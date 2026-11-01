@@ -1253,6 +1253,7 @@ impl DockEngine {
                     | InputOutcome::InteractionProcessed { .. }
                     | InputOutcome::WorkspaceValidated { .. }
                     | InputOutcome::PlatformProviderRejected { .. }
+                    | InputOutcome::MagneticTargetingUpdated { .. }
                     | InputOutcome::StaleRejected { .. } => &[],
                 }
                 .iter()
@@ -1829,6 +1830,28 @@ impl DockEngine {
                     *provider,
                     interaction_events,
                 ),
+            EngineInput::UpdatePointerMagneticTargeting {
+                provider,
+                pointer,
+                enabled,
+            } => self.reduce_pointer_magnetic_targeting(
+                cause,
+                *provider,
+                *pointer,
+                *enabled,
+                interaction_events,
+            ),
+            EngineInput::UpdateNativeMagneticTargeting {
+                provider,
+                binding,
+                enabled,
+            } => self.reduce_native_magnetic_targeting(
+                cause,
+                *provider,
+                *binding,
+                *enabled,
+                interaction_events,
+            ),
             EngineInput::ObserveNativeInputDeviceRemoval { provider } => self
                 .observe_native_input_device_removal(
                     input.sequence,

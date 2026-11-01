@@ -57,6 +57,7 @@ pub enum PointerDeviceKind {
 pub struct PointerEventMetadata {
     device: PointerDeviceKind,
     observed_at: Option<Duration>,
+    magnetic_targeting: Option<bool>,
 }
 
 impl PointerEventMetadata {
@@ -72,6 +73,7 @@ impl PointerEventMetadata {
         Self {
             device,
             observed_at: None,
+            magnetic_targeting: None,
         }
     }
 
@@ -81,7 +83,25 @@ impl PointerEventMetadata {
         Self {
             device,
             observed_at: Some(observed_at),
+            magnetic_targeting: None,
         }
+    }
+
+    /// Directs magnetic target acquisition for the admitted gesture.
+    ///
+    /// Hosts map their own modifier or tool mode to this semantic intent. A
+    /// missing directive preserves the gesture's previous intent; a new gesture
+    /// starts enabled. Explicit guide and tab-gap targets remain available.
+    #[must_use]
+    pub const fn with_magnetic_targeting(mut self, enabled: bool) -> Self {
+        self.magnetic_targeting = Some(enabled);
+        self
+    }
+
+    /// Returns the optional targeting directive carried by this edge.
+    #[must_use]
+    pub const fn magnetic_targeting(self) -> Option<bool> {
+        self.magnetic_targeting
     }
 
     /// Returns the class observed for this edge alone.

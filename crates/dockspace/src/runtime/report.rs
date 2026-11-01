@@ -130,6 +130,12 @@ impl HostFrameReport {
                         binding: NativeSurfaceBinding::from_binding(provider, *binding),
                         changed: *changed,
                     }),
+                InputOutcome::MagneticTargetingUpdated { enabled, changed } => {
+                    Some(HostInputOutcome::MagneticTargetingUpdated {
+                        enabled: *enabled,
+                        changed: *changed,
+                    })
+                }
                 InputOutcome::NativeInputDeviceRemoval => {
                     Some(HostInputOutcome::NativeInputDeviceRemoval)
                 }

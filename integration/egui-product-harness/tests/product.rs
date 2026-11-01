@@ -4939,6 +4939,285 @@ fn run_product_magnetic_drag(
     ]
 }
 
+fn magnetic_modifier_fixture() -> (Context, Dockspace, MagneticPanes, Pos2, Rect) {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace =
+        Dockspace::builder("product-magnetic-modifiers", magnetic_semantic_layout())
+            .style(instrumented_style())
+            .build()
+            .expect("the modifier regression facade initializes");
+    let mut panes = MagneticPanes::new();
+    let (source, target_rect) = settle_until(8, || {
+        let frame = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let source = try_node_rect(&frame.output, Role::Tab, "Second").map(|rect| rect.center());
+        let target_rect = panes.target_rect().filter(|rect| rect.is_positive());
+        let mut missing = Vec::new();
+        if source.is_none() {
+            missing.push("source tab semantics");
+        }
+        if target_rect.is_none() {
+            missing.push("target pane bounds");
+        }
+        ((source, target_rect), missing)
+    })
+    .unwrap_or_else(|timeout| panic!("modifier fixture readiness failed: {timeout}"));
+    // Present one unchanged output so all measured receiver geometry is current.
+    let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    (
+        context,
+        dockspace,
+        panes,
+        source.expect("the source tab is presented"),
+        target_rect.expect("the target pane is presented"),
+    )
+}
+
+#[test]
+fn shift_only_frames_clear_magnetic_preview_and_reenable_waits_for_real_motion() {
+    for key_modifiers in [false, true] {
+        let (context, mut dockspace, mut panes, source, target_rect) = magnetic_modifier_fixture();
+        let case = MAGNETIC_DOCKING_BASINS
+            .cases()
+            .find(|case| {
+                case.basin() == MagneticDockBasin::Center
+                    && case.cadence() == CadenceProfile::Stepwise
+            })
+            .expect("the shared matrix includes a center sample away from explicit guides");
+        let target = normalized_pane_point(target_rect, case);
+        let style = dockspace.style().clone();
+        let drop_fill = style.visuals.drop_fill.unwrap();
+        let before = product_magnetic_snapshot(&dockspace);
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(source), pointer_button(source, true)],
+        );
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(source + vec2(12.0, 8.0))],
+        );
+        settle_product_magnetic_preview(
+            || {
+                run_pane_frame(
+                    &context,
+                    &mut dockspace,
+                    &mut panes,
+                    vec![Event::PointerMoved(target)],
+                )
+            },
+            None,
+            target,
+            target_rect,
+            case,
+            &style,
+        );
+        let modifier_event = |modifiers| {
+            if key_modifiers {
+                Event::Key {
+                    key: Key::A,
+                    physical_key: Some(Key::A),
+                    pressed: false,
+                    repeat: false,
+                    modifiers,
+                }
+            } else {
+                Event::ModifiersChanged(modifiers)
+            }
+        };
+        for events in [
+            vec![modifier_event(Modifiers::SHIFT)],
+            Vec::new(),
+            vec![modifier_event(Modifiers::NONE)],
+            Vec::new(),
+        ] {
+            let (frame, changed, _) =
+                run_pane_frame_with_mutation(&context, &mut dockspace, &mut panes, events);
+            assert_eq!(
+                rect_fill_count(&frame.output, drop_fill),
+                0,
+                "modifier-only and idle frames must not retain or revive a magnetic preview",
+            );
+            assert!(
+                !changed,
+                "a modifier change must preserve gesture ownership"
+            );
+            assert_eq!(product_magnetic_snapshot(&dockspace), before);
+        }
+        let reacquired = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+        assert!(
+            preview_readiness(
+                &reacquired,
+                target_rect,
+                target,
+                MagneticDockBasin::Center,
+                drop_fill,
+            )
+            .is_empty(),
+            "the next real move must acquire a fresh magnetic target",
+        );
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![pointer_button(target, false)],
+        );
+        settle_product_magnetic_outcome(&context, &mut dockspace, &mut panes, case);
+    }
+}
+
+#[test]
+fn same_packet_shift_release_cannot_commit_an_earlier_magnetic_target() {
+    for shift_release in [false, true] {
+        let (context, mut dockspace, mut panes, source, target_rect) = magnetic_modifier_fixture();
+        let target = Pos2::new(
+            egui::lerp(target_rect.x_range(), 0.28),
+            egui::lerp(target_rect.y_range(), 0.28),
+        );
+        let before = product_magnetic_snapshot(&dockspace);
+        let release = Event::PointerButton {
+            pos: target,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: if shift_release {
+                Modifiers::SHIFT
+            } else {
+                Modifiers::NONE
+            },
+        };
+        let frame = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![
+                Event::PointerMoved(source),
+                pointer_button(source, true),
+                Event::PointerMoved(source + vec2(12.0, 8.0)),
+                Event::PointerMoved(target),
+                release,
+                // This must neither rewrite release metadata nor revive its old latch.
+                Event::ModifiersChanged(Modifiers::NONE),
+            ],
+        );
+        if shift_release {
+            // Contained placement uses the same preview fill. The terminal model
+            // below distinguishes a valid float from docking the old magnetic target.
+            for _ in 0..8 {
+                let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+                let source_item = dockspace.view().item(SECOND).unwrap();
+                assert!(
+                    source_item.contained().is_some()
+                        || product_magnetic_snapshot(&dockspace) == before,
+                    "a suppressed release may float or preserve its source but must not dock",
+                );
+                assert_eq!(
+                    dockspace.view().item(FIRST).unwrap().tabs().items(),
+                    &[FIRST]
+                );
+            }
+            assert_eq!(context.dragged_id(), None);
+        } else {
+            let case = MAGNETIC_DOCKING_BASINS
+                .cases()
+                .find(|case| {
+                    case.basin() == MagneticDockBasin::Center
+                        && case.cadence() == CadenceProfile::Burst
+                })
+                .unwrap();
+            assert!(
+                magnetic_preview_rect(
+                    &frame.output,
+                    dockspace.style().visuals.drop_fill.unwrap(),
+                    target_rect,
+                )
+                .is_some(),
+                "the unmodified control packet must expose its magnetic preview",
+            );
+            settle_product_magnetic_outcome(&context, &mut dockspace, &mut panes, case);
+        }
+    }
+}
+
+#[test]
+fn shift_held_from_press_stays_suppressed_through_moves_without_modifiers() {
+    let (context, mut dockspace, mut panes, source, target_rect) = magnetic_modifier_fixture();
+    let target = Pos2::new(
+        egui::lerp(target_rect.x_range(), 0.28),
+        egui::lerp(target_rect.y_range(), 0.28),
+    );
+    let style = dockspace.style().clone();
+    let before = product_magnetic_snapshot(&dockspace);
+    let button = |pos, pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::SHIFT,
+    };
+    let _ = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::ModifiersChanged(Modifiers::SHIFT)],
+    );
+    let _ = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), button(source, true)],
+    );
+    let _ = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(12.0, 8.0))],
+    );
+    for events in [
+        vec![Event::PointerMoved(target)],
+        Vec::new(),
+        vec![Event::PointerMoved(target)],
+        Vec::new(),
+    ] {
+        let _ = run_pane_frame(&context, &mut dockspace, &mut panes, events);
+        // A contained float preview remains valid while magnetic targets are paused.
+        assert_eq!(product_magnetic_snapshot(&dockspace), before);
+    }
+    let dragging = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        guide_button_count(
+            &dragging.output,
+            style.visuals.drop_guide_fill.unwrap(),
+            style.visuals.drop_guide_active_fill.unwrap(),
+        ) > 0,
+        "the suspended gesture must stay active and keep explicit guides available",
+    );
+    let _ = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![button(target, false)],
+    );
+    for _ in 0..8 {
+        let _ = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert!(
+            dockspace.view().item(SECOND).unwrap().contained().is_some()
+                || product_magnetic_snapshot(&dockspace) == before,
+            "holding Shift for the entire gesture must not dock on release",
+        );
+    }
+    assert_eq!(context.dragged_id(), None);
+}
+
 #[test]
 fn causal_settlement_timeout_names_the_missing_observations() {
     let timeout = settle_until(2, || {

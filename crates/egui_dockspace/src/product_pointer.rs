@@ -39,6 +39,7 @@ pub(crate) struct ProductPointer {
     position: Option<Pos2>,
     // Adapter input enrollment only; core remains the sole gesture owner.
     generic_live: bool,
+    magnetic_targeting: Option<bool>,
     touches: TouchContacts,
 }
 
@@ -48,15 +49,21 @@ struct PointerSample {
     device: PointerDeviceKind,
     event: SurfacePointerEvent,
     position: Option<Pos2>,
+    magnetic_targeting: Option<bool>,
 }
 
 impl PointerSample {
-    const fn generic(event: SurfacePointerEvent, position: Option<Pos2>) -> Self {
+    const fn generic(
+        event: SurfacePointerEvent,
+        position: Option<Pos2>,
+        magnetic_targeting: Option<bool>,
+    ) -> Self {
         Self {
             pointer: SurfacePointerId::new(1),
             device: PointerDeviceKind::Unknown,
             event,
             position,
+            magnetic_targeting,
         }
     }
 }
@@ -71,6 +78,7 @@ struct Edge {
     delivery: Option<PresentedDockReceiver>,
     drag_delivery: Option<PresentedDockReceiver>,
     blocked: bool,
+    magnetic_targeting: Option<bool>,
 }
 
 impl ProductPointer {
@@ -151,6 +159,7 @@ impl ProductPointer {
         self.rejected_run = Some(packet.clone());
         let mut position = self.position;
         let mut generic_live = self.generic_live;
+        let mut magnetic_targeting = self.magnetic_targeting;
         let mut touches = self.touches.clone();
         let touch_packet = !touches.is_empty()
             || packet
@@ -165,6 +174,7 @@ impl ProductPointer {
                         SurfacePointerCancelReason::ExplicitPlatformCancellation,
                     ),
                     position,
+                    magnetic_targeting,
                 ));
                 generic_live = false;
             }
@@ -173,6 +183,15 @@ impl ProductPointer {
             );
         }
         for event in packet.events().iter().cloned() {
+            if let Some(enabled) = update_magnetic_targeting(&mut magnetic_targeting, &event)
+                && generic_live
+            {
+                records.push(PointerSample::generic(
+                    SurfacePointerEvent::MagneticTargetingChanged { enabled },
+                    None,
+                    magnetic_targeting,
+                ));
+            }
             if touch_packet
                 && generic_live
                 && matches!(
@@ -191,6 +210,7 @@ impl ProductPointer {
                         SurfacePointerCancelReason::ExplicitPlatformCancellation,
                     ),
                     position,
+                    magnetic_targeting,
                 ));
                 generic_live = false;
             }
@@ -265,7 +285,7 @@ impl ProductPointer {
                 } else {
                     generic_live = true;
                 }
-                records.push(PointerSample::generic(event, position));
+                records.push(PointerSample::generic(event, position, magnetic_targeting));
             }
         }
         if records.is_empty()
@@ -278,20 +298,42 @@ impl ProductPointer {
             // This is an explicit stationary recheck. It does not claim that
             // the pointer moved; the ordinary receiver path below must prove
             // current framework clearance at its retained logical point.
-            if let Some(sample) =
-                continuation_sample(&touches, position, request.pointer(), request.event())
-            {
+            if let Some(sample) = continuation_sample(
+                &touches,
+                position,
+                magnetic_targeting,
+                request.pointer(),
+                request.event(),
+            ) {
                 records.push(sample);
             }
         }
         if records.is_empty() {
             schedule_pointer_continuation(session, ui, packet.observed_at());
+            self.magnetic_targeting = magnetic_targeting;
             self.consumed_run = Some(packet);
             self.rejected_run = None;
             return Ok(Vec::new());
         }
         let interactive = ui.ctx().interactive_rects_last_pass();
         let edge_at = |sample: PointerSample, session: &DockspaceSession| {
+            if matches!(
+                sample.event,
+                SurfacePointerEvent::MagneticTargetingChanged { .. }
+            ) {
+                // A semantic marker has no coordinate or receiver observation.
+                return Edge {
+                    pointer: sample.pointer,
+                    device: sample.device,
+                    event: sample.event,
+                    point: None,
+                    surface: None,
+                    delivery: None,
+                    drag_delivery: None,
+                    blocked: false,
+                    magnetic_targeting: sample.magnetic_targeting,
+                };
+            }
             let position = sample.position;
             let point = position
                 .filter(|_| coordinates_supported)
@@ -356,6 +398,7 @@ impl ProductPointer {
                     .then(|| hit.and_then(|hit| hit.drag_delivery()))
                     .flatten(),
                 blocked: !qualified,
+                magnetic_targeting: sample.magnetic_targeting,
             }
         };
         let edges = records
@@ -372,6 +415,7 @@ impl ProductPointer {
         // continuation failure must not roll their roster back.
         self.position = position;
         self.generic_live = generic_live;
+        self.magnetic_targeting = magnetic_targeting;
         self.touches = touches;
         let mut reports = vec![report];
         if let (Some(request), Some(now)) = (session.pointer_continuation(), observed_at)
@@ -382,6 +426,7 @@ impl ProductPointer {
             && let Some(sample) = continuation_sample(
                 &self.touches,
                 self.position,
+                self.magnetic_targeting,
                 request.pointer(),
                 request.event(),
             )
@@ -427,14 +472,28 @@ impl ProductPointer {
 fn continuation_sample(
     touches: &TouchContacts,
     position: Option<Pos2>,
+    magnetic_targeting: Option<bool>,
     pointer: SurfacePointerId,
     event: SurfacePointerEvent,
 ) -> Option<PointerSample> {
     if pointer == SurfacePointerId::new(1) {
-        Some(PointerSample::generic(event, position))
+        Some(PointerSample::generic(event, position, magnetic_targeting))
     } else {
         touches.continuation(pointer, event)
     }
+}
+
+fn update_magnetic_targeting(current: &mut Option<bool>, event: &Event) -> Option<bool> {
+    let modifiers = match event {
+        Event::ModifiersChanged(modifiers)
+        | Event::Key { modifiers, .. }
+        | Event::PointerButton { modifiers, .. } => modifiers,
+        _ => return None,
+    };
+    let enabled = !modifiers.shift;
+    let changed = *current != Some(enabled);
+    *current = Some(enabled);
+    changed.then_some(enabled)
 }
 
 fn pointer_input(edge: &Edge, observed_at: Option<std::time::Duration>) -> HostPointerInput<'_> {
@@ -462,6 +521,13 @@ fn pointer_input(edge: &Edge, observed_at: Option<std::time::Duration>) -> HostP
             facts = facts.with_clear_hover_lane(surface);
         }
     }
+    let mut metadata = observed_at.map_or_else(
+        || PointerEventMetadata::untimed(edge.device),
+        |time| PointerEventMetadata::new(edge.device, time),
+    );
+    if let Some(enabled) = edge.magnetic_targeting {
+        metadata = metadata.with_magnetic_targeting(enabled);
+    }
     HostPointerInput::new(
         edge.pointer,
         edge.event,
@@ -470,10 +536,7 @@ fn pointer_input(edge: &Edge, observed_at: Option<std::time::Duration>) -> HostP
         SurfacePointerCapture::None,
         facts,
     )
-    .with_metadata(observed_at.map_or_else(
-        || PointerEventMetadata::untimed(edge.device),
-        |time| PointerEventMetadata::new(edge.device, time),
-    ))
+    .with_metadata(metadata)
 }
 
 fn schedule_pointer_continuation(

@@ -84,6 +84,10 @@ pub(crate) struct TargetAcquisition {
 }
 
 impl TargetAcquisition {
+    pub(crate) const fn is_magnetic(self) -> bool {
+        matches!(self.candidate, TargetCandidate::Magnetic(_))
+    }
+
     pub(crate) const fn new(
         scene: SurfaceSceneStamp,
         layer: SceneLayerKey,

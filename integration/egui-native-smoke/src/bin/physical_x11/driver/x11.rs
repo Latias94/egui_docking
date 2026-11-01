@@ -8,7 +8,8 @@ use x11rb::connection::Connection as _;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ChangeWindowAttributesAux,
-    ConnectionExt as _, EventMask, GetPropertyReply, KeyButMask, MOTION_NOTIFY_EVENT, Window,
+    ConnectionExt as _, EventMask, GetPropertyReply, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
+    KeyButMask, MOTION_NOTIFY_EVENT, Window,
 };
 use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
@@ -151,6 +152,41 @@ pub(super) struct X11Desktop {
     connection: RustConnection,
     root: Window,
     atoms: X11Atoms,
+}
+
+/// Armed before keydown so every later error path sends a real keyup.
+pub(super) struct ShiftKeyGuard<'a> {
+    desktop: &'a X11Desktop,
+    keycode: u8,
+    pressed: bool,
+}
+
+impl ShiftKeyGuard<'_> {
+    pub(super) fn release(&mut self) -> Result<(), String> {
+        self.desktop.set_shift_key(self.keycode, false)?;
+        self.pressed = false;
+        eprintln!(
+            "physical-smoke: real XTest Shift_L up keycode={}",
+            self.keycode
+        );
+        Ok(())
+    }
+}
+
+impl Drop for ShiftKeyGuard<'_> {
+    fn drop(&mut self) {
+        if self.pressed {
+            match self.desktop.set_shift_key(self.keycode, false) {
+                Ok(()) => eprintln!(
+                    "physical-smoke: Shift_L error cleanup verified real keyup keycode={}",
+                    self.keycode
+                ),
+                Err(error) => {
+                    eprintln!("physical-smoke: Shift_L real keyup cleanup failed: {error}")
+                }
+            }
+        }
+    }
 }
 
 impl X11Desktop {
@@ -342,6 +378,87 @@ impl X11Desktop {
         if actual != pressed {
             return Err(format!(
                 "XTest primary-button edge did not reach X11: expected pressed={pressed}, actual={actual}"
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn press_shift_left(&self) -> Result<ShiftKeyGuard<'_>, String> {
+        const SHIFT_L: u32 = 0xffe1;
+        let setup = self.connection.setup();
+        let first = setup.min_keycode;
+        let count = setup
+            .max_keycode
+            .checked_sub(first)
+            .and_then(|span| span.checked_add(1))
+            .ok_or_else(|| "X11 keyboard keycode range is invalid".to_owned())?;
+        let mapping = self
+            .connection
+            .get_keyboard_mapping(first, count)
+            .map_err(|error| format!("query current X11 keyboard mapping: {error}"))?
+            .reply()
+            .map_err(|error| format!("read current X11 keyboard mapping: {error}"))?;
+        let stride = usize::from(mapping.keysyms_per_keycode);
+        if stride == 0 || mapping.keysyms.len() != usize::from(count) * stride {
+            return Err("X11 keyboard mapping has an invalid row count/width".to_owned());
+        }
+        let offset = mapping
+            .keysyms
+            .chunks_exact(stride)
+            .position(|row| row.contains(&SHIFT_L))
+            .ok_or_else(|| {
+                "current X11 keyboard mapping has no Shift_L keysym 0xffe1".to_owned()
+            })?;
+        let keycode = u8::try_from(usize::from(first) + offset)
+            .map_err(|error| format!("Shift_L mapping keycode: {error}"))?;
+        self.assert_shift_key(keycode, false)?;
+        let guard = ShiftKeyGuard {
+            desktop: self,
+            keycode,
+            pressed: true,
+        };
+        self.set_shift_key(keycode, true)?;
+        eprintln!(
+            "physical-smoke: real XTest Shift_L down keycode={keycode} keysym=0xffe1 from current X11 keyboard mapping"
+        );
+        Ok(guard)
+    }
+
+    fn set_shift_key(&self, keycode: u8, pressed: bool) -> Result<(), String> {
+        let event = if pressed {
+            KEY_PRESS_EVENT
+        } else {
+            KEY_RELEASE_EVENT
+        };
+        self.connection
+            .xtest_fake_input(event, keycode, CURRENT_TIME, self.root, 0, 0, 0)
+            .map_err(|error| format!("inject XTest Shift_L pressed={pressed}: {error}"))?
+            .check()
+            .map_err(|error| format!("XTest Shift_L pressed={pressed} failed: {error}"))?;
+        self.connection
+            .flush()
+            .map_err(|error| format!("flush XTest Shift_L pressed={pressed}: {error}"))?;
+        self.assert_shift_key(keycode, pressed)
+    }
+
+    fn assert_shift_key(&self, keycode: u8, pressed: bool) -> Result<(), String> {
+        let keys = self
+            .connection
+            .query_keymap()
+            .map_err(|error| format!("query real X11 Shift_L state: {error}"))?
+            .reply()
+            .map_err(|error| format!("read real X11 Shift_L state: {error}"))?;
+        let pointer = self
+            .connection
+            .query_pointer(self.root)
+            .map_err(|error| format!("query X11 Shift modifier state: {error}"))?
+            .reply()
+            .map_err(|error| format!("read X11 Shift modifier state: {error}"))?;
+        let key_down = keys.keys[usize::from(keycode) / 8] & (1_u8 << (keycode % 8)) != 0;
+        let shift_down = pointer.mask.contains(KeyButMask::SHIFT);
+        if key_down != pressed || shift_down != pressed {
+            return Err(format!(
+                "real X11 Shift_L state mismatch: keycode={keycode}, expected={pressed}, key_down={key_down}, shift_mask={shift_down}"
             ));
         }
         Ok(())

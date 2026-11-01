@@ -2533,6 +2533,7 @@ enum ActiveGesture {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InteractionState {
     active: ActiveGesture,
+    magnetic_targeting_enabled: bool,
     last_click_generation: ClickGeneration,
     last_drag_generation: DragGeneration,
     last_resize_generation: ResizeGeneration,
@@ -2544,6 +2545,14 @@ pub struct InteractionState {
 }
 
 impl InteractionState {
+    pub(crate) const fn magnetic_targeting_enabled(&self) -> bool {
+        self.magnetic_targeting_enabled
+    }
+
+    pub(crate) fn set_magnetic_targeting(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.magnetic_targeting_enabled, enabled) != enabled
+    }
+
     pub(crate) fn prepare_presentation_rehome_preview(
         &mut self,
         epoch: WorkspaceEpoch,
@@ -3657,6 +3666,7 @@ impl Default for InteractionState {
     fn default() -> Self {
         Self {
             active: ActiveGesture::Idle,
+            magnetic_targeting_enabled: true,
             last_click_generation: ClickGeneration::default(),
             last_drag_generation: DragGeneration::default(),
             last_resize_generation: ResizeGeneration::default(),

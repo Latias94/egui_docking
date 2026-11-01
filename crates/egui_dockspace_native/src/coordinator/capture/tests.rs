@@ -15,8 +15,8 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceReceiverDescriptor, NativeHostCapabilities, NativeHostCapability, NativeLocalGeometry,
     NativeMonotonicClock, NativeReceiverPurpose, NativeWindowInputState,
-    NativeWindowPresentationState, PointerDeviceKind, PointerEventMetadata,
-    SurfacePaintProgramOperation, SurfacePaintProgramStep, UniformSurfaceMetrics,
+    NativeWindowPresentationState, PointerDeviceKind, SurfacePaintProgramOperation,
+    SurfacePaintProgramStep, UniformSurfaceMetrics,
 };
 use eframe::{NativeViewportPointerCaptureStatus as Status, NativeViewportPointerObservation};
 use winit::application::ApplicationHandler;
@@ -293,10 +293,8 @@ impl Scene {
 
     fn answer(&self, query: NativeReceiverQuery, captured_at: Duration) -> NativeReceiverAnswer {
         assert_eq!(query.surface(), SURFACE);
-        assert_eq!(
-            query.metadata(),
-            PointerEventMetadata::new(PointerDeviceKind::Mouse, captured_at)
-        );
+        assert_eq!(query.metadata().device(), PointerDeviceKind::Mouse);
+        assert_eq!(query.metadata().observed_at(), Some(captured_at));
         let Some((_, receiver, _)) = self.0.iter().find(|tab| {
             query
                 .point()

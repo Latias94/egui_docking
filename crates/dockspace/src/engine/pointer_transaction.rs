@@ -1,8 +1,111 @@
 //! Device-independent pointer interaction transaction.
 
 use super::*;
+use crate::intent::PointerId;
 
 impl DockEngine {
+    fn update_gesture_magnetic_targeting(
+        &mut self,
+        cause: ReductionCause,
+        owner: GestureOwner,
+        enabled: bool,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<bool, EngineError> {
+        if self.interaction.active_owner() != Some(owner) {
+            return Ok(false);
+        }
+        let changed = self.interaction.set_magnetic_targeting(enabled);
+        if let InteractionStatus::Dragging { session } = self.interaction.status() {
+            let magnetic = self
+                .interaction
+                .active_drag(session)
+                .ok()
+                .and_then(|drag| drag.target_acquisition())
+                .is_some_and(|target| target.is_magnetic());
+            if !enabled && magnetic {
+                self.interaction
+                    .clear_preview(session, PreviewResolutionStatus::KnownNone)
+                    .map_err(|source| EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: format!("{source:?}"),
+                    })?;
+                self.interaction
+                    .set_drop_affordance(session, None)
+                    .map_err(|source| EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: format!("{source:?}"),
+                    })?;
+                interaction_events.push(InteractionEvent::new_caused(
+                    cause,
+                    self.version,
+                    InteractionEventKind::PreviewCleared { session },
+                ));
+            }
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn reduce_pointer_magnetic_targeting(
+        &mut self,
+        cause: ReductionCause,
+        provider: PointerInputLease,
+        pointer: PointerId,
+        enabled: bool,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        let owner = self.interaction.active_owner().filter(|owner| {
+            self.pointer_provider() == Some(provider)
+                && owner.lease() == provider
+                && owner.pointer() == pointer
+                && matches!(
+                    provider.scope(),
+                    PointerProviderScope::HostLocal(_) | PointerProviderScope::SurfaceLocal(_)
+                )
+        });
+        let changed = if let Some(owner) = owner {
+            self.update_gesture_magnetic_targeting(cause, owner, enabled, interaction_events)?
+        } else {
+            false
+        };
+        Ok(InputOutcome::MagneticTargetingUpdated { enabled, changed })
+    }
+
+    pub(super) fn reduce_native_magnetic_targeting(
+        &mut self,
+        cause: ReductionCause,
+        provider: BackendIngressLease,
+        binding: ViewportBinding,
+        enabled: bool,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        self.require_managed_input_provider(provider)?;
+        let current = self
+            .viewport
+            .registry()
+            .record(binding.surface())
+            .is_some_and(|record| record.binding() == binding);
+        let keyboard_focus = self
+            .viewport_focus
+            .focus_observation()
+            .is_some_and(|observation| {
+                observation.focused()
+                    == &Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(binding))
+            });
+        let owner = self.interaction.active_owner().filter(|owner| {
+            owner.lease() == provider.pointer_provider()
+                && (keyboard_focus || self.interaction.active_presentation_authority().is_some_and(|authority| {
+                    authority.presented.endpoint()
+                        == crate::presentation_observation::HostPresentationEndpoint::Native(binding)
+                }))
+        }).filter(|_| current);
+        let changed = if let Some(owner) = owner {
+            self.update_gesture_magnetic_targeting(cause, owner, enabled, interaction_events)?
+        } else {
+            false
+        };
+        Ok(InputOutcome::MagneticTargetingUpdated { enabled, changed })
+    }
+
     fn reduce_journal_pointer_edge(
         &mut self,
         cause: ReductionCause,
@@ -117,6 +220,15 @@ impl DockEngine {
                 );
             }
             return Ok(outcomes);
+        }
+        if matching_owner
+            && !matches!(
+                edge.kind(),
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary)
+            )
+            && let Some(enabled) = edge.metadata().magnetic_targeting()
+        {
+            self.update_gesture_magnetic_targeting(cause, owner, enabled, interaction_events)?;
         }
         let event_start = interaction_events.len();
         let mut outcomes = match edge.kind() {
@@ -244,6 +356,20 @@ impl DockEngine {
             | PointerEdgeKind::ButtonReleased(_)
             | PointerEdgeKind::ContactEnded(_) => Ok(Vec::new()),
         }?;
+        if status_before == InteractionStatus::Idle
+            && matches!(
+                edge.kind(),
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary)
+            )
+            && self.interaction.active_owner() == Some(owner)
+        {
+            self.update_gesture_magnetic_targeting(
+                cause,
+                owner,
+                edge.metadata().magnetic_targeting().unwrap_or(true),
+                interaction_events,
+            )?;
+        }
         if matches!(edge.kind(), PointerEdgeKind::ContactEnded(_)) {
             outcomes.extend(self.terminate_journal_stream(
                 cause,
@@ -2532,7 +2658,8 @@ impl DockEngine {
                 drag.payload.clone(),
                 drag.surface_background_offer,
                 point,
-                drag.magnetic_targeting_allowed_at(position),
+                self.interaction.magnetic_targeting_enabled()
+                    && drag.magnetic_targeting_allowed_at(position),
             )
             .map_err(|source| EngineError::PointerInteractionInvariant {
                 cause,

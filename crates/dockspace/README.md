@@ -138,6 +138,24 @@ The official egui owned-run adapter forwards explicit `RawInput.time` as one
 batch observation time, preserving Unknown when it is absent. It does not
 claim per-OS-event timestamps or infer device class from generic pointer events.
 
+Hosts can map a modifier or tool mode to
+`PointerEventMetadata::with_magnetic_targeting(enabled)`. A missing directive
+preserves the current gesture's intent; a new press starts enabled unless it
+carries an explicit directive. Suppression removes a magnetic preview and its
+latch while preserving explicit guides, tab gaps, capture and contained-content
+position. Re-enabling permits fresh acquisition on a later real Move or Release;
+it cannot restore an earlier preview or change an already frozen release.
+
+For modifier-only input, submit
+`SurfacePointerEvent::MagneticTargetingChanged { enabled }` in the same ordered
+host/surface batch and name the matching active pointer. This semantic control
+requires no route, receiver or invented motion and does not advance pointer
+sequence numbers. Managed native hosts instead record
+`report_native_magnetic_targeting(binding, enabled)` in their existing joined
+input order. It applies to that provider's active gesture only when the exact
+current binding is its source or the known keyboard-focus window; it does not
+fan out over devices or infer coordinates, buttons or capture.
+
 ## Stationary interaction
 
 During a local drag or touch press, `DockspaceSession::pointer_continuation()` can return one

@@ -15,6 +15,119 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 ordered magnetic suppression qualification
+
+The completion audit's real Shift gap is now implemented through one semantic
+targeting intent. `PointerEventMetadata::with_magnetic_targeting` carries an
+edge's optional directive; omission preserves the current gesture and a new
+press initializes the default. Modifier-only local controls use
+`SurfacePointerEvent::MagneticTargetingChanged` in the existing host order,
+without a pointer sequence, coordinate, receiver query or fabricated motion.
+Native `ModifiersChanged` callbacks record one semantic input before raw
+acknowledgement and use the existing shared budget. Reduction selects the active
+owner; translation neither selects an owner nor fans out over devices.
+
+Disabling removes only magnetic acquisition, preview and affordance. Explicit
+guide/tab-gap targets, complete contained position and the source continuation
+remain intact. Enabling permits a fresh real Move or Release to acquire; it
+does not resurrect a preview or modify a pending release's frozen exact output.
+Native controls require the same provider and an exact current binding which
+is the source or the known keyboard-focus window. Retired, foreign and inactive
+controls are inert. The existing transport preflight runs before allocating
+the semantic Box. No second gesture owner, clock, registry or docking graph is
+introduced.
+
+Focused public3, native10, core-review2 and egui-product3 traces pass. The core
+review cases additionally preserve complete contained pane/chrome geometry and
+allow a focused Root to control a Child while an unfocused third binding is
+inert. Independent review closes both findings and confirms that stationary
+continuations cannot recreate magnetic preview. Capacity review finds no size
+increase in the inspected arm64 PointerEventMetadata/EngineInput layouts;
+actual native capacities remain dynamically charged and are rerun below.
+
+The real X11/eframe/Glow journey passes on frozen source. XTest Shift_L down
+clears the Root magnetic Dock emission while the original Child press/capture,
+desktop point, native motion count and button count remain unchanged. Keyup
+keeps it absent through two fresh inspection steps. Only a distinct safe real
+Move reacquires a fresh Dock emission, followed by the same real Release,
+redock, exact DestroyNotify, semantic retirement and quiescence. Painted
+inspection emissions do not claim GPU presentation or direct core-commit
+receipts; public/coordinator tests retain the exact output-barrier proof.
+
+The first physical attempt already passed both modifier phases but its fixture
+then incorrectly required full guides before a fresh real edge. A cleared
+affordance need not emit those guides. The corrected fixture checks unchanged
+geometry and absent preview before motion, uses previously observed guides only
+to choose the safe point, then checks every newly emitted guide and preview
+after that motion. It does not weaken fresh acquisition or inject another edge.
+Both attempts remain recorded in `/tmp/dockspace-magnetic-physical-first.json`
+and `/tmp/dockspace-magnetic-physical-v2.json`.
+
+All23 library/tool gates pass on the frozen production source: workspace1958,
+public163/serde191, product112/serde117, official15, native default539,
+macOS native all-targets587 and assertion-disabled library539, and Linux
+library539 both normally and assertion-disabled. Each native configuration
+includes its actual same-coordinator10,000-lifetime soak. One opt-in measurement
+remains skipped in nextest; Linux retains five explicit ignored platform/
+measurement tests. Correctness/suspicious Clippy on core/macOS/Linux, strict
+rustdoc, ten doctests, framework-dependency isolation, formatting and diff also
+pass. Frozen source and commands/results are
+`/tmp/dockspace-magnetic-qualified-source.json` and
+`/tmp/dockspace-magnetic-final-qualification.json`.
+
+Finite window refresh passes macOS default/bounded Redock, both platforms' six
+output-pressure modes, Linux smoke unit tests, real X11 hover positive/InputOnly
+negative, stationary overflow/exit-stop, guide/nested-edge/clipped insertion
+and1kHz center input. The latter matches all1000 callbacks and measures a
+35.400334ms release-to-model upper bound, with sampled owned/reserved bytes
+2,358,993/3,513,528 under4MiB. These are finite observations rather than latency
+guarantees. Shift also passes the complete real journey with native debug
+assertions disabled. Results are
+`/tmp/dockspace-magnetic-window-qualification.json` and
+`/tmp/dockspace-magnetic-window-followup-v3.json`, supplemented by the normal
+Shift result above.
+
+Separately invoked real capture passes normally and assertion-disabled. The
+close/create/age journey passes original press lineage, stale T1 rejection after
+C2, distinct T2 identity, no premature selection, natural250ms freeze, delayed
+q1/q2 close receipts, cancelled-create source preservation, exact A/B Destroyed,
+output zero and quiescence. Its two cfg(test) oracles required migration: capture
+queries now compare exact device/time independently of new targeting intent;
+the WM-aware fork now supplies exact source-window capture/delivery instead of
+Unknown. Both identity assertions are strict and retain original press/device/
+binding checks. Independent review reports no P1/P2. A GUI-panic attempt was
+followed by a T1 timeout; after isolated-display real button/modifier cleanup,
+the final retry passes. Residual buttondown is a plausible cause, not an
+independently observed fact. Original failures are preserved in the window
+qualification, followup and followup-v2 records; successful capture also has
+`/tmp/dockspace-magnetic-window-followup.json`. Only these two ignored Linux
+test files change after the production freeze; the source receipt records them.
+
+The package refresh passes all six matched-package gates. Both archives are
+rebuilt; all275 core and36 adapter Rust files and both READMEs match source byte
+for byte. The extracted public consumers pass default163/serde191, the engine
+example runs and the official consumer passes15. Framework dependencies remain
+registry-sourced. Core's ordinary package verification passes. Adapter's first
+ordinary verification resolves an older cached registry core0.1.0 and fails on
+the new API; a command-line patch attempt with the workspace's unchanged locked
+graph also fails before mutation. Final verification deliberately checks the
+extracted adapter against this same extracted unpublished core via an explicit
+patch, then runs the independent consumers. Tarball production uses no-verify;
+the subsequent matched check and tests supply verification. Neither repository
+lockfiles nor registry cache contents are rewritten to disguise the mismatch.
+This qualifies the paired unpublished artifacts, not availability of their
+eventual registry release. Evidence, hashes and exact commands are
+`/tmp/dockspace-magnetic-package-v2-qualification.json`; the original failed
+verification and unused-patch diagnostic remain in
+`/tmp/dockspace-magnetic-package-qualification.json` and
+`/tmp/dockspace-magnetic-package-matched-core.log`.
+
+The U4 Shift follow-up is qualified for these host and finite reference profiles.
+Earlier qualification sections keep their historical source scope and are not
+reused as fresh results for this production change. Exact remote fork availability,
+independently owned CI-ref alignment and clean-checkout reproduction remain
+unfinished; no push or PR is performed. The complete Goal remains active.
+
 ## 2026-11-01 completion audit and strict Burst/default-feature follow-up
 
 The [completion audit](COMPLETION_AUDIT.md) maps R1–R25, AE1–AE14, implementation

@@ -9,26 +9,40 @@ the plan's existing scope boundaries.
 
 The overall Goal is **not complete**. Remote availability of the exact native
 fork revisions and clean-checkout/CI reproduction remain unqualified. The plan's
-default Shift suppression of magnetic acquisition is also not implemented:
-current Shift handling applies only to scroll projection, not dragging. The
+default Shift suppression gap is now implemented and qualified through the
+renderer-neutral host, official adapter, native model and finite X11 reference.
+The
 default native entrypoint and the stronger first-packet Burst check pass their
 audit follow-up runs; their earlier all-features or weaker results are not used
 as substitutes for those commands.
 
+The current production follow-up is scoped separately in
+[VALIDATION.md](VALIDATION.md#2026-11-01-ordered-magnetic-suppression-qualification).
+It adds ordered semantic targeting intent to core and both adapters, preserves
+contained geometry and exact pending-release decisions, and has passing public,
+product and native focused traces plus a real X11 Shift down/up/reacquisition
+journey. Historical tree/package identity below applies to the prior baseline;
+it is not a byte-match claim for this follow-up. All23 fresh library/tool gates,
+finite window follow-ups and six matched-package gates pass. The two ignored
+Linux platform-test oracles are refreshed separately without another production
+change. Packages are checked as a matched unpublished pair; this does not claim
+that the older cached registry core already exposes the new API.
+
 ## Evidence identity and scope
 
-The complete Git trees for `crates/dockspace`, `crates/dockspace_host_conformance`,
+At the audit baseline, the complete Git trees for `crates/dockspace`, `crates/dockspace_host_conformance`,
 `crates/egui_dockspace` and the three public/product/official consumers match
 qualified core commit `677f291`. The subsequent audit changes only the product
 test's Burst fallback. Native production logic remains `2dfe390`; later source
 changes are smoke diagnostics and a public document-restore documentation fix.
 All 274 core and 36 official-adapter packaged Rust files, plus both READMEs,
-were compared byte-for-byte against current source. Archive hashes still match
+were compared byte-for-byte against that baseline. Archive hashes match
 their qualification record. These checks are recorded in
 `/tmp/dockspace-completion-audit-provenance.json`.
 
 | Evidence | Actual result and boundary |
 | --- | --- |
+| Current ordered magnetic suppression | Workspace1958, public163/serde191, product112/serde117 and official15 pass. Native default539, macOS all-targets587, macOS noassert539 and Linux normal/noassert539 pass, each including its10,000-lifetime soak. Tooling, finite window pressure/stationary/input regressions, real Shift normal/noassert and matched extracted-package consumers pass. Frozen source, commands and resolved attempts are recorded by the `dockspace-magnetic-*` receipts in VALIDATION.md. The275/36 packaged Rust files and both READMEs byte-match current source. |
 | Core capture gates | Workspace 1,953 and public default 160/serde 188 pass at the matching core/consumer trees. `dockspace-capture-core-gates.json` and individual logs identify commands and test names. |
 | Product/official follow-up | Product 114, official 15, ten doctests, dependency isolation, correctness/suspicious Clippy and strict docs pass in `dockspace-capture-followup-qualification.json`. The stronger Burst first-packet condition passes its separate follow-up below. |
 | Extracted package consumers | Both archives are Cargo-verified. Extracted public default 160/serde 188, official 15 and the engine example pass; framework dependencies remain registry-sourced. `dockspace-capture-package-qualification.json`. |
@@ -55,7 +69,7 @@ and physical evidence.
 | --- | --- | --- |
 | R1: tab arming and ordered boundaries | `engine/pointer_transaction.rs` owns press/move reduction. `pointer_host_frame::surface_local_tab_exact_threshold_move_begins_drag` and `public_contract::host_pointer_same_batch_release_waits_for_the_actual_target_preview` pass. Product L03 covers all basins/cadences; the stricter first-packet assertion passes default and serde. | Qualified. |
 | R2: common manipulation semantics | `deliver_drag_release` feeds the shared prepared transaction. `product_actions::docking_a_complete_root_preserves_group_order_and_selection`, product reorder and the complete L03 layout matrix pass. | Qualified. |
-| R3: core magnetic priority and latch | `drop_resolver` and `runtime/direct_manipulation` own acquisition. `rejected_front_candidate_never_falls_through_its_occlusion`, deterministic structural ties and `magnetic_edge_latch_survives_small_center_overshoot_and_release` pass. | Solver/latch qualified; default Shift suppression incomplete. |
+| R3: core magnetic priority and latch | `drop_resolver` and `runtime/direct_manipulation` own acquisition. `rejected_front_candidate_never_falls_through_its_occlusion`, deterministic structural ties and `magnetic_edge_latch_survives_small_center_overshoot_and_release` pass. Ordered suppression has full public/product/native and real X11 normal/noassert evidence in the current follow-up. | Qualified within the stated host and finite reference profiles. |
 | R4: exact-output release barrier | `finish_drag_release_after_evaluation` and pending-release settlement preserve the latch. Public same-batch Presented/Dropped tests and `move_then_release_with_new_preview_waits_for_exact_presentation` check one durable mutation. | Qualified. |
 | R5: complete contained projection | `engine/contained_projection` and the common scene compiler move pane/hit/semantic geometry together. Public `host_local_all_eight_resize_directions_recompile_both_panes_and_receivers` and product live content/ID/bounds tests pass. | Qualified. |
 | R6: fact-qualified native promotion | `native_tear_off` validates the chosen lane. Unknown-work-area and capability-loss tests preserve source with typed outcomes; real X11 journeys cover first-live/redock/retirement. | Qualified within declared capabilities. |
@@ -140,11 +154,13 @@ The default-profile audit matches the configured 6-point drag threshold,
 0.52 center fraction, 0.15 outer band clamped 32–72, 8-point hysteresis, 150 ms hover,
 350 ms touch/8-point slop, 44-point touch targets, 16-point splitter step and
 24-point/50 ms edge scrolling. `baseline_geometry_is_valid_and_renderer_neutral`
-and behavior tests exercise those values. **Shift suppression is a real gap**:
-ordinary pointer metadata and reduction currently carry no targeting intent.
-Scroll modifier handling cannot satisfy it. U4/default-profile completion must
-therefore remain open until suppression invalidates magnetic latch authority,
-release respects ordered intent and re-enabling can reacquire from fresh facts.
+and behavior tests exercise those values. The original audit found that scroll
+modifier handling could not satisfy Shift suppression. The follow-up adds
+optional targeting intent on real edges and an ordered modifier-only control,
+invalidates magnetic latch authority without losing contained position, preserves
+explicit targets and frozen releases, and requires fresh acquisition after
+reenabling. Full fresh gates and the matched archive refresh now pass; the U4
+default-profile suppression gap is closed.
 
 The current ImGui reference is `d88f238d1d363ef387382b2e29ad12cf96f826ac`, matching
 the plan. The [official egui releases](https://github.com/emilk/egui/releases)
@@ -153,15 +169,13 @@ is justified. Earlier research checkpoints preserve their own source scope.
 
 The following requirements remain **incomplete**:
 
-1. Implement and qualify default Shift magnetic suppression through ordered
-   public/egui/native input without adding a second gesture owner or fabricated motion.
-2. Make Winit `2664589f0bd6fd03b2a5490f23bcd692853e63dd` and egui
+1. Make Winit `2664589f0bd6fd03b2a5490f23bcd692853e63dd` and egui
    `56e3db49b66096b58a23b8eb762bdc0a73ae043c` obtainable from their origins.
    Clean exact-SHA fetches currently return `not our ref` for both.
-3. Align the three CI checkout refs with those commits while preserving the
+2. Align the three CI checkout refs with those commits while preserving the
    separately owned working CI change. The proposal is
    `/tmp/dockspace-native-ci-pin-update.patch`; it has only been checked, not applied.
-4. Reproduce the native checkout/build/CI boundary from obtainable revisions,
+3. Reproduce the native checkout/build/CI boundary from obtainable revisions,
    without locally seeded Git objects or path overrides.
 
 The original CI file hash remains

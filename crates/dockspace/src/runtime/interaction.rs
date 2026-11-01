@@ -435,6 +435,14 @@ impl SurfaceScrollEvent {
 /// One renderer-neutral pointer edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SurfacePointerEvent {
+    /// Changes magnetic targeting intent without reporting motion or capture.
+    ///
+    /// The directive applies only to this provider's matching active pointer.
+    /// Enabling permits fresh acquisition on a later real pointer edge.
+    MagneticTargetingChanged {
+        /// Whether magnetic acquisition is enabled; explicit targets stay available.
+        enabled: bool,
+    },
     /// Pointer motion while the provider owns the stream.
     Moved,
     /// Rechecks one core-issued stationary action with fresh receiver facts.
@@ -1280,6 +1288,13 @@ impl DockspaceHostFrame<'_> {
             .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
         let mut prepared = Vec::with_capacity(inputs.len());
         for input in inputs {
+            if matches!(
+                input.event,
+                SurfacePointerEvent::MagneticTargetingChanged { .. }
+            ) {
+                prepared.push((None, input));
+                continue;
+            }
             let segment_start = sequence;
             sequence = sequence
                 .checked_add(1)
@@ -1300,9 +1315,31 @@ impl DockspaceHostFrame<'_> {
                 vec![edge],
             )
             .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
-            prepared.push((edge_sequence, input, journal));
+            prepared.push((Some((edge_sequence, journal)), input));
         }
-        for (edge_sequence, input, journal) in prepared {
+        if prepared.iter().all(|(edge, _)| edge.is_none()) {
+            // Preserve the provider's exact empty interval and commit guard
+            // without inventing a pointer edge for a modifier-only batch.
+            self.complete_pointer_journal()?;
+        }
+        for (prepared_edge, input) in prepared {
+            let Some((edge_sequence, journal)) = prepared_edge else {
+                let SurfacePointerEvent::MagneticTargetingChanged { enabled } = input.event else {
+                    unreachable!("only targeting directives omit a pointer journal");
+                };
+                let provider = self
+                    .session
+                    .pointer
+                    .as_ref()
+                    .map(|pointer| pointer.provider().lease())
+                    .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
+                self.append(crate::engine::EngineInput::UpdatePointerMagneticTargeting {
+                    provider,
+                    pointer: PointerId::new(input.pointer.get()),
+                    enabled,
+                })?;
+                continue;
+            };
             self.submit_runtime_pointer_journal(journal)?;
             let candidates = self
                 .frame
@@ -1340,6 +1377,9 @@ impl DockspaceHostFrame<'_> {
         event: SurfacePointerEvent,
     ) -> Result<PointerEdgeKind, DockspaceRuntimeError> {
         Ok(match event {
+            SurfacePointerEvent::MagneticTargetingChanged { .. } => {
+                unreachable!("targeting directives are semantic inputs, not pointer edges")
+            }
             SurfacePointerEvent::Moved => PointerEdgeKind::Moved,
             SurfacePointerEvent::Continuation(token) => PointerEdgeKind::Continuation(token),
             SurfacePointerEvent::ButtonPressed(button) => {

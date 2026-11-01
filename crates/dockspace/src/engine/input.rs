@@ -1,6 +1,7 @@
 //! Public engine input protocol and opaque prepared interaction proofs.
 
 use super::*;
+use crate::intent::PointerId;
 
 /// A document-validated workspace replacement carrying its opaque allocator lineage.
 ///
@@ -324,6 +325,24 @@ pub(crate) enum LocalTabChromeAction {
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineInput {
+    /// Changes targeting intent for one current host-local pointer owner.
+    UpdatePointerMagneticTargeting {
+        /// Exact provider whose ordered input contains this directive.
+        provider: PointerInputLease,
+        /// Provider-owned pointer identity, without inventing a new stream.
+        pointer: PointerId,
+        /// Whether magnetic targets may be acquired; explicit targets remain valid.
+        enabled: bool,
+    },
+    /// Changes targeting intent from one exact managed window callback.
+    UpdateNativeMagneticTargeting {
+        /// Joined provider which captured the source callback in its total order.
+        provider: BackendIngressLease,
+        /// Exact source or known keyboard-focus incarnation, revalidated at reduction.
+        binding: ViewportBinding,
+        /// Whether magnetic targets may be acquired.
+        enabled: bool,
+    },
     /// Ends managed input at the current fully reduced host-frame boundary.
     ///
     /// This terminal host control must not enter a backend ingress recorder.
@@ -835,6 +854,8 @@ impl EngineInput {
             Self::PublishPaneFocusObservation { .. }
             | Self::PublishPaneFocusRequestObservation { .. } => InputPriority::PlatformObservation,
             Self::ActivateViewport { .. }
+            | Self::UpdatePointerMagneticTargeting { .. }
+            | Self::UpdateNativeMagneticTargeting { .. }
             | Self::CancelNativeInputForOverload { .. }
             | Self::WorkspaceCommand { .. }
             | Self::SelectItem { .. }

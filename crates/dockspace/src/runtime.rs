@@ -227,6 +227,13 @@ pub enum DockspaceCloseRejection {
 /// Public actionable result produced by one facade-owned input.
 #[derive(Debug, PartialEq)]
 pub enum HostInputOutcome {
+    /// An ordered targeting directive affected only its matching live gesture.
+    MagneticTargetingUpdated {
+        /// Requested magnetic targeting intent.
+        enabled: bool,
+        /// Whether a matching active gesture changed its effective intent.
+        changed: bool,
+    },
     /// An uncorrelated native device-removal observation ended live input.
     ///
     /// The provider and accepted release/output obligations remain live. Button

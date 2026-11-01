@@ -64,6 +64,15 @@ default 150ms dwell without requesting pane-content focus. The wake submits an
 explicit continuation with fresh receiver checks; it never fabricates pointer
 motion. `DockStyle::hover_selection_delay` can customize or disable this behavior.
 
+Shift temporarily disables magnetic acquisition. The adapter preserves ordered
+`ModifiersChanged`, key and pointer-button modifier observations, including
+changes within one raw packet. A modifier-only frame can clear an existing
+magnetic preview without reporting mouse motion. Releasing Shift leaves that
+preview absent until a subsequent real Move or Release resolves a fresh target.
+Explicit docking guides and tab-gap targets remain available, and contained
+content keeps its current drag position. This intent is independent from the
+arrangement lock and cannot alter a release already waiting for presentation.
+
 The same finite continuation drives stationary overflow-edge scrolling during
 a local drag. `DockStyle::tab_strip_edge_scroll_band` defaults to 24 points and
 `tab_strip_edge_scroll_interval` to `Some(50ms)`; zero band or `None` disables it.

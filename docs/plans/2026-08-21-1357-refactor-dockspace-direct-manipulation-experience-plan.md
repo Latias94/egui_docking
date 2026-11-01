@@ -24,9 +24,10 @@ review_status: independent-coherence-and-feasibility-reviewed
 | Stop conditions | Reject duplicate topology owners, renderer-selected targets, traversal receipts presented as GPU proof, lost input boundaries, stale output authority, and capabilities inferred from missing facts. |
 | Completion owner | Each implementation unit owns its replacement behavior, meaningful verification, obsolete-path deletion, and documentation. No compatibility layer is required. |
 
-Current readiness (2026-11-01): finite enabled behavior profiles are qualified,
-but the completion audit identifies default Shift magnetic suppression as an
-unimplemented input path. The complete plan also awaits reproducible native
+Current readiness (2026-11-01): finite enabled behavior profiles have qualified
+checkpoints. The completion audit's default Shift magnetic suppression gap is
+now implemented and qualified through fresh full gates and paired package
+consumers. The complete plan still awaits reproducible native
 dependency delivery. The
 renderer-neutral public host, local/contained egui behavior, and U3c complete
 single-batch Burst matrix have qualified checkpoints, including U12's public
@@ -48,13 +49,13 @@ Current acceptance and the remaining delivery boundary are concrete:
 
 | Boundary | Current acceptance / remaining work |
 | --- | --- |
-| U4 default temporary suppression | Shift is handled for scroll projection but ordinary pointer input does not carry suppression intent. Implement ordered modifier-only invalidation, move/release suppression and fresh reacquisition without another gesture owner or fabricated motion. |
+| U4 default temporary suppression | Ordered semantic targeting intent clears only magnetic acquisition, preserves explicit targets/contained geometry/frozen releases, and reacquires through fresh Move or Release. All23 fresh library/tool gates, finite window follow-ups, real X11 Shift normal/noassert and six matched-package gates pass. The complete275/36 packaged Rust files and both READMEs byte-match source; registry availability is a separate delivery boundary. |
 | U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. The representative editor, restore, close/reopen/lock and focus workflows retain their finite qualified scope. |
 | U10 native overflow | Manual clipped insertion passes its 59-check checkpoint. The final stationary profile adds all 19 scoped gates: exact Presented offset0/40/80, a real-exit stop at40 through two intervals and a post-terminal source barrier, retained original capture and same-gesture redock/destruction/quiescence. Each mode passes twice with native assertions enabled and once disabled. |
 | U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze. The mixed accepted-release model qualifies one Focus with predecessor/successor isolation, now also at O256 with its callback already reserved. The elapsed-time model qualifies five expired turns, ready close/create and an accepted release through the shared-budget core continuation, with continuous feedback counting through drain. All 527 affected library cases pass on macOS and Linux, also without Linux native assertions. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples. Broader owner/platform and service-only terminal combinations retain their limits; 2 ms is a cooperative threshold. |
 | U7/U10 positive stationary input | Winit `2664589f` qualifies one root-observed WM parent, terminal-reply hover and exact ancestor revocation; egui `56e3db49b` selects it. Complete positive eframe/Glow hover selection and actual InputOnly negative journeys each pass twice normally and once without native assertions, with conservative capture-interval timing and a compiled early-dwell negative control. All 36 final native/OS checks pass; the final 19-gate overflow qualification closes the remaining substantive finite interaction journey. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
-| U9 reproducible delivery | Final core/official-adapter archive consumers pass public160/serde188, official15 and the engine example. Local fork commits and all 12 Git-family packages align without path overrides. Obtainable remote revisions and clean-checkout/CI reproduction remain open, along with final evidence closure. |
+| U9 reproducible delivery | Current matched core/official-adapter archive consumers pass public163/serde191, official15 and the engine example. The unpublished adapter is explicitly verified against the matching extracted core; ordinary verification against the cached old core fails and is recorded. Local native fork commits and all12 Git-family packages align without path overrides. Obtainable remote revisions and clean-checkout/CI reproduction remain open. |
 
 Open-GPUI and the user's actual engine remain outside the completion dependencies.
 Exact results, limitations and failed attempts live in `docs/VALIDATION.md`;
@@ -82,9 +83,10 @@ current code and actual evidence. Its default-native entrypoint passes529,
 including the10,000-lifetime soak. Its strict Burst follow-up removes the helper's
 ability to send a compensating Move; all three affected matrices pass with
 default features and serde. Earlier weaker passing runs are not used as proof
-of that stronger first-packet claim. The following default-profile audit finds
-the actual Shift suppression gap above; it and the remote dependency/CI boundary
-remain incomplete.
+of that stronger first-packet claim. The following default-profile audit found
+the Shift suppression gap above; its implementation now passes fresh full
+qualification, including the matched-package refresh. The remote dependency/CI
+boundary remains incomplete.
 
 ---
 

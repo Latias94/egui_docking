@@ -34,6 +34,7 @@ impl NativeDeviceRemovalRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeWindowEventClass {
     Pointer,
+    Control,
     Lifecycle,
     Other,
 }
@@ -47,6 +48,7 @@ impl NativeWindowEventClass {
             | WindowEvent::PointerCaptureChanged { .. }
             | WindowEvent::PanGesture { .. }
             | WindowEvent::Touch(_) => Self::Pointer,
+            WindowEvent::ModifiersChanged(_) => Self::Control,
             WindowEvent::CloseRequested | WindowEvent::Destroyed => Self::Lifecycle,
             _ => Self::Other,
         }
@@ -830,6 +832,8 @@ mod tests {
 
     #[test]
     fn event_classification_keeps_only_ordered_dockspace_ingress() {
+        use winit::keyboard::ModifiersState;
+
         let pointer = WindowEvent::CursorMoved {
             device_id: DeviceId::dummy(),
             position: PhysicalPosition::new(1.0, 2.0),
@@ -844,10 +848,32 @@ mod tests {
             NativeWindowEventClass::classify(&WindowEvent::CloseRequested),
             NativeWindowEventClass::Lifecycle
         );
-        assert_eq!(
-            NativeWindowEventClass::classify(&WindowEvent::Focused(true)),
-            NativeWindowEventClass::Other
-        );
+        for modifiers in [ModifiersState::empty(), ModifiersState::SHIFT] {
+            let event = WindowEvent::ModifiersChanged(modifiers.into());
+            let class = NativeWindowEventClass::classify(&event);
+            assert_eq!(class, NativeWindowEventClass::Control);
+            assert!(class.is_dockspace_ingress());
+            let record = NativeWindowEventRecord::for_test_snapshot(
+                1,
+                WindowId::from(WINDOW),
+                None,
+                event.clone(),
+                &NativeViewportMap::default(),
+            );
+            assert_eq!(record.event(), &event);
+            assert_eq!(record.pointer_routes(), None);
+            assert_eq!(record.pointer_location(), None);
+            assert_eq!(record.owned_descendant_capacity_bytes(), 0);
+        }
+        for event in [
+            WindowEvent::Focused(true),
+            WindowEvent::RedrawRequested,
+            WindowEvent::Occluded(false),
+        ] {
+            let class = NativeWindowEventClass::classify(&event);
+            assert_eq!(class, NativeWindowEventClass::Other);
+            assert!(!class.is_dockspace_ingress());
+        }
     }
 
     #[test]

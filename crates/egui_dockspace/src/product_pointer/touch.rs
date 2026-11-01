@@ -119,5 +119,6 @@ fn sample(contact: Contact, event: SurfacePointerEvent) -> PointerSample {
         device: PointerDeviceKind::Touch,
         event,
         position: Some(contact.position),
+        magnetic_targeting: None,
     }
 }

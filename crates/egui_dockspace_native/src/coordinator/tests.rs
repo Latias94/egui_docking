@@ -27,6 +27,7 @@ mod ingress_create;
 mod input_capacity;
 mod input_control;
 mod local_pointer;
+mod magnetic_targeting;
 mod overload;
 mod owner_storage;
 mod replacement;

@@ -42,6 +42,14 @@ overflow-edge scrolling. Each automatic scroll step waits for exact presentation
 of its new geometry, and explicit scrolling or menu actions take ownership
 through the existing tab-strip state.
 
+Shift temporarily disables magnetic target acquisition without cancelling the
+gesture or moving contained content back to its durable position. Ordered
+modifier-only input clears a magnetic preview; keyup permits fresh acquisition
+from the next real Move or Release. Explicit guides and tab gaps remain eligible,
+and releases already waiting for exact presentation retain their frozen decision.
+Custom hosts map their own modifier or tool mode through the public targeting
+intent; egui supplies the default Shift mapping.
+
 The current implementation has a qualified renderer-neutral local/contained
 contract, an official-egui caller-owned validation path, and an experimental
 native multiview adapter. The fast-gesture and configuration-dependent failures
@@ -206,7 +214,10 @@ physical placement hints. The content graph remains in `view()`. Submission
 rebases surface and recovery-host references together; reading a declaration
 does not create an OS window or grant native authority. V1 documents are rejected
 as unsupported because their placement records cannot prove native ownership.
-Native multi-surface window recreation is still under implementation.
+Managed native restore can explicitly queue the declared Child windows through
+the existing preparation, first-live and cleanup owners. Ordinary document
+restore alone does not create OS windows; native restore waits for fresh Root
+facts and exact predecessor quiescence before advancing those declarations.
 
 Raw workspace snapshots, independently replaceable key maps, and mutable
 restore candidates are not product interfaces.

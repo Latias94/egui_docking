@@ -17,17 +17,17 @@ use super::super::app::SharedState;
 use super::super::app::{
     CENTER_DROP_GUIDE_LABEL, CHILD_CLOSE_LABEL, CHILD_TAB_LABEL, OverflowOutput,
     PointerPassthroughObservation, ProductObservation, ProductPhase, ROOT_TARGET_LABEL,
-    ROOT_WINDOW_TITLE, RedockLayout, Shared, SourceSelection, StationaryMode,
+    ROOT_WINDOW_TITLE, RedockLayout, Shared, ShiftProbe, SourceSelection, StationaryMode,
     StationaryOverflowProbe, StationaryPress,
 };
 use super::super::assertions::{
-    ActualGuideHit, DockPreviewEmission, LogicalBounds, NestedPaneCase, OverflowTabGeometry,
-    PHYSICAL_TARGET_ENV, PaneCenterCase, PaneCenterError, PaneCenterGeometry, PaneEdgeCase,
-    PhysicalBounds, PhysicalPoint, SemanticLookupError, SemanticSelector, SemanticStabilitySample,
-    SemanticText, TabHalfCase, TabHalfGeometry, actual_guide_hits, choose_outside_points,
-    desktop_to_viewport_logical, dock_preview_emission, native_drag_preview_observation,
-    nested_pane_bounds, nested_pane_point, overflow_tab_geometry, overflow_tab_point,
-    pane_center_geometry, pane_center_point, pane_edge_point, point_towards,
+    ActualGuideHit, DockPreviewEmission, LogicalBounds, LogicalPoint, NestedPaneCase,
+    OverflowTabGeometry, PHYSICAL_TARGET_ENV, PaneCenterCase, PaneCenterError, PaneCenterGeometry,
+    PaneEdgeCase, PhysicalBounds, PhysicalPoint, SemanticLookupError, SemanticSelector,
+    SemanticStabilitySample, SemanticText, TabHalfCase, TabHalfGeometry, actual_guide_hits,
+    choose_outside_points, desktop_to_viewport_logical, dock_preview_emission,
+    native_drag_preview_observation, nested_pane_bounds, nested_pane_point, overflow_tab_geometry,
+    overflow_tab_point, pane_center_geometry, pane_center_point, pane_edge_point, point_towards,
     pointer_barrier_is_satisfied, pointer_observation_for_barrier, semantic_baseline_after_missing,
     semantic_bounds, semantic_node, semantic_snapshot_is_stable, semantic_tree_summary,
     stationary_overflow_edge_point, stationary_overflow_geometry, tab_drag_point,
@@ -647,6 +647,22 @@ impl PhysicalDriver {
         )?;
         if pointer_load_enabled()? {
             verify_pointer_load(&self.shared)?;
+        }
+        if let Some(probe) = &self
+            .shared
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .shift
+        {
+            if !probe.complete {
+                return Err(format!(
+                    "Shift magnetic pause journey was incomplete: {probe:?}"
+                ));
+            }
+            eprintln!(
+                "physical-smoke: Shift magnetic pause verified: real Shift_L down/up native callbacks, held Child without motion/button edges through both modifier phases, ROOT Dock preview painted emission cleared and stayed absent after keyup, distinct safe center motion emitted a fresh painted preview, real release/redock/DestroyNotify/quiescence verified; exact core output barriers belong to public/coordinator tests"
+            );
         }
         if let Some(probe) = &self
             .shared
@@ -2695,7 +2711,7 @@ fn wait_for_pane_center_scene(
     ))
 }
 
-fn pointer_load_points(
+fn checked_center_motion_points(
     selected: PhysicalPoint,
     client: PhysicalBounds,
     pixels_per_point: f32,
@@ -2729,10 +2745,10 @@ fn pointer_load_points(
             y: selected.y + dy,
         };
         let logical = desktop_to_viewport_logical(client, pixels_per_point, point)
-            .map_err(|error| format!("physical load point {point:?}: {error:?}"))?;
+            .map_err(|error| format!("center motion point {point:?}: {error:?}"))?;
         if !client.contains(point) {
             return Err(format!(
-                "physical load point {point:?} left target client {client:?}"
+                "center motion point {point:?} left target client {client:?}"
             ));
         }
         for (name, bounds, padding) in [
@@ -2746,7 +2762,7 @@ fn pointer_load_points(
                 || logical.y >= bounds.max_y - padding
             {
                 return Err(format!(
-                    "physical load point {point:?} left {name}: {bounds:?}"
+                    "center motion point {point:?} left {name}: {bounds:?}"
                 ));
             }
         }
@@ -2758,7 +2774,7 @@ fn pointer_load_points(
                 && logical.y <= bounds.max_y + margin
             {
                 return Err(format!(
-                    "physical load point {point:?} approaches guide {guide:?}"
+                    "center motion point {point:?} approaches guide {guide:?}"
                 ));
             }
         }
@@ -2989,7 +3005,7 @@ fn move_to_pane_target_while_pressed(
             PaneCenterError::TargetMoved
         ));
     }
-    input_barrier(
+    let source_held = input_barrier(
         shared,
         inspection,
         request.source_viewport,
@@ -3010,8 +3026,27 @@ fn move_to_pane_target_while_pressed(
         target_at_motion.step,
         final_scene.guides.len()
     );
+    if shared
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .shift
+        .is_some()
+    {
+        return shift_pause_while_pressed(
+            shared,
+            inspection,
+            desktop,
+            request,
+            preview,
+            final_scene,
+            final_window,
+            selected,
+            source_held.step,
+        );
+    }
     if load_enabled {
-        let points = pointer_load_points(
+        let points = checked_center_motion_points(
             selected,
             final_window.bounds,
             preview.pixels_per_point,
@@ -3022,6 +3057,345 @@ fn move_to_pane_target_while_pressed(
         inject_pointer_load(shared, desktop, request, points)?;
     }
     Ok((preview, selected))
+}
+
+/// Checks the original Child hold and optionally awaits one real modifier callback.
+fn shift_native_barrier(
+    shared: &Shared,
+    source: ViewportId,
+    baseline: Option<ShiftProbe>,
+    pressed: Option<bool>,
+    overall_deadline: Instant,
+) -> Result<ShiftProbe, String> {
+    let deadline = bounded_stage_deadline(overall_deadline, Duration::from_secs(3));
+    let (lock, changed) = &**shared;
+    let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        if let Some(error) = &state.fatal_error {
+            return Err(format!("Shift native barrier: {error}"));
+        }
+        let probe = state
+            .shift
+            .ok_or_else(|| "Shift probe is disabled".to_owned())?;
+        if state.observation.phase != ProductPhase::ChildFirstLive
+            || !probe.primary_down
+            || probe
+                .source
+                .is_none_or(|(viewport, _)| viewport != source || viewport == ViewportId::ROOT)
+            || baseline.is_some_and(|before| {
+                probe.source != before.source
+                    || probe.motion_count != before.motion_count
+                    || probe.button_count != before.button_count
+            })
+        {
+            return Err(format!(
+                "Shift native barrier lost the unchanged held Child: baseline={baseline:?}, current={probe:?}, product={:?}",
+                state.observation,
+            ));
+        }
+        match pressed {
+            None => return Ok(probe),
+            Some(pressed) => {
+                let before = baseline
+                    .ok_or_else(|| "Shift callback requires a prior checkpoint".to_owned())?;
+                if probe.modifier_count > before.modifier_count
+                    && let Some(callback) = probe.last_modifier
+                    && callback.state.shift_key() == pressed
+                {
+                    if callback
+                        .viewport
+                        .map(|viewport| (viewport, callback.window))
+                        != probe.source
+                        || before
+                            .last_modifier
+                            .is_some_and(|prior| callback.ordinal <= prior.ordinal)
+                    {
+                        return Err(format!(
+                            "Shift modifier callback did not come from the held Child in native order: {probe:?}"
+                        ));
+                    }
+                    return Ok(probe);
+                }
+            }
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "Shift native ModifiersChanged pressed={pressed:?} timed out: baseline={baseline:?}, current={probe:?}"
+            ));
+        }
+        let (next, _) = changed
+            .wait_timeout(state, deadline.saturating_duration_since(now))
+            .unwrap_or_else(PoisonError::into_inner);
+        state = next;
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn shift_pause_while_pressed(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    desktop: &X11Desktop,
+    request: GuideDragRequest<'_>,
+    mut root: ViewportTreeSnapshot,
+    scene: PaneCenterScene,
+    window: WindowRecord,
+    selected: PhysicalPoint,
+    mut source_step: u64,
+) -> Result<(ViewportTreeSnapshot, PhysicalPoint), String> {
+    if request.target_viewport != ViewportId::ROOT || scene.preview.is_none() {
+        return Err(
+            "Shift journey requires the current ROOT center Dock preview painted emission"
+                .to_owned(),
+        );
+    }
+    let baseline = shift_native_barrier(
+        shared,
+        request.source_viewport,
+        None,
+        None,
+        request.deadline,
+    )?;
+    let mut previous_callback = baseline;
+    desktop.assert_pointer(selected, Some(true))?;
+    let mut shift = desktop.press_shift_left()?;
+    for pressed in [true, false] {
+        desktop.assert_pointer(selected, Some(true))?;
+        if !pressed {
+            shift.release()?;
+        }
+        let callback = shift_native_barrier(
+            shared,
+            request.source_viewport,
+            Some(previous_callback),
+            Some(pressed),
+            request.deadline,
+        )?;
+        desktop.assert_pointer(selected, Some(true))?;
+        let deadline = bounded_stage_deadline(request.deadline, Duration::from_secs(3));
+        // Fence after the forwarded native callback, then observe fresh painted emissions.
+        // These inspection steps do not claim an exact core commit or GPU presentation receipt.
+        let fence = inspection.tree(ViewportId::ROOT, deadline)?;
+        let mut after_step = root.step.max(fence.step);
+        let mut clear_steps = 0;
+        while Instant::now() < deadline && clear_steps < 2 {
+            let snapshot = inspection.tree(ViewportId::ROOT, deadline)?;
+            shift_native_barrier(
+                shared,
+                request.source_viewport,
+                Some(baseline),
+                None,
+                request.deadline,
+            )?;
+            if snapshot.step <= after_step {
+                continue;
+            }
+            if pane_center_geometry(&snapshot.tree)
+                .map_err(|error| format!("Shift pane geometry: {error:?}"))?
+                != scene.geometry
+                || snapshot.pixels_per_point != root.pixels_per_point
+            {
+                return Err("Shift modifier phase changed the pane geometry or scale".to_owned());
+            }
+            let preview = dock_preview_emission(&snapshot.tree)
+                .map_err(|error| format!("Shift Dock preview painted emission: {error:?}"))?;
+            if preview.is_some() {
+                if !pressed {
+                    return Err(format!(
+                        "Shift keyup resumed a Dock preview painted emission without motion at ROOT step={}",
+                        snapshot.step
+                    ));
+                }
+                clear_steps = 0;
+            } else {
+                clear_steps += 1;
+            }
+            after_step = snapshot.step;
+            root = snapshot;
+        }
+        if clear_steps != 2 {
+            return Err(format!(
+                "Shift pressed={pressed}: ROOT Dock preview painted emission did not stay absent in two fresh steps"
+            ));
+        }
+        let source = input_barrier(
+            shared,
+            inspection,
+            request.source_viewport,
+            source_step,
+            request.source_client,
+            request.source_pixels_per_point,
+            selected,
+            true,
+            request.deadline,
+            "Shift modifier phase preserves the held Child without motion",
+        )?;
+        source_step = source.step;
+        desktop.assert_pointer(selected, Some(true))?;
+        previous_callback = shift_native_barrier(
+            shared,
+            request.source_viewport,
+            Some(previous_callback),
+            Some(pressed),
+            request.deadline,
+        )?;
+        if desktop
+            .window_for_title(request.target_window_title)?
+            .bounds
+            != window.bounds
+        {
+            return Err("Shift modifier phase changed the ROOT client geometry".to_owned());
+        }
+        eprintln!(
+            "physical-smoke: Shift pressed={pressed} forwarded-native-callback={:?} modifier-count={} ROOT Dock preview painted emission absent through step={} source-held-step={} pointer={selected:?} motion-count={} button-count={}",
+            callback.last_modifier,
+            callback.modifier_count,
+            root.step,
+            source.step,
+            baseline.motion_count,
+            baseline.button_count,
+        );
+    }
+
+    let before_motion = root;
+    if pane_center_geometry(&before_motion.tree)
+        .map_err(|error| format!("Shift keyup pane geometry: {error:?}"))?
+        != scene.geometry
+        || dock_preview_emission(&before_motion.tree)
+            .map_err(|error| format!("Shift keyup Dock preview emission: {error:?}"))?
+            .is_some()
+    {
+        return Err(
+            "Shift keyup changed the frozen pane or restored a painted preview before motion"
+                .to_owned(),
+        );
+    }
+    let current_tab = tab_half_geometry(&before_motion.tree)
+        .map_err(|error| format!("Shift keyup Main tab geometry: {error:?}"))?;
+    let current_window = desktop.window_for_title(request.target_window_title)?;
+    let logical = LogicalPoint {
+        x: scene.geometry.content.min_x
+            + (scene.geometry.content.max_x - scene.geometry.content.min_x) * 0.36,
+        y: scene.geometry.content.min_y
+            + (scene.geometry.content.max_y - scene.geometry.content.min_y) * 0.35,
+    };
+    let resumed = viewport_logical_to_desktop(
+        current_window.bounds,
+        before_motion.pixels_per_point,
+        logical,
+    )
+    .map_err(|error| format!("Shift resume point projection: {error:?}"))?;
+    // The cleared affordance need not emit guides before a real edge. Check the
+    // fixed safe point against the frozen observed guides, then verify every
+    // actual guide again after fresh acquisition. This injects no pointer load.
+    checked_center_motion_points(
+        resumed,
+        current_window.bounds,
+        before_motion.pixels_per_point,
+        &scene,
+    )?;
+    let (original, _) = pane_center_point(
+        PaneCenterCase::A,
+        scene.geometry,
+        current_window.bounds,
+        before_motion.pixels_per_point,
+        &scene.guides,
+    )
+    .map_err(|error| format!("Shift original case A recheck: {error:?}"))?;
+    if current_window.bounds != window.bounds || original != selected || resumed == selected {
+        return Err("Shift resume must keep the frozen geometry and move to a distinct safe physical center point".to_owned());
+    }
+    shift_native_barrier(
+        shared,
+        request.source_viewport,
+        Some(previous_callback),
+        None,
+        request.deadline,
+    )?;
+    desktop.assert_pointer(selected, Some(true))?;
+    desktop.move_pointer(resumed)?;
+    desktop.assert_pointer(resumed, Some(true))?;
+    let source_at_motion = input_barrier(
+        shared,
+        inspection,
+        request.source_viewport,
+        source_step,
+        request.source_client,
+        request.source_pixels_per_point,
+        resumed,
+        true,
+        request.deadline,
+        "Shift real distinct center motion reaches the held Child",
+    )?;
+    let target_at_motion = viewport_barrier(
+        inspection,
+        ViewportId::ROOT,
+        before_motion.step,
+        request.deadline,
+        "Shift ROOT step after real distinct center motion",
+    )?;
+    let (preview, final_scene) = wait_for_pane_center_scene(
+        shared,
+        inspection,
+        ViewportId::ROOT,
+        target_at_motion.step,
+        Some((scene.geometry, PaneDockTarget::Center(PaneCenterCase::A))),
+        request.deadline,
+    )?;
+    let final_window = desktop.window_for_title(request.target_window_title)?;
+    checked_center_motion_points(
+        resumed,
+        final_window.bounds,
+        preview.pixels_per_point,
+        &final_scene,
+    )?;
+    if final_window.bounds != window.bounds
+        || preview.pixels_per_point != before_motion.pixels_per_point
+        || final_scene.tab != current_tab
+    {
+        return Err("Shift resumed center geometry changed before release".to_owned());
+    }
+    input_barrier(
+        shared,
+        inspection,
+        request.source_viewport,
+        source_at_motion.step,
+        request.source_client,
+        request.source_pixels_per_point,
+        resumed,
+        true,
+        request.deadline,
+        "Shift fresh painted emission keeps the source held before real release",
+    )?;
+    desktop.assert_pointer(resumed, Some(true))?;
+    {
+        let mut state = shared.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let phase = state.observation.phase;
+        let probe = state
+            .shift
+            .as_mut()
+            .ok_or_else(|| "Shift probe was removed".to_owned())?;
+        if phase != ProductPhase::ChildFirstLive
+            || probe.source != baseline.source
+            || !probe.primary_down
+            || probe.button_count != baseline.button_count
+            || probe.motion_count <= baseline.motion_count
+            || probe.last_modifier.is_none_or(|row| row.state.shift_key())
+        {
+            return Err(format!(
+                "Shift fresh painted emission lost the original live Child hold: phase={phase:?}, probe={probe:?}"
+            ));
+        }
+        probe.complete = true;
+    }
+    eprintln!(
+        "physical-smoke: Shift resumed by real center motion {selected:?} -> {resumed:?} fraction=(0.36,0.35) Dock preview painted emission={:?} ROOT step={} after-motion-step={} actual-guide-hits-excluded={}; continuing real release/redock",
+        final_scene.preview,
+        preview.step,
+        target_at_motion.step,
+        final_scene.guides.len(),
+    );
+    Ok((preview, resumed))
 }
 
 fn move_to_center_guide_while_pressed(

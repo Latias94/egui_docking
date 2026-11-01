@@ -879,6 +879,45 @@ impl DockspaceSession {
         Ok(())
     }
 
+    /// Records a window's targeting directive in the native input order.
+    ///
+    /// This changes no pointer position, button or capture fact. The reducer
+    /// applies it only to an active gesture from the same provider when this
+    /// exact current binding is its source or the known keyboard-focus window.
+    /// Inactive or retired bindings are inert. Enabling allows fresh acquisition
+    /// on a later pointer edge and cannot revive an old preview. Already frozen
+    /// releases retain their original decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without a managed host, for a foreign provider, or when
+    /// the existing recorded-input allowance cannot retain this semantic record.
+    pub fn report_native_magnetic_targeting(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        enabled: bool,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_managed_native_host_available()?;
+        let native = self.native_state_mut()?;
+        if binding.provider != native.provider() {
+            return Err(NativePlatformError::ProviderSuperseded.into());
+        }
+        native
+            .recorder
+            .preflight_native_transport_append(1, size_of::<EngineInput>())
+            .map_err(NativePlatformError::from_ingress)?;
+        let provider = native.recorder.lease();
+        native
+            .recorder_mut()
+            .record_semantic_input(EngineInput::UpdateNativeMagneticTargeting {
+                provider,
+                binding: binding.binding,
+                enabled,
+            })
+            .map_err(NativePlatformError::from_ingress)?;
+        Ok(())
+    }
+
     /// Records one explicit core-owned close-plan request for an exact native edge.
     ///
     /// # Errors

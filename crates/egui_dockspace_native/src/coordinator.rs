@@ -1575,9 +1575,9 @@ impl NativeCoordinator {
     /// Retains one bounded callback prefix for an exact host-frame boundary.
     ///
     /// The mailbox remains the only callback-order authority. Pointer facts,
-    /// close requests, exact destruction events, viewport rosters, and create
-    /// failures are acknowledged only after their corresponding core input is
-    /// retained. Same-route cursor motions share one prefix of at most 256
+    /// targeting controls, close requests, exact destruction events, viewport
+    /// rosters, and create failures are acknowledged only after their core input
+    /// is retained. Same-route cursor motions share one prefix of at most 256
     /// semantic edges; other callbacks remain causal barriers. The driver must
     /// commit or retry that retained prefix before claiming its successor.
     pub(crate) fn reduce_callback_prefix(
@@ -2258,6 +2258,10 @@ impl NativeCoordinator {
             return Ok(());
         };
         match record.event() {
+            winit::event::WindowEvent::ModifiersChanged(modifiers) => {
+                self.session
+                    .report_native_magnetic_targeting(binding, !modifiers.state().shift_key())?;
+            }
             winit::event::WindowEvent::CloseRequested => {
                 if self
                     .bridge

@@ -52,6 +52,13 @@ pub enum InputPriority {
 /// Result of reducing one sequenced input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputOutcome {
+    /// A targeting directive updated only the current exact gesture owner.
+    MagneticTargetingUpdated {
+        /// Requested magnetic targeting intent.
+        enabled: bool,
+        /// Whether a matching live owner changed its effective intent.
+        changed: bool,
+    },
     /// The exact managed provider accepted terminal overload cancellation.
     NativeInputCancelledForOverload,
     /// Native input device removal cancelled live input without ending input capture.

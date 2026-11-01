@@ -17,6 +17,7 @@ use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, PaneView};
 use egui_dockspace_native::NativeDockspaceApp;
 use winit::event::{DeviceId, ElementState, MouseButton, PointerPressToken, WindowEvent};
+use winit::keyboard::ModifiersState;
 use winit::window::WindowId;
 
 use super::assertions::{
@@ -43,6 +44,7 @@ pub(super) const CHILD_TAB_LABEL: &str = "Child";
 pub(super) const CHILD_CLOSE_LABEL: &str = "Close Child";
 pub(super) const CENTER_DROP_GUIDE_LABEL: &str = "Dockspace center drop guide";
 const STATIONARY_ENV: &str = "EGUI_DOCKSPACE_PHYSICAL_STATIONARY";
+const SHIFT_ENV: &str = "EGUI_DOCKSPACE_PHYSICAL_SHIFT";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum StationaryMode {
@@ -586,6 +588,61 @@ impl RootRosterKey {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ModifierObservation {
+    pub(super) ordinal: u64,
+    pub(super) viewport: Option<ViewportId>,
+    pub(super) window: WindowId,
+    pub(super) state: ModifiersState,
+}
+
+/// One modifier row and counters, never a native event history.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ShiftProbe {
+    pub(super) modifier_count: u64,
+    pub(super) last_modifier: Option<ModifierObservation>,
+    pub(super) motion_count: u64,
+    pub(super) button_count: u64,
+    pub(super) source: Option<(ViewportId, WindowId)>,
+    pub(super) primary_down: bool,
+    pub(super) complete: bool,
+}
+
+impl ShiftProbe {
+    fn observe_event(&mut self, event: eframe::NativeWindowEvent<'_>) {
+        match event.event() {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifier_count = self.modifier_count.saturating_add(1);
+                self.last_modifier = Some(ModifierObservation {
+                    ordinal: event.ordinal().get(),
+                    viewport: event.viewport_id(),
+                    window: event.window_id(),
+                    state: modifiers.state(),
+                });
+                eprintln!(
+                    "physical-smoke: Shift native ModifiersChanged count={} callback={:?} held-source={:?} primary-down={}",
+                    self.modifier_count, self.last_modifier, self.source, self.primary_down,
+                );
+            }
+            WindowEvent::CursorMoved { .. } => {
+                self.motion_count = self.motion_count.saturating_add(1);
+            }
+            WindowEvent::MouseInput { button, state, .. } => {
+                self.button_count = self.button_count.saturating_add(1);
+                if *button == MouseButton::Left {
+                    self.primary_down = *state == ElementState::Pressed;
+                    if self.primary_down {
+                        self.source = event
+                            .viewport_id()
+                            .map(|viewport| (viewport, event.window_id()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct SharedState {
     pub(super) observation: ProductObservation,
@@ -599,10 +656,12 @@ pub(super) struct SharedState {
     pub(super) last_primary_press: Option<PointerSource>,
     pub(super) pointer_load: Option<PointerLoad>,
     pub(super) stationary: Option<StationaryProbe>,
+    pub(super) shift: Option<ShiftProbe>,
 }
 
 pub(super) fn run() -> Result<(), Box<dyn Error>> {
     let measure_pointer_load = pointer_load_enabled()?;
+    let shift_enabled = shift_enabled_from_env(measure_pointer_load)?;
     let stationary_mode = stationary_mode_from_env(measure_pointer_load)?;
     let inspection_endpoint = inspection_endpoint_from_env()?;
     let nested_target = std::env::var(PHYSICAL_TARGET_ENV)
@@ -656,6 +715,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     };
     let shared = Arc::new((
         Mutex::new(SharedState {
+            shift: shift_enabled.then(ShiftProbe::default),
             stationary: stationary_mode.enabled().then(|| StationaryProbe {
                 mode: stationary_mode,
                 ..StationaryProbe::default()
@@ -670,6 +730,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
         shared: Arc::clone(&shared),
         measure_pointer_load,
         stationary_mode,
+        shift_enabled,
     });
     let app_shared = Arc::clone(&shared);
     let options = eframe::NativeOptions {
@@ -733,6 +794,27 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
         )
         .into()),
     }
+}
+
+fn shift_enabled_from_env(measure_pointer_load: bool) -> Result<bool, String> {
+    match std::env::var(SHIFT_ENV) {
+        Err(std::env::VarError::NotPresent) => return Ok(false),
+        Ok(value) if value == "1" => {}
+        value => {
+            return Err(format!(
+                "{SHIFT_ENV}: expected 1 or an unset variable, found {value:?}"
+            ));
+        }
+    }
+    if measure_pointer_load
+        || std::env::var_os(STATIONARY_ENV).is_some()
+        || std::env::var(PHYSICAL_TARGET_ENV).as_deref() != Ok("pane-center-a")
+    {
+        return Err(format!(
+            "{SHIFT_ENV}=1 requires {PHYSICAL_TARGET_ENV}=pane-center-a, {STATIONARY_ENV} unset, and no 1 kHz load"
+        ));
+    }
+    Ok(true)
 }
 
 fn stationary_mode_from_env(measure_pointer_load: bool) -> Result<StationaryMode, String> {
@@ -832,6 +914,7 @@ struct DiagnosticNativeHost {
     shared: Shared,
     measure_pointer_load: bool,
     stationary_mode: StationaryMode,
+    shift_enabled: bool,
 }
 
 impl eframe::NativeHostHandler for DiagnosticNativeHost {
@@ -931,7 +1014,15 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
             }
             changed.notify_all();
         }
-        self.inner.on_window_event(event)
+        let disposition = self.inner.on_window_event(event);
+        if self.shift_enabled {
+            let (lock, changed) = &*self.shared;
+            if let Some(probe) = &mut lock.lock().unwrap_or_else(PoisonError::into_inner).shift {
+                probe.observe_event(event);
+            }
+            changed.notify_all();
+        }
+        disposition
     }
 
     fn on_device_removed(&self, removal: eframe::NativeDeviceRemoval) {

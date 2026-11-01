@@ -368,8 +368,8 @@ impl NativeHostHandler for BoundaryHost {
                 else {
                     panic!("the real expected-press query must produce Observed");
                 };
-                assert_eq!(sample.capture, PointerWindowRoute::Unknown);
-                assert_eq!(delivery, PointerWindowRoute::Unknown);
+                assert_eq!(sample.capture, PointerWindowRoute::Window(*window));
+                assert_eq!(delivery, PointerWindowRoute::Window(*window));
                 assert_eq!(
                     native.stationary_recorded_sample_count_for_test(),
                     facts.pointer_samples_before
@@ -908,7 +908,7 @@ fn drive_pointer_lineage(
     }
     assert_capacity(state);
     eprintln!(
-        "native-boundary: real P1 retained T1/C1, same-press C2 rejected T1, T2 sampled Unknown routes without selection, Esc/all-up restored Root"
+        "native-boundary: real P1 retained T1/C1, same-press C2 rejected T1, T2 sampled exact source capture/delivery without premature selection, Esc/all-up restored Root"
     );
     Ok(())
 }

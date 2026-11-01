@@ -277,9 +277,19 @@ impl NativePointerTranslator {
             | WindowEvent::PointerCaptureChanged { .. } => PointerDeviceKind::Mouse,
             _ => PointerDeviceKind::Unknown,
         };
-        NativePointerTranslation::Input(
-            input.with_metadata(PointerEventMetadata::new(device, captured_at)),
-        )
+        let mut metadata = PointerEventMetadata::new(device, captured_at);
+        let modifiers = match record.event() {
+            WindowEvent::CursorMoved { facts, .. } | WindowEvent::MouseInput { facts, .. } => {
+                facts.modifiers
+            }
+            WindowEvent::Touch(touch) => touch.facts.modifiers,
+            _ => None,
+        };
+        // Missing event-time modifiers preserve the gesture's targeting intent.
+        if let Some(modifiers) = modifiers {
+            metadata = metadata.with_magnetic_targeting(!modifiers.shift_key());
+        }
+        NativePointerTranslation::Input(input.with_metadata(metadata))
     }
 
     #[cfg(test)]
@@ -1018,6 +1028,8 @@ mod overload;
 
 #[cfg(test)]
 mod tests {
+    mod magnetic_targeting;
+
     use super::*;
 
     fn assert_read_only_mouse_device_lookup(

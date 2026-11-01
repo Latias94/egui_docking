@@ -31,6 +31,14 @@ tabs-root journey presents each source-only projection while jittering across a
 magnetic boundary: the target stays latched inside its release margin and changes
 outside it. Framework-clearance facts never replace the core target solver.
 
+`tests/magnetic_targeting.rs` submits ordered targeting directives both on real
+edges and as modifier-only semantic controls. Its recording outputs cover
+suppression, exact rollback, foreign-pointer isolation, stale-preview rejection,
+fresh reacquisition, explicit targets and an already frozen release. Modifier
+controls query no receiver and advance no pointer sequence. Core regression
+tests additionally preserve complete contained geometry and allow an exact
+known keyboard-focus Root to control its provider's active Child gesture.
+
 This is public-contract and renderer-neutral input evidence. It does not prove
 physical OS event delivery or actual GPU presentation. The egui complete Burst
 and ordinary-content matrices are qualified separately in `docs/VALIDATION.md`.

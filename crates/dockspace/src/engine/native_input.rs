@@ -136,7 +136,7 @@ impl DockEngine {
         Ok(())
     }
 
-    fn require_managed_input_provider(
+    pub(super) fn require_managed_input_provider(
         &self,
         provider: BackendIngressLease,
     ) -> Result<(), EngineError> {

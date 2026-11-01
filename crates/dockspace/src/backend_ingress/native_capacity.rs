@@ -25,6 +25,7 @@ impl BackendIngressPayload {
             Self::PointerSegment(journal) => Ok(journal.owned_contents_capacity_bytes()),
             Self::SemanticInput(input) => match input.as_ref() {
                 EngineInput::RegisterViewport { .. }
+                | EngineInput::UpdateNativeMagneticTargeting { .. }
                 | EngineInput::BootstrapChildViewport { .. }
                 | EngineInput::RequestSurfaceClose {
                     request:

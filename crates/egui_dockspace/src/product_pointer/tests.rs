@@ -1,14 +1,21 @@
-//! Mixed-source suppression through real product frames and pointer ownership.
+//! Ordered modifier intent and mixed-source suppression through product frames.
 
 use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
     SurfaceId,
 };
-use dockspace::runtime::{DockspaceManipulationCancelReason, DockspaceManipulationStatus};
+use dockspace::runtime::{
+    DockspaceManipulationCancelReason, DockspaceManipulationStatus, DockspaceSession,
+    SurfacePointerEvent,
+};
 use egui::accesskit::Role;
-use egui::{Context, Event, FullOutput, PointerButton, Pos2, RawInput, Rect, TouchPhase, Ui};
+use egui::{
+    Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, TouchPhase, Ui,
+};
 
 use crate::{Dockspace, PaneView};
+
+use super::{ProductPointer, continuation_sample, update_magnetic_targeting};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const FIRST: ItemId = ItemId::new(1);
@@ -96,6 +103,137 @@ fn contact(phase: TouchPhase, pos: Pos2) -> Event {
         pos,
         force: None,
     }
+}
+
+#[test]
+fn modifier_only_input_remembers_shift_without_enrolling_a_pointer() {
+    let context = Context::default();
+    context.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(RootId::new(1), DockspaceNode::tabs([FIRST, SECOND])),
+    )])
+    .unwrap();
+    let mut session = DockspaceSession::from_layout(layout, Default::default()).unwrap();
+    session.enable_host_pointer().unwrap();
+    let mut pointer = ProductPointer::default();
+    let mut submissions = 0;
+    let (mut output, receipt) = crate::run_ui(
+        &context,
+        RawInput {
+            events: vec![Event::ModifiersChanged(Modifiers::SHIFT)],
+            ..RawInput::default()
+        },
+        |ui| {
+            submissions += pointer
+                .submit(&mut session, SURFACE, ui, false)
+                .unwrap()
+                .len();
+        },
+    )
+    .into_parts();
+    output.textures_delta.clear();
+    receipt.report(crate::SurfacePresentationResult::Presented);
+    assert_eq!(submissions, 0, "idle modifiers need no host pointer batch");
+    assert_eq!(pointer.magnetic_targeting, Some(false));
+    assert!(!pointer.generic_live);
+    assert!(pointer.touches.is_empty());
+    assert_eq!(pointer.position, None);
+}
+
+#[test]
+fn ordered_modifier_sources_preserve_intent_across_events_without_a_directive() {
+    let point = Pos2::new(180.0, 160.0);
+    let mut current = None;
+    assert_eq!(
+        update_magnetic_targeting(&mut current, &Event::PointerMoved(point)),
+        None,
+    );
+    assert_eq!(current, None);
+    for (event, changed, retained) in [
+        (
+            Event::PointerButton {
+                pos: point,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::SHIFT,
+            },
+            Some(false),
+            false,
+        ),
+        (Event::PointerMoved(point), None, false),
+        (Event::Text("held shift".into()), None, false),
+        (
+            Event::Key {
+                key: Key::A,
+                physical_key: Some(Key::A),
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+            Some(true),
+            true,
+        ),
+        (
+            Event::ModifiersChanged(Modifiers::SHIFT),
+            Some(false),
+            false,
+        ),
+        (Event::ModifiersChanged(Modifiers::SHIFT), None, false),
+        (
+            Event::PointerButton {
+                pos: point,
+                button: PointerButton::Secondary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+            Some(true),
+            true,
+        ),
+    ] {
+        assert_eq!(update_magnetic_targeting(&mut current, &event), changed);
+        assert_eq!(current, Some(retained), "event-time intent for {event:?}");
+    }
+}
+
+#[test]
+fn touch_samples_and_continuations_keep_keyboard_targeting_unknown() {
+    let mut pointer = ProductPointer {
+        magnetic_targeting: Some(false),
+        ..ProductPointer::default()
+    };
+    let point = Pos2::new(180.0, 160.0);
+    let sample = pointer
+        .touches
+        .observe(
+            egui::TouchDeviceId(1),
+            egui::TouchId(7),
+            TouchPhase::Start,
+            point,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(sample.magnetic_targeting, None);
+    let touch = continuation_sample(
+        &pointer.touches,
+        Some(point),
+        pointer.magnetic_targeting,
+        sample.pointer,
+        SurfacePointerEvent::Moved,
+    )
+    .unwrap();
+    assert_eq!(touch.magnetic_targeting, None);
+    let generic = continuation_sample(
+        &pointer.touches,
+        Some(point),
+        pointer.magnetic_targeting,
+        dockspace::runtime::SurfacePointerId::new(1),
+        SurfacePointerEvent::Moved,
+    )
+    .unwrap();
+    pointer.magnetic_targeting = Some(true);
+    assert_eq!(generic.magnetic_targeting, Some(false));
+    assert_eq!(generic.position, Some(point));
 }
 
 #[test]
