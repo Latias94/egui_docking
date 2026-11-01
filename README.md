@@ -6,7 +6,7 @@ input delivery, frame scheduling, and platform resources. `egui_dockspace`
 and its native integration are interactive reference adapters used to validate
 the core's behavior and host contracts. Open-GPUI adapter work is deferred.
 
-The repository is undergoing a breaking refactor. There is no compatibility
+The repository has undergone a breaking refactor. There is no compatibility
 layer for the former `egui_docking`, `egui_tiles`, or pre-refactor persistence
 interfaces.
 
@@ -16,8 +16,9 @@ It prioritizes a documented public host API and an independent consumer with
 no egui dependency before broader native certification. The recording consumer
 now verifies owned output records, ordered presentation settlement, and commands
 on two logical surfaces, complete ordered gestures, contained content, close
-approval and exact feedback/focus. Native throughput, lifecycle consolidation
-and platform certification remain separate unfinished gates.
+approval and exact feedback/focus. Finite native throughput, lifecycle, layout
+and stationary profiles also have qualified checkpoints. Reproducible native
+fork delivery remains open; additional platform claims need separate evidence.
 The earlier product-boundary plan supplies the persistence and ownership context.
 
 ## Capability matrix
@@ -26,7 +27,7 @@ The earlier product-boundary plan supplies the persistence and ownership context
 | --- | --- | --- |
 | `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
 | `egui_dockspace` | Caller-owned official-egui runs support tab select/close/reorder, magnetic center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | An unmodified `eframe::App::ui` callback cannot prove terminal presentation; preview-qualified drag and pane-focus settlement are typed unavailable there |
-| `egui_dockspace_native` | Unpublished fork-backed coordinator with an eight-pane editor example, a bounded real-input workflow, a programmatic window smoke, and an X11/XTest physical drag smoke | Native consolidation and broader platform qualification remain open. The qualified reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify other backends |
+| `egui_dockspace_native` | Unpublished fork-backed coordinator with an eight-pane editor example, bounded real-input workflows, a programmatic window smoke, and finite X11/XTest physical drag and stationary profiles | Remote dependency delivery remains open. The qualified reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify other backends |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
 Caller-owned official-egui runs also retain explicit local touch identities:
@@ -45,8 +46,9 @@ The current implementation has a qualified renderer-neutral local/contained
 contract, an official-egui caller-owned validation path, and an experimental
 native multiview adapter. The fast-gesture and configuration-dependent failures
 from the 2026-10-27 audit are repaired and covered by fresh regressions. See
-[`docs/VALIDATION.md`](docs/VALIDATION.md). It is not yet a mature ImGui-level
-docking and multiview crate.
+[`docs/VALIDATION.md`](docs/VALIDATION.md). These results qualify the documented
+host and finite reference profiles; cross-platform ImGui docking/multiview
+parity has not been established.
 
 Native drag-out creation keeps source ownership through staging and prospective child
 painting. Only an accepted exact first-live content output publishes topology,
@@ -74,7 +76,7 @@ exact binding pairs let hosts prepay resources and atomically publish the native
 route and their root-surface field. The reference X11 workflow verifies layout
 and JSON Root rebinding, then Default and named-preset restore through their saved
 host identities, fresh content editing and unchanged physical window identity.
-Broader native completion gates and reproducible fork delivery are still open.
+These finite workflows are qualified; reproducible fork delivery remains open.
 
 Managed engine hosts can also capture native client coordinates from committed
 size and scale facts without desktop position or work areas. The joined recorder
@@ -95,8 +97,8 @@ and exact-output state. Native requests expose scheduling and sampling inputs;
 the host still supplies fresh native facts. The reference adapter now schedules
 Desktop Mouse observations at core deadlines, retaining at most one query until
 its ordered terminal fully commits. Unknown or unavailable facts cannot trigger
-an automatic retry of the same core token. Physical Touch and the complete
-native readiness matrix remain unfinished.
+an automatic retry of the same core token. Physical Touch and unenabled platform
+profiles retain explicit capability limits.
 
 The public continuation can also report a newly acquired capture boundary
 without fabricating motion. Core restarts stationary timing from that accepted
@@ -112,8 +114,11 @@ ancestor loss and foreign InputOnly interception; its 16 component gates pass.
 The complete eframe/Glow X11 stationary hover-selection and real InputOnly
 negative journeys each pass twice normally and once without native assertions.
 The actually recompiled 100 ms early-dwell control fails as intended. All 36
-final integration, window and lint checks pass. Stationary overflow, deeper source ancestry, native-local/Touch
-OS input and macOS/Windows positive stationary behavior remain unqualified.
+final integration, window and lint checks pass. The finite stationary overflow
+profile also qualifies two exact Presented steps and stopping after real motion
+out of the edge band, with the same held Child gesture through redock and cleanup.
+Deeper source ancestry, native-local/Touch OS input and macOS/Windows positive
+stationary behavior remain unqualified.
 
 Native binding retention now uses `terminal_binding_guards()` in the diagnostic
 manifest. It covers observed destruction and conclusively never-created
@@ -132,8 +137,8 @@ pressure freezes ordinary admission through the existing overload boundary.
 Selected 4 MiB profiles have finite qualification: W16 roster/property/Destroyed
 models, real I64/W16/R258 with O256/control2/protected-staging1, and the separate
 1 kHz XTest center-load journey. Their configured owner counts and excluded data
-are recorded in `docs/PLATFORM_SUPPORT.md`. Combined close/create maxima and
-sustained active-service acceptance remain open; 2 ms is a cooperative yield
+are recorded in `docs/PLATFORM_SUPPORT.md`. Broader combined close/create maxima
+and arbitrary active-service loads are outside these profiles; 2 ms is a cooperative yield
 threshold, with overruns retained in measurement, rather than a hard real-time
 guarantee.
 `NativeDockspaceApp::input_storage_capacity_bytes()` measures the current raw,
@@ -267,7 +272,7 @@ directly from the core's existing inventory. The `basic` example shows the eight
 application-owned pane entries and explicit Allow/Veto/Defer controls. Pane data
 remains application-owned while an item is closed.
 
-This facade keeps its configured root logical surface. A close that would remove
+Ordinary facade commands keep the configured root logical surface. A close that would remove
 its only presentation returns `NativeActionRequestError::HostSurfaceRequired`,
 including an exact Allow for a chrome-created plan. Closing individual panes in
 a central root retains its empty dock area and permits reopening. Closing a
@@ -282,13 +287,16 @@ native facts and exact presentation still establish the successor's input and
 focus authority. Old renderer outputs and command receipts retain their original
 binding until their own terminal settlement.
 
-The current facade accepts replacement layouts containing only its configured
-host surface, including contained windows. Resetting from a live child retires
-that child through the existing destruction protocol. Recreating additional
-native windows from a multi-surface document remains subsequent work. The
-example owns its immutable default and at most eight named JSON presets; it
-retains recognized unavailable panes as reloadable placeholders. Full U10
-acceptance remains open; see the dated qualification in
+Layout reset accepts only its configured host surface, including contained
+windows; resetting from a live child retires it through normal destruction.
+Document restore also accepts explicit managed Child declarations with saved
+placement and creates successors after predecessor quiescence. The
+`request_layout_reset_rebinding_root` and
+`request_document_restore_json_rebinding_root` variants explicitly continue the
+same physical Root on a different incoming logical host. The example retains
+that saved host alongside its immutable Default and at most eight named JSON
+presets, and recognized unavailable panes remain reloadable placeholders.
+These finite U10 workflows are qualified; see the dated evidence in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 Hosts that own official crates.io egui's complete run use the Dockspace wrapper
@@ -446,8 +454,13 @@ marker and verify the precise resulting tab order. Nested cases preserve the
 empty central source, ancestor weights and unaffected sibling; west insertion
 must split the target leaf, retaining the three alternating split axes.
 The separate `overflow-tab-before` journey qualifies one manually scrolled
-clipped target. Stationary overflow, arbitrary overflow geometry and nested
-targets, mixed DPI and the complete local journey matrix remain unqualified.
+clipped target. `EGUI_DOCKSPACE_PHYSICAL_STATIONARY=overflow` qualifies one fixed
+400-point strip through offset0/40/80, each bound to its exact Root Presented
+output. `overflow-cancel` leaves the band after the first step and stays at40
+through two quiet intervals and a fresh source-input barrier. Both retain the
+original press/capture and finish the same redock/retirement journey. Arbitrary
+overflow geometry and nested targets, mixed DPI and the complete local journey
+matrix remain unqualified.
 These finite native smokes do not expose core geometry or provide a reusable
 GUI test engine.
 

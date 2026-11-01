@@ -203,7 +203,8 @@ tab's complete visible bounds; the Tab accessibility receiver still excludes
 its close button. These diagnostics confer no input or presentation authority.
 The original single fully visible target has no overflow chrome. The later
 overflow fixture qualifies one partially clipped Main target after real manual
-scrolling; arbitrary overflow geometry and positive stationary scrolling remain
+scrolling. The later finite stationary profile qualifies two automatic steps
+and stopping after exit in that fixed strip; arbitrary overflow geometry remains
 unqualified. The nested fixture preserves
 Horizontal→Vertical ancestry and requires the additional Horizontal split only
 inside the target leaf for west docking. Painted content/tab diagnostics confer
@@ -387,8 +388,19 @@ independently an exact receipt-commit proof; core/adapter models cover ordered f
 All 36 final gates pass in
 `/tmp/dockspace-wm-stationary-final-qualification.json`, including macOS native
 workspace575, assertion-disabled libraries529 on macOS and Linux with the
-10,000-lifetime soak, real windows/pressure and both-platform lint checks. Stationary overflow, deeper source ancestry, native-local/Touch
-OS input and macOS/Windows positive stationary behavior remain unqualified.
+10,000-lifetime soak, real windows/pressure and both-platform lint checks.
+
+The [stationary overflow qualification](VALIDATION.md#2026-11-01-real-x11-stationary-overflow-steps)
+adds one fixed 400-point strip with two real automatic steps, offset0/40/80.
+Three bounded diagnostics bind stats to distinct exact Root Presented outputs;
+each subsequent sample starts after the preceding terminal and a fresh configured
+interval. The exit control stays at40 for two quiet intervals after the held
+source UI observes real exit. Sticky query/capture checks remain through the
+post-terminal source barrier. Both modes retain the original press/capture and
+complete exact redock, destruction and quiescence. All 19 scoped final gates pass,
+including twice with native assertions enabled and once disabled. Deeper source
+ancestry, native-local/Touch OS input and macOS/Windows positive stationary
+behavior remain unqualified.
 
 The earlier finite-scheduling checkpoint also refreshed all twelve ordinary
 physical targets, the separate 1 kHz entry, six pressure cases per platform and
@@ -462,11 +474,14 @@ pressure, finite physical targets and measured active service; earlier results
 retain their separate source scope. The extracted core/official-adapter archive
 gate passes independently of these optional-native fork dependencies.
 
-Still open are broader combined close/create/command owner capacity and measured
-host-service combinations; arbitrary overflow/nested and mixed-DPI physical coverage;
-stationary overflow and native-local/Touch OS evidence; macOS/Windows positive
-stationary and broader platform certification; the complete
-native layout-management showcase; and U9 dependency publication, clean-checkout
-reproduction and remaining evidence/deletion closure. The finite target,
-positive and negative stationary, active-service and center-load results retain
-their scope.
+The qualified owner/service, editor and physical profiles remain finite.
+Broader close/create/command combinations, arbitrary overflow/nested geometry,
+mixed DPI, native-local/Touch OS input and macOS/Windows positive stationary
+behavior require separate evidence before those positive claims are enabled.
+They are capability limits, rather than an unlimited completion matrix.
+The remaining delivery boundary is U9 fork publication, the prepared CI-ref
+alignment and clean-checkout reproduction. Clean exact-SHA fetches currently
+return `not our ref` for both forks; see the
+[final delivery check](VALIDATION.md#2026-11-01-final-native-dependency-delivery-check).
+The finite target, positive/negative stationary, active-service and center-load
+results retain their recorded source scope.

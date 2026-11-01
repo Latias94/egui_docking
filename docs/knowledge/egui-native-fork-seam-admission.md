@@ -139,8 +139,12 @@ intervening motion/button input. The negative profile retains the exact desktop
 point and independently known Child capture/delivery while hover remains Unknown
 or Foreign and Main stays inactive. Both finish exact redock, Child destruction,
 viewport retirement and quiescence. The actually recompiled 100 ms early-dwell
-control fails as intended. All 36 final integration/window/lint checks pass; stationary
-overflow, deeper source ancestry, native-local/Touch OS input and macOS/Windows
+control fails as intended. All 36 final integration/window/lint checks pass.
+The subsequent finite overflow profile adds exact Presented offset0/40/80 and
+a real-exit stop control, qualified by 19 final gates. Its three smoke-only slots
+do not expose production APIs or introduce another continuation owner. Original
+capture remains observed through the post-terminal source barrier. Deeper source
+ancestry, native-local/Touch OS input and macOS/Windows
 positive stationary behavior remain unqualified. See the
 [current journey record](../VALIDATION.md#2026-11-01-complete-x11-stationary-hover-selection-journey).
 
@@ -283,11 +287,11 @@ The working adapter now lends one dispatch budget from output begin through
 Repeat/finalization, staging, close and shutdown, ending it at the physical output
 terminal. Poll yields retain the original held request; they do not synthesize
 CancelClose. Policy submissions and exact close decision plans resume on the
-existing pending close owner. This remains locally qualified work against the
-unpublished fork: tracked dependency pins, real-window journeys, input caps and
-overload/latency qualification are not complete.
+existing pending close owner. At that historical checkpoint, tracked dependency
+alignment, real-window journeys, input caps and overload/latency qualification
+were not complete. Current aligned revisions and finite acceptance are recorded above.
 
-### Local property-command identity prerequisite (not yet pinned)
+### Property-command identity prerequisite (historical qualification)
 
 Local fork commit `7c7b3233541ec724bee561454ba8e9fca384f32e` adds correlated
 host-owned focus and visibility commands and joins their transport with pointer
@@ -306,8 +310,8 @@ cross-property order, missing targets/handlers, attachment changes and saved
 FullOutput/LogicOutput command replay against a successor. Combined renderer
 library tests pass 75 cases normally and 75 without debug assertions. The
 adapter's exact receipt tests and three real macOS redock runs are recorded in
-`docs/VALIDATION.md`. This commit is local and unpublished; it does not change
-the dependency baseline or complete U7/U8 qualification.
+`docs/VALIDATION.md`. At this historical checkpoint the commit was not pinned;
+the current tracked revision includes it, while remote publication remains open.
 
 Local follow-up `1f7c541fde99fd69192622a1a36cb642de58ed29` reports exact
 pre-dispatch retirement for queued focus, visibility and pointer pass-through
@@ -321,13 +325,13 @@ result, so retirement cannot leave an Awaiting reservation permanently live.
 
 The follow-up passes 63 host-seam tests and a WGPU build. The adapter passes 271
 all-target cases normally and 271 with native debug assertions disabled, plus
-programmatic macOS redock. It remains local and unpublished; tracked pins are
-unchanged. Remove the retirement callback together with the typed property queue
+programmatic macOS redock. That checkpoint left tracked pins unchanged; the
+current aligned revision includes the seam. Remove the retirement callback together with the typed property queue
 when upstream supplies equivalent exact execution-or-retirement results. No
 docking identity, cancellation policy or second lifecycle owner belongs in this
 seam.
 
-### Local output-admission prerequisite (not yet pinned)
+### Output-admission prerequisite (historical qualification)
 
 Local fork commit `af92097942f551914644f9d36f73dfba948e4997` makes
 `NativeHostHandler::on_output_begin` return
@@ -345,8 +349,8 @@ rejected-token registry. Nested deferral preserves the outer token, and later
 accepted child/root completion remains contiguous. Remove this result when
 upstream eframe exposes equivalent pre-input output admission with truthful
 defer/terminal ownership. Local model tests do not establish physical keyboard
-input retry or the adapter's complete memory budget. Tracked pins remain the
-published baseline above until an explicit publication step.
+input retry or the adapter's complete memory budget. At that checkpoint tracked
+pins remained the published baseline; current local alignment is recorded above.
 
 The complete eframe library passes 81 Glow tests, 75 WGPU tests and 81 combined
 renderer tests without eframe debug assertions. Both renderer-only configurations

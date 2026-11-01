@@ -15,6 +15,110 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 real X11 stationary overflow steps
+
+The finite reference-host journey uses `EGUI_DOCKSPACE_PHYSICAL_STATIONARY=overflow`
+with the actual eframe/Glow host and XTest input. A fixed three-tab layout uses
+400-point tabs; real tear-off and exact first-live leave Anchor selected and
+Main inactive in the original Root. The current strip has 164 points of remaining
+scroll range. One real held Child motion enters the right edge band after
+subtracting overlay controls. The point is checked after physical rounding and
+cannot overlap Close, scroll/menu controls or actual guides. The test reads the
+configured line extent and interval rather than hard-coding timer behavior.
+
+Three fixed diagnostic slots bind current FullOutput AccessKit stats to exact
+Root/window NativeOutputTokens: baseline, first step and second step. Repeat
+clears that pass's candidate; Terminal is marked after forwarding the original
+affine finalization. Only the matching real `Presented` terminal, forwarded to
+the native host, seals a slot. Tokens differ and completion ordinals increase.
+The first fresh sample leaves offset0; subsequent independent samples produce
+offset40 and offset80, with matching full-tab translation and unchanged viewport,
+maximum and model selection. Each next sample starts after the preceding exact
+Presented callback and at least one configured interval after the previous
+callback's end. This reports renderer terminal forwarding, not a fabricated
+direct core-commit receipt. Actual continuation uses the existing audited core
+presentation barrier; its exact commit/rollback contracts retain library coverage.
+
+The `overflow-cancel` control moves out after the first exact Presented step.
+It observes the original native motion and then the matching held source UI
+position before starting two quiet intervals. A later distinct exact Presented
+output stays at offset40 and uses the same query. The probe remains active through
+the terminal's viewport commands and the next fresh source-input barrier.
+Any new query token, matching-source Release or capture reacquisition makes the
+failure sticky. This closes two independent-review P2 gaps in the initial test,
+which could stop observing before late commands and retain historical Acquired.
+Both modes retain the real original press/capture and continue the same held
+gesture through current Center redock, exact DestroyNotify, semantic viewport
+retirement and quiescence. Slow UI suffixes and a genuine repeated output remain
+part of each case.
+
+The first real run failed because the new fixture expected explicit AccessKit
+`selected=false`; the production renderer clears that field for inactive tabs.
+The reader now follows that producer and separately checks exact public-model
+Main/Anchor/Child selection. All 19 final frozen gates pass: macOS29/Linux60
+physical-smoke unit cases, both-platform correctness/suspicious Clippy, positive
+and stop-control journeys twice with native assertions explicitly enabled and
+once with them disabled, plus hover positive/real-InputOnly negative, default
+guide, manual clipped insertion and 1 kHz center regressions. Formatting and
+diff pass. The two enabled-assertion positive runs measure conservative sample
+intervals of 75.054/69.952 ms and 76.638/69.023 ms; the disabled run measures
+79.303/69.542 ms against the configured50 ms. Quiet stop observations arrive
+125.750–152.797 ms after native exit, with the actual two-interval timer starting
+only after the later source UI exit barrier. These are observed finite timings,
+not latency bounds. Both independent-review P2 findings are re-reviewed and closed.
+Source and commands/results are in
+`/tmp/dockspace-stationary-overflow-final-source.json` and
+`/tmp/dockspace-stationary-overflow-final-qualification.json`, with the combined
+scope/review receipt in `/tmp/dockspace-stationary-overflow-qualified.json`.
+The three smoke Rust files are committed as `b35b8a1`; core and native
+production logic remain at `0e0316b`. Final documentation also corrects the
+public native document-restore comment to describe its already implemented
+explicit Child declarations, and removes the obsolete single-surface-only
+README claim. Strict native rustdoc, formatting and diff pass again in
+`/tmp/dockspace-stationary-overflow-doc-close.json`; this is a documentation-only
+change to the production crate, without another library/soak rerun.
+Arbitrary strips, deeper source ancestry and unclaimed platform/Touch/native-local
+profiles remain outside this finite qualification.
+
+## 2026-11-01 final native dependency delivery check
+
+The exact tracked fork pair is locally committed and selected by all 12 native
+Git-family packages without path overrides. Remote branches still advertise
+Winit `f378b50f` and egui `0716beee`, and clean temporary bare repositories cannot
+fetch the new exact `2664589f` / `56e3db49` revisions: both return `not our ref`.
+This is an actual remote dependency failure, not merely a stale tracking ref.
+Evidence is `/tmp/dockspace-native-delivery-remote-heads.json` and
+`/tmp/dockspace-native-delivery-clean-fetch.json`.
+
+No fork is pushed and no PR is created. The separately owned working CI change
+is preserved byte-for-byte. A reviewable three-ref-only proposal is prepared at
+`/tmp/dockspace-native-ci-pin-update.patch`; it does not alter the working file.
+Publishing the already committed fork branches, aligning those CI refs and
+reproducing the native gates from a clean checkout remain the final delivery
+boundary. The renderer-neutral/official-adapter archive qualification above is
+independent. The overall Goal remains active until that boundary closes.
+
+## 2026-11-01 capture API archive consumer refresh
+
+The final core capture API at `677f291` is included in newly packaged and
+Cargo-verified `dockspace` and `egui_dockspace` archives. All 274/36 Rust files
+and both crate READMEs byte-match their current sources. Independent consumers
+of the extracted archives pass public default160, public serde188, official
+egui15 and the self-drawn engine example. Metadata keeps egui/eframe and their
+framework families registry-sourced; only core and the official adapter resolve
+to the extracted packages. Optional-native Git dependencies are outside this
+archive gate. The retained `clipboard-win 5.4.1` yanked-lock warning is unchanged.
+
+The first extraction driver used system Python3.9, which lacks the requested
+tarfile data filter, after Cargo packaging had passed. Repeating with installed
+Python3.13 completes all five gates. Exact archive hashes, extraction directory,
+commands and results are in `/tmp/dockspace-capture-package-qualification.json`.
+The dockspace archive SHA-256 is
+`e6e9732c429eb08cd6881bd15e89bfaceb6e35dfc2eaa27bd9d29609f3294127`;
+the adapter archive SHA-256 is
+`bd0d1bb89e1e47a13f38e01b3dd29d34f573a2187bcfc8b93587f620485426d2`.
+Registry publication and remote native-fork reproduction remain separate work.
+
 ## 2026-11-01 complete X11 stationary hover-selection journey
 
 The fork-backed reference smoke now has explicit positive and negative stationary
@@ -85,6 +189,8 @@ P1/P2 in the finite test proof or blocker ordering. Frozen source is
 in `/tmp/dockspace-wm-stationary-independent-reviews.json`. Stationary overflow,
 native-local/Touch OS input, deeper source ancestry and broader platform/product
 criteria retain their own scope; this journey does not close the complete Goal.
+Final metadata in `/tmp/dockspace-wm-stationary-final-metadata.json` resolves all
+12 Git-family packages, including Winit's `dpi`, to the exact aligned fork pair.
 
 ## 2026-11-01 observed-parent X11 capture component
 

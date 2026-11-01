@@ -540,15 +540,17 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     ///
     /// Identity recognition includes closed and temporarily unloaded panes. A
     /// recognized missing pane may render an application-owned placeholder. The
-    /// document must contain only the configured host surface and retain the
-    /// current lineage.
+    /// document must preserve the configured host surface and current lineage.
+    /// Additional surfaces require explicit Child hosting declarations and saved
+    /// placement. They resume through budgeted creation after predecessor
+    /// quiescence; undeclared surfaces do not implicitly create OS windows.
     /// Keys and declared identities remain core-owned; current presentation and
     /// focus require fresh native binding and output observations after restore.
     ///
     /// # Errors
     ///
     /// Returns the original queue, decoding, identity or preparation failure, or
-    /// a missing host or unsupported additional surface before accepting the
+    /// a missing host or invalid native hosting declaration before accepting the
     /// command. A queued stale workspace reports `Stale` without replacing newer
     /// committed state.
     #[cfg(feature = "serde")]
