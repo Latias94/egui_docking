@@ -4,6 +4,10 @@ use super::owner_storage::{combined_profile, layout};
 use super::*;
 use crate::focus_control::NativeViewportFocusRecord;
 
+#[cfg(target_os = "linux")]
+#[path = "combined_soak/output_envelopes.rs"]
+mod output_envelopes;
+
 const LIFETIME_CYCLES: u64 = 10_000;
 const TOTAL_BYTES: usize = 4 * 1024 * 1024;
 
@@ -889,6 +893,23 @@ fn assert_close_and_create_command_pressure(
     with_accepted_release: bool,
     with_ordinary_focus: bool,
 ) {
+    assert_close_create_and_output_pressure(
+        with_accepted_release,
+        with_ordinary_focus,
+        None,
+        |_, _| Vec::new(),
+    );
+}
+
+fn assert_close_create_and_output_pressure(
+    with_accepted_release: bool,
+    with_ordinary_focus: bool,
+    output_window: Option<WindowId>,
+    fill_outputs: impl FnOnce(
+        &mut NativeCoordinator,
+        &mut CapacityPeaks,
+    ) -> Vec<eframe::NativeOutputResult>,
+) {
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
@@ -1005,7 +1026,11 @@ fn assert_close_and_create_command_pressure(
             } else {
                 ViewportId::from_hash_of(("finite-close-create", index))
             },
-            WindowId::from(11 * (index as u64 + 1)),
+            if index == 2 {
+                output_window.unwrap_or_else(|| WindowId::from(33))
+            } else {
+                WindowId::from(11 * (index as u64 + 1))
+            },
             bindings[index],
         )
     });
@@ -1441,6 +1466,24 @@ fn assert_close_and_create_command_pressure(
         // queued focus owner coexist before its protected callback is reserved.
         dispatch_model_focus(&mut native, &context, &mut peaks)
     });
+    let output_terminals = fill_outputs(&mut native, &mut peaks);
+    let output_count = output_terminals.len();
+    assert_eq!(native.output_backlog().ordinary(), output_count);
+    assert_eq!(output_count, if output_window.is_some() { 256 } else { 0 });
+    if output_count != 0 {
+        assert!(release_through.is_some());
+        assert_eq!(native.close_progress().cancellations_committed(), 0);
+        assert_eq!(native.close_progress().requests_retained(), 3);
+        assert!(native.effects.references_binding(child));
+        assert_eq!(
+            native.focus_control.pending_token(),
+            Some(predecessor_focus.unwrap().token())
+        );
+        assert!(native.bridge.with_viewports(|routes| {
+            routes.has_admitted_create_attempt(child_viewport, child)
+        }));
+        peaks.observe(&native, 0);
+    }
     let mut accepted = 0;
     for ordinal in 1_000..5_096 {
         let captured = native.bridge.captured_through_for_test();
@@ -1451,13 +1494,27 @@ fn assert_close_and_create_command_pressure(
         }
         accepted += 1;
     }
-    assert!((1..4_096).contains(&accepted));
+    if output_count == 0 {
+        assert!((1..4_096).contains(&accepted));
+    } else {
+        assert_eq!(
+            accepted, 0,
+            "O256 freezes the first subsequent ordinary admission"
+        );
+    }
     let boundary = native.bridge.captured_through_for_test();
     if let Some(release_through) = release_through {
-        assert!(
-            release_through < boundary,
-            "B must include the accepted release and its successors"
-        );
+        if output_count == 0 {
+            assert!(
+                release_through < boundary,
+                "B includes the release and later raw input"
+            );
+        } else {
+            assert_eq!(
+                boundary, release_through,
+                "full output occupancy freezes exactly at the accepted release"
+            );
+        }
         assert!(native.session.has_active_gesture());
     }
     native.bridge.push_record(cursor(&native, 6_000));
@@ -1715,6 +1772,30 @@ fn assert_close_and_create_command_pressure(
     );
     assert!(!native.try_report_retirement_quiescence().unwrap());
     peaks.observe(&native, 0);
+    // The original renderer terminals settle retained framebuffer owners while
+    // the dropped overload candidate, old create and close/focus duties remain.
+    // Retained outputs carry no semantic presentation claim or journal edge.
+    for (index, terminal) in output_terminals.into_iter().enumerate() {
+        let token = terminal.token();
+        assert_eq!(
+            native.bridge.output_reservation(token).unwrap().binding(),
+            Some(input_binding)
+        );
+        assert_eq!(native.bridge.on_output(terminal), NativeHostWake::Wait);
+        assert!(native.bridge.output_reservation(token).is_none());
+        assert_eq!(native.output_backlog().ordinary(), output_count - index - 1);
+        assert_eq!(native.bridge.captured_through_for_test(), terminal_through);
+        assert_eq!(
+            native.bridge.admission_dispatch(),
+            NativeDispatch::Cancel { boundary }
+        );
+        assert_eq!(native.session.version(), version);
+        assert_eq!(native.session.native_input_recorded_count(), recorded);
+        assert_eq!(native.close_progress().cancellations_committed(), 0);
+        assert!(native.effects.references_binding(child));
+        assert_eq!(native.focus_control.has_pending_work(), with_ordinary_focus);
+        peaks.observe(&native, 0);
+    }
     let cancelled = commit_boundary(&mut native);
     assert_eq!(
         cancelled
@@ -2135,7 +2216,7 @@ fn assert_close_and_create_command_pressure(
     }
     assert_eq!(peaks.observe(&native, 0), idle);
     eprintln!(
-        "close-create: W4/A1 E{effect_slots} M4/L2 focus_owner=single, accepted_release={with_accepted_release}, queued_focus_peak={}, raw_accepted={accepted}, owned_peak={}, reserved_peak={}",
+        "close-create: W4/A1 E{effect_slots} M4/L2 O{output_count} focus_owner=single, accepted_release={with_accepted_release}, queued_focus_peak={}, raw_accepted={accepted}, owned_peak={}, reserved_peak={}",
         peaks.queued_focus, peaks.resident, peaks.reserved
     );
 }

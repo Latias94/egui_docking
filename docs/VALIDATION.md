@@ -15,6 +15,77 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 combined lifecycle owners at O256 and foreign freeze counterexample
+
+The existing W4/A1/E2/M4/L2 finite lifecycle model now admits 256 original
+eframe output identities while retaining close predecessors/successors, a
+cancelled but admitted create attempt, the exact dispatched single Focus owner,
+and an accepted release. All output reservations are retained-framebuffer
+owners without new affine paint. The real renderer supplies their identities
+and original terminals; pointer, close, create, Focus and semantic presentation
+facts remain model inputs. This is not a physical journey or 256 concurrent GPU
+frames, nor an all-classes maximum profile.
+
+Full occupancy rejects the next ordinary input and freezes B exactly at the
+accepted release. The dropped release and overload candidates preserve that
+boundary and their session state. Returning each original output terminal
+removes only its exact reservation, decreases ordinary occupancy by one, and
+does not append a semantic journal edge, alter B or settle another owner.
+Subsequent create-failure, release-presentation, Focus and close settlement
+retain the existing drop/retry and final-quiescence checks. Those subsequent
+commits occur after output drainage; continued O256 occupancy during every
+later commit is outside this case. The full state contains an already reserved
+Focus callback; it does not promise admission of a new queued Focus at O256.
+
+The all-feature Linux case passes in an isolated renderer subprocess. Its
+parent kills and reaps an unfinished child on deadline, assertion unwind or
+wait-query failure. A single inline shutdown output belongs to the fixture,
+outside the tested bridge, so consuming eframe's later Close input cannot
+prematurely freeze model admission. The four existing combined controls pass
+separately; the unchanged 10,000-lifetime case is not rerun for this test-only
+extension. Sampled owned/reserved data is 2,143,965/3,267,680 bytes under the
+unchanged 4,194,304-byte limit, excluding fixture/process/renderer storage.
+Initial attempts retain failed shutdown and queued-Focus assumptions in their
+diagnostic logs; no production code changed to make this case pass.
+
+The service layer also has a joint controlled refill case: 529 initial idle
+motion records, then 16 more at one-millisecond intervals before each of six
+turns. The first two turns exhaust the 256-record allowance. Reusing either
+exhausted budget makes no further claim, record or empty-frame publication.
+Refill continues while a ready create starts in turn 3 and close policy drains
+in turn 4, with one unchanged child binding and bounded storage. The controlled
+clock reaches 96 ms; both owners progress before refill stops. After drainage,
+waiting for the external create fact returns Wait without publishing empty
+frames. This tokenless close model checks policy progress and preserved source,
+not successful OS Allow or destruction. Its first failing fixture incorrectly
+expected policy approval to remove source content before Destroyed; correcting
+that expectation needs no production change. Time remains frozen inside each
+dispatch, so this is record-budget coverage and does not certify repeated
+elapsed-time expiry or active-release latency under that load.
+
+Winit test-only commit `beb11f6ccafe52337a736c470036644de02ff164` extends the
+same real explicit-capture test beyond its original four presses. A distinct
+X11 client successfully grabs the exact paired keyboard with a synchronous
+paired pointer while the original explicit pointer effect is Acquired. An
+XTest Primary release and injector-side round trip complete, but the root
+query still reports logical Primary-down and Winit has received no release.
+Checked AsyncDevice and AsyncPair on Winit's original connection leave that
+foreign freeze intact. Both ordinary and expected-press observations keep
+capture/delivery Unknown. Foreign keyboard ungrab delivers exactly one real
+source/device release and retires the original press. The complete five-press
+case passes in 0.39 seconds; foreign grab and injected-button cleanup use RAII.
+
+The integration's production Winit pin remains `39a8165d`; the subsequent fork
+commit changes only this test and does not require a runtime repin. The core,
+egui fork and native production sources retain their preceding qualification.
+Positive stationary input, the elapsed-time service/deadline combination and the
+remaining U7/U8/U9/U10/U11 criteria stay open. Current local logs are
+`/tmp/dockspace-u7-owner-combined-real.log`,
+`/tmp/dockspace-u7-owner-combined-model.log` and
+`/tmp/dockspace-x11-foreign-freeze.log`. Final affected gates and source hashes
+are recorded in `/tmp/dockspace-owner-followup-qualification.json`; the service
+and isolated O256 logs use the `/tmp/dockspace-owner-followup-` prefix.
+
 ## 2026-11-01 serialized X11 capture effects and exact cleanup
 
 The Winit effect seam is locally committed as

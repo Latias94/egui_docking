@@ -855,6 +855,291 @@ mod persistence {
     }
 
     #[test]
+    fn service_refill_advances_close_and_ready_create_after_repeated_budget_exhaustion() {
+        use std::num::NonZeroUsize;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::Duration;
+
+        use dockspace::runtime::{
+            NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit,
+        };
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{DeviceId, PointerEventFacts, WindowEvent};
+
+        use crate::coordinator::NativeCoordinator;
+        use crate::event::NativeWindowEventRecord;
+        use crate::mailbox::{HostRecord, NativeDispatch};
+        use crate::surface_driver::ROOT_WINDOW_TOKEN;
+
+        const INITIAL_BACKLOG: usize = 2 * 256 + 17;
+        const REFILL_PER_TURN: usize = 16;
+        const TURNS: usize = 6;
+
+        // Age and dispatch share one clock. Dispatch itself is frozen so that
+        // exhaustion measures record accounting, not OS scheduling or wall time.
+        let ticks = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&ticks);
+        let clock = NativeMonotonicClock::new(move || {
+            Duration::from_millis(observed.load(Ordering::SeqCst))
+        });
+        let slots = |count| NonZeroUsize::new(count).unwrap();
+        let input = NativeInputStorageLimit::new(slots(128), 512 * 1024)
+            .with_producer_storage_limit(NativeProducerStorageLimit::new(
+                slots(4),
+                slots(1),
+                128 * 1024,
+            ))
+            .with_report_storage_limit(NativeReportStorageLimit::new(
+                slots(64),
+                slots(4),
+                256 * 1024,
+            ));
+        let storage = crate::NativeStorageLimit::new(input, 4 * 1024 * 1024, 4, 2).unwrap();
+        let mut policy = DockPolicy::default();
+        policy.set_allow_native_surfaces(true);
+        let mut coordinator = NativeCoordinator::new_with_combined_storage_limit_and_clock(
+            persistent_session(layout(ROOT, &[FIRST, SECOND], FIRST), policy),
+            NativePointerRoster::Exact(Vec::new()),
+            storage.combined,
+            clock.clone(),
+        )
+        .unwrap();
+        coordinator
+            .register_native_root(SURFACE, ROOT_WINDOW_TOKEN)
+            .unwrap();
+        let mut state = NativeRuntimeState {
+            coordinator,
+            root_surface: SURFACE,
+            instance_id: egui::Id::unique("service-refill-close-create"),
+            style: DockStyle::default(),
+            panes: Panes(Vec::new()),
+            application_actions: Default::default(),
+            pass_actions: Default::default(),
+            close_policy: NativeWindowClosePolicy::CloseContent,
+            root_context: None,
+            shutdown: None,
+        };
+        let context = egui::Context::default();
+        let registration = commit_native_prefix(&mut state);
+        let predecessor = registration.native_bindings()[0];
+        let window = WindowId::from(91);
+        state
+            .coordinator
+            .bind_viewport(egui::ViewportId::ROOT, window, predecessor)
+            .unwrap();
+        state
+            .request_document_restore_json(&saved_child_document(), recognize)
+            .unwrap();
+        let mut restored = commit_queued(&mut state, None);
+        assert!(matches!(
+            take(&mut state),
+            NativeActionStatus::DocumentRestored { .. }
+        ));
+        assert!(restored.take_native_effects().is_empty());
+        assert!(
+            state
+                .service_pending_prefixes(
+                    &context,
+                    None,
+                    SURFACE,
+                    &mut NativeInputBudget::new(&clock),
+                )
+                .unwrap()
+        );
+        record_fresh_root_facts(&mut state);
+        commit_native_prefix(&mut state);
+        let root = state
+            .coordinator
+            .viewport_binding(egui::ViewportId::ROOT)
+            .unwrap();
+        assert!(state.coordinator.session().view().item(FIRST).is_some());
+        {
+            let mut probe = state
+                .coordinator
+                .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            assert!(probe.frame.advance_next_native_surface_create().unwrap());
+            // Dropping the eligibility probe must leave the create for service.
+        }
+        assert!(state.coordinator.deferred_viewport_specs().is_empty());
+
+        let bridge = state.coordinator.dispatch_bridge();
+        // This is the existing tokenless close model. It checks policy progress,
+        // without claiming a successful OS Allow or fabricating a held-close key.
+        bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            1,
+            window,
+            Some(egui::ViewportId::ROOT),
+            Some(root),
+            WindowEvent::CloseRequested,
+        )));
+        assert!(
+            state
+                .coordinator
+                .reduce_callback_prefix(&context, &mut NativeInputBudget::new(&clock))
+                .unwrap()
+                .is_some()
+        );
+        let close_report = commit_native_prefix(&mut state);
+        state
+            .coordinator
+            .settle_close_control_report(&close_report)
+            .unwrap();
+        let close = bridge.with_close_control(|control| {
+            let mut requests = control.unsubmitted_requests();
+            let close = requests.next().unwrap();
+            assert!(requests.next().is_none());
+            close
+        });
+        assert_eq!(close.binding(), root);
+
+        let mut ordinal = 1_u64;
+        let mut enqueue = |count: usize, timed: bool| {
+            for _ in 0..count {
+                if timed {
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                }
+                ordinal += 1;
+                let captured = bridge.captured_through_for_test();
+                bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+                    ordinal,
+                    window,
+                    Some(egui::ViewportId::ROOT),
+                    Some(root),
+                    WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: PhysicalPosition::new(100.0, 100.0),
+                        facts: PointerEventFacts::default(),
+                    },
+                )));
+                assert_eq!(bridge.captured_through_for_test(), captured + 1);
+            }
+        };
+        // Idle coalescing is permitted here, but every discarded raw callback
+        // still owes one shared record credit. This is not an active-release model.
+        let controlled_started_at = clock.now();
+        enqueue(INITIAL_BACKLOG, false);
+        assert_eq!(bridge.input_backlog_for_test().0, INITIAL_BACKLOG);
+
+        let mut exhausted_turns = 0;
+        let mut close_progress_turn = None;
+        let mut create_progress_turn = None;
+        let mut child = None;
+        for turn in 0..TURNS {
+            // Refill even after either owner progresses. A passing drain must
+            // not rely on stopping ingress before service can run either owner.
+            enqueue(REFILL_PER_TURN, true);
+            let accepted = bridge.captured_through_for_test();
+            let mut budget = NativeInputBudget::new(&clock);
+            let ready = state
+                .service_pending_prefixes(&context, None, SURFACE, &mut budget)
+                .unwrap();
+            assert_eq!(bridge.captured_through_for_test(), accepted);
+            assert!(!matches!(
+                bridge.admission_dispatch(),
+                NativeDispatch::Cancel { .. }
+            ));
+            let resident = state.owned_input_capacity_bytes().unwrap();
+            let reserved = state.input_storage_reserved_bytes().unwrap();
+            assert!(resident <= reserved && reserved <= storage.byte_limit());
+            if turn < 2 {
+                assert!(!ready);
+                assert!(budget.is_exhausted());
+                assert_eq!(budget.remaining_records(), 0);
+                assert!(bridge.input_backlog_for_test().0 > 0);
+            }
+            if budget.is_exhausted() {
+                exhausted_turns += 1;
+                let before = (
+                    bridge.input_backlog_for_test(),
+                    state.coordinator.session().native_input_recorded_count(),
+                    state.coordinator.session().version(),
+                    state.coordinator.deferred_viewport_specs(),
+                );
+                assert!(
+                    !state
+                        .service_pending_prefixes(&context, None, SURFACE, &mut budget)
+                        .unwrap()
+                );
+                assert_eq!(
+                    (
+                        bridge.input_backlog_for_test(),
+                        state.coordinator.session().native_input_recorded_count(),
+                        state.coordinator.session().version(),
+                        state.coordinator.deferred_viewport_specs(),
+                    ),
+                    before,
+                    "the same exhausted turn cannot claim a successor or publish an empty frame"
+                );
+            }
+            let (policy_unsubmitted, decisions, policy_runnable) =
+                bridge.with_close_control(|control| {
+                    assert_eq!(control.request_for_binding(root), Some(close));
+                    assert!(control.held_request(close).is_none());
+                    (
+                        control
+                            .unsubmitted_requests()
+                            .any(|request| request == close),
+                        control.decision_count(),
+                        control.has_runnable_policy_work(),
+                    )
+                });
+            // Surface-close approval does not remove content before exact OS
+            // destruction. This tokenless model must only drain policy work;
+            // its Allow dispatch fails explicitly and preserves the source.
+            assert!(state.coordinator.session().view().item(FIRST).is_some());
+            if !policy_runnable {
+                close_progress_turn.get_or_insert(turn);
+                assert!(!policy_unsubmitted);
+                assert_eq!(decisions, 0);
+            }
+            let specs = state.coordinator.deferred_viewport_specs();
+            assert!(specs.len() <= 1);
+            if let Some(spec) = specs.first() {
+                assert_eq!(spec.binding().surface(), OTHER_SURFACE);
+                assert_eq!(spec.role(), NativeSurfaceRole::Child);
+                assert_eq!(*child.get_or_insert(spec.binding()), spec.binding());
+                create_progress_turn.get_or_insert(turn);
+            }
+            assert!(state.shutdown.is_none());
+        }
+        assert!(exhausted_turns >= 2);
+        assert!(close_progress_turn.is_some_and(|turn| turn < TURNS - 1));
+        assert!(create_progress_turn.is_some_and(|turn| turn < TURNS - 1));
+        assert_eq!(state.close_progress().requests_retained(), 1);
+        assert_eq!(bridge.input_backlog_for_test(), (0, None));
+        assert!(!state.coordinator.session().has_pending_native_input());
+        assert!(!bridge.callback_boundary_pending());
+        let version = state.coordinator.session().version();
+        let recorded = state.coordinator.session().native_input_recorded_count();
+        for _ in 0..2 {
+            // The emitted create is now awaiting an external OS fact. Pending
+            // ownership alone must not cause an empty-frame or service-wake loop.
+            assert_eq!(
+                state.service_native_events(&context).unwrap(),
+                NativeHostWake::Wait
+            );
+            assert_eq!(state.coordinator.session().version(), version);
+            assert_eq!(
+                state.coordinator.session().native_input_recorded_count(),
+                recorded
+            );
+            assert_eq!(state.coordinator.deferred_viewport_specs().len(), 1);
+        }
+        // This is controlled schedule time with dispatch time frozen. It does
+        // not qualify elapsed-time budget expiry or active-release latency.
+        let controlled_elapsed = clock.now() - controlled_started_at;
+        assert!(
+            controlled_elapsed <= Duration::from_millis(100),
+            "the frozen-per-dispatch record-budget profile took {controlled_elapsed:?}"
+        );
+        eprintln!(
+            "service-refill: exhausted_turns={exhausted_turns} close_turn={close_progress_turn:?} create_turn={create_progress_turn:?} controlled_elapsed={controlled_elapsed:?} frozen_per_dispatch=true"
+        );
+    }
+
+    #[test]
     fn shutdown_or_quarantined_service_does_not_start_a_queued_child_with_fresh_facts() {
         for fatal in [false, true] {
             let mut state = queued_child_restore();

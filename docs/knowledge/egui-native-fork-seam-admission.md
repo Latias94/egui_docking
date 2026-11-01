@@ -71,7 +71,12 @@ in flight. A later all-up and genuine new press can establish a new owner;
 queued presses and old release claims cannot acquire or ungrab a successor.
 The public `Acquired` result reports only the settled operation effect. Fresh
 capture and delivery queries remain `Unknown`, and eframe has no automatic
-acquisition command yet. See the dated explicit-effect evidence in
+acquisition command yet. Test-only Winit `beb11f6c` verifies a distinct client's
+paired-keyboard freeze while our pointer effect remains Acquired: a real release
+stays logically down and undelivered even after checked AsyncDevice and AsyncPair
+on our original connection. Foreign ungrab delivers it once. These requests
+therefore cannot establish fresh capture or delivery. See the counterexample and
+dated explicit-effect evidence in
 [`VALIDATION.md`](../VALIDATION.md#2026-11-01-serialized-x11-capture-effects-and-exact-cleanup).
 
 The 0.37 branch merges upstream stable `0.37.0` into the minimal native-seam

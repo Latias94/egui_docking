@@ -47,7 +47,7 @@ The next completion work is concrete:
 | --- | --- |
 | U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites now retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. This closes the identified example wiring gap; broader U10 stationary acceptance remains open. |
 | U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
-| U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze, and the mixed accepted-release model qualifies one queued Focus with predecessor/successor isolation. The unreachable Root-close chain, duplicate ordinary command Vec and configurable command-slot quota are removed; one existing Focus owner remains. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples; the 2 ms cooperative yield target is not a hard OS scheduling guarantee. Broader owner/platform combinations retain their documented limits. |
+| U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze. The mixed accepted-release model qualifies one Focus with predecessor/successor isolation, now also at O256 with its callback already reserved. The unreachable Root-close chain, duplicate ordinary command Vec and configurable command-slot quota are removed; one existing Focus owner remains. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples; repeated deadline exhaustion with simultaneous runnable owners remains open. The 2 ms cooperative yield target is not a hard OS scheduling guarantee. |
 | U7/U10 positive stationary input | Supply independently proven fresh capture/delivery facts before enabling successful automatic OS selection/scrolling. The current negative X11 journey cannot close this positive criterion. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
 | U9 reproducible delivery | Commit the final fork seams, synchronize obtainable dependency revisions and lockfiles, verify a clean checkout without local overrides, and refresh core/adapter package consumers and final documentation. |
@@ -2033,12 +2033,39 @@ Main native572/noassert571, Linux525 plus the real retained-query/close/create
 fixture, strict native docs/Clippy and all 32 window gates pass. Both platforms
 use the aligned locked Git sources without path overrides; the Git objects are
 locally seeded and unpublished. The current observation API still reports
-capture/delivery Unknown. Protocol review confirms that checked AsyncDevice
-and AsyncPair requests can legally leave a foreign paired-keyboard freeze
-unchanged. The next minimal experiment must capture that actual counterexample
-before a fresh finite sample and the core acquisition event can be connected. No
+capture/delivery Unknown. The subsequent test-only Winit commit `beb11f6c`
+qualifies the actual foreign paired-keyboard counterexample in the same real
+X11 test. Even with Acquired, checked AsyncDevice and AsyncPair on the original
+connection leave a physically released Primary logically down and undelivered
+until the foreign client ungrabs. The release then arrives exactly once. These
+checked operations cannot provide the missing fresh capture/delivery proof.
+Establish that independent proof before connecting positive stationary facts. No
 positive stationary behavior or full U7/U8/U9/U10/U11 completion follows from
 this effect prerequisite.
+
+The subsequent O256 lifecycle model adds real opaque output envelopes to the
+existing W4/A1/E2/M4/L2 close/create/accepted-release fixture. The same exact
+dispatched Focus callback and cancelled admitted create survive full ordinary
+output occupancy; the first new ordinary input freezes B exactly at the already
+accepted release. All 256 original retained-output terminals release only their
+owners without changing B or semantic input. Candidate drop/retry and final
+quiescence pass, with later create/presentation/close commits occurring after
+output drainage. Four existing combined controls also pass. This finite profile
+does not saturate W16 and every other class together, admit a new queued Focus
+at full output occupancy, or qualify physical input. Its isolated renderer
+process has bounded failure cleanup. Sampled owned/reserved data is
+2,143,965/3,267,680 bytes under 4 MiB. Continued input with repeated elapsed-time
+budget exhaustion and ready close/create/release remains subsequent work.
+
+A joint service refill model now also covers 529 initial idle motion records
+and continued one-millisecond/16-record arrivals across six turns. The first
+two turns exhaust record allowance; the same spent budget cannot claim again.
+Ready create starts in turn 3 and tokenless close policy drains in turn 4 while
+refill continues, and the 96 ms controlled run ends at Wait without duplicate
+create bindings or empty-frame publication. Source content remains until its
+actual lifecycle terminal; policy approval alone cannot remove it. Dispatch
+time is frozen in this model. It does not qualify repeated elapsed-time expiry,
+successful OS close, or an accepted release under that same service load.
 
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete
