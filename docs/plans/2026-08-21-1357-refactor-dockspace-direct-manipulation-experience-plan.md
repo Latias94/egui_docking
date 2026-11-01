@@ -48,13 +48,26 @@ The next completion work is concrete:
 | U10 native layout management | Explicit external Root continuation passes all 61 final checks. Its application Default/preset call sites now retain the correct incoming host and pass eight affected checks, including extended real X11 eight/twelve-edit workflows. This closes the identified example wiring gap; broader U10 stationary acceptance remains open. |
 | U10 native overflow | All 59 final checks pass, including the real `overflow-tab-before` X11 journey with exact preview, `[Anchor, Child, Main]` order and cleanup; compiler, disabled control/focus and queued-retirement regressions pass. Positive stationary OS scrolling remains a separate criterion. |
 | U7/U8 capacity and service | Actual close/create callbacks cross natural age freeze. The mixed accepted-release model qualifies one Focus with predecessor/successor isolation, now also at O256 with its callback already reserved. The elapsed-time model qualifies five expired turns, ready close/create and an accepted release through the shared-budget core continuation, with continuous feedback counting through drain. All 527 affected library cases pass on macOS and Linux, also without Linux native assertions. Complete synchronous service in the finite 1 kHz profile has real Root/Child/standalone samples. Broader owner/platform and service-only terminal combinations retain their limits; 2 ms is a cooperative threshold. |
-| U7/U10 positive stationary input | Winit `3199a442` and eframe `97ebef041` now connect finite direct-root sampling, native acquisition/release and the core acquisition event through existing owners. Pending-deadline and late-query real-backend/recording-host regressions, public160/188, native529 in both assertion modes/platforms and the scoped real-window/physical refresh pass. Ordinary window-manager sources and complete positive eframe/GPU stationary journeys remain the product criterion. |
+| U7/U10 positive stationary input | Winit `2664589f` qualifies one root-observed WM parent, terminal-reply hover and exact ancestor revocation; egui `56e3db49b` selects it. Complete positive eframe/Glow hover selection and actual InputOnly negative journeys each pass twice normally and once without native assertions, with conservative capture-interval timing and a compiled early-dwell negative control. All 36 final native/OS checks pass. The remaining substantive U10 journey is finite stationary overflow scrolling. |
 | U11 platform claims | Qualify macOS/Windows or additional mixed-DPI/backend claims before enabling them. Their unavailable facts do not block the renderer-neutral host contract. |
 | U9 reproducible delivery | Commit the final fork seams, synchronize obtainable dependency revisions and lockfiles, verify a clean checkout without local overrides, and refresh core/adapter package consumers and final documentation. |
 
 Open-GPUI and the user's actual engine remain outside the completion dependencies.
 Exact results, limitations and failed attempts live in `docs/VALIDATION.md`;
 historical checkpoints below retain their original source scope.
+
+Completion review now separates unfinished implementation from unclaimed
+capabilities. After current qualification, finish one real X11 stationary
+overflow journey with two presentation-qualified steps, exact release and native
+cleanup; refresh the final core/official-adapter archive consumers and reconcile
+the capability documentation. Native reference delivery still requires obtainable
+fork revisions and a clean remote checkout/CI run; unpublished locally seeded Git
+objects do not satisfy that gate, and this session does not publish them. Historical
+finite owner/service/Default/preset/restore qualifications are not reopened as
+new unlimited matrix requirements. Deeper source ancestry, NativeLocal/Touch OS,
+arbitrary mixed-DPI/multi-CRTC and unenabled Windows/macOS input claims remain
+explicit capability limits; adding those positive claims requires separate
+evidence. No current finding requires another core architecture replacement.
 
 ---
 
@@ -2141,6 +2154,20 @@ the same frame, and ancestor-only unmap/remap at both sampling checkpoints.
 Unknown/depth-limit/query-failure cases stay Unknown. In particular, verify the
 existing XI NotifyUngrab revocation on ancestor loss instead of assuming source
 UnmapNotify or adding a speculative frame-to-client authority cache.
+
+That bounded experiment exposed an actual ancestor-history gap: a hidden frame
+left the old source press valid after normal pumping, before any restore. Winit
+`2664589f` therefore observes root structure from connection startup and stores
+one immediate-parent/history sample on the existing owned window row. Only
+direct-root or one root-observed parent admits a qualified press; deeper source
+history stays unavailable. Exact matching parent events revoke the existing owner
+without globally resetting unrelated windows. Synthetic events cannot supply the
+native loss. Weak owned rows also survive queued Map/Configure until exact Destroy.
+The managed peer/InputOnly and two-checkpoint ancestor cases, both assertion modes,
+four prior real gates, 119/119 pure cases, Linux91 library, docs/lints/formatting and
+precise negative controls pass. Egui `56e3db49b` pins the component. Native refresh
+and the complete positive stationary product journey remain in progress; neither
+component qualification nor local unpublished Git objects closes the Goal.
 
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete

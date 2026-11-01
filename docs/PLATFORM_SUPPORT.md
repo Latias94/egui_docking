@@ -107,7 +107,7 @@ These bits must be read separately from the evidence:
 
 | Platform | Recorded finite qualification | Remaining platform limit |
 | --- | --- | --- |
-| X11 | Thirteen finite XTest target journeys; a separate stationary-negative entry and center-only high-rate profile; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Broader native readiness remains open. |
+| X11 | Thirteen finite XTest target journeys; complete eframe/Glow stationary hover-selection and real InputOnly negative profiles, each with two fresh passes; a center-only high-rate profile; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Broader native readiness remains open. |
 | macOS | Real-window default/bounded programmatic tear-off, first-live, redock and retirement; six output-pressure cases. Same-window event-time facts have Winit test coverage, and local mouse geometry has deterministic producer/adapter coverage. | Programmatic and same-window fact evidence does not certify a physical cross-window release. `AuthoritativeButtonState` remains absent; cross-surface physical promotion stays fail-closed. Retina/mixed-DPI and the complete physical matrix remain unqualified. |
 | Windows | Conservative capability mapping and shared host/adapter contracts. | No current Windows real-input/platform certification is established by the cited records. Hovered-window, desktop-pointer and authoritative-button bits remain absent; placement/lifecycle bits alone do not qualify cross-window docking. |
 | Wayland | Limited observation/control mapping; deterministic event-time local mouse geometry and Touch position/geometry-pair contracts. | No compositor/physical-input qualification. Managed native lifecycle, global placement, work area and desktop pointer/hover authority remain unavailable in this mapping. Proven local operations need no global desktop lane. |
@@ -324,9 +324,12 @@ correlation. Ordinary and implicit-only queries retain Unknown capture and
 delivery: `XIQueryPointer` does not identify a current grab owner, and retained
 implicit capture cannot repair that gap. The later
 [finite fresh sample](VALIDATION.md#2026-11-01-finite-fresh-x11-capture-sampling)
-can publish known routes only by refreshing an exact active explicit capture
-for a viewable direct-root source, then rejecting queued or intervening native
-events. The seam reports observations without
+originally qualified viewable direct-root sources. The current
+[observed-parent component](VALIDATION.md#2026-11-01-observed-parent-x11-capture-component)
+also admits one root-observed WM parent. Known source capture/delivery require
+an exact active explicit capture, a fresh successful G2 grab refresh, the original
+press and finite parent/native-interval/FIFO checks; queued or intervening native
+events reject the sample. The seam reports observations without
 synthesizing motion. The adapter uses that result seam for finite Desktop Mouse
 scheduling: deadlines request wakes, only final passes dispatch, and one query
 keeps its existing command receipt until full ordered commit. Queries can
@@ -336,13 +339,13 @@ a sample. Identity-free observations still settle their original receipts,
 and result/retirement keys retain the existing command identity. Unknown or
 Unavailable results cannot continuously reschedule the same core token. The
 [finite scheduling qualification](VALIDATION.md#2026-10-31-finite-native-stationary-scheduling)
-passes native526/526 and the full bounded X11 negative journey. Successful OS
-stationary execution, physical Touch and native-local OS handoff remain
-unqualified.
+passed native526/526 and the full bounded X11 negative journey at that checkpoint;
+it did not qualify positive OS stationary execution. Physical Touch and
+native-local OS handoff remain unqualified.
 
 The [explicit-capture effect prerequisite](VALIDATION.md#2026-11-01-serialized-x11-capture-effects-and-exact-cleanup)
-adds a press-correlated X11 acquire/release operation for viewable direct-root
-sources and exact enabled master pointers. It serializes ordinary application
+originally added a press-correlated X11 acquire/release operation for viewable
+direct-root sources and exact enabled master pointers. It serializes ordinary application
 grabs and keeps exact cleanup after revocation. Release invalidates the old
 implicit owner and requires a new server-sync/FIFO boundary. `Acquired` reports
 operation settlement only. The native adapter now connects capture acquisition,
@@ -353,23 +356,45 @@ defers old timed queries. A first fresh capture sample restarts the interval,
 including a query prepared before acquisition settled. Failed unchanged samples
 remain bounded. The integration passes its
 [scoped qualification](VALIDATION.md#2026-11-01-native-capture-acquisition-and-ordered-release-integration);
-the real backend test uses recording core receivers and simulated eframe receipt transport. Ordinary
-WM-framed sources and a complete eframe/GPU stationary journey remain open.
+the real backend test uses recording core receivers and simulated eframe receipt transport.
+The subsequent [observed-parent component](VALIDATION.md#2026-11-01-observed-parent-x11-capture-component)
+qualifies actual Openbox source/peer windows, foreign InputOnly interception and
+ancestor-only loss/remap. Source history admits direct-root or one root-observed
+parent; deeper source ancestry stays unavailable. Its 16 component gates pass.
+Bounded hover uses only its terminal reply's point and child.
+
+The complete [X11 stationary hover-selection journey](VALIDATION.md#2026-11-01-complete-x11-stationary-hover-selection-journey)
+passes both positive and real InputOnly negative twice normally and once without
+native assertions through
+the actual eframe/Glow host, XTest input and exact first-live presentation. The
+positive case observes Root hover independently from original Child
+capture/delivery. Its first fresh sample leaves Main inactive; a distinct later
+sample selects Main after the restarted interval while Primary stays held without
+intervening motion/button input. The actually recompiled 100 ms early-dwell
+control fails the fresh-interval assertion as intended.
 
 Incomplete stationary observations revoke only their pending timed action;
 they do not infer delivery or capture loss. Explicit None/Foreign/mismatched
-owners still use the ordinary cancellation gates. The bounded X11 negative
-journey starts pressure before the real Main motion, observes a genuine query
-with Unknown hover/capture/delivery and unchanged selection, then continues
-the same held gesture through real-motion rearming and exact redock/retirement.
-Its fixed three-tab layout and timing are separate from the twelve ordinary
-physical journeys. The callback-following UI observation is not independently
-an exact receipt-commit proof; core/adapter models cover ordered full commit.
-The final qualification also refreshes all twelve ordinary physical targets,
-the separate 1 kHz entry, six pressure cases per platform and both programmatic
-storage profiles. Linux library484/484 excludes the soak; the macOS native
-normal/noassert runs each retain their separate 10,000-lifetime soak. Public
-default/serde132/139, workspace1,897, product114 and official15 are freshly rerun
+delivery or capture owners still use the ordinary cancellation gates. The current bounded X11
+negative journey uses an actual foreign InputOnly blocker and observes a genuine
+query with the exact desktop point, `Unknown` or `Foreign` hover and independently
+known Child capture/delivery. Main remains inactive through matching post-result
+model observation and Repeat/slow-suffix pressure. After blocker removal, the
+same held gesture resumes; both stationary profiles require exact redock,
+Child destruction, viewport retirement and quiescence. These fixed three-tab
+profiles retain their finite scope. The callback-following UI observation is not
+independently an exact receipt-commit proof; core/adapter models cover ordered full commit.
+All 36 final gates pass in
+`/tmp/dockspace-wm-stationary-final-qualification.json`, including macOS native
+workspace575, assertion-disabled libraries529 on macOS and Linux with the
+10,000-lifetime soak, real windows/pressure and both-platform lint checks. Stationary overflow, deeper source ancestry, native-local/Touch
+OS input and macOS/Windows positive stationary behavior remain unqualified.
+
+The earlier finite-scheduling checkpoint also refreshed all twelve ordinary
+physical targets, the separate 1 kHz entry, six pressure cases per platform and
+both programmatic storage profiles. Linux library484/484 excluded the soak; the
+macOS native normal/noassert runs each retained their separate 10,000-lifetime soak. Public
+default/serde132/139, workspace1,897, product114 and official15 were rerun
 for the core missing-fact semantic correction.
 
 ### Native content input and editor workflow
@@ -402,25 +427,30 @@ and example qualifications cover replacing that host and restoring Default or
 named presets after rebinding, preserving actual text edits and stable item
 identities. Their [dated evidence](VALIDATION.md#2026-11-01-application-default-and-named-presets-after-root-continuation)
 does not certify arbitrary native layout migration or the entire editor.
-Positive stationary and the remaining U7/U8/U10 criteria stay open.
+Stationary coverage beyond the finite X11 hover profile and the remaining
+U7/U8/U10 criteria stay open.
 
 ## Dependency reproducibility and open scope
 
-Current native Git pins are aligned with the qualified local sources:
+Current native Git pins in the working tree are aligned with the qualified
+local sources:
 
-| Dependency | Locally qualified revision | Tracked Git revision |
+| Dependency | Locally qualified revision | Working-tree Git revision |
 | --- | --- | --- |
-| egui/eframe fork | `97ebef0412e07811dc070afeb44fa3f34dad52e0` | `97ebef0412e07811dc070afeb44fa3f34dad52e0` |
-| Winit fork | `3199a442b10a8d6d5b85529599c4cdeb24df1320` | `3199a442b10a8d6d5b85529599c4cdeb24df1320` |
+| egui/eframe fork | `56e3db49b66096b58a23b8eb762bdc0a73ae043c` | `56e3db49b66096b58a23b8eb762bdc0a73ae043c` |
+| Winit fork | `2664589f0bd6fd03b2a5490f23bcd692853e63dd` | `2664589f0bd6fd03b2a5490f23bcd692853e63dd` |
 
 The tracked revisions are visible in the
 [native workspace manifest](../integration/egui-fork-workspace/Cargo.toml) and
 [smoke manifest](../integration/egui-native-smoke/Cargo.toml).
 The [2026-10-30 Touch-fact record](VALIDATION.md#2026-10-30-native-touch-event-time-coordinate-pairs)
 identifies its historical local revisions; the 2026-10-31 edge record retains
-its older overrides and failing tracked-pin check. The current aligned pair
-passes locked/offline Git-source qualification without path overrides using
-locally seeded Cargo Git objects. Those commits are not published. Remote-only
+its older overrides and failing tracked-pin check. The preceding aligned pair
+passed complete integration gates. The current pair passes component qualification
+and all 36 final integration checks, including positive and real InputOnly negative
+profiles twice normally and once without native assertions. Qualification uses
+locked/offline Git sources and locally seeded objects, without path overrides.
+Those commits are not published. Remote-only
 clean-checkout reproduction and the separately owned CI checkout refs remain
 open; local Git-cache availability does not establish either.
 
@@ -434,8 +464,9 @@ gate passes independently of these optional-native fork dependencies.
 
 Still open are broader combined close/create/command owner capacity and measured
 host-service combinations; arbitrary overflow/nested and mixed-DPI physical coverage;
-ordinary-window stationary capture and successful complete automatic execution, and
-native-local/Touch OS evidence; Windows/macOS platform certification; the complete
+stationary overflow and native-local/Touch OS evidence; macOS/Windows positive
+stationary and broader platform certification; the complete
 native layout-management showcase; and U9 dependency publication, clean-checkout
 reproduction and remaining evidence/deletion closure. The finite target,
-negative stationary, active-service and center-load results retain their scope.
+positive and negative stationary, active-service and center-load results retain
+their scope.

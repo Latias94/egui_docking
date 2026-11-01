@@ -16,7 +16,7 @@ use dockspace::runtime::DockspaceSession;
 use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, PaneView};
 use egui_dockspace_native::NativeDockspaceApp;
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceId, ElementState, MouseButton, PointerPressToken, WindowEvent};
 use winit::window::WindowId;
 
 use super::assertions::{
@@ -42,6 +42,28 @@ pub(super) const CHILD_TAB_LABEL: &str = "Child";
 pub(super) const CHILD_CLOSE_LABEL: &str = "Close Child";
 pub(super) const CENTER_DROP_GUIDE_LABEL: &str = "Dockspace center drop guide";
 const STATIONARY_ENV: &str = "EGUI_DOCKSPACE_PHYSICAL_STATIONARY";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum StationaryMode {
+    #[default]
+    Disabled,
+    Negative,
+    Positive,
+}
+
+impl StationaryMode {
+    const fn enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "stationary-disabled",
+            Self::Negative => "stationary-negative",
+            Self::Positive => "stationary-positive",
+        }
+    }
+}
 
 pub(super) type Shared = Arc<(Mutex<SharedState>, Condvar)>;
 
@@ -159,11 +181,12 @@ pub(super) struct PointerPassthroughObservation {
     pub(super) status: eframe::NativeViewportPointerPassthroughStatus,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct StationaryPress {
     pub(super) viewport: ViewportId,
     pub(super) window: WindowId,
     pub(super) device: DeviceId,
+    pub(super) token: PointerPressToken,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,16 +202,34 @@ impl SourceSelection {
         anchor_selected: true,
         child_selected: true,
     };
+
+    pub(super) const ACTIVE_MAIN: Self = Self {
+        main_selected: true,
+        anchor_selected: false,
+        child_selected: true,
+    };
 }
 
 /// One bounded diagnostic of the real query; it owns no input or continuation.
 #[derive(Debug, Default)]
 pub(super) struct StationaryProbe {
+    pub(super) mode: StationaryMode,
     pub(super) press: Option<StationaryPress>,
     pub(super) target: Option<PhysicalPoint>,
     pub(super) hover_observed: bool,
     pub(super) selection: Option<SourceSelection>,
     pub(super) result: Option<eframe::NativeViewportPointerObservationResult>,
+    pub(super) latest_result: Option<eframe::NativeViewportPointerObservationResult>,
+    pub(super) result_at: Option<Instant>,
+    pub(super) result_interval: Option<(Instant, Instant)>,
+    pub(super) latest_result_interval: Option<(Instant, Instant)>,
+    pub(super) capture_pending: bool,
+    pub(super) capture: Option<eframe::NativeViewportPointerCaptureResult>,
+    pub(super) blocker_window: Option<u32>,
+    input_blocker: Option<driver::StationaryInputBlocker>,
+    pub(super) first_model_after_result:
+        Option<eframe::NativeViewportPointerObservationCommandToken>,
+    pub(super) main_selected_at: Option<Instant>,
     pub(super) model_after_result: Option<eframe::NativeViewportPointerObservationCommandToken>,
     pub(super) invalidation: Option<&'static str>,
     pub(super) stress_active: bool,
@@ -199,6 +240,11 @@ pub(super) struct StationaryProbe {
 }
 
 impl StationaryProbe {
+    pub(super) fn finish(&mut self) {
+        self.complete = true;
+        self.input_blocker = None;
+    }
+
     fn observe_event(&mut self, event: eframe::NativeWindowEvent<'_>) {
         if self.complete {
             return;
@@ -208,28 +254,39 @@ impl StationaryProbe {
                 device_id,
                 button: MouseButton::Left,
                 state,
+                primary_press,
                 ..
             } => {
                 if self.target.is_some() {
                     self.invalidation
                         .get_or_insert("a primary-button edge interrupted the stationary hold");
                 } else {
-                    self.press = (*state == ElementState::Pressed)
-                        .then(|| {
-                            event.viewport_id().map(|viewport| StationaryPress {
+                    self.capture_pending = false;
+                    self.capture = None;
+                    self.press = if *state == ElementState::Pressed {
+                        event
+                            .viewport_id()
+                            .zip(primary_press.as_ref())
+                            .map(|(viewport, token)| StationaryPress {
                                 viewport,
                                 window: event.window_id(),
                                 device: *device_id,
+                                token: token.clone(),
                             })
-                        })
-                        .flatten();
+                    } else {
+                        None
+                    };
                 }
             }
             WindowEvent::CursorMoved {
                 device_id, facts, ..
             } => {
                 if let Some(target) = self.target {
-                    if self.press.is_some_and(|press| {
+                    if self.mode == StationaryMode::Positive && self.result.is_some() {
+                        self.invalidation.get_or_insert(
+                            "native motion interrupted the positive stationary dwell",
+                        );
+                    } else if self.press.as_ref().is_some_and(|press| {
                         event.viewport_id() == Some(press.viewport)
                             && event.window_id() == press.window
                             && *device_id == press.device
@@ -243,11 +300,34 @@ impl StationaryProbe {
                     }
                 }
             }
+            WindowEvent::MouseInput { .. } if self.target.is_some() => {
+                self.invalidation
+                    .get_or_insert("a button edge interrupted the stationary hold");
+            }
             WindowEvent::Destroyed if self.target.is_some() => {
                 self.invalidation
                     .get_or_insert("a native window was destroyed during the stationary hold");
             }
             _ => {}
+        }
+        if self.mode == StationaryMode::Negative
+            && self.hover_observed
+            && self.input_blocker.is_none()
+            && let Some(target) = self.target
+        {
+            // The Main motion already carries immutable facts. Install the foreign blocker
+            // before any later UI or native command can query the pointer.
+            match driver::StationaryInputBlocker::new(target) {
+                Ok(blocker) => {
+                    self.blocker_window = Some(blocker.window());
+                    self.input_blocker = Some(blocker);
+                }
+                Err(error) => {
+                    eprintln!("stationary-negative blocker: {error}");
+                    self.invalidation
+                        .get_or_insert("the real stationary blocker failed");
+                }
+            }
         }
     }
 }
@@ -298,7 +378,7 @@ pub(super) struct SharedState {
 
 pub(super) fn run() -> Result<(), Box<dyn Error>> {
     let measure_pointer_load = pointer_load_enabled()?;
-    let stationary_negative = stationary_negative_from_env(measure_pointer_load)?;
+    let stationary_mode = stationary_mode_from_env(measure_pointer_load)?;
     let inspection_endpoint = inspection_endpoint_from_env()?;
     let nested_target = std::env::var(PHYSICAL_TARGET_ENV)
         .ok()
@@ -315,7 +395,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     policy.set_allow_native_surfaces(true);
     let layout = if nested_target.is_some() {
         nested::smoke_layout()
-    } else if stationary_negative || overflow_target {
+    } else if stationary_mode.enabled() || overflow_target {
         stationary_smoke_layout()
     } else {
         smoke_layout()
@@ -351,7 +431,10 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     };
     let shared = Arc::new((
         Mutex::new(SharedState {
-            stationary: stationary_negative.then(StationaryProbe::default),
+            stationary: stationary_mode.enabled().then(|| StationaryProbe {
+                mode: stationary_mode,
+                ..StationaryProbe::default()
+            }),
             ..SharedState::default()
         }),
         Condvar::new(),
@@ -361,7 +444,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
         inner: native_host,
         shared: Arc::clone(&shared),
         measure_pointer_load,
-        stationary_negative,
+        stationary_mode,
     });
     let app_shared = Arc::clone(&shared);
     let options = eframe::NativeOptions {
@@ -402,7 +485,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                 shared: Arc::clone(&app_shared),
                 measure_pointer_load,
                 nested_target: nested_target.is_some(),
-                stationary_negative,
+                stationary_mode,
                 overflow_target,
             }))
         }),
@@ -425,22 +508,23 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn stationary_negative_from_env(measure_pointer_load: bool) -> Result<bool, String> {
-    match std::env::var(STATIONARY_ENV) {
-        Err(std::env::VarError::NotPresent) => return Ok(false),
-        Ok(value) if value == "negative" => {}
+fn stationary_mode_from_env(measure_pointer_load: bool) -> Result<StationaryMode, String> {
+    let mode = match std::env::var(STATIONARY_ENV) {
+        Err(std::env::VarError::NotPresent) => return Ok(StationaryMode::Disabled),
+        Ok(value) if value == "negative" => StationaryMode::Negative,
+        Ok(value) if value == "positive" => StationaryMode::Positive,
         value => {
             return Err(format!(
-                "{STATIONARY_ENV}: expected negative or an unset variable, found {value:?}"
+                "{STATIONARY_ENV}: expected positive, negative or an unset variable, found {value:?}"
             ));
         }
-    }
+    };
     if measure_pointer_load || std::env::var_os(PHYSICAL_TARGET_ENV).is_some() {
         return Err(format!(
-            "{STATIONARY_ENV}=negative requires its fixed anchor layout and default guide-control target ({PHYSICAL_TARGET_ENV} unset), without the 1 kHz load"
+            "{STATIONARY_ENV} requires its fixed anchor layout and default guide-control target ({PHYSICAL_TARGET_ENV} unset), without the 1 kHz load"
         ));
     }
-    Ok(true)
+    Ok(mode)
 }
 
 fn inspection_endpoint_from_env() -> io::Result<SocketAddr> {
@@ -499,7 +583,7 @@ struct DiagnosticNativeHost {
     inner: Arc<dyn eframe::NativeHostHandler>,
     shared: Shared,
     measure_pointer_load: bool,
-    stationary_negative: bool,
+    stationary_mode: StationaryMode,
 }
 
 impl eframe::NativeHostHandler for DiagnosticNativeHost {
@@ -588,7 +672,7 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                     observed_at,
                 );
         }
-        if self.stationary_negative {
+        if self.stationary_mode.enabled() {
             let (lock, changed) = &*self.shared;
             if let Some(probe) = &mut lock
                 .lock()
@@ -610,7 +694,7 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                 .unwrap_or_else(PoisonError::into_inner)
                 .observe_device_removal();
         }
-        if self.stationary_negative {
+        if self.stationary_mode.enabled() {
             let (lock, changed) = &*self.shared;
             if let Some(probe) = &mut lock
                 .lock()
@@ -679,17 +763,51 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
         &self,
         result: eframe::NativeViewportPointerCaptureResult,
     ) -> eframe::NativeHostWake {
-        self.inner.on_viewport_pointer_capture(result)
+        let wake = self.inner.on_viewport_pointer_capture(result);
+        if self.stationary_mode.enabled() {
+            let (lock, changed) = &*self.shared;
+            if let Some(probe) = &mut lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stationary
+                && !probe.complete
+                && probe.press.as_ref().is_some_and(|press| {
+                    result.viewport_id() == press.viewport
+                        && result.expected_window_id() == press.window
+                        && result.device_id() == press.device
+                })
+                && result.action() == eframe::NativeViewportPointerCaptureAction::Acquire
+            {
+                match result.status() {
+                    eframe::NativeViewportPointerCaptureStatus::Pending => {
+                        probe.capture_pending = true;
+                    }
+                    eframe::NativeViewportPointerCaptureStatus::Acquired => {
+                        probe.capture.get_or_insert(result);
+                    }
+                    _ => {}
+                }
+                eprintln!(
+                    "physical-smoke: {} full-eframe/GPU forwarded capture={result:?} host_wake={wake:?}",
+                    probe.mode.label()
+                );
+                changed.notify_all();
+            }
+        }
+        wake
     }
 
     fn on_viewport_pointer_observation(
         &self,
         result: eframe::NativeViewportPointerObservationResult,
     ) -> eframe::NativeHostWake {
+        let received_at = Instant::now();
         let wake = self.inner.on_viewport_pointer_observation(result);
-        if self.stationary_negative {
+        let captured_by = Instant::now();
+        if self.stationary_mode.enabled() {
             eprintln!(
-                "physical-smoke: stationary-negative forwarded raw_result={result:?} host_wake={wake:?}"
+                "physical-smoke: {} full-eframe/GPU forwarded raw_result={result:?} host_wake={wake:?}",
+                self.stationary_mode.label()
             );
             let (lock, changed) = &*self.shared;
             if let Some(probe) = &mut lock
@@ -699,7 +817,13 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                 && probe.hover_observed
                 && !probe.complete
             {
-                probe.result.get_or_insert(result);
+                if probe.result.is_none() {
+                    probe.result = Some(result);
+                    probe.result_at = Some(captured_by);
+                    probe.result_interval = Some((received_at, captured_by));
+                }
+                probe.latest_result = Some(result);
+                probe.latest_result_interval = Some((received_at, captured_by));
                 if wake != eframe::NativeHostWake::RepaintRootAfterCurrent {
                     probe
                         .invalidation
@@ -775,7 +899,7 @@ impl eframe::NativeHostHandler for DiagnosticNativeHost {
                 );
             }
         }
-        if self.stationary_negative {
+        if self.stationary_mode.enabled() {
             let (lock, changed) = &*self.shared;
             if let Some(probe) = &mut lock
                 .lock()
@@ -916,25 +1040,25 @@ struct PhysicalSmokeApp {
     shared: Shared,
     measure_pointer_load: bool,
     nested_target: bool,
-    stationary_negative: bool,
+    stationary_mode: StationaryMode,
     overflow_target: bool,
 }
 
 impl eframe::App for PhysicalSmokeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Only a result forwarded before this UI can label its later model observation.
-        let stationary_result = self.stationary_negative.then(|| {
+        let stationary_result = self.stationary_mode.enabled().then(|| {
             self.shared
                 .0
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .stationary
                 .as_ref()
-                .and_then(|probe| probe.result)
+                .and_then(|probe| probe.latest_result)
         });
         let started = active_service_start(&self.shared, self.measure_pointer_load);
         <NativeDockspaceApp<SmokePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
-        if self.stationary_negative {
+        if self.stationary_mode.enabled() {
             let slow_suffix = {
                 let mut shared = self.shared.0.lock().unwrap_or_else(PoisonError::into_inner);
                 shared.stationary.as_mut().is_some_and(|probe| {
@@ -1014,7 +1138,7 @@ impl PhysicalSmokeApp {
                     .with_view(|view| {
                         if self.nested_target {
                             nested::observed_redock_layout(view)
-                        } else if self.stationary_negative {
+                        } else if self.stationary_mode.enabled() {
                             observed_stationary_redock_layout(view)
                         } else if self.overflow_target {
                             observed_overflow_redock_layout(view)
@@ -1071,7 +1195,8 @@ impl PhysicalSmokeApp {
             None
         };
         let source_selection =
-            self.stationary_negative
+            self.stationary_mode
+                .enabled()
                 .then(|| {
                     self.dockspace
                         .with_view(|view| {
@@ -1095,20 +1220,59 @@ impl PhysicalSmokeApp {
                 })
                 .flatten();
         let stationary_semantic =
-            self.stationary_negative && !self.dockspace.current_output_is_retained();
+            self.stationary_mode.enabled() && !self.dockspace.current_output_is_retained();
         let (lock, changed) = &*self.shared;
         let mut shared = lock.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(probe) = &mut shared.stationary
             && !probe.complete
         {
             probe.selection = source_selection;
-            if probe.target.is_some() && source_selection != Some(SourceSelection::INACTIVE_MAIN) {
-                probe
-                    .invalidation
-                    .get_or_insert("the public model changed the inactive Main/source selection");
-            }
             if stationary_semantic {
                 probe.model_after_result = stationary_result;
+                if probe.first_model_after_result.is_none()
+                    && stationary_result.is_some()
+                    && stationary_result == probe.result.map(|result| result.token())
+                {
+                    probe.first_model_after_result = stationary_result;
+                    if source_selection != Some(SourceSelection::INACTIVE_MAIN) {
+                        probe.invalidation.get_or_insert(
+                            "the first acquisition sample selected Main without a new dwell",
+                        );
+                    }
+                }
+            }
+            if probe.target.is_some() && source_selection != Some(SourceSelection::INACTIVE_MAIN) {
+                let positive_selection = probe.mode == StationaryMode::Positive
+                    && source_selection == Some(SourceSelection::ACTIVE_MAIN);
+                if positive_selection {
+                    let now = Instant::now();
+                    let delay = dockspace::runtime::DockPresentationConfig::default()
+                        .hover_selection_delay()
+                        .expect("the smoke uses the default finite hover delay");
+                    if probe.first_model_after_result.is_none()
+                        || !probe
+                            .result_at
+                            .is_some_and(|at| now.duration_since(at) >= delay)
+                        || !probe.latest_result.is_some_and(|latest| {
+                            Some(latest.token()) != probe.first_model_after_result
+                        })
+                        || !probe
+                            .result_interval
+                            .zip(probe.latest_result_interval)
+                            .is_some_and(|((_, first_end), (second_begin, _))| {
+                                second_begin.saturating_duration_since(first_end) >= delay
+                            })
+                    {
+                        probe.invalidation.get_or_insert(
+                            "Main selected before the fresh sample intervals proved actual dwell",
+                        );
+                    }
+                    probe.main_selected_at.get_or_insert(now);
+                } else {
+                    probe.invalidation.get_or_insert(
+                        "the public model changed the expected Main/source selection",
+                    );
+                }
             }
             changed.notify_all();
         }

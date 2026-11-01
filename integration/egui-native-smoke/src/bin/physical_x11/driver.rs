@@ -8,3 +8,4 @@ mod scenario;
 mod x11;
 
 pub(crate) use scenario::run;
+pub(super) use x11::StationaryInputBlocker;

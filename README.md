@@ -34,7 +34,7 @@ short taps activate on release, pre-arm movement yields to pane content, and a
 350ms stationary continuation arms ordinary docking/resize or a semantic context
 menu. Explicit Touch resize targets request at least 44 logical points before
 surface and protected-control clipping; mouse/pen/unknown-device geometry keeps
-its existing profile. Native touch/stationary capture remains unqualified.
+its existing profile. Native Touch stationary capture remains unqualified.
 
 Local drags use the same finite continuation for tab hover selection and
 overflow-edge scrolling. Each automatic scroll step waits for exact presentation
@@ -74,8 +74,7 @@ exact binding pairs let hosts prepay resources and atomically publish the native
 route and their root-surface field. The reference X11 workflow verifies layout
 and JSON Root rebinding, then Default and named-preset restore through their saved
 host identities, fresh content editing and unchanged physical window identity.
-Positive stationary OS facts, remaining native completion gates and
-reproducible fork delivery are still open.
+Broader native completion gates and reproducible fork delivery are still open.
 
 Managed engine hosts can also capture native client coordinates from committed
 size and scale facts without desktop position or work areas. The joined recorder
@@ -96,8 +95,8 @@ and exact-output state. Native requests expose scheduling and sampling inputs;
 the host still supplies fresh native facts. The reference adapter now schedules
 Desktop Mouse observations at core deadlines, retaining at most one query until
 its ordered terminal fully commits. Unknown or unavailable facts cannot trigger
-an automatic retry of the same core token. Successful OS stationary execution,
-physical Touch and the complete native readiness matrix remain unfinished.
+an automatic retry of the same core token. Physical Touch and the complete
+native readiness matrix remain unfinished.
 
 The public continuation can also report a newly acquired capture boundary
 without fabricating motion. Core restarts stationary timing from that accepted
@@ -107,9 +106,14 @@ current capture/delivery proof and exact release remain host responsibilities.
 The native adapter now connects those operations through the existing gesture,
 window resource and ordered callback receipt. The public capture request also
 exists before timed work begins. Pending acquisition defers the old deadline;
-first fresh evidence restarts timing. Positive X11 capture is still limited to
-viewable direct-root sources, and its recording-host integration test does not
-certify a complete eframe/GPU stationary journey or ordinary WM-framed sources.
+first fresh evidence restarts timing. The current Winit component admits
+one root-observed WM parent and bounded terminal-reply hover, including real
+ancestor loss and foreign InputOnly interception; its 16 component gates pass.
+The complete eframe/Glow X11 stationary hover-selection and real InputOnly
+negative journeys each pass twice normally and once without native assertions.
+The actually recompiled 100 ms early-dwell control fails as intended. All 36
+final integration, window and lint checks pass. Stationary overflow, deeper source ancestry, native-local/Touch
+OS input and macOS/Windows positive stationary behavior remain unqualified.
 
 Native binding retention now uses `terminal_binding_guards()` in the diagnostic
 manifest. It covers observed destruction and conclusively never-created
@@ -206,8 +210,8 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.37.0`. The excluded
 native workspace pins egui/eframe fork
-`9729e354a1985cd9d8bbc7ca6306c68656635e06` and Winit
-`39a8165dd434c33fc2f7198d922a4d3a4d76bbb6`. The egui fork's own Winit dependency,
+`56e3db49b66096b58a23b8eb762bdc0a73ae043c` and Winit
+`2664589f0bd6fd03b2a5490f23bcd692853e63dd`. The egui fork's own Winit dependency,
 all integration patches, inspection dependency and lockfiles select that same
 pair. Local qualification resolves these Git revisions without path overrides,
 using Git objects seeded from the local forks. The commits remain unpublished;
@@ -224,11 +228,14 @@ and egui_tiles remains reference-only.
 
 The optional native pointer observation seam feeds the adapter's finite
 stationary scheduler. Its current X11 query reports server-logical desktop
-position and limited direct-root-child hover; capture and delivery remain
-Unknown, so querying does not authorize a stationary gesture. Hosts must not
-fill those gaps from the expected window or cached implicit capture. The
-renderer-neutral core supports stationary continuations when a host can supply
-complete native facts.
+position and bounded hover from one terminal reply. Ordinary and implicit-only
+queries always retain `Unknown` capture and delivery. For a viewable source
+directly under root or below one root-observed WM parent, an exact active explicit capture can
+publish known source capture/delivery after a fresh successful G2 grab refresh
+and original-press, finite parent, native-interval and FIFO checks. Hosts must
+not fill missing observations from the expected window or cached implicit
+capture. The renderer-neutral core requires complete native facts for stationary
+continuations.
 
 Native queries can freeze the original Primary-press identity. The adapter
 accepts continuation input only while both the frozen and current identities
@@ -236,8 +243,11 @@ are present and equal; ordinary queries without identity still settle their
 own receipts. Identity matching grants no capture or delivery authority.
 The X11 fork also provides a finite explicit source-capture effect with exact
 cleanup coordinated with ordinary cursor grabs. Its `Acquired` result records
-operation settlement; queried capture/delivery remain `Unknown`. Automatic
-native stationary behavior still requires the remaining fresh-fact integration.
+operation settlement only; the separate fresh sample supplies current route
+authority. The real InputOnly negative journey retains independently known
+Child capture/delivery while hover stays `Unknown` or `Foreign`; capture cannot
+authorize blocked hover.
+
 Content drags preserve their source window's native hit regions. Only a
 runtime-owned Child whose complete sole main root is being dragged, without
 contained siblings, uses the correlated pass-through and restore lifecycle.
@@ -435,9 +445,11 @@ Tab halves exclude Close Main and actual guides, require the narrow insertion
 marker and verify the precise resulting tab order. Nested cases preserve the
 empty central source, ancestor weights and unaffected sibling; west insertion
 must split the target leaf, retaining the three alternating split axes.
-These finite native smokes do not certify overflowed/clipped tab insertion,
-arbitrary nested targets, mixed DPI or the complete local journey matrix. They do not expose core
-geometry or provide a reusable GUI test engine.
+The separate `overflow-tab-before` journey qualifies one manually scrolled
+clipped target. Stationary overflow, arbitrary overflow geometry and nested
+targets, mixed DPI and the complete local journey matrix remain unqualified.
+These finite native smokes do not expose core geometry or provide a reusable
+GUI test engine.
 
 The optional high-rate extension sets `EGUI_DOCKSPACE_PHYSICAL_LOAD=1khz`
 together with one explicit pane-center target. It establishes the real Dock

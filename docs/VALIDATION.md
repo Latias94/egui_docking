@@ -15,6 +15,149 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 complete X11 stationary hover-selection journey
+
+The fork-backed reference smoke now has explicit positive and negative stationary
+modes. Both use the actual eframe/Glow host, real XTest input, prospective child
+content and exact first-live presentation before the Child-source drag. They
+preserve the required PassThrough source-input path. Capture Pending/Acquired
+and pointer observations are forwarded unchanged by the diagnostic handler.
+The positive case proves ROOT hover independently from original Child delivery
+and capture. Its first fresh sample leaves Main inactive; a distinct later
+sample selects Main while the same Primary remains held without intervening
+motion/button events. The held gesture then uses the current Center preview,
+redocks [Anchor, Main, Child], observes real Child DestroyNotify, waits for its
+semantic viewport to retire and reaches quiescence. This is a full reference
+eframe/GPU journey, unlike the earlier recording-receiver/simulated-transport case.
+
+The initial test measured first callback to observed selected model. Independent
+review showed the wrapper's 3 ms slow suffix could hide an early second sample.
+The final test brackets each synchronous inner callback with begin/end Instants
+and requires `second_begin - first_end >= configured_delay`, along with distinct
+tokens and the later committed non-retained model. This conservative lower bound
+cannot borrow time from UI or reducer delay. One strengthened run measured
+171.94 ms between capture intervals and 191.32 ms to the selected-model observation;
+these are different measurements and neither is a hard latency bound.
+
+A precise temporary core mutation shortens acquisition restart by 100 ms. An
+initial host-written mutation was not recompiled in the container and incorrectly
+left the negative control green; that attempt is explicitly rejected as evidence.
+The repeated control writes inside the container, asserts the mutated bytes and
+requires `Compiling dockspace` in its build log. It reaches a real second sample
+after about 85 ms and fails the fresh-interval assertion, as intended. The original
+source hash is restored before rebuilding the final binary. Evidence is
+`/tmp/dockspace-wm-short-dwell-actual.json`; the ineffective attempt and fingerprint
+diagnosis remain in `/tmp/dockspace-wm-stationary-short-dwell-red.json` and
+`/tmp/dockspace-wm-stationary-fingerprint.log`.
+
+The negative case now creates an actual foreign root InputOnly blocker over Main
+using a separate X connection. It validates real viewability and pointer-child
+interception. Creation happens after the immutable exact Main motion is received,
+before its original callback returns to Winit, so subsequent queries see the real
+blocker without changing that input packet. An earlier UI-entry placement raced
+the first query and failed the strict blocked-hover assertion on repeat; it is
+removed. A genuine Observed result must retain the exact desktop point, Unknown
+or Foreign hover and independently known Child capture/delivery. No query,
+Unavailable or Unsupported cannot pass. Main stays inactive through matching
+post-result model observation and real Repeat/slow-suffix pressure. The blocker
+lives on the diagnostic probe until assertions finish, then is destroyed before
+the same held drag resumes and redocks/cleans up. Known capture cannot repair a
+blocked hover lane.
+
+The frozen final qualification passes all 36 gates. Positive and negative each
+pass twice normally and once without native debug assertions. The normal positive
+runs measure conservative capture intervals of 179.327 ms and 179.393 ms; the
+assertion-disabled run measures 183.084 ms. The macOS native workspace passes575,
+and native libraries pass529 without assertions on both macOS and Linux, including
+the unchanged same-coordinator 10,000-lifetime soak. The preceding same-pin Linux
+normal library passes529 in
+`/tmp/dockspace-wm-integration-native-first-gates.json`; its library source is
+unchanged by the later fixture timing correction. Eframe libraries pass
+macOS104/Linux99 on this Git pair. Final correctness/suspicious Clippy on both
+platforms, strict native rustdoc, formatting and diff pass. Mac default/bounded
+redock, all six pressure cases on each platform, physical guide/non-guide center,
+nested edge, clipped overflow insertion and 1 kHz center load also pass.
+
+Independent review closes the sample timing P2 and finds no further confirmed
+P1/P2 in the finite test proof or blocker ordering. Frozen source is
+`/tmp/dockspace-wm-stationary-source.json`; final commands/results are in
+`/tmp/dockspace-wm-stationary-final-qualification.json`, with independent review
+in `/tmp/dockspace-wm-stationary-independent-reviews.json`. Stationary overflow,
+native-local/Touch OS input, deeper source ancestry and broader platform/product
+criteria retain their own scope; this journey does not close the complete Goal.
+
+## 2026-11-01 observed-parent X11 capture component
+
+Local Winit `2664589f0bd6fd03b2a5490f23bcd692853e63dd` extends the finite source
+profile to direct-root windows and clients below one root-observed parent.
+Root SubstructureNotify is selected before owned window creation. The existing
+window row retains only its immediate parent and whether that finite history is
+available; refresh closes the existing mutation fence. Deeper, failed or cross-root
+source history cannot issue a qualified original press. Native parent unmap,
+reparent and destruction revoke matching source owners, while unrelated and
+synthetic root notifications cannot retire capture. No second ancestry registry,
+capture owner, issuer or window-manager policy table is added.
+
+Hover discovery is bounded to 32 child-query steps. Intermediate replies only
+name the next query object; the terminal reply itself must name a live owned
+child and supplies its own root coordinates and button state. Unknown leaves,
+subtree exit and depth exhaustion remain Unknown; failed queries are Unavailable.
+This follows Xorg's [XIQueryPointer implementation](https://raw.githubusercontent.com/mirror/xserver/master/Xi/xiquerypointer.c),
+which derives child from the current sprite's ancestor chain. Known routing
+still identifies an owned subtree, not its deepest embedded foreign child.
+Capture/delivery continue to require the exact active explicit duty, successful
+fresh G2, original press and final native interval/FIFO checks.
+
+The public ignored Openbox test confirms actual non-override-redirect
+reparenting, one real press/master pointer, source-directed delivery while over
+the peer, and ordinary Unknown versus fresh known source routes. A foreign
+InputOnly sibling intercepts the sprite inside the same WM frame without changing
+root child; hover cannot penetrate to the peer. Separate native root lifetimes
+and a synthetic parent Unmap leave the original capture intact. Creating and
+immediately dropping another owned window queues Map/Configure ahead of its real
+Destroy; its exact Destroyed callback arrives once.
+
+The private checkpoint test uses two actual presses in one loop. It unmaps only
+the WM frame after the terminal position reply and after G2, proves the source
+remains mapped but Unviewable, and checks revocation before any restoration.
+Foreign frame restoration temporarily bypasses MapRequest redirection and
+restores the original flag without calling a Winit mutator. A successful ordinary
+sample after remap excludes hidden-source/queue excuses; the old press cannot
+acquire or observe again. A second WM-controlled press exercises the other
+checkpoint. Exact native cleanup remains on the original row.
+
+Real execution exposed four implementation/fixture boundaries. Plain frame remap
+was redirected and left it Unmapped. Existing XI NotifyUngrab alone did not revoke
+the hidden source identity. Calling the old reset helper for an unknown root
+window closed the global fence and masked missing parent matching; exact affected
+filtering fixes that. Finally, dead-weak garbage collection during queued Map
+discarded an owned terminal before Destroy, so the row now lives until its exact
+native DestroyNotify. Precise parent-reset and unrelated-reset negative controls
+fail as intended on the final tests. Synthetic Unmap and owned-terminal cases
+also have observed red-to-green runs. The first parent-reset negative incorrectly
+passed through the broad global reset; it is retained as a failed control, not
+acceptance evidence.
+
+Final frozen qualification passes 16 gates: real managed/ancestor cases normally
+and without Winit debug assertions; macOS119/Linux119 pure cases; Linux91 library
+cases with two native tests separately ignored; all four prior real X11 gates;
+all-target compilation; correctness/suspicious Clippy; strict rustdoc; formatting
+and diff. The original crossing fixture now locates a queued XI crossing using an
+always-false XCheckIfEvent predicate, without consuming or reordering earlier root
+Create/Map notifications. Both exact FIFO rejection and interval-history checks
+remain. Independent source/parent/lifecycle review found no remaining confirmed
+P1/P2 within this finite profile. Evidence is
+`/tmp/dockspace-wm-pointer-qualified.json`,
+`/tmp/dockspace-wm-pointer-source.json` and
+`/tmp/dockspace-wm-pointer-frozen-qualification.json`.
+
+Egui `56e3db49b66096b58a23b8eb762bdc0a73ae043c` pins that Winit revision and
+passes macOS104/Linux99 eframe library tests. Native manifests and lockfiles now
+select the same pair using locally seeded Git objects. The complete positive
+eframe/GPU stationary journey and integration refresh pass the qualification
+above; these component results do not close U7/U8/U9/U10/U11 or the Goal. Both forks remain
+unpublished, and remote-only checkout remains unqualified.
+
 ## 2026-11-01 native capture acquisition and ordered release integration
 
 This slice connects the finite platform operation to the existing core gesture,

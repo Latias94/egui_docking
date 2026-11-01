@@ -18,6 +18,99 @@ use super::super::assertions::{PhysicalBounds, PhysicalPoint};
 const MAX_CLIENT_WINDOWS: usize = 1_024;
 const MAX_WINDOW_TITLE_BYTES: usize = 1_024;
 
+/// A real foreign input-only window for the negative stationary journey.
+pub(in super::super) struct StationaryInputBlocker {
+    connection: RustConnection,
+    window: Window,
+}
+
+impl std::fmt::Debug for StationaryInputBlocker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("StationaryInputBlocker")
+            .field(&self.window)
+            .finish()
+    }
+}
+
+impl StationaryInputBlocker {
+    pub(in super::super) fn new(point: PhysicalPoint) -> Result<Self, String> {
+        use x11rb::protocol::xproto::{CreateWindowAux, MapState, WindowClass};
+
+        let (connection, screen) = x11rb::connect(None).map_err(|error| error.to_string())?;
+        let root = connection.setup().roots[screen].root;
+        let window = connection
+            .generate_id()
+            .map_err(|error| error.to_string())?;
+        let blocker = Self { connection, window };
+        blocker
+            .connection
+            .create_window(
+                0,
+                window,
+                root,
+                i16::try_from(point.x - 8).map_err(|error| error.to_string())?,
+                i16::try_from(point.y - 8).map_err(|error| error.to_string())?,
+                16,
+                16,
+                0,
+                WindowClass::INPUT_ONLY,
+                0,
+                &CreateWindowAux::new().override_redirect(1),
+            )
+            .map_err(|error| error.to_string())?
+            .check()
+            .map_err(|error| error.to_string())?;
+        blocker
+            .connection
+            .map_window(window)
+            .map_err(|error| error.to_string())?
+            .check()
+            .map_err(|error| error.to_string())?;
+        let attributes = blocker
+            .connection
+            .get_window_attributes(window)
+            .map_err(|error| error.to_string())?
+            .reply()
+            .map_err(|error| error.to_string())?;
+        let pointer = blocker
+            .connection
+            .query_pointer(root)
+            .map_err(|error| error.to_string())?
+            .reply()
+            .map_err(|error| error.to_string())?;
+        if attributes.class != WindowClass::INPUT_ONLY
+            || attributes.map_state != MapState::VIEWABLE
+            || !pointer.same_screen
+            || pointer.child != window
+            || i32::from(pointer.root_x) != point.x
+            || i32::from(pointer.root_y) != point.y
+        {
+            return Err(format!(
+                "stationary blocker did not intercept the actual pointer: window={window}, point={point:?}, pointer={pointer:?}"
+            ));
+        }
+        Ok(blocker)
+    }
+
+    pub(in super::super) const fn window(&self) -> Window {
+        self.window
+    }
+}
+
+impl Drop for StationaryInputBlocker {
+    fn drop(&mut self) {
+        if let Err(error) = self
+            .connection
+            .destroy_window(self.window)
+            .map_err(x11rb::errors::ReplyError::from)
+            .and_then(|request| request.check())
+        {
+            eprintln!("stationary input blocker cleanup: {error}");
+        }
+    }
+}
+
 pub(super) fn x11_window_is_retired(
     windows: &[WindowRecord],
     child: &WindowRecord,
