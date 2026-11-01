@@ -326,8 +326,8 @@ jobs:
             platform_impl::linux::x11::work_area::tests::exact_randr_scale_rejects_winit_compatibility_clamps
             platform_impl::linux::x11::work_area::tests::subscribed_foreign_authorities_survive_owner_switches_until_destroyed
             platform_impl::linux::x11::work_area::tests::authority_subscription_roster_is_bounded_and_recovers_after_destroy
-            platform_impl::linux::x11::monitor::tests::monitor_authority_subscribes_to_every_randr_1_3_fact
-            platform_impl::linux::x11::monitor::tests::monitor_authority_versions_newer_randr_selection_bits
+            platform_impl::linux::x11::monitor::notify_mask_tests::monitor_authority_subscribes_to_every_randr_1_3_fact
+            platform_impl::linux::x11::monitor::notify_mask_tests::monitor_authority_versions_newer_randr_selection_bits
             platform_impl::linux::x11::xsettings::tests::empty
             platform_impl::linux::x11::xsettings::tests::parse_xsettings
             platform_impl::linux::x11::xsettings::tests::exact_parser_reads_the_complete_property
@@ -347,7 +347,7 @@ jobs:
           x11_fact_modules=(
             platform_impl::linux::x11::pointer_facts::tests
             platform_impl::linux::x11::work_area::tests
-            platform_impl::linux::x11::monitor::tests
+            platform_impl::linux::x11::monitor::notify_mask_tests
             platform_impl::linux::x11::xsettings::tests
           )
           for module in "${x11_fact_modules[@]}"; do
