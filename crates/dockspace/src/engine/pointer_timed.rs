@@ -18,7 +18,7 @@ impl DockEngine {
         )
     }
 
-    fn native_stationary_source(&self, owner: GestureOwner) -> Option<ViewportBinding> {
+    fn native_stationary_source_identity(&self, owner: GestureOwner) -> Option<ViewportBinding> {
         let PointerProviderScope::NativeJoined(host) = owner.lease().scope() else {
             return None;
         };
@@ -42,6 +42,11 @@ impl DockEngine {
         {
             return None;
         }
+        Some(binding)
+    }
+
+    fn native_stationary_source(&self, owner: GestureOwner) -> Option<ViewportBinding> {
+        let binding = self.native_stationary_source_identity(owner)?;
         (self
             .pointer_journal
             .native_primary_press_continuity(owner.stream(), binding)
@@ -126,6 +131,153 @@ impl DockEngine {
                 })
             }
         }
+    }
+
+    pub(super) fn journal_capture_acquisition_is_current(
+        &self,
+        stream: PointerStreamId,
+        token: PointerContinuationToken,
+    ) -> bool {
+        let PointerContinuationSession::Drag(session) = token.session else {
+            return false;
+        };
+        // Target generations may advance while a native acquisition is in flight.
+        // Only the original desktop gesture is matched; no old target is executed.
+        self.interaction.active_drag(session).is_ok_and(|drag| {
+            token.owner == stream
+                && token.native_desktop
+                && drag.owner.stream() == stream
+                && drag.owner.is_desktop()
+                && matches!(
+                    drag.owner.lease().scope(),
+                    PointerProviderScope::NativeJoined(_)
+                )
+                && self.native_stationary_source_identity(drag.owner).is_some()
+                && (self.presentation_authority_is_current(drag.presentation)
+                    || drag.continuation.as_ref().is_some_and(|continuation| {
+                        self.scene_gesture_continuation_is_current(continuation)
+                    }))
+        })
+    }
+
+    pub(crate) fn native_drag_capture_projection(
+        &self,
+        token: PointerContinuationToken,
+    ) -> Option<(crate::platform::NativeDragSourceInput, bool)> {
+        if !self.journal_capture_acquisition_is_current(token.owner, token) {
+            return None;
+        }
+        let PointerContinuationSession::Drag(session) = token.session else {
+            return None;
+        };
+        let drag = self.interaction.active_drag(session).ok()?;
+        if !self.pointer_continuation_source_is_current(drag.owner) {
+            return None;
+        }
+        Some((
+            self.native_drag_source_input(drag),
+            drag.capture_acquired_at.is_some(),
+        ))
+    }
+
+    pub(super) fn reduce_journal_capture_acquired(
+        &mut self,
+        cause: ReductionCause,
+        owner: GestureOwner,
+        token: PointerContinuationToken,
+        edge: &PointerEdge,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<Vec<InteractionOutcome>, EngineError> {
+        if !self.journal_capture_acquisition_is_current(owner.stream(), token) {
+            return Ok(Vec::new());
+        }
+        let PointerContinuationSession::Drag(session) = token.session else {
+            return Ok(Vec::new());
+        };
+        let mut outcomes = Vec::new();
+        if matches!(edge.delivery_owner(), Authority::Known(_)) {
+            let (delivery, outcome) = self.gate_journal_delivery_action(
+                cause,
+                owner,
+                edge.delivery_owner(),
+                interaction_events,
+            )?;
+            outcomes.extend(outcome);
+            if !delivery {
+                return Ok(outcomes);
+            }
+        }
+        outcomes.extend(self.reduce_journal_capture_change(
+            cause,
+            owner,
+            edge.capture_owner(),
+            interaction_events,
+        )?);
+        if self.interaction.active_owner() != Some(owner) {
+            return Ok(outcomes);
+        }
+        if !self.stationary_edge_has_authority(owner, edge) {
+            self.clear_drag_continuation(session);
+            return Ok(outcomes);
+        }
+        if let Some(outcome) = self.cancel_revoked_presentation_caused(cause, interaction_events)? {
+            outcomes.push(outcome);
+            return Ok(outcomes);
+        }
+        let drag = self.interaction.active_drag(session).map_err(|_| {
+            EngineError::ReductionCauseInvariant {
+                detail: "capture acquisition lost its current drag",
+            }
+        })?;
+        if drag.capture_acquired_at.is_some() {
+            return Ok(outcomes);
+        }
+        let Some(now) = edge.metadata().observed_at() else {
+            self.clear_drag_continuation(session);
+            return Ok(outcomes);
+        };
+        let delay = match drag.timed.as_ref() {
+            Some(DragTimedContinuation::HoverSelection(_)) => self
+                .presentation_authority
+                .presentation_config
+                .hover_selection_delay(),
+            Some(DragTimedContinuation::TabStripEdgeScroll(_)) => self
+                .presentation_authority
+                .presentation_config
+                .tab_strip_edge_scroll_interval(),
+            None => None,
+        };
+        let next = match delay.and_then(|delay| now.checked_add(delay)) {
+            Some(deadline) => Some(
+                self.interaction
+                    .mint_continuation(owner, PointerContinuationSession::Drag(session), deadline)
+                    .map_err(|source| EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: source.to_string(),
+                    })?,
+            ),
+            None => None,
+        };
+        let drag = self.interaction.active_drag_mut(session).map_err(|_| {
+            EngineError::ReductionCauseInvariant {
+                detail: "capture acquisition lost its mutable drag",
+            }
+        })?;
+        // Acquisition is accepted once per original drag. A late same-gesture result may
+        // postpone its current target, but cannot reuse the pre-acquisition dwell interval.
+        drag.capture_acquired_at = Some(now);
+        match (drag.timed.as_mut(), next) {
+            (Some(DragTimedContinuation::HoverSelection(state)), Some(token)) => {
+                state.started_at = now;
+                state.request.token = token;
+            }
+            (Some(DragTimedContinuation::TabStripEdgeScroll(state)), Some(token)) => {
+                state.started_at = now;
+                state.request.token = token;
+            }
+            _ => drag.timed = None,
+        }
+        Ok(outcomes)
     }
 
     pub(super) fn clear_pointer_continuation(&mut self, owner: GestureOwner) {

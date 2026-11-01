@@ -65,6 +65,9 @@ pub enum NativePointerEvent {
     Moved,
     /// Rechecks one core-issued stationary action with fresh receiver facts.
     Continuation(crate::interaction::PointerContinuationToken),
+    /// Reports newly acquired capture for an existing native desktop drag.
+    /// Core starts a new stationary interval without executing its old deadline.
+    CaptureAcquired(crate::interaction::PointerContinuationToken),
     /// One button became pressed.
     ButtonPressed(NativePointerButton),
     /// One button became released while the pointer remains live.
@@ -878,6 +881,7 @@ impl RuntimeNativeState {
         let kind = match input.event() {
             NativePointerEvent::Moved => PointerEdgeKind::Moved,
             NativePointerEvent::Continuation(token) => PointerEdgeKind::Continuation(token),
+            NativePointerEvent::CaptureAcquired(token) => PointerEdgeKind::CaptureAcquired(token),
             NativePointerEvent::ButtonPressed(button) => {
                 PointerEdgeKind::ButtonPressed(button.into_core())
             }

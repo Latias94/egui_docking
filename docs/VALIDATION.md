@@ -15,6 +15,91 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-01 native capture acquisition timing boundary
+
+The core, native, real-window and extracted-package gates pass. Native desktop
+continuations expose
+the core-derived `NativeDragSourceInput` through a read-only runtime projection
+and can return `capture_acquired_event()`. The new `CaptureAcquired(token)`
+travels through the existing ordered native pointer journal. Core records the
+first accepted acquisition time on ActiveDrag and rebases its current hover or
+edge-scroll interval, without receiver queries, motion, selection, scrolling
+or payload delivery. Native-local and touch requests expose no acquisition
+event. Existing hosts with independently continuous capture need not use it.
+
+An older target challenge may restart the current target within its original
+desktop gesture; another gesture or a token issued before local-to-desktop
+handoff cannot authorize acquisition. Accepted duplicates do not postpone the
+interval again, including untimed duplicates. Missing first-acquisition time,
+delivery or capture clears timed work without inferring owner loss. Known loss
+still cancels; obsolete tokens cannot hide a current capture observation from
+the interaction owner. Unknown-to-known recovery records the boundary without
+restoring a cleared target. Frame drop keeps the original candidate retryable.
+
+The nine new public cases and existing native stationary controls pass 22/22.
+They include overdue dwell 240→390 ms, exact 389/390 ms execution, duplicate and
+older-target handling, dropped-frame replay, foreign session/source rejection,
+local-token handoff rejection, unknown and known-loss cases, obsolete-token ×
+capture-loss intersections and exact edge-scroll output settlement. The ledger
+case rejects acquisition-created/replaced streams and preserves atomic retry.
+The initial edge-scroll fixture incorrectly assumed a narrow requested layout
+would override native client geometry and that an edge always hit a tab body.
+The corrected fixture reports a 300px physical/200-point logical client,
+commits measurements before paint and registers the actual strip descriptor.
+Hover-only clearance still requires that descriptor's exact current output;
+click/drag delivery has no strip fallback. It retains the exact 40px step,
+successor deadline and presentation barrier assertions.
+
+Fresh final results pass workspace 1,953, public default/serde 157/185,
+doctests 10, native 572 and native noassert 571. Normal native includes a fresh
+same-coordinator 10,000-lifetime case in 165.273 seconds; noassert skips that
+just-run case. Both workspaces pass correctness/suspicious Clippy, strict
+rustdoc and formatting. The real refresh passes Linux library 525 plus the
+separately invoked retained-query/close/create/age OS fixture, default/bounded
+macOS redock, six output-pressure cases per platform and all fifteen X11
+physical entries. The 1 kHz case matches all 1,000 native callbacks at 994.4 Hz
+after 999.8 Hz injection; release-to-model upper bound is 40.968459 ms. Selected
+Root/Child/standalone service maxima are 0.401/0.517750/1.420875 ms. These finite
+measurements do not establish a hard timing bound.
+
+Both packages verify; their 274/36 Rust files and READMEs match current source.
+Extracted public consumers pass 157/185, official-egui 15, the self-drawn engine
+example and dependency isolation. Package SHA256 values are
+`96fb962eecaa057136a38760e46b85822ee48df36847dc5ccd6ea1b5b62bf752`
+for dockspace and
+`d76641c1736607a94069619293e54f23bd44eb6887e6905cd3913ee820a38883`
+for egui_dockspace. Existing advisory lint/dead-code and yanked clipboard lockfile
+warnings retain their previously documented scope.
+
+Independent source review found and closed the old-capture precondition,
+Unknown-delivery cancellation, local-token handoff and obsolete acquisition
+capture-loss defects before final qualification. These are source reviews,
+separate from main-thread Cargo execution. The Winit resource model is a
+separately unfinished working-tree draft, not part of these tracked Git-source
+native gates. It dispatches no grab/ungrab and reports no new capture proof.
+Ordinary application grab mutation and exact cleanup ordering must be settled
+before that model can drive native effects. Positive stationary OS execution
+and the overall Goal remain open.
+
+Evidence is `/tmp/dockspace-capture-boundary-qualified-source.json`,
+`/tmp/dockspace-capture-boundary-qualified.json`,
+`/tmp/dockspace-capture-boundary-window-qualification.json`,
+`/tmp/dockspace-capture-boundary-package-qualification.json` and
+`/tmp/dockspace-capture-boundary-review.json`. macOS native gates use the tracked
+unpublished Git pins without overrides. Linux uses the same committed Winit
+`8334294b` exported into the isolated snapshot, excluding the unfinished model;
+its exact archive and local override are recorded in
+`/tmp/dockspace-capture-boundary-linux-baseline.json`. This is local-source
+qualification, not remote-only reproducibility. The separately tested 47-case
+draft model is recorded in
+`/tmp/dockspace-capture-boundary-winit-model-qualification.json`; it also passes
+81 Linux library tests and correctness/suspicious Clippy. Independent source
+review confirms its exact resource, successor and sync/drain boundaries at
+SHA256 `1e58ef0039f5f81b1f63373b49390bdbee3c96cddb40d2eac4754638d3f4a883`.
+These model/library results are not OS capture or ordinary-grab coordination
+evidence. The draft remains uncommitted until its actual dispatch owner is
+integrated and qualified.
+
 ## 2026-11-01 source-specific physical drag capability requirements
 
 The source, native, real-window and extracted-package gates below pass.

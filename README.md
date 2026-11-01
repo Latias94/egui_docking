@@ -99,6 +99,12 @@ its ordered terminal fully commits. Unknown or unavailable facts cannot trigger
 an automatic retry of the same core token. Successful OS stationary execution,
 physical Touch and the complete native readiness matrix remain unfinished.
 
+The public continuation can also report a newly acquired capture boundary
+without fabricating motion. Core restarts stationary timing from that accepted
+observation, rather than crediting dwell from before capture was acquired.
+The source input requirement is a read-only projection; actual OS acquisition,
+current capture/delivery proof and exact release remain host responsibilities.
+
 Native binding retention now uses `terminal_binding_guards()` in the diagnostic
 manifest. It covers observed destruction and conclusively never-created
 bindings, including a published Pending binding cancelled before its Create

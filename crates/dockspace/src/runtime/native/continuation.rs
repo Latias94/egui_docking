@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use super::{
-    DockspaceSession, NativeHostProfile, NativeLocalCoordinates, NativePointerEvent,
-    NativePointerId, NativeSurfaceBinding,
+    DockspaceSession, NativeDragSourceInput, NativeHostProfile, NativeLocalCoordinates,
+    NativePointerEvent, NativePointerId, NativeSurfaceBinding,
 };
 use crate::geometry::LogicalPoint;
 use crate::ids::SurfaceId;
@@ -26,6 +26,8 @@ pub struct NativePointerContinuation {
     request: PointerContinuationRequest,
     source_binding: NativeSurfaceBinding,
     local_coordinates: Option<NativeLocalCoordinates>,
+    source_input: Option<NativeDragSourceInput>,
+    capture_acquired: bool,
 }
 
 impl NativePointerContinuation {
@@ -77,6 +79,31 @@ impl NativePointerContinuation {
         self.source_binding
     }
 
+    /// Returns core's frozen source-window treatment for a native desktop drag.
+    ///
+    /// This is a read-only requirement, not permission to change window input or
+    /// infer capture. Local and pressed-touch continuations return `None`.
+    #[must_use]
+    pub const fn source_input(&self) -> Option<NativeDragSourceInput> {
+        self.source_input
+    }
+
+    /// Returns the non-motion fact for the first fresh capture acquisition.
+    ///
+    /// Submit only after the host independently proves that the original drag
+    /// acquired capture. Supply its actual observation time and exact source
+    /// delivery/capture facts. Core starts a fresh interval without executing
+    /// selection or scrolling. A result from an older target in the same drag
+    /// may postpone its current challenge; another gesture cannot consume it.
+    /// Missing facts revoke the current timed action without inferring owner
+    /// loss. Repeated accepted acquisition cannot restart the interval again.
+    /// Hosts with independently continuous capture need no acquisition event.
+    #[must_use]
+    pub fn capture_acquired_event(&self) -> Option<NativePointerEvent> {
+        (self.source_input.is_some() && !self.capture_acquired)
+            .then_some(NativePointerEvent::CaptureAcquired(self.request.token))
+    }
+
     /// Returns the original local lane's current exact coordinate capability.
     ///
     /// `Some` requires a fresh sample captured under this binding and generation.
@@ -110,10 +137,13 @@ impl DockspaceSession {
         {
             return None;
         }
+        let capture = self.engine.native_drag_capture_projection(request.token);
         Some(NativePointerContinuation {
             request,
             source_binding,
             local_coordinates,
+            source_input: capture.map(|(input, _)| input),
+            capture_acquired: capture.is_some_and(|(_, acquired)| acquired),
         })
     }
 

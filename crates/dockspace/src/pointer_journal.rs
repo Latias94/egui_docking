@@ -1043,6 +1043,9 @@ pub enum PointerEdgeKind {
     /// A host woke to recheck one core-issued stationary gesture action.
     /// This edge reports no motion and never starts a pointer stream.
     Continuation(crate::interaction::PointerContinuationToken),
+    /// A host acquired fresh native capture for an existing drag.
+    /// This edge only rebases stationary timing and reports no motion.
+    CaptureAcquired(crate::interaction::PointerContinuationToken),
     /// One button became pressed.
     ButtonPressed(PointerButton),
     /// One button became released while the provider-local pointer remains live.

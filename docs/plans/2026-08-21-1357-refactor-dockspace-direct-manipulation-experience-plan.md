@@ -1975,6 +1975,48 @@ Secondary remains held, cancellation and successor-safe release. These checks
 may prove a current sampled lease; they do not prove the whole earlier dwell
 was never frozen. This remains a design boundary, not a positive platform claim.
 
+The next core boundary is now implemented and qualified. A native
+desktop continuation exposes the frozen source requirement read-only and can
+produce `CaptureAcquired(token)` for the normal ordered input. Core retains the
+first accepted acquisition time in the existing ActiveDrag, rebases its current
+hover/edge-scroll interval and mints a successor challenge without querying a
+receiver or executing a timed action. It accepts an older target generation
+only within the same original desktop gesture. Tokens freeze desktop issuance,
+so a local token cannot acquire permission after handoff. Unknown facts clear
+timed work while preserving the held gesture; known loss still cancels even
+when the request token is obsolete. Dropped candidates retain exact retry.
+Repeated accepted acquisition does not postpone timing again. Public hosts
+which already prove continuous capture need no acquisition event.
+The fresh checkpoint passes public stationary22, workspace1,953, public157/185,
+doctests10, native572 with a fresh 10,000-lifetime case and noassert571. Linux525,
+the separate real retained-query/close/create/age fixture, both platform pressure
+matrices, macOS redock and all fifteen X11 physical entries pass. Extracted
+packages pass public157/185, official15, the self-drawn engine example and
+dependency isolation. Exact source scope and evidence live in
+`docs/VALIDATION.md`; no positive OS capture path is enabled by these results.
+
+The parallel X11 resource model remains unfinished integration work, separate
+from the core checkpoint. Permission revocation cannot erase the native release
+obligation: same-row retirement must survive Primary-up, all-up, device removal,
+late success and failed ungrab. It must also coordinate ordinary application
+`set_cursor_grab` mutations before dispatch. Rejecting a later explicit lease
+alone does not prove that an old XIUngrabDevice cannot affect a new ordinary
+application grab. The [XI2 protocol](https://xorg.freedesktop.org/archive/X11R7.7/doc/inputproto/XI2proto.txt)
+identifies ungrab by device and server time, without a client lease identity.
+Qualify the mutation reservation/cleanup ordering and real successor-grab
+interleaving before enabling native dispatch or reporting known capture.
+The bounded coordination design uses a fallible connection-local reservation
+inside the existing capture owner. Ordinary `set_cursor_grab` and
+`drag_initiate` must reserve before their first ungrab, reject unresolved
+Acquiring/Active/Retiring duties without a native side effect, and retain the
+reservation through ungrab, replacement grab, reply/error handling and mode
+publication. Competing acquisition, cleanup and ordinary mutations cannot
+dispatch during that reservation. Native calls still run outside the capture
+mutex. Confirmed cleanup must precede an ordinary takeover; enqueue, flush and
+the current ignored ungrab error are not completion proof. Validate blocked
+ordinary dispatch, interleaving between ungrab/grab, failed-cleanup retry and
+late predecessor release after application takeover before broadening support.
+
 The W16 combined-profile model now qualifies its configured maximum roster and
 property/Destroyed fanout (2026-10-31). Sixteen concurrent lifetimes, one complete
 roster and 32 original property identities coexist while ordinary input reaches

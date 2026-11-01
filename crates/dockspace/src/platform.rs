@@ -255,8 +255,8 @@ impl PlatformCapability {
 
 /// Required treatment of a physical drag's source native window.
 ///
-/// Core derives this from the source ownership and complete payload. Hosts may
-/// query the corresponding capability requirements; this value alone supplies
+/// Core derives this from the source ownership and complete payload. A native
+/// continuation may expose the frozen requirement; this value alone supplies
 /// no input, capture, delivery or pass-through acknowledgement authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeDragSourceInput {

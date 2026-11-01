@@ -168,6 +168,21 @@ disables it. Selection keeps the active drag and requests no pane-content focus;
 only a subsequent normal release can deliver the payload. Native stationary
 input still needs independently captured routing and event-time facts.
 
+A native desktop drag's continuation exposes core's frozen source-window
+treatment through `source_input()`. This read-only `NativeDragSourceInput`
+projection does not choose a mode, change the OS window or grant capture.
+When a host explicitly acquires fresh capture after the drag began, submit
+`capture_acquired_event()` through the ordinary native input order with its
+actual observation time and independently proven source delivery/capture.
+Acquisition starts a fresh stationary interval; it never executes the previous
+deadline, selects a tab, scrolls or delivers the payload. An older challenge
+in the same drag may postpone the current target, while local-lane and other
+gesture tokens cannot authorize acquisition. Repeating an accepted acquisition
+does not reset the interval again. Missing facts clear timed work while known
+capture loss still cancels the gesture, including observations on an obsolete
+request. Hosts which already prove continuous capture need no acquisition
+event. OS acquisition, loss and exact resource release remain host obligations.
+
 Local active drags also scroll an overflowing tab strip while stationary near
 its content edge. The default band is 24 logical points and the interval is
 50ms; each accepted continuation advances at most one existing scroll-line

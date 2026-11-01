@@ -74,11 +74,27 @@ impl DockEngine {
             }
             return Ok(Vec::new());
         }
+        if let PointerEdgeKind::CaptureAcquired(token) = edge.kind()
+            && !self.journal_capture_acquisition_is_current(stream, token)
+        {
+            if matching_owner
+                && matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
+            {
+                return self.reduce_journal_capture_change(
+                    cause,
+                    owner,
+                    capture_authority_after,
+                    interaction_events,
+                );
+            }
+            return Ok(Vec::new());
+        }
         if matching_owner
             && matches!(
                 edge.kind(),
                 PointerEdgeKind::Moved
                     | PointerEdgeKind::Continuation(_)
+                    | PointerEdgeKind::CaptureAcquired(_)
                     | PointerEdgeKind::ButtonReleased(PointerButton::Primary)
                     | PointerEdgeKind::ContactEnded(PointerButton::Primary)
             )
@@ -152,6 +168,9 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            PointerEdgeKind::CaptureAcquired(token) => {
+                self.reduce_journal_capture_acquired(cause, owner, token, edge, interaction_events)
+            }
             PointerEdgeKind::ButtonReleased(PointerButton::Primary)
             | PointerEdgeKind::ContactEnded(PointerButton::Primary) => self
                 .reduce_journal_primary_release(

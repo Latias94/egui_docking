@@ -92,6 +92,10 @@ pub(super) fn pointer_receiver_candidate_spec(
     edge: &PointerEdge,
     stream: PointerStreamId,
 ) -> PointerReceiverCandidateSpec {
+    if matches!(edge.kind(), PointerEdgeKind::CaptureAcquired(_)) {
+        // Acquiring capture may postpone timed work, but cannot inspect or execute a target.
+        return PointerReceiverCandidateSpec::not_applicable(edge.sequence());
+    }
     if let PointerEdgeKind::Continuation(token) = edge.kind()
         && (!engine.journal_continuation_is_current(stream, token)
             || engine

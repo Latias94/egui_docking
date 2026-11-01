@@ -17,6 +17,8 @@ pub struct PointerContinuationToken {
     pub(crate) session: PointerContinuationSession,
     pub(crate) generation: u64,
     pub(crate) deadline: Duration,
+    // A local token cannot authorize acquisition after a same-session desktop handoff.
+    pub(crate) native_desktop: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +104,8 @@ impl InteractionState {
             session,
             generation: self.last_continuation_generation,
             deadline,
+            native_desktop: owner.is_desktop()
+                && matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_)),
         })
     }
 }

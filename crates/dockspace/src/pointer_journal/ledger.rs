@@ -189,6 +189,7 @@ impl JournalPointerAuthority {
             }
             PointerEdgeKind::Moved
             | PointerEdgeKind::Continuation(_)
+            | PointerEdgeKind::CaptureAcquired(_)
             | PointerEdgeKind::CaptureChanged
             | PointerEdgeKind::StreamEnded
             | PointerEdgeKind::Scrolled(_) => {}
@@ -1269,7 +1270,8 @@ impl PointerJournalLedger {
         }
 
         for edge in journal.edges() {
-            if let PointerEdgeKind::Continuation(token) = edge.kind()
+            if let PointerEdgeKind::Continuation(token) | PointerEdgeKind::CaptureAcquired(token) =
+                edge.kind()
                 && active_streams.get(&edge.pointer()).map(|stream| stream.id) != Some(token.owner)
             {
                 return Err(PointerJournalLedgerError::ContinuationStreamMismatch {

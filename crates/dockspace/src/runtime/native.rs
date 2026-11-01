@@ -31,7 +31,7 @@ use crate::platform::{
     CloseEffectAcknowledgement, ObservedWindow, WindowCloseObservation, WindowCloseState,
     WindowInputState, WindowPresentationState,
 };
-pub use crate::platform::{NativeCreateReadiness, NativeCreateStrategy};
+pub use crate::platform::{NativeCreateReadiness, NativeCreateStrategy, NativeDragSourceInput};
 use crate::platform_provider::PlatformObservationLease;
 use crate::viewport::{
     CloseObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaGeneration,

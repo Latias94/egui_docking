@@ -189,6 +189,15 @@ capability reason while retaining its restore obligation. Independent input,
 hit-observation and presentation requirements remain unchanged. This capability
 split does not supply missing positive stationary OS facts.
 
+Native desktop continuations now expose the frozen source requirement through
+the read-only `source_input()` projection. Public hosts may report a newly
+acquired capture boundary with `capture_acquired_event()`, actual sample time
+and independent source delivery/capture facts. Core restarts stationary timing
+without treating the acquisition as motion or authorizing its previous
+deadline. This public projection does not expose the internal composed
+capability queries or placement-proof constructors. No X11 capture operation
+or positive stationary capability is enabled by that core contract alone.
+
 Tab-half selection uses an opt-in passive diagnostic copied from the painted
 tab's complete visible bounds; the Tab accessibility receiver still excludes
 its close button. These diagnostics confer no input or presentation authority.

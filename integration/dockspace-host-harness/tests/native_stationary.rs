@@ -14,17 +14,18 @@ use dockspace::runtime::{
     DockspaceHostFrame, DockspaceManipulationDelivery as Delivery,
     DockspaceManipulationPendingReason as PendingReason, DockspaceManipulationStatus as Status,
     DockspacePaneFocusRequest, DockspacePreviewVisual, DockspaceReceiverDescriptor,
-    DockspaceSession, DockspaceTouchEvent, HostFrameReport, HostInputOutcome, HostPointerInput,
-    HostPointerRoute, HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation,
-    NativeDesktopPosition, NativeHostCapabilities, NativeHostCapability, NativeLocalCoordinates,
-    NativeLocalGeometry, NativeLocalPointerFact, NativeLocalPointerLocation,
-    NativeLocalPointerSample, NativeLocalToDesktopHandoff, NativePointerButton as Button,
-    NativePointerContinuation, NativePointerEvent as Event, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
-    NativeReceiverPurpose, NativeReceiverQuery, NativeScrollDelta, NativeScrollDeviceId,
-    NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaRoster, PaintedSurfaceOutput, PointerDeviceKind as Device, PointerEventMetadata,
+    DockspaceReceiverRole, DockspaceSession, DockspaceTouchEvent, HostFrameReport,
+    HostInputOutcome, HostPointerInput, HostPointerRoute, HostWindowToken, NativeCreateStrategy,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeDragSourceInput,
+    NativeHostCapabilities, NativeHostCapability, NativeLocalCoordinates, NativeLocalGeometry,
+    NativeLocalPointerFact, NativeLocalPointerLocation, NativeLocalPointerSample,
+    NativeLocalToDesktopHandoff, NativePointerButton as Button, NativePointerContinuation,
+    NativePointerEvent as Event, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose,
+    NativeReceiverQuery, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
+    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+    PaintedSurfaceOutput, PointerDeviceKind as Device, PointerEventMetadata,
     SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
     SurfacePointerButton, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
     SurfacePointerReceiverFacts, SurfacePresentationResult as Disposition,
@@ -135,26 +136,44 @@ impl Scene {
         let Some(point) = query.point() else {
             return NativeReceiverAnswer::Unknown;
         };
-        let Some(tab) = self
+        let receiver = self
             .tabs
             .iter()
             .find(|tab| tab.receiver.bounds().contains(point))
-        else {
+            .map(|tab| tab.receiver)
+            .or_else(|| {
+                if !matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
+                    return None;
+                }
+                self.recording
+                    .records
+                    .iter()
+                    .find_map(|record| match record {
+                        OwnedRecord::Receiver(receiver)
+                            if receiver.role() == DockspaceReceiverRole::TabStripScroll
+                                && receiver.bounds().contains(point) =>
+                        {
+                            Some(*receiver)
+                        }
+                        _ => None,
+                    })
+            });
+        let Some(receiver) = receiver else {
             return NativeReceiverAnswer::Unknown;
         };
         assert!(
             self.recording
                 .records
-                .contains(&OwnedRecord::Receiver(tab.receiver))
+                .contains(&OwnedRecord::Receiver(receiver))
         );
         if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
-            query.clear_hover_lane(&tab.receiver).map_or(
+            query.clear_hover_lane(&receiver).map_or(
                 NativeReceiverAnswer::Unknown,
                 NativeReceiverAnswer::ClearHoverLane,
             )
         } else {
             query
-                .bind_receiver(&tab.receiver)
+                .bind_receiver(&receiver)
                 .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
         }
     }
@@ -175,8 +194,13 @@ fn render(frame: &mut DockspaceHostFrame<'_>) -> Scene {
     let focus = plan.pane_focus_request();
     let mut tabs = Vec::new();
     let mut dragged_item = None;
+    let mut strip_receivers = Vec::new();
     plan.visit_surface_program(|step| {
         match step {
+            Step::Operation {
+                operation: Operation::TabBar(bar),
+                ..
+            } => strip_receivers.extend(plan.receiver_for_tab_strip_scroll(bar)),
             Step::Operation {
                 operation: Operation::Tab(tab),
                 ..
@@ -195,7 +219,12 @@ fn render(frame: &mut DockspaceHostFrame<'_>) -> Scene {
         Ok::<(), ()>(())
     })
     .unwrap();
-    let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
+    let (mut recording, receipt) = RecordingRenderer::execute(plan).unwrap();
+    for receiver in strip_receivers {
+        recording
+            .records
+            .insert(recording.records.len() - 1, OwnedRecord::Receiver(receiver));
+    }
     for tab in &tabs {
         assert!(
             recording
@@ -716,6 +745,8 @@ fn native_touch_long_press_arms_then_contact_end_waits_for_the_exact_reorder_out
         assert!(!pressed.workspace_changed());
         let request = session.native_pointer_continuation().unwrap();
         assert_eq!(request.deadline(), Duration::from_millis(350));
+        assert!(request.source_input().is_none());
+        assert!(request.capture_acquired_event().is_none());
         assert_eq!(request.position(), source);
         assert_eq!(request.local_coordinates().is_some(), lane == Lane::Local);
         session
@@ -1538,4 +1569,933 @@ fn an_obsolete_local_token_after_handoff_cannot_cancel_the_desktop_drag() {
     assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
     assert_eq!(order(&session), [SECOND, FIRST, THIRD]);
     assert!(!session.has_active_gesture());
+}
+
+#[test]
+fn native_capture_acquisition_restarts_overdue_dwell_without_executing_it() {
+    let (mut session, binding, scene) = fixture(true);
+    let target = scene.point(SECOND, 0.625);
+    let version = session.version();
+    let presented = session.presented_surface(SURFACE);
+    let request = start_drag(&mut session, Lane::Desktop, binding, &scene, target);
+    assert_eq!(request.deadline(), Duration::from_millis(160));
+    assert_eq!(
+        request.source_input(),
+        Some(NativeDragSourceInput::Preserve)
+    );
+    let acquired = request.capture_acquired_event().unwrap();
+    assert_eq!(acquired, Event::CaptureAcquired(request.token()));
+    let recorded = session.native_input_recorded_count();
+    for _ in 0..3 {
+        assert_eq!(session.native_pointer_continuation(), Some(request));
+        assert_eq!(request.capture_acquired_event(), Some(acquired));
+        assert_eq!(session.native_input_recorded_count(), recorded);
+        assert_eq!(session.version(), version);
+    }
+
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            acquired,
+            target,
+            at(Device::Mouse, 240),
+        ))
+        .unwrap();
+    assert!(session.native_pointer_continuation().is_none());
+    let report = idle(&mut session);
+    assert!(report.inputs().is_empty());
+    assert!(report.manipulation_feedback().is_empty());
+    assert!(!report.workspace_changed());
+    assert_eq!(session.version(), version);
+    assert_eq!(session.presented_surface(SURFACE), presented);
+    assert_eq!(session.native_input_recorded_count(), recorded + 1);
+    assert!(session.has_active_gesture());
+    assert!(!session.has_pending_native_input());
+    assert!(session.view().item(FIRST).unwrap().is_selected());
+    assert!(!session.view().item(SECOND).unwrap().is_selected());
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+
+    let restarted = session.native_pointer_continuation().unwrap();
+    assert_ne!(restarted.token(), request.token());
+    assert_eq!(restarted.deadline(), Duration::from_millis(390));
+    assert_eq!(restarted.pointer(), POINTER);
+    assert_eq!(restarted.surface(), SURFACE);
+    assert_eq!(restarted.source_binding(), binding);
+    assert_eq!(restarted.position(), target);
+    assert!(restarted.local_coordinates().is_none());
+    assert_eq!(restarted.event(), Event::Continuation(restarted.token()));
+    assert_eq!(
+        restarted.source_input(),
+        Some(NativeDragSourceInput::Preserve)
+    );
+    assert!(restarted.capture_acquired_event().is_none());
+    assert!(session.pointer_continuation().is_none());
+
+    session
+        .record_native_pointer(continuation(
+            request,
+            Duration::from_millis(240),
+            Device::Mouse,
+            NativePointerOwner::Native(binding),
+        ))
+        .unwrap();
+    assert!(idle(&mut session).inputs().is_empty());
+    assert_eq!(session.native_pointer_continuation(), Some(restarted));
+    for (millis, expected) in [(389, vec![]), (390, vec![SECOND])] {
+        session
+            .record_native_pointer(continuation(
+                restarted,
+                Duration::from_millis(millis),
+                Device::Mouse,
+                NativePointerOwner::Native(binding),
+            ))
+            .unwrap();
+        let report = finish(
+            session
+                .begin_native_host_frame(|query| {
+                    assert_eq!(query.metadata(), at(Device::Mouse, millis));
+                    assert_eq!(query.point(), Some(target));
+                    assert!(query.matches_native_binding(binding));
+                    scene.answer(query)
+                })
+                .unwrap(),
+        );
+        assert_eq!(selections(&report), expected);
+        assert_eq!(report.workspace_changed(), millis == 390);
+        assert!(report.manipulation_feedback().is_empty());
+        if millis == 389 {
+            assert_eq!(session.native_pointer_continuation(), Some(restarted));
+            assert_eq!(session.version(), version);
+        }
+    }
+    assert!(session.view().item(SECOND).unwrap().is_selected());
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert!(session.has_active_gesture());
+    assert!(session.native_pointer_continuation().is_none());
+}
+
+#[test]
+fn native_capture_acquisition_from_an_older_challenge_restarts_the_current_target_once() {
+    let (mut session, binding, scene) = fixture(true);
+    let old_target = scene.point(SECOND, 0.625);
+    let target = scene.point(THIRD, 0.625);
+    let version = session.version();
+    let old = start_drag(&mut session, Lane::Desktop, binding, &scene, old_target);
+    let old_acquired = old.capture_acquired_event().unwrap();
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            Event::Moved,
+            target,
+            at(Device::Mouse, 40),
+        ))
+        .unwrap();
+    assert!(!reduce(&mut session, &scene).workspace_changed());
+    let current = session.native_pointer_continuation().unwrap();
+    assert_ne!(current.token(), old.token());
+    assert_eq!(current.deadline(), Duration::from_millis(190));
+    assert_eq!(current.position(), target);
+    let current_acquired = current.capture_acquired_event().unwrap();
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            old_acquired,
+            target,
+            at(Device::Mouse, 240),
+        ))
+        .unwrap();
+    let report = idle(&mut session);
+    assert!(report.inputs().is_empty());
+    assert!(report.manipulation_feedback().is_empty());
+    let restarted = session.native_pointer_continuation().unwrap();
+    assert_ne!(restarted.token(), old.token());
+    assert_ne!(restarted.token(), current.token());
+    assert_eq!(restarted.deadline(), Duration::from_millis(390));
+    assert_eq!(restarted.position(), target);
+    assert_eq!(restarted.source_binding(), binding);
+    assert!(restarted.capture_acquired_event().is_none());
+
+    for (event, metadata) in [
+        (old_acquired, at(Device::Mouse, 260)),
+        (current_acquired, at(Device::Mouse, 280)),
+        (old_acquired, PointerEventMetadata::untimed(Device::Mouse)),
+    ] {
+        session
+            .record_native_pointer(input(
+                &session,
+                Lane::Desktop,
+                binding,
+                event,
+                target,
+                metadata,
+            ))
+            .unwrap();
+        let duplicate = idle(&mut session);
+        assert!(duplicate.inputs().is_empty());
+        assert!(duplicate.manipulation_feedback().is_empty());
+        assert!(!duplicate.workspace_changed());
+        assert_eq!(session.version(), version);
+        assert!(session.view().item(FIRST).unwrap().is_selected());
+        assert_eq!(session.native_pointer_continuation(), Some(restarted));
+    }
+    session
+        .record_native_pointer(continuation(
+            restarted,
+            restarted.deadline(),
+            Device::Mouse,
+            NativePointerOwner::Native(binding),
+        ))
+        .unwrap();
+    let selected = reduce(&mut session, &scene);
+    assert_eq!(selections(&selected), [THIRD]);
+    assert!(selected.workspace_changed());
+    assert!(!session.view().item(SECOND).unwrap().is_selected());
+    assert!(session.view().item(THIRD).unwrap().is_selected());
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert!(session.has_active_gesture());
+    assert!(session.native_pointer_continuation().is_none());
+}
+
+#[test]
+fn native_capture_acquisition_retries_dropped_frames_and_rejects_foreign_or_stale_sources() {
+    let (mut session, binding, scene) = fixture(true);
+    let target = scene.point(SECOND, 0.625);
+    let version = session.version();
+    let presented = session.presented_surface(SURFACE);
+    let request = start_drag(&mut session, Lane::Desktop, binding, &scene, target);
+    let acquired = request.capture_acquired_event().unwrap();
+    let (_, foreign, _) = fixture(true);
+    let before = session.native_input_recorded_count();
+    for delivery_foreign in [false, true] {
+        let (delivery, capture) = if delivery_foreign {
+            (
+                NativePointerOwner::Native(foreign),
+                NativePointerOwner::Native(binding),
+            )
+        } else {
+            (
+                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(foreign),
+            )
+        };
+        let invalid = NativePointerInput::new(
+            POINTER,
+            acquired,
+            desktop_location(binding, target),
+            delivery,
+            capture,
+        )
+        .with_metadata(at(Device::Mouse, 240));
+        assert!(session.record_native_pointer(invalid).is_err());
+        assert_eq!(session.native_input_recorded_count(), before);
+        assert!(!session.has_pending_native_input());
+        assert_eq!(session.native_pointer_continuation(), Some(request));
+    }
+
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            acquired,
+            target,
+            at(Device::Mouse, 240),
+        ))
+        .unwrap();
+    let recorded = session.native_input_recorded_count();
+    assert_eq!(recorded, before + 1);
+    let abandoned = session
+        .begin_native_host_frame(|_| panic!("capture acquisition must not query receivers"))
+        .unwrap();
+    assert!(abandoned.view().item(FIRST).unwrap().is_selected());
+    assert!(!abandoned.view().item(SECOND).unwrap().is_selected());
+    drop(abandoned);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.presented_surface(SURFACE), presented);
+    assert!(session.view().item(FIRST).unwrap().is_selected());
+    assert!(session.has_active_gesture());
+    assert!(session.has_pending_native_input());
+    assert_eq!(session.native_input_recorded_count(), recorded);
+    assert!(session.native_pointer_continuation().is_none());
+
+    let retried = idle(&mut session);
+    assert!(retried.inputs().is_empty());
+    assert!(retried.manipulation_feedback().is_empty());
+    assert!(!retried.workspace_changed());
+    assert_eq!(session.native_input_recorded_count(), recorded);
+    assert!(!session.has_pending_native_input());
+    let restarted = session.native_pointer_continuation().unwrap();
+    assert_ne!(restarted.token(), request.token());
+    assert_eq!(restarted.deadline(), Duration::from_millis(390));
+    assert!(restarted.capture_acquired_event().is_none());
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            acquired,
+            target,
+            at(Device::Mouse, 260),
+        ))
+        .unwrap();
+    assert!(idle(&mut session).inputs().is_empty());
+    assert_eq!(session.native_pointer_continuation(), Some(restarted));
+
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            RELEASE,
+            target,
+            at(Device::Mouse, 270),
+        ))
+        .unwrap();
+    let released = finish(
+        session
+            .begin_native_host_frame(|query| {
+                NativeReceiverAnswer::Blocked(query.presented_surface())
+            })
+            .unwrap(),
+    );
+    assert!(!released.workspace_changed());
+    assert!(!session.has_active_gesture());
+    session
+        .record_native_pointer_batch([
+            input(
+                &session,
+                Lane::Desktop,
+                binding,
+                PRESS,
+                scene.point(FIRST, 0.25),
+                at(Device::Mouse, 280),
+            ),
+            input(
+                &session,
+                Lane::Desktop,
+                binding,
+                Event::Moved,
+                target,
+                at(Device::Mouse, 290),
+            ),
+        ])
+        .unwrap();
+    assert!(!reduce(&mut session, &scene).workspace_changed());
+    let new_gesture = session.native_pointer_continuation().unwrap();
+    assert_ne!(new_gesture.token(), restarted.token());
+    assert_eq!(new_gesture.deadline(), Duration::from_millis(440));
+    assert!(new_gesture.capture_acquired_event().is_some());
+
+    // Primary release preserves the pointer stream, but the drag session is new.
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            acquired,
+            target,
+            at(Device::Mouse, 300),
+        ))
+        .unwrap();
+    let stale = idle(&mut session);
+    assert!(stale.inputs().is_empty());
+    assert!(stale.manipulation_feedback().is_empty());
+    assert_eq!(session.native_pointer_continuation(), Some(new_gesture));
+    assert!(session.has_active_gesture());
+    assert_eq!(session.version(), version);
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            new_gesture.capture_acquired_event().unwrap(),
+            target,
+            at(Device::Mouse, 310),
+        ))
+        .unwrap();
+    assert!(idle(&mut session).inputs().is_empty());
+    let current = session.native_pointer_continuation().unwrap();
+    assert_eq!(current.deadline(), Duration::from_millis(460));
+    assert_ne!(current.token(), new_gesture.token());
+    assert!(current.capture_acquired_event().is_none());
+}
+
+#[test]
+fn native_capture_acquisition_restarts_edge_scroll_and_waits_for_the_exact_output() {
+    fn strip(frame: &mut DockspaceHostFrame<'_>) -> (LogicalRect, f64, f64) {
+        let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+        let mut strip = None;
+        plan.visit_surface_program(|step| {
+            if let Step::Operation {
+                operation: Operation::TabBar(bar),
+                ..
+            } = step
+            {
+                assert!(strip.is_none());
+                strip = Some((
+                    bar.viewport(),
+                    bar.scroll_offset(),
+                    bar.maximum_scroll_offset(),
+                ));
+            }
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        strip.unwrap()
+    }
+
+    let (mut session, binding, _) = fixture(true);
+    let version = session.version();
+    session
+        .report_managed_native_snapshot(
+            [(
+                binding,
+                window_facts(true)
+                    .with_content_size(PhysicalSize::new(300.0, 900.0).unwrap())
+                    .with_content_bounds(PhysicalRect::new(400.0, -300.0, 300.0, 900.0).unwrap()),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .unwrap();
+    let mut frame = session
+        .begin_native_host_frame(|_| panic!("measurement must not query receivers"))
+        .unwrap();
+    measure(&mut frame, 200.0);
+    assert!(!finish(frame).workspace_changed());
+    let mut frame = session
+        .begin_native_host_frame(|_| panic!("painting the measured strip has no input"))
+        .unwrap();
+    let (viewport, offset, maximum) = strip(&mut frame);
+    assert_eq!(offset, 0.0);
+    assert!(
+        maximum > 40.0,
+        "expected overflow: viewport={viewport:?}, offset={offset}, maximum={maximum}"
+    );
+    let scene = render(&mut frame);
+    let mut report = finish(frame);
+    let output = take_output(&mut report, &scene, binding);
+    present(&mut session, output);
+    let edge = LogicalPoint::new(viewport.max().x() - 1.0, viewport.y() + 1.0).unwrap();
+    assert!(
+        scene.recording.records.iter().any(|record| matches!(record,
+            OwnedRecord::Receiver(receiver) if receiver.role() == DockspaceReceiverRole::TabStripScroll
+                && receiver.bounds().contains(edge)))
+    );
+    let request = start_drag(&mut session, Lane::Desktop, binding, &scene, edge);
+    assert_eq!(request.deadline(), Duration::from_millis(60));
+    assert_eq!(
+        request.source_input(),
+        Some(NativeDragSourceInput::Preserve)
+    );
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            request.capture_acquired_event().unwrap(),
+            edge,
+            at(Device::Mouse, 240),
+        ))
+        .unwrap();
+    let mut frame = session
+        .begin_native_host_frame(|_| panic!("capture acquisition must not query edge receivers"))
+        .unwrap();
+    assert_eq!(strip(&mut frame), (viewport, 0.0, maximum));
+    let acquired = finish(frame);
+    assert!(acquired.inputs().is_empty());
+    assert!(acquired.manipulation_feedback().is_empty());
+    assert!(!acquired.workspace_changed());
+    assert!(session.view().item(FIRST).unwrap().is_selected());
+    assert_eq!(session.version(), version);
+    assert!(!session.native_pointer_continuation_awaits_presentation(SURFACE));
+    let restarted = session.native_pointer_continuation().unwrap();
+    assert_eq!(restarted.deadline(), Duration::from_millis(290));
+    assert_ne!(restarted.token(), request.token());
+    assert_eq!(restarted.position(), edge);
+    assert_eq!(restarted.source_binding(), binding);
+    assert!(restarted.capture_acquired_event().is_none());
+    for (wake, millis) in [(request, 240), (restarted, 289)] {
+        session
+            .record_native_pointer(continuation(
+                wake,
+                Duration::from_millis(millis),
+                Device::Mouse,
+                NativePointerOwner::Native(binding),
+            ))
+            .unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|query| scene.answer(query))
+            .unwrap();
+        assert_eq!(strip(&mut frame), (viewport, 0.0, maximum));
+        let early = finish(frame);
+        assert!(early.inputs().is_empty());
+        assert!(!early.workspace_changed());
+        assert_eq!(session.native_pointer_continuation(), Some(restarted));
+    }
+
+    session
+        .record_native_pointer(continuation(
+            restarted,
+            restarted.deadline(),
+            Device::Mouse,
+            NativePointerOwner::Native(binding),
+        ))
+        .unwrap();
+    let mut frame = session
+        .begin_native_host_frame(|query| {
+            assert_eq!(query.metadata(), at(Device::Mouse, 290));
+            assert_eq!(query.point(), Some(edge));
+            assert!(query.matches_native_binding(binding));
+            scene.answer(query)
+        })
+        .unwrap();
+    assert_eq!(strip(&mut frame), (viewport, 40.0, maximum));
+    let scrolled = render(&mut frame);
+    assert_eq!(scrolled.focus, scene.focus);
+    let mut report = finish(frame);
+    assert!(!report.workspace_changed());
+    assert!(selections(&report).is_empty());
+    assert!(report.manipulation_feedback().is_empty());
+    assert!(session.view().item(FIRST).unwrap().is_selected());
+    let exact = take_output(&mut report, &scrolled, binding);
+    assert!(session.native_pointer_continuation().is_none());
+    assert!(session.native_pointer_continuation_awaits_presentation(SURFACE));
+    assert!(!session.pointer_continuation_awaits_presentation(SURFACE));
+    assert_eq!(session.version(), version);
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert!(session.has_active_gesture());
+    assert!(idle(&mut session).inputs().is_empty());
+    assert!(session.native_pointer_continuation().is_none());
+    assert!(session.native_pointer_continuation_awaits_presentation(SURFACE));
+
+    let artifact = exact.presentation_artifact();
+    let presented = present(&mut session, exact);
+    assert!(
+        presented
+            .surface_presentation_commits()
+            .iter()
+            .any(|commit| commit.presents(artifact))
+    );
+    let next = session.native_pointer_continuation().unwrap();
+    assert_ne!(next.token(), restarted.token());
+    assert_eq!(next.deadline(), Duration::from_millis(340));
+    assert_eq!(next.position(), edge);
+    assert_eq!(next.source_binding(), binding);
+    assert_eq!(next.source_input(), Some(NativeDragSourceInput::Preserve));
+    assert!(next.capture_acquired_event().is_none());
+    assert!(!session.native_pointer_continuation_awaits_presentation(SURFACE));
+    assert!(!session.has_pending_native_input());
+}
+
+#[test]
+fn native_capture_acquisition_after_unknown_capture_does_not_restore_a_cleared_target() {
+    let (mut session, binding, scene) = fixture(true);
+    let target = scene.point(SECOND, 0.625);
+    let version = session.version();
+    let request = start_drag(&mut session, Lane::Desktop, binding, &scene, target);
+    let acquired = request.capture_acquired_event().unwrap();
+    session
+        .record_native_pointer(observed_input(
+            None,
+            binding,
+            Event::CaptureChanged,
+            target,
+            NativePointerOwner::Unknown,
+            at(Device::Mouse, 20),
+        ))
+        .unwrap();
+    assert!(idle(&mut session).inputs().is_empty());
+    assert!(session.has_active_gesture());
+    assert!(session.native_pointer_continuation().is_none());
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            acquired,
+            target,
+            at(Device::Mouse, 240),
+        ))
+        .unwrap();
+    let report = idle(&mut session);
+    assert!(report.inputs().is_empty());
+    assert!(report.manipulation_feedback().is_empty());
+    assert!(!report.workspace_changed());
+    assert_eq!(session.version(), version);
+    assert!(session.view().item(FIRST).unwrap().is_selected());
+    assert!(session.has_active_gesture());
+    assert!(session.native_pointer_continuation().is_none());
+    session
+        .record_native_pointer(continuation(
+            request,
+            Duration::from_millis(241),
+            Device::Mouse,
+            NativePointerOwner::Native(binding),
+        ))
+        .unwrap();
+    assert!(idle(&mut session).inputs().is_empty());
+    assert!(session.native_pointer_continuation().is_none());
+
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            Event::Moved,
+            target,
+            at(Device::Mouse, 260),
+        ))
+        .unwrap();
+    assert!(!reduce(&mut session, &scene).workspace_changed());
+    let rearmed = session.native_pointer_continuation().unwrap();
+    assert_ne!(rearmed.token(), request.token());
+    assert_eq!(rearmed.deadline(), Duration::from_millis(410));
+    assert_eq!(rearmed.position(), target);
+    assert_eq!(
+        rearmed.source_input(),
+        Some(NativeDragSourceInput::Preserve)
+    );
+    assert!(rearmed.capture_acquired_event().is_none());
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            acquired,
+            target,
+            at(Device::Mouse, 300),
+        ))
+        .unwrap();
+    assert!(idle(&mut session).inputs().is_empty());
+    assert_eq!(session.native_pointer_continuation(), Some(rearmed));
+    assert_eq!(session.version(), version);
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+}
+
+#[test]
+fn native_capture_acquisition_with_missing_facts_only_clears_the_timer() {
+    for (unknown_delivery, unknown_capture, metadata) in [
+        (true, false, at(Device::Mouse, 240)),
+        (false, true, at(Device::Mouse, 240)),
+        (true, true, at(Device::Mouse, 240)),
+        (false, false, PointerEventMetadata::untimed(Device::Mouse)),
+    ] {
+        let (mut session, binding, scene) = fixture(true);
+        let target = scene.point(SECOND, 0.625);
+        let version = session.version();
+        let request = start_drag(&mut session, Lane::Desktop, binding, &scene, target);
+        let delivery = if unknown_delivery {
+            NativePointerOwner::Unknown
+        } else {
+            NativePointerOwner::Native(binding)
+        };
+        let capture = if unknown_capture {
+            NativePointerOwner::Unknown
+        } else {
+            NativePointerOwner::Native(binding)
+        };
+        session
+            .record_native_pointer(
+                NativePointerInput::new(
+                    POINTER,
+                    request.capture_acquired_event().unwrap(),
+                    desktop_location(binding, target),
+                    delivery,
+                    capture,
+                )
+                .with_metadata(metadata),
+            )
+            .unwrap();
+        let unknown = idle(&mut session);
+        assert!(unknown.inputs().is_empty());
+        assert!(unknown.manipulation_feedback().is_empty());
+        assert!(!unknown.workspace_changed());
+        assert_eq!(session.version(), version);
+        assert!(session.has_active_gesture(), "{delivery:?}/{capture:?}");
+        assert!(session.view().item(FIRST).unwrap().is_selected());
+        assert!(session.native_pointer_continuation().is_none());
+        assert!(!session.has_pending_native_input());
+
+        session
+            .record_native_pointer(input(
+                &session,
+                Lane::Desktop,
+                binding,
+                Event::Moved,
+                target,
+                at(Device::Mouse, 260),
+            ))
+            .unwrap();
+        assert!(!reduce(&mut session, &scene).workspace_changed());
+        let rearmed = session.native_pointer_continuation().unwrap();
+        assert_eq!(rearmed.deadline(), Duration::from_millis(410));
+        assert_eq!(rearmed.position(), target);
+        assert_ne!(rearmed.token(), request.token());
+        let acquired = rearmed.capture_acquired_event().unwrap();
+        session
+            .record_native_pointer(input(
+                &session,
+                Lane::Desktop,
+                binding,
+                acquired,
+                target,
+                at(Device::Mouse, 300),
+            ))
+            .unwrap();
+        assert!(idle(&mut session).inputs().is_empty());
+        let restarted = session.native_pointer_continuation().unwrap();
+        assert_eq!(restarted.deadline(), Duration::from_millis(450));
+        assert_ne!(restarted.token(), rearmed.token());
+        assert!(restarted.capture_acquired_event().is_none());
+        assert_eq!(session.version(), version);
+        assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    }
+}
+
+#[test]
+fn native_capture_acquisition_with_known_owner_loss_cancels_the_gesture() {
+    for lost in [NativePointerOwner::None, NativePointerOwner::Foreign] {
+        for delivery_lost in [false, true] {
+            let (mut session, binding, scene) = fixture(true);
+            let target = scene.point(SECOND, 0.625);
+            let version = session.version();
+            let request = start_drag(&mut session, Lane::Desktop, binding, &scene, target);
+            let acquired = request.capture_acquired_event().unwrap();
+            let (delivery, capture) = if delivery_lost {
+                (lost, NativePointerOwner::Unknown)
+            } else {
+                (NativePointerOwner::Unknown, lost)
+            };
+            session
+                .record_native_pointer(
+                    NativePointerInput::new(
+                        POINTER,
+                        acquired,
+                        desktop_location(binding, target),
+                        delivery,
+                        capture,
+                    )
+                    .with_metadata(at(Device::Mouse, 240)),
+                )
+                .unwrap();
+            let cancelled = idle(&mut session);
+            assert!(!cancelled.workspace_changed());
+            assert!(selections(&cancelled).is_empty());
+            let [feedback] = cancelled.manipulation_feedback() else {
+                panic!("known owner loss must cancel once: {cancelled:?}");
+            };
+            assert!(matches!(feedback.status(), Status::Cancelled(_)));
+            assert_eq!(session.version(), version);
+            assert!(!session.has_active_gesture(), "{delivery:?}/{capture:?}");
+            assert!(session.native_pointer_continuation().is_none());
+            assert!(!session.has_pending_native_input());
+            assert!(session.view().item(FIRST).unwrap().is_selected());
+            assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+
+            session
+                .record_native_pointer(input(
+                    &session,
+                    Lane::Desktop,
+                    binding,
+                    acquired,
+                    target,
+                    at(Device::Mouse, 250),
+                ))
+                .unwrap();
+            assert!(idle(&mut session).inputs().is_empty());
+            assert!(!session.has_active_gesture());
+            assert!(session.native_pointer_continuation().is_none());
+            assert_eq!(session.version(), version);
+        }
+    }
+}
+
+#[test]
+fn obsolete_capture_acquisition_still_observes_current_capture_loss() {
+    for capture in [
+        NativePointerOwner::Unknown,
+        NativePointerOwner::None,
+        NativePointerOwner::Foreign,
+    ] {
+        let (mut session, binding, scene) = fixture(true);
+        let target = scene.point(SECOND, 0.625);
+        let version = session.version();
+        let old = start_drag(&mut session, Lane::Desktop, binding, &scene, target);
+        session
+            .record_native_pointer(input(
+                &session,
+                Lane::Desktop,
+                binding,
+                RELEASE,
+                target,
+                at(Device::Mouse, 20),
+            ))
+            .unwrap();
+        let released = finish(
+            session
+                .begin_native_host_frame(|query| {
+                    NativeReceiverAnswer::Blocked(query.presented_surface())
+                })
+                .unwrap(),
+        );
+        assert!(!released.workspace_changed());
+        assert!(!session.has_active_gesture());
+        session
+            .record_native_pointer_batch([
+                input(
+                    &session,
+                    Lane::Desktop,
+                    binding,
+                    PRESS,
+                    scene.point(FIRST, 0.25),
+                    at(Device::Mouse, 30),
+                ),
+                input(
+                    &session,
+                    Lane::Desktop,
+                    binding,
+                    Event::Moved,
+                    target,
+                    at(Device::Mouse, 40),
+                ),
+            ])
+            .unwrap();
+        assert!(!reduce(&mut session, &scene).workspace_changed());
+        let current = session.native_pointer_continuation().unwrap();
+        assert_ne!(old.token(), current.token());
+        session
+            .record_native_pointer(
+                NativePointerInput::new(
+                    POINTER,
+                    old.capture_acquired_event().unwrap(),
+                    desktop_location(binding, target),
+                    NativePointerOwner::Native(binding),
+                    capture,
+                )
+                .with_metadata(at(Device::Mouse, 50)),
+            )
+            .unwrap();
+        let observed = idle(&mut session);
+        assert!(!observed.workspace_changed());
+        assert!(selections(&observed).is_empty());
+        assert!(session.native_pointer_continuation().is_none());
+        assert_eq!(session.version(), version);
+        assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+        if capture == NativePointerOwner::Unknown {
+            assert!(session.has_active_gesture());
+            assert!(observed.manipulation_feedback().is_empty());
+            session
+                .record_native_pointer(input(
+                    &session,
+                    Lane::Desktop,
+                    binding,
+                    Event::Moved,
+                    target,
+                    at(Device::Mouse, 60),
+                ))
+                .unwrap();
+            assert!(!reduce(&mut session, &scene).workspace_changed());
+            let rearmed = session.native_pointer_continuation().unwrap();
+            assert_eq!(rearmed.deadline(), Duration::from_millis(210));
+            assert!(rearmed.capture_acquired_event().is_some());
+        } else {
+            assert!(!session.has_active_gesture());
+            let [feedback] = observed.manipulation_feedback() else {
+                panic!("known capture loss must cancel the current gesture exactly once");
+            };
+            assert!(matches!(feedback.status(), Status::Cancelled(_)));
+        }
+    }
+}
+
+#[test]
+fn a_local_capture_token_cannot_authorize_acquisition_after_desktop_handoff() {
+    let (mut session, binding, scene) = fixture(true);
+    let target = scene.point(SECOND, 0.625);
+    let version = session.version();
+    let local = start_drag(&mut session, Lane::Local, binding, &scene, target);
+    assert!(local.source_input().is_none());
+    assert!(local.capture_acquired_event().is_none());
+    let local_acquired = Event::CaptureAcquired(local.token());
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Local,
+            binding,
+            local_acquired,
+            target,
+            at(Device::Mouse, 15),
+        ))
+        .unwrap();
+    assert!(idle(&mut session).inputs().is_empty());
+    assert_eq!(session.native_pointer_continuation(), Some(local));
+    let packet = NativeLocalToDesktopHandoff::new(
+        sample(local.local_coordinates().unwrap(), binding, target),
+        desktop_location(binding, target),
+    );
+    session
+        .record_native_pointer(
+            NativePointerInput::new_handoff(
+                POINTER,
+                Event::Moved,
+                packet,
+                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding),
+            )
+            .with_metadata(at(Device::Mouse, 20)),
+        )
+        .unwrap();
+    assert!(!reduce(&mut session, &scene).workspace_changed());
+    let desktop = session.native_pointer_continuation().unwrap();
+    assert!(desktop.local_coordinates().is_none());
+    assert_eq!(
+        desktop.source_input(),
+        Some(NativeDragSourceInput::Preserve)
+    );
+    assert_eq!(desktop.deadline(), Duration::from_millis(170));
+    assert_ne!(desktop.token(), local.token());
+    let desktop_acquired = desktop.capture_acquired_event().unwrap();
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            local_acquired,
+            target,
+            at(Device::Mouse, 240),
+        ))
+        .unwrap();
+    let rejected = idle(&mut session);
+    assert!(rejected.inputs().is_empty());
+    assert!(rejected.manipulation_feedback().is_empty());
+    assert!(!rejected.workspace_changed());
+    assert_eq!(session.native_pointer_continuation(), Some(desktop));
+    assert!(session.has_active_gesture());
+    assert_eq!(session.version(), version);
+    assert!(session.view().item(FIRST).unwrap().is_selected());
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    session
+        .record_native_pointer(input(
+            &session,
+            Lane::Desktop,
+            binding,
+            desktop_acquired,
+            target,
+            at(Device::Mouse, 250),
+        ))
+        .unwrap();
+    assert!(idle(&mut session).inputs().is_empty());
+    let restarted = session.native_pointer_continuation().unwrap();
+    assert_eq!(restarted.deadline(), Duration::from_millis(400));
+    assert_ne!(restarted.token(), desktop.token());
+    assert_eq!(restarted.position(), target);
+    assert!(restarted.capture_acquired_event().is_none());
+    assert_eq!(session.version(), version);
 }
