@@ -159,6 +159,8 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          # The library fork does not track its test workspace lockfile.
+          cargo generate-lockfile --manifest-path .ci/winit-fork/Cargo.toml
           pointer_fact_tests=(
             platform_impl::macos::view::pointer_route_tests::frontmost_winit_window_is_reported_exactly
             platform_impl::macos::view::pointer_route_tests::desktop_and_foreign_windows_remain_distinct
@@ -296,6 +298,8 @@ jobs:
 
       - name: Run pinned X11 pointer and work-area fact tests
         run: |
+          # Resolve once, then keep the source-fork test run locked.
+          cargo generate-lockfile --manifest-path .ci/winit-fork/Cargo.toml
           x11_fact_tests=(
             platform_impl::linux::x11::pointer_facts::tests::button_transition_uses_post_event_state
             platform_impl::linux::x11::pointer_facts::tests::implicit_capture_stays_with_first_delivery_until_last_release
