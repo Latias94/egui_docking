@@ -15,10 +15,116 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-03 semantic-state final qualification
+
+The final tranche follows `ddd77a5` and completes the functional work in the
+[semantic-state plan](plans/2026-11-02-dockspace-semantic-state-refactor.md).
+The full P0–P5 scope is complete. The
+[completion audit](audits/2026-11-03-semantic-state-completion.md) maps the plan's
+phases and invariants to maintained tests and final-source receipts. Historical
+receipts below do not substitute for this checkpoint. Implementation is committed
+as `72a75d9`, `ddd77a5`, `3a294c6` and `68bb666`; no push or PR is part of delivery.
+
+Touching-boundary resize freezes the exact complete layout projection. It merges
+incident gap movement, propagates outer-edge changes through orthogonal splits,
+and keeps non-touching siblings at their projected pixel sizes. Every affected
+node's minimum and maximum constrain one shared displacement per axis. Pointer,
+single-splitter and junction actions reconstruct one deduplicated `ResizeSplits`
+transaction. Central leaves consume residual space; zero effective motion keeps
+original weight bits. The former incident-only handle solver is deleted. A final
+N-ary regression preserves a tiny positive far-side central child when f32 sibling
+rounding exhausts its mathematical residual; its own positive weight remains
+representable and the existing normalized-sum tolerance is unchanged.
+
+Six public immediate/deferred regressions fail against the immutable `ddd77a5`
+snapshot, then pass against this implementation. They exercise exact nested and
+N-ary pane sizes, descendant limits, both central choices, four-arm junctions,
+semantic adjustments, failed/abandoned candidates and exact sequence retry.
+The first test attempts exposed two fixture assumptions (an occluded version-control
+separator and a Ready paint plan after a complete release batch). Corrected fixtures
+retain all geometric, weight and rollback assertions; final red/green records use
+the same test bytes. Earlier fixture failures are not functional counterexamples.
+
+Independent numerical review found strict zero overflow/unallocated checks rejecting
+ULP residuals, plus min/max checks ignoring rectangle coordinate subtraction error.
+Four maintained min/max endpoint tests fail before the fix and pass afterward on
+both axes; large-origin actual overflow, unallocated space and compressed gaps still
+reject. All 14 geometry tests pass after the final central-residual follow-up.
+Batch command validation also changes from 64 complete root builds to one in its
+64-split structural regression, while rejecting
+a foreign member and a different frozen fingerprint in the same batch. The cache
+exists only within that validation call; it is not another graph or authority owner.
+
+Two additional independent public counterexamples are repaired:
+
+- Closing A's popup while preserving B's valid output allows a new B smooth-scroll
+  Begin/Update/End sequence without remeasurement. Existing scroll owners still end
+  when semantic popup routing actually changes. The owner captures current routing
+  from its validated journal presentation rather than B's historical visual plan.
+- A retired logical surface can reattach and present its same-host headless successor
+  before old outputs settle. Old Presented/Dropped results and exact stream reclamation
+  cannot authorize, retire or disturb that successor. Native endpoints and other
+  retirement causes retain their exact reuse guards. Failed/abandoned frames publish
+  neither retirement nor presentation. A final foreign-host review additionally
+  requires no active owner or a distinct same-host active successor before
+  predecessor reclamation. Both proof preparation and consumption recheck this
+  condition; two red negative tests now pass.
+
+Local focused evidence is in `dockspace-touching-final-red-gates.json`,
+`dockspace-touching-numeric-green.json`, `dockspace-semantic-final-red-gates.json`,
+`dockspace-semantic-final-focused-green.json` and
+`dockspace-semantic-final-green-batch-proof.json`, all under `/tmp`.
+The final source inventory is `/tmp/dockspace-semantic-final-v2-source.json` (512
+production, test, manifest, lockfile, README and tool paths). Qualification uses
+one Cargo owner, one build job and serial tests. Linux has no nextest, so its
+explicit fallback is `cargo test -- --test-threads=1`. MacOS uses nextest.
+
+| Final-source gate | Actual result |
+| --- | --- |
+| Workspace, all targets/features | 2,005 passed |
+| Public default / serde | 213 / 241 passed |
+| Product serde / official egui | 117 / 15 passed |
+| Native Linux all targets/features | 619 passed; 5 explicit ignored cases |
+| Native Linux assertion-disabled library | 540 passed; same 5 explicit ignored cases |
+| MacOS literal default entrypoint | 540 passed; 1 explicit opt-in skip |
+| MacOS all-feature assertion-disabled library | 540 passed; 1 explicit opt-in skip |
+| Tooling | Core/native correctness/suspicious Clippy, strict docs, ten doctests, core dependency isolation and five formatting workspaces pass |
+| Matched extracted archives | Cargo verification passes; all 280 core and 36 adapter Rust files and both crate READMEs byte-match source; extracted public 213/241, official 15 and engine example pass |
+| MacOS windows | Default/bounded redock and six output-pressure modes pass |
+| X11 windows | Default/bounded redock, actual recover/retain/cancel close, six pressure modes, thirteen physical targets, four stationary modes and real Shift suppression/reacquisition pass |
+| Explicit native opt-in cases | Original output, full-output capacity, actual press capture, close/create/age renderer boundary and release-mode wall-time gates pass separately |
+
+Native normal/noassert suites include the same-coordinator 10,000-lifetime soak.
+Broad-run ignores are not relabelled passed by the model suite; the separate
+isolated runs above supply their actual platform/measurement qualification.
+
+The 1 kHz physical load keeps its 900 Hz floor, 100 ms release bound and 4 MiB
+storage allowance. Original 100 ms Docker CPU quota periods stall the injector
+and fail cadence despite receiving all callbacks; those failed attempts remain
+recorded. Instrumentation records 14 throttle periods and 346 ms throttled time.
+A 10 ms period reduces gaps but remains below the rate floor. With the same
+image, binary, total 1 CPU quota and 4 GiB memory, a 1 ms quota period passes
+twice: injection 988.4/988.2 Hz, all 1,000 callbacks at 981.5/989.8 Hz,
+release-to-model upper bounds 22.26/22.07 ms, and 3,534,000 reserved bytes.
+No input burst, catch-up, code change or lower threshold is used. The successful
+load profile explicitly requires its 1 ms quota period; longer-period injector
+attempts remain unqualified. Other window gates retain their original container.
+
+Final receipts under `/tmp` use the `dockspace-semantic-final-v2-` prefix:
+`linux-gates.json`, `package-gates.json`, `x11-gates.json`,
+`x11-isolated-gates.json`, `load-1ms-period.json`, `load-1ms-confirm.json`,
+`macos-gates.json` and `format.json`. The independent-review receipt is
+`dockspace-semantic-final-review.json`. The earlier v1 source and successful
+receipts remain separate from v2's three changed Rust paths and requalification.
+These finite records do not certify GPU scanout, unenabled platforms or general
+cross-platform ImGui parity. Independent CI changes and `docs/reviews/` remain
+outside this work.
+
 ## 2026-11-02 semantic-state refactor, first tranche
 
-The [active follow-up plan](plans/2026-11-02-dockspace-semantic-state-refactor.md)
-remains open. This tranche implements all nine executed counterexamples from the
+At this historical checkpoint, the
+[follow-up plan](plans/2026-11-02-dockspace-semantic-state-refactor.md)
+remained open. This tranche implements all nine executed counterexamples from the
 [ImGui review](audits/2026-11-02-dockspace-imgui-review.md), plus independently
 reviewed presentation/native interleavings. The following records describe this
 tranche only. Production depth handling, dynamic logical surfaces, pending-mutation
@@ -95,7 +201,8 @@ substitution, push or PR is part of this tranche.
 ## 2026-11-02 semantic-state structural tranche
 
 Implementation follows `72a75d9`; the structural tranche passes the qualification below.
-Nested touching-boundary resizing is still open in the active plan.
+Nested touching-boundary resizing was still open at this checkpoint; the final
+qualification above closes it.
 
 - One `Option<PendingMutation>` replaces the drag-release, contained-release and
   presentation-rehome Options. One concrete presentation tracker owns exact emitted

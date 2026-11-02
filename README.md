@@ -10,7 +10,7 @@ The repository has undergone a breaking refactor. There is no compatibility
 layer for the former `egui_docking`, `egui_tiles`, or pre-refactor persistence
 interfaces.
 
-The current engine-host and direct-manipulation plan lives in
+The earlier engine-host and direct-manipulation plan lives in
 [`docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md`](docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md).
 It prioritizes a documented public host API and an independent consumer with
 no egui dependency before broader native certification. The recording consumer
@@ -19,10 +19,19 @@ on two logical surfaces, complete ordered gestures, contained content, close
 approval and exact feedback/focus. Finite native throughput, lifecycle, layout
 and stationary profiles also have qualified checkpoints. The exact native fork
 revisions are published, and clean-checkout CI-equivalent delivery passes.
-The [completion audit](docs/COMPLETION_AUDIT.md) closes the current plan within
+The [completion audit](docs/COMPLETION_AUDIT.md) closes that plan within
 these documented profiles.
 Additional platform claims need separate evidence.
 The earlier product-boundary plan supplies the persistence and ownership context.
+
+The [semantic-state follow-up](docs/plans/2026-11-02-dockspace-semantic-state-refactor.md)
+addresses the subsequent ImGui comparison: stable semantic identities, independent
+surface presentation and popup routing, nested touching-boundary resizing,
+continuous native preparation, incremental logical surfaces and measured workspace
+sharing. The [completion audit](docs/audits/2026-11-03-semantic-state-completion.md)
+records its completed implementation, independent review and final qualification.
+Dated evidence in [VALIDATION](docs/VALIDATION.md) distinguishes each source
+checkpoint and the finite platform profiles.
 
 ## Capability matrix
 

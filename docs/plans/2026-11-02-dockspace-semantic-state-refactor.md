@@ -1,6 +1,6 @@
 # Dockspace semantic state and engine-host refactor
 
-Date: 2026-11-02. Status: active; first functional tranche qualified; structural work remains open.
+Date: 2026-11-02. Completed: 2026-11-03 within the documented host and finite reference profiles.
 
 This follows the [independent ImGui comparison](../audits/2026-11-02-dockspace-imgui-review.md),
 which demonstrates nine public-path counterexamples against `ca8f0c3`. It adds
@@ -10,9 +10,12 @@ remains an engine-owned UI/render loop; egui is the validation adapter.
 
 ## Execution status
 
-The full plan is the active Goal. No slice is qualified merely because its code
-has landed in the working tree. Cargo and real-window work have one main-thread
-owner; implementation and read-only review lanes use disjoint write scopes.
+The full plan is implemented and qualified. The
+[completion audit](../audits/2026-11-03-semantic-state-completion.md) maps every
+phase and invariant to maintained oracles and final-source receipts. Cargo and
+real-window work had one main-thread owner; implementation and read-only review
+lanes used disjoint write scopes. Working-tree presence alone was never counted
+as qualification.
 
 - P0: all nine public-path counterexamples are maintained host-harness tests;
   same-prefix, separately settled and abandoned-settlement cases now pass.
@@ -28,7 +31,8 @@ owner; implementation and read-only review lanes use disjoint write scopes.
   preserves weights, and unrelated scroll preserves/rebinds stationary work only
   through a fresh exact output. Product declaration clone/compile/drop and production
   measurement are iterative; the 10,000-level public scene passes. Nested touching-boundary
-  resize remains open.
+  resize now shares one solver across pointer, splitter and junction actions. Six
+  public regressions fail on the old snapshot and pass on the new implementation.
 - P4: native preparation uses continuous relevant facts in the existing streams;
   actual source recovery cancels all create phases even after readiness loss.
   First-tranche native model and finite macOS/X11 qualification pass. Work-area selection
@@ -55,7 +59,31 @@ Structural-tranche qualification passes workspace 1,988, public default 202 / se
 docs, correctness/suspicious Clippy and four formatting workspaces. The five ignored
 native opt-in/isolated-renderer cases retain their own qualification scope. Optimized
 X11 default/bounded redock, six pressure cases and physical guide docking pass.
-Nested touching-boundary resizing and final full-plan delivery remain open.
+The final tranche implements touching-frontier resizing, including two independently
+reviewed floating-point endpoint defects. Four new numerical counterexamples fail
+before the coordinate-aware fix and pass afterward; actual overflow and compressed
+gaps remain rejected. A 64-split frontier now validates a root once per command
+validation rather than once per split, with stale/foreign source controls.
+
+Final independent review also found two missed interleavings: sibling smooth-scroll
+owners captured an obsolete visual popup revision, and a removed logical surface's
+unsettled predecessor stream prevented same-host headless reincarnation. Their public
+counterexamples now pass after targeted fixes. Real popup changes still terminate
+old scrolling; native endpoint and foreign-host reuse guards remain.
+
+Final frozen-source qualification passes workspace 2,005, public default 213 /
+serde 241, product serde 117, official 15, native all-targets 619 and noassert
+library 540, strict core/native docs, Clippy, ten doctests, dependency isolation
+and five formatting workspaces. Matched extracted packages and their independent
+consumers pass. MacOS default/noassert each pass 540 tests, including the same
+10,000-lifetime coordinator soak; real default/bounded redock and six pressure
+modes pass. X11 refreshes the complete enabled physical/stationary/Shift profile,
+real close policy, pressure and the separately selected ignored native cases.
+The 1 kHz load passes twice with the same 1 CPU / 4 GiB budget and a 1 ms quota
+period; longer-period injector failures remain explicitly recorded. Final
+independent review closes the numerical and foreign-host findings with no
+remaining confirmed P1/P2 in that scope. See the completion audit for exact
+commands, source identities, limits and local commit references.
 
 Independent CI changes and `docs/reviews/` are excluded from all slice commits.
 

@@ -31,6 +31,14 @@ tabs-root journey presents each source-only projection while jittering across a
 magnetic boundary: the target stays latched inside its release margin and changes
 outside it. Framework-clearance facts never replace the core target solver.
 
+`tests/nested_splitter.rs` compares nested touching-boundary resizing through
+pointer and semantic actions. It checks distant-pane pixel preservation,
+descendant minimum limits, central leaves, N-ary splits and four-arm junctions
+with immediate or deferred output handling. Failed and abandoned frames publish
+none of the proposed split updates; a successful junction release applies the
+whole set once. Returning to the original boundary preserves weight bits and
+does not change the workspace version.
+
 `tests/magnetic_targeting.rs` submits ordered targeting directives both on real
 edges and as modifier-only semantic controls. Its recording outputs cover
 suppression, exact rollback, foreign-pointer isolation, stale-preview rejection,
@@ -188,6 +196,13 @@ surface's exact presented receiver, docks content into the new central region,
 migrates it back, retires the empty surface, and reuses its semantic IDs without
 reactivating predecessor outputs. Typed policy/nonempty/native/recovery refusals
 and abandoned/poisoned-frame retries preserve published state.
+The successor can present before predecessor outputs settle; late predecessor
+results and exact stream reclamation cannot disturb the successor's authority.
+
+`tests/popup_scroll_continuity.rs` keeps a sibling's presented output through a
+popup open/close cycle. A new smooth-scroll sequence uses current semantic popup
+routing without remeasuring that sibling. An existing sequence still terminates
+when the popup routing actually changes.
 
 `tests/deep_layout.rs` compiles, clones, drops and measures a 10,000-level product
 declaration on the ordinary thread stack. Error cleanup is included. The recording
