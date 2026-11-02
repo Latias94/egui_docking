@@ -2148,7 +2148,13 @@ impl PresentationLedger {
             return Err(PresentationLedgerError::StreamHasPendingOutputs { stream });
         }
         if retirement == PresentationStreamRetirementCause::SurfaceRemoved {
-            if self.active_streams.contains_key(&state.surface) {
+            if let Some(active_stream) = self.active_streams.get(&state.surface)
+                && (*active_stream == stream
+                    || !self.streams.get(active_stream).is_some_and(|successor| {
+                        successor.host == host
+                            && successor.lifecycle == PresentationStreamLifecycle::Active
+                    }))
+            {
                 return Err(
                     PresentationLedgerError::SurfaceRemovedStreamRegainedOwnership {
                         stream,
@@ -2229,11 +2235,17 @@ impl PresentationLedger {
             self.streams.get(stream).is_some_and(|state| {
                 state.surface == surface
                     && state.endpoint == endpoint
-                    && matches!(state.lifecycle, PresentationStreamLifecycle::Retiring(_))
+                    && matches!(
+                        state.lifecycle,
+                        PresentationStreamLifecycle::Retiring(cause)
+                            if endpoint != HostPresentationEndpoint::Headless
+                                || cause != PresentationStreamRetirementCause::SurfaceRemoved
+                    )
             })
         }) {
-            // The same host may advance to a new core-frozen endpoint, but it
-            // cannot return to an exact retired endpoint and create ABA.
+            // Only surface removal permits a same-host headless successor with a new
+            // stream identity. Native endpoints and other retirement causes keep their
+            // reuse guard until the exact retiring stream has been reclaimed.
             return Err(PresentationLedgerError::RetiredEndpointCannotEmit {
                 surface,
                 endpoint,
@@ -2702,17 +2714,232 @@ mod tests {
 
     #[test]
     fn superseded_host_cannot_emit_a_replacement_stream_for_the_same_surface() {
+        for remove_surface in [false, true] {
+            let mut ledger = ledger();
+            let first_host = ledger.create_host().expect("first host lease");
+            let second_host = ledger.create_host().expect("second host lease");
+            let _old = ledger
+                .emit(
+                    first_host,
+                    SURFACE_A,
+                    HostPresentationEndpoint::Headless,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect("old emission");
+            if remove_surface {
+                ledger
+                    .retire_absent_surface_streams(&BTreeSet::new())
+                    .expect("surface removal retires the first host's stream");
+            }
+            let current = ledger
+                .emit(
+                    second_host,
+                    SURFACE_A,
+                    HostPresentationEndpoint::Headless,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect("current emission");
+
+            let error = ledger
+                .emit(
+                    first_host,
+                    SURFACE_A,
+                    HostPresentationEndpoint::Headless,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect_err("superseded host must not reclaim the surface");
+            assert!(matches!(
+                error,
+                PresentationLedgerError::SupersededHostCannotEmit {
+                    host,
+                    surface: SURFACE_A,
+                    active_stream,
+                } if host == first_host && active_stream == current.stream()
+            ));
+
+            let current_again = ledger
+                .emit(
+                    second_host,
+                    SURFACE_A,
+                    HostPresentationEndpoint::Headless,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect("current host remains active");
+            assert_eq!(current_again.stream(), current.stream());
+        }
+    }
+
+    #[test]
+    fn same_host_may_advance_endpoint_but_cannot_reuse_a_retired_endpoint() {
+        for first_endpoint in [HostPresentationEndpoint::Headless, native_endpoint(10)] {
+            let mut ledger = ledger();
+            let host = ledger.create_host().expect("host lease");
+            let second_endpoint = native_endpoint(11);
+            let first = ledger
+                .emit(
+                    host,
+                    SURFACE_A,
+                    first_endpoint,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect("first endpoint emission");
+            let successor = ledger
+                .emit(
+                    host,
+                    SURFACE_A,
+                    second_endpoint,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect("same host may advance to a new endpoint");
+            let successor_again = ledger
+                .emit(
+                    host,
+                    SURFACE_A,
+                    second_endpoint,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect("active successor remains usable");
+            assert_eq!(successor_again.stream(), successor.stream());
+
+            let error = ledger
+                .emit(
+                    host,
+                    SURFACE_A,
+                    first_endpoint,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect_err("retired endpoint must not regain authority");
+            assert!(matches!(
+                error,
+                PresentationLedgerError::RetiredEndpointCannotEmit {
+                    surface: SURFACE_A,
+                    endpoint,
+                    stream,
+                } if endpoint == first_endpoint && stream == first.stream()
+            ));
+        }
+    }
+
+    #[test]
+    fn removed_or_quiesced_native_endpoint_cannot_emit_before_reclamation() {
+        for quiesce_endpoint in [false, true] {
+            let mut ledger = ledger();
+            let host = ledger.create_host().expect("host lease");
+            let endpoint = native_endpoint(10);
+            let removed = ledger
+                .emit(
+                    host,
+                    SURFACE_A,
+                    endpoint,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect("native endpoint emits");
+            if quiesce_endpoint {
+                let HostPresentationEndpoint::Native(binding) = endpoint else {
+                    panic!("the fixture must use a native endpoint")
+                };
+                assert_eq!(
+                    ledger
+                        .retire_native_binding_streams_for_quiescence(host, binding)
+                        .expect("native endpoint quiescence retires its stream"),
+                    vec![removed.stream()]
+                );
+            } else {
+                ledger
+                    .retire_absent_surface_streams(&BTreeSet::new())
+                    .expect("surface removal retires its native stream");
+            }
+
+            let error = ledger
+                .emit(
+                    host,
+                    SURFACE_A,
+                    endpoint,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect_err("native endpoint reuse still requires exact reclamation");
+            assert!(matches!(
+                error,
+                PresentationLedgerError::RetiredEndpointCannotEmit {
+                    surface: SURFACE_A,
+                    endpoint: rejected_endpoint,
+                    stream,
+                } if rejected_endpoint == endpoint && stream == removed.stream()
+            ));
+        }
+    }
+
+    #[test]
+    fn removed_headless_stream_reclaims_without_disturbing_pending_successor() {
+        let mut ledger = ledger();
+        let host = ledger.create_host().expect("host lease");
+        let removed = ledger
+            .emit(
+                host,
+                SURFACE_A,
+                HostPresentationEndpoint::Headless,
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("headless predecessor emits");
+        ledger
+            .retire_absent_surface_streams(&BTreeSet::new())
+            .expect("surface removal retires its headless stream");
+        let successor = ledger
+            .emit(
+                host,
+                SURFACE_A,
+                HostPresentationEndpoint::Headless,
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("same host may emit a fresh headless incarnation");
+        assert_ne!(successor.stream(), removed.stream());
+        assert_ne!(successor.key(), removed.key());
+        assert_eq!(successor.key().ordinal_for_test(), 1);
+        assert_eq!(removed.key().ordinal_for_test(), 1);
+        assert!(matches!(
+            ledger.prepare_stream_quiescence(host, removed.stream()),
+            Err(PresentationLedgerError::StreamHasPendingOutputs { stream })
+                if stream == removed.stream()
+        ));
+
+        settle_retiring_stream(&mut ledger, host, removed, successor, 1);
+        let proof = ledger
+            .prepare_stream_quiescence(host, removed.stream())
+            .expect("a distinct active successor must not block exact predecessor quiescence");
+        ledger
+            .compact_quiesced_retiring_stream(proof, &BTreeSet::new())
+            .expect("settled predecessor reclaims independently of its successor");
+        assert!(!ledger.streams.contains_key(&removed.stream()));
+        assert_eq!(
+            ledger.hosts[&host].streams,
+            BTreeSet::from([successor.stream()])
+        );
+        assert_eq!(
+            ledger.active_surface_scope(SURFACE_A),
+            Some((successor.stream(), host, HostPresentationEndpoint::Headless))
+        );
+        assert_eq!(
+            ledger.pending_output_keys().collect::<Vec<_>>(),
+            vec![successor.key()]
+        );
+    }
+
+    #[test]
+    fn surface_removed_stream_cannot_quiesce_under_a_foreign_successor() {
         let mut ledger = ledger();
         let first_host = ledger.create_host().expect("first host lease");
         let second_host = ledger.create_host().expect("second host lease");
-        let _old = ledger
+        let removed = ledger
             .emit(
                 first_host,
                 SURFACE_A,
                 HostPresentationEndpoint::Headless,
                 HostPresentationOutputPayload::Bootstrap,
             )
-            .expect("old emission");
+            .expect("predecessor emits");
+        ledger
+            .retire_absent_surface_streams(&BTreeSet::new())
+            .expect("surface removal retires the predecessor");
         let current = ledger
             .emit(
                 second_host,
@@ -2720,8 +2947,37 @@ mod tests {
                 HostPresentationEndpoint::Headless,
                 HostPresentationOutputPayload::Bootstrap,
             )
-            .expect("current emission");
+            .expect("foreign host owns the successor");
+        let scope = ledger
+            .pending_stream_scope(first_host)
+            .expect("predecessor host pending scope");
+        ledger
+            .reduce_observation(
+                first_host,
+                &scope,
+                HostPresentationObservation::Batch(vec![HostPresentationObservationEntry::new(
+                    removed.stream(),
+                    HostPresentationStreamObservation::Captured {
+                        generation: HostPresentationCaptureGeneration::new(1),
+                        progress: HostPresentationProgress::Retired {
+                            settled_through: removed.key(),
+                            presented: Authority::Known(Some(removed.key())),
+                        },
+                    },
+                )]),
+            )
+            .expect("removed predecessor settles under the foreign owner");
 
+        let error = ledger
+            .prepare_stream_quiescence(first_host, removed.stream())
+            .expect_err("a foreign successor must prevent predecessor quiescence");
+        assert!(matches!(
+            error,
+            PresentationLedgerError::SurfaceRemovedStreamRegainedOwnership {
+                stream,
+                surface: SURFACE_A,
+            } if stream == removed.stream()
+        ));
         let error = ledger
             .emit(
                 first_host,
@@ -2729,7 +2985,7 @@ mod tests {
                 HostPresentationEndpoint::Headless,
                 HostPresentationOutputPayload::Bootstrap,
             )
-            .expect_err("superseded host must not reclaim the surface");
+            .expect_err("the superseded host must not reclaim the surface");
         assert!(matches!(
             error,
             PresentationLedgerError::SupersededHostCannotEmit {
@@ -2738,78 +2994,57 @@ mod tests {
                 active_stream,
             } if host == first_host && active_stream == current.stream()
         ));
+    }
 
-        let current_again = ledger
+    #[test]
+    fn surface_removed_stream_quiescence_rechecks_foreign_owner_on_consumption() {
+        let mut ledger = ledger();
+        let first_host = ledger.create_host().expect("first host lease");
+        let second_host = ledger.create_host().expect("second host lease");
+        let removed = ledger
+            .emit(
+                first_host,
+                SURFACE_A,
+                HostPresentationEndpoint::Headless,
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("predecessor emits");
+        ledger
+            .retire_absent_surface_streams(&BTreeSet::new())
+            .expect("surface removal retires the predecessor");
+        let successor = ledger
+            .emit(
+                first_host,
+                SURFACE_A,
+                HostPresentationEndpoint::Headless,
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("same-host successor emits");
+        settle_retiring_stream(&mut ledger, first_host, removed, successor, 1);
+        let proof = ledger
+            .prepare_stream_quiescence(first_host, removed.stream())
+            .expect("same-host successor permits preparing predecessor quiescence");
+
+        ledger
             .emit(
                 second_host,
                 SURFACE_A,
                 HostPresentationEndpoint::Headless,
                 HostPresentationOutputPayload::Bootstrap,
             )
-            .expect("current host remains active");
-        assert_eq!(current_again.stream(), current.stream());
-    }
-
-    #[test]
-    fn same_host_may_advance_endpoint_but_cannot_reuse_a_retired_endpoint() {
-        let mut ledger = ledger();
-        let host = ledger.create_host().expect("host lease");
-        let first_endpoint = HostPresentationEndpoint::Native(ViewportBinding::new(
-            EngineAuthorityDomainId::new_for_test(71),
-            WorkspaceEpoch::new(1),
-            SURFACE_A,
-            WindowToken::new(10),
-            WindowIncarnation::new(1),
-        ));
-        let second_endpoint = HostPresentationEndpoint::Native(ViewportBinding::new(
-            EngineAuthorityDomainId::new_for_test(71),
-            WorkspaceEpoch::new(1),
-            SURFACE_A,
-            WindowToken::new(11),
-            WindowIncarnation::new(1),
-        ));
-        let first = ledger
-            .emit(
-                host,
-                SURFACE_A,
-                first_endpoint,
-                HostPresentationOutputPayload::Bootstrap,
-            )
-            .expect("first endpoint emission");
-        let successor = ledger
-            .emit(
-                host,
-                SURFACE_A,
-                second_endpoint,
-                HostPresentationOutputPayload::Bootstrap,
-            )
-            .expect("same host may advance to a new endpoint");
-        let successor_again = ledger
-            .emit(
-                host,
-                SURFACE_A,
-                second_endpoint,
-                HostPresentationOutputPayload::Bootstrap,
-            )
-            .expect("active successor remains usable");
-        assert_eq!(successor_again.stream(), successor.stream());
-
+            .expect("foreign host takes ownership after proof preparation");
+        let before = ledger.clone();
         let error = ledger
-            .emit(
-                host,
-                SURFACE_A,
-                first_endpoint,
-                HostPresentationOutputPayload::Bootstrap,
-            )
-            .expect_err("retired endpoint must not regain authority");
+            .compact_quiesced_retiring_stream(proof, &BTreeSet::new())
+            .expect_err("consumption must recheck the current foreign owner");
         assert!(matches!(
             error,
-            PresentationLedgerError::RetiredEndpointCannotEmit {
-                surface: SURFACE_A,
-                endpoint,
+            PresentationLedgerError::SurfaceRemovedStreamRegainedOwnership {
                 stream,
-            } if endpoint == first_endpoint && stream == first.stream()
+                surface: SURFACE_A,
+            } if stream == removed.stream()
         ));
+        assert_eq!(ledger, before);
     }
 
     #[test]

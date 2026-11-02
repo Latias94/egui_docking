@@ -1139,7 +1139,7 @@ impl DockEngine {
             receiver: region,
             hit,
             endpoint,
-            popup_routing: plan.popup().revision(),
+            popup_routing: presentation.popup_revision(),
             policy: requirement.policy(),
             config: requirement.config(),
             geometry,

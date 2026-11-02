@@ -673,3 +673,224 @@ fn logical_surface_reattach_cannot_reauthorize_predecessor_outputs() {
         assert_eq!(session.version(), version);
     }
 }
+
+#[test]
+fn logical_surface_reattach_presents_successor_before_predecessor_outputs_settle() {
+    for late_result in [
+        SurfacePresentationResult::Presented,
+        SurfacePresentationResult::Dropped,
+    ] {
+        let mut session = session();
+        let (s1, s1_receiver) = paint_and_present(&mut session, S1, Some(SECOND));
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.attach_empty_surface_current(S2, R2).unwrap();
+        measure(&mut frame, S2);
+        finish(frame);
+        let (old_surface, old_receiver) = paint_and_present(&mut session, S2, None);
+        let (_, old_descriptor, late_output) = paint(&mut session, S2, None);
+        let late_artifact = late_output.presentation_artifact();
+
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.retire_empty_surface_current(S2).unwrap();
+        finish(frame);
+        assert!(session.view().surface(S2).is_none());
+        assert!(session.presented_surface(S2).is_none());
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.attach_empty_surface_current(S2, R2).unwrap();
+        measure(&mut frame, S2);
+        finish(frame);
+        let version = session.version();
+        let (_, new_descriptor, fresh_output) = paint(&mut session, S2, None);
+        let fresh_artifact = fresh_output.presentation_artifact();
+        assert_ne!(fresh_artifact, late_artifact);
+        assert_ne!(new_descriptor, old_descriptor);
+        assert!(session.presented_surface(S2).is_none());
+        assert!(session.bind_presented_receiver(&new_descriptor).is_none());
+
+        let fresh = present(&mut session, fresh_output);
+        assert_ne!(fresh, old_surface);
+        assert!(!fresh.matches_presentation_artifact(late_artifact));
+        let fresh_receiver = session.bind_presented_receiver(&new_descriptor).unwrap();
+        assert!(session.bind_presented_receiver(&old_descriptor).is_none());
+        assert!(
+            session
+                .bind_presented_receiver(&old_receiver.descriptor())
+                .is_none()
+        );
+        assert_preserved(&session, s1, s1_receiver);
+
+        session
+            .report_surface_presentation(late_output, late_result)
+            .unwrap();
+        let report = settle(&mut session);
+        assert!(
+            report
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.retires(late_artifact))
+        );
+        assert!(
+            report
+                .surface_presentation_commits()
+                .iter()
+                .all(|commit| !commit.settles(fresh_artifact))
+        );
+        assert_preserved(&session, fresh, fresh_receiver);
+        assert!(session.bind_presented_receiver(&old_descriptor).is_none());
+        assert_preserved(&session, s1, s1_receiver);
+
+        let reclaimed = settle(&mut session);
+        assert!(reclaimed.surface_presentation_commits().is_empty());
+        assert_preserved(&session, fresh, fresh_receiver);
+        assert!(session.bind_presented_receiver(&old_descriptor).is_none());
+        assert_preserved(&session, s1, s1_receiver);
+        assert_eq!(session.version(), version);
+    }
+}
+
+#[test]
+fn logical_surface_reattach_keeps_predecessor_results_separate_from_pending_successor() {
+    for late_result in [
+        SurfacePresentationResult::Presented,
+        SurfacePresentationResult::Dropped,
+    ] {
+        let mut session = session();
+        let (s1, s1_receiver) = paint_and_present(&mut session, S1, Some(SECOND));
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.attach_empty_surface_current(S2, R2).unwrap();
+        measure(&mut frame, S2);
+        finish(frame);
+        let (_, old_descriptor, late_output) = paint(&mut session, S2, None);
+        let late_artifact = late_output.presentation_artifact();
+
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.retire_empty_surface_current(S2).unwrap();
+        finish(frame);
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.attach_empty_surface_current(S2, R2).unwrap();
+        measure(&mut frame, S2);
+        finish(frame);
+        let version = session.version();
+        let (_, new_descriptor, fresh_output) = paint(&mut session, S2, None);
+        let fresh_artifact = fresh_output.presentation_artifact();
+        assert_ne!(fresh_artifact, late_artifact);
+        assert_ne!(new_descriptor, old_descriptor);
+
+        session
+            .report_surface_presentation(late_output, late_result)
+            .unwrap();
+        let report = settle(&mut session);
+        assert!(
+            report
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.retires(late_artifact))
+        );
+        assert!(
+            report
+                .surface_presentation_commits()
+                .iter()
+                .all(|commit| !commit.settles(fresh_artifact))
+        );
+        assert!(session.presented_surface(S2).is_none());
+        assert!(session.bind_presented_receiver(&old_descriptor).is_none());
+        assert!(session.bind_presented_receiver(&new_descriptor).is_none());
+        assert_preserved(&session, s1, s1_receiver);
+
+        let reclaimed = settle(&mut session);
+        assert!(reclaimed.surface_presentation_commits().is_empty());
+        assert!(session.presented_surface(S2).is_none());
+        let fresh = present(&mut session, fresh_output);
+        assert!(!fresh.matches_presentation_artifact(late_artifact));
+        assert!(session.bind_presented_receiver(&old_descriptor).is_none());
+        assert!(session.bind_presented_receiver(&new_descriptor).is_some());
+        assert_preserved(&session, s1, s1_receiver);
+        assert_eq!(session.version(), version);
+    }
+}
+
+#[test]
+fn logical_surface_reattach_does_not_publish_presentation_from_aborted_frames() {
+    for fail_frame in [false, true] {
+        let mut session = session();
+        let (s1, s1_receiver) = paint_and_present(&mut session, S1, Some(SECOND));
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.attach_empty_surface_current(S2, R2).unwrap();
+        measure(&mut frame, S2);
+        finish(frame);
+        let (old_surface, old_receiver) = paint_and_present(&mut session, S2, None);
+        let (_, old_descriptor, late_output) = paint(&mut session, S2, None);
+        let late_artifact = late_output.presentation_artifact();
+
+        let version = session.version();
+        let mut aborted = session.begin_host_frame().unwrap();
+        aborted.retire_empty_surface_current(S2).unwrap();
+        if fail_frame {
+            measure(&mut aborted, S1);
+            assert!(aborted.select_item_current(FIRST).is_err());
+            assert!(aborted.commit().is_err());
+        } else {
+            drop(aborted);
+        }
+        assert_eq!(session.version(), version);
+        assert!(session.view().surface(S2).is_some());
+        assert_preserved(&session, old_surface, old_receiver);
+        assert_preserved(&session, s1, s1_receiver);
+
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.retire_empty_surface_current(S2).unwrap();
+        finish(frame);
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.attach_empty_surface_current(S2, R2).unwrap();
+        measure(&mut frame, S2);
+        finish(frame);
+        let version = session.version();
+        let (_, new_descriptor, fresh_output) = paint(&mut session, S2, None);
+        let fresh_artifact = fresh_output.presentation_artifact();
+        session
+            .report_surface_presentation(fresh_output, SurfacePresentationResult::Presented)
+            .unwrap();
+        session
+            .report_surface_presentation(late_output, SurfacePresentationResult::Presented)
+            .unwrap();
+
+        let mut aborted = session.begin_host_frame().unwrap();
+        if fail_frame {
+            measure(&mut aborted, S1);
+            assert!(aborted.select_item_current(FIRST).is_err());
+            assert!(aborted.commit().is_err());
+        } else {
+            drop(aborted);
+        }
+        assert_eq!(session.version(), version);
+        assert!(session.presented_surface(S2).is_none());
+        assert!(session.bind_presented_receiver(&old_descriptor).is_none());
+        assert!(session.bind_presented_receiver(&new_descriptor).is_none());
+        assert_preserved(&session, s1, s1_receiver);
+
+        let report = settle(&mut session);
+        assert!(
+            report
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.retires(late_artifact))
+        );
+        assert!(
+            report
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.presents(fresh_artifact))
+        );
+        let fresh = session.presented_surface(S2).unwrap();
+        assert!(fresh.matches_presentation_artifact(fresh_artifact));
+        assert!(!fresh.matches_presentation_artifact(late_artifact));
+        let fresh_receiver = session.bind_presented_receiver(&new_descriptor).unwrap();
+        assert!(session.bind_presented_receiver(&old_descriptor).is_none());
+        assert_preserved(&session, s1, s1_receiver);
+
+        settle(&mut session);
+        assert_preserved(&session, fresh, fresh_receiver);
+        assert_preserved(&session, s1, s1_receiver);
+        assert_eq!(session.version(), version);
+    }
+}
