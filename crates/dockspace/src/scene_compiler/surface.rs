@@ -653,13 +653,18 @@ fn compile_root(
         pane_minimums,
         layout,
     } = root_measurement;
-    ready.push_root_layout_facts(RootLayoutFacts::new(root, bounds, pane_minimums));
     let root_overrides = resize_overrides
         .iter()
         .copied()
         .filter(|override_| override_.source().root() == root)
         .collect::<Vec<_>>();
-    let projection = layout.project(bounds, &root_overrides)?;
+    let projection = Arc::new(layout.project(bounds, &root_overrides)?);
+    ready.push_root_layout_facts(RootLayoutFacts::new(
+        root,
+        bounds,
+        pane_minimums,
+        Arc::clone(&projection),
+    ));
     let mut node_depths = BTreeMap::new();
     let mut pending_depths = vec![(root_record.node, 0_usize)];
     while let Some((node, depth)) = pending_depths.pop() {

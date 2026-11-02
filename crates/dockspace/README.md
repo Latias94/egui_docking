@@ -140,6 +140,23 @@ partial topology, lifecycle, input watermark or presentation authority. Other
 ledgers retain their existing owned representation; this is a measured, local
 copy optimization rather than a second mutation authority.
 
+## Nested split resizing
+
+Dragging a separator moves the descendant boundaries which touch it. Descendant
+siblings away from that boundary keep their projected pixel size. An orthogonal
+split passes the moving edge through all its children; a split on the same axis
+passes it only through its first or last child. This also applies to N-ary splits
+and junctions with several incident separators.
+
+The exact presented layout supplies the complete geometry and constraints.
+All affected minima and maxima limit one shared displacement per axis before
+weights are reconstructed. Pointer gestures, splitter adjustments and junction
+adjustments use the same solver and publish their split updates in one atomic
+workspace mutation. Zero effective movement preserves the original persistent
+weights, including a gesture which moves away and returns to its starting point.
+An overflowing, underallocated or compressed separator projection cannot begin
+a resize; clipped hit geometry is never substituted for complete layout facts.
+
 ## Pointer device and event time
 
 Local and native pointer inputs accept `with_metadata(PointerEventMetadata::new(

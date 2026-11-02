@@ -88,7 +88,7 @@ use self::reducer::{
     SequencedInput,
 };
 use self::splitter_geometry::{
-    prepare_resize_axis_groups, resize_delta_interval, split_resize_update, split_resize_updates,
+    prepare_resize_axis_groups, resize_axis_group_updates, split_resize_updates,
 };
 use self::surface_contribution::PreparedSurfaceContributionState;
 pub use self::surface_contribution::{
@@ -132,7 +132,7 @@ use crate::frame::{
     PanelFocus, SurfaceVacancyAuthority, ViewportCoordinator, ViewportCoordinatorError,
 };
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
-use crate::graph::{Node, Workspace};
+use crate::graph::{Axis, Node, Workspace};
 use crate::ids::{
     EngineAuthorityDomainId, FloatingPresentationId, HostPresentationAttemptId, InputSequence,
     ItemId, NativeCreateSagaId, PresentationIdentityFrontier, ReducerCausalOrdinal, ReducerTickId,
@@ -149,18 +149,17 @@ use crate::interaction::{
     ContainedTransformPlacement, ContainedTransformPreview, ContainedTransformSessionId,
     ContainedTransformStart, DragArmStart, DragTimedContinuation, EscapeDelivery,
     FrozenClickAction, FrozenCloseClick, FrozenContainedDragOrigin, FrozenDragOrigin,
-    FrozenPresentationAuthority, FrozenResizeHandle, FrozenTabListMenuBackdropClick,
-    FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick, FrozenTabStripControlClick,
-    GestureLane, GestureOwner, HoverSelectionState, InteractionCancelReason,
-    InteractionCounterError, InteractionDelivery, InteractionEvent, InteractionEventKind,
-    InteractionOutcome, InteractionRejection, InteractionState, InteractionStatus,
-    JournalDragSourceGeometry, JournalDragThresholdOrigin, ManipulationPositionKey,
-    PointerContinuationRequest, PointerContinuationSession, PointerContinuationToken, PreviewProof,
-    PreviewResolutionStatus, PreviewVisual, ResizeStart, SceneGestureContinuation,
-    SceneGestureContinuationDraft, SceneGestureContinuationSource, SceneGestureSession,
-    ScrollApplication, ScrollReductionOutcome, ScrollSessionId, ScrollSuppressionReason,
-    ScrollTerminationReason, TabStripEdgeDirection, TabStripEdgeScrollState, TouchPressState,
-    WorkspaceDeliveryKind,
+    FrozenPresentationAuthority, FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick,
+    FrozenTabListMenuRowClick, FrozenTabStripControlClick, GestureLane, GestureOwner,
+    HoverSelectionState, InteractionCancelReason, InteractionCounterError, InteractionDelivery,
+    InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
+    InteractionState, InteractionStatus, JournalDragSourceGeometry, JournalDragThresholdOrigin,
+    ManipulationPositionKey, PointerContinuationRequest, PointerContinuationSession,
+    PointerContinuationToken, PreviewProof, PreviewResolutionStatus, PreviewVisual, ResizeStart,
+    SceneGestureContinuation, SceneGestureContinuationDraft, SceneGestureContinuationSource,
+    SceneGestureSession, ScrollApplication, ScrollReductionOutcome, ScrollSessionId,
+    ScrollSuppressionReason, ScrollTerminationReason, TabStripEdgeDirection,
+    TabStripEdgeScrollState, TouchPressState, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::{DockspaceLayout, DockspaceView, ProductAction};
@@ -2342,19 +2341,29 @@ impl DockEngine {
             return false;
         }
 
-        resize.axis_groups.iter().all(|group| {
-            group.handles.iter().all(|handle| {
-                self.workspace
-                    .capture_node_source(handle.source.root(), handle.source.node())
-                    .is_ok_and(|current| current == handle.source)
-                    && matches!(
-                        self.workspace.presentation_for_root(handle.source.root()),
-                        Some(crate::RootPresentationOwner::Main { surface })
-                            | Some(crate::RootPresentationOwner::Contained { surface, .. })
-                            if surface == resize.surface
-                    )
+        let mut root_sources = BTreeMap::new();
+        resize
+            .axis_groups
+            .iter()
+            .flat_map(|group| group.sources())
+            .all(|source| {
+                let (frozen, current) = root_sources.entry(source.root()).or_insert_with(|| {
+                    let current = self
+                        .workspace
+                        .root_fingerprint(source.root())
+                        .is_ok_and(|current| current == *source.fingerprint())
+                        && matches!(
+                            self.workspace.presentation_for_root(source.root()),
+                            Some(crate::RootPresentationOwner::Main { surface })
+                                | Some(crate::RootPresentationOwner::Contained { surface, .. })
+                                if surface == resize.surface
+                        );
+                    (source.fingerprint().clone(), current)
+                });
+                *current
+                    && (Arc::ptr_eq(&frozen.0, &source.fingerprint().0)
+                        || &*frozen == source.fingerprint())
             })
-        })
     }
 
     fn scene_gesture_continuation_draft(
@@ -4692,30 +4701,25 @@ impl DockEngine {
                 ));
             }
         };
-        if let Err(error) = self.check_resize_policy(&source, policy) {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::ResizeRejected(error),
-            ));
-        }
-        let Some(allowed_delta) = resize_delta_interval(&record) else {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::SplitterResizeGeometryUnavailable,
-            ));
+        let axis = record.axis();
+        let groups = match self.prepare_checked_resize_axis_groups(
+            painted.plan(),
+            vec![(source, record)],
+            policy,
+        ) {
+            Ok(groups) => groups,
+            Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
         };
-        let clamped_delta = delta.clamp(allowed_delta.minimum, allowed_delta.maximum);
-        let handle = FrozenResizeHandle {
-            source,
-            record,
-            allowed_delta,
+        let delta = match axis {
+            Axis::Horizontal => [delta, 0.0],
+            Axis::Vertical => [0.0, delta],
         };
-        let Some(update) = split_resize_update(&handle, clamped_delta) else {
+        let Some(updates) = resize_axis_group_updates(&groups, delta) else {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::SplitterResizeGeometryUnavailable,
             ));
         };
-        let command = WorkspaceCommand::ResizeSplits {
-            splits: vec![update],
-        };
+        let command = WorkspaceCommand::ResizeSplits { splits: updates };
         match self.apply_interaction_command_with_policy(input, policy, &command, events)? {
             CommandApplication::Applied { outcome, changed } => {
                 if changed {
@@ -4813,28 +4817,23 @@ impl DockEngine {
                     ));
                 }
             };
-            if let Err(error) = self.check_resize_policy(&source, policy) {
-                return Ok(InteractionOutcome::Rejected(
-                    InteractionRejection::ResizeRejected(error),
-                ));
-            }
             sources.push((source, record));
         }
 
-        let Some(group) = prepare_resize_axis_groups(sources)
-            .and_then(|groups| groups.into_iter().find(|group| group.axis == axis))
-        else {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::SplitterResizeGeometryUnavailable,
-            ));
+        let painted = match self.semantic_candidate(scene) {
+            Ok(painted) => painted,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
         };
-        let shared_delta = delta.clamp(group.common_delta.minimum, group.common_delta.maximum);
-        let Some(updates) = group
-            .handles
-            .iter()
-            .map(|handle| split_resize_update(handle, shared_delta))
-            .collect::<Option<Vec<_>>>()
-        else {
+        let groups = match self.prepare_checked_resize_axis_groups(painted.plan(), sources, policy)
+        {
+            Ok(groups) => groups,
+            Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
+        };
+        let delta = match axis {
+            Axis::Horizontal => [delta, 0.0],
+            Axis::Vertical => [0.0, delta],
+        };
+        let Some(updates) = resize_axis_group_updates(&groups, delta) else {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::SplitterResizeGeometryUnavailable,
             ));

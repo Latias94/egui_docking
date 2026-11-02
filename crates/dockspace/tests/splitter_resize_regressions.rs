@@ -111,7 +111,7 @@ fn junction_workspace() -> (Workspace, NodeId, NodeId) {
     )
 }
 
-fn cross_junction_workspace() -> (Workspace, NodeId, NodeId, NodeId) {
+fn cross_junction_workspace() -> (Workspace, [NodeId; 5]) {
     let mut builder = Workspace::builder();
     let top_left = builder.insert_node(Node::tabs([ItemId::new(1)]));
     let lower_left_tall_top = builder.insert_node(Node::tabs([ItemId::new(2)]));
@@ -145,9 +145,7 @@ fn cross_junction_workspace() -> (Workspace, NodeId, NodeId, NodeId) {
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     (
         builder.build().expect("cross junction workspace is valid"),
-        root,
-        left,
-        right,
+        [root, left, right, lower_left, lower_left_tall],
     )
 }
 
@@ -959,7 +957,7 @@ fn junction_resize_clamps_one_axis_and_commits_both_axes_in_one_revision() {
 
 #[test]
 fn cross_junction_clamps_all_touching_handles_to_one_common_axis_delta() {
-    let (workspace, root, left, right) = cross_junction_workspace();
+    let (workspace, [root, left, right, lower_left, lower_left_tall]) = cross_junction_workspace();
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
     let mut host = support::TestPresentationHost::new(&mut engine);
     support::publish_surface_with(
@@ -999,6 +997,7 @@ fn cross_junction_clamps_all_touching_handles_to_one_common_axis_delta() {
     assert_eq!(press, region_press);
     let (_, left_record) = splitter(&engine, left);
     let (_, right_record) = splitter(&engine, right);
+    let (_, nested_record) = splitter(&engine, lower_left_tall);
     let positive_limit = |record: &SplitterRecord| {
         let index = record.id().index;
         let before = record.child_extents()[index];
@@ -1006,6 +1005,8 @@ fn cross_junction_clamps_all_touching_handles_to_one_common_axis_delta() {
         (record.before_maximum_extent() - before).min(after - record.after_minimum_extent())
     };
     assert!(positive_limit(&left_record) < positive_limit(&right_record));
+    let touching_limit = positive_limit(&left_record)
+        .min(nested_record.child_extents()[0] - nested_record.before_minimum_extent());
     let initial_version = engine.version();
     let mut pointer = create_pointer_stream(&mut engine, &host);
 
@@ -1042,7 +1043,7 @@ fn cross_junction_clamps_all_touching_handles_to_one_common_axis_delta() {
         panic!("cross-junction update must publish one atomic batch: {update:?}");
     };
     assert_eq!(updated_session, session);
-    assert_eq!(splits.len(), 3);
+    assert_eq!(splits.len(), 5);
     let projected_delta = |record: &SplitterRecord, split: NodeId| {
         let update = splits
             .iter()
@@ -1055,7 +1056,7 @@ fn cross_junction_clamps_all_touching_handles_to_one_common_axis_delta() {
     let left_delta = projected_delta(&left_record, left);
     let right_delta = projected_delta(&right_record, right);
     assert!((left_delta - right_delta).abs() <= 1.0e-4);
-    assert!((left_delta - positive_limit(&left_record)).abs() <= 1.0e-4);
+    assert!((left_delta - touching_limit).abs() <= 1.0e-4);
 
     let delivered_transition = submit_pointer_edge(
         &mut engine,
@@ -1077,12 +1078,12 @@ fn cross_junction_clamps_all_touching_handles_to_one_common_axis_delta() {
         ..
     } = delivered
     else {
-        panic!("cross-junction release must commit one three-split command: {delivered:?}");
+        panic!("cross-junction release must commit its complete touching frontier: {delivered:?}");
     };
     assert_eq!(delivered_session, session);
     assert_eq!(
         committed.into_iter().collect::<BTreeSet<_>>(),
-        BTreeSet::from([root, left, right])
+        BTreeSet::from([root, left, right, lower_left, lower_left_tall])
     );
     assert_eq!(
         engine.version().revision().get(),

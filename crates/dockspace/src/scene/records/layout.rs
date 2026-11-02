@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
 use crate::interaction::{ContainedTransformSessionId, DragSessionId};
+use crate::layout::LayoutProjection;
 use crate::presentation_config::DockPresentationConfig;
 use crate::scene_manifest::{
     AuthoritativeSurfaceMeasurements, PaneMinimumKey, SurfaceMeasurements, TabIntrinsic,
@@ -86,6 +87,7 @@ pub(crate) struct RootLayoutFacts {
     root: RootId,
     bounds: LogicalRect,
     pane_minimums: BTreeMap<PaneMinimumKey, LogicalSize>,
+    projection: Arc<LayoutProjection>,
 }
 
 impl RootLayoutFacts {
@@ -93,11 +95,13 @@ impl RootLayoutFacts {
         root: RootId,
         bounds: LogicalRect,
         pane_minimums: BTreeMap<PaneMinimumKey, LogicalSize>,
+        projection: Arc<LayoutProjection>,
     ) -> Self {
         Self {
             root,
             bounds,
             pane_minimums,
+            projection,
         }
     }
 
@@ -107,6 +111,10 @@ impl RootLayoutFacts {
 
     pub(crate) const fn bounds(&self) -> LogicalRect {
         self.bounds
+    }
+
+    pub(crate) fn projection(&self) -> &LayoutProjection {
+        &self.projection
     }
 
     pub(crate) fn pane_minimums(&self) -> impl Iterator<Item = (PaneMinimumKey, LogicalSize)> + '_ {

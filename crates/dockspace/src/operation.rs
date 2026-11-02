@@ -1567,11 +1567,51 @@ fn validate_split_resizes_structure(
         return Err(CommandError::EmptySplitResizeBatch);
     }
     let mut seen = std::collections::BTreeSet::new();
+    // A touching frontier shares one frozen root. Verify that snapshot once,
+    // then check every additional source against its exact proof and members.
+    let mut roots = BTreeMap::<_, (&crate::command::NodeFingerprint, BTreeSet<_>)>::new();
     let mut validated = Vec::with_capacity(splits.len());
     for resize in splits {
         let split = resize.split();
         let weights = resize.weights();
-        validate_node_source(workspace, split)?;
+        if let Some((expected, members)) = roots.get(&split.root()) {
+            if !workspace.nodes.contains_key(split.node()) {
+                return Err(CommandError::MissingNode {
+                    role: ReferenceRole::Source,
+                    node: split.node(),
+                });
+            }
+            if !members.contains(&split.node()) {
+                return Err(CommandError::NodeOutsideRoot {
+                    role: ReferenceRole::Source,
+                    root: split.root(),
+                    node: split.node(),
+                });
+            }
+            if *expected != split.fingerprint() {
+                return Err(CommandError::StaleNode {
+                    role: ReferenceRole::Source,
+                    node: split.node(),
+                    expected: split.fingerprint().clone(),
+                    actual: (*expected).clone(),
+                });
+            }
+        } else {
+            validate_node_source(workspace, split)?;
+            roots.insert(
+                split.root(),
+                (
+                    split.fingerprint(),
+                    split
+                        .fingerprint()
+                        .0
+                        .nodes
+                        .iter()
+                        .map(|node| node.id)
+                        .collect(),
+                ),
+            );
+        }
         let node_id = split.node();
         if !seen.insert(node_id) {
             return Err(CommandError::DuplicateSplitResize { split: node_id });
@@ -3441,6 +3481,7 @@ fn edge_axis_and_order(edge: Edge) -> (Axis, bool) {
 mod tests {
     mod arrangement_lock;
     mod logical_surfaces;
+    mod split_resize;
 
     use super::*;
     use crate::command::{ContainedRootSource, DockFraction, SurfaceRosterSource};

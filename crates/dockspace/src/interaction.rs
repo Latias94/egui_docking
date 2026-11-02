@@ -20,9 +20,9 @@ use crate::drop_target::DropTargetId;
 use crate::event::{PendingReductionCause, ReductionCause};
 use crate::frame::NativeCreateRequest;
 use crate::geometry::{
-    LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
+    Constraints, LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
 };
-use crate::graph::Axis;
+use crate::graph::{Axis, SplitWeight};
 use crate::ids::{
     FloatingPresentationId, InputSequence, ItemId, RootId, SurfaceId, WorkspaceEpoch,
 };
@@ -46,9 +46,9 @@ use crate::runtime::direct_manipulation::{
     TargetAcquisition, TargetLatchDecision, TargetObservation, reconcile_target,
 };
 use crate::scene::{
-    PresentationLayoutFacts, SplitterRecord, SplitterResizeTarget, SurfaceCoordinateCapture,
-    SurfaceSceneStamp, TabBarSceneId, TabListMenuBackdropRecord, TabListMenuRecord,
-    TabListMenuRowRecord, TabSceneId, TabStripControlRecord,
+    PresentationLayoutFacts, SplitterResizeTarget, SurfaceCoordinateCapture, SurfaceSceneStamp,
+    TabBarSceneId, TabListMenuBackdropRecord, TabListMenuRecord, TabListMenuRowRecord, TabSceneId,
+    TabStripControlRecord,
 };
 use crate::scene_manifest::{RequirementRevision, SurfaceMeasurementTicket};
 use crate::tab_strip::{
@@ -2389,17 +2389,38 @@ pub(crate) struct ActiveResize {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct FrozenResizeHandle {
+pub(crate) struct FrozenResizeSplit {
     pub(crate) source: NodeSource,
-    pub(crate) record: SplitterRecord,
-    pub(crate) allowed_delta: ResizeDeltaInterval,
+    pub(crate) axis: Axis,
+    pub(crate) bounds: LogicalRect,
+    pub(crate) constraints: Constraints,
+    pub(crate) weights: Vec<SplitWeight>,
+    pub(crate) child_extents: Vec<f64>,
+    pub(crate) child_minimum_extents: Vec<f64>,
+    pub(crate) child_maximum_extents: Vec<f64>,
+    /// Extent changes per unit displacement along the containing group's axis.
+    pub(crate) child_coefficients: Vec<f64>,
+    pub(crate) central_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FrozenResizeAxisGroup {
     pub(crate) axis: Axis,
-    pub(crate) handles: Vec<FrozenResizeHandle>,
+    pub(crate) splits: Vec<FrozenResizeSplit>,
     pub(crate) common_delta: ResizeDeltaInterval,
+}
+
+impl FrozenResizeAxisGroup {
+    pub(crate) fn sources(&self) -> impl Iterator<Item = &NodeSource> {
+        self.splits.iter().map(|split| &split.source)
+    }
+
+    pub(crate) fn resized_sources(&self) -> impl Iterator<Item = &NodeSource> {
+        self.splits
+            .iter()
+            .filter(|split| split.axis == self.axis)
+            .map(|split| &split.source)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

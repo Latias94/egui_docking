@@ -1,7 +1,9 @@
 use super::super::*;
 use super::*;
-use crate::graph::{Node, Workspace};
+use crate::geometry::{Constraints, LogicalSize};
+use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use crate::ids::{EngineAuthorityDomainId, ItemId, NodeId, WorkspaceEpoch};
+use crate::layout::{LayoutMetrics, project_root};
 use crate::policy::{PolicyRevision, TabBarInteraction};
 use crate::presentation_config::{DockPresentationConfig, PresentationConfigRevision};
 use crate::presentation_observation::PresentationOutputSerial;
@@ -86,12 +88,33 @@ fn plan(config: DockPresentationConfig) -> PresentationPlan {
         .expect("measurements satisfy the exact set")
         .require_authoritative()
         .expect("bounds are authoritative");
+    let root = RootId::new(1);
+    let root_bounds = rect(40.0, 40.0, 520.0, 520.0);
+    let mut builder = Workspace::builder();
+    let leaf = builder.insert_node(Node::tabs([ItemId::new(1)]));
+    builder.set_root(root, RootRecord::new(leaf));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
+    let workspace = builder.build().expect("single-root fixture is valid");
+    let constraints = Constraints::new(
+        LogicalSize::new(0.0, 0.0).expect("zero minimum is valid"),
+        root_bounds.size(),
+    )
+    .expect("root constraints are valid");
+    let projection = project_root(
+        &workspace,
+        root,
+        root_bounds,
+        &[(leaf, constraints)].into_iter().collect(),
+        LayoutMetrics::new(config.splitter_thickness()).expect("splitter metric is valid"),
+    )
+    .expect("root projection is valid");
     let mut plan = PresentationPlan::new(SurfaceId::new(1), bounds);
     plan.install_layout_facts(config, measurements);
     plan.push_root_layout_facts(RootLayoutFacts::new(
-        RootId::new(1),
-        rect(40.0, 40.0, 520.0, 520.0),
+        root,
+        root_bounds,
         Default::default(),
+        std::sync::Arc::new(projection),
     ));
     plan
 }

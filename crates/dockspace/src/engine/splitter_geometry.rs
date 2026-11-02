@@ -1,283 +1,519 @@
-//! Feasible-delta solving and weight reconstruction for splitter resizing.
+//! Frozen touching-boundary geometry shared by pointer and semantic resizing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::command::{NodeSource, SplitResize};
-use crate::geometry::LogicalPoint;
-use crate::graph::Axis;
+use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
+use crate::graph::{Axis, Node, SplitWeight, Workspace};
+use crate::ids::{NodeId, RootId};
 use crate::interaction::{
-    ActiveResize, FrozenResizeAxisGroup, FrozenResizeHandle, ResizeDeltaInterval,
+    ActiveResize, FrozenResizeAxisGroup, FrozenResizeSplit, ResizeDeltaInterval,
 };
-use crate::scene::SplitterRecord;
+use crate::layout::{LayoutProjection, SplitProjection};
+use crate::scene::{PresentationPlan, SplitterRecord};
 
 pub(super) fn split_resize_updates(
     resize: &ActiveResize,
     current_pointer: LogicalPoint,
 ) -> Option<Vec<SplitResize>> {
-    let mut updates = Vec::new();
-    for group in &resize.axis_groups {
-        let initial = match group.axis {
-            Axis::Horizontal => resize.initial_pointer.x(),
-            Axis::Vertical => resize.initial_pointer.y(),
-        };
-        let current = match group.axis {
-            Axis::Horizontal => current_pointer.x(),
-            Axis::Vertical => current_pointer.y(),
-        };
-        let requested_delta = current - initial;
-        if !requested_delta.is_finite() {
-            return None;
-        }
-        let shared_delta =
-            requested_delta.clamp(group.common_delta.minimum, group.common_delta.maximum);
-        for handle in &group.handles {
-            updates.push(split_resize_update(handle, shared_delta)?);
-        }
-    }
-    Some(updates)
+    resize_axis_group_updates(
+        &resize.axis_groups,
+        [
+            current_pointer.x() - resize.initial_pointer.x(),
+            current_pointer.y() - resize.initial_pointer.y(),
+        ],
+    )
 }
 
-pub(super) fn resize_delta_interval(record: &SplitterRecord) -> Option<ResizeDeltaInterval> {
-    let index = record.id().index;
-    let extents = record.child_extents();
-    let before = *extents.get(index)?;
-    let after = *extents.get(index + 1)?;
-    let pair_extent = before + after;
-    let full_extent = extents.iter().sum::<f64>();
-    if !full_extent.is_finite() || full_extent <= 0.0 {
-        return None;
-    }
-    let representable_minimum = full_extent * f64::from(f32::EPSILON);
-    let before_minimum = record.before_minimum_extent().max(representable_minimum);
-    let after_minimum = record.after_minimum_extent().max(representable_minimum);
-    let before_maximum = record.before_maximum_extent();
-    let after_maximum = record.after_maximum_extent();
-    let minimum_sum = before_minimum + after_minimum;
-    let tolerance = f64::EPSILON
-        * pair_extent
-            .abs()
-            .max(minimum_sum.abs())
-            .max(before_maximum.abs())
-            .max(after_maximum.abs())
-            .max(1.0)
-        * 16.0;
-    if !pair_extent.is_finite()
-        || pair_extent <= 0.0
-        || !minimum_sum.is_finite()
-        || !before_maximum.is_finite()
-        || !after_maximum.is_finite()
-        || before_maximum < before_minimum
-        || after_maximum < after_minimum
-        || (minimum_sum > pair_extent && minimum_sum - pair_extent > tolerance)
-    {
-        return None;
-    }
-    let minimum = (before_minimum - before).max(after - after_maximum);
-    let mut maximum = (before_maximum - before).min(after - after_minimum);
-    if minimum > maximum && minimum - maximum > tolerance {
-        return None;
-    }
-    if minimum > maximum {
-        maximum = minimum;
-    }
-    Some(ResizeDeltaInterval { minimum, maximum })
-}
-
+/// Freezes the complete touching frontier from the exact presented projection.
+/// Missing layout facts never fall back to clipped handle geometry.
 pub(super) fn prepare_resize_axis_groups(
+    workspace: &Workspace,
+    plan: &PresentationPlan,
     handles: Vec<(NodeSource, SplitterRecord)>,
 ) -> Option<Vec<FrozenResizeAxisGroup>> {
-    let mut grouped = BTreeMap::<Axis, Vec<FrozenResizeHandle>>::new();
+    if handles.is_empty() {
+        return None;
+    }
+    let facts = plan.layout_facts()?;
+    let mut roots = BTreeMap::<RootId, NodeSource>::new();
+    // Include both outer slots, and merge every incident gap before traversal.
+    // No handle independently solves a child shared with another incident gap.
+    let mut incidents = BTreeMap::<Axis, BTreeMap<(RootId, NodeId), Vec<Option<f64>>>>::new();
     for (source, record) in handles {
-        let allowed_delta = resize_delta_interval(&record)?;
-        grouped
-            .entry(record.axis())
+        let id = *record.id();
+        if source.root() != id.root || source.node() != id.split || !record.operable() {
+            return None;
+        }
+        match roots.entry(id.root) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                if workspace
+                    .root_fingerprint(id.root)
+                    .ok()?
+                    .ne(source.fingerprint())
+                {
+                    return None;
+                }
+                entry.insert(source.clone());
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                if entry.get().fingerprint() != source.fingerprint() {
+                    return None;
+                }
+            }
+        }
+        let projection = facts.root(id.root)?.projection();
+        let Node::Split {
+            axis,
+            children,
+            weights,
+        } = workspace.node(id.split)?
+        else {
+            return None;
+        };
+        let split = projection.splits.get(&id.split)?;
+        if *axis != record.axis()
+            || split.axis != *axis
+            || id.index >= children.len().checked_sub(1)?
+            || record.child_extents() != split.child_extents.as_slice()
+            || record.central_index() != split.central_index
+            || record.weights() != weights.as_slice()
+            || record.before_minimum_extent() != *split.child_minimum_extents.get(id.index)?
+            || record.after_minimum_extent() != *split.child_minimum_extents.get(id.index + 1)?
+            || record.before_maximum_extent() != *split.child_maximum_extents.get(id.index)?
+            || record.after_maximum_extent() != *split.child_maximum_extents.get(id.index + 1)?
+        {
+            return None;
+        }
+        let edges = incidents
+            .entry(*axis)
             .or_default()
-            .push(FrozenResizeHandle {
-                source,
-                record,
-                allowed_delta,
-            });
+            .entry((id.root, id.split))
+            .or_insert_with(|| vec![None; children.len() + 1]);
+        merge_edge(edges.get_mut(id.index + 1)?, 1.0)?;
     }
 
-    grouped
+    incidents
         .into_iter()
-        .map(|(axis, mut handles)| {
-            handles.sort_unstable_by_key(|handle| *handle.record.id());
-            let minimum = handles
-                .iter()
-                .map(|handle| handle.allowed_delta.minimum)
-                .max_by(f64::total_cmp)?;
-            let maximum = handles
-                .iter()
-                .map(|handle| handle.allowed_delta.maximum)
-                .min_by(f64::total_cmp)?;
-            (minimum <= maximum).then_some(FrozenResizeAxisGroup {
+        .map(|(axis, incidents)| {
+            let mut group = FrozenResizeAxisGroup {
                 axis,
-                handles,
-                common_delta: ResizeDeltaInterval { minimum, maximum },
-            })
+                splits: Vec::new(),
+                common_delta: ResizeDeltaInterval {
+                    minimum: f64::NEG_INFINITY,
+                    maximum: f64::INFINITY,
+                },
+            };
+            let incident_roots = incidents
+                .keys()
+                .map(|(root, _)| *root)
+                .collect::<BTreeSet<_>>();
+            let mut found_incidents = 0;
+            for root in incident_roots {
+                let prototype = roots.get(&root)?;
+                let root_facts = facts.root(root)?;
+                let projection = root_facts.projection();
+                let root_node = workspace.root(root)?.node;
+                if projection.node_rects.get(&root_node) != Some(&root_facts.bounds()) {
+                    return None;
+                }
+                let mut pending = vec![(root_node, [0.0, 0.0], false)];
+                let mut visited = BTreeSet::new();
+                while let Some((node, outer_edges, check_extent)) = pending.pop() {
+                    if !visited.insert(node) {
+                        return None;
+                    }
+                    let incident = incidents.get(&(root, node));
+                    let affected = outer_edges != [0.0, 0.0] || incident.is_some();
+                    if affected || check_extent {
+                        let rect = *projection.node_rects.get(&node)?;
+                        let constraints = *projection.node_constraints.get(&node)?;
+                        intersect_extent_interval(
+                            &mut group.common_delta,
+                            rect_extent(rect, axis),
+                            size_extent(constraints.min(), axis),
+                            size_extent(constraints.max(), axis),
+                            outer_edges[1] - outer_edges[0],
+                            rect_extent_tolerance(rect, axis),
+                        )?;
+                    }
+                    let Node::Split {
+                        axis: split_axis,
+                        children,
+                        weights,
+                    } = workspace.node(node)?
+                    else {
+                        if incident.is_some() {
+                            return None;
+                        }
+                        continue;
+                    };
+                    let mut edges = vec![0.0; children.len() + 1];
+                    if *split_axis == axis {
+                        *edges.first_mut()? = outer_edges[0];
+                        *edges.last_mut()? = outer_edges[1];
+                        if let Some(incident) = incident {
+                            if incident.len() != edges.len() {
+                                return None;
+                            }
+                            for (edge, movement) in edges.iter_mut().zip(incident) {
+                                if let Some(movement) = movement {
+                                    *edge = *movement;
+                                }
+                            }
+                            found_incidents += 1;
+                        }
+                    } else if incident.is_some() {
+                        return None;
+                    }
+                    if affected {
+                        let split = projection.splits.get(&node)?;
+                        let bounds = *projection.node_rects.get(&node)?;
+                        validate_split_projection(
+                            projection,
+                            split,
+                            *split_axis,
+                            bounds,
+                            children,
+                            weights,
+                            facts.config().splitter_thickness(),
+                        )?;
+                        let coefficients = if *split_axis == axis {
+                            edges
+                                .windows(2)
+                                .map(|pair| pair[1] - pair[0])
+                                .collect::<Vec<_>>()
+                        } else {
+                            vec![0.0; children.len()]
+                        };
+                        if *split_axis == axis {
+                            intersect_split_intervals(
+                                &mut group.common_delta,
+                                split,
+                                &coefficients,
+                            )?;
+                        }
+                        group.splits.push(FrozenResizeSplit {
+                            // Traversal proves membership; share the exact root snapshot.
+                            source: NodeSource {
+                                root,
+                                node,
+                                fingerprint: prototype.fingerprint().clone(),
+                            },
+                            axis: *split_axis,
+                            bounds,
+                            constraints: *projection.node_constraints.get(&node)?,
+                            weights: weights.clone(),
+                            child_extents: split.child_extents.clone(),
+                            child_minimum_extents: split.child_minimum_extents.clone(),
+                            child_maximum_extents: split.child_maximum_extents.clone(),
+                            child_coefficients: coefficients,
+                            central_index: split.central_index,
+                        });
+                    }
+                    for (index, child) in children.iter().copied().enumerate().rev() {
+                        let child_edges = if *split_axis == axis {
+                            [*edges.get(index)?, *edges.get(index + 1)?]
+                        } else {
+                            outer_edges
+                        };
+                        pending.push((child, child_edges, affected));
+                    }
+                }
+            }
+            if found_incidents != incidents.len()
+                || !group.common_delta.minimum.is_finite()
+                || !group.common_delta.maximum.is_finite()
+                || group.common_delta.minimum > 0.0
+                || group.common_delta.maximum < 0.0
+            {
+                return None;
+            }
+            Some(group)
         })
         .collect()
 }
 
-pub(super) fn split_resize_update(handle: &FrozenResizeHandle, delta: f64) -> Option<SplitResize> {
-    if !delta.is_finite() {
+/// Produces one deduplicated batch. Orthogonal frontiers constrain motion and
+/// continuation; only the group matching a split's own axis emits its weights.
+pub(super) fn resize_axis_group_updates(
+    groups: &[FrozenResizeAxisGroup],
+    delta: [f64; 2],
+) -> Option<Vec<SplitResize>> {
+    if groups.is_empty() || delta.iter().any(|value| !value.is_finite()) {
         return None;
     }
-    if delta < handle.allowed_delta.minimum || delta > handle.allowed_delta.maximum {
+    let mut axes = BTreeSet::new();
+    let mut updates = BTreeMap::new();
+    for group in groups {
+        if !axes.insert(group.axis) {
+            return None;
+        }
+        let requested = match group.axis {
+            Axis::Horizontal => delta[0],
+            Axis::Vertical => delta[1],
+        };
+        let shared = requested.clamp(group.common_delta.minimum, group.common_delta.maximum);
+        for split in group.splits.iter().filter(|split| split.axis == group.axis) {
+            let update = split_update(split, shared)?;
+            if updates
+                .insert((split.source.root(), split.source.node()), update)
+                .is_some()
+            {
+                return None;
+            }
+        }
+    }
+    Some(updates.into_values().collect())
+}
+
+fn merge_edge(edge: &mut Option<f64>, movement: f64) -> Option<()> {
+    if edge.is_some_and(|previous| previous != movement) {
         return None;
     }
-    let record = &handle.record;
-    let index = record.id().index;
-    let mut extents = record.child_extents().to_vec();
-    let before = *extents.get(index)?;
-    let after = *extents.get(index + 1)?;
-    extents[index] = before + delta;
-    extents[index + 1] = after - delta;
-    if extents[index] == before && extents[index + 1] == after {
-        // Projected pixels already include minimum/maximum constraints. A
-        // stationary boundary must not overwrite the frozen durable intent.
+    *edge = Some(movement);
+    Some(())
+}
+
+fn rect_extent(rect: LogicalRect, axis: Axis) -> f64 {
+    match axis {
+        Axis::Horizontal => rect.width(),
+        Axis::Vertical => rect.height(),
+    }
+}
+
+fn size_extent(size: LogicalSize, axis: Axis) -> f64 {
+    match axis {
+        Axis::Horizontal => size.width(),
+        Axis::Vertical => size.height(),
+    }
+}
+
+fn tolerance(left: f64, right: f64) -> f64 {
+    left.abs().max(right.abs()).max(1.0) * f64::EPSILON * 64.0
+}
+
+fn rect_extent_tolerance(rect: LogicalRect, axis: Axis) -> f64 {
+    match axis {
+        Axis::Horizontal => tolerance(rect.min().x(), rect.max().x()),
+        Axis::Vertical => tolerance(rect.min().y(), rect.max().y()),
+    }
+}
+
+fn intersect_extent_interval(
+    interval: &mut ResizeDeltaInterval,
+    extent: f64,
+    minimum: f64,
+    maximum: f64,
+    coefficient: f64,
+    coordinate_tolerance: f64,
+) -> Option<()> {
+    if !extent.is_finite()
+        || !minimum.is_finite()
+        || !maximum.is_finite()
+        || minimum < 0.0
+        || minimum > maximum
+        || minimum - extent > tolerance(extent, minimum).max(coordinate_tolerance)
+        || extent - maximum > tolerance(extent, maximum).max(coordinate_tolerance)
+    {
+        return None;
+    }
+    if coefficient == 0.0 {
+        return Some(());
+    }
+    let lower = (minimum - extent).min(0.0) / coefficient;
+    let upper = (maximum - extent).max(0.0) / coefficient;
+    interval.minimum = interval.minimum.max(lower.min(upper));
+    interval.maximum = interval.maximum.min(lower.max(upper));
+    (interval.minimum <= interval.maximum).then_some(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_split_projection(
+    projection: &LayoutProjection,
+    split: &SplitProjection,
+    axis: Axis,
+    bounds: LogicalRect,
+    children: &[NodeId],
+    weights: &[SplitWeight],
+    thickness: f64,
+) -> Option<()> {
+    let count = children.len();
+    if count < 2
+        || split.axis != axis
+        || count != weights.len()
+        || count != split.child_extents.len()
+        || count != split.child_minimum_extents.len()
+        || count != split.child_maximum_extents.len()
+        || split.splitter_rects.len() != count - 1
+        || split.central_index.is_some_and(|central| central >= count)
+    {
+        return None;
+    }
+    let gaps = std::iter::repeat_n(thickness, count - 1).sum::<f64>();
+    let available = split.child_extents.iter().sum::<f64>();
+    let extent = rect_extent(bounds, axis);
+    // Child allocation and rectangle max-minus-min may differ by a few ULPs.
+    // Judge residuals at the bounds' coordinate scale, without relaxing gaps.
+    let extent_tolerance =
+        tolerance(available + gaps, extent).max(rect_extent_tolerance(bounds, axis));
+    if !available.is_finite()
+        || available <= 0.0
+        || !gaps.is_finite()
+        || gaps > extent
+        || !split.overflow.is_finite()
+        || split.overflow < 0.0
+        || split.overflow > extent_tolerance
+        || !split.unallocated.is_finite()
+        || split.unallocated < 0.0
+        || split.unallocated > extent_tolerance
+        || (available + gaps - extent).abs() > extent_tolerance
+        || split.splitter_rects.iter().any(|gap| {
+            (rect_extent(*gap, axis) - thickness).abs()
+                > rect_extent_tolerance(*gap, axis).max(tolerance(thickness, thickness))
+        })
+    {
+        return None;
+    }
+    let mut fixed = ResizeDeltaInterval {
+        minimum: 0.0,
+        maximum: 0.0,
+    };
+    for (index, child) in children.iter().enumerate() {
+        let actual = split.child_extents[index];
+        let child_bounds = *projection.node_rects.get(child)?;
+        let projected = rect_extent(child_bounds, axis);
+        if actual <= 0.0
+            || (actual - projected).abs()
+                > tolerance(actual, projected).max(rect_extent_tolerance(child_bounds, axis))
+        {
+            return None;
+        }
+        intersect_extent_interval(
+            &mut fixed,
+            actual,
+            split.child_minimum_extents[index],
+            split.child_maximum_extents[index],
+            0.0,
+            0.0,
+        )?;
+    }
+    Some(())
+}
+
+fn intersect_split_intervals(
+    interval: &mut ResizeDeltaInterval,
+    split: &SplitProjection,
+    coefficients: &[f64],
+) -> Option<()> {
+    let total = split.child_extents.iter().sum::<f64>();
+    let total_coefficient = coefficients.iter().sum::<f64>();
+    intersect_extent_interval(
+        interval,
+        total,
+        total * f64::from(f32::EPSILON),
+        f64::MAX,
+        total_coefficient,
+        0.0,
+    )?;
+    for (index, (&extent, &coefficient)) in split.child_extents.iter().zip(coefficients).enumerate()
+    {
+        intersect_extent_interval(
+            interval,
+            extent,
+            split.child_minimum_extents[index],
+            split.child_maximum_extents[index],
+            coefficient,
+            0.0,
+        )?;
+        // Keep normalized f32 shares positive as the total changes. A smaller
+        // existing share remains valid at zero displacement.
+        let share_floor = (extent / total).min(f64::from(f32::EPSILON));
+        let margin = (extent - share_floor * total).max(0.0);
+        let slope = coefficient - share_floor * total_coefficient;
+        if share_floor <= 0.0 {
+            return None;
+        }
+        if slope > 0.0 {
+            interval.minimum = interval.minimum.max(-margin / slope);
+        } else if slope < 0.0 {
+            interval.maximum = interval.maximum.min(-margin / slope);
+        }
+    }
+    (interval.minimum <= interval.maximum).then_some(())
+}
+
+fn split_update(split: &FrozenResizeSplit, delta: f64) -> Option<SplitResize> {
+    let extents = split
+        .child_extents
+        .iter()
+        .zip(&split.child_coefficients)
+        .map(|(&extent, &coefficient)| extent + coefficient * delta)
+        .collect::<Vec<_>>();
+    if extents == split.child_extents {
         return Some(SplitResize::new(
-            handle.source.clone(),
-            record.weights().to_vec(),
+            split.source.clone(),
+            split.weights.clone(),
         ));
     }
-    let available = extents.iter().sum::<f64>();
-    if !available.is_finite() || available <= 0.0 {
+    let mut fixed = ResizeDeltaInterval {
+        minimum: 0.0,
+        maximum: 0.0,
+    };
+    intersect_extent_interval(
+        &mut fixed,
+        rect_extent(split.bounds, split.axis)
+            + split.child_coefficients.iter().sum::<f64>() * delta,
+        size_extent(split.constraints.min(), split.axis),
+        size_extent(split.constraints.max(), split.axis),
+        0.0,
+        rect_extent_tolerance(split.bounds, split.axis),
+    )?;
+    for (index, &extent) in extents.iter().enumerate() {
+        intersect_extent_interval(
+            &mut fixed,
+            extent,
+            split.child_minimum_extents[index],
+            split.child_maximum_extents[index],
+            0.0,
+            0.0,
+        )?;
+    }
+    let total = extents.iter().sum::<f64>();
+    if !total.is_finite() || total <= 0.0 {
         return None;
     }
-
-    let mut values = vec![0.0_f64; extents.len()];
-    if let Some(central) = record.central_index() {
-        if central >= values.len() {
-            return None;
-        }
-        let mut noncentral_sum = 0.0;
-        for (child, extent) in extents.iter().copied().enumerate() {
-            if child == central {
-                continue;
+    let mut shares = extents
+        .iter()
+        .map(|extent| extent / total)
+        .collect::<Vec<_>>();
+    if let Some(central) = split.central_index {
+        let mut siblings = 0.0;
+        for (index, share) in shares.iter_mut().enumerate() {
+            if index != central {
+                *share = f64::from(weight(*share)?.get());
+                siblings += *share;
             }
-            let share = extent / available;
-            if !share.is_finite() || share <= 0.0 {
-                return None;
-            }
-            values[child] = share;
-            noncentral_sum += share;
         }
-        let residual = 1.0 - noncentral_sum;
-        if !residual.is_finite() || residual <= 0.0 {
-            return None;
-        }
-        values[central] = residual;
-    } else {
-        for (share, extent) in values.iter_mut().zip(extents) {
-            *share = extent / available;
-            if !share.is_finite() || *share <= 0.0 {
-                return None;
-            }
+        let central_share = shares.get_mut(central)?;
+        let residual = 1.0 - siblings;
+        // Rounded siblings can exhaust the residual. Central layout ignores its
+        // own weight, so retain the raw positive share in that case.
+        if residual > 0.0 {
+            *central_share = residual;
         }
     }
+    let weights = shares.into_iter().map(weight).collect::<Option<Vec<_>>>()?;
+    Some(SplitResize::new(split.source.clone(), weights))
+}
 
+fn weight(value: f64) -> Option<SplitWeight> {
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "split weights intentionally use the workspace's f32 storage model"
+        reason = "normalized logical extents use the workspace's f32 weight representation"
     )]
-    let values = values.into_iter().map(|value| value as f32);
-    let weights = crate::graph::SplitWeight::normalize(values).ok()?;
-    Some(SplitResize::new(handle.source.clone(), weights))
+    SplitWeight::new(value as f32).ok()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::drop_target::SceneLayerKey;
-    use crate::geometry::LogicalRect;
-    use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-    use crate::hit_region::HitRegion;
-    use crate::ids::{ItemId, RootId, SurfaceId};
-    use crate::scene::SplitterSceneId;
-
-    fn constrained_handle(maximum: f64) -> FrozenResizeHandle {
-        let root = RootId::new(1);
-        let mut builder = Workspace::builder();
-        let left = builder.insert_node(Node::tabs([ItemId::new(1)]));
-        let right = builder.insert_node(Node::tabs([ItemId::new(2)]));
-        let split = builder
-            .insert_node(Node::split(Axis::Horizontal, [left, right], [0.25, 0.75]).unwrap());
-        builder.set_root(root, RootRecord::new(split));
-        builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
-        let workspace = builder.build().unwrap();
-        let source = workspace.capture_node_source(root, split).unwrap();
-        let Node::Split { weights, .. } = workspace.node(split).unwrap() else {
-            unreachable!();
-        };
-        let draw = LogicalRect::new(200.0, 0.0, 1.0, 300.0).unwrap();
-        let record = SplitterRecord::new(
-            SplitterSceneId {
-                root,
-                split,
-                index: 0,
-            },
-            draw,
-            HitRegion::new(draw),
-            Axis::Horizontal,
-            LogicalRect::new(0.0, 0.0, 200.0, 300.0).unwrap(),
-            LogicalRect::new(201.0, 0.0, 200.0, 300.0).unwrap(),
-            200.0,
-            100.0,
-            maximum,
-            maximum,
-            vec![200.0, 200.0],
-            None,
-            weights.clone(),
-            SceneLayerKey::surface_base(),
-            true,
-        );
-        let allowed_delta = resize_delta_interval(&record).unwrap();
-        FrozenResizeHandle {
-            source,
-            record,
-            allowed_delta,
-        }
-    }
-
-    #[test]
-    fn zero_effective_motion_preserves_constrained_split_intent() {
-        for maximum in [200.0, 400.0] {
-            let handle = constrained_handle(maximum);
-            for requested in [0.0_f64, -48.0] {
-                let delta =
-                    requested.clamp(handle.allowed_delta.minimum, handle.allowed_delta.maximum);
-                assert_eq!(delta, 0.0);
-                let update = split_resize_update(&handle, delta).unwrap();
-                assert_eq!(update.weights(), handle.record.weights());
-                assert_eq!(
-                    update
-                        .weights()
-                        .iter()
-                        .map(|weight| weight.get())
-                        .collect::<Vec<_>>(),
-                    [0.25, 0.75],
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn returning_to_the_press_boundary_restores_the_original_intent() {
-        let handle = constrained_handle(400.0);
-        let moved = split_resize_update(&handle, 50.0).unwrap();
-        assert_eq!(
-            moved
-                .weights()
-                .iter()
-                .map(|weight| weight.get())
-                .collect::<Vec<_>>(),
-            [0.625, 0.375],
-        );
-        assert_eq!(
-            split_resize_update(&handle, 0.0).unwrap().weights(),
-            handle.record.weights(),
-        );
-    }
-}
+mod tests;

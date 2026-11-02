@@ -47,9 +47,8 @@ impl DockEngine {
         if winner != Some(region) {
             return Err(InteractionRejection::SplitterGestureHitUnavailable { surface });
         }
-        let handles = self.prepare_splitter_resize_handles(plan, target, policy)?;
-        let axis_groups = prepare_resize_axis_groups(handles)
-            .ok_or(InteractionRejection::SplitterResizeGeometryUnavailable)?;
+        let handles = self.prepare_splitter_resize_handles(plan, target)?;
+        let axis_groups = self.prepare_checked_resize_axis_groups(plan, handles, policy)?;
         Ok(ResizeStart {
             owner,
             journal_capture_authority: capture_authority,
@@ -68,7 +67,6 @@ impl DockEngine {
         &self,
         plan: &PresentationPlan,
         target: SplitterResizeTarget,
-        policy: &DockPolicySnapshot,
     ) -> Result<Vec<(NodeSource, crate::scene::SplitterRecord)>, InteractionRejection> {
         let surface = plan.surface();
         let ids = match target {
@@ -101,11 +99,24 @@ impl DockEngine {
                     .workspace
                     .capture_node_source(id.root, id.split)
                     .map_err(InteractionRejection::ResizeRejected)?;
-                self.check_resize_policy(&source, policy)
-                    .map_err(InteractionRejection::ResizeRejected)?;
                 Ok((source, record))
             })
             .collect()
+    }
+
+    pub(super) fn prepare_checked_resize_axis_groups(
+        &self,
+        plan: &PresentationPlan,
+        handles: Vec<(NodeSource, crate::scene::SplitterRecord)>,
+        policy: &DockPolicySnapshot,
+    ) -> Result<Vec<crate::interaction::FrozenResizeAxisGroup>, InteractionRejection> {
+        let groups = prepare_resize_axis_groups(&self.workspace, plan, handles)
+            .ok_or(InteractionRejection::SplitterResizeGeometryUnavailable)?;
+        for source in groups.iter().flat_map(|group| group.resized_sources()) {
+            self.check_resize_policy(source, policy)
+                .map_err(InteractionRejection::ResizeRejected)?;
+        }
+        Ok(groups)
     }
 
     pub(super) fn update_journal_resize(

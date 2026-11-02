@@ -1546,8 +1546,10 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     );
     assert_eq!(work.transaction_prepares, 1);
     assert_eq!(work.transaction_commands, 1);
-    assert_eq!(work.root_fingerprint_builds, 8);
-    assert_eq!(work.root_fingerprint_node_visits, 24);
+    // Starting the touching solver validates one complete presented root in
+    // addition to the existing source, continuation and transaction captures.
+    assert_eq!(work.root_fingerprint_builds, 9);
+    assert_eq!(work.root_fingerprint_node_visits, 27);
 }
 
 #[test]
