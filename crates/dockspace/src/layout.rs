@@ -160,6 +160,8 @@ pub struct SplitProjection {
 pub struct LayoutProjection {
     /// Logical rectangle assigned to every reachable node.
     pub node_rects: BTreeMap<NodeId, LogicalRect>,
+    /// Composed minimum and maximum logical sizes for every reachable node.
+    pub node_constraints: BTreeMap<NodeId, Constraints>,
     /// Split-specific outcomes keyed by split node identity.
     pub splits: BTreeMap<NodeId, SplitProjection>,
 }
@@ -459,41 +461,117 @@ pub fn project_root_with_overrides(
     metrics: LayoutMetrics,
     weight_overrides: &[SplitWeightOverride<'_>],
 ) -> Result<LayoutProjection, LayoutError> {
-    let root_record = workspace
+    workspace
         .root(root)
         .ok_or(LayoutError::MissingRoot { root })?;
     let weight_overrides = validate_split_weight_overrides(workspace, root, weight_overrides)?;
-    let mut measurements = BTreeMap::new();
-    let mut visiting = BTreeSet::new();
-    let root_measurement = measure_subtree(
+    measure_root(
         workspace,
-        root_record.node,
-        root_record.central,
-        leaf_constraints,
+        root,
+        LeafMeasurements::Constraints(leaf_constraints),
         metrics,
-        &mut measurements,
-        &mut visiting,
-    )?;
-    if let Some(central) = root_record.central
-        && !root_measurement.contains_central
-    {
-        return Err(LayoutError::CentralNodeNotReachable { root, central });
+    )?
+    .project_with_weights(bounds, &weight_overrides)
+}
+
+/// Measures scene minima once, before root bounds determine the uniform leaf maximum.
+pub(crate) fn measure_root_minimums<'workspace>(
+    workspace: &'workspace Workspace,
+    root: RootId,
+    leaf_minimums: &BTreeMap<NodeId, LogicalSize>,
+    metrics: LayoutMetrics,
+) -> Result<RootMeasurement<'workspace>, LayoutError> {
+    measure_root(
+        workspace,
+        root,
+        LeafMeasurements::Minimums(leaf_minimums),
+        metrics,
+    )
+}
+
+/// One root's postorder measurements, bound to the workspace that produced them.
+pub(crate) struct RootMeasurement<'workspace> {
+    workspace: &'workspace Workspace,
+    root: RootId,
+    node: NodeId,
+    metrics: LayoutMetrics,
+    minimum: LogicalSize,
+    measurements: BTreeMap<NodeId, SubtreeMeasurement>,
+    /// Nonempty only when scene leaf maxima must be completed after bounds are known.
+    minimum_postorder: Vec<NodeId>,
+}
+
+impl RootMeasurement<'_> {
+    pub(crate) fn minimum(&self) -> LogicalSize {
+        self.minimum
     }
 
-    let mut projection = LayoutProjection {
-        node_rects: BTreeMap::new(),
-        splits: BTreeMap::new(),
-    };
-    project_subtree(
-        workspace,
-        root_record.node,
-        bounds,
-        metrics,
-        &measurements,
-        &weight_overrides,
-        &mut projection,
-    )?;
-    Ok(projection)
+    pub(crate) fn project(
+        self,
+        bounds: LogicalRect,
+        weight_overrides: &[SplitWeightOverride<'_>],
+    ) -> Result<LayoutProjection, LayoutError> {
+        let weights = validate_split_weight_overrides(self.workspace, self.root, weight_overrides)?;
+        self.project_with_weights(bounds, &weights)
+    }
+
+    fn project_with_weights(
+        mut self,
+        bounds: LogicalRect,
+        weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
+    ) -> Result<LayoutProjection, LayoutError> {
+        if !self.minimum_postorder.is_empty() {
+            // Contained chrome fixes bounds after measurement; only maxima need completion.
+            let minimum = self.minimum();
+            let leaf_maximum = LogicalSize::new(
+                bounds.width().max(minimum.width()),
+                bounds.height().max(minimum.height()),
+            )?;
+            for node in &self.minimum_postorder {
+                let maximum = match self
+                    .workspace
+                    .node(*node)
+                    .ok_or(LayoutError::MissingNode { node: *node })?
+                {
+                    Node::Tabs { .. } => leaf_maximum,
+                    Node::Split { axis, children, .. } => {
+                        let children = child_measurements(children, &self.measurements)?;
+                        compose_maximum(
+                            *axis,
+                            &children,
+                            total_splitter_extent(*node, children.len(), self.metrics)?,
+                        )?
+                    }
+                };
+                let measurement = self
+                    .measurements
+                    .get_mut(node)
+                    .ok_or(LayoutError::MissingNode { node: *node })?;
+                measurement.constraints = Constraints::new(measurement.constraints.min(), maximum)?;
+            }
+        }
+
+        let mut projection = LayoutProjection {
+            node_rects: BTreeMap::new(),
+            node_constraints: BTreeMap::new(),
+            splits: BTreeMap::new(),
+        };
+        project_subtree(
+            self.workspace,
+            self.node,
+            bounds,
+            self.metrics,
+            &self.measurements,
+            weight_overrides,
+            &mut projection,
+        )?;
+        projection.node_constraints = self
+            .measurements
+            .into_iter()
+            .map(|(node, measurement)| (node, measurement.constraints))
+            .collect();
+        Ok(projection)
+    }
 }
 
 fn validate_split_weight_overrides(
@@ -562,6 +640,31 @@ struct SubtreeMeasurement {
     contains_central: bool,
 }
 
+#[derive(Clone, Copy)]
+enum LeafMeasurements<'leaves> {
+    Constraints(&'leaves BTreeMap<NodeId, Constraints>),
+    Minimums(&'leaves BTreeMap<NodeId, LogicalSize>),
+}
+
+impl LeafMeasurements<'_> {
+    fn get(self, node: NodeId) -> Result<Constraints, LayoutError> {
+        match self {
+            Self::Constraints(constraints) => constraints
+                .get(&node)
+                .copied()
+                .ok_or(LayoutError::MissingLeafConstraints { node }),
+            Self::Minimums(minimums) => {
+                let minimum = minimums
+                    .get(&node)
+                    .copied()
+                    .ok_or(LayoutError::MissingLeafConstraints { node })?;
+                // Point constraints hold minima until root bounds supply leaf maxima.
+                Ok(Constraints::new(minimum, minimum)?)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum MeasurementFrame<'workspace> {
     Enter(NodeId),
@@ -572,16 +675,20 @@ enum MeasurementFrame<'workspace> {
     },
 }
 
-fn measure_subtree(
-    workspace: &Workspace,
-    node_id: NodeId,
-    central: Option<NodeId>,
-    leaf_constraints: &BTreeMap<NodeId, Constraints>,
+fn measure_root<'workspace>(
+    workspace: &'workspace Workspace,
+    root: RootId,
+    leaves: LeafMeasurements<'_>,
     metrics: LayoutMetrics,
-    measurements: &mut BTreeMap<NodeId, SubtreeMeasurement>,
-    visiting: &mut BTreeSet<NodeId>,
-) -> Result<SubtreeMeasurement, LayoutError> {
-    let mut stack = vec![MeasurementFrame::Enter(node_id)];
+) -> Result<RootMeasurement<'workspace>, LayoutError> {
+    let root_record = workspace
+        .root(root)
+        .ok_or(LayoutError::MissingRoot { root })?;
+    let minimums_only = matches!(leaves, LeafMeasurements::Minimums(_));
+    let mut measurements = BTreeMap::new();
+    let mut visiting = BTreeSet::new();
+    let mut minimum_postorder = Vec::new();
+    let mut stack = vec![MeasurementFrame::Enter(root_record.node)];
 
     while let Some(frame) = stack.pop() {
         match frame {
@@ -599,14 +706,14 @@ fn measure_subtree(
                 match node {
                     Node::Tabs { .. } => {
                         let measurement = SubtreeMeasurement {
-                            constraints: leaf_constraints
-                                .get(&current)
-                                .copied()
-                                .ok_or(LayoutError::MissingLeafConstraints { node: current })?,
-                            contains_central: central == Some(current),
+                            constraints: leaves.get(current)?,
+                            contains_central: root_record.central == Some(current),
                         };
                         visiting.remove(&current);
                         measurements.insert(current, measurement);
+                        if minimums_only {
+                            minimum_postorder.push(current);
+                        }
                     }
                     Node::Split {
                         axis,
@@ -634,29 +741,61 @@ fn measure_subtree(
                 axis,
                 children,
             } => {
-                let children = children
-                    .iter()
-                    .map(|child| {
-                        measurements
-                            .get(child)
-                            .copied()
-                            .ok_or(LayoutError::MissingNode { node: *child })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let children = child_measurements(children, &measurements)?;
                 let measurement = SubtreeMeasurement {
-                    constraints: compose_constraints(current, axis, &children, metrics)?,
+                    constraints: compose_constraints(
+                        current,
+                        axis,
+                        &children,
+                        metrics,
+                        minimums_only,
+                    )?,
                     contains_central: children.iter().any(|child| child.contains_central),
                 };
                 visiting.remove(&current);
                 measurements.insert(current, measurement);
+                if minimums_only {
+                    minimum_postorder.push(current);
+                }
             }
         }
     }
 
-    measurements
-        .get(&node_id)
-        .copied()
-        .ok_or(LayoutError::MissingNode { node: node_id })
+    let root_measurement = measurements
+        .get(&root_record.node)
+        .ok_or(LayoutError::MissingNode {
+            node: root_record.node,
+        })?;
+    if let Some(central) = root_record.central
+        && !root_measurement.contains_central
+    {
+        return Err(LayoutError::CentralNodeNotReachable { root, central });
+    }
+    let minimum = root_measurement.constraints.min();
+    Ok(RootMeasurement {
+        workspace,
+        root,
+        node: root_record.node,
+        metrics,
+        minimum,
+        measurements,
+        minimum_postorder,
+    })
+}
+
+fn child_measurements(
+    children: &[NodeId],
+    measurements: &BTreeMap<NodeId, SubtreeMeasurement>,
+) -> Result<Vec<SubtreeMeasurement>, LayoutError> {
+    children
+        .iter()
+        .map(|child| {
+            measurements
+                .get(child)
+                .copied()
+                .ok_or(LayoutError::MissingNode { node: *child })
+        })
+        .collect()
 }
 
 fn compose_constraints(
@@ -664,6 +803,7 @@ fn compose_constraints(
     axis: Axis,
     children: &[SubtreeMeasurement],
     metrics: LayoutMetrics,
+    minimums_only: bool,
 ) -> Result<Constraints, LayoutError> {
     if children.is_empty() {
         return Err(LayoutError::SplitCardinalityMismatch {
@@ -673,47 +813,70 @@ fn compose_constraints(
         });
     }
     let splitter_extent = total_splitter_extent(node, children.len(), metrics)?;
+    let minimum = compose_minimum(axis, children, splitter_extent)?;
+    let maximum = if minimums_only {
+        minimum
+    } else {
+        compose_maximum(axis, children, splitter_extent)?
+    };
+    Ok(Constraints::new(minimum, maximum)?)
+}
 
+fn compose_minimum(
+    axis: Axis,
+    children: &[SubtreeMeasurement],
+    splitter_extent: f64,
+) -> Result<LogicalSize, LayoutError> {
     let min_widths = children.iter().map(|child| child.constraints.min().width());
-    let max_widths = children.iter().map(|child| child.constraints.max().width());
     let min_heights = children
         .iter()
         .map(|child| child.constraints.min().height());
-    let max_heights = children
-        .iter()
-        .map(|child| child.constraints.max().height());
 
-    let (min_width, max_width, min_height, max_height) = match axis {
+    let (width, height) = match axis {
         Axis::Horizontal => (
             checked_sum(
                 min_widths.chain(std::iter::once(splitter_extent)),
                 "subtree minimum width",
             )?,
-            checked_sum(
-                max_widths.chain(std::iter::once(splitter_extent)),
-                "subtree maximum width",
-            )?,
             min_heights.fold(0.0, f64::max),
-            max_heights.fold(f64::INFINITY, f64::min),
         ),
         Axis::Vertical => (
             min_widths.fold(0.0, f64::max),
-            max_widths.fold(f64::INFINITY, f64::min),
             checked_sum(
                 min_heights.chain(std::iter::once(splitter_extent)),
                 "subtree minimum height",
             )?,
+        ),
+    };
+    Ok(LogicalSize::new(width, height)?)
+}
+
+fn compose_maximum(
+    axis: Axis,
+    children: &[SubtreeMeasurement],
+    splitter_extent: f64,
+) -> Result<LogicalSize, LayoutError> {
+    let max_widths = children.iter().map(|child| child.constraints.max().width());
+    let max_heights = children
+        .iter()
+        .map(|child| child.constraints.max().height());
+    let (width, height) = match axis {
+        Axis::Horizontal => (
+            checked_sum(
+                max_widths.chain(std::iter::once(splitter_extent)),
+                "subtree maximum width",
+            )?,
+            max_heights.fold(f64::INFINITY, f64::min),
+        ),
+        Axis::Vertical => (
+            max_widths.fold(f64::INFINITY, f64::min),
             checked_sum(
                 max_heights.chain(std::iter::once(splitter_extent)),
                 "subtree maximum height",
             )?,
         ),
     };
-
-    Ok(Constraints::new(
-        LogicalSize::new(min_width, min_height)?,
-        LogicalSize::new(max_width, max_height)?,
-    )?)
+    Ok(LogicalSize::new(width, height)?)
 }
 
 fn total_splitter_extent(
@@ -828,15 +991,7 @@ fn prepare_split_projection<'workspace>(
         });
     }
 
-    let child_measurements = children
-        .iter()
-        .map(|child| {
-            measurements
-                .get(child)
-                .copied()
-                .ok_or(LayoutError::MissingNode { node: *child })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let child_measurements = child_measurements(children, measurements)?;
     let axis_constraints = child_measurements
         .iter()
         .map(|child| match axis {
@@ -1193,4 +1348,86 @@ fn checked_sum(
 
 fn allocation_tolerance(a: f64, b: f64, c: f64) -> f64 {
     a.abs().max(b.abs()).max(c.abs()).max(1.0) * f64::EPSILON * 64.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{RootRecord, SurfacePresentation};
+    use crate::ids::{ItemId, SurfaceId};
+
+    #[test]
+    fn measured_minimums_preserve_projection_constraints_and_resize_overrides() {
+        let metrics = LayoutMetrics::new(3.0).unwrap();
+        let root = RootId::new(1);
+        for central in [false, true] {
+            let mut builder = Workspace::builder();
+            let a = builder.insert_node(Node::tabs([ItemId::new(1)]));
+            let b = builder.insert_node(Node::tabs([ItemId::new(2)]));
+            let c = builder.insert_node(Node::tabs([ItemId::new(3)]));
+            let d = builder.insert_node(Node::tabs([ItemId::new(4)]));
+            let inner =
+                builder.insert_node(Node::split(Axis::Vertical, [b, c], [0.7, 0.3]).unwrap());
+            let outer = builder.insert_node(
+                Node::split(Axis::Horizontal, [a, inner, d], [0.2, 0.5, 0.3]).unwrap(),
+            );
+            let record = if central {
+                RootRecord::new(outer).with_central(b)
+            } else {
+                RootRecord::new(outer)
+            };
+            builder.set_root(root, record);
+            builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
+            let workspace = builder.build().unwrap();
+            let minimums = BTreeMap::from([
+                (a, LogicalSize::new(17.0, 11.0).unwrap()),
+                (b, LogicalSize::new(31.0, 7.0).unwrap()),
+                (c, LogicalSize::new(13.0, 19.0).unwrap()),
+                (d, LogicalSize::new(23.0, 5.0).unwrap()),
+            ]);
+            let root_minimum = LogicalSize::new(77.0, 29.0).unwrap();
+            let source = workspace.capture_node_source(root, inner).unwrap();
+            let weights = SplitWeight::normalize([0.4, 0.6]).unwrap();
+            let overrides = [SplitWeightOverride::new(&source, &weights)];
+
+            for (width, height) in [(300.0, 200.0), (77.0, 29.0), (41.0, 23.0)] {
+                let bounds = LogicalRect::new(5.0, 7.0, width, height).unwrap();
+                let maximum = LogicalSize::new(
+                    width.max(root_minimum.width()),
+                    height.max(root_minimum.height()),
+                )
+                .unwrap();
+                let constraints = minimums
+                    .iter()
+                    .map(|(node, minimum)| (*node, Constraints::new(*minimum, maximum).unwrap()))
+                    .collect();
+                for overrides in [&[][..], &overrides[..]] {
+                    let measured =
+                        measure_root_minimums(&workspace, root, &minimums, metrics).unwrap();
+                    assert_eq!(measured.minimum(), root_minimum);
+                    let actual = measured.project(bounds, overrides).unwrap();
+                    let expected = project_root_with_overrides(
+                        &workspace,
+                        root,
+                        bounds,
+                        &constraints,
+                        metrics,
+                        overrides,
+                    )
+                    .unwrap();
+                    assert_eq!(actual, expected);
+                    assert_eq!(actual.node_constraints.len(), 6);
+                    assert_eq!(actual.node_constraints[&b], constraints[&b]);
+                    assert_eq!(
+                        actual.node_constraints[&inner].min(),
+                        LogicalSize::new(31.0, 29.0).unwrap(),
+                    );
+                    assert_eq!(
+                        actual.node_constraints[&inner].max(),
+                        LogicalSize::new(maximum.width(), 2.0 * maximum.height() + 3.0).unwrap(),
+                    );
+                }
+            }
+        }
+    }
 }

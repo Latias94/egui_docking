@@ -5,17 +5,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use super::surface::{
-    allocate_tab_widths, pane_outer_minimum, reveal_tab_range, subtree_minimum,
-    tab_strip_optional_chrome_layout,
+    allocate_tab_widths, pane_outer_minimum, reveal_tab_range, tab_strip_optional_chrome_layout,
 };
 use crate::RootPresentationOwner;
 use crate::command::{MovePayload, TabTarget};
 use crate::error::CommandError;
-use crate::geometry::{Constraints, GeometryError, LogicalRect, LogicalSize};
+use crate::geometry::{GeometryError, LogicalRect, LogicalSize};
 use crate::graph::{Node, Workspace};
 use crate::ids::{ItemId, NodeId, RootId};
 use crate::layout::{
-    LayoutError, LayoutMetrics, LayoutMetricsError, LayoutProjection, project_root,
+    LayoutError, LayoutMetrics, LayoutMetricsError, LayoutProjection, measure_root_minimums,
 };
 use crate::policy::{DockPolicySnapshot, DockTabBarPolicyRequest, TabBarVisibility};
 use crate::scene::{PresentationLayoutFacts, PresentationPlan, TabBarSceneId, TabSceneId};
@@ -87,26 +86,14 @@ pub(crate) fn project_future_root(
         }
     }
 
-    let root_minimum = subtree_minimum(
+    let measured = measure_root_minimums(
         workspace,
-        surface,
         root,
-        root_node,
         &leaf_minimums,
-        target_facts.config().splitter_thickness(),
-        &mut BTreeSet::new(),
+        LayoutMetrics::new(target_facts.config().splitter_thickness())?,
     )?;
-    let bounds = target_root.bounds();
-    let maximum = LogicalSize::new(
-        bounds.width().max(root_minimum.width()),
-        bounds.height().max(root_minimum.height()),
-    )?;
-    let constraints = leaf_minimums
-        .into_iter()
-        .map(|(node, minimum)| Ok((node, Constraints::new(minimum, maximum)?)))
-        .collect::<Result<BTreeMap<_, _>, GeometryError>>()?;
-    let metrics = LayoutMetrics::new(target_facts.config().splitter_thickness())?;
-    project_root(workspace, root, bounds, &constraints, metrics)
+    measured
+        .project(target_root.bounds(), &[])
         .map(Some)
         .map_err(FutureLayoutProjectionError::Layout)
 }

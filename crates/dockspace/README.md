@@ -117,6 +117,29 @@ this contract without egui or native hosting. The common public-host and egui ge
 single-batch input. Optional native consolidation and platform qualification
 remain separate; see `docs/VALIDATION.md` for evidence and limits.
 
+## Incremental logical surfaces
+
+A custom renderer may add an empty docking container with
+`frame.attach_empty_surface_current(surface, root)` and remove it with
+`frame.retire_empty_surface_current(surface)`. Both return a submitted-action
+identity; inspect the exact `HostInputOutcome::LogicalSurfaceAttached`,
+`LogicalSurfaceRetired` or `LogicalSurfaceRejected` in the committed report.
+An attached surface owns an empty central main root and can receive content
+through the ordinary `DockAnchor::Central(root)` docking actions in the same frame.
+
+These operations use the existing atomic workspace transaction, keep its epoch,
+and preserve unaffected surfaces' current input proofs. Retire checks all main
+and contained content. Close or migrate nonempty content before retrying; native
+bindings, recovery owners and drag reservations must finish first. Reusing a
+retired semantic surface/root ID requires fresh measurement and presentation;
+predecessor receivers and late outputs cannot authorize the new container.
+
+Host-frame candidates share the immutable canonical workspace until a checked
+command needs its existing staging copy. Abandoning a frame still publishes no
+partial topology, lifecycle, input watermark or presentation authority. Other
+ledgers retain their existing owned representation; this is a measured, local
+copy optimization rather than a second mutation authority.
+
 ## Pointer device and event time
 
 Local and native pointer inputs accept `with_metadata(PointerEventMetadata::new(

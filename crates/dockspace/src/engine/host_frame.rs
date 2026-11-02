@@ -485,18 +485,10 @@ impl DockEngine {
             }
             vacancy_ledger.observe_bindings(&candidate);
         }
-        let drag_release_settled = candidate.settle_presented_pending_drag_release(
+        if candidate.settle_presented_pending_mutation(
             &mut observation_events,
             &mut observation_interaction_events,
-        )?;
-        let contained_release_settled = candidate
-            .settle_presented_pending_contained_transform_release(
-                &mut observation_events,
-                &mut observation_interaction_events,
-            )?;
-        let presentation_rehome_settled =
-            candidate.settle_presented_pending_presentation_rehome(&mut observation_events)?;
-        if drag_release_settled || contained_release_settled || presentation_rehome_settled {
+        )? {
             candidate.rebuild_presentation_requirements(candidate.last_input)?;
         }
         candidate.reconcile_interaction_after_presentation_observations(
@@ -524,7 +516,7 @@ impl DockEngine {
 impl<'frame> HostFrameView<'frame> {
     /// Returns the post-observation workspace visible to this frame.
     #[must_use]
-    pub const fn workspace(&self) -> &'frame Workspace {
+    pub fn workspace(&self) -> &'frame Workspace {
         self.engine.workspace()
     }
 
@@ -1848,9 +1840,9 @@ impl CoreHostFrame {
         }
 
         self.events.append(&mut lifecycle_events);
-        let drag_release_settled = match self
+        let pending_settled = match self
             .candidate
-            .settle_presented_pending_drag_release(&mut self.events, &mut self.interaction_events)
+            .settle_presented_pending_mutation(&mut self.events, &mut self.interaction_events)
         {
             Ok(settled) => settled,
             Err(error) => {
@@ -1858,29 +1850,7 @@ impl CoreHostFrame {
                 return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
             }
         };
-        let contained_release_settled = match self
-            .candidate
-            .settle_presented_pending_contained_transform_release(
-                &mut self.events,
-                &mut self.interaction_events,
-            ) {
-            Ok(settled) => settled,
-            Err(error) => {
-                self.input_prefix_error = Some(error);
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-            }
-        };
-        let presentation_rehome_settled = match self
-            .candidate
-            .settle_presented_pending_presentation_rehome(&mut self.events)
-        {
-            Ok(settled) => settled,
-            Err(error) => {
-                self.input_prefix_error = Some(error);
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-            }
-        };
-        if (drag_release_settled || contained_release_settled || presentation_rehome_settled)
+        if pending_settled
             && let Err(error) = self
                 .candidate
                 .rebuild_presentation_requirements(self.candidate.last_input)
@@ -3030,7 +3000,7 @@ impl OwnedPreparedHostFrameCommit {
     }
 
     #[cfg(feature = "serde")]
-    pub(crate) const fn candidate_workspace(&self) -> &Workspace {
+    pub(crate) fn candidate_workspace(&self) -> &Workspace {
         self.candidate.workspace()
     }
 

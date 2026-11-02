@@ -6,10 +6,12 @@ mod contained_geometry;
 mod contained_projection;
 mod host_frame;
 mod input;
+mod logical_surface;
 mod native_admission;
 mod native_input;
 mod native_projection;
 mod native_tear_off;
+mod pending_mutation;
 mod pointer_contained;
 mod pointer_edge_scroll;
 mod pointer_handoff;
@@ -70,6 +72,7 @@ pub use self::input::{
     ValidatedWorkspaceRestore,
 };
 use self::native_admission::NativeAdmissionState;
+use self::pending_mutation::{PendingMutation, PendingPresentationTracker};
 use self::presentation_authority::PresentationAuthorityState;
 use self::presentation_identity::PresentationIdentityAuthority;
 use self::presentation_roster::{
@@ -722,8 +725,9 @@ impl<'frame> HostFrameView<'frame> {
         }
         .or_else(|| {
             self.engine
-                .pending_drag_release
+                .pending_mutation
                 .as_ref()
+                .and_then(PendingMutation::drag_release)
                 .map(|pending| &pending.drag)
         })?;
         drag.drop_affordance().filter(|affordance| {
@@ -1391,14 +1395,6 @@ pub enum EngineError {
         /// Input which attempted to replace presentation policy.
         input: InputSequence,
     },
-    /// One surface's independent requirement counter cannot advance without wrapping.
-    #[error("surface {surface} requirement revision is exhausted while reducing input {input}")]
-    SurfaceRequirementRevisionExhausted {
-        /// Input which attempted to replace presentation requirements.
-        input: InputSequence,
-        /// Surface whose independent counter was exhausted.
-        surface: crate::ids::SurfaceId,
-    },
     /// Validated engine state could not produce its core-owned presentation manifest.
     #[error("presentation requirement invariant failed at input {input:?}: {detail}")]
     PresentationRequirementInvariant {
@@ -1577,7 +1573,9 @@ fn presentation_ledger_error(source: PresentationLedgerError) -> EngineError {
 #[derive(Debug, PartialEq)]
 pub struct DockEngine {
     authority_domain: EngineAuthorityDomainId,
-    workspace: Workspace,
+    /// Canonical immutable snapshot shared by rollback candidates. Checked
+    /// commands own the existing staging copy and publish a new snapshot.
+    workspace: Arc<Workspace>,
     presentation_identity: PresentationIdentityAuthority,
     policy: DockPolicySnapshot,
     version: WorkspaceVersion,
@@ -1595,9 +1593,7 @@ pub struct DockEngine {
     pointer_receiver_attempt_issuer: Arc<PointerReceiverAttemptIssuer>,
     scroll_interaction: scroll_interaction::ScrollInteractionState,
     interaction: InteractionState,
-    pending_drag_release: Option<PendingDragRelease>,
-    pending_contained_transform_release: Option<PendingContainedTransformRelease>,
-    pending_presentation_rehome: Option<PendingPresentationRehome>,
+    pending_mutation: Option<PendingMutation>,
     close: CloseCoordinator<PreparedCloseOperation>,
     viewport: ViewportCoordinator,
     viewport_focus: ViewportFocusCoordinator,
@@ -1801,9 +1797,7 @@ struct PendingDragRelease {
     )>,
     release_decision: PreviewDecision,
     preview: crate::interaction::PreviewToken,
-    presentation_outputs: BTreeSet<HostFrameKey>,
-    presented_output: Option<HostFrameKey>,
-    presentation_failed: bool,
+    presentation: PendingPresentationTracker,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1815,9 +1809,7 @@ struct PendingContainedTransformRelease {
     transform: ActiveContainedTransform,
     placement: ContainedTransformPlacement,
     preview: crate::interaction::ContainedTransformPreviewToken,
-    presentation_outputs: BTreeSet<HostFrameKey>,
-    presented_output: Option<HostFrameKey>,
-    presentation_failed: bool,
+    presentation: PendingPresentationTracker,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1839,9 +1831,7 @@ struct PendingPresentationRehome {
     context: product_action::ProductCommandContext,
     pane_focus: PaneFocusDisposition,
     preview: crate::interaction::PublishedPreview,
-    presentation_outputs: BTreeSet<HostFrameKey>,
-    presented_output: Option<HostFrameKey>,
-    presentation_failed: bool,
+    presentation: PendingPresentationTracker,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2187,7 +2177,7 @@ impl DockEngine {
         })?;
         Ok(Self {
             authority_domain,
-            workspace,
+            workspace: Arc::new(workspace),
             presentation_identity,
             policy,
             version,
@@ -2209,9 +2199,7 @@ impl DockEngine {
             )),
             scroll_interaction: scroll_interaction::ScrollInteractionState::default(),
             interaction,
-            pending_drag_release: None,
-            pending_contained_transform_release: None,
-            pending_presentation_rehome: None,
+            pending_mutation: None,
             close: CloseCoordinator::new(authority_domain),
             viewport: ViewportCoordinator::new(authority_domain),
             viewport_focus: ViewportFocusCoordinator::default(),
@@ -2231,7 +2219,7 @@ impl DockEngine {
 
     /// Returns the published workspace.
     #[must_use]
-    pub const fn workspace(&self) -> &Workspace {
+    pub fn workspace(&self) -> &Workspace {
         &self.workspace
     }
 
@@ -2812,7 +2800,7 @@ impl DockEngine {
             .presentation
             .retire_host(host, tick, reason)
             .map_err(presentation_ledger_error)?;
-        candidate.observe_pending_release_host_retirement(retirement.retired_outputs());
+        candidate.observe_pending_mutation_host_retirement(retirement.retired_outputs());
         let retired_pointer_provider = candidate
             .pointer_journal
             .active_lease()
@@ -2843,16 +2831,7 @@ impl DockEngine {
             )?;
         }
         let mut events = Vec::new();
-        let drag_release_settled = candidate
-            .settle_presented_pending_drag_release(&mut events, &mut interaction_events)?;
-        let contained_release_settled = candidate
-            .settle_presented_pending_contained_transform_release(
-                &mut events,
-                &mut interaction_events,
-            )?;
-        let presentation_rehome_settled =
-            candidate.settle_presented_pending_presentation_rehome(&mut events)?;
-        if drag_release_settled || contained_release_settled || presentation_rehome_settled {
+        if candidate.settle_presented_pending_mutation(&mut events, &mut interaction_events)? {
             candidate.rebuild_presentation_requirements(candidate.last_input)?;
         }
         candidate.settle_retired_presentation_hosts()?;
@@ -2920,9 +2899,7 @@ impl DockEngine {
     }
 
     pub(crate) fn has_pending_presentation(&self) -> bool {
-        self.pending_drag_release.is_some()
-            || self.pending_contained_transform_release.is_some()
-            || self.pending_presentation_rehome.is_some()
+        self.pending_mutation.is_some()
     }
 
     pub(crate) fn surface_requires_presentation(&self, surface: SurfaceId) -> bool {
@@ -2937,55 +2914,11 @@ impl DockEngine {
 
     // The boolean distinguishes a missing paint from an exact output awaiting its terminal.
     fn pending_presentation_targets(&self) -> impl Iterator<Item = (SurfaceId, bool)> {
-        [
-            self.pending_drag_release
-                .as_ref()
-                .filter(|pending| {
-                    pending.presented_output.is_none() && !pending.presentation_failed
-                })
-                .map(|pending| {
-                    (
-                        pending
-                            .drag
-                            .preview()
-                            .expect("pending release retains its exact preview")
-                            .public()
-                            .visual()
-                            .surface(),
-                        pending.presentation_outputs.is_empty(),
-                    )
-                }),
-            self.pending_contained_transform_release
-                .as_ref()
-                .filter(|pending| {
-                    pending.presented_output.is_none() && !pending.presentation_failed
-                })
-                .map(|pending| {
-                    (
-                        pending
-                            .transform
-                            .preview
-                            .as_ref()
-                            .expect("pending contained release retains its exact preview")
-                            .public()
-                            .surface(),
-                        pending.presentation_outputs.is_empty(),
-                    )
-                }),
-            self.pending_presentation_rehome
-                .as_ref()
-                .filter(|pending| {
-                    pending.presented_output.is_none() && !pending.presentation_failed
-                })
-                .map(|pending| {
-                    (
-                        pending.target_surface,
-                        pending.presentation_outputs.is_empty(),
-                    )
-                }),
-        ]
-        .into_iter()
-        .flatten()
+        self.pending_mutation
+            .as_ref()
+            .filter(|pending| pending.presentation().awaiting_presentation())
+            .map(|pending| (pending.surface(), pending.presentation().outputs.is_empty()))
+            .into_iter()
     }
 
     /// Returns the exact release preview retained until the host proves that it
@@ -2997,8 +2930,9 @@ impl DockEngine {
         crate::interaction::DragSessionId,
         crate::interaction::PreviewToken,
     )> {
-        self.pending_drag_release
+        self.pending_mutation
             .as_ref()
+            .and_then(PendingMutation::drag_release)
             .map(|pending| (pending.session, pending.preview))
     }
 
@@ -3011,8 +2945,9 @@ impl DockEngine {
         ContainedTransformSessionId,
         crate::interaction::ContainedTransformPreviewToken,
     )> {
-        self.pending_contained_transform_release
+        self.pending_mutation
             .as_ref()
+            .and_then(PendingMutation::contained_release)
             .map(|pending| (pending.session, pending.preview))
     }
 
@@ -3023,14 +2958,16 @@ impl DockEngine {
         self.interaction
             .preview()
             .or_else(|| {
-                self.pending_drag_release
+                self.pending_mutation
                     .as_ref()
+                    .and_then(PendingMutation::drag_release)
                     .and_then(|pending| pending.drag.preview())
                     .map(crate::interaction::PublishedPreview::public)
             })
             .or_else(|| {
-                self.pending_presentation_rehome
+                self.pending_mutation
                     .as_ref()
+                    .and_then(PendingMutation::rehome)
                     .map(|pending| pending.preview.public())
             })
     }
@@ -3040,8 +2977,9 @@ impl DockEngine {
     #[must_use]
     pub fn presentation_contained_transform_preview(&self) -> Option<&ContainedTransformPreview> {
         self.interaction.contained_transform_preview().or_else(|| {
-            self.pending_contained_transform_release
+            self.pending_mutation
                 .as_ref()
+                .and_then(PendingMutation::contained_release)
                 .and_then(|pending| pending.transform.preview.as_ref())
                 .map(crate::interaction::PublishedContainedTransformPreview::public)
         })
@@ -3807,7 +3745,7 @@ impl DockEngine {
                 .merge_restored(workspace, restored),
             None => self.presentation_identity.observe_workspace(workspace),
         }
-        self.workspace = workspace.clone();
+        self.workspace = Arc::new(workspace.clone());
         self.surface_recovery.clear();
         self.root_recovery_anchors.clear();
         self.bound_surface_recoveries.clear();
@@ -4196,7 +4134,11 @@ impl DockEngine {
     }
 
     fn root_has_pending_presentation_transition(&self, root: crate::ids::RootId) -> bool {
-        self.pending_presentation_rehome.is_some() || self.native_create_reserves_root(root)
+        self.pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_some()
+            || self.native_create_reserves_root(root)
     }
 
     fn first_pending_presentation_source_mismatch(
@@ -4204,7 +4146,10 @@ impl DockEngine {
         candidate: &Workspace,
         authority: WorkspacePublicationAuthority,
     ) -> Option<SurfaceId> {
-        if let Some(pending) = self.pending_presentation_rehome.as_ref()
+        if let Some(pending) = self
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
             && !matches!(
                 authority,
                 WorkspacePublicationAuthority::PendingPresentationRehome { root }
@@ -4464,6 +4409,8 @@ impl DockEngine {
             | WorkspaceCommand::Open { .. }
             | WorkspaceCommand::Move { .. }
             | WorkspaceCommand::ResizeSplits { .. }
+            | WorkspaceCommand::AttachEmptySurface { .. }
+            | WorkspaceCommand::RetireEmptySurface { .. }
             | WorkspaceCommand::CreateSurfaceRoot { .. }
             | WorkspaceCommand::InstallMainRoot { .. }
             | WorkspaceCommand::PromoteContained { .. }
@@ -5614,6 +5561,17 @@ impl DockEngine {
         action_barrier: Option<&BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>>,
         authority: WorkspacePublicationAuthority,
     ) -> Result<(Option<StagedWorkspacePublication>, CommandApplication), EngineError> {
+        if self.logical_surface_lifecycle_rejection(command).is_some() {
+            let surface = match command {
+                WorkspaceCommand::AttachEmptySurface { surface, .. }
+                | WorkspaceCommand::RetireEmptySurface { surface } => *surface,
+                _ => unreachable!("only membership commands have a lifecycle refusal"),
+            };
+            return Ok((
+                None,
+                CommandApplication::Rejected(CommandError::SurfaceLifecycleFrozen { surface }),
+            ));
+        }
         let mut candidate = self.clone_workspace_candidate();
         let report = match WorkspaceTransaction::from_commands([command.clone()])
             .apply(&mut candidate, policy)
@@ -5685,7 +5643,7 @@ impl DockEngine {
     fn publish_workspace(&mut self, publication: StagedWorkspacePublication) {
         self.presentation_identity
             .observe_workspace(&publication.workspace);
-        self.workspace = publication.workspace;
+        self.workspace = Arc::new(publication.workspace);
         self.root_recovery_anchors = publication.root_recovery_anchors;
         self.bound_surface_recoveries = publication.bound_surface_recoveries;
     }
@@ -5782,11 +5740,17 @@ impl DockEngine {
         self.reconcile_viewport_focus_authority();
         if changed {
             self.advance_revision(input)?;
-            self.invalidate_transient(
-                input,
-                InteractionCancelReason::WorkspaceChanged,
-                interaction_events,
-            )?;
+            if !matches!(
+                command,
+                WorkspaceCommand::AttachEmptySurface { .. }
+                    | WorkspaceCommand::RetireEmptySurface { .. }
+            ) {
+                self.invalidate_transient(
+                    input,
+                    InteractionCancelReason::WorkspaceChanged,
+                    interaction_events,
+                )?;
+            }
         }
         if changed {
             events.push(WorkspaceEvent::new(
@@ -5808,7 +5772,7 @@ impl DockEngine {
         crate::drop_resolver::structural_work::record_engine_workspace_candidate_clone(
             &self.workspace,
         );
-        self.workspace.clone()
+        self.workspace.as_ref().clone()
     }
 
     fn candidate(&self) -> Self {
@@ -5847,7 +5811,7 @@ impl DockEngine {
         }
         let mut candidate = Self {
             authority_domain: self.authority_domain,
-            workspace: self.workspace.clone(),
+            workspace: Arc::clone(&self.workspace),
             presentation_identity: self.presentation_identity,
             policy: self.policy.clone(),
             version: self.version,
@@ -5857,9 +5821,7 @@ impl DockEngine {
             pointer_receiver_attempt_issuer: Arc::clone(&self.pointer_receiver_attempt_issuer),
             scroll_interaction: self.scroll_interaction.clone(),
             interaction: self.interaction.clone(),
-            pending_drag_release: self.pending_drag_release.clone(),
-            pending_contained_transform_release: self.pending_contained_transform_release.clone(),
-            pending_presentation_rehome: self.pending_presentation_rehome.clone(),
+            pending_mutation: self.pending_mutation.clone(),
             close: self.close.clone(),
             viewport: self.viewport.clone(),
             viewport_focus: self.viewport_focus.clone(),

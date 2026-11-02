@@ -21,8 +21,9 @@ impl DockEngine {
             _ => None,
         }
         .or_else(|| {
-            self.pending_contained_transform_release
+            self.pending_mutation
                 .as_ref()
+                .and_then(PendingMutation::contained_release)
                 .map(|pending| &pending.transform)
         });
         if let Some(transform) = transform.filter(|transform| transform.surface == surface)
@@ -44,8 +45,9 @@ impl DockEngine {
             _ => None,
         }
         .or_else(|| {
-            self.pending_drag_release
+            self.pending_mutation
                 .as_ref()
+                .and_then(PendingMutation::drag_release)
                 .map(|pending| &pending.drag)
         })?;
         let FrozenDragOrigin::Contained(origin) = &drag.origin else {
@@ -138,8 +140,9 @@ impl DockEngine {
                 .active_contained_transform(session)
                 .ok()
                 .or_else(|| {
-                    self.pending_contained_transform_release
+                    self.pending_mutation
                         .as_ref()
+                        .and_then(PendingMutation::contained_release)
                         .filter(|pending| pending.session == session)
                         .map(|pending| &pending.transform)
                 })

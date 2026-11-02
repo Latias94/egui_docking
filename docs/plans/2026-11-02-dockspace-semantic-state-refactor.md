@@ -19,19 +19,28 @@ owner; implementation and read-only review lanes use disjoint write scopes.
 - P1: last-Presented settlement and owner-only popup visuals are implemented,
   including non-owner click/drag dismissal and wheel blocking. The duplicate
   popup proof map and its revision issuer are deleted. The single pending-mutation
-  enum and shared presentation tracker remain open.
+  enum and shared presentation tracker are implemented and qualified.
 - P2: defaults and document restore preserve semantic IDs and merge allocation
   history; the rebase module is deleted. Host and managed window keys use distinct
   namespaces in the existing registry; importing managed keys is rejected.
   First-tranche core/public/product/native qualification passes.
 - P3: contained movement shares manipulation geometry, zero-displacement resize
   preserves weights, and unrelated scroll preserves/rebinds stationary work only
-  through a fresh exact output. Nested boundary behavior and production traversal
-  remain open.
+  through a fresh exact output. Product declaration clone/compile/drop and production
+  measurement are iterative; the 10,000-level public scene passes. Nested touching-boundary
+  resize remains open.
 - P4: native preparation uses continuous relevant facts in the existing streams;
   actual source recovery cancels all create phases even after readiness loss.
-  Native model and finite macOS/X11 qualification pass; work-area selection remains open.
-- P5: dynamic logical surfaces and measured transaction optimization remain open.
+  First-tranche native model and finite macOS/X11 qualification pass. Work-area selection
+  now uses greatest rectangle intersection and nearest fallback; its structural-tranche
+  qualification passes.
+- P5: explicit empty-central attach/retire, exact old-output rejection and unaffected
+  surface proof retention are implemented. Existing aggregate requirement revisions
+  mint fresh per-surface revisions without a second history map. An independent review
+  found a drag-reservation conflict gap; four real press/move/release counterexamples
+  fail before the fix and pass with both active and pending reservation checks.
+  Whole-engine candidates now share the immutable workspace; actual command staging
+  retains its owned graph copy. Structural qualification passes.
 
 First-tranche qualification passes workspace 1,970, public default 183 / serde 211,
 product serde 117, native normal/noassert 540 each, ten doctests, strict rustdoc,
@@ -40,6 +49,13 @@ redock and all six pressure modes pass, as does the X11 physical guide journey.
 The W16/O256 gate additionally found and fixed ordinary-output pressure rejecting
 an already-owned Show callback; its terminal keeps the existing prepaid owner.
 Full records and limits are in [VALIDATION](../VALIDATION.md#2026-11-02-semantic-state-refactor-first-tranche).
+
+Structural-tranche qualification passes workspace 1,988, public default 202 / serde
+230, product serde 117, native Linux normal/noassert 540 each, ten doctests, strict
+docs, correctness/suspicious Clippy and four formatting workspaces. The five ignored
+native opt-in/isolated-renderer cases retain their own qualification scope. Optimized
+X11 default/bounded redock, six pressure cases and physical guide docking pass.
+Nested touching-boundary resizing and final full-plan delivery remain open.
 
 Independent CI changes and `docs/reviews/` are excluded from all slice commits.
 

@@ -26,20 +26,9 @@ impl DockEngine {
         if let Some(active) = self.interaction.active_presentation_authority() {
             emissions.insert(active.presented.emission());
         }
-        if let Some(pending) = &self.pending_drag_release {
-            emissions.insert(pending.drag.presentation.presented.emission());
-            emissions.extend(pending.presentation_outputs.iter().copied());
-            emissions.extend(pending.presented_output);
-        }
-        if let Some(pending) = &self.pending_contained_transform_release {
-            emissions.insert(pending.transform.presentation.presented.emission());
-            emissions.extend(pending.presentation_outputs.iter().copied());
-            emissions.extend(pending.presented_output);
-        }
-        if let Some(pending) = &self.pending_presentation_rehome {
-            emissions.insert(pending.source_presentation.emission());
-            emissions.extend(pending.presentation_outputs.iter().copied());
-            emissions.extend(pending.presented_output);
+        if let Some(pending) = &self.pending_mutation {
+            emissions.insert(pending.source_presentation());
+            pending.presentation().retain_emissions(&mut emissions);
         }
         emissions.extend(
             self.viewport

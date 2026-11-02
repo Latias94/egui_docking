@@ -66,7 +66,7 @@ traces do not qualify automatic native document recreation or OS creation.
 
 `tests/native_document_restore.rs` exercises the opt-in atomic native restore
 boundary using only public APIs. It preserves complete split/selected-tab/
-contained forests through identity rebasing, queues explicit Child intents,
+contained forests with their declared identities, queues explicit Child intents,
 waits for fresh Root facts and all inherited exact predecessor guards, and
 advances creation under finite producer/effect-report storage. DirectPrepared
 and Staged use their existing first-live owners. Stopped intents stay suspended
@@ -76,7 +76,7 @@ separate real-window restoration journey.
 
 The explicit Root-rebinding journeys remove the old logical host while preserving
 its external window token under a new exact binding. They force a retired incoming
-Root through rebasing, check Child recovery/placement references, failed/dropped
+Root through exact instance replacement, check Child recovery/placement references, failed/dropped
 frame retries and old-output isolation, and keep the existing first-live gates.
 `native_local_geometry.rs` also exercises layout-only Root continuation without
 enabling persistence. These recording tests prove host semantics rather than an
@@ -181,3 +181,25 @@ cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml 
 cargo run --manifest-path integration/dockspace-host-harness/Cargo.toml --example engine_host --locked
 python3 scripts/check_core_dependencies.py
 ```
+
+`tests/logical_surfaces.rs` exercises incremental empty-central attach and retire
+without native enrollment or workspace replacement. It preserves an unaffected
+surface's exact presented receiver, docks content into the new central region,
+migrates it back, retires the empty surface, and reuses its semantic IDs without
+reactivating predecessor outputs. Typed policy/nonempty/native/recovery refusals
+and abandoned/poisoned-frame retries preserve published state.
+
+`tests/deep_layout.rs` compiles, clones, drops and measures a 10,000-level product
+declaration on the ordinary thread stack. Error cleanup is included. The recording
+program and exact final presentation cover the production scene path rather than
+only the low-level graph solver.
+
+`tests/native_work_area_placement.rs` checks default window placement from current
+authoritative work areas: greatest rectangle intersection, nearest-rectangle
+fallback and deterministic token ties, followed by the existing cascade/clamp.
+Unknown/foreign/empty facts cannot reuse a historical placement authority.
+
+`cargo run --release --example frame_cost` prints five local samples each for idle
+and selected-item host frames at 16/128/1024 panes. It has no time threshold and
+is not platform-latency certification. Core work counters separately distinguish
+shared immutable workspace snapshots from explicit command-stage graph copies.

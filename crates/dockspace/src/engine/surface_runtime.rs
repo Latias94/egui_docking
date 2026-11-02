@@ -2406,7 +2406,7 @@ impl DockEngine {
             let _ = close.mark_externally_destroyed_unproved(stale_request, binding);
         }
 
-        let changed = commit.candidate != self.workspace;
+        let changed = commit.candidate != *self.workspace;
         self.publish_workspace(publication);
         self.close = close;
         self.reconcile_viewport_focus_authority();

@@ -107,6 +107,28 @@ impl HostFrameReport {
         });
         for reduced in transition.reduced_inputs() {
             let outcome = match reduced.outcome() {
+                InputOutcome::LogicalSurfaceAttached {
+                    surface,
+                    root,
+                    version,
+                } => Some(HostInputOutcome::LogicalSurfaceAttached {
+                    surface: *surface,
+                    root: *root,
+                    version: *version,
+                }),
+                InputOutcome::LogicalSurfaceRetired { surface, version } => {
+                    Some(HostInputOutcome::LogicalSurfaceRetired {
+                        surface: *surface,
+                        version: *version,
+                    })
+                }
+                InputOutcome::LogicalSurfaceRejected { surface, reason } => {
+                    Some(HostInputOutcome::LogicalSurfaceRejected {
+                        surface: *surface,
+                        reason: *reason,
+                    })
+                }
+
                 InputOutcome::NativeSurfaceCreateRequested { binding }
                 | InputOutcome::NativeSurfaceCreateAdvanced { binding } => {
                     native_provider.map(|provider| HostInputOutcome::NativeSurfaceCreateRequested {

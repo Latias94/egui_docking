@@ -2,8 +2,12 @@
 
 use super::*;
 
-use crate::geometry::{PhysicalPoint, PhysicalRect};
+use crate::geometry::PhysicalRect;
 use crate::model::{DockspaceActionOutcome, DockspaceActionRejection, NativeWindowPlacement};
+use crate::platform::ObservedWorkArea;
+
+#[cfg(test)]
+mod tests;
 
 const DEFAULT_NATIVE_WINDOW_CASCADE: f64 = 24.0;
 
@@ -89,20 +93,11 @@ impl DockEngine {
             }
         };
 
-        let center = PhysicalPoint::new(
-            requested.x() + requested.width() * 0.5,
-            requested.y() + requested.height() * 0.5,
+        let work_area = select_native_work_area(
+            requested,
+            self.viewport.work_areas().map(|(_, work_area)| work_area),
         )
-        .map_err(|_| DockspaceActionRejection::PresentationUnavailable { surface })?;
-        let mut matching_work_areas = self
-            .viewport
-            .work_areas()
-            .map(|(_, work_area)| work_area)
-            .filter(|work_area| work_area.bounds().contains(center));
-        let work_area = matching_work_areas
-            .next()
-            .filter(|_| matching_work_areas.next().is_none())
-            .ok_or(DockspaceActionRejection::NativeUnavailable)?;
+        .ok_or(DockspaceActionRejection::NativeUnavailable)?;
         let offset = DEFAULT_NATIVE_WINDOW_CASCADE * coordinates.native_scale_factor().get();
         let cascaded = PhysicalRect::new(
             requested.x() + offset,
@@ -135,10 +130,7 @@ impl DockEngine {
         if self.root_has_pending_presentation_transition(root) {
             return Ok(Err(DockspaceActionRejection::Conflict));
         }
-        if self.pending_drag_release.is_some()
-            || self.pending_contained_transform_release.is_some()
-            || self.interaction.status() != InteractionStatus::Idle
-        {
+        if self.pending_mutation.is_some() || self.interaction.status() != InteractionStatus::Idle {
             return Ok(Err(DockspaceActionRejection::Conflict));
         }
 
@@ -249,10 +241,7 @@ impl DockEngine {
                 version: self.version,
             });
         }
-        if self.pending_drag_release.is_some()
-            || self.pending_contained_transform_release.is_some()
-            || self.interaction.status() != InteractionStatus::Idle
-        {
+        if self.pending_mutation.is_some() || self.interaction.status() != InteractionStatus::Idle {
             return Ok(InputOutcome::ProductActionRejected {
                 reason: DockspaceActionRejection::Conflict,
                 version: self.version,
@@ -541,6 +530,49 @@ impl DockEngine {
             }),
         }
     }
+}
+
+/// Selects from the caller's current authoritative work-area roster only.
+///
+/// Like ImGui's FindPlatformMonitorForRect, positive axis-aligned intersection area
+/// takes priority. With no positive intersection, distance is the Euclidean distance
+/// between the closest points of the two rectangles: hypot(horizontal gap, vertical
+/// gap), with touching edges at distance zero. Equal scores choose the lowest token,
+/// independently of roster order. Cascade and clamping happen after this selection.
+fn select_native_work_area(
+    requested: PhysicalRect,
+    work_areas: impl IntoIterator<Item = ObservedWorkArea>,
+) -> Option<ObservedWorkArea> {
+    work_areas
+        .into_iter()
+        .map(|work_area| {
+            let bounds = work_area.bounds();
+            let overlap_width =
+                requested.max().x().min(bounds.max().x()) - requested.x().max(bounds.x());
+            let overlap_height =
+                requested.max().y().min(bounds.max().y()) - requested.y().max(bounds.y());
+            let intersection = if overlap_width > 0.0 && overlap_height > 0.0 {
+                overlap_width * overlap_height
+            } else {
+                0.0
+            };
+            let horizontal_gap = (requested.x() - bounds.max().x())
+                .max(bounds.x() - requested.max().x())
+                .max(0.0);
+            let vertical_gap = (requested.y() - bounds.max().y())
+                .max(bounds.y() - requested.max().y())
+                .max(0.0);
+            (work_area, intersection, horizontal_gap.hypot(vertical_gap))
+        })
+        .max_by(
+            |(left, left_area, left_distance), (right, right_area, right_distance)| {
+                left_area
+                    .total_cmp(right_area)
+                    .then_with(|| right_distance.total_cmp(left_distance))
+                    .then_with(|| right.token().cmp(&left.token()))
+            },
+        )
+        .map(|(work_area, _, _)| work_area)
 }
 
 fn expand_content_rect_to_outer(

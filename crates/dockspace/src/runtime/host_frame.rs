@@ -11,7 +11,7 @@ use crate::document::PendingRuntimeDocumentRestore;
 use crate::engine::{
     CoreHostFrame, EngineInput, HostPresentationSlot, HostPresentationUnavailableReason,
 };
-use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
+use crate::ids::{RootId, SourceSequence, StableInputSourceId, SurfaceId};
 use crate::model::{DockPlacement, DockspaceView, WorkspaceVersion};
 use crate::policy::DockPolicy;
 use crate::transition::InputOutcome;
@@ -118,6 +118,54 @@ impl DockspaceHostFrame<'_> {
             surface,
         })?;
         Ok(true)
+    }
+
+    /// Attaches a logical surface with one empty central main root.
+    ///
+    /// Declared identities may be reused after exact retirement. Unaffected
+    /// surfaces keep their current presented input proof; the workspace epoch
+    /// is unchanged. This operation creates no native window.
+    ///
+    /// # Errors
+    ///
+    /// Returns a frame-phase or submission error. Semantic refusals are reported
+    /// by the returned action token after this complete frame commits.
+    pub fn attach_empty_surface_current(
+        &mut self,
+        surface: SurfaceId,
+        root: RootId,
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        let attempt = self.frame.presentation_attempt();
+        let sequence = self.append_identified(EngineInput::AttachEmptySurface {
+            expected: self.frame.view().version(),
+            surface,
+            root,
+        })?;
+        Ok(DockspaceSubmittedAction::new(attempt, sequence))
+    }
+
+    /// Retires an item-free surface and its complete empty main/contained forest.
+    ///
+    /// Close or migrate content first. Native hosting and recovery obligations
+    /// must finish before their logical surface can be retired. An abandoned
+    /// or rejected frame publishes no membership change.
+    ///
+    /// # Errors
+    ///
+    /// Returns a frame-phase or submission error. A nonempty surface or lifecycle
+    /// conflict is a typed outcome associated with the returned action token.
+    pub fn retire_empty_surface_current(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        let attempt = self.frame.presentation_attempt();
+        let sequence = self.append_identified(EngineInput::RetireEmptySurface {
+            expected: self.frame.view().version(),
+            surface,
+        })?;
+        Ok(DockspaceSubmittedAction::new(attempt, sequence))
     }
 
     /// Creates a managed child window for an existing complete logical surface.

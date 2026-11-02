@@ -657,6 +657,10 @@ fn host_frame_records_one_whole_engine_candidate_clone() {
     assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         work.engine_deep_clones.atomic_candidates.volume,
+        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+    );
+    assert_eq!(
+        work.engine_deep_clones.shared_workspace,
         expected_workspace_volume
     );
 }
@@ -1060,6 +1064,10 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
     assert_eq!(press_work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         press_work.engine_deep_clones.atomic_candidates.volume,
+        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+    );
+    assert_eq!(
+        press_work.engine_deep_clones.shared_workspace,
         workspace_volume
     );
     assert_eq!(
@@ -1127,6 +1135,10 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
     assert_eq!(release_work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         release_work.engine_deep_clones.atomic_candidates.volume,
+        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+    );
+    assert_eq!(
+        release_work.engine_deep_clones.shared_workspace,
         workspace_volume
     );
     assert_eq!(
@@ -1506,8 +1518,9 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         work.engine_deep_clones.atomic_candidates.volume,
-        workspace_volume
+        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
     );
+    assert_eq!(work.engine_deep_clones.shared_workspace, workspace_volume);
     assert_eq!(
         work.engine_deep_clones.atomic_candidate_state,
         crate::drop_resolver::structural_work::EngineCloneVolume {
@@ -1606,8 +1619,9 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
     assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         work.engine_deep_clones.atomic_candidates.volume,
-        expected_volume
+        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
     );
+    assert_eq!(work.engine_deep_clones.shared_workspace, expected_volume);
 
     let floating = FloatingPresentationId::new(1);
     let mut builder = Workspace::builder();
@@ -1696,8 +1710,9 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
     assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         work.engine_deep_clones.atomic_candidates.volume,
-        expected_volume
+        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
     );
+    assert_eq!(work.engine_deep_clones.shared_workspace, expected_volume);
 }
 
 #[test]

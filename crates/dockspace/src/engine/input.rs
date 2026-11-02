@@ -325,6 +325,18 @@ pub(crate) enum LocalTabChromeAction {
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineInput {
+    /// Attach an empty central logical surface using declared semantic identities.
+    AttachEmptySurface {
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+        root: RootId,
+    },
+    /// Retire an item-free logical surface without replacing the workspace epoch.
+    RetireEmptySurface {
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+    },
+
     /// Changes targeting intent for one current host-local pointer owner.
     UpdatePointerMagneticTargeting {
         /// Exact provider whose ordered input contains this directive.
@@ -857,6 +869,8 @@ impl EngineInput {
             | Self::UpdatePointerMagneticTargeting { .. }
             | Self::UpdateNativeMagneticTargeting { .. }
             | Self::CancelNativeInputForOverload { .. }
+            | Self::AttachEmptySurface { .. }
+            | Self::RetireEmptySurface { .. }
             | Self::WorkspaceCommand { .. }
             | Self::SelectItem { .. }
             | Self::OpenItem { .. }

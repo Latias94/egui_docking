@@ -545,10 +545,7 @@ impl DockEngine {
         placement: ContainedTransformPlacement,
         policy: &DockPolicySnapshot,
     ) -> Result<InteractionOutcome, EngineError> {
-        if self.pending_drag_release.is_some()
-            || self.pending_contained_transform_release.is_some()
-            || self.pending_presentation_rehome.is_some()
-        {
+        if self.pending_mutation.is_some() {
             return Err(EngineError::PointerInteractionInvariant {
                 cause,
                 detail: "a contained-transform release obligation is already pending".to_owned(),
@@ -560,18 +557,18 @@ impl DockEngine {
             .expect("deferred contained release has an exact preview")
             .public()
             .token();
-        self.pending_contained_transform_release = Some(PendingContainedTransformRelease {
-            source_version: self.version,
-            policy_revision: policy.revision(),
-            cause,
-            session,
-            transform,
-            placement,
-            preview,
-            presentation_outputs: BTreeSet::new(),
-            presented_output: None,
-            presentation_failed: false,
-        });
+        self.pending_mutation = Some(PendingMutation::ContainedRelease(
+            PendingContainedTransformRelease {
+                source_version: self.version,
+                policy_revision: policy.revision(),
+                cause,
+                session,
+                transform,
+                placement,
+                preview,
+                presentation: PendingPresentationTracker::default(),
+            },
+        ));
         Ok(InteractionOutcome::ContainedTransformReleasePending { session, preview })
     }
 
@@ -728,21 +725,24 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<bool, EngineError> {
-        let Some(pending) = self.pending_contained_transform_release.as_ref() else {
+        let Some(pending) = self
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::contained_release)
+        else {
             return Ok(false);
         };
-        if pending.presented_output.is_none() && !pending.presentation_failed {
+        if pending.presentation.presented.is_none() && !pending.presentation.failed {
             return Ok(false);
         }
-        let pending = self
-            .pending_contained_transform_release
-            .take()
-            .expect("checked contained release remains present");
+        let Some(PendingMutation::ContainedRelease(pending)) = self.pending_mutation.take() else {
+            unreachable!("checked contained release remains present");
+        };
         let cancellation = if self.version != pending.source_version {
             Some(InteractionCancelReason::WorkspaceChanged)
         } else if self.policy.revision() != pending.policy_revision {
             Some(InteractionCancelReason::PolicyChanged)
-        } else if pending.presentation_failed {
+        } else if pending.presentation.failed {
             Some(InteractionCancelReason::SceneUnavailable)
         } else {
             None
@@ -1043,7 +1043,9 @@ mod tests {
         assert!(
             frame
                 .candidate
-                .pending_contained_transform_release
+                .pending_mutation
+                .as_ref()
+                .and_then(PendingMutation::contained_release)
                 .is_some(),
             "release retains its resized rectangle for actual presentation"
         );

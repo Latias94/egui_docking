@@ -2305,8 +2305,9 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
 
     let pending = fixture
         .engine
-        .pending_presentation_rehome
+        .pending_mutation
         .as_ref()
+        .and_then(PendingMutation::rehome)
         .expect("the target presentation remains pending");
     assert_eq!(pending.source_binding, request.binding());
     assert_eq!(
@@ -2426,7 +2427,11 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
         "a release without an active journal gesture must not alter the pending rehome"
     );
     assert_eq!(
-        fixture.engine.pending_presentation_rehome.as_ref(),
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome),
         Some(&pending_before)
     );
     assert_eq!(fixture.engine.version(), version_before_press);
@@ -2459,7 +2464,11 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
     assert!(!retirement.interaction_changed());
     assert!(retirement.repaint_required());
     assert_eq!(
-        fixture.engine.pending_presentation_rehome.as_ref(),
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome),
         Some(&pending_before)
     );
     let mut unrelated_interaction_events = Vec::new();
@@ -2474,7 +2483,14 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
             .is_empty(),
         "a programmatic rehome is not a pointer release obligation"
     );
-    assert!(fixture.engine.pending_presentation_rehome.is_some());
+    assert!(
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_some()
+    );
     assert!(unrelated_interaction_events.is_empty());
 
     let measurements = surface_measurements(&fixture.engine, TARGET_SURFACE, background_bounds());
@@ -2580,7 +2596,14 @@ fn product_single_item_native_child_dock_waits_for_target_presentation() {
             surface: NATIVE_SURFACE,
         })
     );
-    assert!(fixture.engine.pending_presentation_rehome.is_some());
+    assert!(
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_some()
+    );
     assert!(staged.platform_effects().iter().all(|effect| {
         !matches!(
             effect.effect(),
@@ -2589,8 +2612,10 @@ fn product_single_item_native_child_dock_waits_for_target_presentation() {
     }));
     let pending_before = fixture
         .engine
-        .pending_presentation_rehome
-        .clone()
+        .pending_mutation
+        .as_ref()
+        .and_then(PendingMutation::rehome)
+        .cloned()
         .expect("the dock transition owns its source reservation");
     let PreviewProof::PresentationRehome { command } = pending_before.preview.proof() else {
         panic!("presentation rehome retains its exact frozen command");
@@ -2627,7 +2652,11 @@ fn product_single_item_native_child_dock_waits_for_target_presentation() {
         } if *version == source_version
     ));
     assert_eq!(
-        fixture.engine.pending_presentation_rehome.as_ref(),
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome),
         Some(&pending_before)
     );
 
@@ -2730,8 +2759,9 @@ fn product_native_main_dock_back_uses_bound_recovery_after_target_presentation()
     );
     let pending = fixture
         .engine
-        .pending_presentation_rehome
+        .pending_mutation
         .as_ref()
+        .and_then(PendingMutation::rehome)
         .expect("dock-back waits for the exact recovery-host presentation");
     assert_eq!(pending.target_surface, target_surface);
     assert_eq!(pending.floating, Some(expected_floating));
@@ -2870,7 +2900,14 @@ fn runtime_owned_native_main_dock_back_requires_window_lifecycle_capability() {
         } if *actual == version
     ));
     assert_eq!(fixture.engine.version(), version);
-    assert!(fixture.engine.pending_presentation_rehome.is_none());
+    assert!(
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_none()
+    );
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
         Some(crate::RootPresentationOwner::Main {
@@ -2914,7 +2951,14 @@ fn root_presentation_transitions_share_one_pending_reservation() {
             .native_create_saga(request.saga())
             .is_some()
     );
-    assert!(creating.engine.pending_presentation_rehome.is_none());
+    assert!(
+        creating
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_none()
+    );
     assert!(conflict.platform_effects().is_empty());
 
     let mut rehoming = background_fixture(policy);
@@ -2951,8 +2995,10 @@ fn root_presentation_transitions_share_one_pending_reservation() {
     ));
     let pending = rehoming
         .engine
-        .pending_presentation_rehome
-        .clone()
+        .pending_mutation
+        .as_ref()
+        .and_then(PendingMutation::rehome)
+        .cloned()
         .expect("the first presentation transition owns the root reservation");
     let tear_off = submit_test_input(
         &mut rehoming.engine,
@@ -2992,7 +3038,11 @@ fn root_presentation_transitions_share_one_pending_reservation() {
         }
     ));
     assert_eq!(
-        rehoming.engine.pending_presentation_rehome.as_ref(),
+        rehoming
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome),
         Some(&pending)
     );
     let different_root = submit_test_input(
@@ -3014,7 +3064,11 @@ fn root_presentation_transitions_share_one_pending_reservation() {
         }
     ));
     assert_eq!(
-        rehoming.engine.pending_presentation_rehome.as_ref(),
+        rehoming
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome),
         Some(&pending)
     );
     assert!(tear_off.platform_effects().is_empty());
@@ -3523,8 +3577,9 @@ fn product_native_root_to_contained_settles_when_the_source_host_retires() {
     ));
     let source_emission = fixture
         .engine
-        .pending_presentation_rehome
+        .pending_mutation
         .as_ref()
+        .and_then(PendingMutation::rehome)
         .expect("the target presentation remains pending")
         .source_presentation
         .emission();
@@ -3546,7 +3601,14 @@ fn product_native_root_to_contained_settles_when_the_source_host_retires() {
         .transition()
         .expect("the first source host retirement publishes a transition");
 
-    assert!(fixture.engine.pending_presentation_rehome.is_none());
+    assert!(
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_none()
+    );
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
         Some(crate::RootPresentationOwner::Main {
@@ -3610,7 +3672,14 @@ fn product_native_root_rehome_terminates_on_exact_backend_failure() {
         },
     )
     .expect("native-to-contained transition must stage");
-    assert!(fixture.engine.pending_presentation_rehome.is_some());
+    assert!(
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_some()
+    );
 
     let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
     for obligation in frame
@@ -3635,7 +3704,14 @@ fn product_native_root_rehome_terminates_on_exact_backend_failure() {
         .finish(&mut fixture.engine)
         .expect("an explicit backend failure settles without a core fatal error");
 
-    assert!(fixture.engine.pending_presentation_rehome.is_none());
+    assert!(
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_none()
+    );
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
         Some(crate::RootPresentationOwner::Main {
@@ -3714,7 +3790,14 @@ fn product_native_root_rehome_ignores_target_failure_without_preview_token() {
             .settle_presented_pending_presentation_rehome(&mut events)
             .expect("an unrelated target failure remains inert")
     );
-    assert!(fixture.engine.pending_presentation_rehome.is_some());
+    assert!(
+        fixture
+            .engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_some()
+    );
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
         Some(crate::RootPresentationOwner::Main {
@@ -4357,7 +4440,13 @@ fn rootless_native_child_rehome_waits_for_target_presentation_before_release() {
             floating: child_floating,
         })
     );
-    assert!(engine.pending_presentation_rehome.is_some());
+    assert!(
+        engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_some()
+    );
     assert!(staged.platform_effects().iter().all(|effect| {
         !matches!(
             effect.effect(),
@@ -4382,7 +4471,7 @@ fn rootless_native_child_rehome_waits_for_target_presentation_before_release() {
         }) if surface == host_surface && floating == child_floating
         ),
         "unexpected final owner {final_owner:?}, pending {:?}, events {:?}",
-        engine.pending_presentation_rehome,
+        engine.pending_mutation,
         transferred.events()
     );
     assert!(engine.workspace().surface(child_surface).is_none());
@@ -4672,12 +4761,14 @@ fn stale_roster_precondition_is_a_nonpublishing_recovery_rejection() {
     let transaction = roster
         .compile_rehome_transaction(engine.workspace(), &placement)
         .expect("current roster must compile");
-    let Some(Node::Tabs { selected, .. }) = engine.workspace.nodes.get_mut(source_tabs) else {
+    let Some(Node::Tabs { selected, .. }) = Arc::make_mut(&mut engine.workspace)
+        .nodes
+        .get_mut(source_tabs)
+    else {
         panic!("source root must remain tabs");
     };
     *selected = Some(ItemId::new(42));
-    engine
-        .workspace
+    Arc::make_mut(&mut engine.workspace)
         .tab_mru
         .insert(source_tabs, vec![ItemId::new(42), ItemId::new(40)]);
     engine

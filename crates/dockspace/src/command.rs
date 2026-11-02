@@ -616,6 +616,14 @@ pub enum WorkspaceCommand {
     },
     /// Atomically replace every weight for one or more distinct splits.
     ResizeSplits { splits: Vec<SplitResize> },
+    /// Attach a logical surface with a new main root containing one empty central tabs leaf.
+    ///
+    /// This creates no native hosting and admits no application item.
+    AttachEmptySurface { surface: SurfaceId, root: RootId },
+    /// Retire a logical surface only when its entire main and contained forest owns no items.
+    ///
+    /// All empty roots and contained presentations owned by the surface are removed atomically.
+    RetireEmptySurface { surface: SurfaceId },
     /// Create a new logical surface and its main root atomically.
     CreateSurfaceRoot {
         surface: SurfaceId,
@@ -719,6 +727,8 @@ impl WorkspaceCommand {
             | Self::Reorder { .. }
             | Self::Move { .. }
             | Self::ResizeSplits { .. }
+            | Self::AttachEmptySurface { .. }
+            | Self::RetireEmptySurface { .. }
             | Self::CreateSurfaceRoot {
                 content: RootContent::Move(_),
                 ..
@@ -769,6 +779,10 @@ pub enum CommandOutcome {
     },
     /// One atomic split-resize batch was checked and optionally stored.
     SplitsResized { splits: Vec<NodeId>, changed: bool },
+    /// A logical surface with an empty central main root was attached.
+    EmptySurfaceAttached { surface: SurfaceId, root: RootId },
+    /// A logical surface and its complete item-free forest were retired.
+    EmptySurfaceRetired { surface: SurfaceId },
     /// A new surface and main root were created.
     SurfaceRootCreated {
         surface: SurfaceId,
@@ -841,6 +855,8 @@ impl CommandOutcome {
                 ..
             } => *rect_changed || *order_changed,
             Self::Opened { .. }
+            | Self::EmptySurfaceAttached { .. }
+            | Self::EmptySurfaceRetired { .. }
             | Self::SurfaceRootCreated { .. }
             | Self::ContainedRootCreated { .. }
             | Self::MainRootInstalled { .. }

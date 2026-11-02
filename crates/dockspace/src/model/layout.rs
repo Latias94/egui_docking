@@ -41,13 +41,12 @@ impl From<Axis> for DockspaceAxis {
 /// Recursive product declaration of one tabs or split node.
 ///
 /// Runtime node identities are allocated only when the complete [`DockspaceLayout`] is built.
-#[derive(Debug, Clone)]
+/// Compilation, cloning, and destruction use heap traversal rather than recursive calls.
 pub struct DockspaceNode {
     kind: DockspaceNodeKind,
     central: bool,
 }
 
-#[derive(Debug, Clone)]
 enum DockspaceNodeKind {
     Tabs {
         items: Vec<ItemId>,
@@ -60,7 +59,114 @@ enum DockspaceNodeKind {
     },
 }
 
+impl fmt::Debug for DockspaceNode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut node = formatter.debug_struct("DockspaceNode");
+        match &self.kind {
+            DockspaceNodeKind::Tabs { items, selected } => {
+                node.field("items", items).field("selected", selected);
+            }
+            DockspaceNodeKind::Split {
+                axis,
+                children,
+                weights,
+            } => {
+                node.field("axis", axis)
+                    .field("child_count", &children.len())
+                    .field("weights", weights);
+            }
+        }
+        node.field("central", &self.central).finish_non_exhaustive()
+    }
+}
+
+impl Clone for DockspaceNode {
+    fn clone(&self) -> Self {
+        enum Frame<'node> {
+            Enter(&'node DockspaceNode),
+            FinishSplit {
+                axis: DockspaceAxis,
+                weights: &'node [SplitWeight],
+                child_base: usize,
+                central: bool,
+            },
+        }
+
+        let mut pending = vec![Frame::Enter(self)];
+        let mut completed = Vec::new();
+        while let Some(frame) = pending.pop() {
+            match frame {
+                Frame::Enter(node) => match &node.kind {
+                    DockspaceNodeKind::Tabs { items, selected } => completed.push(Self {
+                        kind: DockspaceNodeKind::Tabs {
+                            items: items.clone(),
+                            selected: *selected,
+                        },
+                        central: node.central,
+                    }),
+                    DockspaceNodeKind::Split {
+                        axis,
+                        children,
+                        weights,
+                    } => {
+                        pending.push(Frame::FinishSplit {
+                            axis: *axis,
+                            weights,
+                            child_base: completed.len(),
+                            central: node.central,
+                        });
+                        pending.extend(children.iter().rev().map(Frame::Enter));
+                    }
+                },
+                Frame::FinishSplit {
+                    axis,
+                    weights,
+                    child_base,
+                    central,
+                } => {
+                    let children = completed.split_off(child_base);
+                    completed.push(Self {
+                        kind: DockspaceNodeKind::Split {
+                            axis,
+                            children,
+                            weights: weights.to_vec(),
+                        },
+                        central,
+                    });
+                }
+            }
+        }
+        completed.pop().expect("the declaration contains its root")
+    }
+}
+
+impl Drop for DockspaceNode {
+    fn drop(&mut self) {
+        let DockspaceNodeKind::Split { children, .. } = &mut self.kind else {
+            return;
+        };
+        let mut pending = std::mem::take(children);
+        while let Some(mut node) = pending.pop() {
+            if let DockspaceNodeKind::Split { children, .. } = &mut node.kind {
+                // Empty each node before its destructor runs, including error cleanup.
+                pending.append(children);
+            }
+        }
+    }
+}
+
 impl DockspaceNode {
+    fn into_parts(mut self) -> (DockspaceNodeKind, bool) {
+        let kind = std::mem::replace(
+            &mut self.kind,
+            DockspaceNodeKind::Tabs {
+                items: Vec::new(),
+                selected: None,
+            },
+        );
+        (kind, self.central)
+    }
+
     /// Creates a tabs leaf and selects its first item, if present.
     #[must_use]
     pub fn tabs(items: impl IntoIterator<Item = ItemId>) -> Self {
@@ -258,9 +364,21 @@ pub struct DockspaceLayout {
 impl fmt::Debug for DockspaceLayout {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_tuple("DockspaceLayout")
-            .field(&self.view())
-            .finish()
+            .debug_struct("DockspaceLayout")
+            .field(
+                "surfaces",
+                &self
+                    .workspace
+                    .surfaces()
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>(),
+            )
+            .field(
+                "roots",
+                &self.workspace.roots().map(|(id, _)| id).collect::<Vec<_>>(),
+            )
+            .field("node_count", &self.workspace.nodes().count())
+            .finish_non_exhaustive()
     }
 }
 
@@ -447,38 +565,76 @@ impl LayoutCompiler {
         root: RootId,
         central: &mut Option<NodeId>,
     ) -> Result<NodeId, DockspaceLayoutError> {
-        let compiled = match node.kind {
-            DockspaceNodeKind::Tabs { items, selected } => {
-                for item in &items {
-                    if !self.items.insert(*item) {
-                        return Err(DockspaceLayoutError::DuplicateItem { item: *item });
+        enum Frame {
+            Enter(DockspaceNode),
+            FinishSplit {
+                axis: DockspaceAxis,
+                weights: Vec<SplitWeight>,
+                child_base: usize,
+                central: bool,
+            },
+        }
+
+        let mut pending = vec![Frame::Enter(node)];
+        let mut completed = Vec::new();
+        while let Some(frame) = pending.pop() {
+            let (compiled, is_central) = match frame {
+                Frame::Enter(node) => {
+                    let (kind, is_central) = node.into_parts();
+                    match kind {
+                        DockspaceNodeKind::Tabs { items, selected } => {
+                            for item in &items {
+                                if !self.items.insert(*item) {
+                                    return Err(DockspaceLayoutError::DuplicateItem {
+                                        item: *item,
+                                    });
+                                }
+                            }
+                            (
+                                self.builder
+                                    .insert_node(Node::tabs_with_selection(items, selected)),
+                                is_central,
+                            )
+                        }
+                        DockspaceNodeKind::Split {
+                            axis,
+                            children,
+                            weights,
+                        } => {
+                            pending.push(Frame::FinishSplit {
+                                axis,
+                                weights,
+                                child_base: completed.len(),
+                                central: is_central,
+                            });
+                            pending.extend(children.into_iter().rev().map(Frame::Enter));
+                            continue;
+                        }
                     }
                 }
-                self.builder
-                    .insert_node(Node::tabs_with_selection(items, selected))
-            }
-            DockspaceNodeKind::Split {
-                axis,
-                children,
-                weights,
-            } => {
-                let children = children
-                    .into_iter()
-                    .map(|child| self.compile_node(child, root, central))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.builder.insert_node(Node::Split {
-                    axis: axis.into(),
-                    children,
+                Frame::FinishSplit {
+                    axis,
                     weights,
-                })
-            }
-        };
+                    child_base,
+                    central,
+                } => {
+                    let children = completed.split_off(child_base);
+                    (
+                        self.builder.insert_node(Node::Split {
+                            axis: axis.into(),
+                            children,
+                            weights,
+                        }),
+                        central,
+                    )
+                }
+            };
 
-        if node.central {
-            if central.replace(compiled).is_some() {
+            if is_central && central.replace(compiled).is_some() {
                 return Err(DockspaceLayoutError::MultipleCentralRegions { root });
             }
+            completed.push(compiled);
         }
-        Ok(compiled)
+        completed.pop().ok_or(DockspaceLayoutError::InvalidTopology)
     }
 }

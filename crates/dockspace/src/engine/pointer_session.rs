@@ -323,21 +323,10 @@ impl DockEngine {
         reason: InteractionCancelReason,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Vec<InteractionOutcome> {
-        let statuses = [
-            self.pending_drag_release
-                .take()
-                .map(|pending| InteractionStatus::Dragging {
-                    session: pending.session,
-                }),
-            self.pending_contained_transform_release
-                .take()
-                .map(|pending| InteractionStatus::ContainedTransforming {
-                    session: pending.session,
-                }),
-        ];
-        statuses
+        self.pending_mutation
+            .take_if(|pending| pending.gesture().is_some())
+            .and_then(|pending| pending.gesture().map(|(_, status)| status))
             .into_iter()
-            .flatten()
             .map(|status| {
                 interaction_events.push(InteractionEvent::new_caused(
                     cause,
@@ -355,19 +344,11 @@ impl DockEngine {
         reason: InteractionCancelReason,
         interaction_events: &mut Vec<InteractionEvent>,
     ) {
-        let statuses = [
-            self.pending_drag_release
-                .take()
-                .map(|pending| InteractionStatus::Dragging {
-                    session: pending.session,
-                }),
-            self.pending_contained_transform_release
-                .take()
-                .map(|pending| InteractionStatus::ContainedTransforming {
-                    session: pending.session,
-                }),
-        ];
-        interaction_events.extend(statuses.into_iter().flatten().map(|status| {
+        let status = self
+            .pending_mutation
+            .take_if(|pending| pending.gesture().is_some())
+            .and_then(|pending| pending.gesture().map(|(_, status)| status));
+        interaction_events.extend(status.into_iter().map(|status| {
             InteractionEvent::new(
                 input,
                 self.version,
@@ -382,13 +363,16 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) {
         let reason = self
-            .pending_drag_release
+            .pending_mutation
             .as_ref()
-            .map(|pending| (pending.source_version, pending.policy_revision))
-            .or_else(|| {
-                self.pending_contained_transform_release
-                    .as_ref()
-                    .map(|pending| (pending.source_version, pending.policy_revision))
+            .and_then(|pending| match pending {
+                PendingMutation::DragRelease(pending) => {
+                    Some((pending.source_version, pending.policy_revision))
+                }
+                PendingMutation::ContainedRelease(pending) => {
+                    Some((pending.source_version, pending.policy_revision))
+                }
+                PendingMutation::Rehome(_) => None,
             })
             .and_then(|(source_version, policy_revision)| {
                 if self.version != source_version {
@@ -456,19 +440,15 @@ impl DockEngine {
                 },
             ));
         }
-        let pending_statuses = [
-            self.pending_drag_release
-                .take_if(|pending| pending.drag.owner.lease() == provider)
-                .map(|pending| InteractionStatus::Dragging {
-                    session: pending.session,
-                }),
-            self.pending_contained_transform_release
-                .take_if(|pending| pending.transform.owner.lease() == provider)
-                .map(|pending| InteractionStatus::ContainedTransforming {
-                    session: pending.session,
-                }),
-        ];
-        interaction_events.extend(pending_statuses.into_iter().flatten().map(|status| {
+        let pending_status = self
+            .pending_mutation
+            .take_if(|pending| {
+                pending
+                    .gesture()
+                    .is_some_and(|(owner, _)| owner == provider)
+            })
+            .and_then(|pending| pending.gesture().map(|(_, status)| status));
+        interaction_events.extend(pending_status.into_iter().map(|status| {
             InteractionEvent::new_caused(
                 cause,
                 self.version,

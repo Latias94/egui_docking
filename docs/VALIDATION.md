@@ -21,9 +21,9 @@ The [active follow-up plan](plans/2026-11-02-dockspace-semantic-state-refactor.m
 remains open. This tranche implements all nine executed counterexamples from the
 [ImGui review](audits/2026-11-02-dockspace-imgui-review.md), plus independently
 reviewed presentation/native interleavings. The following records describe this
-tranche only; nested boundary resizing, production depth handling, dynamic logical
-surfaces, pending-mutation consolidation and profiled transaction copying remain
-unimplemented.
+tranche only. Production depth handling, dynamic logical surfaces, pending-mutation
+consolidation and profiled transaction copying continue in the structural tranche
+below; nested touching-boundary resizing remains open.
 
 Changes:
 
@@ -91,6 +91,98 @@ rebuildable project caches/artifacts were reclaimed. Repository source, independ
 CI edits and `docs/reviews/` were preserved. All dependency gates use tracked Git
 pins from the existing Cargo cache with `--locked --offline`; no dependency path
 substitution, push or PR is part of this tranche.
+
+## 2026-11-02 semantic-state structural tranche
+
+Implementation follows `72a75d9`; the structural tranche passes the qualification below.
+Nested touching-boundary resizing is still open in the active plan.
+
+- One `Option<PendingMutation>` replaces the drag-release, contained-release and
+  presentation-rehome Options. One concrete presentation tracker owns exact emitted
+  keys, successful presentation and failure, retirement and retention. Each variant
+  retains its semantic command and terminal result. Read-only review finds no confirmed
+  presentation/cancellation regression against the first tranche.
+- `attach_empty_surface_current` and `retire_empty_surface_current` use the existing
+  workspace transaction. Empty central roots accept docking in the same frame;
+  nonempty main/contained forests and native/recovery/reservation conflicts reject.
+  Unrelated presented receivers remain usable. Abandoned and poisoned frames leave
+  published topology, version and presentation unchanged. Reattachment keeps semantic
+  IDs and the workspace epoch but requires new node/measurement/presentation proof.
+  Changed surface requirements use the existing aggregate requirement revision;
+  live per-surface state still prunes without adding a history registry.
+- Independent review identified a reserved drag ID gap before native-create enrollment.
+  Four real press/move/release regressions independently collide with the reserved
+  surface or root during active drag and pending release. All four fail before the fix
+  and pass afterward; each then delivers the original create only after its exact
+  preview presentation. Existing reservation objects supply the conflict check.
+- Product declaration compilation, clone, debug and destruction use heap traversal.
+  Production scene minima use the shared iterative measurement once, then complete
+  bounds-dependent maxima and project. Public 10,000-level declaration, error cleanup
+  and complete measured/painted/presented contained-scene cases pass on the ordinary
+  thread stack. The old recursive compiler/minimum path is deleted.
+- Sampling the first complete deep scene found a repeated full-root fingerprint in
+  pane tab-bar policy validation. Expected-pane validation already proves membership,
+  owner and selection; the policy now uses that selected item directly. The same debug
+  complete-scene test improves from 238 seconds to 56 seconds. This is a local sample,
+  not a general linear-runtime or latency claim.
+- Default native placement compares all current authoritative work areas by requested
+  rectangle intersection, then nearest rectangle distance, then lowest token. Existing
+  cascade/clamp follows selection. Thirteen public traces and four low-level cases
+  cover gaps, overlaps, deterministic ties, scale, missing facts and stale/foreign input.
+- Whole-engine candidates share the immutable canonical workspace through `Arc`.
+  Checked mutations retain the existing owned staging copy and publish a new snapshot;
+  other ledgers retain their representation. Deterministic counters distinguish shared
+  workspace volume from explicit deep copies, and all core rollback/producer tests pass.
+
+The opt-in public `frame_cost` example prints five samples per size with no timing
+threshold. A Linux/arm64 optimized local run reports the following medians in microseconds;
+concurrent host activity, compiler/runtime and fixture details limit comparisons.
+These samples include the whole facade frame, not allocation-only or renderer time.
+
+| Panes | Idle before | Idle after | One selected pane before | One selected pane after |
+| --- | ---: | ---: | ---: | ---: |
+| 16 | 19.25 | 19.21 | 70.68 | 70.82 |
+| 128 | 81.17 | 74.29 | 505.21 | 498.87 |
+| 1024 | 611.21 | 506.99 | 4820.95 | 4709.79 |
+
+Pre-reservation-fix macOS workspace 1,984 and public serde 230 pass. They are not the
+final source receipt. macOS product qualification then fails during compilation from
+full disk; no test result is claimed for that attempt. Only rebuildable project Cargo
+output is reclaimed, preserving source, dependency caches and independent changes.
+Final frozen-source qualification continues serially with one Linux build job and
+one libtest thread in the existing container target. That container has no nextest;
+standard Cargo test is the explicit fallback. Exact locally cached registry archives
+and sparse-index entries are reused without changing manifests or lockfiles.
+
+The corrected frozen-source Linux runs pass workspace 1,988, public serde 230,
+public default 202, product serde 117 and native normal/noassert 540 each. The five ignored native
+cases retain their actual scope: three isolated real-X11/renderer cases, one
+full-output-capacity renderer case and one opt-in wall-time measurement. They
+are not silently counted as passed by the model suites. Strict workspace docs,
+Clippy correctness/suspicious and ten doctests pass. Four workspace/harness
+format checks and modified Markdown local-link checks pass.
+
+The host disk was subsequently stabilized by reclaiming three inactive July/August
+Cargo target directories inside this project's public/product/old-fork harnesses.
+They contained no tracked files and no active build. No repository source, user
+edits, reference checkout or dependency cache was removed. Docker was restarted
+after its VM exited and the daemon returned EOF; all pre-restart receipts remain
+separate from the following real-window refresh.
+
+The final optimized X11 window refresh passes default/bounded redock, all six output
+pressure modes and physical guide drag-out/redock/Destroyed/quiescence. The native
+workspace uses the tracked remote egui/Winit pins with no path substitutions. MacOS
+first-tranche window receipts remain separate; this structural slice's post-reservation-fix
+window refresh is X11. The final plan qualification still refreshes enabled profiles
+when the remaining touching-boundary resize implementation is frozen.
+
+Source and command records:
+`/tmp/dockspace-semantic-structural-final-snapshot.json`,
+`/tmp/dockspace-semantic-structural-linux-final-gates.json`,
+`/tmp/dockspace-semantic-drag-reservation-red-v3.log`,
+`/tmp/dockspace-semantic-drag-reservation-green.log` and
+`/tmp/dockspace-semantic-frame-cost-summary.json` and
+`/tmp/dockspace-semantic-structural-x11-gates.json`.
 
 ## Remote fork publication and clean-checkout delivery
 

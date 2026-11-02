@@ -3,6 +3,17 @@
 use super::*;
 
 use crate::frame::{NativeCreatePhase, NativeCreateRequest};
+use crate::geometry::PhysicalPoint;
+use crate::interaction::{InteractionEventKind, PreviewVisual};
+use crate::model::LogicalSurfaceRejection;
+use crate::platform::{
+    InputEffectAcknowledgement, NativeDragSourceInput, WindowInputObservation, WindowInputState,
+};
+use crate::pointer_journal::{
+    DesktopRouteFact, DesktopWorkAreaRoute, PointerEventDeliveryOwner, PointerInputLease,
+};
+use crate::pointer_receiver::PointerReceiverProbeRequest;
+use crate::viewport::InputObservationGeneration;
 
 #[derive(Clone, Copy)]
 enum PartialPayload {
@@ -382,4 +393,530 @@ fn native_commit_exempts_only_its_own_partial_source_reservation() {
     assert_eq!(fixture.engine.workspace(), &workspace);
     assert_eq!(fixture.engine.version(), version);
     assert_eq!(fixture.engine.viewport(), &viewport);
+}
+
+fn submit_native_reservation_edge(
+    fixture: &mut BackgroundFixture,
+    provider: PointerInputLease,
+    previous: u64,
+    kind: PointerEdgeKind,
+    route: DesktopRouteFact,
+) -> EngineTransition {
+    let binding = background_source_binding(fixture);
+    let capture = if kind == PointerEdgeKind::ButtonReleased(PointerButton::Primary) {
+        PointerCaptureOwner::None
+    } else {
+        PointerCaptureOwner::Native(binding)
+    };
+    let sequence = PointerEdgeSequence::new(previous + 1);
+    let journal = PointerEdgeJournal::new(
+        PointerEdgeSequence::new(previous),
+        sequence,
+        vec![PointerEdge::new_with_delivery(
+            sequence,
+            TEST_POINTER,
+            kind,
+            PointerEdgeLocation::Desktop { route },
+            Authority::Known(PointerEventDeliveryOwner::Native(binding)),
+            Authority::Known(capture),
+        )],
+    )
+    .expect("the native reservation gesture must have contiguous edges");
+    let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    frame
+        .submit_pointer_journal(provider, journal)
+        .expect("the native reservation gesture must stage");
+    let [candidate] = frame
+        .pointer_receiver_candidates()
+        .expect("the native edge must freeze its exact receiver roster")
+        .candidates()
+    else {
+        panic!("one native edge must freeze one receiver candidate");
+    };
+    let observation = match candidate.probes() {
+        PointerReceiverProbeRequest::Delivery => {
+            assert_eq!(kind, PointerEdgeKind::ButtonPressed(PointerButton::Primary));
+            let projection = frame
+                .view()
+                .interaction_projection(SOURCE_SURFACE)
+                .expect("the press must use the source's presented projection");
+            let region = projection
+                .hit_manifest()
+                .regions()
+                .iter()
+                .find(|region| {
+                    matches!(region.id().kind(), PresentationHitRegionKind::TabBody(tab)
+                        if tab.item == ItemId::new(1))
+                })
+                .expect("the selected source tab must have an exact receiver")
+                .id();
+            let delivery = PointerReceiverDelivery::new(
+                projection,
+                PointerReceiverDeliveryDisposition::Dock(region),
+            )
+            .expect("the native press must bind its actual source receiver");
+            PointerReceiverObservation::Presented(
+                PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
+                    delivery,
+                )])
+                .expect("the native press must answer its delivery probe"),
+            )
+        }
+        PointerReceiverProbeRequest::NotApplicable => PointerReceiverObservation::NotApplicable,
+        PointerReceiverProbeRequest::HoverHit => {
+            panic!("an explicit outside-all route must not request a surface hover receiver")
+        }
+    };
+    let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+        .expect("the native gesture must answer exactly its frozen receiver roster");
+    frame
+        .submit_pointer_receiver_receipts(receipts)
+        .expect("the native gesture receiver receipt must reduce");
+    complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut frame);
+    frame
+        .finish(&mut fixture.engine)
+        .expect("the real native gesture must commit")
+}
+
+fn native_drag_reservation_fixture() -> (BackgroundFixture, PointerInputLease, DesktopRouteFact) {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let work_area = publish_native_background_platform(&mut fixture);
+    let binding = background_source_binding(&fixture);
+    let mut capabilities = PlatformCapabilities::default();
+    capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
+    capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+    capabilities.set_global_window_placement(PlatformCapability::Supported);
+    capabilities.set_work_area(PlatformCapability::Supported);
+    capabilities.set_hovered_window(PlatformCapability::Supported);
+    capabilities.set_desktop_pointer_position(PlatformCapability::Supported);
+    capabilities.set_authoritative_button_state(PlatformCapability::Supported);
+    capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+    let observed = ObservedWindow::new(binding)
+        .with_coordinate_observation(WindowCoordinateObservation::new(
+            binding,
+            CoordinateObservationGeneration::new(2),
+            Authority::Known(PhysicalRect::new(0.0, 0.0, 400.0, 300.0).unwrap()),
+            Authority::Known(PhysicalRect::new(-8.0, -30.0, 416.0, 338.0).unwrap()),
+            Authority::Known(ScaleFactor::new(1.0).unwrap()),
+            Authority::Known(ScaleFactor::new(1.0).unwrap()),
+        ))
+        .with_input_observation(WindowInputObservation::new(
+            binding,
+            InputObservationGeneration::new(2),
+            Authority::Known(WindowInputState::ReceivesInput),
+            InputEffectAcknowledgement::known(None),
+        ))
+        .with_presentation_observation(WindowPresentationObservation::new(
+            binding,
+            crate::viewport::PresentationObservationGeneration::new(2),
+            Authority::Known(WindowPresentationState::Visible),
+            PresentationEffectAcknowledgement::known(None),
+        ));
+    let snapshot = test_platform_snapshot(
+        capabilities,
+        FocusObservationEnvelope::new(
+            FocusObservationGeneration::new(2),
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            Authority::Known(None),
+        ),
+        vec![observed],
+        Vec::new(),
+        known_work_area_observation(
+            2,
+            vec![ObservedWorkArea::new(
+                work_area,
+                PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).unwrap(),
+                ScaleFactor::new(1.0).unwrap(),
+            )],
+        ),
+    )
+    .expect("the native drag must have authoritative routing, input, and placement facts");
+    let platform_provider = test_platform_provider(&mut fixture.engine);
+    let expected_epoch = fixture.engine.version().epoch();
+    submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::PublishPlatformSnapshot {
+            provider: platform_provider,
+            expected_epoch,
+            snapshot,
+        },
+    )
+    .expect("the physical native drag capabilities must publish");
+    publish_background_scene(&mut fixture);
+    let projection = fixture
+        .engine
+        .interaction_projection(SOURCE_SURFACE)
+        .unwrap();
+    let source = projection
+        .hit_manifest()
+        .regions()
+        .iter()
+        .find(|region| {
+            matches!(region.id().kind(), PresentationHitRegionKind::TabBody(tab)
+                if tab.item == ItemId::new(1))
+        })
+        .expect("the partial source tab must have a presented receiver");
+    let point = region_center(source);
+    let press_route = DesktopRouteFact::dock_from_desktop_position(
+        binding,
+        Authority::Known(PhysicalPoint::new(point.x(), point.y()).unwrap()),
+    );
+    let provider = fixture
+        .engine
+        .create_pointer_provider(
+            PointerProviderScope::DesktopGlobal,
+            PointerEdgeSequence::new(0),
+        )
+        .expect("the native drag pointer provider must enroll");
+    let pressed = submit_native_reservation_edge(
+        &mut fixture,
+        provider,
+        0,
+        PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        press_route,
+    );
+    assert!(matches!(
+        pressed.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::DragArmed { .. }]
+    ));
+    let outside = DesktopRouteFact::no_window(
+        Authority::Known(PhysicalPoint::new(1000.0, 700.0).unwrap()),
+        Authority::Known(DesktopWorkAreaRoute::new(
+            platform_provider,
+            fixture.engine.viewport().work_area_generation(),
+            work_area,
+        )),
+    );
+    for previous in [1, 2] {
+        let moved = submit_native_reservation_edge(
+            &mut fixture,
+            provider,
+            previous,
+            PointerEdgeKind::Moved,
+            outside,
+        );
+        assert!(
+            moved.reduced_pointer_edges()[0]
+                .interaction_outcomes()
+                .iter()
+                .any(|outcome| {
+                    matches!(outcome, InteractionOutcome::PreviewUpdated {
+                        preview: Some(preview), ..
+                    } if matches!(preview.visual(), PreviewVisual::Native { .. }))
+                })
+        );
+    }
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .confirmed_drag_source(TEST_POINTER),
+        Some(binding)
+    );
+    assert_eq!(
+        fixture.engine.viewport().drag_source_input(TEST_POINTER),
+        Some(NativeDragSourceInput::Preserve)
+    );
+    (fixture, provider, outside)
+}
+
+fn stage_native_reservation_checkpoint(
+    frame: &mut CoreHostFrame,
+    provider: PointerInputLease,
+    through: u64,
+) {
+    let through = PointerEdgeSequence::new(through);
+    frame
+        .submit_pointer_journal(
+            provider,
+            PointerEdgeJournal::new(through, through, Vec::new()).unwrap(),
+        )
+        .expect("the native reservation frame must retain its real pointer watermark");
+    frame
+        .submit_pointer_receiver_receipts(PointerReceiverReceiptBatch::new([]).unwrap())
+        .expect("the empty pointer checkpoint has no receiver probes");
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReservedDragPhase {
+    Active,
+    PendingRelease,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReservedDragIdentity {
+    Surface,
+    Root,
+}
+
+fn assert_logical_attach_preserves_native_drag_reservation(
+    phase: ReservedDragPhase,
+    collision: ReservedDragIdentity,
+) {
+    let (mut fixture, provider, outside) = native_drag_reservation_fixture();
+    let InteractionStatus::Dragging { session } = fixture.engine.interaction().status() else {
+        panic!("the real press and move must leave an active drag");
+    };
+    let drag = fixture.engine.interaction.active_drag(session).unwrap();
+    let reservation = drag.journal_presentation_reservation.unwrap();
+    assert_eq!(drag.complete_root, None, "the drag must reserve a new root");
+    let preview = drag.preview().unwrap().public().token();
+    assert_eq!(
+        drag.preview().unwrap().public().visual().surface(),
+        SOURCE_SURFACE
+    );
+    assert_eq!(
+        drag.preview().unwrap().public().visual().target_surface(),
+        Some(reservation.surface)
+    );
+    let through = match phase {
+        ReservedDragPhase::Active => 3,
+        ReservedDragPhase::PendingRelease => {
+            let released = submit_native_reservation_edge(
+                &mut fixture,
+                provider,
+                3,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                outside,
+            );
+            assert!(
+                released.reduced_pointer_edges()[0]
+                    .interaction_outcomes()
+                    .iter()
+                    .any(|outcome| {
+                        matches!(outcome, InteractionOutcome::ReleasePending {
+                            session: actual, preview: token,
+                        } if *actual == session && *token == preview)
+                    })
+            );
+            assert_eq!(
+                fixture.engine.interaction().status(),
+                InteractionStatus::Idle
+            );
+            assert_eq!(
+                fixture.engine.pending_release_preview(),
+                Some((session, preview))
+            );
+            4
+        }
+    };
+    let (surface, root) = match collision {
+        ReservedDragIdentity::Surface => (reservation.surface, RootId::new(1000)),
+        ReservedDragIdentity::Root => (SurfaceId::new(1000), reservation.root),
+    };
+    assert!(fixture.engine.workspace().surface(surface).is_none());
+    assert!(fixture.engine.workspace().root(root).is_none());
+    assert_ne!(surface, SOURCE_SURFACE);
+    assert_ne!(surface, TARGET_SURFACE);
+    assert!(!fixture.engine.native_create_reserves_root(root));
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .next()
+            .is_none()
+    );
+    let workspace = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
+    let interaction = fixture.engine.interaction().clone();
+    let pending = fixture.engine.pending_mutation.clone();
+    let identities = fixture.engine.presentation_identity;
+    let mut inputs = TestInputStream::resume(&fixture.engine, ENGINE_TEST_INPUT_SOURCE);
+    let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    stage_native_reservation_checkpoint(&mut frame, provider, through);
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::AttachEmptySurface {
+                expected: version,
+                surface,
+                root,
+            },
+        )
+        .expect("a colliding logical attach must enter the existing host-frame transaction");
+    complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut frame);
+    let rejected = frame.finish(&mut fixture.engine).unwrap();
+    assert!(
+        matches!(
+            rejected.reduced_inputs()[0].outcome(),
+            InputOutcome::LogicalSurfaceRejected {
+                surface: actual,
+                reason: LogicalSurfaceRejection::RecoveryConflict,
+            } if *actual == surface
+        ),
+        "{phase:?} {collision:?} collision must be a typed refusal: {:?}",
+        rejected.reduced_inputs()
+    );
+    assert_eq!(fixture.engine.workspace(), &workspace);
+    assert_eq!(fixture.engine.version(), version);
+    assert_eq!(fixture.engine.interaction(), &interaction);
+    assert_eq!(fixture.engine.pending_mutation, pending);
+    assert_eq!(fixture.engine.presentation_identity, identities);
+    assert!(rejected.events().is_empty());
+    assert!(rejected.interaction_events().is_empty());
+    let retained_reservation = match phase {
+        ReservedDragPhase::Active => {
+            fixture
+                .engine
+                .interaction
+                .active_drag(session)
+                .unwrap()
+                .journal_presentation_reservation
+        }
+        ReservedDragPhase::PendingRelease => {
+            fixture
+                .engine
+                .pending_mutation
+                .as_ref()
+                .and_then(PendingMutation::drag_release)
+                .unwrap()
+                .drag
+                .journal_presentation_reservation
+        }
+    };
+    assert_eq!(retained_reservation, Some(reservation));
+
+    let mut paint = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
+    stage_native_reservation_checkpoint(&mut paint, provider, through);
+    complete_host_frame_with_current_outputs(&fixture.engine, &mut paint);
+    let painted = paint.finish(&mut fixture.engine).unwrap();
+    let outputs = painted
+        .presentation_emissions()
+        .iter()
+        .map(|emission| emission.output())
+        .collect::<Vec<_>>();
+    assert!(outputs.iter().any(|output| {
+        output.surface() == SOURCE_SURFACE
+            && output
+                .payload()
+                .interaction()
+                .is_some_and(|interaction| interaction.drag_preview() == Some(preview))
+    }));
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .next()
+            .is_none(),
+        "painting the preview must not deliver before its exact presentation"
+    );
+    let mut prelude = fixture
+        .engine
+        .begin_host_frame(fixture.presentation_host)
+        .unwrap();
+    prelude
+        .submit_presentation_observation(HostPresentationObservation::Batch(
+            outputs
+                .into_iter()
+                .map(|output| {
+                    HostPresentationObservationEntry::new(
+                        output.stream(),
+                        HostPresentationStreamObservation::Captured {
+                            generation: HostPresentationCaptureGeneration::new(
+                                output.key().ordinal_for_test(),
+                            ),
+                            progress: HostPresentationProgress::Retired {
+                                settled_through: output.key(),
+                                presented: Authority::Known(Some(output.key())),
+                            },
+                        },
+                    )
+                })
+                .collect(),
+        ))
+        .expect("only the original preview's exact emitted outputs authorize delivery");
+    let mut observed = prelude.seal(&fixture.engine).unwrap();
+    stage_native_reservation_checkpoint(&mut observed, provider, through);
+    complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut observed);
+    let presented = observed.finish(&mut fixture.engine).unwrap();
+    let delivered = match phase {
+        ReservedDragPhase::Active => {
+            assert!(
+                fixture
+                    .engine
+                    .viewport()
+                    .native_create_sagas()
+                    .next()
+                    .is_none()
+            );
+            assert_eq!(
+                fixture.engine.interaction().status(),
+                InteractionStatus::Dragging { session }
+            );
+            submit_native_reservation_edge(
+                &mut fixture,
+                provider,
+                through,
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                outside,
+            )
+        }
+        ReservedDragPhase::PendingRelease => presented,
+    };
+    let request = delivered
+        .interaction_events()
+        .iter()
+        .find_map(|event| match event.kind() {
+            InteractionEventKind::NativePresentationRequested(request) => Some(*request),
+            _ => None,
+        })
+        .expect(
+            "the preserved drag must deliver its original native creation after exact presentation",
+        );
+    assert_eq!(request.binding().surface(), reservation.surface);
+    assert_eq!(fixture.engine.viewport().native_create_sagas().count(), 1);
+    let saga = fixture
+        .engine
+        .viewport()
+        .native_create_saga(request.saga())
+        .unwrap();
+    assert_eq!(saga.prepared().proposal().root(), reservation.root);
+    assert_eq!(
+        saga.prepared().payload(),
+        &background_payload(&fixture, ItemId::new(1))
+    );
+    assert_eq!(
+        fixture.engine.interaction().status(),
+        InteractionStatus::Idle
+    );
+    assert!(fixture.engine.pending_mutation.is_none());
+    assert_eq!(fixture.engine.workspace(), &workspace);
+    assert_eq!(fixture.engine.version(), version);
+}
+
+#[test]
+fn logical_attach_rejects_active_drag_reserved_surface_with_another_free_root() {
+    assert_logical_attach_preserves_native_drag_reservation(
+        ReservedDragPhase::Active,
+        ReservedDragIdentity::Surface,
+    );
+}
+
+#[test]
+fn logical_attach_rejects_active_drag_reserved_root_with_another_free_surface() {
+    assert_logical_attach_preserves_native_drag_reservation(
+        ReservedDragPhase::Active,
+        ReservedDragIdentity::Root,
+    );
+}
+
+#[test]
+fn logical_attach_rejects_pending_release_reserved_surface_with_another_free_root() {
+    assert_logical_attach_preserves_native_drag_reservation(
+        ReservedDragPhase::PendingRelease,
+        ReservedDragIdentity::Surface,
+    );
+}
+
+#[test]
+fn logical_attach_rejects_pending_release_reserved_root_with_another_free_surface() {
+    assert_logical_attach_preserves_native_drag_reservation(
+        ReservedDragPhase::PendingRelease,
+        ReservedDragIdentity::Root,
+    );
 }

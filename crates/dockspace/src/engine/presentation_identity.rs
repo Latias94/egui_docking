@@ -267,6 +267,8 @@ impl DockEngine {
         command: &WorkspaceCommand,
     ) -> Result<(), CommandError> {
         match command {
+            WorkspaceCommand::AttachEmptySurface { .. }
+            | WorkspaceCommand::RetireEmptySurface { .. } => Ok(()),
             WorkspaceCommand::CreateSurfaceRoot { surface, root, .. } => {
                 self.validate_fresh_or_continuing_surface_identity(*surface)?;
                 self.validate_fresh_root_identity(*root)
@@ -309,6 +311,11 @@ impl DockEngine {
 
     pub(super) fn adopt_application_command_identities(&mut self, command: &WorkspaceCommand) {
         match command {
+            WorkspaceCommand::AttachEmptySurface { surface, root } => {
+                self.presentation_identity.observe_surface(*surface);
+                self.presentation_identity.observe_root(*root);
+            }
+            WorkspaceCommand::RetireEmptySurface { .. } => {}
             WorkspaceCommand::CreateSurfaceRoot { surface, root, .. } => {
                 self.presentation_identity.observe_surface(*surface);
                 self.presentation_identity.observe_root(*root);
@@ -372,8 +379,9 @@ impl DockEngine {
     }
 
     fn pending_presentation_rehome_floating(&self) -> Option<FloatingPresentationId> {
-        self.pending_presentation_rehome
+        self.pending_mutation
             .as_ref()
+            .and_then(PendingMutation::rehome)
             .and_then(|pending| pending.floating)
     }
 

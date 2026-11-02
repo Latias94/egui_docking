@@ -345,18 +345,7 @@ impl DockEngine {
                 .requirement()
                 .surface_requirement()
         } else {
-            surface_revisions
-                .get(&surface)
-                .copied()
-                .unwrap_or_default()
-                .checked_next()
-                .ok_or_else(|| {
-                    requirement_failure(
-                        PresentationRequirementFailure::SurfaceRequirementRevisionExhausted {
-                            surface,
-                        },
-                    )
-                })?
+            SurfaceRequirementRevision::new(requirement_revision.get())
         };
         surface_revisions.insert(surface, surface_revision);
         let mut draft = derive_scene_requirement_draft(

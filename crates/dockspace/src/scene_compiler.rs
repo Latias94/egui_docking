@@ -16,14 +16,11 @@ use crate::drop_target::{
     DropTargetUnavailable, DropVisual, SceneLayerKey, SurfaceBackground,
 };
 use crate::error::CommandError;
-use crate::geometry::{Constraints, GeometryError, LogicalPoint, LogicalRect, LogicalSize};
+use crate::geometry::{GeometryError, LogicalPoint, LogicalRect, LogicalSize};
 use crate::graph::{Node, Workspace};
 use crate::hit_region::HitRegion;
 use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, NodeId, RootId, SurfaceId};
-use crate::layout::{
-    LayoutError, LayoutMetrics, LayoutMetricsError, SplitWeightOverride,
-    project_root_with_overrides,
-};
+use crate::layout::{LayoutError, LayoutMetrics, LayoutMetricsError, SplitWeightOverride};
 use crate::policy::{
     DockPolicySnapshot, DockTabBarPolicyRequest, TabBarInteraction, TabBarVisibility,
 };

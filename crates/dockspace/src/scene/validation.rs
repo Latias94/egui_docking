@@ -1030,34 +1030,21 @@ fn validate_pane_and_tab_records(
         }
     }
 
+    // The expected pane roster already proves root membership, owner, and
+    // selection. Tab-bar policy only needs that selected item's stable rule;
+    // capturing a complete root fingerprint for every leaf repeats O(n) work.
     let pane_policies = expected_panes
         .iter()
         .map(|(id, (selected, _))| {
-            let target = selected
-                .map(|_| workspace.capture_tab_target(id.root, id.tabs))
-                .transpose()
-                .map_err(|_| SceneBuildError::InvalidPaneRecord {
-                    surface: ready.surface,
-                    id: *id,
-                })?;
-            if target
-                .as_ref()
-                .is_some_and(|target| target.surface() != ready.surface)
-            {
-                return Err(SceneBuildError::InvalidPaneRecord {
-                    surface: ready.surface,
-                    id: *id,
-                });
-            }
-            Ok((
+            (
                 *id,
                 policy.tab_bar_policy(DockTabBarPolicyRequest::new(
                     ready.surface,
-                    target.as_ref().map(|target| target.rule()),
+                    selected.map(crate::policy::DockTargetRuleKey::Item),
                 )),
-            ))
+            )
         })
-        .collect::<Result<BTreeMap<_, _>, SceneBuildError>>()?;
+        .collect::<BTreeMap<_, _>>();
     let bars = ready
         .tab_bar_records
         .iter()

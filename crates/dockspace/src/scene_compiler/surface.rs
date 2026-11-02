@@ -1,4 +1,5 @@
 use super::*;
+use crate::layout::{RootMeasurement, measure_root_minimums};
 
 #[cfg(test)]
 thread_local! {
@@ -85,6 +86,8 @@ pub(crate) fn compile_surface_scene(
     }
 
     if let Some(root) = presentation.main_root {
+        let root_measurement =
+            measure_root_layout(workspace, config, requirements, measurements, root)?;
         ready.begin_surface_program_root(root, SurfaceProgramRootPresentation::Main)?;
         compile_root(
             workspace,
@@ -96,6 +99,7 @@ pub(crate) fn compile_surface_scene(
             measurements,
             surface,
             root,
+            root_measurement,
             bounds,
             SceneLayerKey::surface_base(),
             fraction,
@@ -129,8 +133,9 @@ pub(crate) fn compile_surface_scene(
             HitRegion::new(outer),
             layer,
         ));
-        let minimum =
-            contained_minimum_size(workspace, config, requirements, measurements, record.root)?;
+        let root_measurement =
+            measure_root_layout(workspace, config, requirements, measurements, record.root)?;
+        let minimum = contained_minimum_size(config, root_measurement.layout.minimum())?;
         ready.push_contained_minimum(ContainedMinimumMeasurement::new(floating, minimum));
 
         if intersect_rect(bounds, outer)?.is_none() {
@@ -169,6 +174,7 @@ pub(crate) fn compile_surface_scene(
                 measurements,
                 surface,
                 record.root,
+                root_measurement,
                 content,
                 layer,
                 fraction,
@@ -630,6 +636,7 @@ fn compile_root(
     measurements: AuthoritativeSurfaceMeasurements<'_>,
     surface: SurfaceId,
     root: RootId,
+    root_measurement: RootLayoutMeasurement<'_>,
     bounds: LogicalRect,
     layer: SceneLayerKey,
     fraction: DockFraction,
@@ -642,31 +649,17 @@ fn compile_root(
     let root_record = workspace
         .root(root)
         .ok_or(SceneCompilationError::MissingRoot { surface, root })?;
-    let pane_minimums = root_pane_minimum_measurements(requirements, measurements, root)?;
-    let leaf_constraints = root_leaf_constraints(
-        workspace,
-        config,
-        requirements,
-        surface,
-        root,
-        bounds,
-        &pane_minimums,
-    )?;
+    let RootLayoutMeasurement {
+        pane_minimums,
+        layout,
+    } = root_measurement;
     ready.push_root_layout_facts(RootLayoutFacts::new(root, bounds, pane_minimums));
-    let metrics = LayoutMetrics::new(config.splitter_thickness())?;
     let root_overrides = resize_overrides
         .iter()
         .copied()
         .filter(|override_| override_.source().root() == root)
         .collect::<Vec<_>>();
-    let projection = project_root_with_overrides(
-        workspace,
-        root,
-        bounds,
-        &leaf_constraints,
-        metrics,
-        &root_overrides,
-    )?;
+    let projection = layout.project(bounds, &root_overrides)?;
     let mut node_depths = BTreeMap::new();
     let mut pending_depths = vec![(root_record.node, 0_usize)];
     while let Some((node, depth)) = pending_depths.pop() {
@@ -1807,44 +1800,48 @@ fn tab_gap_geometries(
     Ok(gaps)
 }
 
-fn root_leaf_constraints(
-    workspace: &Workspace,
+struct RootLayoutMeasurement<'workspace> {
+    pane_minimums: BTreeMap<PaneMinimumKey, LogicalSize>,
+    layout: RootMeasurement<'workspace>,
+}
+
+fn measure_root_layout<'workspace>(
+    workspace: &'workspace Workspace,
     config: &DockPresentationConfig,
     requirements: &SurfaceRequirements,
-    surface: SurfaceId,
+    measurements: AuthoritativeSurfaceMeasurements<'_>,
     root: RootId,
-    bounds: LogicalRect,
-    pane_minimums: &BTreeMap<PaneMinimumKey, LogicalSize>,
-) -> Result<BTreeMap<NodeId, Constraints>, SceneCompilationError> {
-    let minimums = root_leaf_minimums(
+) -> Result<RootLayoutMeasurement<'workspace>, SceneCompilationError> {
+    let surface = requirements.ticket().surface();
+    let pane_minimums = root_pane_minimum_measurements(requirements, measurements, root)?;
+    let minimums = root_leaf_minimums(workspace, config, requirements, root, &pane_minimums)?;
+    let layout = measure_root_minimums(
         workspace,
-        config,
-        requirements,
-        surface,
         root,
-        pane_minimums,
-    )?;
-    let root_node = workspace
-        .root(root)
-        .ok_or(SceneCompilationError::MissingRoot { surface, root })?
-        .node;
-    let root_minimum = subtree_minimum(
-        workspace,
-        surface,
-        root,
-        root_node,
         &minimums,
-        config.splitter_thickness(),
-        &mut BTreeSet::new(),
-    )?;
-    let maximum = LogicalSize::new(
-        bounds.width().max(root_minimum.width()),
-        bounds.height().max(root_minimum.height()),
-    )?;
-    minimums
-        .into_iter()
-        .map(|(node, minimum)| Ok((node, Constraints::new(minimum, maximum)?)))
-        .collect()
+        LayoutMetrics::new(config.splitter_thickness())?,
+    )
+    .map_err(|error| match error {
+        LayoutError::MissingRoot { root } => SceneCompilationError::MissingRoot { surface, root },
+        LayoutError::MissingNode { node } => SceneCompilationError::MissingNode {
+            surface,
+            root,
+            node,
+        },
+        LayoutError::MissingLeafConstraints { node } => {
+            SceneCompilationError::MissingLeafMinimum { root, tabs: node }
+        }
+        LayoutError::Cycle { node } => SceneCompilationError::RepeatedNode {
+            surface,
+            root,
+            node,
+        },
+        error => error.into(),
+    })?;
+    Ok(RootLayoutMeasurement {
+        pane_minimums,
+        layout,
+    })
 }
 
 fn root_pane_minimum_measurements(
@@ -1868,7 +1865,6 @@ fn root_leaf_minimums(
     workspace: &Workspace,
     config: &DockPresentationConfig,
     requirements: &SurfaceRequirements,
-    surface: SurfaceId,
     root: RootId,
     pane_minimums: &BTreeMap<PaneMinimumKey, LogicalSize>,
 ) -> Result<BTreeMap<NodeId, LogicalSize>, SceneCompilationError> {
@@ -1892,36 +1888,6 @@ fn root_leaf_minimums(
             key.tabs(),
             pane_outer_minimum(*measured, config, tab_bar.policy().visibility())?,
         );
-    }
-    let root_node = workspace
-        .root(root)
-        .ok_or(SceneCompilationError::MissingRoot { surface, root })?
-        .node;
-    let mut pending = vec![root_node];
-    let mut visited = BTreeSet::new();
-    while let Some(node) = pending.pop() {
-        if !visited.insert(node) {
-            return Err(SceneCompilationError::RepeatedNode {
-                surface,
-                root,
-                node,
-            });
-        }
-        match workspace
-            .node(node)
-            .ok_or(SceneCompilationError::MissingNode {
-                surface,
-                root,
-                node,
-            })? {
-            Node::Tabs { .. } if !minimums.contains_key(&node) => {
-                return Err(SceneCompilationError::MissingLeafMinimum { root, tabs: node });
-            }
-            Node::Tabs { .. } => {}
-            Node::Split { children, .. } => {
-                pending.extend(children.iter().rev().copied());
-            }
-        }
     }
     Ok(minimums)
 }
@@ -1948,34 +1914,9 @@ pub(super) fn pane_outer_minimum(
 }
 
 fn contained_minimum_size(
-    workspace: &Workspace,
     config: &DockPresentationConfig,
-    requirements: &SurfaceRequirements,
-    measurements: AuthoritativeSurfaceMeasurements<'_>,
-    root: RootId,
+    root_minimum: LogicalSize,
 ) -> Result<LogicalSize, SceneCompilationError> {
-    let surface = requirements.ticket().surface();
-    let pane_minimums = root_pane_minimum_measurements(requirements, measurements, root)?;
-    let minimums = root_leaf_minimums(
-        workspace,
-        config,
-        requirements,
-        surface,
-        root,
-        &pane_minimums,
-    )?;
-    let root_record = workspace
-        .root(root)
-        .ok_or(SceneCompilationError::MissingRoot { surface, root })?;
-    let root_minimum = subtree_minimum(
-        workspace,
-        surface,
-        root,
-        root_record.node,
-        &minimums,
-        config.splitter_thickness(),
-        &mut BTreeSet::new(),
-    )?;
     let border = 2.0 * config.floating_border_width();
     let measured = LogicalSize::new(
         root_minimum.width() + border,
@@ -1986,74 +1927,6 @@ fn contained_minimum_size(
         measured.width().max(configured.width()),
         measured.height().max(configured.height()),
     )?)
-}
-
-pub(super) fn subtree_minimum(
-    workspace: &Workspace,
-    surface: SurfaceId,
-    root: RootId,
-    node: NodeId,
-    minimums: &BTreeMap<NodeId, LogicalSize>,
-    splitter: f64,
-    visiting: &mut BTreeSet<NodeId>,
-) -> Result<LogicalSize, SceneCompilationError> {
-    if !visiting.insert(node) {
-        return Err(SceneCompilationError::RepeatedNode {
-            surface,
-            root,
-            node,
-        });
-    }
-    let result = match workspace
-        .node(node)
-        .ok_or(SceneCompilationError::MissingNode {
-            surface,
-            root,
-            node,
-        })? {
-        Node::Tabs { .. } => minimums
-            .get(&node)
-            .copied()
-            .ok_or(SceneCompilationError::MissingLeafMinimum { root, tabs: node })?,
-        Node::Split { axis, children, .. } => {
-            let child_minimums = children
-                .iter()
-                .copied()
-                .map(|child| {
-                    subtree_minimum(
-                        workspace, surface, root, child, minimums, splitter, visiting,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let gap_count = u32::try_from(children.len().saturating_sub(1))
-                .map_err(|_| SceneCompilationError::GeometryCountOverflow)?;
-            let gaps = splitter * f64::from(gap_count);
-            match axis {
-                crate::graph::Axis::Horizontal => LogicalSize::new(
-                    checked_sum(
-                        child_minimums.iter().map(|size| size.width()),
-                        "root minimum width",
-                    )? + gaps,
-                    child_minimums
-                        .iter()
-                        .map(|size| size.height())
-                        .fold(0.0, f64::max),
-                )?,
-                crate::graph::Axis::Vertical => LogicalSize::new(
-                    child_minimums
-                        .iter()
-                        .map(|size| size.width())
-                        .fold(0.0, f64::max),
-                    checked_sum(
-                        child_minimums.iter().map(|size| size.height()),
-                        "root minimum height",
-                    )? + gaps,
-                )?,
-            }
-        }
-    };
-    visiting.remove(&node);
-    Ok(result)
 }
 
 #[allow(clippy::too_many_arguments)]

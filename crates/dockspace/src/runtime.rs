@@ -51,7 +51,9 @@ use error_kind::{
 };
 use native::NativePlatformError;
 
-pub use crate::model::{NativeWindowPlacement, PreparedDockAction, WorkspaceVersion};
+pub use crate::model::{
+    LogicalSurfaceRejection, NativeWindowPlacement, PreparedDockAction, WorkspaceVersion,
+};
 pub use crate::pointer_journal::{PointerDeviceKind, PointerEventMetadata};
 pub use crate::presentation_config::{
     DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
@@ -227,6 +229,23 @@ pub enum DockspaceCloseRejection {
 /// Public actionable result produced by one facade-owned input.
 #[derive(Debug, PartialEq)]
 pub enum HostInputOutcome {
+    /// An empty central dockspace was attached without creating native hosting.
+    LogicalSurfaceAttached {
+        surface: SurfaceId,
+        root: crate::ids::RootId,
+        version: WorkspaceVersion,
+    },
+    /// An item-free logical surface and its empty forest were retired.
+    LogicalSurfaceRetired {
+        surface: SurfaceId,
+        version: WorkspaceVersion,
+    },
+    /// Logical surface membership was left unchanged.
+    LogicalSurfaceRejected {
+        surface: SurfaceId,
+        reason: LogicalSurfaceRejection,
+    },
+
     /// An ordered targeting directive affected only its matching live gesture.
     MagneticTargetingUpdated {
         /// Requested magnetic targeting intent.

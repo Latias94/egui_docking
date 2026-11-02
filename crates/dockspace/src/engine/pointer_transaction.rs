@@ -2061,10 +2061,7 @@ impl DockEngine {
         release_decision: PreviewDecision,
         policy: &DockPolicySnapshot,
     ) -> Result<InteractionOutcome, EngineError> {
-        if self.pending_drag_release.is_some()
-            || self.pending_contained_transform_release.is_some()
-            || self.pending_presentation_rehome.is_some()
-        {
+        if self.pending_mutation.is_some() {
             return Err(EngineError::PointerInteractionInvariant {
                 cause,
                 detail: "a drag release presentation obligation is already pending".to_owned(),
@@ -2075,7 +2072,7 @@ impl DockEngine {
             .expect("deferred release has an exact matching preview")
             .public()
             .token();
-        self.pending_drag_release = Some(PendingDragRelease {
+        self.pending_mutation = Some(PendingMutation::DragRelease(PendingDragRelease {
             source_version: self.version,
             policy_revision: policy.revision(),
             cause,
@@ -2085,10 +2082,8 @@ impl DockEngine {
             physical_route,
             release_decision,
             preview,
-            presentation_outputs: BTreeSet::new(),
-            presented_output: None,
-            presentation_failed: false,
-        });
+            presentation: PendingPresentationTracker::default(),
+        }));
         Ok(InteractionOutcome::ReleasePending { session, preview })
     }
 
@@ -2154,21 +2149,24 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<bool, EngineError> {
-        let Some(pending) = self.pending_drag_release.as_ref() else {
+        let Some(pending) = self
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::drag_release)
+        else {
             return Ok(false);
         };
-        if pending.presented_output.is_none() && !pending.presentation_failed {
+        if pending.presentation.presented.is_none() && !pending.presentation.failed {
             return Ok(false);
         }
-        let pending = self
-            .pending_drag_release
-            .take()
-            .expect("checked pending release remains present");
+        let Some(PendingMutation::DragRelease(pending)) = self.pending_mutation.take() else {
+            unreachable!("checked pending release remains present");
+        };
         let cancellation = if self.version != pending.source_version {
             Some(InteractionCancelReason::WorkspaceChanged)
         } else if self.policy.revision() != pending.policy_revision {
             Some(InteractionCancelReason::PolicyChanged)
-        } else if pending.presentation_failed {
+        } else if pending.presentation.failed {
             Some(InteractionCancelReason::SceneUnavailable)
         } else {
             None

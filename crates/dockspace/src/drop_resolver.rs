@@ -1200,13 +1200,12 @@ pub(crate) mod structural_work {
         pub(crate) transaction_candidates: DeepCloneWork,
     }
 
-    /// Explicit whole-engine candidate clone sites.
-    ///
-    /// The volume records the cloned workspace portion. Other engine ledgers are
-    /// represented by the call count until they expose deterministic size facts.
+    /// Whole-engine candidate preparation. Workspace authority is shared;
+    /// explicit mutation preparation owns the separate deep-copy counters.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct EngineDeepCloneWork {
         pub(crate) atomic_candidates: DeepCloneWork,
+        pub(crate) shared_workspace: WorkspaceCloneVolume,
         pub(crate) atomic_candidate_state: EngineCloneVolume,
     }
 
@@ -1365,7 +1364,10 @@ pub(crate) mod structural_work {
         state: EngineCloneVolume,
     ) {
         update(|work| {
-            work.engine_deep_clones.atomic_candidates.record(workspace);
+            work.engine_deep_clones.atomic_candidates.calls += 1;
+            work.engine_deep_clones
+                .shared_workspace
+                .accumulate(WorkspaceCloneVolume::capture(workspace));
             work.engine_deep_clones
                 .atomic_candidate_state
                 .accumulate(state);

@@ -622,7 +622,12 @@ impl TabStripStateStore {
         }
         for (key, state) in &mut candidate.states {
             let items = &live_rosters[key];
-            if items.is_empty() {
+            if items.is_empty()
+                && self
+                    .live_rosters
+                    .get(key)
+                    .is_some_and(|previous| !previous.is_empty())
+            {
                 let reset = TabStripState::default();
                 if *state != reset {
                     *state = reset;

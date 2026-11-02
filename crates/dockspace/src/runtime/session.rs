@@ -145,7 +145,7 @@ impl DockspaceSession {
     #[cfg(test)]
     #[doc(hidden)]
     #[must_use]
-    pub(crate) const fn workspace(&self) -> &Workspace {
+    pub(crate) fn workspace(&self) -> &Workspace {
         self.engine.workspace()
     }
 

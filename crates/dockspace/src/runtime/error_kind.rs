@@ -427,7 +427,6 @@ pub(super) const fn engine_error_kind(error: &EngineError) -> DockspaceRuntimeEr
         | EngineError::PresentationRequirementRevisionExhausted { .. }
         | EngineError::PresentationConfigRevisionExhausted { .. }
         | EngineError::PolicyRevisionExhausted { .. }
-        | EngineError::SurfaceRequirementRevisionExhausted { .. }
         | EngineError::PresentationRequirementInvariant { .. }
         | EngineError::ClosePlanInvariant { .. }
         | EngineError::SurfaceContributionInvariant { .. }

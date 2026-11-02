@@ -716,7 +716,7 @@ impl DockEngine {
                 CommandError::SurfaceLifecycleFrozen { surface },
             ));
         }
-        let changed = commit.candidate != self.workspace;
+        let changed = commit.candidate != *self.workspace;
         let focus_successor = self.content_close_focus_successor(&prepared, &commit.candidate);
         let outcome = commit.outcome;
 

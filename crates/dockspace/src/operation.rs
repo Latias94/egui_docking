@@ -740,8 +740,11 @@ pub(crate) fn authorize_workspace_command(
                 )),
             )
         }
-        // Application cleanup is lock-gated above; irreversible recovery uses its own authority.
-        WorkspaceCommand::RemoveEmptyRoot { .. } => Ok(()),
+        // Empty container lifetime and application cleanup are lock-gated above.
+        // Irreversible recovery uses its own authority.
+        WorkspaceCommand::AttachEmptySurface { .. }
+        | WorkspaceCommand::RetireEmptySurface { .. }
+        | WorkspaceCommand::RemoveEmptyRoot { .. } => Ok(()),
     }
 }
 
@@ -1239,6 +1242,12 @@ fn apply_command(
         WorkspaceCommand::Open { item, target } => open(workspace, *item, target),
         WorkspaceCommand::Move { payload, target } => move_payload(workspace, payload, target),
         WorkspaceCommand::ResizeSplits { splits } => resize_splits(workspace, splits),
+        WorkspaceCommand::AttachEmptySurface { surface, root } => {
+            attach_empty_surface(workspace, *surface, *root)
+        }
+        WorkspaceCommand::RetireEmptySurface { surface } => {
+            retire_empty_surface(workspace, *surface)
+        }
         WorkspaceCommand::CreateSurfaceRoot {
             surface,
             root,
@@ -1622,6 +1631,70 @@ fn resize_splits(
             splits: validated.iter().map(|(split, _)| *split).collect(),
             changed: validated.iter().any(|(_, changed)| *changed),
         },
+        delta: ItemDelta::None,
+    })
+}
+
+fn attach_empty_surface(
+    workspace: &mut Workspace,
+    surface: SurfaceId,
+    root: RootId,
+) -> Result<AppliedCommand, CommandError> {
+    ensure_root_ids_available(workspace, root)?;
+    if workspace.surfaces.contains_key(&surface) {
+        return Err(CommandError::SurfaceIdCollision { surface });
+    }
+    let central = workspace.insert_runtime_node(Node::tabs([]));
+    workspace
+        .roots
+        .insert(root, RootRecord::new(central).with_central(central));
+    workspace
+        .surfaces
+        .insert(surface, SurfacePresentation::with_main(root));
+    Ok(AppliedCommand {
+        outcome: CommandOutcome::EmptySurfaceAttached { surface, root },
+        delta: ItemDelta::None,
+    })
+}
+
+fn retire_empty_surface(
+    workspace: &mut Workspace,
+    surface: SurfaceId,
+) -> Result<AppliedCommand, CommandError> {
+    let presentation = workspace
+        .surfaces
+        .get(&surface)
+        .ok_or(CommandError::MissingSurface { surface })?;
+    let mut roots = Vec::with_capacity(presentation.contained.len().saturating_add(1));
+    roots.extend(presentation.main_root);
+    for floating in &presentation.contained {
+        let record =
+            workspace
+                .contained_floatings
+                .get(floating)
+                .ok_or(CommandError::MissingFloating {
+                    floating: *floating,
+                })?;
+        roots.push(record.root);
+    }
+    let mut items = 0;
+    for root in &roots {
+        let record = workspace
+            .roots
+            .get(root)
+            .ok_or(CommandError::MissingRoot { root: *root })?;
+        items += workspace.collect_items_in_subtree(record.node).len();
+    }
+    if items != 0 {
+        return Err(CommandError::SurfaceNotEmpty { surface, items });
+    }
+    for root in roots {
+        let record = remove_root_and_presentation(workspace, root)?;
+        remove_subtree_nodes(workspace, record.node)?;
+    }
+    workspace.surfaces.remove(&surface);
+    Ok(AppliedCommand {
+        outcome: CommandOutcome::EmptySurfaceRetired { surface },
         delta: ItemDelta::None,
     })
 }
@@ -3367,6 +3440,7 @@ fn edge_axis_and_order(edge: Edge) -> (Axis, bool) {
 #[cfg(test)]
 mod tests {
     mod arrangement_lock;
+    mod logical_surfaces;
 
     use super::*;
     use crate::command::{ContainedRootSource, DockFraction, SurfaceRosterSource};

@@ -52,6 +52,23 @@ pub enum InputPriority {
 /// Result of reducing one sequenced input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputOutcome {
+    /// An empty central dockspace was attached in the current epoch.
+    LogicalSurfaceAttached {
+        surface: SurfaceId,
+        root: RootId,
+        version: WorkspaceVersion,
+    },
+    /// An item-free surface and its complete empty forest were retired.
+    LogicalSurfaceRetired {
+        surface: SurfaceId,
+        version: WorkspaceVersion,
+    },
+    /// A logical surface operation was rejected without changing topology.
+    LogicalSurfaceRejected {
+        surface: SurfaceId,
+        reason: crate::model::LogicalSurfaceRejection,
+    },
+
     /// A targeting directive updated only the current exact gesture owner.
     MagneticTargetingUpdated {
         /// Requested magnetic targeting intent.

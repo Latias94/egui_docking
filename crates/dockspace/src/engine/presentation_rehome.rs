@@ -39,10 +39,7 @@ impl DockEngine {
         let Some(_) = self.native_presentation_rehome_source(root, target_surface)? else {
             return Ok(());
         };
-        if self.pending_drag_release.is_some()
-            || self.pending_contained_transform_release.is_some()
-            || self.interaction.status() != InteractionStatus::Idle
-        {
+        if self.pending_mutation.is_some() || self.interaction.status() != InteractionStatus::Idle {
             return Err(DockspaceActionRejection::Conflict);
         }
         if self.interaction_projection(target_surface).is_none() {
@@ -269,11 +266,7 @@ impl DockEngine {
         let root = source.root();
         debug_assert_eq!(root, candidate_root);
         debug_assert_eq!(target_surface, candidate_target_surface);
-        if self.pending_presentation_rehome.is_some()
-            || self.pending_drag_release.is_some()
-            || self.pending_contained_transform_release.is_some()
-            || self.interaction.status() != InteractionStatus::Idle
-        {
+        if self.pending_mutation.is_some() || self.interaction.status() != InteractionStatus::Idle {
             return Ok(Some(InputOutcome::ProductActionRejected {
                 reason: DockspaceActionRejection::Conflict,
                 version: self.version,
@@ -358,7 +351,7 @@ impl DockEngine {
             }
             _ => return Ok(None),
         };
-        self.pending_presentation_rehome = Some(PendingPresentationRehome {
+        self.pending_mutation = Some(PendingMutation::Rehome(PendingPresentationRehome {
             source_version: expected,
             policy_revision: policy.revision(),
             cause,
@@ -376,10 +369,8 @@ impl DockEngine {
             context,
             pane_focus,
             preview,
-            presentation_outputs: BTreeSet::new(),
-            presented_output: None,
-            presentation_failed: false,
-        });
+            presentation: PendingPresentationTracker::default(),
+        }));
         let _ = events;
         Ok(Some(InputOutcome::ProductActionProcessed {
             outcome,
@@ -498,23 +489,34 @@ impl DockEngine {
     pub(super) fn pending_presentation_transition_gesture_rejection(
         &self,
     ) -> Option<InteractionRejection> {
-        (self.pending_presentation_rehome.is_some()
+        (self
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+            .is_some()
             || self.viewport.native_create_sagas().next().is_some())
         .then_some(InteractionRejection::PresentationTransitionPending)
     }
 
     pub(super) fn invalidate_pending_presentation_rehome(&mut self) {
-        if let Some(pending) = self.pending_presentation_rehome.as_mut()
+        if let Some(pending) = self
+            .pending_mutation
+            .as_mut()
+            .and_then(PendingMutation::rehome_mut)
             && (pending.source_version != self.version
                 || pending.policy_revision != self.policy.revision())
         {
-            pending.presentation_failed = true;
+            pending.presentation.failed = true;
         }
     }
 
     pub(super) fn fail_pending_presentation_rehome(&mut self) {
-        if let Some(pending) = self.pending_presentation_rehome.as_mut() {
-            pending.presentation_failed = true;
+        if let Some(pending) = self
+            .pending_mutation
+            .as_mut()
+            .and_then(PendingMutation::rehome_mut)
+        {
+            pending.presentation.failed = true;
         }
     }
 
@@ -522,7 +524,11 @@ impl DockEngine {
         &mut self,
         dispositions: &[HostPresentationDispositionOutcome],
     ) -> bool {
-        let Some(pending) = self.pending_presentation_rehome.as_mut() else {
+        let Some(pending) = self
+            .pending_mutation
+            .as_mut()
+            .and_then(PendingMutation::rehome_mut)
+        else {
             return false;
         };
         let failed = dispositions.iter().any(|outcome| {
@@ -535,7 +541,7 @@ impl DockEngine {
                 )
         });
         if failed {
-            pending.presentation_failed = true;
+            pending.presentation.failed = true;
         }
         failed
     }
@@ -670,10 +676,7 @@ impl DockEngine {
                 });
             }
         };
-        if self.pending_drag_release.is_some()
-            || self.pending_contained_transform_release.is_some()
-            || self.interaction.status() != InteractionStatus::Idle
-        {
+        if self.pending_mutation.is_some() || self.interaction.status() != InteractionStatus::Idle {
             return Ok(InputOutcome::ProductActionRejected {
                 reason: DockspaceActionRejection::Conflict,
                 version: self.version,
@@ -839,7 +842,7 @@ impl DockEngine {
                 PreviewProof::PresentationRehome { command },
             )
             .map_err(|source| EngineError::Interaction { input, source })?;
-        self.pending_presentation_rehome = Some(PendingPresentationRehome {
+        self.pending_mutation = Some(PendingMutation::Rehome(PendingPresentationRehome {
             source_version: self.version,
             policy_revision: policy.revision(),
             cause,
@@ -857,10 +860,8 @@ impl DockEngine {
             context,
             pane_focus,
             preview,
-            presentation_outputs: BTreeSet::new(),
-            presented_output: None,
-            presentation_failed: false,
-        });
+            presentation: PendingPresentationTracker::default(),
+        }));
         Ok(InputOutcome::ProductActionProcessed {
             outcome: DockspaceActionOutcome::RootFloatRequested {
                 root: planned_root,
@@ -876,7 +877,11 @@ impl DockEngine {
         &mut self,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<bool, EngineError> {
-        let Some(pending) = self.pending_presentation_rehome.as_ref() else {
+        let Some(pending) = self
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::rehome)
+        else {
             return Ok(false);
         };
         let source_is_current = self
@@ -905,7 +910,7 @@ impl DockEngine {
             Some(crate::event::PresentationRehomeResult::WorkspaceChanged)
         } else if self.policy.revision() != pending.policy_revision {
             Some(crate::event::PresentationRehomeResult::PolicyChanged)
-        } else if pending.presentation_failed {
+        } else if pending.presentation.failed {
             Some(crate::event::PresentationRehomeResult::TargetNotPresented)
         } else if !source_is_current
             || self.workspace.presentation_for_root(pending.root) != Some(pending.source_owner)
@@ -914,13 +919,12 @@ impl DockEngine {
         } else {
             None
         };
-        if rejection.is_none() && pending.presented_output.is_none() {
+        if rejection.is_none() && pending.presentation.presented.is_none() {
             return Ok(false);
         }
-        let pending = self
-            .pending_presentation_rehome
-            .take()
-            .expect("checked pending presentation rehome remains present");
+        let Some(PendingMutation::Rehome(pending)) = self.pending_mutation.take() else {
+            unreachable!("checked pending presentation rehome remains present");
+        };
         if let Some(result) = rejection {
             Self::record_presentation_rehome_settlement(
                 &pending,

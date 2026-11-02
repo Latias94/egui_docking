@@ -5,6 +5,25 @@ use crate::ids::{EngineAuthorityDomainId, ItemId, RootId, SurfaceId};
 
 use super::WorkspaceVersion;
 
+/// Refusal of an incremental logical-surface membership operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalSurfaceRejection {
+    /// The requested surface already belongs to the current workspace.
+    SurfaceAlreadyAttached,
+    /// Another presentation currently owns this root identity.
+    RootAlreadyOwned { root: RootId },
+    /// The requested surface is absent.
+    SurfaceUnavailable,
+    /// Main or contained content must be closed or migrated first.
+    SurfaceNotEmpty { items: usize },
+    /// An exact native binding still owns this logical surface.
+    NativeBindingPresent,
+    /// A pending mutation, native creation or recovery references the request.
+    RecoveryConflict,
+    /// The current policy disallows changing the arrangement.
+    PolicyDenied,
+}
+
 /// Stable item or central-region anchor used by product docking actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DockAnchor {

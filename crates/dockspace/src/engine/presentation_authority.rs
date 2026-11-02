@@ -19,7 +19,8 @@ pub(super) struct PresentationAuthorityState {
     pub(super) presentation_requirements: SceneRequirementManifest,
     pub(super) tab_strip_states: TabStripStateStore,
     pub(super) surface_semantic_snapshots: BTreeMap<crate::ids::SurfaceId, SurfaceSemanticSnapshot>,
-    /// Monotonic watermarks retained across removal and re-addition in one engine domain.
+    /// Current per-surface revisions. Changed/new surfaces use the existing
+    /// aggregate requirement revision, so reattachment needs no history map.
     pub(super) surface_requirement_revisions:
         BTreeMap<crate::ids::SurfaceId, SurfaceRequirementRevision>,
     pub(super) scene: SurfaceSceneSet,
@@ -80,8 +81,6 @@ struct ContainedSemanticSnapshot {
 pub(super) enum PresentationRequirementFailure {
     #[error("aggregate requirement revision is exhausted")]
     RequirementRevisionExhausted,
-    #[error("surface {surface} requirement revision is exhausted")]
-    SurfaceRequirementRevisionExhausted { surface: crate::ids::SurfaceId },
     #[error("presentation requirement invariant failed: {0}")]
     Invariant(String),
     #[error(transparent)]
@@ -320,16 +319,7 @@ impl DockEngine {
                     self.scene().native_first_live_projection(surface) != Some(projection.stamp())
                 });
             if semantics_changed {
-                let revision = surface_requirement_revisions
-                    .get(&surface)
-                    .copied()
-                    .unwrap_or_default()
-                    .checked_next()
-                    .ok_or(
-                        PresentationRequirementFailure::SurfaceRequirementRevisionExhausted {
-                            surface,
-                        },
-                    )?;
+                let revision = SurfaceRequirementRevision::new(requirement_revision.get());
                 surface_requirement_revisions.insert(surface, revision);
                 revised_surfaces.insert(surface);
             }
@@ -394,14 +384,7 @@ impl DockEngine {
             if !current_surface_roster.contains(&surface) || revised_surfaces.contains(&surface) {
                 continue;
             }
-            let revision = surface_requirement_revisions
-                .get(&surface)
-                .copied()
-                .unwrap_or_default()
-                .checked_next()
-                .ok_or(
-                    PresentationRequirementFailure::SurfaceRequirementRevisionExhausted { surface },
-                )?;
+            let revision = SurfaceRequirementRevision::new(requirement_revision.get());
             surface_requirement_revisions.insert(surface, revision);
             revised_surfaces.insert(surface);
             draft_revisions_changed = true;
@@ -511,9 +494,6 @@ impl DockEngine {
         match failure {
             PresentationRequirementFailure::RequirementRevisionExhausted => {
                 EngineError::PresentationRequirementRevisionExhausted { input }
-            }
-            PresentationRequirementFailure::SurfaceRequirementRevisionExhausted { surface } => {
-                EngineError::SurfaceRequirementRevisionExhausted { input, surface }
             }
             PresentationRequirementFailure::Invariant(detail) => {
                 EngineError::PresentationRequirementInvariant {
@@ -771,7 +751,11 @@ impl DockEngine {
                 }
             }
         }
-        if let Some(pending) = &self.pending_drag_release {
+        if let Some(pending) = self
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::drag_release)
+        {
             self.collect_pending_drag_release_platform_dependencies(pending, &mut dependencies);
         }
         dependencies
@@ -1746,21 +1730,13 @@ impl DockEngine {
                     }
                 }
             }
-            self.observe_pending_drag_release_presentation(
-                promotion.key(),
-                ticket.surface(),
-                interaction,
-            );
-            self.observe_pending_presentation_rehome(
-                promotion.key(),
-                ticket.surface(),
-                interaction,
-            );
-            self.observe_pending_contained_transform_release_presentation(
-                promotion.key(),
-                ticket.surface(),
-                interaction,
-            );
+            // A matching output may precede the release edge in the same
+            // ordered batch. Its core-minted preview token preserves that causality.
+            if let Some(pending) = self.pending_mutation.as_mut().filter(|pending| {
+                pending.surface() == ticket.surface() && pending.matches_interaction(interaction)
+            }) {
+                pending.presentation_mut().presented = Some(promotion.key());
+            }
             if let Some(token) = interaction.drag_preview() {
                 self.interaction
                     .observe_presented_preview(ticket.surface(), token);
@@ -1770,7 +1746,7 @@ impl DockEngine {
                     .observe_presented_contained_transform_preview(ticket.surface(), token);
             }
         }
-        self.observe_pending_release_retirements(&outcomes);
+        self.observe_pending_mutation_retirements(&outcomes);
         Ok((
             outcomes,
             changed_surfaces,
@@ -1779,175 +1755,21 @@ impl DockEngine {
         ))
     }
 
-    fn observe_pending_release_retirements(
+    fn observe_pending_mutation_retirements(
         &mut self,
         outcomes: &[HostPresentationObservationOutcome],
     ) {
-        if let Some(pending) = self.pending_drag_release.as_mut() {
-            Self::retire_pending_release_outputs(
-                &mut pending.presentation_outputs,
-                pending.presented_output,
-                &mut pending.presentation_failed,
-                outcomes,
-            );
-        }
-        if let Some(pending) = self.pending_contained_transform_release.as_mut() {
-            Self::retire_pending_release_outputs(
-                &mut pending.presentation_outputs,
-                pending.presented_output,
-                &mut pending.presentation_failed,
-                outcomes,
-            );
-        }
-        if let Some(pending) = self.pending_presentation_rehome.as_mut() {
-            Self::retire_pending_release_outputs(
-                &mut pending.presentation_outputs,
-                pending.presented_output,
-                &mut pending.presentation_failed,
-                outcomes,
-            );
+        if let Some(pending) = self.pending_mutation.as_mut() {
+            pending.presentation_mut().retire_prefixes(outcomes);
         }
     }
 
-    pub(super) fn observe_pending_release_host_retirement(
+    pub(super) fn observe_pending_mutation_host_retirement(
         &mut self,
         retired_outputs: &BTreeSet<HostFrameKey>,
     ) {
-        if let Some(pending) = self.pending_drag_release.as_mut() {
-            Self::retire_pending_release_output_keys(
-                &mut pending.presentation_outputs,
-                pending.presented_output,
-                &mut pending.presentation_failed,
-                retired_outputs,
-            );
-        }
-        if let Some(pending) = self.pending_contained_transform_release.as_mut() {
-            Self::retire_pending_release_output_keys(
-                &mut pending.presentation_outputs,
-                pending.presented_output,
-                &mut pending.presentation_failed,
-                retired_outputs,
-            );
-        }
-        if let Some(pending) = self.pending_presentation_rehome.as_mut() {
-            Self::retire_pending_release_output_keys(
-                &mut pending.presentation_outputs,
-                pending.presented_output,
-                &mut pending.presentation_failed,
-                retired_outputs,
-            );
-        }
-    }
-
-    fn retire_pending_release_output_keys(
-        outputs: &mut BTreeSet<HostFrameKey>,
-        presented_output: Option<HostFrameKey>,
-        presentation_failed: &mut bool,
-        retired_outputs: &BTreeSet<HostFrameKey>,
-    ) {
-        if presented_output.is_some() || outputs.is_empty() {
-            return;
-        }
-
-        let before = outputs.len();
-        outputs.retain(|output| !retired_outputs.contains(output));
-        if outputs.len() < before && outputs.is_empty() {
-            *presentation_failed = true;
-        }
-    }
-
-    fn retire_pending_release_outputs(
-        outputs: &mut BTreeSet<HostFrameKey>,
-        presented_output: Option<HostFrameKey>,
-        presentation_failed: &mut bool,
-        outcomes: &[HostPresentationObservationOutcome],
-    ) {
-        if presented_output.is_some() || outputs.is_empty() {
-            return;
-        }
-
-        let mut retired_bound_output = false;
-        for outcome in outcomes {
-            let HostPresentationObservationOutcome::Retired {
-                stream,
-                settled_through,
-                ..
-            } = outcome
-            else {
-                continue;
-            };
-            outputs.retain(|output| {
-                let retained = output.stream() != *stream || *output > *settled_through;
-                retired_bound_output |= !retained;
-                retained
-            });
-        }
-        if retired_bound_output && outputs.is_empty() {
-            *presentation_failed = true;
-        }
-    }
-
-    fn observe_pending_drag_release_presentation(
-        &mut self,
-        output: HostFrameKey,
-        surface: SurfaceId,
-        interaction: HostInteractionPresentation,
-    ) {
-        let Some(pending) = self.pending_drag_release.as_mut() else {
-            return;
-        };
-        let preview_surface = pending
-            .drag
-            .preview()
-            .expect("pending release retains its exact preview")
-            .public()
-            .visual()
-            .surface();
-        // A matching observed output can predate the release edge in the same
-        // ordered ingress batch. Its token is core-minted and unique to this
-        // preview, so requiring a post-release emission would reverse valid
-        // presentation-before-release causality.
-        if interaction.drag_preview() == Some(pending.preview) && surface == preview_surface {
-            pending.presented_output = Some(output);
-        }
-    }
-
-    fn observe_pending_presentation_rehome(
-        &mut self,
-        output: HostFrameKey,
-        surface: SurfaceId,
-        interaction: HostInteractionPresentation,
-    ) {
-        let Some(pending) = self.pending_presentation_rehome.as_mut() else {
-            return;
-        };
-        if interaction.drag_preview() == Some(pending.preview.public().token())
-            && surface == pending.target_surface
-        {
-            pending.presented_output = Some(output);
-        }
-    }
-
-    fn observe_pending_contained_transform_release_presentation(
-        &mut self,
-        output: HostFrameKey,
-        surface: SurfaceId,
-        interaction: HostInteractionPresentation,
-    ) {
-        let Some(pending) = self.pending_contained_transform_release.as_mut() else {
-            return;
-        };
-        let preview_surface = pending
-            .transform
-            .preview
-            .as_ref()
-            .expect("pending contained release retains its exact preview")
-            .public()
-            .surface();
-        if interaction.contained_transform_preview() == Some(pending.preview)
-            && surface == preview_surface
-        {
-            pending.presented_output = Some(output);
+        if let Some(pending) = self.pending_mutation.as_mut() {
+            pending.presentation_mut().retire_keys(retired_outputs);
         }
     }
 
@@ -2004,16 +1826,22 @@ impl DockEngine {
         if changed_surfaces.is_empty() {
             return Ok(());
         }
-        let pending_projection_lost = self.pending_drag_release.as_ref().is_some_and(|pending| {
-            changed_surfaces.contains(&pending.preview.scene().surface())
-                && !self.drag_preview_authority_is_current(&pending.drag)
-        }) || self
-            .pending_contained_transform_release
+        let pending_projection_lost = self
+            .pending_mutation
             .as_ref()
+            .and_then(PendingMutation::drag_release)
             .is_some_and(|pending| {
-                changed_surfaces.contains(&pending.transform.surface)
-                    && !self.current_contained_projection_is_owned(pending.transform.surface)
-            });
+                changed_surfaces.contains(&pending.preview.scene().surface())
+                    && !self.drag_preview_authority_is_current(&pending.drag)
+            })
+            || self
+                .pending_mutation
+                .as_ref()
+                .and_then(PendingMutation::contained_release)
+                .is_some_and(|pending| {
+                    changed_surfaces.contains(&pending.transform.surface)
+                        && !self.current_contained_projection_is_owned(pending.transform.surface)
+                });
         if pending_projection_lost {
             self.cancel_pending_release_obligations_caused(
                 cause,

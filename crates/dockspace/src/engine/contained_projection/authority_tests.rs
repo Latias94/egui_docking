@@ -4,7 +4,7 @@ use crate::behavior_tests::support::{
     MeasurementProfile, TestPresentationHost, complete_host_frame_with_retained_or_unavailable,
     measurements, publish_surface_with,
 };
-use crate::engine::{CoreHostFrame, DockEngine, PreparedSurfacePaintCandidate};
+use crate::engine::{CoreHostFrame, DockEngine, PendingMutation, PreparedSurfacePaintCandidate};
 use crate::event::ReductionCause;
 use crate::intent::{Authority, PointerButton, PointerId};
 use crate::interaction::{
@@ -405,7 +405,13 @@ fn retained_target_preview_cannot_borrow_an_unpresented_measurement_basis_on_rel
         events.is_empty(),
         "release must never deliver the stale dock command"
     );
-    assert!(engine.pending_drag_release.is_none());
+    assert!(
+        engine
+            .pending_mutation
+            .as_ref()
+            .and_then(PendingMutation::drag_release)
+            .is_none()
+    );
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
     assert_eq!(engine.version(), version);
     assert_eq!(

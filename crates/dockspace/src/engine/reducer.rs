@@ -663,10 +663,7 @@ impl DockEngine {
         let before_presentation_identity = self.presentation_identity;
         let before_scene = self.presentation_authority.scene.clone();
         let before_interaction = self.interaction.clone();
-        let before_pending_drag_release = self.pending_drag_release.clone();
-        let before_pending_contained_transform_release =
-            self.pending_contained_transform_release.clone();
-        let before_pending_presentation_rehome = self.pending_presentation_rehome.clone();
+        let before_pending_mutation = self.pending_mutation.clone();
         let before_close = self.close.clone();
         let before_viewport = self.viewport.clone();
         let before_viewport_focus = self.viewport_focus.clone();
@@ -923,10 +920,7 @@ impl DockEngine {
             || before_presentation_identity != candidate.presentation_identity
             || before_scene != candidate.presentation_authority.scene
             || before_interaction != candidate.interaction
-            || before_pending_drag_release != candidate.pending_drag_release
-            || before_pending_contained_transform_release
-                != candidate.pending_contained_transform_release
-            || before_pending_presentation_rehome != candidate.pending_presentation_rehome
+            || before_pending_mutation != candidate.pending_mutation
             || before_close != candidate.close
             || before_viewport != candidate.viewport
             || !focus_delta.is_empty();
@@ -984,7 +978,7 @@ impl DockEngine {
                     continuation,
                 )
                 .map_err(presentation_ledger_error)?;
-            self.bind_pending_release_outputs(output)?;
+            self.bind_pending_mutation_output(output)?;
             emissions.push(HostPresentationEmission::new(staged.request, output));
         }
         Ok(emissions)
@@ -1009,9 +1003,7 @@ impl DockEngine {
                 coordinate_generation,
                 interaction,
             } => {
-                let (drag_release, contained_release, presentation_rehome) =
-                    self.pending_release_output_matches(surface, interaction)?;
-                if drag_release || contained_release || presentation_rehome {
+                if self.pending_mutation_output_matches(surface, interaction)? {
                     return Ok(HostPresentationContinuation::Terminal);
                 }
                 let promotion_eligible = self.paint_output_is_promotion_eligible(
@@ -1067,85 +1059,20 @@ impl DockEngine {
             )
     }
 
-    fn pending_release_output_matches(
-        &self,
-        surface: crate::ids::SurfaceId,
-        interaction: crate::presentation_observation::HostInteractionPresentation,
-    ) -> Result<(bool, bool, bool), EngineError> {
-        let drag = if let Some(pending) = self.pending_drag_release.as_ref()
-            && interaction.drag_preview() == Some(pending.preview)
-        {
-            let expected = pending
-                .drag
-                .preview()
-                .expect("pending release retains its exact preview")
-                .public()
-                .visual()
-                .surface();
-            if surface != expected {
-                return Err(EngineError::PresentationLedger {
-                    detail: "release preview output was emitted on the wrong surface".to_owned(),
-                });
-            }
-            true
-        } else {
-            false
-        };
-        let contained = if let Some(pending) = self.pending_contained_transform_release.as_ref()
-            && interaction.contained_transform_preview() == Some(pending.preview)
-        {
-            let expected = pending
-                .transform
-                .preview
-                .as_ref()
-                .expect("pending contained release retains its exact preview")
-                .public()
-                .surface();
-            if surface != expected {
-                return Err(EngineError::PresentationLedger {
-                    detail: "contained release preview output was emitted on the wrong surface"
-                        .to_owned(),
-                });
-            }
-            true
-        } else {
-            false
-        };
-        let presentation_rehome = if let Some(pending) = self.pending_presentation_rehome.as_ref()
-            && interaction.drag_preview() == Some(pending.preview.public().token())
-        {
-            if surface != pending.target_surface {
-                return Err(EngineError::PresentationLedger {
-                    detail: "presentation rehome preview output was emitted on the wrong surface"
-                        .to_owned(),
-                });
-            }
-            true
-        } else {
-            false
-        };
-        Ok((drag, contained, presentation_rehome))
-    }
-
-    fn bind_pending_release_outputs(
+    fn bind_pending_mutation_output(
         &mut self,
         output: crate::presentation_observation::HostPresentationOutput,
     ) -> Result<(), EngineError> {
         let Some(interaction) = output.payload().interaction() else {
             return Ok(());
         };
-        let (drag_release, contained_release, presentation_rehome) =
-            self.pending_release_output_matches(output.surface(), interaction)?;
-        if drag_release && let Some(pending) = self.pending_drag_release.as_mut() {
-            pending.presentation_outputs.insert(output.key());
-        }
-        if contained_release
-            && let Some(pending) = self.pending_contained_transform_release.as_mut()
-        {
-            pending.presentation_outputs.insert(output.key());
-        }
-        if presentation_rehome && let Some(pending) = self.pending_presentation_rehome.as_mut() {
-            pending.presentation_outputs.insert(output.key());
+        if self.pending_mutation_output_matches(output.surface(), interaction)? {
+            self.pending_mutation
+                .as_mut()
+                .expect("the matching mutation is still pending")
+                .presentation_mut()
+                .outputs
+                .insert(output.key());
         }
         Ok(())
     }
@@ -1218,7 +1145,10 @@ impl DockEngine {
                     | InputOutcome::GlobalFocusObservationPublished { transition: focus } => focus
                         .effect_settlement()
                         .map_or(&[][..], |settlement| settlement.observed_effects()),
-                    InputOutcome::ViewportRegistered { .. }
+                    InputOutcome::LogicalSurfaceAttached { .. }
+                    | InputOutcome::LogicalSurfaceRetired { .. }
+                    | InputOutcome::LogicalSurfaceRejected { .. }
+                    | InputOutcome::ViewportRegistered { .. }
                     | InputOutcome::NativeInputCancelledForOverload
                     | InputOutcome::NativeInputDeviceRemoval
                     | InputOutcome::NativeInputBindingRetired { .. }
@@ -1283,6 +1213,31 @@ impl DockEngine {
         self.last_focus_reducer_generation = focus_generation;
         let focus_causal = FocusCausalStamp::new(focus_generation, cause);
         match &input.input {
+            EngineInput::AttachEmptySurface {
+                expected,
+                surface,
+                root,
+            } => self.reduce_logical_surface_command(
+                input.sequence,
+                *expected,
+                &WorkspaceCommand::AttachEmptySurface {
+                    surface: *surface,
+                    root: *root,
+                },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
+            EngineInput::RetireEmptySurface { expected, surface } => self
+                .reduce_logical_surface_command(
+                    input.sequence,
+                    *expected,
+                    &WorkspaceCommand::RetireEmptySurface { surface: *surface },
+                    tick_start.policy,
+                    events,
+                    interaction_events,
+                ),
+
             EngineInput::RegisterViewport {
                 provider,
                 expected,
