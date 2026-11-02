@@ -1,5 +1,12 @@
 # Dockspace completion audit
 
+**Subsequent review (2026-11-02):** this document records the earlier acceptance
+checkpoint. A new [ImGui comparison](audits/2026-11-02-dockspace-imgui-review.md)
+demonstrates nine public-path counterexamples outside that matrix. Remediation
+is outstanding in the [follow-up plan](plans/2026-11-02-dockspace-semantic-state-refactor.md).
+The completion statement below describes the prior Goal checkpoint and is not
+current correctness approval of those newly exercised behaviors.
+
 This audit applies the requirements and exit criteria of the
 [canonical plan](plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md).
 It does not replace or narrow that plan. The current implementation is
