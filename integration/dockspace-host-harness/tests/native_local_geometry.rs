@@ -32,7 +32,7 @@ fn managed_root() -> (DockspaceSession, NativeSurfaceBinding) {
 }
 
 #[test]
-fn external_root_layout_continuation_needs_no_persistence_and_rebases_retired_targets() {
+fn external_root_layout_continuation_preserves_declared_identities_without_persistence() {
     let (mut session, mut binding) = managed_root();
     let foreign = managed_root().1;
     for incoming in [SurfaceId::new(2), SURFACE] {
@@ -73,9 +73,9 @@ fn external_root_layout_continuation_needs_no_persistence_and_rebases_retired_ta
             let successor = pairs[0].successor();
             assert_eq!(successor.window_token(), previous.window_token());
             assert_ne!(successor.surface(), previous.surface());
-            if incoming == SURFACE {
-                assert_ne!(successor.surface(), incoming);
-            }
+            assert_eq!(successor.surface(), incoming);
+            assert_ne!(successor, previous);
+            assert_eq!(frame.view().item(SECOND).unwrap().root(), ROOT);
             assert!(frame.view().surface(previous.surface()).is_none());
             assert_eq!(
                 frame.view().item(SECOND).unwrap().surface(),

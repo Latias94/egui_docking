@@ -1,6 +1,10 @@
 # Dockspace and ImGui design review
 
-Date: 2026-11-02. Status: review complete; remediation not implemented.
+Date: 2026-11-02. Status: review complete; remediation in progress.
+
+The findings below describe the reviewed source baseline. Current implementation
+and qualification progress is tracked in the
+[active refactor plan](../plans/2026-11-02-dockspace-semantic-state-refactor.md).
 
 ## Scope and evidence
 

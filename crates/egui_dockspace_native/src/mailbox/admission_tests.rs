@@ -642,3 +642,49 @@ fn in_flight_roster_settlement_keeps_cancellation_pending_after_full_commit() {
         NativeDispatch::Cancel { boundary: 1 },
     );
 }
+
+#[test]
+fn accepted_lifecycle_show_reserves_its_terminal_while_ordinary_ingress_drains() {
+    let (bridge, _, binding, window) = bridge_with_clock();
+    let context = eframe::egui::Context::default();
+    let token = eframe::queue_native_viewport_visibility(&context, ViewportId::ROOT, true);
+    bridge.configure_window_resource_storage(1, 0).unwrap();
+    bridge
+        .bind_viewport_route(ViewportId::ROOT, window, binding)
+        .unwrap();
+    let capacity = bridge.lock().window_resources.owned_data_capacity_bytes();
+    assert_eq!(bridge.lock().window_resources.bindings().count(), 1);
+    let boundary = bridge.freeze_ordinary_for_test();
+    let before = bridge.lock().admission;
+    assert!(bridge.reserve_visibility_callback(ViewportId::ROOT, binding, window, token, true));
+    assert_eq!(bridge.lock().admission, before);
+    assert!(!bridge.permits_unscheduled_input());
+    let record = NativeViewportVisibilityRecord::for_test(
+        token,
+        ViewportId::ROOT,
+        window,
+        binding,
+        true,
+        eframe::NativeViewportVisibilityStatus::Dispatched,
+    );
+    assert!(bridge.lock().record_viewport_visibility(record));
+    assert!(!bridge.lock().record_viewport_visibility(record));
+    assert_eq!(bridge.lock().journal.captured_through(), boundary + 1);
+    assert_eq!(bridge.lock().window_resources.callback_ingress().count(), 1);
+    assert_eq!(
+        bridge.lock().window_resources.owned_data_capacity_bytes(),
+        capacity
+    );
+    assert_eq!(bridge.lock().window_resources.bindings().count(), 1);
+    assert_eq!(bridge.lock().journal.len(), 0);
+    assert!(bridge.reserve_visibility_callback(ViewportId::ROOT, binding, window, token, true));
+    assert!(!bridge.reserve_visibility_callback(
+        ViewportId::ROOT,
+        binding,
+        WindowId::from(999),
+        token,
+        true,
+    ));
+    bridge.lock().freeze();
+    assert!(!bridge.reserve_visibility_callback(ViewportId::ROOT, binding, window, token, true));
+}

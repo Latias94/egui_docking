@@ -540,3 +540,316 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
         .expect_err("public measurement must reject the removed target at roster lookup");
     assert_eq!(error.kind(), DockspaceRuntimeErrorKind::HostProtocol);
 }
+
+#[test]
+fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
+    let mut fixture = native_child_source_fixture();
+    fixture
+        .engine
+        .viewport
+        .freeze_native_create_strategy(crate::platform::NativeCreateStrategy::DirectPrepared);
+    let expected = fixture.engine.version();
+    submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::WorkspaceCommand {
+            expected,
+            command: WorkspaceCommand::InstallMainRoot {
+                surface: TARGET_SURFACE,
+                root: RootId::new(3),
+                content: RootContent::OpenItem(ItemId::new(4)),
+            },
+        },
+    )
+    .expect("the recovery host must retain its main root when B leaves");
+    publish_background_scene(&mut fixture);
+    let source = background_source_binding(&fixture);
+    let host = fixture
+        .engine
+        .viewport()
+        .viewport(TARGET_SURFACE)
+        .unwrap()
+        .binding();
+    let workspace = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
+
+    // Reserve B first so its first-live action rebuilds requirements before A's.
+    let requests = [(TARGET_ROOT, 1000.0), (SOURCE_ROOT, 1400.0)].map(|(root, x)| {
+        let expected = fixture.engine.version();
+        let created = submit_test_input(
+            &mut fixture.engine,
+            fixture.presentation_host,
+            EngineInput::TearOffRoot {
+                expected,
+                root,
+                placement: crate::model::NativeWindowPlacement::new(
+                    PhysicalRect::new(x, 0.0, 400.0, 300.0).unwrap(),
+                ),
+            },
+        )
+        .expect("both independent roots must request real native creates");
+        let target = match created.reduced_inputs()[0].outcome() {
+            InputOutcome::ProductActionProcessed {
+                outcome:
+                    DockspaceActionOutcome::NativeRootTearOffRequested {
+                        root: actual,
+                        target_surface,
+                        ..
+                    },
+                ..
+            } if *actual == root => *target_surface,
+            outcome => panic!("expected a real native create for {root}, got {outcome:?}"),
+        };
+        let request = fixture
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .find_map(|(saga, create)| {
+                (create.binding().surface() == target).then_some((
+                    saga,
+                    create.binding(),
+                    create.create(),
+                    create.resource(),
+                ))
+            })
+            .expect("each accepted command must retain its own native create saga");
+        assert!(created.platform_effects().iter().any(|effect| {
+            effect.id() == request.2
+                && matches!(
+                    effect.effect(),
+                    PlatformEffect::CreateWindow {
+                        binding,
+                        strategy: crate::platform::NativeCreateStrategy::DirectPrepared,
+                        ..
+                    } if *binding == request.1
+                )
+        }));
+        request
+    });
+    let [
+        (b_saga, b_binding, _, b_resource),
+        (a_saga, a_binding, a_create, a_resource),
+    ] = requests;
+    assert!(source.surface() < b_binding.surface());
+    assert!(b_binding.surface() < a_binding.surface());
+
+    let unavailable_host =
+        observed_source_window(host, 2, 0.0, WindowPresentationState::Visible, None)
+            .with_coordinate_observation(WindowCoordinateObservation::new(
+                host,
+                CoordinateObservationGeneration::new(2),
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            ));
+    let mut windows = vec![unavailable_host];
+    windows.extend(
+        requests
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, binding, create, _))| {
+                observed_source_window(
+                    binding,
+                    2,
+                    1000.0 + index as f64 * 400.0,
+                    WindowPresentationState::Visible,
+                    None,
+                )
+                .with_create_preparation(
+                    crate::platform::WindowCreatePreparationObservation::new(
+                        binding,
+                        CoordinateObservationGeneration::new(2),
+                        Authority::Known(crate::platform::NativeCreateReadiness::Prepared),
+                        Some(create),
+                    ),
+                )
+            }),
+    );
+    let destroyed = publish_source_windows(
+        &mut fixture,
+        2,
+        windows,
+        vec![WindowCloseObservation::new(
+            source,
+            CloseObservationGeneration::new(1),
+            Authority::Known(WindowCloseState::Destroyed),
+            CloseEffectAcknowledgement::known(None),
+        )],
+    );
+    let actions = match destroyed.reduced_inputs()[0].outcome() {
+        InputOutcome::PlatformSnapshotPublished { transition, .. } => transition.actions(),
+        outcome => panic!("the real coordinator snapshot must publish, got {outcome:?}"),
+    };
+    assert!(matches!(
+        actions,
+        [
+            crate::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. },
+            crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { saga: b, .. },
+            crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { saga: a, .. },
+        ] if observation.binding() == source && *b == b_saga && *a == a_saga
+    ));
+    assert_eq!(fixture.engine.workspace(), &workspace);
+    assert_eq!(fixture.engine.version(), version);
+    assert!(matches!(
+        fixture.engine.surface_recovery.blocked(SOURCE_SURFACE),
+        Some(SurfaceRecoveryBlockedReason::HostAuthorityUnavailable { surface })
+            if *surface == TARGET_SURFACE
+    ));
+    assert!(
+        fixture
+            .engine
+            .pending_surface_recovery(SOURCE_SURFACE)
+            .unwrap()
+            .matches_workspace(&workspace)
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(a_saga)
+            .is_none()
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .viewport(a_binding.surface())
+            .is_none()
+    );
+    assert!(
+        fixture
+            .engine
+            .scene()
+            .surface(a_binding.surface())
+            .is_none()
+    );
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(b_saga)
+            .unwrap()
+            .phase(),
+        NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+    ));
+    assert!(
+        fixture
+            .engine
+            .scene()
+            .surface(b_binding.surface())
+            .is_some()
+    );
+    assert!(
+        fixture
+            .engine
+            .native_admission
+            .owns_native_create_barrier(b_saga, b_binding, b_resource)
+    );
+    assert!(
+        !fixture
+            .engine
+            .native_admission
+            .owns_native_create_barrier(a_saga, a_binding, a_resource)
+    );
+    assert_eq!(
+        destroyed
+            .platform_effects()
+            .iter()
+            .filter(|effect| {
+                matches!(effect.effect(), PlatformEffect::CompensatingClose { binding, compensates }
+                if *binding == a_binding && *compensates == a_create)
+            })
+            .count(),
+        1,
+        "revoking A must retain exactly one cleanup owner"
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .binding_retirements()
+            .find_map(|(binding, retirement)| {
+                (binding == a_binding).then_some(retirement.origin())
+            }),
+        Some(crate::frame::BindingRetirementOrigin::NativeCreateAborted { create: a_create })
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .map(|descriptor| descriptor.id())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([a_resource, b_resource])
+    );
+
+    // Replaying an already advanced B or a withdrawn A must not reject either owner again.
+    let repeated = [actions[1].clone(), actions[2].clone(), actions[2].clone()];
+    let input = fixture.engine.last_input;
+    let provider = fixture.engine.platform_provider().unwrap();
+    let focus_causal = mint_test_focus_causal(&mut fixture.engine);
+    let recovery_batch = fixture
+        .engine
+        .freeze_surface_recovery_batch(input, &repeated)
+        .unwrap();
+    let viewport = fixture.engine.viewport().clone();
+    let admission = fixture.engine.native_admission.clone();
+    let mut activations = Vec::new();
+    let mut events = Vec::new();
+    let mut interaction_events = Vec::new();
+    fixture
+        .engine
+        .reduce_viewport_actions(
+            input,
+            provider,
+            focus_causal,
+            &repeated,
+            &recovery_batch,
+            &mut activations,
+            &mut events,
+            &mut interaction_events,
+        )
+        .expect("known withdrawn or advanced actions must be idempotently inert");
+    assert_eq!(fixture.engine.viewport(), &viewport);
+    assert_eq!(fixture.engine.native_admission, admission);
+    assert!(activations.is_empty());
+    assert!(events.is_empty());
+    assert!(interaction_events.is_empty());
+
+    let mut unexplained = actions[2].clone();
+    let missing = crate::ids::NativeCreateSagaId::new(u64::MAX);
+    let crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { saga, .. } =
+        &mut unexplained
+    else {
+        unreachable!();
+    };
+    *saga = missing;
+    let error = fixture
+        .engine
+        .reduce_viewport_actions(
+            input,
+            provider,
+            focus_causal,
+            &[unexplained],
+            &recovery_batch,
+            &mut activations,
+            &mut events,
+            &mut interaction_events,
+        )
+        .expect_err("an unrelated missing saga must remain an invariant error");
+    assert!(matches!(
+        error,
+        EngineError::Viewport {
+            source: crate::frame::ViewportCoordinatorError::MissingCreateSaga { saga },
+            ..
+        } if saga == missing
+    ));
+    assert_eq!(fixture.engine.viewport(), &viewport);
+    assert_eq!(fixture.engine.native_admission, admission);
+    fixture
+        .engine
+        .viewport()
+        .validate_native_staging_resource_conservation()
+        .expect("A cleanup and B first-live must each retain their exact resource owner");
+}

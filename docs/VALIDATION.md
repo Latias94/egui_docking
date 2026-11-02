@@ -15,6 +15,83 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-02 semantic-state refactor, first tranche
+
+The [active follow-up plan](plans/2026-11-02-dockspace-semantic-state-refactor.md)
+remains open. This tranche implements all nine executed counterexamples from the
+[ImGui review](audits/2026-11-02-dockspace-imgui-review.md), plus independently
+reviewed presentation/native interleavings. The following records describe this
+tranche only; nested boundary resizing, production depth handling, dynamic logical
+surfaces, pending-mutation consolidation and profiled transaction copying remain
+unimplemented.
+
+Changes:
+
+- Preserve the last actually Presented output while settling later Dropped
+  emissions, including separately committed and abandoned/retried prefixes.
+  A fresh terminal preview still needs its own exact presentation before mutation.
+- Delete the workspace popup rendezvous, duplicate proof map and separate gate
+  revision issuer. Only the owner measures/paints the popup; current non-owner
+  click or drag delivery dismisses it without activating content. Blocked, foreign
+  and stale claims cannot dismiss it, and wheel delivery cannot scroll underneath.
+- Delete presentation-identity rebasing on defaults/document replacement. Declared
+  root, surface and floating IDs and their policies remain stable; epoch changes
+  reject old actions, receivers and bindings, while allocation frontiers merge.
+- Separate host and managed window-key namespaces in the existing registry.
+  Host `u64::MAX` cannot exhaust child allocation; managed keys cannot be imported
+  through root/owned-child registration. Exact binding/physical-route checks remain.
+- Share manipulation-derived contained movement across content and commit preview,
+  preserve oversized dimensions, and preserve durable split weights at zero delta.
+- Scope manual scroll pauses to the affected strip. Rebind unchanged stationary
+  work through an exact candidate successor with a new token and original deadline;
+  changed geometry, old wakes and unpresented outputs remain ineligible.
+- Keep staged preparation through unchanged durable observations. Actual readiness,
+  coordinate, provider or lifecycle interruption revokes old output. Create and Show
+  ACK settlement precedes readiness gating. Source recovery revokes all preparation
+  phases; withdrawn batch actions are inert only with exact identity/retirement proof.
+- The real W16/O256 pressure case exposed a distinct adapter bug: ordinary output
+  saturation rejected an already-emitted lifecycle Show while reserving its terminal.
+  Exact visibility callbacks now use their existing prepaid owner slot through ordinary
+  draining; Frozen still rejects and quarantine still cannot dispatch a new Show. The
+  maintained regression first failed on the original adapter path, then passed.
+  The larger last-Presented record also requires 1 MiB for the fixture's 258 report
+  slots rather than 768 KiB; the total allowance remains 4 MiB. Combined reserves
+  3,794,808 bytes on macOS / 3,795,976 on X11 at peak and forwards all 258 real terminals before exact cleanup.
+
+Qualification is serialized with one build job, no incremental cache, a shared
+project target, and one nextest test thread. Debug symbols are disabled to fit the
+host disk; the normal runs retain debug assertions. Native noassert uses both
+`CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false` and
+`CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false` and is recorded separately.
+
+| Gate | Current result |
+| --- | --- |
+| Workspace, all targets/features | 1,970 passed |
+| Public host, serde | 211 passed |
+| Public host, default | 183 passed |
+| Product host, serde | 117 passed |
+| Native model, all features | 540 passed; one existing opt-in measurement ignored; includes 10,000 same-coordinator lifetimes |
+| Native model, noassert | 540 passed; same existing measurement ignored |
+| Clippy correctness/suspicious | Passed; ordinary style/pedantic warnings are not promoted |
+| Strict workspace rustdoc | Passed with `RUSTDOCFLAGS=-D warnings` |
+| Workspace doctests | 10 passed |
+| macOS real-window checks | Default/bounded redock and all six output-pressure cases passed; Combined reaches W16/O256/control2 and retires all exact children |
+| X11 real-window checks | Default/bounded redock, all six optimized pressure cases and finite physical guide drag-out/redock/Destroyed/quiescence passed |
+
+The frozen Rust-file hashes and raw commands are recorded locally in
+`/tmp/dockspace-semantic-first-tranche-frozen.json`,
+`/tmp/dockspace-semantic-first-tranche-gates.json` and
+`/tmp/dockspace-semantic-first-tranche-adapter-gates-v2.json`. The final adapter and
+platform refresh uses `dockspace-semantic-show-pressure-qualification.json` and
+`dockspace-semantic-first-tranche-platform-final.json`; the strengthened fixed-owner
+regression has its own focused normal/noassert receipt. Failed compilation
+attempts, full-disk link/strip failures and superseded fixture failures remain in
+separate `dockspace-semantic-*` logs; they are not counted as passing tests. Only
+rebuildable project caches/artifacts were reclaimed. Repository source, independent
+CI edits and `docs/reviews/` were preserved. All dependency gates use tracked Git
+pins from the existing Cargo cache with `--locked --offline`; no dependency path
+substitution, push or PR is part of this tranche.
+
 ## Remote fork publication and clean-checkout delivery
 
 After explicit user authorization, both qualified branches are fast-forwarded

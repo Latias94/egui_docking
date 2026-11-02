@@ -259,7 +259,7 @@ fn storage_limit(
         .with_report_storage_limit(NativeReportStorageLimit::new(
             slots(258),
             slots(if combined { 16 } else { 2 }),
-            768 * 1024,
+            1024 * 1024,
         ));
     if combined {
         NativeStorageLimit::new(input, BYTE_LIMIT, 48, 16)

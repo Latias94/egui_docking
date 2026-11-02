@@ -78,7 +78,7 @@ through the public host frame. It shares readiness, exact first-live and cleanup
 ownership while retaining its topology and workspace version. Failed or cancelled
 initial attempts can retry with a fresh window incarnation; old acknowledgements
 and outputs remain tied to their original window. Managed native document
-restore now atomically queues explicit Child declarations with their rebased
+restore atomically queues explicit Child declarations with their declared
 surface IDs and saved placement. Budgeted frames wait for fresh Root facts and
 exact predecessor quiescence before creating each child once. The X11 reference
 workflow verifies two live predecessors, two restored children and real content
@@ -216,7 +216,7 @@ Document V2 also binds explicit native root/child hosting preferences and each
 child's recovery-host surface. `surface_presentation_preferences()` on a session,
 prepared restore or candidate frame returns these declarations and optional
 physical placement hints. The content graph remains in `view()`. Submission
-rebases surface and recovery-host references together; reading a declaration
+preserves declared surface and recovery-host identities; reading a declaration
 does not create an OS window or grant native authority. V1 documents are rejected
 as unsupported because their placement records cannot prove native ownership.
 Managed native restore can explicitly queue the declared Child windows through

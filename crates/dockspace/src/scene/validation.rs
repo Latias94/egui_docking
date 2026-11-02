@@ -436,8 +436,8 @@ fn magnetic_targets_are_canonical(
 
 fn validate_popup_plane(ready: &PresentationPlan) -> Result<(), SceneBuildError> {
     let backdrops = &ready.tab_list_menu_backdrop_records;
-    match ready.popup {
-        PopupPlaneRequirement::Inactive { .. } => {
+    match ready.popup.visual_for_surface(ready.surface) {
+        None => {
             if ready.popup_plane_bounds.is_some()
                 || !backdrops.is_empty()
                 || !ready.tab_list_menu_records.is_empty()
@@ -447,11 +447,11 @@ fn validate_popup_plane(ready: &PresentationPlan) -> Result<(), SceneBuildError>
                 });
             }
         }
-        PopupPlaneRequirement::Active {
+        Some(PopupPlaneRequirement::Active {
             revision,
             session,
             owner,
-        } => {
+        }) => {
             let Some(popup_plane_bounds) = ready.popup_plane_bounds else {
                 return Err(SceneBuildError::PopupPlaneRecordSetMismatch {
                     surface: ready.surface,
@@ -467,21 +467,17 @@ fn validate_popup_plane(ready: &PresentationPlan) -> Result<(), SceneBuildError>
                     surface: ready.surface,
                 });
             }
-            let owner_surface = owner.surface() == ready.surface;
-            if owner_surface {
-                if ready.tab_list_menu_records.len() != 1
-                    || ready.tab_list_menu_records[0].session() != session
-                    || ready.tab_list_menu_records[0].bar() != owner.bar()
-                {
-                    return Err(SceneBuildError::PopupPlaneRecordSetMismatch {
-                        surface: ready.surface,
-                    });
-                }
-            } else if !ready.tab_list_menu_records.is_empty() {
+            if ready.tab_list_menu_records.len() != 1
+                || ready.tab_list_menu_records[0].session() != session
+                || ready.tab_list_menu_records[0].bar() != owner.bar()
+            {
                 return Err(SceneBuildError::PopupPlaneRecordSetMismatch {
                     surface: ready.surface,
                 });
             }
+        }
+        Some(PopupPlaneRequirement::Inactive { .. }) => {
+            unreachable!("inactive popup has no visual")
         }
     }
     Ok(())

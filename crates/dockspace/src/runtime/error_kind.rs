@@ -349,8 +349,7 @@ pub(super) const fn presentation_observation_error_kind(
 pub(super) const fn engine_error_kind(error: &EngineError) -> DockspaceRuntimeErrorKind {
     match error {
         EngineError::InvalidWorkspace(_) => DockspaceRuntimeErrorKind::InvalidConfiguration,
-        EngineError::WorkspaceReplacementIdentityRetired { .. }
-        | EngineError::WorkspaceReplacementPolicyDenied { .. }
+        EngineError::WorkspaceReplacementPolicyDenied { .. }
         | EngineError::NativeWorkspaceChildAlreadyHosted { .. }
         | EngineError::NativeWorkspaceRootUnavailable { .. } => {
             DockspaceRuntimeErrorKind::OperationConflict

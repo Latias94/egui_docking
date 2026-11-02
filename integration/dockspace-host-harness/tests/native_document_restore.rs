@@ -549,6 +549,7 @@ fn assert_content_on_root(view: DockspaceView<'_>, root_surface: SurfaceId) -> C
 }
 
 struct NativeDocumentHost {
+    strategy: NativeCreateStrategy,
     session: DockspaceSession,
     root: NativeSurfaceBinding,
     original_children: Vec<NativeSurfaceBinding>,
@@ -692,6 +693,7 @@ impl NativeDocumentHost {
         idle(&mut session);
         assert!(session.native_local_coordinates(root).is_some());
         Self {
+            strategy,
             session,
             root,
             original_children,
@@ -770,6 +772,10 @@ impl NativeDocumentHost {
         index: usize,
         admitted: &[NativeSurfaceBinding],
     ) {
+        let readiness = match self.strategy {
+            NativeCreateStrategy::DirectPrepared => NativeCreateReadiness::Prepared,
+            NativeCreateStrategy::Staged => NativeCreateReadiness::Created,
+        };
         let mut observations = vec![(self.root, root_facts())];
         for &other in admitted {
             let index = ids
@@ -779,14 +785,12 @@ impl NativeDocumentHost {
                 .unwrap();
             observations.push((
                 other,
-                window_facts(placement(index))
-                    .with_create_readiness(NativeCreateReadiness::Prepared, None),
+                window_facts(placement(index)).with_create_readiness(readiness, None),
             ));
         }
         observations.push((
             binding,
-            window_facts(placement(index))
-                .with_create_readiness(NativeCreateReadiness::Prepared, Some(acknowledgement)),
+            window_facts(placement(index)).with_create_readiness(readiness, Some(acknowledgement)),
         ));
         self.session
             .report_managed_native_snapshot(observations, work_areas())
@@ -880,7 +884,7 @@ fn take_create(
 }
 
 #[test]
-fn rebinding_root_restore_rebases_retired_document_root_and_children_keep_first_live_gate() {
+fn rebinding_root_restore_preserves_semantic_identities_and_children_keep_first_live_gate() {
     let bytes = saved_document(SavedHosting::Children);
     let mut host = NativeDocumentHost::with_retired_saved_root();
     let external_root = host.root;
@@ -927,26 +931,26 @@ fn rebinding_root_restore_rebases_retired_document_root_and_children_keep_first_
     let successor = continuation.successor();
     assert_eq!(continuation.predecessor(), external_root);
     assert_eq!(successor.window_token(), external_root.window_token());
-    assert_ne!(successor.surface(), incoming_root);
+    assert_eq!(successor.surface(), incoming_root);
     assert_ne!(successor.surface(), external_root.surface());
     assert!(frame.view().surface(external_root.surface()).is_none());
-    assert!(frame.view().surface(incoming_root).is_none());
+    assert!(frame.view().surface(incoming_root).is_some());
     let ids = assert_content_on_root(frame.view(), successor.surface());
+    assert_eq!(ids, original);
     assert_eq!(
         frame.proposed_native_bindings().collect::<Vec<_>>(),
         [successor]
     );
-    for (saved, rebased) in original.surfaces.into_iter().zip(ids.surfaces) {
-        assert_ne!(saved, rebased);
+    for surface in ids.surfaces {
         let saved = saved_preferences
             .iter()
-            .find(|preference| preference.surface() == saved)
+            .find(|preference| preference.surface() == surface)
             .unwrap();
         let current = frame
             .surface_presentation_preferences()
-            .find(|preference| preference.surface() == rebased)
+            .find(|preference| preference.surface() == surface)
             .unwrap();
-        let hosting = if rebased == successor.surface() {
+        let hosting = if surface == successor.surface() {
             DockspaceNativeSurfaceHosting::Root
         } else {
             DockspaceNativeSurfaceHosting::Child {
@@ -1055,10 +1059,11 @@ fn rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_l
         assert_eq!(continuation.predecessor(), external_root);
         let successor = continuation.successor();
         assert_eq!(successor.window_token(), external_root.window_token());
-        assert_ne!(successor.surface(), incoming_root);
+        assert_eq!(successor.surface(), incoming_root);
         assert!(frame.view().surface(external_root.surface()).is_none());
-        assert!(frame.view().surface(incoming_root).is_none());
+        assert!(frame.view().surface(incoming_root).is_some());
         let ids = assert_content_on_root(frame.view(), successor.surface());
+        assert_eq!(ids, assert_content(restore.view()));
         assert_eq!(*candidate_ids.get_or_insert(ids), ids);
         assert_eq!(
             *candidate_version.get_or_insert(frame.version()),
@@ -1175,7 +1180,7 @@ fn rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_l
     let recorded = host.session.native_input_recorded_count();
     host.session
         .report_managed_native_snapshot([(external_root, root_facts())], work_areas())
-        .expect_err("late predecessor facts cannot supply rebased Root coordinates");
+        .expect_err("late predecessor facts cannot supply successor Root coordinates");
     assert_eq!(host.session.native_input_recorded_count(), recorded);
     host.session
         .report_surface_presentation(old_output, SurfacePresentationResult::Presented)
@@ -1265,7 +1270,7 @@ fn rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_l
 }
 
 #[test]
-fn multiple_children_restore_atomically_rebase_the_complete_forest_and_advance_once_each() {
+fn multiple_children_restore_preserves_the_complete_forest_and_advances_once_each() {
     let bytes = saved_document(SavedHosting::Children);
     let mut host = NativeDocumentHost::new(8, true);
     let old_root = host.root;
@@ -1287,17 +1292,17 @@ fn multiple_children_restore_atomically_rebase_the_complete_forest_and_advance_o
             .submit_native_document_restore(&restore, HOST)
             .unwrap();
         let ids = assert_content(frame.view());
+        assert_eq!(ids, original);
         assert_eq!(*candidate_ids.get_or_insert(ids), ids);
         for surface in CHILDREN {
-            assert!(frame.view().surface(surface).is_none());
+            assert!(frame.view().surface(surface).is_some());
         }
         for root in ROOTS {
-            assert!(frame.view().root(root).is_none());
+            assert!(frame.view().root(root).is_some());
         }
         for floating in FLOATING {
-            assert!(frame.view().contained(floating).is_none());
+            assert!(frame.view().contained(floating).is_some());
         }
-        assert!(ids.roots.iter().all(|root| root.get() > 900));
         let bindings = frame.proposed_native_bindings().collect::<Vec<_>>();
         let [root] = bindings.as_slice() else {
             panic!("restore may queue children but cannot allocate their bindings");

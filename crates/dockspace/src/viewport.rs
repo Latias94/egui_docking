@@ -34,10 +34,50 @@ macro_rules! monotonic_id {
     };
 }
 
-monotonic_id!(
-    WindowToken,
-    "Opaque adapter token used instead of storing an operating-system handle."
-);
+/// Opaque resource key in either the host or managed-window namespace.
+/// Numeric host values never participate in managed-window allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WindowToken {
+    namespace: WindowTokenNamespace,
+    value: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum WindowTokenNamespace {
+    Host,
+    Managed,
+}
+
+impl WindowToken {
+    /// Creates a resource key in the host-owned namespace.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self {
+            namespace: WindowTokenNamespace::Host,
+            value,
+        }
+    }
+
+    pub(crate) const fn managed(value: u64) -> Self {
+        Self {
+            namespace: WindowTokenNamespace::Managed,
+            value,
+        }
+    }
+
+    pub(crate) const fn is_host(self) -> bool {
+        matches!(self.namespace, WindowTokenNamespace::Host)
+    }
+
+    /// Advances within the same namespace without wrapping.
+    #[must_use]
+    pub const fn checked_next(self) -> Option<Self> {
+        match self.value.checked_add(1) {
+            Some(value) => Some(Self { value, ..self }),
+            None => None,
+        }
+    }
+}
 monotonic_id!(
     WindowIncarnation,
     "Core-owned incarnation which changes whenever a token is rebound."

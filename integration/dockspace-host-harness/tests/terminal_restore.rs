@@ -162,7 +162,7 @@ fn ordinary_terminal_restore_retries_atomically_and_recognizes_unloaded_content(
         frame.submit_document_restore(&prepared).unwrap();
         let restored = frame.view().item(MISSING).unwrap();
         assert_eq!(restored.surface(), SURFACE);
-        assert!(restored.root().get() > ROOT.get());
+        assert_eq!(restored.root(), RootId::new(1));
         assert_eq!(restored.tabs().items(), &[FIRST, MISSING]);
         assert!(restored.is_selected());
         assert!(frame.view().item(HISTORICAL).is_none());

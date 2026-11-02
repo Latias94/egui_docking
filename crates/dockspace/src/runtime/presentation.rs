@@ -67,7 +67,7 @@ impl SurfacePresentationArtifact {
 /// Hosts use this acknowledgement to promote or retire only artifacts from
 /// the exact committed stream prefix. Its fields remain private so callers
 /// cannot synthesize a core commit. Retaining an accepted artifact does not bypass
-/// interaction gates, such as a popup awaiting presentation on another surface;
+/// interaction gates, such as a popup awaiting its owner's presentation;
 /// bind receiver descriptors through [`DockspaceSession::bind_presented_receiver`](super::DockspaceSession::bind_presented_receiver).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SurfacePresentationCommit {
@@ -488,7 +488,9 @@ impl PendingPresentationReport {
         if output > self.settled_through {
             self.settled_through = output;
         }
-        self.presented = (result == SurfacePresentationResult::Presented).then_some(output);
+        if result == SurfacePresentationResult::Presented {
+            self.presented = Some(output);
+        }
     }
 }
 
@@ -525,6 +527,7 @@ struct RuntimePresentationStream {
     stream: HostPresentationStreamId,
     generation: HostPresentationCaptureGeneration,
     recorded: Option<RecordedPresentationReport>,
+    presented: Option<SurfacePresentationArtifact>,
 }
 
 #[derive(Debug, Default)]
@@ -919,29 +922,37 @@ impl RuntimePresentationState {
             {
                 continue;
             }
-            let presented_artifact = report.presented.and_then(|presented| {
-                self.pending
-                    .lock()
-                    .iter()
-                    .map(|entry| entry.output)
-                    .find(|output| output.stream() == *stream && output.key() == presented)
-                    .filter(|output| {
-                        *promotion_eligible && engine.scene().retains_observed_emission(*output)
-                    })
-                    .map(|output| SurfacePresentationArtifact { output })
-            });
-            commits.push(SurfacePresentationCommit::new(
-                *stream,
-                *settled_through,
-                presented_artifact,
-            ));
             let state = self
                 .streams
                 .iter_mut()
                 .find(|state| state.stream == *stream)
                 .expect("the submitted observation retains its stream metadata");
+            let presented_artifact = report.presented.map_or_else(
+                || {
+                    state.presented.filter(|artifact| {
+                        engine.scene().retains_observed_emission(artifact.output())
+                    })
+                },
+                |presented| {
+                    self.pending
+                        .lock()
+                        .iter()
+                        .map(|entry| entry.output)
+                        .find(|output| output.stream() == *stream && output.key() == presented)
+                        .filter(|output| {
+                            *promotion_eligible && engine.scene().retains_observed_emission(*output)
+                        })
+                        .map(|output| SurfacePresentationArtifact { output })
+                },
+            );
+            commits.push(SurfacePresentationCommit::new(
+                *stream,
+                *settled_through,
+                presented_artifact,
+            ));
             state.generation = *generation;
             state.recorded = None;
+            state.presented = presented_artifact;
             self.pending.lock().retain(|entry| {
                 entry.output.stream() != *stream || entry.output.key() > *settled_through
             });
@@ -1005,6 +1016,7 @@ impl RuntimePresentationState {
                 stream: emissions[index].output().stream(),
                 generation: HostPresentationCaptureGeneration::default(),
                 recorded: None,
+                presented: None,
             });
         }
         self.streams
@@ -1396,9 +1408,9 @@ mod tests {
         let [second_ack] = second_commit.surface_presentation_commits() else {
             panic!("the dropped successor must produce one core commit ack")
         };
-        assert!(second_ack.retires(first_artifact));
+        assert!(!second_ack.retires(first_artifact));
         assert!(second_ack.retires(second_artifact));
-        assert!(!second_ack.presents(first_artifact));
+        assert!(second_ack.presents(first_artifact));
         assert!(!second_ack.presents(second_artifact));
     }
 

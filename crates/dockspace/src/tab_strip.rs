@@ -124,6 +124,12 @@ pub enum PopupPlaneRequirement {
 }
 
 impl PopupPlaneRequirement {
+    pub(crate) fn visual_for_surface(self, surface: SurfaceId) -> Option<Self> {
+        self.owner()
+            .is_some_and(|owner| owner.surface() == surface)
+            .then_some(self)
+    }
+
     /// Returns the exact core-owned popup-plane revision.
     #[must_use]
     pub const fn revision(self) -> PopupRoutingRevision {
@@ -325,8 +331,8 @@ pub(crate) struct TabStripStateDelta {
 pub(crate) enum TabStripInfluenceDomain {
     /// Only these logical surfaces need their transient scene input invalidated.
     Local(BTreeSet<SurfaceId>),
-    /// The workspace-global popup receiver plane changed for the exact surface roster.
-    PopupRoster,
+    /// Popup state changed; its previous and current owners need new visuals.
+    Popup(BTreeSet<SurfaceId>),
 }
 
 impl TabStripStateDelta {
@@ -364,7 +370,11 @@ impl TabStripInfluenceDomain {
 
     pub(crate) fn merge(self, next: Self) -> Self {
         match (self, next) {
-            (Self::PopupRoster, _) | (_, Self::PopupRoster) => Self::PopupRoster,
+            (Self::Popup(mut before), Self::Local(after) | Self::Popup(after))
+            | (Self::Local(mut before), Self::Popup(after)) => {
+                before.extend(after);
+                Self::Popup(before)
+            }
             (Self::Local(mut before), Self::Local(after)) => {
                 before.extend(after);
                 Self::Local(before)
@@ -455,7 +465,7 @@ impl TabStripStateStore {
         self.active_menu = Some(active);
         Ok((
             session,
-            TabStripStateDelta::new(true, TabStripInfluenceDomain::PopupRoster),
+            TabStripStateDelta::new(true, TabStripInfluenceDomain::Popup(BTreeSet::new())),
         ))
     }
 
@@ -482,7 +492,7 @@ impl TabStripStateStore {
         self.popup_routing_revision = routing_revision;
         Ok(TabStripStateDelta::new(
             true,
-            TabStripInfluenceDomain::PopupRoster,
+            TabStripInfluenceDomain::Popup(BTreeSet::new()),
         ))
     }
 
@@ -569,7 +579,7 @@ impl TabStripStateStore {
         self.active_menu_mut(session)?.scroll_offset = offset;
         Ok(TabStripStateDelta::new(
             true,
-            TabStripInfluenceDomain::PopupRoster,
+            TabStripInfluenceDomain::Popup(BTreeSet::new()),
         ))
     }
 
@@ -593,7 +603,7 @@ impl TabStripStateStore {
     pub(crate) fn reconcile_exact_for_surface_roster<'a>(
         &mut self,
         live: impl IntoIterator<Item = (TabStripStateKey, &'a [ItemId])>,
-        surface_roster_changed: bool,
+        _surface_roster_changed: bool,
     ) -> Result<TabStripStateDelta, TabStripStateError> {
         let mut candidate = self.clone();
         let live = live
@@ -621,8 +631,7 @@ impl TabStripStateStore {
         }
         let active_before = candidate.active_menu.clone();
         candidate.reconcile_active_menu();
-        let routing_changed = (surface_roster_changed && candidate.active_menu.is_some())
-            || candidate.active_menu != active_before;
+        let routing_changed = candidate.active_menu != active_before;
         if routing_changed {
             candidate.popup_routing_revision = candidate
                 .popup_routing_revision
@@ -631,7 +640,7 @@ impl TabStripStateStore {
         }
         let state_changed = candidate != *self;
         let influence = if routing_changed {
-            TabStripInfluenceDomain::PopupRoster
+            TabStripInfluenceDomain::Popup(BTreeSet::new())
         } else {
             TabStripInfluenceDomain::Local(changed_local_surfaces(self, &candidate))
         };
@@ -884,7 +893,7 @@ mod tests {
         assert_ne!(states.popup_requirement().revision(), routing_before_first);
         assert_eq!(
             first_delta.influence(),
-            &TabStripInfluenceDomain::PopupRoster
+            &TabStripInfluenceDomain::Popup(BTreeSet::new())
         );
         assert_eq!(
             states.active_menu().map(ActiveTabListMenu::key),
@@ -902,7 +911,7 @@ mod tests {
         assert_ne!(states.popup_requirement().revision(), routing_before_second);
         assert_eq!(
             second_delta.influence(),
-            &TabStripInfluenceDomain::PopupRoster
+            &TabStripInfluenceDomain::Popup(BTreeSet::new())
         );
         assert_ne!(first_session, second_session);
         assert_eq!(
@@ -945,7 +954,7 @@ mod tests {
         assert!(scroll_delta.state_changed());
         assert_eq!(
             scroll_delta.influence(),
-            &TabStripInfluenceDomain::PopupRoster
+            &TabStripInfluenceDomain::Popup(BTreeSet::new())
         );
         assert_eq!(states.popup_requirement().revision(), routing_before_scroll);
 
@@ -972,7 +981,10 @@ mod tests {
             states.popup_requirement().revision(),
             routing_before_reconcile
         );
-        assert_eq!(reconcile.influence(), &TabStripInfluenceDomain::PopupRoster);
+        assert_eq!(
+            reconcile.influence(),
+            &TabStripInfluenceDomain::Popup(BTreeSet::new())
+        );
         let active = states.active_menu().expect("the live menu remains active");
         assert_eq!(active.focus(), initial[2]);
         assert_eq!(active.items(), removed_focus);
@@ -1093,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn delta_merge_unions_local_surfaces_and_popup_roster_absorbs_local_scope() {
+    fn delta_merge_preserves_local_surfaces_alongside_popup_changes() {
         let [first_node, second_node] = nodes();
         let first = key(1, 10, first_node);
         let second = key(2, 20, second_node);
@@ -1129,11 +1141,14 @@ mod tests {
             .expect("the live strip can own the popup plane");
         let absorbed = first_local.merge(popup);
         assert_ne!(states.popup_requirement().revision(), routing_before_popup);
-        assert_eq!(absorbed.influence(), &TabStripInfluenceDomain::PopupRoster);
+        assert_eq!(
+            absorbed.influence(),
+            &TabStripInfluenceDomain::Popup(BTreeSet::from([first.surface()])),
+        );
     }
 
     #[test]
-    fn inactive_surface_rosters_preserve_independent_routing_and_active_rosters_advance_it() {
+    fn unrelated_surface_rosters_preserve_popup_routing() {
         let [node, _] = nodes();
         let key = key(1, 10, node);
         let items = [ItemId::new(1)];
@@ -1152,8 +1167,14 @@ mod tests {
         let revision_after_close = states.popup_requirement().revision();
         assert_ne!(revision_after_open, revision_before_open);
         assert_ne!(revision_after_close, revision_after_open);
-        assert_eq!(open.influence(), &TabStripInfluenceDomain::PopupRoster);
-        assert_eq!(close.influence(), &TabStripInfluenceDomain::PopupRoster);
+        assert_eq!(
+            open.influence(),
+            &TabStripInfluenceDomain::Popup(BTreeSet::new())
+        );
+        assert_eq!(
+            close.influence(),
+            &TabStripInfluenceDomain::Popup(BTreeSet::new())
+        );
 
         let revision_before_roster = states.popup_requirement().revision();
         let roster = states
@@ -1172,10 +1193,10 @@ mod tests {
         let revision_before_roster = states.popup_requirement().revision();
         let roster = states
             .reconcile_exact_for_surface_roster([(key, items.as_slice())], true)
-            .expect("an active popup requires a new exact-roster barrier");
-        assert!(roster.state_changed());
-        assert_eq!(roster.influence(), &TabStripInfluenceDomain::PopupRoster);
-        assert_ne!(
+            .expect("unrelated surface membership preserves the active popup");
+        assert!(!roster.state_changed());
+        assert!(roster.influence().is_empty());
+        assert_eq!(
             states.popup_requirement().revision(),
             revision_before_roster
         );

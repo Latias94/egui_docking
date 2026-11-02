@@ -540,7 +540,7 @@ fn destroyed_root_and_pending_child_keep_both_host_declarations_before_the_first
 }
 
 #[test]
-fn terminal_restore_rebases_preferences_and_recovery_host_only_in_the_candidate() {
+fn terminal_restore_preserves_preference_and_recovery_host_identities_atomically() {
     let bytes = saved_native_document();
     let mut destination =
         DockspaceSession::from_document_json(&bytes, DockPolicy::default(), recognize).unwrap();
@@ -586,19 +586,19 @@ fn terminal_restore_rebases_preferences_and_recovery_host_only_in_the_candidate(
         let candidate_version = frame.version();
         assert_ne!(candidate_version, before);
         let content = assert_complete_content(frame.view());
-        assert_ne!(content.host, HOST);
-        assert_ne!(content.child, CHILD);
+        assert_eq!(content, original_content);
         assert!(frame.proposed_native_bindings().next().is_none());
-        assert!(frame.view().surface(HOST).is_none());
-        assert!(frame.view().surface(CHILD).is_none());
+        assert!(frame.view().surface(HOST).is_some());
+        assert!(frame.view().surface(CHILD).is_some());
         for root in original_content.roots {
-            assert!(frame.view().root(root).is_none());
+            assert!(frame.view().root(root).is_some());
         }
         for floating in original_content.contained {
-            assert!(frame.view().contained(floating).is_none());
+            assert!(frame.view().contained(floating).is_some());
         }
         assert_eq!(*candidate_content.get_or_insert(content), content);
         let values = preferences(frame.surface_presentation_preferences());
+        assert!(values == original_preferences);
         assert_observed_preferences(&values, content.host, content.child);
         assert!(values == preferences(frame.surface_presentation_preferences()));
         assert!(values == *candidate_preferences.get_or_insert_with(|| values.clone()));

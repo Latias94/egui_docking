@@ -132,6 +132,61 @@ fn operable_tab_scroll_range(
 }
 
 impl DockEngine {
+    pub(super) fn dismiss_popup_from_other_surface_press(
+        &mut self,
+        cause: ReductionCause,
+        owner: GestureOwner,
+        capture: Authority<PointerCaptureOwner>,
+        receipt: &ValidatedPointerReceiverReceipt,
+        snapshot: &JournalPresentationSnapshot,
+    ) -> Result<Option<InteractionOutcome>, EngineError> {
+        let Some(session) = self
+            .presentation_authority
+            .tab_strip_states
+            .active_menu()
+            .map(|menu| menu.session())
+        else {
+            return Ok(None);
+        };
+        let PointerReceiverObservation::Presented(observation) = receipt.observation() else {
+            return Ok(None);
+        };
+        let Some(delivery) = observation.probes().iter().find_map(|probe| match probe {
+            PointerReceiverProbeReceipt::Delivery(delivery) => Some(delivery),
+            PointerReceiverProbeReceipt::HoverHit(_) => None,
+        }) else {
+            return Ok(None);
+        };
+        if ![delivery.click(), delivery.drag()].into_iter().any(|lane| {
+            matches!(
+                lane,
+                PointerReceiverDeliveryDisposition::Dock(_)
+                    | PointerReceiverDeliveryDisposition::DockCanvas
+            )
+        }) {
+            return Ok(None);
+        }
+        let (Some(output), Some(authority)) = (delivery.output(), delivery.authority()) else {
+            return Ok(None);
+        };
+        if output.surface() == session.key().surface()
+            || self
+                .interaction_projection(output.surface())
+                .is_none_or(|projection| projection.authority() != authority)
+        {
+            return Ok(None);
+        }
+        let presentation = snapshot
+            .presentation(output, authority)
+            .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
+        if let Some(rejection) =
+            self.journal_press_capture_rejection(owner, capture, presentation)?
+        {
+            return Ok(Some(InteractionOutcome::Rejected(rejection)));
+        }
+        self.close_tab_list_menu(cause, session).map(Some)
+    }
+
     /// Verifies the geometry portion of one known docking receiver claim before
     /// the journal watermark advances.
     ///
@@ -415,7 +470,6 @@ impl DockEngine {
             return Ok(());
         }
         let dragging = if let InteractionStatus::Dragging { session } = self.interaction.status() {
-            self.clear_drag_continuation(session);
             self.interaction
                 .clear_preview(session, PreviewResolutionStatus::Unavailable)
                 .map_err(|error| Self::tab_strip_state_invariant(cause, format!("{error:?}")))?;
@@ -462,9 +516,10 @@ impl DockEngine {
                     let policy = self.policy.clone();
                     self.reduce_surface_contribution(cause.tick(), contribution, &policy)?;
                 }
+                self.rebind_edge_scroll_after_local_recompile(cause, surfaces)?;
                 Ok(())
             }
-            TabStripInfluenceDomain::PopupRoster => self
+            TabStripInfluenceDomain::Popup(_) => self
                 .try_rebuild_presentation_requirements(Some(delta.influence()))
                 .map_err(|source| EngineError::PointerInteractionInvariant {
                     cause,
@@ -515,7 +570,7 @@ impl DockEngine {
             .interaction_projection(presentation.surface())
             .ok_or(InteractionRejection::StaleScene)?;
         if projection.authority() != presentation.presented
-            || projection.popup_gate_revision() != presentation.popup_gate_revision
+            || projection.popup_revision() != presentation.popup_revision
         {
             return Err(InteractionRejection::StaleScene);
         }

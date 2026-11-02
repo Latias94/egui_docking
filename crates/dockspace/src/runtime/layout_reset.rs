@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::engine::{EngineInput, HostFrameView, rebase_workspace_presentation_identities};
+use crate::engine::{EngineInput, HostFrameView};
 use crate::graph::Workspace;
 use crate::ids::EngineAuthorityDomainId;
 use crate::model::{DockspaceLayout, DockspaceView, SurfaceId, WorkspaceVersion};
@@ -60,7 +60,7 @@ impl DockspaceSession {
 
     /// Begins an affine frame whose final semantic mutation resets the layout.
     ///
-    /// Retired presentation identities are rebased in the current candidate.
+    /// Declared presentation identities are preserved in a new workspace epoch.
     /// Measurement may follow; its contributions install Ready scenes at commit,
     /// which a later host frame can paint. Later semantic and configuration
     /// input is rejected. Dropping the frame preserves the published state and
@@ -140,7 +140,7 @@ impl DockspaceSession {
 impl DockspaceHostFrame<'_> {
     /// Replaces the layout and continues one external Root window on an incoming surface.
     ///
-    /// `incoming_root` names a surface in the prepared layout before rebasing.
+    /// `incoming_root` names the exact surface preserved from the prepared layout.
     /// The exact current `existing_root` must be admitted and available for
     /// continuation. Its old logical surface may disappear from the new layout.
     /// The committed report carries the exact predecessor/successor pair; hosts
@@ -162,16 +162,16 @@ impl DockspaceHostFrame<'_> {
         self.session.ensure_managed_native_host_available()?;
         self.session.ensure_prepared_layout_reset_current(reset)?;
         self.complete_pointer_input()?;
-        let rebased = reset.rebased_workspace(self.frame.view())?;
-        let target = rebased
-            .surfaces
-            .get(&incoming_root)
-            .copied()
-            .ok_or_else(|| DockspaceRuntimeError::native_root_surface_missing(incoming_root))?;
+        reset.ensure_authority(self.frame.view())?;
+        if reset.workspace.surface(incoming_root).is_none() {
+            return Err(DockspaceRuntimeError::native_root_surface_missing(
+                incoming_root,
+            ));
+        }
         let continuation =
-            self.prepare_native_root_continuation(existing_root, target, &rebased.workspace)?;
+            self.prepare_native_root_continuation(existing_root, incoming_root, &reset.workspace)?;
         self.append(EngineInput::ReplaceWorkspaceContinuingRoot {
-            workspace: rebased.workspace,
+            workspace: reset.workspace.clone(),
             continuation,
         })?;
         self.replacement_submitted = true;
@@ -213,8 +213,8 @@ impl DockspaceHostFrame<'_> {
     /// [`Self::native_input_pending`] is false. This operation keeps that exact
     /// candidate and its already reduced input; it starts no second replay.
     ///
-    /// The preparation remains bound to the published session, while presentation
-    /// identities rebase against this frame's current candidate. Earlier product
+    /// The preparation remains bound to the published session, and its declared
+    /// presentation identities survive replacement in a new epoch. Earlier product
     /// outcomes are superseded by the report's single `LayoutReset` result.
     /// Measurement may follow, but further semantic and configuration input may
     /// not. Dropping the frame leaves `reset` available for an exact retry.
@@ -241,10 +241,10 @@ impl DockspaceHostFrame<'_> {
 impl PreparedDockspaceLayoutReset {
     /// Returns a read-only projection of the declared layout before replacement.
     ///
-    /// This view grants no presentation authority. The terminal replacement may
-    /// rebase [`RootId`](crate::model::RootId), [`SurfaceId`](crate::model::SurfaceId),
+    /// This view grants no presentation authority. The terminal replacement preserves
+    /// [`RootId`](crate::model::RootId), [`SurfaceId`](crate::model::SurfaceId),
     /// and [`FloatingPresentationId`](crate::model::FloatingPresentationId) values
-    /// before publication.
+    /// in a new workspace epoch.
     #[must_use]
     pub fn view(&self) -> DockspaceView<'_> {
         DockspaceView::new(&self.workspace)
@@ -254,23 +254,14 @@ impl PreparedDockspaceLayoutReset {
         &self,
         frame: HostFrameView<'_>,
     ) -> Result<EngineInput, DockspaceRuntimeError> {
-        let rebased = self.rebased_workspace(frame)?;
-        Ok(EngineInput::ReplaceWorkspace(rebased.workspace))
+        self.ensure_authority(frame)?;
+        Ok(EngineInput::ReplaceWorkspace(self.workspace.clone()))
     }
 
-    fn rebased_workspace(
-        &self,
-        frame: HostFrameView<'_>,
-    ) -> Result<crate::engine::RebasedWorkspace, DockspaceRuntimeError> {
+    fn ensure_authority(&self, frame: HostFrameView<'_>) -> Result<(), DockspaceRuntimeError> {
         if self.authority != frame.authority_domain() {
             return Err(DockspaceRuntimeError::prepared_layout_reset_mismatch());
         }
-        rebase_workspace_presentation_identities(
-            self.workspace.clone(),
-            frame.workspace(),
-            frame.presentation_identity_frontier(),
-            None,
-        )
-        .map_err(DockspaceRuntimeError::layout_reset_rebase)
+        Ok(())
     }
 }

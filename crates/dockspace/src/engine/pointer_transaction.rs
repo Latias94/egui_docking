@@ -1,5 +1,6 @@
 //! Device-independent pointer interaction transaction.
 
+use super::contained_geometry::{contained_manipulation_point, contained_move_geometry};
 use super::*;
 use crate::intent::PointerId;
 
@@ -326,7 +327,6 @@ impl DockEngine {
                 let mut outcomes = if matching_owner
                     && matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
                 {
-                    self.clear_pointer_continuation(owner);
                     self.reduce_journal_capture_change(
                         cause,
                         owner,
@@ -524,6 +524,15 @@ impl DockEngine {
             self.journal_press_delivery_rejection(edge.delivery_owner(), expected_delivery)?
         {
             return Ok(Some(InteractionOutcome::Rejected(rejection)));
+        }
+        if let Some(outcome) = self.dismiss_popup_from_other_surface_press(
+            cause,
+            owner,
+            capture_authority,
+            receipt,
+            snapshot,
+        )? {
+            return Ok(Some(outcome));
         }
         let Some((region, presentation)) =
             Self::journal_semantic_press_delivery(cause, receipt, snapshot)?
@@ -1571,7 +1580,7 @@ impl DockEngine {
             .presentation
             .presented
             .same_interaction_semantics(presentation.authority())
-            || click.presentation.popup_gate_revision != presentation.popup_gate_revision()
+            || click.presentation.popup_revision != presentation.popup_revision()
             || !self.journal_popup_presentation_is_exact_current(presentation))
         {
             return Ok(Self::record_terminal_click_cancellation(
@@ -1971,7 +1980,7 @@ impl DockEngine {
                 current.plan_stamp() == presentation.scene()
                     && current.output_ticket() == presentation.output_ticket()
                     && current.authority() == presentation.authority()
-                    && current.popup_gate_revision() == presentation.popup_gate_revision()
+                    && current.popup_revision() == presentation.popup_revision()
                     && current
                         .output()
                         .coordinate_capture()
@@ -2691,6 +2700,7 @@ impl DockEngine {
             DropResolution::KnownNone(_) => self.resolve_journal_local_contained_candidate(
                 cause,
                 drag,
+                position,
                 SurfacePointer::new(presentation.surface(), point),
                 policy,
             )?,
@@ -2970,10 +2980,17 @@ impl DockEngine {
         &self,
         cause: ReductionCause,
         drag: &crate::interaction::ActiveDrag,
+        position: ManipulationPositionKey,
         pointer: SurfacePointer,
         policy: &DockPolicySnapshot,
     ) -> Result<PreviewDecision, EngineError> {
-        match self.core_contained_candidate(drag, pointer, None) {
+        let candidate = match &drag.origin {
+            FrozenDragOrigin::Contained(origin) => {
+                self.core_contained_move_candidate(drag, origin, position, pointer.surface())
+            }
+            FrozenDragOrigin::Workspace => self.core_contained_candidate(drag, pointer, None),
+        };
+        match candidate {
             CoreContainedCandidate::None => {
                 Ok(PreviewDecision::Clear(PreviewResolutionStatus::KnownNone))
             }
@@ -2989,6 +3006,102 @@ impl DockEngine {
             }
             CoreContainedCandidate::Cancel(reason) => Ok(PreviewDecision::Cancel(reason)),
         }
+    }
+
+    fn core_contained_move_candidate(
+        &self,
+        drag: &crate::interaction::ActiveDrag,
+        origin: &FrozenContainedDragOrigin,
+        position: ManipulationPositionKey,
+        destination: SurfaceId,
+    ) -> CoreContainedCandidate {
+        if destination != origin.surface {
+            return CoreContainedCandidate::None;
+        }
+        if !self.frozen_drag_origin_is_current(drag.origin.clone()) {
+            return CoreContainedCandidate::Rejected;
+        }
+        let Some(point) = contained_manipulation_point(position, origin.surface) else {
+            return CoreContainedCandidate::None;
+        };
+        let (scene, bounds) =
+            match Self::ready_surface_bounds(self.scene(), self.version, origin.surface) {
+                Ok(ready) => ready,
+                Err(
+                    ContainedPlacementUnavailable::StaleSurface { .. }
+                    | ContainedPlacementUnavailable::PendingPaintSurface { .. },
+                ) => return CoreContainedCandidate::None,
+                Err(_) => {
+                    return CoreContainedCandidate::Cancel(
+                        InteractionCancelReason::SceneUnavailable,
+                    );
+                }
+            };
+        let previous = drag.preview().and_then(|preview| match preview.proof() {
+            PreviewProof::Contained { proposal, .. }
+                if proposal.surface() == origin.surface
+                    && proposal.root() == origin.root
+                    && proposal.floating() == origin.floating
+                    && proposal.placement().surface_bounds() == bounds
+                    && drag.last_advanced_position().and_then(|previous| {
+                        contained_manipulation_point(previous, origin.surface)
+                    }) == Some(point) =>
+            {
+                Some((proposal.placement().requested_rect(), proposal.rect()))
+            }
+            _ => None,
+        });
+        let (requested, rect) = match previous.map(Ok).unwrap_or_else(|| {
+            contained_move_geometry(bounds, origin.source_rect, origin.initial_pointer, point)
+        }) {
+            Ok(geometry) => geometry,
+            Err(()) => return CoreContainedCandidate::Rejected,
+        };
+        let placement = ContainedPlacementProof::new(
+            scene,
+            origin.surface,
+            requested,
+            origin.minimum_size,
+            bounds,
+            rect,
+        );
+        CoreContainedCandidate::Proposal(crate::intent::ContainedTearOffProposal::new(
+            origin.root,
+            origin.floating,
+            placement,
+            ContainedPosition::Front,
+        ))
+    }
+
+    fn valid_contained_move_proposal(
+        &self,
+        origin: &FrozenContainedDragOrigin,
+        proposal: crate::intent::ContainedTearOffProposal,
+        authority: ContainedPlacementAuthority,
+    ) -> bool {
+        let proof = proposal.placement();
+        let current = match authority {
+            ContainedPlacementAuthority::PresentedCoordinates => {
+                self.scene().ready_surface(proof.surface())
+            }
+            ContainedPlacementAuthority::CurrentCandidate => {
+                self.semantic_candidate(proof.scene()).ok()
+            }
+        };
+        let Some(current) = current else {
+            return false;
+        };
+        // Existing movement has its own sizing rule, with the same exact scene,
+        // epoch and bounds checks as placement. An oversized source stays intact.
+        current.stamp() == proof.scene()
+            && proof.scene().requirement().workspace_epoch() == self.version.epoch()
+            && current.plan().bounds() == proof.surface_bounds()
+            && proof.surface() == origin.surface
+            && proof.minimum_size() == origin.minimum_size
+            && proof.requested_rect().width() == origin.source_rect.width()
+            && proof.requested_rect().height() == origin.source_rect.height()
+            && clamp_moved_contained_rect(proof.surface_bounds(), proof.requested_rect())
+                == Ok(proof.clamped_rect())
     }
 
     pub(super) fn resolve_contained_proposal(
@@ -3010,7 +3123,16 @@ impl DockEngine {
         ) else {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
         };
-        if !self.valid_core_contained_command(drag, proposal, &command, authority)
+        let valid = match &drag.origin {
+            FrozenDragOrigin::Contained(origin) => {
+                self.valid_contained_move_proposal(origin, proposal, authority)
+                    && self.valid_contained_command_structure(drag, proposal, &command)
+            }
+            FrozenDragOrigin::Workspace => {
+                self.valid_core_contained_command(drag, proposal, &command, authority)
+            }
+        };
+        if !valid
             || self
                 .stage_journal_workspace_command(cause, &command, policy)?
                 .is_err()

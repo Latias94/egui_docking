@@ -54,8 +54,6 @@ pub(crate) enum NativeBringupPhase {
         hidden_coordinate_observation_generation: CoordinateObservationGeneration,
         acknowledged_generation: PresentationObservationGeneration,
         acknowledged_inventory_generation: InventoryGeneration,
-        acknowledged_coordinate_generation: CoordinateGeneration,
-        acknowledged_coordinate_observation_generation: CoordinateObservationGeneration,
         create_emitted_inventory_generation: InventoryGeneration,
         show_emitted_inventory_generation: InventoryGeneration,
         pre_show: PresentedNativeStagingPresentation,
@@ -121,8 +119,6 @@ pub(crate) struct NativeVisibilityProof {
     pub(super) hidden_coordinate_observation_generation: CoordinateObservationGeneration,
     pub(super) acknowledged_generation: PresentationObservationGeneration,
     pub(super) acknowledged_inventory_generation: InventoryGeneration,
-    pub(super) acknowledged_coordinate_generation: CoordinateGeneration,
-    pub(super) acknowledged_coordinate_observation_generation: CoordinateObservationGeneration,
     pub(super) visible_generation: PresentationObservationGeneration,
     pub(super) visible_inventory_generation: InventoryGeneration,
     pub(super) visible_coordinate_generation: CoordinateGeneration,
@@ -317,6 +313,9 @@ impl ViewportCoordinator {
                 .presentation_observation()
                 .and_then(WindowPresentationObservation::known_state)
                 != Some(WindowPresentationState::Visible)
+            || proof
+                .retained_resource()
+                .is_some_and(|resource| self.native_staging_resources.get(resource).is_none())
         {
             return false;
         }
@@ -335,15 +334,14 @@ impl ViewportCoordinator {
                 let visibility = proof.visibility;
                 let provider = proof.post_show.request().basis().platform_provider();
                 self.platform_provider() == Some(provider)
+                    && self.native_staging_basis_matches_current(proof.post_show.request())
                     && visibility.pre_show.request().basis().platform_provider() == provider
                     && proof.post_show.request().binding() == binding
                     && proof.post_show.request().owner() == visibility.pre_show.request().owner()
                     && visibility.visible_generation > visibility.acknowledged_generation
                     && visibility.acknowledged_generation > visibility.hidden_generation
-                    && visibility.acknowledged_coordinate_generation >= visibility.hidden_coordinate_generation
-                    && visibility.visible_coordinate_generation >= visibility.acknowledged_coordinate_generation
-                    && visibility.acknowledged_coordinate_observation_generation >= visibility.hidden_coordinate_observation_generation
-                    && visibility.visible_coordinate_observation_generation >= visibility.acknowledged_coordinate_observation_generation
+                    && visibility.visible_coordinate_generation >= visibility.hidden_coordinate_generation
+                    && visibility.visible_coordinate_observation_generation >= visibility.hidden_coordinate_observation_generation
                     && visibility.visible_inventory_generation > visibility.acknowledged_inventory_generation
                     && visibility.acknowledged_inventory_generation > visibility.hidden_inventory_generation
                     && visibility.visible_inventory_generation > visibility.show_emitted_inventory_generation
@@ -404,10 +402,73 @@ impl ViewportCoordinator {
                 NativePreparationOutcome::Ignored
             });
         }
+        if let NativeBringupPhase::AwaitingShowAcknowledgement {
+            create,
+            show,
+            hidden_generation,
+            hidden_inventory_generation,
+            hidden_coordinate_generation,
+            hidden_coordinate_observation_generation,
+            create_emitted_inventory_generation,
+            pre_show,
+        } = phase
+        {
+            // Effect settlement is independent of coordinate and renderer readiness.
+            // Consume the one-shot ACK before a later snapshot replaces its envelope.
+            let observation = self
+                .registry
+                .record(binding.surface())
+                .filter(|record| record.binding() == binding)
+                .and_then(|record| record.presentation_observation());
+            let Some(observation) = observation.filter(|observation| {
+                observation.generation() > hidden_generation
+                    && observation.inventory_generation() > hidden_inventory_generation
+                    && self.presentation_observation_settles(*observation, show)
+            }) else {
+                return Ok(NativePreparationOutcome::Ignored);
+            };
+            let Some(show_emitted_inventory_generation) = self.effect_emission_fence(show, binding)
+            else {
+                return Ok(NativePreparationOutcome::Ignored);
+            };
+            if self.effects.mark_observed_applied(
+                provider,
+                show,
+                binding,
+                observation.inventory_generation(),
+            ) != EffectTransition::Applied
+            {
+                return Ok(NativePreparationOutcome::Ignored);
+            }
+            return Ok(NativePreparationOutcome::Advanced(
+                NativeBringupPhase::AwaitingVisible {
+                    create,
+                    show,
+                    hidden_generation,
+                    hidden_inventory_generation,
+                    hidden_coordinate_generation,
+                    hidden_coordinate_observation_generation,
+                    acknowledged_generation: observation.generation(),
+                    acknowledged_inventory_generation: observation.inventory_generation(),
+                    create_emitted_inventory_generation,
+                    show_emitted_inventory_generation,
+                    pre_show,
+                },
+            ));
+        }
         let Some((observation, coordinate_generation, coordinate_observation_generation)) = self
             .registry
             .record(binding.surface())
-            .filter(|record| record.binding() == binding)
+            .filter(|record| {
+                record.binding() == binding
+                    && record.is_ready()
+                    && matches!(
+                        record
+                            .create_preparation()
+                            .and_then(|preparation| preparation.known_readiness()),
+                        Some(NativeCreateReadiness::Created | NativeCreateReadiness::Prepared)
+                    )
+            })
             .and_then(|record| {
                 Some((
                     record.presentation_observation()?,
@@ -421,7 +482,12 @@ impl ViewportCoordinator {
         let next = match phase {
             NativeBringupPhase::AwaitingHidden { create }
                 if observation.known_state() == Some(WindowPresentationState::Hidden)
-                    && create_applied.is_some() =>
+                    && create_applied.is_some()
+                    && self.presentation_observation_follows_applied_effect(
+                        provider,
+                        observation,
+                        create,
+                    ) =>
             {
                 let Some(create_emitted_inventory_generation) =
                     self.effect_emission_fence(create, binding)
@@ -457,10 +523,7 @@ impl ViewportCoordinator {
                     observation,
                     create,
                 )
-                && (presentation.basis().platform_provider() != provider
-                    || presentation.basis().presentation_observation_generation()
-                        != observation.generation()
-                    || presentation.basis().coordinate_generation() != coordinate_generation) =>
+                && !self.native_staging_basis_matches_current(presentation) =>
             {
                 let presentation = self.mint_native_staging_presentation(
                     binding,
@@ -480,50 +543,6 @@ impl ViewportCoordinator {
                     presentation,
                 })
             }
-            NativeBringupPhase::AwaitingShowAcknowledgement {
-                create,
-                show,
-                hidden_generation,
-                hidden_inventory_generation,
-                hidden_coordinate_generation,
-                hidden_coordinate_observation_generation,
-                create_emitted_inventory_generation,
-                pre_show,
-            } if observation.generation() > hidden_generation
-                && observation.inventory_generation() > hidden_inventory_generation
-                && self.presentation_observation_settles(observation, show) =>
-            {
-                let Some(show_emitted_inventory_generation) =
-                    self.effect_emission_fence(show, binding)
-                else {
-                    return Ok(NativePreparationOutcome::Ignored);
-                };
-                if self.effects.mark_observed_applied(
-                    provider,
-                    show,
-                    binding,
-                    observation.inventory_generation(),
-                ) != EffectTransition::Applied
-                {
-                    return Ok(NativePreparationOutcome::Ignored);
-                }
-                Some(NativeBringupPhase::AwaitingVisible {
-                    create,
-                    show,
-                    hidden_generation,
-                    hidden_inventory_generation,
-                    hidden_coordinate_generation,
-                    hidden_coordinate_observation_generation,
-                    acknowledged_generation: observation.generation(),
-                    acknowledged_inventory_generation: observation.inventory_generation(),
-                    acknowledged_coordinate_generation: coordinate_generation,
-                    acknowledged_coordinate_observation_generation:
-                        coordinate_observation_generation,
-                    create_emitted_inventory_generation,
-                    show_emitted_inventory_generation,
-                    pre_show,
-                })
-            }
             NativeBringupPhase::AwaitingVisible {
                 create,
                 show,
@@ -533,8 +552,7 @@ impl ViewportCoordinator {
                 hidden_coordinate_observation_generation,
                 acknowledged_generation,
                 acknowledged_inventory_generation,
-                acknowledged_coordinate_generation,
-                acknowledged_coordinate_observation_generation,
+
                 create_emitted_inventory_generation,
                 show_emitted_inventory_generation,
                 pre_show,
@@ -553,8 +571,7 @@ impl ViewportCoordinator {
                     hidden_coordinate_observation_generation,
                     acknowledged_generation,
                     acknowledged_inventory_generation,
-                    acknowledged_coordinate_generation,
-                    acknowledged_coordinate_observation_generation,
+
                     visible_generation: observation.generation(),
                     visible_inventory_generation: observation.inventory_generation(),
                     visible_coordinate_generation: coordinate_generation,
@@ -580,12 +597,12 @@ impl ViewportCoordinator {
                 mut visibility,
                 presentation,
             } if observation.known_state() == Some(WindowPresentationState::Visible)
-                && self
-                    .presentation_observation_is_after_emission(observation, visibility.show)
-                && (presentation.basis().platform_provider() != provider
-                    || presentation.basis().presentation_observation_generation()
-                        != observation.generation()
-                    || presentation.basis().coordinate_generation() != coordinate_generation) =>
+                && self.presentation_observation_follows_applied_effect(
+                    provider,
+                    observation,
+                    visibility.show,
+                )
+                && !self.native_staging_basis_matches_current(presentation) =>
             {
                 visibility.visible_generation = observation.generation();
                 visibility.visible_inventory_generation = observation.inventory_generation();
@@ -657,11 +674,18 @@ impl ViewportCoordinator {
                     return Ok(NativePreparationOutcome::Ignored);
                 };
                 if observation.known_state() != Some(WindowPresentationState::Hidden)
-                    || observation.generation() != hidden_generation
+                    || observation.generation() < hidden_generation
                     || observation.inventory_generation() < hidden_inventory_generation
                     || record.coordinate_generation() != hidden_coordinate_generation
                     || record.coordinate_observation_generation()
                         < Some(hidden_coordinate_observation_generation)
+                    || self.effect_emission_fence(create, binding)
+                        != Some(create_emitted_inventory_generation)
+                    || !self.presentation_observation_follows_applied_effect(
+                        request.basis().platform_provider(),
+                        observation,
+                        create,
+                    )
                 {
                     return Ok(NativePreparationOutcome::Ignored);
                 }
@@ -700,7 +724,7 @@ impl ViewportCoordinator {
                     return Ok(NativePreparationOutcome::Ignored);
                 };
                 if observation.known_state() != Some(WindowPresentationState::Visible)
-                    || observation.generation() != visibility.visible_generation
+                    || observation.generation() < visibility.visible_generation
                     || observation.inventory_generation() < visibility.visible_inventory_generation
                     || record.coordinate_generation() != visibility.visible_coordinate_generation
                     || record.coordinate_observation_generation()
@@ -778,8 +802,23 @@ impl ViewportCoordinator {
             NativeStagingPresentationPhase::PreShow => WindowPresentationState::Hidden,
             NativeStagingPresentationPhase::PostShow => WindowPresentationState::Visible,
         };
-        observation.known_state() == Some(expected_state)
-            && observation.generation() == basis.presentation_observation_generation()
+        // The basis names an observation inside the current uninterrupted
+        // interval; later identical snapshots do not replace that request.
+        record.is_ready()
+            && record.coordinates().is_some_and(|coordinates| {
+                coordinates.content_size().width() > 0.0
+                    && coordinates.content_size().height() > 0.0
+            })
+            && matches!(
+                record
+                    .create_preparation()
+                    .and_then(|preparation| preparation.known_readiness()),
+                Some(NativeCreateReadiness::Created | NativeCreateReadiness::Prepared)
+            )
+            && observation.known_state() == Some(expected_state)
+            && record.staging_presentation_is_continuous_since(
+                basis.presentation_observation_generation(),
+            )
             && record.coordinate_generation() == basis.coordinate_generation()
     }
 
@@ -833,5 +872,431 @@ impl ViewportCoordinator {
                 .then(|| record.emitted_inventory_generation())
                 .flatten()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{PhysicalRect, ScaleFactor};
+    use crate::ids::{SurfaceId, WorkspaceEpoch};
+    use crate::intent::{Authority, AuthorityUnavailableReason};
+    use crate::platform::{
+        CapabilityRosterObservation, ObservedWindow, PlatformCapabilities, PlatformCapability,
+        PlatformSnapshot, PresentationEffectAcknowledgement, WindowCoordinateObservation,
+        WindowCreatePreparationObservation, WindowInventoryObservation, WorkAreaRosterObservation,
+    };
+    use crate::surface_recovery::SurfaceRecoveryObligationId;
+    use crate::viewport::{
+        CapabilityObservationGeneration, InventoryObservationGeneration,
+        PlatformSnapshotGeneration, ViewportRole, WorkAreaObservationGeneration,
+    };
+    use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
+
+    fn window(
+        binding: ViewportBinding,
+        generation: u64,
+        state: WindowPresentationState,
+        create_acknowledgement: Option<EffectId>,
+    ) -> ObservedWindow {
+        let bounds = PhysicalRect::new(10.0, 20.0, 300.0, 200.0).unwrap();
+        let scale = ScaleFactor::new(1.0).unwrap();
+        ObservedWindow::new(binding)
+            .with_coordinate_observation(WindowCoordinateObservation::new(
+                binding,
+                CoordinateObservationGeneration::new(generation),
+                Authority::Known(bounds),
+                Authority::Known(bounds),
+                Authority::Known(scale),
+                Authority::Known(scale),
+            ))
+            .with_presentation_observation(WindowPresentationObservation::new(
+                binding,
+                PresentationObservationGeneration::new(generation),
+                Authority::Known(state),
+                PresentationEffectAcknowledgement::known(None),
+            ))
+            .with_create_preparation(WindowCreatePreparationObservation::new(
+                binding,
+                CoordinateObservationGeneration::new(generation),
+                Authority::Known(NativeCreateReadiness::Created),
+                create_acknowledgement,
+            ))
+    }
+
+    fn publish(coordinator: &mut ViewportCoordinator, generation: u64, window: ObservedWindow) {
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        let reason = AuthorityUnavailableReason::NotReported;
+        let snapshot = PlatformSnapshot::new(
+            PlatformSnapshotGeneration::new(generation),
+            CapabilityRosterObservation::new(
+                CapabilityObservationGeneration::new(generation),
+                Authority::Known(capabilities),
+            ),
+            unknown_focus_observation(FocusObservationGeneration::new(generation), reason),
+            WindowInventoryObservation::new(
+                InventoryObservationGeneration::new(generation),
+                Authority::Known(vec![window.binding()]),
+            )
+            .unwrap(),
+            vec![window],
+            Vec::new(),
+            WorkAreaRosterObservation::unknown(
+                WorkAreaObservationGeneration::new(generation),
+                reason,
+            ),
+        )
+        .unwrap();
+        coordinator.publish_snapshot(&snapshot).unwrap();
+    }
+
+    fn advance(
+        coordinator: &mut ViewportCoordinator,
+        phase: NativeBringupPhase,
+    ) -> NativeBringupPhase {
+        let presentation = phase.staging_presentation().unwrap();
+        let NativePreparationOutcome::Advanced(next) = coordinator
+            .observe_native_bringup_presentation(
+                presentation.binding(),
+                presentation.owner(),
+                phase,
+                PresentedNativeStagingPresentation::mint_observed_for_test(presentation, 1),
+            )
+            .unwrap()
+        else {
+            panic!("pre-show presentation must advance to ShowWindow");
+        };
+        next
+    }
+
+    fn reduce(
+        coordinator: &mut ViewportCoordinator,
+        binding: ViewportBinding,
+        owner: NativeStagingOwner,
+        phase: NativeBringupPhase,
+    ) -> NativeBringupPhase {
+        match coordinator
+            .reduce_ready_native_bringup(
+                coordinator.platform_provider().unwrap(),
+                binding,
+                owner,
+                phase,
+            )
+            .unwrap()
+        {
+            NativePreparationOutcome::Advanced(next) => next,
+            NativePreparationOutcome::Ignored => phase,
+            NativePreparationOutcome::Ready(_) => panic!("staging still requires Presented"),
+        }
+    }
+
+    fn awaiting_staging(post_show: bool) -> (ViewportCoordinator, NativeBringupPhase, u64) {
+        let mut coordinator = ViewportCoordinator::default();
+        let binding = coordinator
+            .registry
+            .reserve(
+                WorkspaceEpoch::default(),
+                SurfaceId::new(710),
+                ViewportRole::Child,
+            )
+            .unwrap();
+        let owner = NativeStagingOwner::InitialSurface {
+            binding,
+            recovery_obligation: SurfaceRecoveryObligationId::new_for_test(712),
+        };
+        let create = coordinator
+            .effects
+            .request(PlatformEffect::RequestReplacement {
+                binding,
+                placement: PhysicalRect::new(10.0, 20.0, 300.0, 200.0).unwrap(),
+                role: ViewportRole::Child,
+                strategy: NativeCreateStrategy::Staged,
+            })
+            .unwrap();
+        assert_eq!(coordinator.take_new_effects().len(), 1);
+        publish(
+            &mut coordinator,
+            1,
+            window(binding, 1, WindowPresentationState::Hidden, Some(create)),
+        );
+        let phase = reduce(
+            &mut coordinator,
+            binding,
+            owner,
+            NativeBringupPhase::AwaitingHidden { create },
+        );
+        assert!(matches!(
+            phase,
+            NativeBringupPhase::AwaitingPreShowPresentation { .. }
+        ));
+        if !post_show {
+            return (coordinator, phase, 1);
+        }
+        let phase = advance(&mut coordinator, phase);
+        let effects = coordinator.take_new_effects();
+        let [show] = effects.as_slice() else {
+            panic!("pre-show must emit one ShowWindow");
+        };
+        publish(
+            &mut coordinator,
+            2,
+            window(binding, 2, WindowPresentationState::Hidden, None)
+                .with_presentation_observation(WindowPresentationObservation::new(
+                    binding,
+                    PresentationObservationGeneration::new(2),
+                    Authority::Known(WindowPresentationState::Hidden),
+                    PresentationEffectAcknowledgement::known(Some(show.id())),
+                )),
+        );
+        let phase = reduce(&mut coordinator, binding, owner, phase);
+        assert!(matches!(phase, NativeBringupPhase::AwaitingVisible { .. }));
+        publish(
+            &mut coordinator,
+            3,
+            window(binding, 3, WindowPresentationState::Visible, None),
+        );
+        let phase = reduce(&mut coordinator, binding, owner, phase);
+        assert!(matches!(
+            phase,
+            NativeBringupPhase::AwaitingPostShowPresentation { .. }
+        ));
+        (coordinator, phase, 3)
+    }
+
+    #[test]
+    fn unchanged_snapshots_preserve_inflight_pre_show_and_post_show() {
+        for post_show in [false, true] {
+            let (mut coordinator, mut phase, generation) = awaiting_staging(post_show);
+            let presentation = phase.staging_presentation().unwrap();
+            let binding = presentation.binding();
+            let state = if post_show {
+                WindowPresentationState::Visible
+            } else {
+                WindowPresentationState::Hidden
+            };
+            for generation in generation + 1..=generation + 16 {
+                publish(
+                    &mut coordinator,
+                    generation,
+                    window(binding, generation, state, None),
+                );
+                phase = reduce(&mut coordinator, binding, presentation.owner(), phase);
+                assert_eq!(phase.staging_presentation(), Some(presentation));
+                assert!(coordinator.native_staging_basis_matches_current(presentation));
+            }
+            let outcome = coordinator
+                .observe_native_bringup_presentation(
+                    binding,
+                    presentation.owner(),
+                    phase,
+                    PresentedNativeStagingPresentation::mint_observed_for_test(
+                        presentation,
+                        if post_show { 2 } else { 1 },
+                    ),
+                )
+                .unwrap();
+            if post_show {
+                let NativePreparationOutcome::Ready(proof) = outcome else {
+                    panic!("the original post-show output must establish readiness");
+                };
+                assert!(coordinator.native_ready_proof_is_current(proof));
+                publish(
+                    &mut coordinator,
+                    generation + 17,
+                    window(binding, generation + 17, state, None),
+                );
+                assert!(coordinator.native_ready_proof_is_current(proof));
+                let revoked = window(binding, generation + 18, state, None)
+                    .with_create_preparation(WindowCreatePreparationObservation::new(
+                        binding,
+                        CoordinateObservationGeneration::new(generation + 18),
+                        Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                        None,
+                    ));
+                publish(&mut coordinator, generation + 18, revoked);
+                assert!(!coordinator.native_ready_proof_is_current(proof));
+                publish(
+                    &mut coordinator,
+                    generation + 19,
+                    window(binding, generation + 19, state, None),
+                );
+                assert!(
+                    !coordinator.native_ready_proof_is_current(proof),
+                    "restored readiness requires a new post-show output"
+                );
+            } else {
+                assert!(matches!(
+                    outcome,
+                    NativePreparationOutcome::Advanced(
+                        NativeBringupPhase::AwaitingShowAcknowledgement { .. }
+                    )
+                ));
+                assert!(
+                    matches!(coordinator.take_new_effects().as_slice(), [request] if matches!(request.effect(), PlatformEffect::ShowWindow { binding: actual, .. } if *actual == binding))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn interrupted_staging_rejects_old_outputs_after_the_same_facts_return() {
+        #[derive(Clone, Copy, Debug)]
+        enum Revocation {
+            PresentationUnknown,
+            Visibility,
+            ReadinessUnknown,
+            ReadinessChanged,
+            Failed,
+            Bounds,
+            OuterBounds,
+            NativeScale,
+            PresentationScale,
+        }
+
+        for post_show in [false, true] {
+            for revocation in [
+                Revocation::PresentationUnknown,
+                Revocation::Visibility,
+                Revocation::ReadinessUnknown,
+                Revocation::ReadinessChanged,
+                Revocation::Failed,
+                Revocation::Bounds,
+                Revocation::OuterBounds,
+                Revocation::NativeScale,
+                Revocation::PresentationScale,
+            ] {
+                let (mut coordinator, phase, generation) = awaiting_staging(post_show);
+                let presentation = phase.staging_presentation().unwrap();
+                let binding = presentation.binding();
+                let state = if post_show {
+                    WindowPresentationState::Visible
+                } else {
+                    WindowPresentationState::Hidden
+                };
+                let next = generation + 1;
+                let mut revoked = window(binding, next, state, None);
+                match revocation {
+                    Revocation::PresentationUnknown | Revocation::Visibility => {
+                        revoked = revoked.with_presentation_observation(
+                            WindowPresentationObservation::new(
+                                binding,
+                                PresentationObservationGeneration::new(next),
+                                if matches!(revocation, Revocation::PresentationUnknown) {
+                                    Authority::Unknown(AuthorityUnavailableReason::NotReported)
+                                } else {
+                                    Authority::Known(WindowPresentationState::Minimized)
+                                },
+                                PresentationEffectAcknowledgement::known(None),
+                            ),
+                        );
+                    }
+                    Revocation::ReadinessUnknown
+                    | Revocation::ReadinessChanged
+                    | Revocation::Failed => {
+                        revoked = revoked.with_create_preparation(
+                            WindowCreatePreparationObservation::new(
+                                binding,
+                                CoordinateObservationGeneration::new(next),
+                                match revocation {
+                                    Revocation::ReadinessUnknown => {
+                                        Authority::Unknown(AuthorityUnavailableReason::NotReported)
+                                    }
+                                    Revocation::ReadinessChanged => {
+                                        Authority::Known(NativeCreateReadiness::Prepared)
+                                    }
+                                    _ => Authority::Known(NativeCreateReadiness::Failed),
+                                },
+                                None,
+                            ),
+                        );
+                    }
+                    Revocation::Bounds
+                    | Revocation::OuterBounds
+                    | Revocation::NativeScale
+                    | Revocation::PresentationScale => {
+                        let original = PhysicalRect::new(10.0, 20.0, 300.0, 200.0).unwrap();
+                        let changed = PhysicalRect::new(11.0, 20.0, 300.0, 200.0).unwrap();
+                        let scale = ScaleFactor::new(1.0).unwrap();
+                        let changed_scale = ScaleFactor::new(2.0).unwrap();
+                        revoked =
+                            revoked.with_coordinate_observation(WindowCoordinateObservation::new(
+                                binding,
+                                CoordinateObservationGeneration::new(next),
+                                Authority::Known(if matches!(revocation, Revocation::Bounds) {
+                                    changed
+                                } else {
+                                    original
+                                }),
+                                Authority::Known(
+                                    if matches!(revocation, Revocation::OuterBounds) {
+                                        changed
+                                    } else {
+                                        original
+                                    },
+                                ),
+                                Authority::Known(
+                                    if matches!(revocation, Revocation::NativeScale) {
+                                        changed_scale
+                                    } else {
+                                        scale
+                                    },
+                                ),
+                                Authority::Known(
+                                    if matches!(revocation, Revocation::PresentationScale) {
+                                        changed_scale
+                                    } else {
+                                        scale
+                                    },
+                                ),
+                            ));
+                    }
+                }
+                publish(&mut coordinator, next, revoked);
+                assert!(
+                    !coordinator.native_staging_basis_matches_current(presentation),
+                    "{revocation:?}"
+                );
+                publish(
+                    &mut coordinator,
+                    next + 1,
+                    window(binding, next + 1, state, None),
+                );
+                assert!(
+                    !coordinator.native_staging_basis_matches_current(presentation),
+                    "{revocation:?}"
+                );
+                assert!(
+                    matches!(
+                        coordinator
+                            .observe_native_bringup_presentation(
+                                binding,
+                                presentation.owner(),
+                                phase,
+                                PresentedNativeStagingPresentation::mint_observed_for_test(
+                                    presentation,
+                                    1
+                                )
+                            )
+                            .unwrap(),
+                        NativePreparationOutcome::Ignored
+                    ),
+                    "{revocation:?}"
+                );
+                if !matches!(revocation, Revocation::Failed) {
+                    let refreshed = reduce(&mut coordinator, binding, presentation.owner(), phase);
+                    let replacement = refreshed.staging_presentation().unwrap();
+                    assert_ne!(replacement, presentation, "{revocation:?}");
+                    assert!(
+                        coordinator.native_staging_basis_matches_current(replacement),
+                        "{revocation:?}"
+                    );
+                }
+                assert!(
+                    coordinator.take_new_effects().is_empty(),
+                    "a stale output must not issue ShowWindow: {revocation:?}"
+                );
+            }
+        }
     }
 }

@@ -68,7 +68,7 @@ fn frame(context: &Context, dockspace: &mut Dockspace, panes: &mut Panes) {
 }
 
 #[test]
-fn application_default_reset_rebases_retired_layout_and_preserves_pane_data_and_rules() {
+fn application_default_reset_preserves_semantic_identities_pane_data_and_rules() {
     let context = Context::default();
     context.enable_accesskit();
     let default = default_layout();
@@ -100,8 +100,8 @@ fn application_default_reset_rebases_retired_layout_and_preserves_pane_data_and_
     let mutation = dockspace.reset_layout(default.clone()).unwrap();
     assert!(mutation.workspace_changed());
     let restored = dockspace.view().item(FIRST).unwrap();
-    assert_ne!(restored.surface(), SURFACE);
-    assert_ne!(restored.root(), ROOT);
+    assert_eq!(restored.surface(), SURFACE);
+    assert_eq!(restored.root(), ROOT);
     assert_eq!(restored.tabs().items(), &[FIRST, SECOND]);
     assert!(
         restored.is_selected(),

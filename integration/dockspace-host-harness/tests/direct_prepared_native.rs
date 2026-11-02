@@ -40,6 +40,10 @@ impl PendingDirect {
     }
 
     fn with_strategy(strategy: NativeCreateStrategy) -> Self {
+        Self::with_root_token(strategy, HostWindowToken::new(1))
+    }
+
+    fn with_root_token(strategy: NativeCreateStrategy, root_token: HostWindowToken) -> Self {
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             HOST,
             DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::central_tabs([MAIN_ITEM])),
@@ -71,9 +75,9 @@ impl PendingDirect {
         session
             .configure_managed_native_capabilities(capabilities)
             .unwrap();
-        session
-            .register_native_root(HOST, HostWindowToken::new(1))
-            .unwrap();
+        session.register_native_root(HOST, root_token).expect(
+            "an external root token must be accepted independently of core child identities",
+        );
         let registration = idle(&mut session);
         let [root] = registration.native_bindings() else {
             panic!("the external host must publish exactly one native binding");
@@ -95,7 +99,7 @@ impl PendingDirect {
             .unwrap();
         frame
             .move_root_to_new_window_current(CHILD_ROOT, NativeWindowPlacement::new(placement))
-            .unwrap();
+            .expect("an external root token must not exhaust internal child identity allocation");
         let mut report = finish(frame);
         assert!(report.native_admissions().is_empty());
         let [create] = report.take_native_effects().try_into().unwrap();
@@ -178,6 +182,48 @@ impl PendingDirect {
 
 fn contained_bounds() -> LogicalRect {
     LogicalRect::new(40.0, 50.0, 360.0, 280.0).unwrap()
+}
+
+#[test]
+fn review_external_root_token_cannot_exhaust_core_child_identity_space() {
+    let pending = PendingDirect::with_root_token(
+        NativeCreateStrategy::DirectPrepared,
+        HostWindowToken::new(u64::MAX),
+    );
+    assert!(pending.session.has_pending_native_create());
+}
+
+#[test]
+fn managed_window_tokens_cannot_be_imported_as_external_registrations() {
+    let source = PendingDirect::new();
+    let managed = source.child.window_token();
+    assert_ne!(managed, source.root.window_token());
+    let mut destination = PendingDirect::new();
+    let before = destination.session.version();
+    for owned in [false, true] {
+        let result = if owned {
+            destination
+                .session
+                .register_owned_native_child(SurfaceId::new(90), managed, HOST)
+        } else {
+            destination
+                .session
+                .register_native_root(SurfaceId::new(90), managed)
+        };
+        assert_eq!(
+            result.unwrap_err().native_kind(),
+            Some(dockspace::runtime::NativeHostErrorKind::InvalidFacts),
+        );
+        let mut report = idle(&mut destination.session);
+        assert!(!report.workspace_changed());
+        assert!(report.take_native_effects().is_empty());
+        assert_eq!(destination.session.version(), before);
+        destination.assert_source();
+    }
+    destination.observe(Some(NativeCreateReadiness::Prepared));
+    let output = paint(&mut destination.session, destination.child);
+    let report = destination.present(output);
+    assert_admitted(&destination, &report);
 }
 
 fn window_facts(bounds: PhysicalRect) -> NativeWindowFacts {

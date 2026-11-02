@@ -133,11 +133,10 @@ fn assert_queue_error(error: NativeLayoutRequestError, expected: NativeActionReq
 }
 
 #[test]
-fn queued_reset_is_stale_after_publication_and_repeated_resets_rebase_retired_roots() {
+fn queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic_identities() {
     let mut state = test_state();
     let panes = state.panes.0.clone();
     let defaults = layout(PRESET_ROOT, &[FIRST, THIRD], THIRD);
-    let mut previous_root = ROOT;
     for round in 0..2 {
         let before = state.coordinator.session().version();
         state.request_layout_reset(defaults.clone()).unwrap();
@@ -192,8 +191,8 @@ fn queued_reset_is_stale_after_publication_and_repeated_resets_rebase_retired_ro
         assert_eq!(restored.surface(), SURFACE);
         assert_eq!(restored.tabs().items(), &[FIRST, THIRD]);
         assert!(restored.is_selected());
-        assert!(restored.root().get() > previous_root.get());
-        previous_root = restored.root();
+        assert_eq!(restored.root(), PRESET_ROOT);
+        assert_ne!(current, previous);
         assert!(state.coordinator.session().view().item(SECOND).is_none());
         assert_eq!(state.panes.0, panes);
         assert!(state.shutdown.is_none());
@@ -235,7 +234,7 @@ fn queued_reset_is_stale_after_publication_and_repeated_resets_rebase_retired_ro
     );
     let retained = state.coordinator.session().view().item(FIRST).unwrap();
     assert!(retained.is_selected());
-    assert_eq!(retained.root(), previous_root);
+    assert_eq!(retained.root(), PRESET_ROOT);
     assert_eq!(state.panes.0, panes);
     assert!(state.shutdown.is_none());
     state.request_select_item(THIRD).unwrap();
@@ -555,13 +554,8 @@ mod persistence {
             assert_eq!(proposals[0].predecessor(), predecessor);
             let successor = proposals[0].successor();
             assert_ne!(successor.surface(), before_surface);
-            if incoming == SURFACE {
-                assert_ne!(
-                    successor.surface(),
-                    incoming,
-                    "retired incoming IDs must rebase before continuation"
-                );
-            }
+            assert_eq!(successor.surface(), incoming);
+            assert_ne!(successor, predecessor);
             assert_eq!(state.root_surface, before_surface);
             frame
                 .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -688,8 +682,8 @@ mod persistence {
         assert!(state.shutdown.is_none());
         assert_eq!(state.coordinator.session().version(), before);
 
-        // Removing the peer from the graph leaves its old physical route owned
-        // by retirement. Its numeric surface must rebase, not block a fresh Root.
+        // Removing the peer from the graph leaves its physical route occupied.
+        // Semantic identity preservation cannot bypass native window ownership.
         state
             .request_layout_reset(layout(PRESET_ROOT, &[FIRST, SECOND], SECOND))
             .unwrap();
@@ -704,15 +698,47 @@ mod persistence {
                 .is_none()
         );
         assert!(state.coordinator.surface_viewport(OTHER_SURFACE).is_some());
-        state
-            .request_layout_reset_rebinding_root(candidate(), OTHER_SURFACE)
+        let root = state
+            .coordinator
+            .viewport_binding(egui::ViewportId::ROOT)
             .unwrap();
-        let report = commit_queued(&mut state, None);
-        take(&mut state);
-        let root = report.native_root_continuations()[0].successor();
-        assert_ne!(root.surface(), OTHER_SURFACE);
-        assert_eq!(state.root_surface, root.surface());
         let before = state.coordinator.session().version();
+        let reset = state
+            .coordinator
+            .session()
+            .prepare_layout_reset(candidate())
+            .unwrap();
+        let mut frame = state
+            .coordinator
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .frame
+            .submit_native_layout_reset(&reset, root, OTHER_SURFACE)
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let error = frame
+            .commit_publishing_root(&mut state.root_surface)
+            .expect_err("the retained physical route must reject publication atomically");
+        assert_eq!(error.kind(), NativeRuntimeErrorKind::HostProtocol);
+        assert_eq!(state.coordinator.session().version(), before);
+        assert_eq!(state.root_surface, root.surface());
+        assert_eq!(
+            state.coordinator.viewport_binding(egui::ViewportId::ROOT),
+            Some(root)
+        );
+        assert!(
+            state
+                .coordinator
+                .session()
+                .view()
+                .surface(OTHER_SURFACE)
+                .is_none()
+        );
+        assert!(!state.application_actions.is_occupied());
+        assert!(state.shutdown.is_none());
 
         // A preparation may lose eligibility after enqueue without changing the
         // durable workspace version. Settle only this command as rejected.

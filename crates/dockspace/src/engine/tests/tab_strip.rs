@@ -1729,7 +1729,7 @@ fn menu_control_replaces_cross_surface_session_and_invalidates_both_owners() {
             &mut reverse_changed,
         )
         .expect("exact owner unavailability must settle before later inert outcomes");
-    let expected_changed = BTreeSet::from([first_surface, second_surface]);
+    let expected_changed = BTreeSet::from([second_surface]);
     assert_eq!(forward_changed, expected_changed);
     assert_eq!(reverse_changed, expected_changed);
     for settled in [&forward, &reverse] {
@@ -1744,7 +1744,7 @@ fn menu_control_replaces_cross_surface_session_and_invalidates_both_owners() {
             settled.presentation_requirements().popup(),
             crate::tab_strip::PopupPlaneRequirement::Inactive { .. }
         ));
-        assert!(settled.interaction_projection(first_surface).is_none());
+        assert!(settled.interaction_projection(first_surface).is_some());
         assert!(settled.interaction_projection(second_surface).is_none());
     }
     assert_eq!(

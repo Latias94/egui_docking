@@ -644,7 +644,7 @@ geometry for contained recovery. Reading saved hosting preferences remains inert
 For managed native document restoration, use
 `frame.submit_native_document_restore(&restore, root_surface)` as the frame's
 terminal input. It commits the document and explicit Child creation intents
-together after surface/recovery-host rebasing. The retained external Root may
+together while preserving declared surface/recovery-host identities. The retained external Root may
 omit its saved role declaration; every additional surface must declare Child
 hosting to that Root and a positive saved outer placement. Another retained
 external Root cannot silently become a Child. Ordinary `submit_document_restore`
@@ -653,8 +653,8 @@ keeps native declarations inert.
 To replace the logical host itself while retaining an external Root window, use
 `frame.submit_native_layout_reset(&reset, existing_root, incoming_root)` or the
 persistence-enabled `submit_native_document_restore_rebinding_root`. The incoming
-surface names the prepared layout/document before rebasing; core resolves its
-final identity alongside Child recovery references and saved placement. The old
+surface names the prepared layout/document; core preserves that identity
+alongside Child recovery references and saved placement. The old
 host surface may disappear entirely. These explicit operations reject an occupied
 target rather than claiming another window.
 
@@ -737,7 +737,8 @@ items currently returned by `session.view().item(id)`. Reopen with
 `DockPlacement`. Core selects newly opened content and requests its pane focus;
 an already open item returns `Existing` without moving it or stealing focus.
 Missing anchors are rejected. The shell chooses a fallback from the current
-surface/root/item view, including after restore remaps retired presentation IDs.
+surface/root/item view. Restore preserves declared presentation identities and
+uses the new workspace epoch to reject old capabilities.
 
 ## Arrangement locking
 
@@ -817,9 +818,11 @@ prepay resources for the replacement before committing. These proposals confer
 no current route or presentation authority; install successors only after the
 complete committed report confirms their exact identities.
 `begin_layout_reset_frame` and `begin_native_layout_reset_frame` remain
-synchronous conveniences over the same submission path. Retired root, surface
-and contained identities are rebased against the current candidate; stable pane
-items and declared selections remain intact.
+synchronous conveniences over the same submission path. Declared root, surface,
+contained and pane identities remain stable, preserving identity-scoped policies.
+The replacement advances the workspace epoch; old outputs, actions and native
+bindings cannot authorize the new instance. Automatic allocation history remains
+monotonic and merges restored document frontiers.
 
 For a document-bound session, layout reset preserves key history and save
 generation. Every item must already have a recognized key, including closed
@@ -858,9 +861,8 @@ client size and native scale; they grant no current coordinate authority.
 
 Use `surface_presentation_preferences()` on `DockspaceSession`,
 `PreparedDockspaceDocumentRestore` or `DockspaceHostFrame` to inspect the same
-read-only product values. Prepared values use incoming identities. A submitted
-restore exposes candidate identities with both its source surface and child
-recovery-host references rebased together. Dropping the frame publishes none of
+read-only product values. Prepared, candidate and committed values preserve
+the declared source-surface and child recovery-host identities. Dropping the frame publishes none of
 those changes; successful commit publishes preferences, graph, keys and
 generation atomically. This projection does not save new observations or
 advance a generation. The workspace `view()` remains the content authority,

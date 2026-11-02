@@ -821,9 +821,6 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::LayoutResetItemUnknown { .. } => {
                 DockspaceRuntimeErrorKind::InvalidConfiguration
             }
-            DockspaceRuntimeErrorSource::LayoutResetRebase(_) => {
-                DockspaceRuntimeErrorKind::Internal
-            }
             DockspaceRuntimeErrorSource::NativeRootSurfaceMissing { .. } => {
                 DockspaceRuntimeErrorKind::InvalidConfiguration
             }
@@ -928,12 +925,6 @@ impl DockspaceRuntimeError {
     const fn layout_reset_item_unknown(item: crate::ids::ItemId) -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::LayoutResetItemUnknown { item },
-        }
-    }
-
-    fn layout_reset_rebase(error: crate::engine::WorkspaceRebaseError) -> Self {
-        Self {
-            source: DockspaceRuntimeErrorSource::LayoutResetRebase(Box::new(error)),
         }
     }
 
@@ -1060,8 +1051,6 @@ enum DockspaceRuntimeErrorSource {
     #[cfg(feature = "serde")]
     #[error("layout reset item {item} is not registered in the session document")]
     LayoutResetItemUnknown { item: crate::ids::ItemId },
-    #[error(transparent)]
-    LayoutResetRebase(Box<crate::engine::WorkspaceRebaseError>),
     #[error("incoming native Root surface {surface} is absent from the replacement layout")]
     NativeRootSurfaceMissing { surface: SurfaceId },
     #[error("native Root surface {surface} has no current external window to continue")]

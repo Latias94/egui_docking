@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests;
 
+use super::contained_geometry::{contained_manipulation_point, contained_move_geometry};
 use super::*;
 use crate::interaction::DragSessionId;
 use crate::scene::{ContainedLayoutOwner, ContainedLayoutProjection};
@@ -58,36 +59,32 @@ impl DockEngine {
         {
             return None;
         }
-        let point = match drag.last_advanced_position()? {
-            ManipulationPositionKey::JournalHost { manipulation, .. } => manipulation
-                .filter(|route| route.surface() == surface)?
-                .position(),
-            ManipulationPositionKey::JournalNativeLocal { manipulation, .. } => manipulation
-                .filter(|route| route.binding().surface() == surface)?
-                .surface_position(),
-            ManipulationPositionKey::JournalSurface {
-                scope: PointerProviderScope::SurfaceLocal(scope),
-                position: Authority::Known(point),
-            } if scope.surface() == surface => point,
-            ManipulationPositionKey::JournalDesktop(DesktopRouteValidation::Known(
-                crate::pointer_journal::ValidatedDesktopRoute::Dock(route),
-            )) if route.binding().surface() == surface => route.surface_position(),
-            _ => return None,
-        };
+        let point = contained_manipulation_point(drag.last_advanced_position()?, surface)?;
         let bounds = self
             .scene()
             .surface(surface)?
             .paint_projection()?
             .plan()
             .bounds();
-        let requested = LogicalRect::new(
-            origin.source_rect.x() + point.x() - origin.initial_pointer.x(),
-            origin.source_rect.y() + point.y() - origin.initial_pointer.y(),
-            origin.source_rect.width(),
-            origin.source_rect.height(),
-        )
-        .ok()?;
-        let rect = clamp_moved_contained_rect(bounds, requested).ok()?;
+        let rect = match drag.preview().map(|preview| preview.proof()) {
+            Some(PreviewProof::Contained { proposal, .. })
+                if proposal.surface() == surface
+                    && proposal.root() == origin.root
+                    && proposal.floating() == origin.floating
+                    && proposal.placement().surface_bounds() == bounds =>
+            {
+                // The non-docking candidate already solved movement from the
+                // validated manipulation lane. Its content uses that result.
+                proposal.rect()
+            }
+            _ => {
+                // Docking feedback has destination geometry instead. The live
+                // source still follows the same manipulation-only move rule.
+                contained_move_geometry(bounds, origin.source_rect, origin.initial_pointer, point)
+                    .ok()?
+                    .1
+            }
+        };
         Some(ContainedLayoutProjection {
             owner: ContainedLayoutOwner::Drag(drag.session),
             surface,

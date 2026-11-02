@@ -843,7 +843,7 @@ impl DockspaceSession {
             expected,
             committed,
             surface,
-            token.into_core(),
+            token.into_core()?,
         )?;
         Ok(())
     }
@@ -873,7 +873,7 @@ impl DockspaceSession {
             expected,
             committed,
             surface,
-            token.into_core(),
+            token.into_core()?,
             crate::surface_recovery::SurfaceRecoveryBootstrap::new(recovery_host),
         )?;
         Ok(())

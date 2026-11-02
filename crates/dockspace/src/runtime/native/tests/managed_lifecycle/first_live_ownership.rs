@@ -315,7 +315,11 @@ fn emit_first_live_child_output(
             .expect("the publicly enumerated surface measures");
         assert_eq!(
             popup_bounds_requests,
-            usize::from(popup.session().is_some()),
+            usize::from(
+                popup
+                    .owner()
+                    .is_some_and(|owner| owner.surface() == surface)
+            ),
             "public measurement requests must match the current popup plane for {surface:?}"
         );
     }
@@ -377,7 +381,7 @@ fn emit_first_live_child_output(
     for item in [ITEM, SECOND_ITEM] {
         assert!(tabs.contains(&(ROOT, item, item == selected)));
     }
-    assert_eq!(popup_backdrops, usize::from(popup.session().is_some()));
+    assert_eq!(popup_backdrops, 0, "the popup stays on its source owner");
     let semantic_output = semantic_output.expect("the complete program emits its semantic seal");
     paint
         .confirm_surface_painted(receipt)
@@ -811,7 +815,7 @@ fn active_popup_first_live_presented_dismisses_before_fresh_inactive_output_admi
             .surface(child.surface())
             .unwrap()
             .popup_plane_bounds()
-            .is_some()
+            .is_none()
     );
     let ingress = session.engine.backend_ingress_committed_through();
     session
@@ -904,15 +908,15 @@ fn active_popup_first_live_presented_dismisses_before_fresh_inactive_output_admi
     assert!(!presentation.presents(active_artifact));
     assert_first_live_child_admitted(&session, child, version);
     assert!(
-        session.presented_surface(child.surface()).is_none(),
-        "the inactive close successor must still wait for the surviving source's exact proof"
+        session.presented_surface(child.surface()).is_some(),
+        "the child's exact first-live output is independent of source repaint"
     );
     assert!(
         session
             .engine
             .presentation_retention_manifest()
             .retains(inactive_artifact.output().key()),
-        "the popup gate must retain receiver resources for its exact waiting child output"
+        "the exact presented child output must retain its receiver resources"
     );
     assert!(
         !session
@@ -932,14 +936,14 @@ fn active_popup_first_live_presented_dismisses_before_fresh_inactive_output_admi
         0
     );
 
-    // Closing a workspace popup keeps its exact-roster barrier until every live surface presents.
+    // The source independently retires its old popup visual.
     let source_output = emit_inactive_first_live_source_output(&mut session, root);
     let source_artifact = source_output.presentation_artifact();
-    assert!(session.presented_surface(child.surface()).is_none());
+    assert!(session.presented_surface(child.surface()).is_some());
     session
         .report_surface_presentation(source_output, SurfacePresentationResult::Presented)
         .expect("the surviving source records its fresh inactive presentation");
-    assert!(session.presented_surface(child.surface()).is_none());
+    assert!(session.presented_surface(child.surface()).is_some());
     let report = commit_managed_frame_report(&mut session);
     assert!(report.native_admissions().is_empty());
     let [presentation] = report.surface_presentation_commits() else {
@@ -952,13 +956,13 @@ fn active_popup_first_live_presented_dismisses_before_fresh_inactive_output_admi
     assert!(
         session
             .presented_surface(root.surface())
-            .expect("the surviving source crosses the inactive exact-roster barrier")
+            .expect("the source presents its inactive successor")
             .matches_presentation_artifact(source_artifact)
     );
     assert!(
         session
             .presented_surface(child.surface())
-            .expect("the original inactive child artifact gains authority with the complete roster")
+            .expect("source repaint preserves the child's original authority")
             .matches_presentation_artifact(inactive_artifact)
     );
 

@@ -1457,7 +1457,11 @@ mod tests {
         );
 
         store.commit_presentations(&[second_commit]);
-        assert!(!store.presented.contains_key(&SURFACE));
+        assert!(store.presented.get(&SURFACE).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.artifact == first_artifact && entry.binding == binding)
+        }));
         assert!(store.awaiting_core.is_empty());
     }
 

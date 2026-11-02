@@ -336,9 +336,6 @@ impl DockEngine {
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
-        if let InteractionStatus::Dragging { session } = self.interaction.status() {
-            self.clear_drag_continuation(session);
-        }
         let mut observed = match (scroll.delta(), scroll.modifiers()) {
             (
                 Some(ScrollDelta::PhysicalPixels {
@@ -542,6 +539,7 @@ impl DockEngine {
 
         match self.resolve_initial_scroll_owner(cause, stream, edge, observed)? {
             Ok(owner) => {
+                self.pause_drag_continuation_for_scroll(owner.receiver);
                 self.scroll_interaction.active.insert(
                     key,
                     ActiveScrollSession {
@@ -899,6 +897,14 @@ impl DockEngine {
         else {
             return Ok(Err(ScrollSuppressionReason::ReceiverUnknown));
         };
+        if self
+            .presentation_authority
+            .tab_strip_states
+            .active_menu()
+            .is_some_and(|menu| menu.key().surface() != presentation.surface())
+        {
+            return Ok(Err(ScrollSuppressionReason::PopupBlocked));
+        }
         match disposition {
             PointerReceiverDeliveryDisposition::Dock(region) => {
                 let Some(endpoint) =
@@ -1200,6 +1206,7 @@ impl DockEngine {
             ));
         }
         let requested_delta = self.convert_scroll_delta(cause, owner, delta, modifiers)?;
+        self.pause_drag_continuation_for_scroll(owner.receiver);
         let old_offset = match owner.geometry {
             ScrollReceiverGeometry::TabStrip { key, .. } => self
                 .presentation_authority

@@ -824,7 +824,9 @@ impl SceneRequirementDraft {
     ) -> Result<SceneRequirementManifest, ManifestBuildError> {
         validate_popup_requirement(&self.surfaces, popup)?;
         for (surface, requirements) in &mut self.surfaces {
-            requirements.popup_plane_bounds = matches!(popup, PopupPlaneRequirement::Active { .. })
+            requirements.popup_plane_bounds = popup
+                .visual_for_surface(*surface)
+                .is_some()
                 .then(|| PopupPlaneBoundsKey::new(*surface));
         }
         Ok(SceneRequirementManifest {
@@ -951,7 +953,9 @@ impl SurfaceRequirements {
     }
 
     pub(crate) fn with_popup_plane_requirement(mut self, popup: PopupPlaneRequirement) -> Self {
-        self.popup_plane_bounds = matches!(popup, PopupPlaneRequirement::Active { .. })
+        self.popup_plane_bounds = popup
+            .visual_for_surface(self.ticket.surface())
+            .is_some()
             .then(|| PopupPlaneBoundsKey::new(self.ticket.surface()));
         self
     }

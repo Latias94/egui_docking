@@ -26,8 +26,8 @@ use crate::external_item_key::{
 use crate::graph::Workspace;
 use crate::ids::{EngineAuthorityDomainId, ItemId, PresentationIdentityFrontier, SurfaceId};
 use crate::persistence::{
-    SnapshotCaptureError, SnapshotEntityKind, SnapshotNode, SnapshotRestoreError,
-    WorkspaceSnapshot, WorkspaceSnapshotEnvelope,
+    SnapshotCaptureError, SnapshotNode, SnapshotRestoreError, WorkspaceSnapshot,
+    WorkspaceSnapshotEnvelope,
 };
 use crate::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
 use crate::viewport::ViewportRole;
@@ -591,7 +591,7 @@ impl PreparedRuntimeDocumentRestore {
     }
 
     pub(crate) fn into_engine_input_tracking_surface(
-        mut self,
+        self,
         frame: HostFrameView<'_>,
         tracked_surface: Option<SurfaceId>,
     ) -> Result<
@@ -602,15 +602,11 @@ impl PreparedRuntimeDocumentRestore {
         ),
         RuntimeDocumentRestoreError,
     > {
-        if frame.authority_domain() != self.source_authority_domain {
+        if frame.authority_domain() != self.source_authority_domain
+            || tracked_surface.is_some_and(|surface| self.workspace().surface(surface).is_none())
+        {
             return Err(RuntimeDocumentRestoreError::EnginePublicationMismatch);
         }
-        let mapped_surface = rebase_restored_presentation_identities(
-            &mut self.restored,
-            frame.workspace(),
-            frame.presentation_identity_frontier(),
-            tracked_surface,
-        )?;
         let expected_workspace = WorkspaceSnapshot::capture(self.restored.restore.workspace())?;
         let mut expected_frontier = frame.presentation_identity_frontier();
         expected_frontier.merge(self.restored.restore.presentation_identity_frontier());
@@ -622,6 +618,10 @@ impl PreparedRuntimeDocumentRestore {
             external_item_keys: _,
             viewport_placements,
         } = self.restored;
+        // The replacement outcome and publication proof must carry the same
+        // merged allocation history even when restoring an older document.
+        let (workspace, _) = restore.into_parts();
+        let restore = ValidatedWorkspaceRestore::new(workspace, expected_frontier);
         let pending = PendingRuntimeDocumentRestore {
             binding: BoundDocumentState {
                 document_id,
@@ -639,7 +639,7 @@ impl PreparedRuntimeDocumentRestore {
         Ok((
             EngineInput::RestoreWorkspace(restore),
             pending,
-            mapped_surface,
+            tracked_surface,
         ))
     }
 }
@@ -807,63 +807,6 @@ impl RestoredDockspaceDocument {
     }
 }
 
-fn rebase_restored_presentation_identities(
-    restored: &mut RestoredDockspaceDocument,
-    active_workspace: &Workspace,
-    active_frontier: PresentationIdentityFrontier,
-    tracked_surface: Option<SurfaceId>,
-) -> Result<Option<SurfaceId>, DockspaceDocumentRestoreError> {
-    let rebased = crate::engine::rebase_workspace_presentation_identities(
-        restored.restore.workspace().clone(),
-        active_workspace,
-        active_frontier,
-        Some(restored.restore.presentation_identity_frontier()),
-    )
-    .map_err(document_rebase_error)?;
-    let mapped_surface = tracked_surface
-        .map(|surface| {
-            rebased.surfaces.get(&surface).copied().ok_or(
-                DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
-                    kind: SnapshotEntityKind::Surface,
-                    id: surface.get(),
-                },
-            )
-        })
-        .transpose()?;
-    restored
-        .viewport_placements
-        .remap_surfaces(&rebased.surfaces);
-    restored.restore = ValidatedWorkspaceRestore::new(rebased.workspace, rebased.frontier);
-    Ok(mapped_surface)
-}
-
-fn document_rebase_error(
-    error: crate::engine::WorkspaceRebaseError,
-) -> DockspaceDocumentRestoreError {
-    use crate::engine::{WorkspaceRebaseEntity, WorkspaceRebaseError};
-    let snapshot_kind = |kind| match kind {
-        WorkspaceRebaseEntity::Surface => SnapshotEntityKind::Surface,
-        WorkspaceRebaseEntity::Root => SnapshotEntityKind::Root,
-        WorkspaceRebaseEntity::Floating => SnapshotEntityKind::ContainedFloating,
-    };
-    match error {
-        WorkspaceRebaseError::Exhausted { kind } => {
-            DockspaceDocumentRestoreError::PresentationIdentitySpaceExhausted {
-                kind: snapshot_kind(kind),
-            }
-        }
-        WorkspaceRebaseError::MissingReference { kind, id } => {
-            DockspaceDocumentRestoreError::PresentationIdentityRemapInvariant {
-                kind: snapshot_kind(kind),
-                id,
-            }
-        }
-        WorkspaceRebaseError::InvalidWorkspace(source) => {
-            DockspaceDocumentRestoreError::Workspace(SnapshotRestoreError::InvalidWorkspace(source))
-        }
-    }
-}
-
 /// Serialized representation used only while decoding an untrusted document.
 ///
 /// `PresentationIdentityFrontier` deliberately has no public deserializer or
@@ -952,23 +895,6 @@ pub enum DockspaceDocumentRestoreError {
     /// The embedded workspace snapshot is invalid.
     #[error("workspace snapshot restore failed: {0}")]
     Workspace(#[from] SnapshotRestoreError),
-    /// A validated runtime workspace could not be recaptured for identity rebasing.
-    #[error("restored workspace recapture failed: {0}")]
-    WorkspaceCapture(#[from] SnapshotCaptureError),
-    /// Reintroducing a retired presentation identity exhausted its numeric domain.
-    #[error("restored {kind:?} identity space is exhausted")]
-    PresentationIdentitySpaceExhausted {
-        /// Exhausted presentation identity class.
-        kind: SnapshotEntityKind,
-    },
-    /// A validated presentation reference was absent from the complete remap.
-    #[error("restored {kind:?} identity {id} was absent from the complete remap")]
-    PresentationIdentityRemapInvariant {
-        /// Missing presentation identity class.
-        kind: SnapshotEntityKind,
-        /// Missing persisted identity.
-        id: u64,
-    },
     /// The durable root allocator counter is behind a live root identity.
     #[error("document root identity frontier {frontier} is behind live root {live}")]
     RootIdentityFrontierBehind {
@@ -1598,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_restore_rebases_profile_surface_and_recovery_host_together() {
+    fn prepared_restore_preserves_profile_surface_and_recovery_host_identities() {
         let mut preferences = profile_preferences();
         let rect = PhysicalRect::new(-40.0, 30.0, 800.0, 600.0).expect("placement must validate");
         preferences.set(
@@ -1621,7 +1547,7 @@ mod tests {
         let (input, pending) = prepared
             .clone()
             .into_engine_input(frame.view())
-            .expect("retired profile references must rebase atomically");
+            .expect("saved profile identities must survive preparation");
         let EngineInput::RestoreWorkspace(restore) = input else {
             panic!("prepared restore must produce one workspace replacement");
         };
@@ -1634,7 +1560,13 @@ mod tests {
             .item(ItemId::new(1))
             .expect("host item must survive")
             .surface();
-        assert!(child.get() > 10 && root.get() > 10);
+        assert_eq!(child, SurfaceId::new(2));
+        assert_eq!(root, SurfaceId::new(1));
+        assert_eq!(
+            restore.presentation_identity_frontier(),
+            active.presentation_identity_frontier()
+        );
+        assert_eq!(pending.viewport_placements(), &preferences);
         assert_eq!(
             pending.viewport_placements().native_host(child),
             Some(NativeSurfaceHostPreference::Child {
@@ -1651,15 +1583,129 @@ mod tests {
             .expect("placement must follow source");
         assert_eq!(placement.surface(), child);
         assert_eq!(placement.outer_rect(), rect);
-        assert!(
-            pending
-                .viewport_placements()
-                .surface_ids()
-                .all(|surface| surface.get() > 10)
-        );
         assert_eq!(prepared.viewport_placements(), &preferences);
         assert!(bound.viewport_placements().is_empty());
         assert!(active.workspace().surface(SurfaceId::new(10)).is_some());
+    }
+
+    #[test]
+    fn public_document_restore_merges_higher_live_frontiers_before_publication() {
+        use crate::geometry::{LogicalRect, LogicalSize};
+        use crate::model::{
+            DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+            DockspaceSurfaceLayout, FloatingPresentationId,
+        };
+        use crate::runtime::{
+            DockspaceDocumentBootstrap, DockspaceSession, HostInputOutcome,
+            SurfaceUnavailableReason, UniformSurfaceMetrics,
+        };
+
+        let bootstrap = || {
+            let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT_ID);
+            bootstrap
+                .ensure_items(["pane/one", "pane/two", "pane/three"])
+                .unwrap();
+            bootstrap
+        };
+        let layout = |surface, main, contained, floating| {
+            DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                SurfaceId::new(surface),
+                DockspaceRootLayout::new(
+                    RootId::new(main),
+                    DockspaceNode::central_tabs([ItemId::new(1), ItemId::new(2)]),
+                ),
+            )
+            .with_contained(DockspaceContainedLayout::new(
+                FloatingPresentationId::new(floating),
+                DockspaceRootLayout::new(
+                    RootId::new(contained),
+                    DockspaceNode::tabs([ItemId::new(3)]),
+                ),
+                LogicalRect::new(100.0, 80.0, 320.0, 240.0).unwrap(),
+            ))])
+            .unwrap()
+        };
+        let mut source = DockspaceSession::from_persistent_layout(
+            layout(1, 1, 2, 1),
+            DockPolicy::default(),
+            bootstrap(),
+        )
+        .unwrap();
+        let older = source.save_document_json().unwrap();
+        let mut target = DockspaceSession::from_persistent_layout(
+            layout(100, 200, 201, 300),
+            DockPolicy::default(),
+            bootstrap(),
+        )
+        .unwrap();
+        let before = target.version();
+        let prepared = target
+            .prepare_document_restore_json(&older, |document, key| {
+                document == DOCUMENT_ID && matches!(key, "pane/one" | "pane/two" | "pane/three")
+            })
+            .unwrap();
+
+        {
+            let frame = target.begin_document_restore_frame(&prepared).unwrap();
+            assert_eq!(
+                frame.view().item(ItemId::new(1)).unwrap().root(),
+                RootId::new(1)
+            );
+        }
+        assert_eq!(target.version(), before);
+        assert!(target.view().surface(SurfaceId::new(100)).is_some());
+
+        let mut frame = target.begin_document_restore_frame(&prepared).unwrap();
+        frame
+            .measure_surface(
+                SurfaceId::new(1),
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 900.0, 650.0).unwrap(),
+                    LogicalSize::new(48.0, 32.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let report = frame
+            .commit()
+            .expect("the merged frontier must satisfy publication proof");
+        assert!(matches!(
+            report.inputs(),
+            [HostInputOutcome::DocumentRestored { previous, current }]
+                if *previous == before && *current == target.version()
+        ));
+        assert_eq!(target.version().epoch().get(), before.epoch().get() + 1);
+        assert_eq!(
+            target.view().item(ItemId::new(1)).unwrap().root(),
+            RootId::new(1)
+        );
+        let contained = target.view().item(ItemId::new(3)).unwrap();
+        assert_eq!(contained.surface(), SurfaceId::new(1));
+        assert_eq!(contained.root(), RootId::new(2));
+        assert_eq!(contained.contained(), Some(FloatingPresentationId::new(1)));
+
+        let saved = target.save_document_json().unwrap();
+        let document = serde_json::from_slice::<DockspaceDocumentEnvelope>(&saved)
+            .unwrap()
+            .into_document()
+            .unwrap();
+        assert_eq!(
+            document.presentation_identity_frontier,
+            PresentationIdentityFrontier::from_counters(100, 201, 300)
+        );
+
+        let mut frame = target.begin_host_frame().unwrap();
+        frame
+            .float_item_current(ItemId::new(2), SurfaceId::new(1))
+            .unwrap();
+        let floated = frame.view().item(ItemId::new(2)).unwrap();
+        assert_eq!(floated.root(), RootId::new(202));
+        assert_eq!(floated.contained(), Some(FloatingPresentationId::new(301)));
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap();
     }
 
     #[test]

@@ -889,6 +889,19 @@ fn current_platform_snapshot(
                     )
                 })
         });
+        // A repeated coordinate generation must retain its entire preparation
+        // envelope, including an earlier Create acknowledgement. ACK consumption
+        // requires a fresh provider generation, as it does in the public runtime.
+        let acknowledged_create = acknowledged_create.or_else(|| {
+            let generation = window.coordinate_observation()?.generation();
+            fixture
+                .engine
+                .viewport()
+                .viewport(binding.surface())?
+                .create_preparation()
+                .filter(|previous| previous.generation() == generation)
+                .and_then(WindowCreatePreparationObservation::acknowledged_create)
+        });
         let acknowledged_show = acknowledged_effect.filter(|effect| {
             fixture
                 .engine

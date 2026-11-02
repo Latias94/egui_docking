@@ -4,7 +4,6 @@ mod lifecycle;
 mod records;
 mod validation;
 
-pub(crate) use self::lifecycle::PopupInteractionGateRevision;
 pub use self::lifecycle::{
     BootstrapSurfaceScene, BootstrapSurfaceSceneReason, PopupGeometryUnavailableReason,
     ReadySurfaceScene, RetainedSurfacePlanStamps, StaleSurfaceScene, StaleSurfaceSceneReason,
@@ -52,8 +51,6 @@ use crate::scene_manifest::{
 };
 use crate::semantic_manifest::PresentationSemanticManifest;
 use crate::splitter_junction_index::derive_splitter_junction_candidates;
-#[cfg(test)]
-use crate::tab_strip::PopupRoutingRevision;
 use crate::tab_strip::{
     PopupPlaneRequirement, TabListMenuSessionId, TabStripControlId, TabStripStateKey,
 };

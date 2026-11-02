@@ -11,11 +11,11 @@ use dockspace::runtime::{
     DockspaceGuideScope as GuideScope, DockspacePreviewVisual, DockspaceReceiverDescriptor,
     DockspaceReceiverRole as Role, DockspaceRuntimeError, DockspaceRuntimeErrorKind,
     DockspaceSession, DockspaceVisualId, DockspaceVisualKind as Kind, HostFrameReport,
-    HostPointerInput, HostPointerRoute, PaintedSurfaceOutput, SurfacePaintDisposition as Paint,
-    SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
-    SurfacePointerButton as Button, SurfacePointerCapture, SurfacePointerEvent as Event,
-    SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult as Disposition,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    HostPointerInput, HostPointerRoute, PaintedSurfaceOutput, PointerEventMetadata,
+    SurfacePaintDisposition as Paint, SurfacePaintProgramOperation as Operation,
+    SurfacePaintProgramStep as Step, SurfacePointerButton as Button, SurfacePointerCapture,
+    SurfacePointerEvent as Event, SurfacePointerId, SurfacePointerReceiverFacts,
+    SurfacePresentationResult as Disposition, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -226,6 +226,15 @@ fn present(
 }
 
 fn fixture() -> (DockspaceSession, Recorded) {
+    let mut session = session_with_contained_rect(initial_rect());
+    let (recorded, output) = paint(&mut session);
+    assert_projected(&session, &recorded, &recorded, initial_rect());
+    assert!(!present(&mut session, output, Disposition::Presented).workspace_changed());
+    assert_current_receivers(&session, &recorded);
+    (session, recorded)
+}
+
+fn session_with_contained_rect(bounds: LogicalRect) -> DockspaceSession {
     let split = DockspaceNode::equal_split(
         DockspaceAxis::Horizontal,
         [DockspaceNode::tabs([LEFT]), DockspaceNode::tabs([RIGHT])],
@@ -238,17 +247,166 @@ fn fixture() -> (DockspaceSession, Recorded) {
     .with_contained(DockspaceContainedLayout::new(
         FLOATING,
         DockspaceRootLayout::new(ROOT, split),
-        initial_rect(),
+        bounds,
     ))])
     .unwrap();
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
     session.enable_host_pointer().unwrap();
     measure(&mut session);
-    let (recorded, output) = paint(&mut session);
-    assert_projected(&session, &recorded, &recorded, initial_rect());
-    assert!(!present(&mut session, output, Disposition::Presented).workspace_changed());
-    assert_current_receivers(&session, &recorded);
-    (session, recorded)
+    session
+}
+
+fn edge_with_routes(
+    session: &mut DockspaceSession,
+    event: Event,
+    manipulation: LogicalPoint,
+    hover: LogicalPoint,
+) {
+    let delivery_hit = session.host_pointer_hit(SURFACE, manipulation).unwrap();
+    let hover_hit = session.host_pointer_hit(SURFACE, hover).unwrap();
+    let source = delivery_hit.surface();
+    let target = hover_hit.surface();
+    let click = delivery_hit.delivery();
+    let drag = delivery_hit.drag_delivery();
+    let facts = click.as_ref().map_or_else(
+        || SurfacePointerReceiverFacts::unknown().with_no_delivery(&source),
+        SurfacePointerReceiverFacts::delivery,
+    );
+    let facts = drag.as_ref().map_or_else(
+        || facts.with_no_drag_delivery(&source),
+        |receiver| facts.with_drag_delivery(receiver),
+    );
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .submit_host_pointer(
+            HostPointerInput::new(
+                SurfacePointerId::new(1),
+                event,
+                HostPointerRoute::new(source, manipulation),
+                HostPointerRoute::new(target, hover),
+                SurfacePointerCapture::ProviderEndpoint,
+                facts.with_clear_hover_lane(&target),
+            )
+            .with_metadata(PointerEventMetadata::unknown().with_magnetic_targeting(false)),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+}
+
+#[test]
+fn review_contained_move_uses_manipulation_for_both_projection_and_commit_preview() {
+    let (mut session, before) = fixture();
+    let press = before.title.center();
+    edge(&mut session, Event::ButtonPressed(Button::Primary), press).unwrap();
+    edge_with_routes(
+        &mut session,
+        Event::Moved,
+        offset(press, 56.0, 32.0),
+        offset(press, 176.0, 32.0),
+    );
+    let (recorded, _output) = paint(&mut session);
+    let projection = recorded
+        .projected_source
+        .expect("the contained drag must project its complete content")
+        .1;
+    let preview = recorded
+        .renderer
+        .records
+        .iter()
+        .find_map(|record| match record {
+            OwnedRecord::Preview(DockspacePreviewVisual::Contained {
+                surface: SURFACE,
+                rect,
+                ..
+            }) => Some(*rect),
+            _ => None,
+        })
+        .expect("the non-docking drag must expose a contained commit preview");
+    assert_eq!(projection, rect(256.0, 172.0, 400.0, 300.0));
+    assert_eq!(
+        preview, projection,
+        "hover coordinates must not create a second contained position"
+    );
+}
+
+struct ContainedMotion {
+    title: Option<DockspaceReceiverDescriptor>,
+    projection: Option<LogicalRect>,
+    preview: Option<LogicalRect>,
+}
+
+fn paint_contained_motion(
+    session: &mut DockspaceSession,
+) -> (ContainedMotion, PaintedSurfaceOutput) {
+    let mut frame = session.begin_host_frame().unwrap();
+    let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+    let mut title = None;
+    let mut projection = None;
+    let mut preview = None;
+    // Oversized windows can clip resize/close receivers; only the visible title is needed.
+    plan.visit_surface_program(|step| {
+        match step {
+            Step::RootBegin { root, .. } if root.root() == ROOT => {
+                title = plan.receiver_for_contained_title(root.contained().unwrap());
+            }
+            Step::DragDecoration(source) if source.source_is_projected() => {
+                projection = source.projected_root_bounds();
+            }
+            Step::DragPreview(candidate) => {
+                if let DockspacePreviewVisual::Contained { rect, .. } = candidate.visual() {
+                    preview = Some(rect);
+                }
+            }
+            _ => {}
+        }
+        Ok::<(), ()>(())
+    })
+    .unwrap();
+    let (_, receipt) = RecordingRenderer::execute(plan).unwrap();
+    frame.confirm_surface_painted(receipt).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut outputs = frame.commit().unwrap().take_painted_outputs();
+    assert_eq!(outputs.len(), 1);
+    (
+        ContainedMotion {
+            title,
+            projection,
+            preview,
+        },
+        outputs.pop().unwrap(),
+    )
+}
+
+#[test]
+fn review_contained_move_of_oversized_source_preserves_one_width() {
+    let mut session = session_with_contained_rect(rect(0.0, 140.0, 1000.0, 300.0));
+    let (before, output) = paint_contained_motion(&mut session);
+    present(&mut session, output, Disposition::Presented);
+    let press = before
+        .title
+        .expect("the oversized contained source must retain a visible title")
+        .center();
+    edge(&mut session, Event::ButtonPressed(Button::Primary), press).unwrap();
+    let moved = offset(press, 30.0, 20.0);
+    edge_with_routes(&mut session, Event::Moved, moved, moved);
+    let (recorded, _output) = paint_contained_motion(&mut session);
+    let projection = recorded
+        .projection
+        .expect("the oversized contained drag must project its content");
+    let preview = recorded
+        .preview
+        .expect("the oversized contained drag must expose a commit preview");
+    assert_eq!(projection.width(), 1000.0);
+    assert_eq!(
+        preview.width(),
+        projection.width(),
+        "moving an existing contained source must preserve its width in the commit preview"
+    );
 }
 
 fn edge(
@@ -789,7 +947,7 @@ fn release_before_paint_keeps_full_projection_until_exact_presented_or_dropped_c
 }
 
 #[test]
-fn dropped_active_resize_output_revokes_source_and_restores_cached_durable_layout() {
+fn dropped_resize_successor_preserves_the_presented_projection_and_release_authority() {
     let (mut session, before) = fixture();
     let version = session.version();
     let press = before
@@ -819,44 +977,25 @@ fn dropped_active_resize_output_revokes_source_and_restores_cached_durable_layou
     assert!(session.has_active_gesture());
     assert_durable(&session, initial_rect());
 
-    // A concrete later output revokes even an already-presented source preview.
+    // Dropping a successor does not erase the exact source still on screen.
+    let authority = session.presented_surface(SURFACE).unwrap();
     let (later, output) = paint(&mut session);
     assert_projected(&session, &before, &later, projected);
     assert!(!present(&mut session, output, Disposition::Dropped).workspace_changed());
-    assert!(session.presented_surface(SURFACE).is_none());
-    assert!(session.bind_presented_receiver(&live.title).is_none());
-    assert!(
-        !session.has_active_gesture(),
-        "source-layout ownership cannot outlive a dropped source output"
-    );
+    assert_eq!(session.presented_surface(SURFACE), Some(authority));
+    assert_current_receivers(&session, &live);
+    assert!(session.has_active_gesture());
     assert_eq!(session.version(), version);
     assert_durable(&session, initial_rect());
 
-    // No measurement callback: rollback must recompile the cached durable layout.
-    let (restored, output) = paint(&mut session);
-    assert_projected(&session, &before, &restored, initial_rect());
-    assert!(restored.renderer.records.iter().all(|record| !matches!(
-        record,
-        OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
-    )));
-    assert!(!present(&mut session, output, Disposition::Presented).workspace_changed());
-    assert_current_receivers(&session, &restored);
-
-    for event in [Event::Moved, Event::ButtonReleased(Button::Primary)] {
-        assert!(
-            !edge(&mut session, event, offset(moved, 24.0, 16.0))
-                .unwrap()
-                .workspace_changed(),
-            "a fresh route must not revive the cancelled resize"
-        );
-        assert!(!session.has_active_gesture());
-        assert_durable(&session, initial_rect());
-    }
-    let (idle, output) = paint(&mut session);
-    assert_projected(&session, &before, &idle, initial_rect());
-    assert!(!present(&mut session, output, Disposition::Presented).workspace_changed());
-    assert_eq!(session.version(), version);
-    assert_durable(&session, initial_rect());
+    let released = edge(&mut session, Event::ButtonReleased(Button::Primary), moved).unwrap();
+    assert!(released.workspace_changed());
+    assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
+    assert_durable(&session, projected);
+    let committed = session.version();
+    assert!(!settle(&mut session).workspace_changed());
+    assert_eq!(session.version(), committed);
 }
 
 #[test]

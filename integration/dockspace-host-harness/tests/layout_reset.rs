@@ -6,7 +6,7 @@ use dockspace::model::{
     DockPlacement, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
     DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
 };
-use dockspace::policy::{CloseCapability, DockPolicy};
+use dockspace::policy::{CloseCapability, DockPolicy, DockSourceRule};
 use dockspace::runtime::{
     DockPresentationConfig, DockspaceHostFrame, DockspacePaneFocusObservation,
     DockspacePaneFocusRequest, DockspaceRuntimeErrorKind, DockspaceSession, HostFrameReport,
@@ -143,6 +143,54 @@ fn assert_default_content(
     (first.surface(), first.root(), third.root(), floating)
 }
 
+#[test]
+fn review_root_policy_survives_closing_and_restoring_defaults() {
+    use dockspace::model::{DockAnchor, DockspaceActionRejection};
+
+    let defaults = default_layout();
+    let mut policy = policy();
+    let mut source = DockSourceRule::new();
+    source.set_enabled(false);
+    policy.set_source_rule(FLOATING_ROOT, source);
+    let mut session = DockspaceSession::from_layout(defaults.clone(), policy).unwrap();
+    commit_measured(session.begin_host_frame().unwrap());
+
+    let mut blocked = session.begin_host_frame().unwrap();
+    blocked
+        .dock_root_current(
+            FLOATING_ROOT,
+            DockPlacement::Center(DockAnchor::Item(FIRST)),
+        )
+        .unwrap();
+    let before = commit_deferred(blocked);
+    assert_eq!(
+        before.inputs(),
+        &[HostInputOutcome::ProductActionRejected(
+            DockspaceActionRejection::PolicyDenied
+        )]
+    );
+
+    close_root(&mut session, FLOATING_ROOT);
+    let reset = session.prepare_layout_reset(defaults).unwrap();
+    commit_measured(session.begin_layout_reset_frame(&reset).unwrap());
+    let restored_root = session.view().item(THIRD).unwrap().root();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .dock_root_current(
+            restored_root,
+            DockPlacement::Center(DockAnchor::Item(FIRST)),
+        )
+        .unwrap();
+    let report = commit_deferred(frame);
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionRejected(
+            DockspaceActionRejection::PolicyDenied
+        )],
+        "restoring defaults must preserve the root's source restriction"
+    );
+}
+
 fn focus_request(
     session: &mut DockspaceSession,
     surface: SurfaceId,
@@ -158,7 +206,7 @@ fn focus_request(
 }
 
 #[test]
-fn cloned_defaults_reset_repeatedly_after_surface_root_and_floating_retirement() {
+fn cloned_defaults_preserve_semantic_identities_across_repeated_epoch_replacements() {
     let defaults = default_layout();
     let mut session = session(defaults.clone());
     let original = assert_default_content(&session);
@@ -173,7 +221,6 @@ fn cloned_defaults_reset_repeatedly_after_surface_root_and_floating_retirement()
         assert!(session.view().item(item).is_none());
     }
 
-    let mut previous_ids = original;
     for _ in 0..3 {
         let before = session.version();
         let reset = session.prepare_layout_reset(defaults.clone()).unwrap();
@@ -188,15 +235,7 @@ fn cloned_defaults_reset_repeatedly_after_surface_root_and_floating_retirement()
             }]
         );
         let ids = assert_default_content(&session);
-        assert_ne!(ids.0, SURFACE);
-        assert_ne!(ids.1, ROOT);
-        assert_ne!(ids.2, FLOATING_ROOT);
-        assert_ne!(ids.3, FLOATING);
-        assert_ne!(ids.0, previous_ids.0);
-        assert_ne!(ids.1, previous_ids.1);
-        assert_ne!(ids.2, previous_ids.2);
-        assert_ne!(ids.3, previous_ids.3);
-        previous_ids = ids;
+        assert_eq!(ids, original);
     }
     assert!(defaults.view().surface(SURFACE).is_some());
     assert!(defaults.view().root(ROOT).is_some());
@@ -207,7 +246,7 @@ fn cloned_defaults_reset_repeatedly_after_surface_root_and_floating_retirement()
 }
 
 #[test]
-fn reset_reserves_incoming_fresh_identities_before_rebasing_retired_ones() {
+fn reset_preserves_both_retired_and_fresh_declared_identities() {
     let defaults = default_layout();
     let mut session = session(defaults.clone());
     close_root(&mut session, ROOT);
@@ -254,21 +293,18 @@ fn reset_reserves_incoming_fresh_identities_before_rebasing_retired_ones() {
     assert_eq!(view.surfaces().count(), 2);
     let first = view.item(FIRST).unwrap();
     let third = view.item(THIRD).unwrap();
-    assert!(first.surface().get() > fresh_surface.get());
+    assert_eq!(first.surface(), SURFACE);
     assert_eq!(third.surface(), first.surface());
-    assert!(first.root().get() > fresh_floating_root.get());
-    assert!(third.root().get() > fresh_floating_root.get());
+    assert_eq!(first.root(), ROOT);
+    assert_eq!(third.root(), FLOATING_ROOT);
     assert_ne!(first.root(), third.root());
     assert_eq!(first.tabs().items(), &[FIRST, SECOND]);
     assert_eq!(first.tabs().selected(), Some(SECOND));
     assert_eq!(third.tabs().items(), &[THIRD, FOURTH]);
     assert_eq!(third.tabs().selected(), Some(FOURTH));
-    let rebased_floating = third.contained().unwrap();
-    assert!(rebased_floating.get() > fresh_floating.get());
-    assert_eq!(
-        view.contained(rebased_floating).unwrap().rect(),
-        durable_rect()
-    );
+    let floating = third.contained().unwrap();
+    assert_eq!(floating, FLOATING);
+    assert_eq!(view.contained(floating).unwrap().rect(), durable_rect());
 
     let fifth = view.item(fifth).unwrap();
     let sixth = view.item(sixth).unwrap();
@@ -363,7 +399,7 @@ fn terminal_reset_rejects_locked_foreign_and_stale_preparations_without_mutation
 }
 
 #[test]
-fn terminal_reset_rebases_current_prefix_and_retries_without_old_authority() {
+fn terminal_reset_preserves_declared_identities_and_retries_without_old_authority() {
     let defaults = default_layout();
     let mut session = session(defaults.clone());
     let mut select = session.begin_host_frame().unwrap();
@@ -416,8 +452,9 @@ fn terminal_reset_rebases_current_prefix_and_retries_without_old_authority() {
         );
         assert!(main.is_selected());
         assert_eq!(main.root(), ROOT);
-        assert!(contained.root().get() > prefix_root.get());
-        assert!(contained.contained().unwrap().get() > prefix_floating.get());
+        assert_eq!(contained.root(), FLOATING_ROOT);
+        assert_eq!(contained.contained(), Some(FLOATING));
+        assert_ne!(candidate.version(), prefix_version);
         assert_eq!(
             candidate.submit_layout_reset(&reset).unwrap_err().kind(),
             DockspaceRuntimeErrorKind::OperationConflict

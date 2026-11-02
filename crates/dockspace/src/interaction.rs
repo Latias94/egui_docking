@@ -46,9 +46,9 @@ use crate::runtime::direct_manipulation::{
     TargetAcquisition, TargetLatchDecision, TargetObservation, reconcile_target,
 };
 use crate::scene::{
-    PopupInteractionGateRevision, PresentationLayoutFacts, SplitterRecord, SplitterResizeTarget,
-    SurfaceCoordinateCapture, SurfaceSceneStamp, TabBarSceneId, TabListMenuBackdropRecord,
-    TabListMenuRecord, TabListMenuRowRecord, TabSceneId, TabStripControlRecord,
+    PresentationLayoutFacts, SplitterRecord, SplitterResizeTarget, SurfaceCoordinateCapture,
+    SurfaceSceneStamp, TabBarSceneId, TabListMenuBackdropRecord, TabListMenuRecord,
+    TabListMenuRowRecord, TabSceneId, TabStripControlRecord,
 };
 use crate::scene_manifest::{RequirementRevision, SurfaceMeasurementTicket};
 use crate::tab_strip::{
@@ -472,17 +472,17 @@ pub(crate) enum FrozenClickAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FrozenPresentationAuthority {
     pub(crate) presented: PresentedSurfaceAuthority,
-    pub(crate) popup_gate_revision: PopupInteractionGateRevision,
+    pub(crate) popup_revision: PopupRoutingRevision,
 }
 
 impl FrozenPresentationAuthority {
     pub(crate) const fn new(
         presented: PresentedSurfaceAuthority,
-        popup_gate_revision: PopupInteractionGateRevision,
+        popup_revision: PopupRoutingRevision,
     ) -> Self {
         Self {
             presented,
-            popup_gate_revision,
+            popup_revision,
         }
     }
 
@@ -1388,6 +1388,8 @@ pub enum ScrollSuppressionReason {
     ReceiverUnknown,
     /// A known framework receiver blocked docking delivery.
     FrameworkBlocked,
+    /// The active workspace popup blocks scrolling on another surface.
+    PopupBlocked,
     /// The framework authoritatively reported no receiver.
     NoReceiver,
     /// The docking canvas received the edge but owns no scroll capability.
@@ -3761,7 +3763,7 @@ mod tests {
         );
         FrozenPresentationAuthority::new(
             PresentedSurfaceAuthority::mint_observed_for_test(output, CoordinateGeneration::new(1)),
-            PopupInteractionGateRevision::default(),
+            PopupRoutingRevision::default(),
         )
     }
 

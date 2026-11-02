@@ -265,25 +265,6 @@ impl ViewportPlacementPreferences {
         self.surfaces
             .retain(|surface, _| surfaces.contains(surface));
     }
-
-    pub(crate) fn remap_surfaces(&mut self, remap: &BTreeMap<SurfaceId, SurfaceId>) {
-        let surfaces = std::mem::take(&mut self.surfaces);
-        self.surfaces = surfaces
-            .into_iter()
-            .map(|(surface, mut entry)| {
-                let surface = remap.get(&surface).copied().unwrap_or(surface);
-                if let Some(placement) = &mut entry.placement {
-                    placement.surface = surface;
-                }
-                if let Some(NativeSurfaceHostPreference::Child { recovery_host }) =
-                    &mut entry.native_host
-                {
-                    *recovery_host = remap.get(recovery_host).copied().unwrap_or(*recovery_host);
-                }
-                (surface, entry)
-            })
-            .collect();
-    }
 }
 
 /// A versioned, renderer-neutral viewport placement sidecar.
@@ -836,10 +817,8 @@ mod tests {
     }
 
     #[test]
-    fn native_hosting_without_placement_survives_round_trip_and_reference_remapping() {
+    fn native_hosting_without_placement_preserves_identities_through_round_trip_and_pruning() {
         let child = SurfaceId::new(8);
-        let root = SurfaceId::new(70);
-        let next_child = SurfaceId::new(80);
         let mut preferences = ViewportPlacementPreferences::new();
         preferences.set_native_host(FIRST, NativeSurfaceHostPreference::Root);
         preferences.set_native_host(
@@ -855,24 +834,20 @@ mod tests {
             .unwrap();
         assert_eq!(restored, preferences);
         assert!(restored.iter().next().is_none());
-        restored.remap_surfaces(&BTreeMap::from([(FIRST, root), (child, next_child)]));
+        assert_eq!(restored.surface_ids().collect::<Vec<_>>(), [FIRST, child]);
         assert_eq!(
-            restored.surface_ids().collect::<Vec<_>>(),
-            [root, next_child]
-        );
-        assert_eq!(
-            restored.native_host(root),
+            restored.native_host(FIRST),
             Some(NativeSurfaceHostPreference::Root)
         );
         assert_eq!(
-            restored.native_host(next_child),
+            restored.native_host(child),
             Some(NativeSurfaceHostPreference::Child {
-                recovery_host: root
+                recovery_host: FIRST
             })
         );
-        restored.retain_surfaces(&BTreeSet::from([root]));
+        restored.retain_surfaces(&BTreeSet::from([FIRST]));
         assert_eq!(restored.len(), 1);
-        assert_eq!(restored.remove(root), None);
+        assert_eq!(restored.remove(FIRST), None);
         assert!(restored.is_empty());
     }
 

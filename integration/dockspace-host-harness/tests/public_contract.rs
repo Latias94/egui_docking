@@ -12,9 +12,10 @@ use dockspace::runtime::{
     SurfacePaintDisposition, SurfacePaintProgramOperation as Operation,
     SurfacePaintProgramStep as Step, SurfacePointerButton, SurfacePointerCapture,
     SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts,
-    SurfacePresentationResult as ResultKind, SurfaceUnavailableReason, TabListMenuMetrics,
-    TabStripControlKind, TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement,
-    TabStripMetrics, UniformSurfaceMetrics,
+    SurfacePresentationResult as ResultKind, SurfaceScrollDelta, SurfaceScrollDeviceId,
+    SurfaceScrollEvent, SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase,
+    SurfaceUnavailableReason, TabListMenuMetrics, TabStripControlKind, TabStripControlMetric,
+    TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -59,54 +60,52 @@ fn measure(frame: &mut DockspaceHostFrame<'_>, width: f64) {
 
 fn measure_overflow(frame: &mut DockspaceHostFrame<'_>) {
     for surface in frame.surfaces() {
-        frame
-            .measure_surface_with(surface, |request| match request {
-                SurfaceMeasurementRequest::DockBounds { .. }
-                | SurfaceMeasurementRequest::PopupPlaneBounds { .. } => {
-                    SurfaceMeasurementAnswer::Bounds(bounds(160.0))
-                }
-                SurfaceMeasurementRequest::PaneMinimum { .. } => {
-                    SurfaceMeasurementAnswer::PaneMinimum(LogicalSize::new(64.0, 48.0).unwrap())
-                }
-                SurfaceMeasurementRequest::TabIntrinsic { .. } => {
-                    SurfaceMeasurementAnswer::TabIntrinsic(96.0)
-                }
-                SurfaceMeasurementRequest::TabStrip { .. } => {
-                    let controls = TabStripControlMetrics::new(4.0)
-                        .unwrap()
-                        .with_scroll_backward(
-                            TabStripControlMetric::new(
-                                18.0,
-                                TabStripControlPlacement::OverlayLeading,
-                            )
-                            .unwrap(),
-                        )
-                        .with_scroll_forward(
-                            TabStripControlMetric::new(
-                                18.0,
-                                TabStripControlPlacement::OverlayTrailing,
-                            )
-                            .unwrap(),
-                        )
-                        .with_tab_list_menu(
-                            TabStripControlMetric::new(
-                                20.0,
-                                TabStripControlPlacement::ReservedTrailing,
-                            )
-                            .unwrap(),
-                        );
-                    SurfaceMeasurementAnswer::TabStrip(
-                        TabStripMetrics::new(0.0, 0.0)
-                            .unwrap()
-                            .with_controls(controls)
-                            .with_tab_list_menu(
-                                TabListMenuMetrics::new(24.0, 8.0, 8.0, 2.0, 92.0, 10.0).unwrap(),
-                            ),
-                    )
-                }
-            })
-            .unwrap();
+        measure_overflow_surface(frame, surface);
     }
+}
+
+fn measure_overflow_surface(frame: &mut DockspaceHostFrame<'_>, surface: SurfaceId) {
+    frame
+        .measure_surface_with(surface, |request| match request {
+            SurfaceMeasurementRequest::DockBounds { .. }
+            | SurfaceMeasurementRequest::PopupPlaneBounds { .. } => {
+                SurfaceMeasurementAnswer::Bounds(bounds(160.0))
+            }
+            SurfaceMeasurementRequest::PaneMinimum { .. } => {
+                SurfaceMeasurementAnswer::PaneMinimum(LogicalSize::new(64.0, 48.0).unwrap())
+            }
+            SurfaceMeasurementRequest::TabIntrinsic { .. } => {
+                SurfaceMeasurementAnswer::TabIntrinsic(96.0)
+            }
+            SurfaceMeasurementRequest::TabStrip { .. } => {
+                let controls = TabStripControlMetrics::new(4.0)
+                    .unwrap()
+                    .with_scroll_backward(
+                        TabStripControlMetric::new(18.0, TabStripControlPlacement::OverlayLeading)
+                            .unwrap(),
+                    )
+                    .with_scroll_forward(
+                        TabStripControlMetric::new(18.0, TabStripControlPlacement::OverlayTrailing)
+                            .unwrap(),
+                    )
+                    .with_tab_list_menu(
+                        TabStripControlMetric::new(
+                            20.0,
+                            TabStripControlPlacement::ReservedTrailing,
+                        )
+                        .unwrap(),
+                    );
+                SurfaceMeasurementAnswer::TabStrip(
+                    TabStripMetrics::new(0.0, 0.0)
+                        .unwrap()
+                        .with_controls(controls)
+                        .with_tab_list_menu(
+                            TabListMenuMetrics::new(24.0, 8.0, 8.0, 2.0, 92.0, 10.0).unwrap(),
+                        ),
+                )
+            }
+        })
+        .unwrap();
 }
 
 fn settle(session: &mut DockspaceSession) -> HostFrameReport {
@@ -152,6 +151,421 @@ fn tab_receiver(recording: &RecordingRenderer) -> DockspaceReceiverDescriptor {
             _ => None,
         })
         .unwrap()
+}
+
+fn open_tab_list_menu(session: &mut DockspaceSession, surface: SurfaceId) {
+    let mut inspect = session.begin_host_frame().unwrap();
+    let plan = inspect.paint_plan(surface).unwrap().unwrap();
+    let mut control = None;
+    plan.visit_surface_program(|step| {
+        if let Step::Operation {
+            operation: Operation::TabStripControl(candidate),
+            ..
+        } = step
+            && candidate.kind() == TabStripControlKind::TabListMenu
+        {
+            assert!(candidate.enabled());
+            assert!(!candidate.menu_open());
+            assert!(control.replace(candidate).is_none());
+        }
+        Ok::<(), ()>(())
+    })
+    .unwrap();
+    let open = plan
+        .prepare_tab_strip_control_activation(
+            control.expect("the overflow surface must expose its tab-list control"),
+        )
+        .unwrap();
+    inspect
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    inspect.commit().unwrap();
+    let mut open_frame = session.begin_host_frame().unwrap();
+    open_frame.submit_surface_action(open).unwrap();
+    open_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    open_frame.commit().unwrap();
+}
+
+#[test]
+fn review_popup_on_a_is_interactive_when_b_has_no_new_output() {
+    let mut session = session();
+    let mut narrow = session.begin_host_frame().unwrap();
+    measure_overflow(&mut narrow);
+    narrow.commit().unwrap();
+    for surface in [A, B] {
+        let (_, output) = paint(&mut session, surface);
+        session
+            .report_surface_presentation(output, ResultKind::Presented)
+            .unwrap();
+    }
+    settle(&mut session);
+    assert!(session.presented_surface(A).is_some());
+    assert!(session.presented_surface(B).is_some());
+
+    open_tab_list_menu(&mut session, A);
+    let mut measured = session.begin_host_frame().unwrap();
+    measure_overflow(&mut measured);
+    measured.commit().unwrap();
+
+    // B may be minimized or independently scheduled; only A presents a successor.
+    let (_, output) = paint(&mut session, A);
+    session
+        .report_surface_presentation(output, ResultKind::Presented)
+        .unwrap();
+    settle(&mut session);
+    assert!(
+        session.presented_surface(A).is_some(),
+        "the popup owner must be interactive without waiting for B's successor output"
+    );
+}
+
+fn popup_layers(frame: &mut DockspaceHostFrame<'_>, surface: SurfaceId) -> (bool, bool) {
+    let plan = frame
+        .paint_plan(surface)
+        .unwrap()
+        .expect("the retained surface must expose its program without popup remeasurement");
+    let mut menu = false;
+    let mut backdrop = false;
+    plan.visit_surface_program(|step| {
+        match step {
+            Step::PopupMenu { .. } => menu = true,
+            Step::PopupBackdrop(_) => backdrop = true,
+            _ => {}
+        }
+        Ok::<(), ()>(())
+    })
+    .unwrap();
+    (menu, backdrop)
+}
+
+fn host_pointer_popup_fixture() -> (
+    DockspaceSession,
+    PresentedDockspaceSurface,
+    PresentedDockReceiver,
+) {
+    let mut session = session();
+    session.enable_host_pointer().unwrap();
+    let mut narrow = session.begin_host_frame().unwrap();
+    measure_overflow_surface(&mut narrow, A);
+    narrow
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    narrow.commit().unwrap();
+
+    let mut initial = session.begin_host_frame().unwrap();
+    let target = initial
+        .paint_plan(B)
+        .unwrap()
+        .unwrap()
+        .tab_receiver(FOURTH)
+        .expect("B must expose its unselected tab before A opens the menu");
+    record_host_pointer_surfaces(&mut initial);
+    for output in initial.commit().unwrap().take_painted_outputs() {
+        session
+            .report_surface_presentation(output, ResultKind::Presented)
+            .unwrap();
+    }
+    settle(&mut session);
+    let b = session.presented_surface(B).unwrap();
+    let target = session.bind_presented_receiver(&target).unwrap();
+
+    open_tab_list_menu(&mut session, A);
+    // Only the popup owner measures and presents; B retains its pre-popup output.
+    let mut measured = session.begin_host_frame().unwrap();
+    measure_overflow_surface(&mut measured, A);
+    measured
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    measured.commit().unwrap();
+    let (_, output) = paint(&mut session, A);
+    session
+        .report_surface_presentation(output, ResultKind::Presented)
+        .unwrap();
+    settle(&mut session);
+    assert!(session.presented_surface(A).is_some());
+    assert_eq!(session.presented_surface(B), Some(b));
+    assert_eq!(
+        session.bind_presented_receiver(&target.descriptor()),
+        Some(target)
+    );
+    let mut inspect = session.begin_host_frame().unwrap();
+    assert_eq!(popup_layers(&mut inspect, A), (true, true));
+    assert_eq!(popup_layers(&mut inspect, B), (false, false));
+    drop(inspect);
+    (session, b, target)
+}
+
+fn assert_popup_press_leaves_content_idle(session: &DockspaceSession, report: &HostFrameReport) {
+    assert!(!report.workspace_changed());
+    assert_eq!(report.before(), report.after());
+    assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
+    assert!(report.manipulation_feedback().is_empty());
+    assert!(report.inputs().iter().all(|input| !matches!(
+        input,
+        HostInputOutcome::ProductActionApplied(_)
+            | HostInputOutcome::ProductPresentationActionRequested { .. }
+    )));
+    for item in [FIRST, THIRD] {
+        assert!(session.view().item(item).unwrap().is_selected());
+    }
+    for item in [SECOND, FOURTH] {
+        assert!(!session.view().item(item).unwrap().is_selected());
+    }
+}
+
+#[test]
+fn host_pointer_other_surface_press_dismisses_popup_without_activating_the_tab_or_drag() {
+    let (mut session, b, target) = host_pointer_popup_fixture();
+    let route = HostPointerRoute::new(b, target.center());
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .submit_host_pointer(HostPointerInput::new(
+            SurfacePointerId::new(1),
+            SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+            route,
+            route,
+            SurfacePointerCapture::ProviderEndpoint,
+            SurfacePointerReceiverFacts::delivery(&target),
+        ))
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert_popup_press_leaves_content_idle(&session, &report);
+    assert!(report.published_state_changed());
+    assert_eq!(session.presented_surface(B), Some(b));
+
+    let mut measured = session.begin_host_frame().unwrap();
+    measure_overflow_surface(&mut measured, A);
+    measured
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    measured.commit().unwrap();
+    let mut inspect = session.begin_host_frame().unwrap();
+    assert_eq!(popup_layers(&mut inspect, A), (false, false));
+    assert_eq!(popup_layers(&mut inspect, B), (false, false));
+}
+
+#[test]
+fn host_pointer_blocked_foreign_or_stale_delivery_cannot_dismiss_another_surfaces_popup() {
+    for scenario in ["blocked", "foreign", "stale"] {
+        let (mut session, mut b, target) = host_pointer_popup_fixture();
+        let foreign = (scenario == "foreign").then(host_pointer_popup_fixture);
+        let delivery = foreign
+            .as_ref()
+            .map_or(target, |(_, _, receiver)| *receiver);
+        if scenario == "foreign" {
+            assert_ne!(delivery, target);
+            assert_eq!(delivery.center(), target.center());
+        }
+        if scenario == "stale" {
+            let (_, output) = paint(&mut session, B);
+            session
+                .report_surface_presentation(output, ResultKind::Presented)
+                .unwrap();
+            settle(&mut session);
+            let current = session.presented_surface(B).unwrap();
+            assert_ne!(current, b);
+            let current_receiver = session
+                .bind_presented_receiver(&target.descriptor())
+                .expect("B's unchanged tab must remain bindable through the current output");
+            assert_ne!(
+                current_receiver, target,
+                "the old receiver must be stale even when the semantic scene is unchanged"
+            );
+            b = current;
+        }
+        let route = HostPointerRoute::new(b, target.center());
+        let facts = if scenario == "blocked" {
+            SurfacePointerReceiverFacts::unknown().with_blocked_delivery(&b)
+        } else {
+            SurfacePointerReceiverFacts::delivery(&delivery)
+        };
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .submit_host_pointer(HostPointerInput::new(
+                SurfacePointerId::new(1),
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                route,
+                route,
+                SurfacePointerCapture::ProviderEndpoint,
+                facts,
+            ))
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        assert_popup_press_leaves_content_idle(&session, &report);
+        assert_eq!(session.presented_surface(B), Some(b), "{scenario}");
+        let mut inspect = session.begin_host_frame().unwrap();
+        assert_eq!(popup_layers(&mut inspect, A), (true, true), "{scenario}");
+        assert_eq!(popup_layers(&mut inspect, B), (false, false), "{scenario}");
+    }
+}
+
+#[test]
+fn host_pointer_other_surface_drag_only_press_dismisses_popup_without_starting_group_drag() {
+    for framework_blocked in [false, true] {
+        let (mut session, b, _) = host_pointer_popup_fixture();
+        let mut inspect = session.begin_host_frame().unwrap();
+        let plan = inspect.paint_plan(B).unwrap().unwrap();
+        let mut grip = None;
+        plan.visit_surface_program(|step| {
+            if let Step::Operation {
+                operation: Operation::TabBar(bar),
+                ..
+            } = step
+            {
+                grip = plan.receiver_for_tab_group_grip(bar);
+            }
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        let grip = grip.expect("B's retained tab group must expose a drag-only grip");
+        assert_eq!(grip.role(), DockspaceReceiverRole::TabGroupGrip);
+        drop(inspect);
+        let grip = session.bind_presented_receiver(&grip).unwrap();
+        let hit = session.host_pointer_hit(B, grip.center()).unwrap();
+        assert!(hit.delivery().is_none());
+        assert_eq!(hit.drag_delivery(), Some(grip));
+
+        // Unknown click delivery is independent of an exact Dock drag receiver.
+        let facts = if framework_blocked {
+            SurfacePointerReceiverFacts::unknown().with_blocked_delivery(&b)
+        } else {
+            SurfacePointerReceiverFacts::unknown().with_drag_delivery(&grip)
+        };
+        let route = HostPointerRoute::new(b, grip.center());
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .submit_host_pointer(HostPointerInput::new(
+                SurfacePointerId::new(1),
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                route,
+                route,
+                SurfacePointerCapture::ProviderEndpoint,
+                facts,
+            ))
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        assert_popup_press_leaves_content_idle(&session, &report);
+        assert_eq!(session.presented_surface(B), Some(b));
+
+        let mut measured = session.begin_host_frame().unwrap();
+        measure_overflow_surface(&mut measured, A);
+        measured
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        measured.commit().unwrap();
+        let mut inspect = session.begin_host_frame().unwrap();
+        assert_eq!(
+            popup_layers(&mut inspect, A),
+            (framework_blocked, framework_blocked),
+            "a valid drag lane must dismiss the popup; blocked delivery must preserve it"
+        );
+        assert_eq!(popup_layers(&mut inspect, B), (false, false));
+    }
+}
+
+#[test]
+fn host_pointer_other_surface_wheel_preserves_popup_and_underlying_strip_offset() {
+    let (mut session, _, _) = host_pointer_popup_fixture();
+    let mut measured = session.begin_host_frame().unwrap();
+    measure_overflow_surface(&mut measured, B);
+    measured
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    measured.commit().unwrap();
+
+    let mut inspect = session.begin_host_frame().unwrap();
+    let plan = inspect.paint_plan(B).unwrap().unwrap();
+    let mut strip = None;
+    plan.visit_surface_program(|step| {
+        if let Step::Operation {
+            operation: Operation::TabBar(bar),
+            ..
+        } = step
+        {
+            strip = Some((
+                plan.receiver_for_tab_strip_scroll(bar).unwrap(),
+                bar.scroll_offset(),
+                bar.maximum_scroll_offset(),
+            ));
+        }
+        Ok::<(), ()>(())
+    })
+    .unwrap();
+    let (scroll, offset, maximum) = strip.expect("B must expose its overflowing strip");
+    assert_eq!(offset, 0.0);
+    assert!(
+        maximum > 40.0,
+        "the wheel must have room to scroll B's strip"
+    );
+    drop(inspect);
+    let (_, output) = paint(&mut session, B);
+    session
+        .report_surface_presentation(output, ResultKind::Presented)
+        .unwrap();
+    settle(&mut session);
+    let b = session.presented_surface(B).unwrap();
+    let scroll = session.bind_presented_receiver(&scroll).unwrap();
+
+    let route = HostPointerRoute::new(b, scroll.center());
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .submit_host_pointer(HostPointerInput::new(
+            SurfacePointerId::new(1),
+            SurfacePointerEvent::Scrolled(SurfaceScrollEvent::new(
+                SurfaceScrollDeviceId::new(1),
+                SurfaceScrollPhase::Discrete {
+                    delta: SurfaceScrollDelta::LogicalPoints { x: -40.0, y: 0.0 },
+                },
+                SurfaceScrollMomentum::Direct,
+                SurfaceScrollModifiers::new(false, false, false, false),
+            )),
+            route,
+            route,
+            SurfacePointerCapture::None,
+            SurfacePointerReceiverFacts::delivery(&scroll),
+        ))
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert_popup_press_leaves_content_idle(&session, &report);
+    assert!(session.pointer_continuation().is_none());
+    assert_eq!(session.presented_surface(B), Some(b));
+
+    let mut inspect = session.begin_host_frame().unwrap();
+    let plan = inspect.paint_plan(B).unwrap().unwrap();
+    let mut after = None;
+    plan.visit_surface_program(|step| {
+        if let Step::Operation {
+            operation: Operation::TabBar(bar),
+            ..
+        } = step
+        {
+            after = Some((bar.scroll_offset(), bar.maximum_scroll_offset()));
+        }
+        Ok::<(), ()>(())
+    })
+    .unwrap();
+    assert_eq!(
+        after,
+        Some((offset, maximum)),
+        "a non-owner wheel must not scroll the strip underneath the popup"
+    );
+    assert_eq!(popup_layers(&mut inspect, A), (true, true));
+    assert_eq!(popup_layers(&mut inspect, B), (false, false));
 }
 
 #[test]
@@ -335,45 +749,13 @@ fn pending_surfaces_present_independently_and_keep_equal_coordinate_receivers_is
 }
 
 #[test]
-fn popup_barrier_ack_preserves_first_surface_artifact_until_sibling_presents() {
+fn popup_owner_ack_is_independent_and_preserves_its_artifact_when_sibling_presents() {
     let mut session = session();
     let mut narrow = session.begin_host_frame().unwrap();
     measure_overflow(&mut narrow);
     narrow.commit().unwrap();
 
-    let mut inspect = session.begin_host_frame().unwrap();
-    let plan = inspect.paint_plan(A).unwrap().unwrap();
-    let mut menu_control = None;
-    plan.visit_surface_program(|step| {
-        if let Step::Operation {
-            operation: Operation::TabStripControl(control),
-            ..
-        } = step
-            && control.kind() == TabStripControlKind::TabListMenu
-        {
-            assert!(control.enabled());
-            assert!(!control.menu_open());
-            assert!(menu_control.replace(control).is_none());
-        }
-        Ok::<(), ()>(())
-    })
-    .unwrap();
-    let open = plan
-        .prepare_tab_strip_control_activation(
-            menu_control.expect("the narrow strip must expose its tab-list menu control"),
-        )
-        .unwrap();
-    inspect
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    inspect.commit().unwrap();
-
-    let mut open_frame = session.begin_host_frame().unwrap();
-    open_frame.submit_surface_action(open).unwrap();
-    open_frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    open_frame.commit().unwrap();
+    open_tab_list_menu(&mut session, A);
     let mut publish_popup = session.begin_host_frame().unwrap();
     measure_overflow(&mut publish_popup);
     publish_popup.commit().unwrap();
@@ -398,9 +780,10 @@ fn popup_barrier_ack_preserves_first_surface_artifact_until_sibling_presents() {
         })
         .unwrap();
         assert_eq!(menu_seen, surface == A);
+        assert_eq!(backdrop_receiver.is_some(), surface == A);
         let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
         painted.confirm_surface_painted(receipt).unwrap();
-        recordings.push((recording, backdrop_receiver.unwrap()));
+        recordings.push((recording, backdrop_receiver));
     }
     let mut outputs = painted.commit().unwrap().take_painted_outputs();
     assert_eq!(outputs.len(), 2);
@@ -416,6 +799,10 @@ fn popup_barrier_ack_preserves_first_surface_artifact_until_sibling_presents() {
     let [(a_records, a_receiver), (b_records, b_receiver)] = recordings.as_slice() else {
         panic!("both surfaces must retain their owned popup recordings")
     };
+    let a_receiver = a_receiver
+        .as_ref()
+        .expect("the popup owner must expose its backdrop receiver");
+    assert!(b_receiver.is_none());
     assert!(
         matches!(a_records.records.last(), Some(OwnedRecord::SurfaceEnd(semantic))
         if a_output.matches_semantic_output(*semantic))
@@ -438,38 +825,36 @@ fn popup_barrier_ack_preserves_first_surface_artifact_until_sibling_presents() {
     assert!(a_ack.presents(a_artifact));
     assert!(!a_ack.retires(a_artifact));
     assert!(!a_ack.settles(b_artifact));
-    assert!(session.presented_surface(A).is_none());
+    assert_eq!(session.presented_surface(A).unwrap().surface(), A);
     assert!(session.presented_surface(B).is_none());
-    assert!(session.bind_presented_receiver(a_receiver).is_none());
-    assert!(session.bind_presented_receiver(b_receiver).is_none());
+    let a_bound_receiver = session
+        .bind_presented_receiver(a_receiver)
+        .expect("the popup owner must become interactive after its own presentation");
 
-    // A's acknowledged recording stays usable while the popup barrier hides
-    // its accepted proof. Only B emits the remaining final-presentation report.
+    // B settles independently without changing A's accepted popup artifact or authority.
     session
         .report_surface_presentation(b_output, ResultKind::Presented)
         .unwrap();
     let mut b_committed = settle(&mut session);
     assert!(b_committed.take_painted_outputs().is_empty());
     let [b_ack] = b_committed.surface_presentation_commits() else {
-        panic!("the sibling alone must complete the popup presentation barrier")
+        panic!("the sibling must settle its own presentation independently")
     };
     assert!(b_ack.presents(b_artifact));
     assert!(!b_ack.retires(b_artifact));
     assert!(!b_ack.settles(a_artifact));
     assert_eq!(session.presented_surface(A).unwrap().surface(), A);
     assert_eq!(session.presented_surface(B).unwrap().surface(), B);
-    let a_bound_receiver = session.bind_presented_receiver(a_receiver).unwrap();
-    let b_bound_receiver = session.bind_presented_receiver(b_receiver).unwrap();
+    assert_eq!(
+        session.bind_presented_receiver(a_receiver),
+        Some(a_bound_receiver)
+    );
     let mut unchanged = settle(&mut session);
     assert!(unchanged.surface_presentation_commits().is_empty());
     assert!(unchanged.take_painted_outputs().is_empty());
     assert_eq!(
         session.bind_presented_receiver(a_receiver),
         Some(a_bound_receiver)
-    );
-    assert_eq!(
-        session.bind_presented_receiver(b_receiver),
-        Some(b_bound_receiver)
     );
 }
 

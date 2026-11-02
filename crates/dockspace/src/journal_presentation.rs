@@ -16,14 +16,15 @@ use crate::pointer_receiver::{
 };
 use crate::presentation_hit::PresentationHitManifest;
 use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
-use crate::scene::{PopupInteractionGateRevision, PresentationPlan, SurfacePlanScene};
+use crate::scene::{PresentationPlan, SurfacePlanScene};
+use crate::tab_strip::PopupRoutingRevision;
 
 /// One exact output projection frozen for a pointer-journal reduction.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct JournalSurfacePresentation {
     output: SurfacePlanScene,
     authority: PresentedSurfaceAuthority,
-    popup_gate_revision: PopupInteractionGateRevision,
+    popup_revision: PopupRoutingRevision,
 }
 
 impl JournalSurfacePresentation {
@@ -33,7 +34,7 @@ impl JournalSurfacePresentation {
         Self {
             output: projection.output().clone(),
             authority: projection.authority(),
-            popup_gate_revision: projection.popup_gate_revision(),
+            popup_revision: projection.popup_revision(),
         }
     }
 
@@ -45,8 +46,8 @@ impl JournalSurfacePresentation {
         self.authority
     }
 
-    pub(crate) const fn popup_gate_revision(&self) -> PopupInteractionGateRevision {
-        self.popup_gate_revision
+    pub(crate) const fn popup_revision(&self) -> PopupRoutingRevision {
+        self.popup_revision
     }
 
     pub(crate) const fn surface(&self) -> SurfaceId {
@@ -73,7 +74,7 @@ impl JournalSurfacePresentation {
         crate::scene::SurfaceInteractionProjection::from_frozen_parts(
             &self.output,
             self.authority,
-            self.popup_gate_revision,
+            self.popup_revision,
         )
     }
 }

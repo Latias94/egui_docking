@@ -1,12 +1,47 @@
 # Dockspace semantic state and engine-host refactor
 
-Date: 2026-11-02. Status: proposed; implementation has not started.
+Date: 2026-11-02. Status: active; first functional tranche qualified; structural work remains open.
 
 This follows the [independent ImGui comparison](../audits/2026-11-02-dockspace-imgui-review.md),
 which demonstrates nine public-path counterexamples against `ca8f0c3`. It adds
 work discovered after the earlier plan's acceptance checkpoint. Breaking interfaces,
 deletion of superseded paths, and fork changes are allowed. The primary consumer
 remains an engine-owned UI/render loop; egui is the validation adapter.
+
+## Execution status
+
+The full plan is the active Goal. No slice is qualified merely because its code
+has landed in the working tree. Cargo and real-window work have one main-thread
+owner; implementation and read-only review lanes use disjoint write scopes.
+
+- P0: all nine public-path counterexamples are maintained host-harness tests;
+  same-prefix, separately settled and abandoned-settlement cases now pass.
+- P1: last-Presented settlement and owner-only popup visuals are implemented,
+  including non-owner click/drag dismissal and wheel blocking. The duplicate
+  popup proof map and its revision issuer are deleted. The single pending-mutation
+  enum and shared presentation tracker remain open.
+- P2: defaults and document restore preserve semantic IDs and merge allocation
+  history; the rebase module is deleted. Host and managed window keys use distinct
+  namespaces in the existing registry; importing managed keys is rejected.
+  First-tranche core/public/product/native qualification passes.
+- P3: contained movement shares manipulation geometry, zero-displacement resize
+  preserves weights, and unrelated scroll preserves/rebinds stationary work only
+  through a fresh exact output. Nested boundary behavior and production traversal
+  remain open.
+- P4: native preparation uses continuous relevant facts in the existing streams;
+  actual source recovery cancels all create phases even after readiness loss.
+  Native model and finite macOS/X11 qualification pass; work-area selection remains open.
+- P5: dynamic logical surfaces and measured transaction optimization remain open.
+
+First-tranche qualification passes workspace 1,970, public default 183 / serde 211,
+product serde 117, native normal/noassert 540 each, ten doctests, strict rustdoc,
+Clippy correctness/suspicious and formatting. Finite macOS and X11 default/bounded
+redock and all six pressure modes pass, as does the X11 physical guide journey.
+The W16/O256 gate additionally found and fixed ordinary-output pressure rejecting
+an already-owned Show callback; its terminal keeps the existing prepaid owner.
+Full records and limits are in [VALIDATION](../VALIDATION.md#2026-11-02-semantic-state-refactor-first-tranche).
+
+Independent CI changes and `docs/reviews/` are excluded from all slice commits.
 
 ## Required invariants
 

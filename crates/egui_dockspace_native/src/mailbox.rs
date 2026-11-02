@@ -5156,7 +5156,9 @@ impl NativeHostBridge {
         if records.viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
             return false;
         }
-        (matches!(records.mode, HostIngressMode::Quarantined) || records.admit_ordinary())
+        // An emitted lifecycle effect owns this prepaid terminal slot. Ordinary
+        // output pressure must not turn its pending Show into a dispatch failure.
+        records.mode.accepts_terminal_callbacks()
             && records
                 .window_resources
                 .reserve_visibility_callback(viewport, binding, window, token, visible)

@@ -1044,13 +1044,17 @@ impl WindowPresentationObservation {
     }
 }
 
-/// Monotonic per-binding presentation observation stream.
+/// Monotonic per-binding presentation observations and their staging continuity interval.
+///
+/// Consecutive equal states preserve the interval regardless of one-shot ACKs.
+/// The registry also cuts this interval when the associated readiness changes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct WindowPresentationObservationStream {
     current: Option<WindowPresentationObservation>,
     last_generation: Option<PresentationObservationGeneration>,
     last_envelope: Option<WindowPresentationObservation>,
     requires_tombstone: bool,
+    continuous_since: Option<PresentationObservationGeneration>,
 }
 
 impl WindowPresentationObservationStream {
@@ -1061,11 +1065,13 @@ impl WindowPresentationObservationStream {
     ) {
         let Some(observation) = observation else {
             self.current = None;
+            self.continuous_since = None;
             self.requires_tombstone |= self.last_generation.is_some();
             return;
         };
         if observation.binding() != binding {
             self.current = None;
+            self.continuous_since = None;
             self.requires_tombstone |= self.last_generation.is_some();
             return;
         }
@@ -1077,24 +1083,48 @@ impl WindowPresentationObservationStream {
                     .is_some_and(|last| last.same_provider_envelope(observation))
                 {
                     self.current = None;
+                    self.continuous_since = None;
                     self.requires_tombstone = true;
                 }
                 return;
             }
             Some(_) | None => {}
         }
+        let continues = self.current.is_some_and(|current| {
+            current.known_state() == observation.known_state()
+                && current.generation().checked_next() == Some(observation.generation())
+        });
         self.last_generation = Some(observation.generation());
         self.last_envelope = Some(observation);
         if self.requires_tombstone && observation.known_state().is_some() {
             self.current = None;
+            self.continuous_since = None;
             return;
         }
         self.current = observation.known_state().map(|_| observation);
+        if self.current.is_none() {
+            self.continuous_since = None;
+        } else if !continues || self.continuous_since.is_none() {
+            self.continuous_since = Some(observation.generation());
+        }
         self.requires_tombstone = false;
     }
 
     pub(crate) const fn current(self) -> Option<WindowPresentationObservation> {
         self.current
+    }
+
+    /// Preparation changes also cut staging continuity, without issuing another clock.
+    pub(crate) fn revoke_continuity(&mut self) {
+        self.continuous_since = None;
+    }
+
+    pub(crate) fn is_continuous_since(self, generation: PresentationObservationGeneration) -> bool {
+        self.continuous_since
+            .is_some_and(|since| since <= generation)
+            && self
+                .current
+                .is_some_and(|current| generation <= current.generation())
     }
 }
 
@@ -3494,6 +3524,69 @@ mod tests {
             InventoryGeneration::new(7),
             "repeating an old provider envelope cannot make it causally newer"
         );
+    }
+
+    #[test]
+    fn presentation_continuity_ignores_consumed_acks_but_rejects_interrupted_intervals() {
+        let binding = binding(1);
+        let mut stream = WindowPresentationObservationStream::default();
+        let observation = |generation, state, acknowledgement| {
+            WindowPresentationObservation::new(
+                binding,
+                PresentationObservationGeneration::new(generation),
+                state,
+                acknowledgement,
+            )
+        };
+        let first = observation(
+            1,
+            Authority::Known(WindowPresentationState::Hidden),
+            PresentationEffectAcknowledgement::known(Some(EffectId::new(1))),
+        );
+        stream.observe(binding, Some(first));
+        stream.observe(
+            binding,
+            Some(observation(
+                2,
+                Authority::Known(WindowPresentationState::Hidden),
+                PresentationEffectAcknowledgement::known(None),
+            )),
+        );
+        assert!(stream.is_continuous_since(first.generation()));
+
+        stream.observe(
+            binding,
+            Some(observation(
+                3,
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                PresentationEffectAcknowledgement::known(None),
+            )),
+        );
+        stream.observe(binding, Some(first));
+        assert!(!stream.is_continuous_since(first.generation()));
+        let restored = observation(
+            4,
+            Authority::Known(WindowPresentationState::Hidden),
+            PresentationEffectAcknowledgement::known(None),
+        );
+        stream.observe(binding, Some(restored));
+        assert!(!stream.is_continuous_since(first.generation()));
+        assert!(stream.is_continuous_since(restored.generation()));
+
+        stream.revoke_continuity();
+        stream.observe(binding, Some(restored));
+        assert!(stream.current().is_some());
+        assert!(!stream.is_continuous_since(restored.generation()));
+        stream.observe(
+            binding,
+            Some(observation(
+                5,
+                Authority::Known(WindowPresentationState::Hidden),
+                PresentationEffectAcknowledgement::known(None),
+            )),
+        );
+        assert!(!stream.is_continuous_since(restored.generation()));
+        assert!(stream.is_continuous_since(PresentationObservationGeneration::new(5)));
     }
 
     #[test]

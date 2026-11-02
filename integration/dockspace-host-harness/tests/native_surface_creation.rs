@@ -599,7 +599,56 @@ fn direct_prepared_first_live_admits_the_existing_surface_without_changing_its_t
 }
 
 #[test]
+fn review_identical_hidden_snapshot_preserves_inflight_pre_show() {
+    let mut fixture = SurfaceHost::new(NativeCreateStrategy::Staged);
+    let (child, create) = fixture.request();
+    let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
+        panic!("creation must return its exact readiness acknowledgement");
+    };
+    fixture.observe(
+        child,
+        child_facts(NativeWindowPresentationState::Hidden)
+            .with_create_readiness(NativeCreateReadiness::Created, Some(created)),
+    );
+    let pre_show = paint_staging(
+        &mut fixture.session,
+        child,
+        NativeStagingPresentationPhase::PreShow,
+    );
+
+    // Durable visibility, readiness, geometry and scale facts remain identical.
+    // The one-shot Create acknowledgement was consumed by the first observation.
+    fixture.observe(
+        child,
+        child_facts(NativeWindowPresentationState::Hidden)
+            .with_create_readiness(NativeCreateReadiness::Created, None),
+    );
+    fixture
+        .session
+        .report_native_staging_presentation(pre_show, SurfacePresentationResult::Presented)
+        .unwrap();
+    let mut report = finish(native_frame(&mut fixture.session));
+    assert!(
+        report.take_native_effects().iter().any(|request| matches!(
+            request.operation(),
+            NativeEffectOperation::ShowWindow { binding } if *binding == child
+        )),
+        "unchanged Hidden/Created facts must preserve the in-flight PreShow presentation"
+    );
+}
+
+#[test]
 fn staged_existing_surface_requires_pre_show_show_ack_post_show_and_semantic_first_live() {
+    complete_staged_surface(true, true);
+}
+
+#[test]
+fn staged_show_ack_survives_unknown_preparation_or_coordinates() {
+    complete_staged_surface(false, true);
+    complete_staged_surface(false, false);
+}
+
+fn complete_staged_surface(show_readiness: bool, show_geometry: bool) {
     let mut fixture = SurfaceHost::new(NativeCreateStrategy::Staged);
     let (child, create) = fixture.request();
     let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
@@ -631,11 +680,19 @@ fn staged_existing_surface_requires_pre_show_show_ack_post_show_and_semantic_fir
     let Some(NativeEffectAcknowledgement::Presentation(shown)) = show.accepted() else {
         panic!("Show must return its exact visibility acknowledgement");
     };
+    let show_facts = if show_geometry {
+        child_facts(NativeWindowPresentationState::Hidden)
+    } else {
+        NativeWindowFacts::live()
+    };
+    let show_facts = if show_readiness {
+        show_facts.with_create_readiness(NativeCreateReadiness::Created, None)
+    } else {
+        show_facts
+    };
     fixture.observe(
         child,
-        child_facts(NativeWindowPresentationState::Hidden)
-            .with_create_readiness(NativeCreateReadiness::Created, None)
-            .with_presentation(NativeWindowPresentationState::Hidden, Some(shown)),
+        show_facts.with_presentation(NativeWindowPresentationState::Hidden, Some(shown)),
     );
     assert_unpaintable(&mut fixture.session);
     fixture.observe(

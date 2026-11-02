@@ -3061,8 +3061,8 @@ fn presentation_reports_queue_behind_a_dropped_joined_host_frame() {
     );
     host.run(|_| {});
     assert!(
-        host.session.presented_surface(SURFACE).is_none(),
-        "the queued dropped output retires the newer presentation obligation"
+        host.session.presented_surface(SURFACE).is_some(),
+        "the queued dropped output preserves the earlier actual presentation"
     );
 }
 
@@ -3107,8 +3107,8 @@ fn latest_terminal_result_is_independent_of_prelude_batching() {
     host.run(|_| {});
 
     assert!(
-        host.session.presented_surface(SURFACE).is_none(),
-        "the latest terminal output must revoke older presentation authority"
+        host.session.presented_surface(SURFACE).is_some(),
+        "a dropped successor preserves the last actual presentation in the same prefix"
     );
 }
 

@@ -50,14 +50,13 @@ pub(crate) fn compile_surface_scene(
         return Err(SceneCompilationError::EmptySurfaceBounds { surface });
     }
     let popup_plane_bounds = measurements.popup_plane_bounds();
-    match (popup, popup_plane_bounds) {
-        (PopupPlaneRequirement::Inactive { .. }, None) => {}
-        (PopupPlaneRequirement::Active { .. }, Some(bounds)) if rect_has_area(bounds) => {}
-        (PopupPlaneRequirement::Active { .. }, Some(_)) => {
+    match (popup.visual_for_surface(surface), popup_plane_bounds) {
+        (None, None) => {}
+        (Some(_), Some(bounds)) if rect_has_area(bounds) => {}
+        (Some(_), Some(_)) => {
             return Err(SceneCompilationError::EmptyPopupPlaneBounds { surface });
         }
-        (PopupPlaneRequirement::Inactive { .. }, Some(_))
-        | (PopupPlaneRequirement::Active { .. }, None) => {
+        (None, Some(_)) | (Some(_), None) => {
             return Err(SceneCompilationError::PopupPlaneStateMismatch);
         }
     }
@@ -74,6 +73,7 @@ pub(crate) fn compile_surface_scene(
     if let PopupPlaneRequirement::Active {
         revision, session, ..
     } = popup
+        && popup.visual_for_surface(surface).is_some()
     {
         let popup_plane_bounds =
             popup_plane_bounds.ok_or(SceneCompilationError::PopupPlaneStateMismatch)?;

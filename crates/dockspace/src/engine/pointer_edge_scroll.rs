@@ -36,6 +36,21 @@ impl DockEngine {
         LogicalPoint,
         TabStripEdgeDirection,
     )> {
+        let (presentation, point) = self.stationary_hover_presentation(receipt, snapshot)?;
+        let (bar, direction) = self.tab_strip_edge_scroll_target_at(
+            presentation.plan(),
+            presentation.hit_manifest(),
+            point,
+        )?;
+        Some((presentation, bar, point, direction))
+    }
+
+    fn tab_strip_edge_scroll_target_at<'plan>(
+        &self,
+        plan: &'plan PresentationPlan,
+        hit_manifest: &crate::presentation_hit::PresentationHitManifest,
+        point: LogicalPoint,
+    ) -> Option<(&'plan TabBarRecord, TabStripEdgeDirection)> {
         let config = &self.presentation_authority.presentation_config;
         config.tab_strip_edge_scroll_interval()?;
         if self
@@ -46,9 +61,7 @@ impl DockEngine {
         {
             return None;
         }
-        let (presentation, point) = self.stationary_hover_presentation(receipt, snapshot)?;
-        let hit = presentation
-            .hit_manifest()
+        let hit = hit_manifest
             .resolve_exclusive(PresentationPointerLane::Scroll, point)
             .ok()??;
         let PresentationHitRegionKind::TabStripScroll(bar) = hit.id().kind() else {
@@ -58,10 +71,7 @@ impl DockEngine {
             PresentationPointerLane::Click,
             PresentationPointerLane::Drag,
         ] {
-            let winner = presentation
-                .hit_manifest()
-                .resolve_exclusive(lane, point)
-                .ok()?;
+            let winner = hit_manifest.resolve_exclusive(lane, point).ok()?;
             let same_strip = winner.is_none_or(|winner| match winner.id().kind() {
                 PresentationHitRegionKind::TabBody(tab) => {
                     tab.root == bar.root && tab.tabs == bar.tabs
@@ -70,8 +80,7 @@ impl DockEngine {
                 PresentationHitRegionKind::PaneBody(pane) => {
                     pane.root == bar.root && pane.tabs == bar.tabs
                 }
-                PresentationHitRegionKind::ContainedFrameBlocker(floating) => presentation
-                    .plan()
+                PresentationHitRegionKind::ContainedFrameBlocker(floating) => plan
                     .contained_record(floating)
                     .is_some_and(|contained| contained.root() == bar.root),
                 _ => false,
@@ -80,16 +89,15 @@ impl DockEngine {
                 return None;
             }
         }
-        let key = TabStripStateKey::new(presentation.surface(), bar);
+        let key = TabStripStateKey::new(plan.surface(), bar);
         if self.tab_strip_has_manual_scroll_owner(key) {
             return None;
         }
-        let record = presentation
-            .plan()
+        let record = plan
             .tab_bar_records()
             .iter()
             .find(|record| *record.id() == bar)?;
-        let viewport = edge_content_viewport(presentation.plan(), record)?;
+        let viewport = edge_content_viewport(plan, record)?;
         if record.interaction() != TabBarInteraction::Enabled || !viewport.contains(point) {
             return None;
         }
@@ -111,7 +119,141 @@ impl DockEngine {
         } else {
             return None;
         };
-        Some((presentation, record, point, direction))
+        Some((record, direction))
+    }
+
+    /// Rebinds unchanged stationary work after a local strip-state recompile.
+    /// The successor remains unexecutable until its exact output is Presented.
+    pub(super) fn rebind_edge_scroll_after_local_recompile(
+        &mut self,
+        cause: ReductionCause,
+        surfaces: &BTreeSet<SurfaceId>,
+    ) -> Result<(), EngineError> {
+        let InteractionStatus::Dragging { session } = self.interaction.status() else {
+            return Ok(());
+        };
+        let drag = self
+            .interaction
+            .active_drag(session)
+            .map_err(|error| edge_scroll_invariant(cause, format!("{error:?}")))?;
+        let Some(DragTimedContinuation::TabStripEdgeScroll(pending)) = drag.timed.as_ref() else {
+            return Ok(());
+        };
+        if !surfaces.contains(&pending.key.surface()) {
+            return Ok(());
+        }
+        let owner = drag.owner;
+        let source_current = self.presentation_authority_is_current(drag.presentation)
+            || drag.continuation.as_ref().is_some_and(|continuation| {
+                self.scene_gesture_continuation_is_current(continuation)
+            });
+        let output = (source_current
+            && self.pointer_continuation_source_is_current(owner)
+            && self.stationary_surface_is_reachable(owner, pending.key.surface())
+            && pending.request.token.owner == owner.stream()
+            && pending.request.token.session == PointerContinuationSession::Drag(session))
+        .then(|| self.rebound_edge_scroll_output(pending))
+        .flatten();
+        let Some(output) = output else {
+            self.clear_drag_continuation(session);
+            return Ok(());
+        };
+        if output == pending.output {
+            return Ok(());
+        }
+        let deadline = pending.request.token.deadline;
+        let token = self
+            .interaction
+            .mint_continuation(owner, PointerContinuationSession::Drag(session), deadline)
+            .map_err(|error| edge_scroll_invariant(cause, error))?;
+        let drag = self
+            .interaction
+            .active_drag_mut(session)
+            .map_err(|error| edge_scroll_invariant(cause, format!("{error:?}")))?;
+        let Some(DragTimedContinuation::TabStripEdgeScroll(pending)) = drag.timed.as_mut() else {
+            return Err(edge_scroll_invariant(
+                cause,
+                "rebound edge scroll lost its pending state",
+            ));
+        };
+        pending.output = output;
+        pending.request.token = token;
+        Ok(())
+    }
+
+    fn rebound_edge_scroll_output(
+        &self,
+        pending: &TabStripEdgeScrollState,
+    ) -> Option<crate::presentation_observation::SurfacePresentationOutputTicket> {
+        let surface = pending.key.surface();
+        if pending.workspace != self.version || pending.request.surface != surface {
+            return None;
+        }
+        let ready = self.scene().surface(surface)?.ready()?;
+        let candidate = ready.candidate();
+        let previous = if candidate.output_ticket() == pending.output {
+            candidate
+        } else {
+            ready
+                .paint_fallback()
+                .filter(|previous| previous.output_ticket() == pending.output)?
+        };
+        let (stream, _, endpoint) = self
+            .presentation_authority
+            .presentation
+            .active_surface_scope(surface)?;
+        if stream != pending.authority.stream()
+            || endpoint != pending.authority.endpoint()
+            || presentation_endpoint_from_capture(candidate.coordinate_capture()) != endpoint
+            || candidate.coordinate_capture().authority_generation()
+                != pending.authority.coordinate_generation()
+            || !candidate
+                .coordinate_capture()
+                .same_projection_authority(previous.coordinate_capture())
+            || !Self::coordinate_capture_matches_current(
+                candidate.coordinate_capture(),
+                self.viewport.viewport(surface),
+                self.viewport.surface_coordinate_authority(surface),
+            )
+            || previous.stamp().requirement() != candidate.stamp().requirement()
+            || previous.plan().bounds() != candidate.plan().bounds()
+            || previous.plan().popup() != candidate.plan().popup()
+        {
+            return None;
+        }
+        let (before, before_direction) = self.tab_strip_edge_scroll_target_at(
+            previous.plan(),
+            previous.hit_manifest(),
+            pending.request.point,
+        )?;
+        let (after, after_direction) = self.tab_strip_edge_scroll_target_at(
+            candidate.plan(),
+            candidate.hit_manifest(),
+            pending.request.point,
+        )?;
+        // Compare only the affected strip's actual records. A sibling's changed
+        // offset must not revoke the stationary point on this unchanged strip.
+        if *before.id() != pending.key.bar()
+            || before.viewport() != pending.viewport
+            || before.scroll_offset() != pending.offset
+            || before.maximum_scroll_offset() != pending.maximum
+            || before_direction != pending.direction
+            || after_direction != pending.direction
+            || before != after
+            || !previous
+                .plan()
+                .tab_strip_control_records()
+                .iter()
+                .filter(|control| control.id().bar() == pending.key.bar())
+                .eq(candidate
+                    .plan()
+                    .tab_strip_control_records()
+                    .iter()
+                    .filter(|control| control.id().bar() == pending.key.bar()))
+        {
+            return None;
+        }
+        Some(candidate.output_ticket())
     }
 
     pub(super) fn edge_scroll_continuation_is_current(

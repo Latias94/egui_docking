@@ -41,7 +41,7 @@ fn execute_surface_program(
 
 #[cfg(feature = "serde")]
 #[test]
-fn joined_document_restore_rebases_after_a_workspace_mutating_native_prefix() {
+fn joined_document_restore_preserves_identities_after_a_workspace_mutating_native_prefix() {
     const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x5a; 16]);
 
     fn persistent_session() -> (DockspaceSession, ItemId, ItemId) {
@@ -151,7 +151,7 @@ fn joined_layout_reset_retries_after_a_workspace_mutating_native_prefix() {
         )])
         .expect("the joined reset layout validates")
     };
-    // The default's root is below the live frontier and must receive a fresh ID.
+    // The default's root remains stable even below the live allocation frontier.
     let mut target = DockspaceSession::from_layout(layout(RootId::new(2)), DockPolicy::default())
         .expect("the layout-only session initializes");
     target
@@ -186,7 +186,7 @@ fn joined_layout_reset_retries_after_a_workspace_mutating_native_prefix() {
             .begin_native_layout_reset_frame(&prepared, |_| NativeReceiverAnswer::Unknown)
             .expect("the rollbackable joined reset begins");
         assert_ne!(reset.version().epoch(), expected.epoch());
-        assert_eq!(reset.view().item(ITEM).unwrap().root(), RootId::new(3));
+        assert_eq!(reset.view().item(ITEM).unwrap().root(), ROOT);
         assert!(reset.view().item(ITEM).unwrap().is_selected());
         assert_eq!(reset.frame.backend_ingress_through(), prefix);
         reset.version()
@@ -203,7 +203,7 @@ fn joined_layout_reset_retries_after_a_workspace_mutating_native_prefix() {
         .expect("the same prepared reset replays the unchanged native prefix");
     assert_eq!(reset.version(), candidate_version);
     assert_eq!(reset.frame.backend_ingress_through(), prefix);
-    assert_eq!(reset.view().item(ITEM).unwrap().root(), RootId::new(3));
+    assert_eq!(reset.view().item(ITEM).unwrap().root(), ROOT);
     reset
         .measure_surface(
             SURFACE,

@@ -68,7 +68,7 @@ impl ValidatedWorkspaceRestore {
         self.root_continuation
     }
 
-    pub(super) fn into_parts(self) -> (Workspace, PresentationIdentityFrontier) {
+    pub(crate) fn into_parts(self) -> (Workspace, PresentationIdentityFrontier) {
         (self.workspace, self.presentation_identity_frontier)
     }
 }

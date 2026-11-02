@@ -564,7 +564,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
 
     /// Restores a document and continues the external Root on its declared incoming surface.
     ///
-    /// Core rebases Root/Child references and placement together. Explicit Child
+    /// Core preserves declared Root/Child identities and placement together. Explicit Child
     /// declarations resume through normal budgeted creation after predecessor
     /// quiescence. The physical Root window survives the logical replacement.
     ///

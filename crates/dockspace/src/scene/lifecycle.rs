@@ -1,6 +1,7 @@
 //! Surface presentation lifecycle, authority, and retained paint state.
 
 use super::*;
+use crate::tab_strip::PopupRoutingRevision;
 
 /// Exact authority of one independently replaceable surface presentation.
 ///
@@ -261,7 +262,11 @@ impl ReadySurfaceScene {
                 paint_fallback: self.paint_fallback().map(SurfacePlanScene::output_ticket),
             });
         };
-        if output.plan().popup() != popup
+        if output
+            .plan()
+            .popup()
+            .visual_for_surface(authority.surface())
+            != popup.visual_for_surface(authority.surface())
             || !output
                 .coordinate_capture()
                 .matches_presented_authority(authority)
@@ -443,7 +448,7 @@ impl SurfaceScene {
 
     fn interaction_projection(
         &self,
-        popup_gate_revision: PopupInteractionGateRevision,
+        popup_revision: PopupRoutingRevision,
     ) -> Option<SurfaceInteractionProjection<'_>> {
         let Self::Ready(scene) = self else {
             return None;
@@ -454,7 +459,7 @@ impl SurfaceScene {
         Some(SurfaceInteractionProjection {
             output,
             authority,
-            popup_gate_revision,
+            popup_revision,
         })
     }
 
@@ -502,105 +507,6 @@ impl SurfaceScene {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PopupInteractionGatePhase {
-    InactiveIndependent,
-    Staging,
-    ActivePresented,
-}
-
-/// Monotonic identity of one workspace-global popup interaction authority epoch.
-///
-/// Exhaustion permanently keeps the gate fail-closed rather than permitting an
-/// ABA identity reuse.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct PopupInteractionGateRevision(u64);
-
-impl PopupInteractionGateRevision {
-    const fn checked_next(self) -> Option<Self> {
-        match self.0.checked_add(1) {
-            Some(value) => Some(Self(value)),
-            None => None,
-        }
-    }
-}
-
-/// Interaction authority coordinator for the workspace popup receiver plane.
-///
-/// With no active popup, each surface proves and loses authority independently.
-/// An active popup spans the workspace, so opening it, replacing it, and
-/// clearing it all require one exact-roster presentation barrier. Once the
-/// inactive close successor crosses that barrier, surfaces return to independent
-/// authority without weakening the exact per-output proof checks.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PopupInteractionGate {
-    requirement: PopupPlaneRequirement,
-    roster: BTreeSet<SurfaceId>,
-    proofs: BTreeMap<SurfaceId, PresentedSurfaceAuthority>,
-    phase: PopupInteractionGatePhase,
-    revision: Option<PopupInteractionGateRevision>,
-}
-
-impl PopupInteractionGate {
-    fn new(manifest: &SceneRequirementManifest) -> Self {
-        let requirement = manifest.popup();
-        Self {
-            requirement,
-            roster: manifest.surfaces().map(|(surface, _)| surface).collect(),
-            proofs: BTreeMap::new(),
-            phase: match requirement {
-                PopupPlaneRequirement::Inactive { .. } => {
-                    PopupInteractionGatePhase::InactiveIndependent
-                }
-                PopupPlaneRequirement::Active { .. } => PopupInteractionGatePhase::Staging,
-            },
-            revision: Some(PopupInteractionGateRevision::default()),
-        }
-    }
-
-    fn requires_roster_barrier(&self) -> bool {
-        self.phase != PopupInteractionGatePhase::InactiveIndependent
-    }
-
-    fn is_active_presented(&self) -> bool {
-        self.phase == PopupInteractionGatePhase::ActivePresented && self.revision.is_some()
-    }
-
-    fn interaction_revision(&self) -> Option<PopupInteractionGateRevision> {
-        if self.phase == PopupInteractionGatePhase::Staging {
-            return None;
-        }
-        self.revision
-    }
-
-    fn reconcile_identity(&mut self, manifest: &SceneRequirementManifest) -> bool {
-        let previous_requirement = self.requirement;
-        let roster = manifest
-            .surfaces()
-            .map(|(surface, _)| surface)
-            .collect::<BTreeSet<_>>();
-        let requirement = manifest.popup();
-        let changed = previous_requirement != requirement || self.roster != roster;
-        let requires_fresh_barrier = changed
-            && (matches!(previous_requirement, PopupPlaneRequirement::Active { .. })
-                || matches!(requirement, PopupPlaneRequirement::Active { .. })
-                || self.phase == PopupInteractionGatePhase::Staging);
-        if changed {
-            self.requirement = requirement;
-            self.roster = roster;
-        }
-        requires_fresh_barrier
-    }
-
-    fn reset_barrier(&mut self) {
-        self.revision = self
-            .revision
-            .and_then(PopupInteractionGateRevision::checked_next);
-        self.proofs.clear();
-        self.phase = PopupInteractionGatePhase::Staging;
-    }
-}
-
 /// Exact output-bound projection eligible for pointer receiver validation.
 ///
 /// Keeping these values in one view prevents adapters from pairing a current
@@ -609,19 +515,19 @@ impl PopupInteractionGate {
 pub struct SurfaceInteractionProjection<'a> {
     output: &'a SurfacePlanScene,
     authority: PresentedSurfaceAuthority,
-    popup_gate_revision: PopupInteractionGateRevision,
+    popup_revision: PopupRoutingRevision,
 }
 
 impl<'a> SurfaceInteractionProjection<'a> {
     pub(crate) const fn from_frozen_parts(
         output: &'a SurfacePlanScene,
         authority: PresentedSurfaceAuthority,
-        popup_gate_revision: PopupInteractionGateRevision,
+        popup_revision: PopupRoutingRevision,
     ) -> Self {
         Self {
             output,
             authority,
-            popup_gate_revision,
+            popup_revision,
         }
     }
 
@@ -665,8 +571,8 @@ impl<'a> SurfaceInteractionProjection<'a> {
         self.authority
     }
 
-    pub(crate) const fn popup_gate_revision(self) -> PopupInteractionGateRevision {
-        self.popup_gate_revision
+    pub(crate) const fn popup_revision(self) -> PopupRoutingRevision {
+        self.popup_revision
     }
 }
 
@@ -782,7 +688,7 @@ impl SurfaceSceneRecord {
 pub struct SurfaceSceneSet {
     surfaces: BTreeMap<SurfaceId, SurfaceSceneRecord>,
     revision_tombstones: BTreeMap<SurfaceId, SurfaceSceneRevision>,
-    popup_interaction_gate: PopupInteractionGate,
+    popup_requirement: PopupPlaneRequirement,
 }
 
 impl SurfaceSceneSet {
@@ -807,7 +713,7 @@ impl SurfaceSceneSet {
         let mut set = Self {
             surfaces: BTreeMap::new(),
             revision_tombstones: BTreeMap::new(),
-            popup_interaction_gate: PopupInteractionGate::new(manifest),
+            popup_requirement: manifest.popup(),
         };
         for (surface, requirements) in manifest.surfaces() {
             let revision = set.next_revision(surface)?;
@@ -845,7 +751,7 @@ impl SurfaceSceneSet {
         if self.native_first_live_projection(surface).is_some() {
             return None;
         }
-        let revision = self.popup_interaction_gate.interaction_revision()?;
+        let revision = self.popup_requirement.revision();
         self.surface(surface)
             .and_then(|scene| scene.interaction_projection(revision))
     }
@@ -872,42 +778,30 @@ impl SurfaceSceneSet {
             .collect()
     }
 
-    /// Iterates concrete emissions retained inside ready scenes, including proofs temporarily
-    /// hidden behind the workspace-global popup presentation barrier.
-    ///
-    /// The latter must remain available to adapter receiver stores: completing the sibling
-    /// roster can reactivate those proofs without emitting the same concrete output again.
+    /// Iterates concrete emissions retained inside ready scenes.
     pub(crate) fn retained_interaction_emissions(
         &self,
     ) -> impl Iterator<Item = crate::presentation_observation::HostFrameKey> + '_ {
-        let active = self
-            .surfaces
+        self.surfaces
             .values()
             .filter_map(|record| match record.scene() {
                 SurfaceScene::Ready(ready) => ready
                     .interaction_authority()
                     .map(PresentedSurfaceAuthority::emission),
                 SurfaceScene::Stale(_) | SurfaceScene::Bootstrap(_) => None,
-            });
-        active.chain(
-            self.popup_interaction_gate
-                .proofs
-                .values()
-                .map(|authority| authority.emission()),
-        )
+            })
     }
 
-    /// Tests whether core retained this exact observed emission, including a proof
-    /// temporarily waiting for the other surfaces in the popup presentation barrier.
-    /// This does not grant interaction through that barrier.
+    /// Tests whether core retained this exact observed emission. Receiver use
+    /// still requires the current popup routing revision and output binding.
     pub(crate) fn retains_observed_emission(
         &self,
         output: crate::presentation_observation::HostPresentationOutput,
     ) -> bool {
-        let Some(authority) = self.popup_interaction_gate.proofs.get(&output.surface()) else {
+        let Some(ready) = self.surface(output.surface()).and_then(SurfaceScene::ready) else {
             return false;
         };
-        let Some(ready) = self.surface(output.surface()).and_then(SurfaceScene::ready) else {
+        let Some(authority) = ready.interaction_authority() else {
             return false;
         };
         authority.emission() == output.key()
@@ -919,7 +813,7 @@ impl SurfaceSceneSet {
                 .is_some_and(|scene| authority.matches_output(scene))
             && output.payload().coordinate_generation() == Some(authority.coordinate_generation())
             && ready
-                .validate_presented_authority(*authority, self.popup_interaction_gate.requirement)
+                .validate_presented_authority(authority, self.popup_requirement)
                 .is_ok()
     }
 
@@ -940,23 +834,16 @@ impl SurfaceSceneSet {
         &mut self,
         streams: &BTreeSet<crate::presentation_observation::HostPresentationStreamId>,
     ) -> BTreeSet<SurfaceId> {
-        if self.popup_interaction_gate.requires_roster_barrier() {
-            let intersects_gate = self
-                .popup_interaction_gate
-                .proofs
-                .values()
-                .any(|authority| streams.contains(&authority.stream()));
-            if !intersects_gate {
-                return BTreeSet::new();
-            }
-            return self.reset_popup_interaction_barrier();
-        }
         let affected = self
-            .popup_interaction_gate
-            .proofs
+            .surfaces
             .iter()
-            .filter_map(|(surface, authority)| {
-                streams.contains(&authority.stream()).then_some(*surface)
+            .filter_map(|(surface, record)| {
+                record
+                    .scene()
+                    .ready()?
+                    .interaction_authority()
+                    .filter(|authority| streams.contains(&authority.stream()))
+                    .map(|_| *surface)
             })
             .collect::<BTreeSet<_>>();
         self.revoke_independent_surface_authorities(&affected)
@@ -1000,13 +887,13 @@ impl SurfaceSceneSet {
         authority: PresentedSurfaceAuthority,
     ) -> Result<(), PresentationAuthorityRejection> {
         let surface = authority.surface();
-        if !self.popup_interaction_gate.roster.contains(&surface) {
+        if !self.surfaces.contains_key(&surface) {
             return Err(PresentationAuthorityRejection::SurfaceOutsideRoster);
         }
         let Some(SurfaceScene::Ready(ready)) = self.surface(surface) else {
             return Err(PresentationAuthorityRejection::SurfaceNotReady);
         };
-        ready.validate_presented_authority(authority, self.popup_interaction_gate.requirement)
+        ready.validate_presented_authority(authority, self.popup_requirement)
     }
 
     pub(crate) fn accept_observed_authority(
@@ -1014,7 +901,7 @@ impl SurfaceSceneSet {
         authority: PresentedSurfaceAuthority,
     ) -> Result<BTreeSet<SurfaceId>, PresentationAuthorityRejection> {
         let surface = authority.surface();
-        if !self.popup_interaction_gate.roster.contains(&surface) {
+        if !self.surfaces.contains_key(&surface) {
             return Err(PresentationAuthorityRejection::SurfaceOutsideRoster);
         }
         let Some(SurfaceScene::Ready(ready)) =
@@ -1022,9 +909,9 @@ impl SurfaceSceneSet {
         else {
             return Err(PresentationAuthorityRejection::SurfaceNotReady);
         };
-        ready.validate_presented_authority(authority, self.popup_interaction_gate.requirement)?;
+        ready.validate_presented_authority(authority, self.popup_requirement)?;
 
-        let previous = self.popup_interaction_gate.proofs.get(&surface).copied();
+        let previous = ready.interaction_authority();
         if let Some(previous) = previous {
             if authority.emission() == previous.emission() {
                 debug_assert_eq!(
@@ -1041,14 +928,7 @@ impl SurfaceSceneSet {
             }
         }
 
-        let interaction_semantics_changed =
-            previous.is_some_and(|previous| !previous.same_interaction_semantics(authority));
-        let mut changed =
-            if self.popup_interaction_gate.is_active_presented() && interaction_semantics_changed {
-                self.reset_popup_interaction_barrier()
-            } else {
-                BTreeSet::new()
-            };
+        let mut changed = BTreeSet::new();
 
         let Some(SurfaceScene::Ready(ready)) = self
             .surfaces
@@ -1057,25 +937,15 @@ impl SurfaceSceneSet {
         else {
             return Err(PresentationAuthorityRejection::SurfaceNotReady);
         };
-        ready.observe_presented_for_paint(authority, self.popup_interaction_gate.requirement)?;
-        let phase = self.popup_interaction_gate.phase;
+        ready.observe_presented_for_paint(authority, self.popup_requirement)?;
         let authority_changed = ready
             .interaction_authority
             .is_none_or(|current| !current.same_interaction_semantics(authority));
-        if phase != PopupInteractionGatePhase::Staging {
-            ready.interaction_authority = Some(authority);
-            if authority_changed {
-                changed.insert(surface);
-            }
+        ready.interaction_authority = Some(authority);
+        if authority_changed {
+            changed.insert(surface);
         }
-        self.popup_interaction_gate
-            .proofs
-            .insert(surface, authority);
 
-        if phase != PopupInteractionGatePhase::Staging {
-            return Ok(changed);
-        }
-        changed.extend(self.try_present_popup_interaction_gate());
         Ok(changed)
     }
 
@@ -1093,24 +963,24 @@ impl SurfaceSceneSet {
         current_surfaces: &BTreeSet<SurfaceId>,
     ) -> BTreeSet<SurfaceId> {
         let affected_surfaces = current_surfaces
-            .intersection(&self.popup_interaction_gate.roster)
+            .iter()
+            .filter(|surface| self.surfaces.contains_key(surface))
             .copied()
             .collect::<BTreeSet<_>>();
         let proof_surfaces = self
-            .popup_interaction_gate
-            .proofs
+            .surfaces
             .iter()
-            .filter_map(|(surface, authority)| {
-                streams.contains(&authority.stream()).then_some(*surface)
+            .filter_map(|(surface, record)| {
+                record
+                    .scene()
+                    .ready()?
+                    .interaction_authority()
+                    .filter(|authority| streams.contains(&authority.stream()))
+                    .map(|_| *surface)
             })
             .collect::<BTreeSet<_>>();
         if affected_surfaces.is_empty() && proof_surfaces.is_empty() {
             return BTreeSet::new();
-        }
-        if self.popup_interaction_gate.requires_roster_barrier() {
-            let mut changed = self.reset_popup_interaction_barrier();
-            changed.extend(affected_surfaces);
-            return changed;
         }
         let mut revoked = affected_surfaces.clone();
         revoked.extend(proof_surfaces);
@@ -1199,15 +1069,8 @@ impl SurfaceSceneSet {
             });
             self.surfaces.insert(surface, replacement);
         }
-        let requires_fresh_barrier = self.popup_interaction_gate.reconcile_identity(manifest);
-        if requires_fresh_barrier
-            || (self.popup_interaction_gate.requires_roster_barrier()
-                && !self.popup_gate_proofs_are_current())
-        {
-            self.reset_popup_interaction_barrier();
-        } else if !self.popup_interaction_gate.requires_roster_barrier() {
-            self.revoke_invalid_independent_authorities();
-        }
+        self.popup_requirement = manifest.popup();
+        self.revoke_invalid_independent_authorities();
         Ok(())
     }
 
@@ -1219,7 +1082,7 @@ impl SurfaceSceneSet {
         output_serial: PresentationOutputSerial,
     ) -> Result<(SurfaceSceneStamp, SurfacePresentationOutputTicket), SceneBuildError> {
         let surface = plan.surface();
-        if plan.popup() != self.popup_interaction_gate.requirement {
+        if plan.popup() != self.popup_requirement {
             return Err(SceneBuildError::PopupPlaneRecordSetMismatch { surface });
         }
         let ticket = plan
@@ -1280,13 +1143,7 @@ impl SurfaceSceneSet {
             }))
         });
         self.surfaces.insert(surface, current);
-        if !self.popup_gate_proofs_are_current() {
-            if self.popup_interaction_gate.requires_roster_barrier() {
-                self.reset_popup_interaction_barrier();
-            } else {
-                self.revoke_invalid_independent_authorities();
-            }
-        }
+        self.revoke_invalid_independent_authorities();
         Ok((stamp, output_ticket))
     }
 
@@ -1394,116 +1251,16 @@ impl SurfaceSceneSet {
         Ok(stamp)
     }
 
-    fn popup_gate_proofs_are_current(&self) -> bool {
-        self.popup_interaction_gate
-            .proofs
-            .iter()
-            .all(|(surface, authority)| {
-                *surface == authority.surface()
-                    && self
-                        .surfaces
-                        .get(surface)
-                        .and_then(|record| record.scene().ready())
-                        .is_some_and(|ready| {
-                            ready
-                                .validate_presented_authority(
-                                    *authority,
-                                    self.popup_interaction_gate.requirement,
-                                )
-                                .is_ok()
-                        })
-            })
-    }
-
-    fn try_present_popup_interaction_gate(&mut self) -> BTreeSet<SurfaceId> {
-        if !self.popup_interaction_gate.requires_roster_barrier() {
-            return BTreeSet::new();
-        }
-        if self.popup_interaction_gate.roster.is_empty()
-            || self.popup_interaction_gate.proofs.len() != self.popup_interaction_gate.roster.len()
-            || !self
-                .popup_interaction_gate
-                .roster
-                .iter()
-                .all(|surface| self.popup_interaction_gate.proofs.contains_key(surface))
-            || !self.popup_gate_proofs_are_current()
-        {
-            return BTreeSet::new();
-        }
-
-        let (gate, surfaces) = (&mut self.popup_interaction_gate, &mut self.surfaces);
-        let Some(_) = gate.revision else {
-            return BTreeSet::new();
-        };
-        let mut changed = BTreeSet::new();
-        for surface in &gate.roster {
-            let authority = *gate
-                .proofs
-                .get(surface)
-                .expect("popup gate preflight established an exact proof roster");
-            let Some(SurfaceScene::Ready(ready)) =
-                surfaces.get_mut(surface).map(SurfaceSceneRecord::scene_mut)
-            else {
-                unreachable!("popup gate preflight established an exact ready roster");
-            };
-            if ready
-                .interaction_authority
-                .is_none_or(|current| !current.same_interaction_semantics(authority))
-            {
-                changed.insert(*surface);
-            }
-            ready.interaction_authority = Some(authority);
-        }
-        gate.phase = match gate.requirement {
-            PopupPlaneRequirement::Inactive { .. } => {
-                PopupInteractionGatePhase::InactiveIndependent
-            }
-            PopupPlaneRequirement::Active { .. } => PopupInteractionGatePhase::ActivePresented,
-        };
-        changed
-    }
-
-    fn reset_popup_interaction_barrier(&mut self) -> BTreeSet<SurfaceId> {
-        self.popup_interaction_gate.reset_barrier();
-        let mut changed = BTreeSet::new();
-        for (surface, record) in &mut self.surfaces {
-            let scene = record.scene_mut();
-            let SurfaceScene::Ready(ready) = scene else {
-                continue;
-            };
-            if ready.interaction_authority.take().is_some() {
-                changed.insert(*surface);
-            }
-        }
-        changed
-    }
-
     fn invalidate_popup_authority_for_surface(&mut self, surface: SurfaceId) {
-        if self.popup_interaction_gate.is_active_presented() {
-            self.reset_popup_interaction_barrier();
-            return;
-        }
-        // A staging gate already denies all interaction. A surface still
-        // awaiting its own successor must not erase unchanged exact outputs
-        // accepted for the other surfaces of that same popup epoch.
-        self.popup_interaction_gate.proofs.remove(&surface);
-        if let Some(SurfaceScene::Ready(ready)) = self
-            .surfaces
-            .get_mut(&surface)
-            .map(SurfaceSceneRecord::scene_mut)
-        {
-            ready.interaction_authority = None;
-        }
+        self.revoke_independent_surface_authorities(&BTreeSet::from([surface]));
     }
 
     fn revoke_independent_surface_authorities(
         &mut self,
         surfaces: &BTreeSet<SurfaceId>,
     ) -> BTreeSet<SurfaceId> {
-        debug_assert!(!self.popup_interaction_gate.requires_roster_barrier());
         let mut changed = BTreeSet::new();
         for surface in surfaces {
-            self.popup_interaction_gate.proofs.remove(surface);
             let Some(SurfaceScene::Ready(ready)) = self
                 .surfaces
                 .get_mut(surface)
@@ -1519,26 +1276,17 @@ impl SurfaceSceneSet {
     }
 
     fn revoke_invalid_independent_authorities(&mut self) -> BTreeSet<SurfaceId> {
-        debug_assert!(!self.popup_interaction_gate.requires_roster_barrier());
         let invalid = self
-            .popup_interaction_gate
-            .proofs
+            .surfaces
             .iter()
-            .filter_map(|(surface, authority)| {
-                let current = *surface == authority.surface()
-                    && self
-                        .surfaces
-                        .get(surface)
-                        .and_then(|record| record.scene().ready())
-                        .is_some_and(|ready| {
-                            ready
-                                .validate_presented_authority(
-                                    *authority,
-                                    self.popup_interaction_gate.requirement,
-                                )
-                                .is_ok()
-                        });
-                (!current).then_some(*surface)
+            .filter_map(|(surface, record)| {
+                let ready = record.scene().ready()?;
+                let authority = ready.interaction_authority()?;
+                (authority.surface() != *surface
+                    || ready
+                        .validate_presented_authority(authority, self.popup_requirement)
+                        .is_err())
+                .then_some(*surface)
             })
             .collect::<BTreeSet<_>>();
         self.revoke_independent_surface_authorities(&invalid)

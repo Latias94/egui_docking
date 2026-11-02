@@ -214,11 +214,7 @@ fn restore_relocates_stable_focus_and_prefers_pending_over_other_surface_history
 
         let restored = session.view().item(SECOND).unwrap();
         assert_eq!(restored.surface(), SURFACE);
-        assert_ne!(
-            restored.root(),
-            RootId::new(1),
-            "retired roots must be remapped"
-        );
+        assert_eq!(restored.root(), RootId::new(1));
         assert!(restored.is_selected());
         let request = requests(&mut session);
         assert_eq!(request.len(), 1);

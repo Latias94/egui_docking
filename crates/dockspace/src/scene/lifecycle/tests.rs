@@ -104,7 +104,7 @@ fn candidate_with_popup(
         ticket,
         popup,
         bounds,
-        matches!(popup, PopupPlaneRequirement::Active { .. }).then_some(bounds),
+        popup.visual_for_surface(ticket.surface()).map(|_| bounds),
     );
     plan.finish_surface_program()
         .expect("empty lifecycle fixture program should finish");
@@ -455,7 +455,7 @@ fn inactive_coordinate_invalidation_preserves_sibling_interaction_authority() {
 }
 
 #[test]
-fn popup_close_requires_the_new_inactive_revision_across_the_exact_roster() {
+fn popup_owner_opens_and_closes_without_waiting_for_other_surfaces() {
     let first = SurfaceId::new(139);
     let second = SurfaceId::new(140);
     let bar = TabBarSceneId {
@@ -486,7 +486,7 @@ fn popup_close_requires_the_new_inactive_revision_across_the_exact_roster() {
     scenes
         .accept_observed_authority(observed(active_outputs[&first], 1))
         .expect("first active proof is accepted");
-    assert!(scenes.ready_surface(first).is_none());
+    assert!(scenes.ready_surface(first).is_some());
     assert!(scenes.ready_surface(second).is_none());
     scenes
         .accept_observed_authority(observed(active_outputs[&second], 2))
@@ -527,7 +527,7 @@ fn popup_close_requires_the_new_inactive_revision_across_the_exact_roster() {
     scenes
         .accept_observed_authority(observed(inactive_outputs[&first], 4))
         .expect("first close proof is accepted");
-    assert!(scenes.ready_surface(first).is_none());
+    assert!(scenes.ready_surface(first).is_some());
     assert!(scenes.ready_surface(second).is_none());
     scenes
         .accept_observed_authority(observed(inactive_outputs[&second], 5))

@@ -149,6 +149,25 @@ impl DockEngine {
         &mut self,
         requested_influence: Option<&TabStripInfluenceDomain>,
     ) -> Result<(), PresentationRequirementFailure> {
+        let recovering_sources = self
+            .viewport
+            .native_create_sagas()
+            .filter_map(|(saga, create)| {
+                let source = create.prepared().source_surface();
+                self.surface_recovery
+                    .pending(source)
+                    .is_some()
+                    .then_some(saga)
+            })
+            .collect::<Vec<_>>();
+        for saga in recovering_sources {
+            // Source recovery revokes every preparation phase, including one
+            // which lost readiness before its former first-live scene rebuilt.
+            self.viewport
+                .reject_native_create(saga)
+                .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
+            let _ = self.viewport_focus.cancel_activation_reservation(saga);
+        }
         self.native_admission
             .reconcile_pending_creates(&self.viewport);
         let mut surface_semantic_snapshots =
@@ -346,7 +365,7 @@ impl DockEngine {
         )
         .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
         let popup_mismatch_influence = if popup_requirement_changed {
-            TabStripInfluenceDomain::PopupRoster
+            TabStripInfluenceDomain::Popup(BTreeSet::new())
         } else {
             TabStripInfluenceDomain::Local(BTreeSet::new())
         };
@@ -355,7 +374,20 @@ impl DockEngine {
             .merge(tab_strip_delta.influence().clone());
         let affected_surfaces = match influence {
             TabStripInfluenceDomain::Local(surfaces) => surfaces,
-            TabStripInfluenceDomain::PopupRoster => current_surface_roster.clone(),
+            TabStripInfluenceDomain::Popup(mut surfaces) => {
+                surfaces.extend(
+                    self.presentation_requirements()
+                        .popup()
+                        .owner()
+                        .into_iter()
+                        .chain(tab_strip_states.popup_requirement().owner())
+                        .map(|owner| owner.surface()),
+                );
+                // Prospective children must compile the current routing context
+                // before their exact first-live output may transfer ownership.
+                surfaces.extend(native_projections.keys().copied());
+                surfaces
+            }
         };
         let mut draft_revisions_changed = false;
         for surface in affected_surfaces {
@@ -1581,11 +1613,16 @@ impl DockEngine {
                 | HostPresentationObservationOutcome::Retired {
                     stream,
                     promotion_eligible: false,
+                    presented: Authority::Known(Some(_)) | Authority::Unknown(_),
                     ..
                 } => Some(*stream),
                 HostPresentationObservationOutcome::NoUpdate { .. }
                 | HostPresentationObservationOutcome::Retired {
                     promotion_eligible: true,
+                    ..
+                }
+                | HostPresentationObservationOutcome::Retired {
+                    presented: Authority::Known(None),
                     ..
                 }
                 | HostPresentationObservationOutcome::Rejected { .. } => None,

@@ -2312,8 +2312,9 @@ fn terminal_predecessor_vacancy_preserves_a_live_successor() {
     assert!(coordinator.binding_cleanup.is_terminal(destroyed));
     assert!(!coordinator.binding_cleanup.contains_key(&destroyed));
     let successor = coordinator
-        .register_owned_child(destroyed.epoch(), destroyed.surface(), destroyed.token())
-        .expect("exact destruction must allow a newly minted successor incarnation");
+        .registry
+        .reserve(destroyed.epoch(), destroyed.surface(), ViewportRole::Child)
+        .expect("exact destruction must allow a newly allocated managed successor");
     assert_ne!(successor, destroyed);
     coordinator
         .publish_snapshot(&routing_snapshot(
@@ -2325,6 +2326,7 @@ fn terminal_predecessor_vacancy_preserves_a_live_successor() {
             InputEffectAcknowledgement::known(None),
         ))
         .expect("successor must become live independently of its predecessor");
+    coordinator.registry.admit(successor).unwrap();
     assert!(
         coordinator
             .viewport(successor.surface())
@@ -2350,8 +2352,9 @@ fn predecessor_vacancy_without_terminal_owner_rejects_a_successor_atomically() {
         .detach(previous)
         .expect("detachment alone must not synthesize terminal cleanup authority");
     let successor = coordinator
-        .register_owned_child(previous.epoch(), previous.surface(), previous.token())
-        .expect("registry must mint a distinct successor binding");
+        .registry
+        .reserve(previous.epoch(), previous.surface(), ViewportRole::Child)
+        .expect("registry must allocate a distinct managed successor binding");
     assert_ne!(successor, previous);
     coordinator
         .publish_snapshot(&routing_snapshot(
@@ -2363,6 +2366,7 @@ fn predecessor_vacancy_without_terminal_owner_rejects_a_successor_atomically() {
             InputEffectAcknowledgement::known(None),
         ))
         .expect("successor must publish its own live facts");
+    coordinator.registry.admit(successor).unwrap();
     assert!(!coordinator.binding_cleanup.is_terminal(previous));
     assert!(!coordinator.binding_cleanup.contains_key(&previous));
     let ordinary = coordinator.capture_surface_vacancy_authority(successor.surface());
@@ -2423,7 +2427,7 @@ fn retired_close_stream_ignores_stale_destroyed_generation() {
 
 #[test]
 fn terminal_tombstone_is_idempotent_after_same_token_aba_rebinding() {
-    let (mut coordinator, old_binding, _, _) = runtime_child_vacancy();
+    let (mut coordinator, old_binding) = external_routing_coordinator();
     let mut initial_capabilities = PlatformCapabilities::default();
     initial_capabilities.set_authoritative_inventory(PlatformCapability::Supported);
     initial_capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
@@ -2449,6 +2453,7 @@ fn terminal_tombstone_is_idempotent_after_same_token_aba_rebinding() {
         .expect("exact destruction must retire the old binding");
     assert!(coordinator.binding_cleanup.is_terminal(old_binding));
     assert!(!coordinator.binding_cleanup.contains_key(&old_binding));
+    coordinator.registry.remove_destroyed(old_binding).unwrap();
 
     let new_binding = coordinator
         .register_existing(

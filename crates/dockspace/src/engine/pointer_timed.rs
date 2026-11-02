@@ -383,6 +383,32 @@ impl DockEngine {
         }
     }
 
+    pub(super) fn pause_drag_continuation_for_scroll(&mut self, receiver: PresentationHitRegionId) {
+        let key = match receiver.kind() {
+            PresentationHitRegionKind::TabStripScroll(bar) => {
+                TabStripStateKey::new(receiver.surface(), bar)
+            }
+            PresentationHitRegionKind::TabListMenuScroll(menu) => menu.key(),
+            _ => return,
+        };
+        let InteractionStatus::Dragging { session } = self.interaction.status() else {
+            return;
+        };
+        let affected = self.interaction.active_drag(session).is_ok_and(|drag| {
+            drag.timed.as_ref().is_some_and(|timed| match timed {
+                DragTimedContinuation::TabStripEdgeScroll(pending) => pending.key == key,
+                DragTimedContinuation::HoverSelection(pending) => {
+                    pending.request.surface == key.surface()
+                        && pending.target.root == key.bar().root
+                        && pending.target.tabs == key.bar().tabs
+                }
+            })
+        });
+        if affected {
+            self.clear_drag_continuation(session);
+        }
+    }
+
     pub(super) fn stationary_hover_presentation<'snapshot>(
         &self,
         receipt: &ValidatedPointerReceiverReceipt,

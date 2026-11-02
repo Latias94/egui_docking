@@ -225,8 +225,14 @@ fn delayed_pre_show_output_cannot_cross_a_reissued_basis() {
     );
     let delayed_output = emit_background_native_staging(&mut fixture, first);
 
+    let _ = publish_background_native_window(
+        &mut fixture,
+        request,
+        WindowPresentationState::Minimized,
+        3,
+    );
     let _ =
-        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 3);
+        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 4);
     let reissued = current_native_staging_presentation(
         &fixture,
         request,
@@ -278,7 +284,7 @@ fn delayed_pre_show_output_cannot_cross_a_reissued_basis() {
 }
 
 #[test]
-fn pre_show_reissues_after_later_hidden_observation_without_repeated_create_ack() {
+fn pre_show_survives_later_hidden_observation_without_repeated_create_ack() {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let mut fixture = background_fixture(policy);
@@ -335,11 +341,11 @@ fn pre_show_reissues_after_later_hidden_observation_without_repeated_create_ack(
         request,
         crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
     );
-    assert_ne!(reissued, first);
+    assert_eq!(reissued, first);
     assert_eq!(reissued.retained_resource(), first.retained_resource());
     assert_eq!(
         reissued.basis().presentation_observation_generation(),
-        crate::viewport::PresentationObservationGeneration::new(3)
+        crate::viewport::PresentationObservationGeneration::new(2)
     );
     let frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
     assert!(

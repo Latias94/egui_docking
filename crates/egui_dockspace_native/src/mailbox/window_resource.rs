@@ -1432,10 +1432,19 @@ mod tests {
             panic!("the create request must provide its create acknowledgement")
         };
         let mut acknowledgement = Some(created);
-        let requests = std::array::from_fn(|_| {
+        let requests = std::array::from_fn(|index| {
+            // Distinct requests require changed durable facts. Consuming a
+            // one-shot ACK while geometry stays equal preserves the same basis.
+            let observed = PhysicalRect::new(
+                placement.x() + f64::from(u32::try_from(index).unwrap()),
+                placement.y(),
+                placement.width(),
+                placement.height(),
+            )
+            .unwrap();
             let child_facts = NativeWindowFacts::live()
-                .with_content_bounds(placement)
-                .with_outer_bounds(placement)
+                .with_content_bounds(observed)
+                .with_outer_bounds(observed)
                 .with_native_scale_factor(scale)
                 .with_presentation_scale_factor(scale)
                 .with_input(NativeWindowInputState::ReceivesInput, None)

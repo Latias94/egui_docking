@@ -1834,6 +1834,40 @@ impl DockEngine {
                     prepared,
                     proof,
                 } => {
+                    let Some(current) = self.viewport.native_create_saga(*saga) else {
+                        // An earlier action may rebuild requirements and revoke
+                        // this exact owner. Unexplained missing sagas remain errors.
+                        if proof.retained_resource().is_some_and(|resource| {
+                            resource.authority_domain() == self.authority_domain
+                                && resource.saga() == *saga
+                        }) && self
+                            .viewport
+                            .recognizes_retired_native_binding(proof.binding())
+                        {
+                            continue;
+                        }
+                        return Err(EngineError::Viewport {
+                            input,
+                            source: crate::frame::ViewportCoordinatorError::MissingCreateSaga {
+                                saga: *saga,
+                            },
+                        });
+                    };
+                    if current.id() != *saga
+                        || current.binding() != proof.binding()
+                        || current.create() != proof.create()
+                        || Some(current.resource()) != proof.retained_resource()
+                        || current.prepared() != prepared.as_ref()
+                        || !matches!(
+                            current.phase(),
+                            crate::frame::NativeCreatePhase::AwaitingFirstLivePreparation {
+                                correlation,
+                            } if correlation == proof.correlation_effect()
+                        )
+                        || self.viewport.native_ready_basis(proof.binding()) != Some(proof.basis())
+                    {
+                        continue;
+                    }
                     let policy = self.policy.clone();
                     let (publication, application) = self
                         .stage_workspace_command_for_native_commit(

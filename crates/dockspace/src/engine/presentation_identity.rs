@@ -1,12 +1,13 @@
-//! Durable presentation identity allocation and retirement authority.
+//! Durable presentation identity allocation and command freshness authority.
 
 use super::*;
 
-/// Sole owner of the non-reusable presentation identity frontier.
+/// Sole owner of the monotonic presentation identity allocation frontier.
 ///
 /// Workspace publication, document restore, and native reservations all flow
 /// through this owner so speculative engine candidates cannot update one
-/// identity lane without preserving the other retired lanes.
+/// identity lane without preserving the other allocation lanes. Workspace
+/// replacement preserves declared semantic identities in a new epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PresentationIdentityAuthority {
     frontier: PresentationIdentityFrontier,
@@ -111,15 +112,6 @@ impl PresentationIdentityAuthority {
 
     pub(super) fn observe_floating(&mut self, floating: FloatingPresentationId) {
         self.frontier.observe_floating(floating);
-    }
-
-    pub(super) fn validate_fresh_surface(&self, surface: SurfaceId) -> Result<(), CommandError> {
-        (surface.get() > self.frontier.last_surface())
-            .then_some(())
-            .ok_or(CommandError::RetiredSurfaceId {
-                surface,
-                frontier: self.frontier.last_surface(),
-            })
     }
 
     pub(super) fn validate_fresh_or_continuing_surface(
@@ -241,10 +233,6 @@ impl PresentationIdentityAuthority {
 }
 
 impl DockEngine {
-    fn validate_fresh_surface_identity(&self, surface: SurfaceId) -> Result<(), CommandError> {
-        self.presentation_identity.validate_fresh_surface(surface)
-    }
-
     fn validate_fresh_or_continuing_surface_identity(
         &self,
         surface: SurfaceId,
@@ -357,28 +345,6 @@ impl DockEngine {
             | WorkspaceCommand::RaiseContained { .. }
             | WorkspaceCommand::RemoveEmptyRoot { .. } => {}
         }
-    }
-
-    pub(super) fn validate_workspace_replacement_identity_freshness(
-        &self,
-        replacement: &Workspace,
-    ) -> Result<(), CommandError> {
-        for (surface, _) in replacement.surfaces() {
-            if self.workspace.surface(surface).is_none() {
-                self.validate_fresh_surface_identity(surface)?;
-            }
-        }
-        for (root, _) in replacement.roots() {
-            if self.workspace.root(root).is_none() {
-                self.validate_fresh_root_identity(root)?;
-            }
-        }
-        for (floating, _) in replacement.contained_floatings() {
-            if self.workspace.contained_floating(floating).is_none() {
-                self.validate_fresh_floating_identity(floating)?;
-            }
-        }
-        Ok(())
     }
 
     fn pending_native_identity_reservations(

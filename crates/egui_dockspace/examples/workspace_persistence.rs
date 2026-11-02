@@ -563,16 +563,9 @@ mod tests {
         app.restore_named(DEFAULT_PRESET);
         assert_eq!(app.status, "Applied layout: Default");
         let surface = app.dockspace.view().surfaces().next().unwrap();
-        assert_ne!(
-            surface.id(),
-            SURFACE,
-            "retired surface identity must also be remapped"
-        );
+        assert_eq!(surface.id(), SURFACE);
         let root = surface.main_root().unwrap().id();
-        assert_ne!(
-            root, ROOT,
-            "retired root identity cannot be revived by a preset"
-        );
+        assert_eq!(root, ROOT);
         let close = app.dockspace.request_close_item_current(document).unwrap();
         let DockspaceCloseRequestStatus::Requested(request) = close.status() else {
             panic!("the restored document must remain closeable");

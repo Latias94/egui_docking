@@ -9,7 +9,7 @@ and returns the core execution receipt. Recording is sink acceptance, not final 
 The tests inspect records after frame borrows end and report exact affine outputs as
 `Presented` or `Dropped`. Only a committed core acknowledgement grants receiver authority.
 They also cover independently settling pending surfaces with identical receiver coordinates,
-accepted artifacts waiting behind a popup's cross-surface presentation barrier, late outputs
+popup owners presenting independently of deferred siblings, late outputs
 after whole-surface redocking or pane-selection invalidation, abandoned outputs unblocking
 newer presentation prefixes, and semantic layout commands without registering a pointer
 producer or enabling native hosting.
@@ -137,7 +137,7 @@ frame or after a budgeted native prefix. A real presented receiver is answered
 before an atomic input group yields; both final `poll + submit` and synchronous
 convenience paths process only its remaining edge. Dropped attempts replay from
 the published watermark, while a committed reset publishes one replacement and
-the complete native root successor roster. Reset rebases current candidate
+the complete native root successor roster. Reset preserves declared semantic
 identities, rejects stale/foreign/locked preparations and retires old output
 and focus authority.
 
@@ -152,8 +152,7 @@ window recreation or the native showcase's preset UI.
 owned-child hosting through public native registration, including a child's main
 root and complete contained forest. Document V2 round-trips those declarations
 with optional physical placement. Prepared, candidate-frame and committed
-projections preserve the same data while rebase remaps both child and recovery
-host references. Dropped attempts preserve the published document, and reads
+projections preserve the same semantic child and recovery-host references. Dropped attempts preserve the published document, and reads
 cannot create effects, native bindings or presentation authority. V1 rejection
 is version-first because its placements cannot establish the missing host role.
 

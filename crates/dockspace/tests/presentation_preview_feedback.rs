@@ -398,8 +398,8 @@ fn exact_presented_preview_survives_promotion_and_releases_without_another_paint
 }
 
 #[test]
-fn dropped_preview_clears_feedback_and_cannot_redock_on_release() {
-    let (mut session, target, _) = dragging_fixture();
+fn dropped_unpresented_preview_keeps_the_target_but_requires_a_new_terminal_output() {
+    let (mut session, target, preview) = dragging_fixture();
     let output = paint(&mut session);
     let artifact = output.presentation_artifact();
     session
@@ -412,57 +412,50 @@ fn dropped_preview_clears_feedback_and_cannot_redock_on_release() {
             .iter()
             .any(|commit| commit.retires(artifact))
     );
-    assert_eq!(
-        inspect_feedback(&mut session).0,
-        None,
-        "retiring the output must clear its unavailable target feedback"
-    );
-    assert!(session.host_pointer_hit(SURFACE, target).is_none());
+    assert_eq!(inspect_feedback(&mut session).0, Some(preview));
+    assert!(session.host_pointer_hit(SURFACE, target).is_some());
 
     release(&mut session, target);
     assert!(!session.has_active_gesture());
+    assert!(session.has_pending_presentation());
     assert!(session.view().contained(FLOATING).is_some());
     assert_eq!(
-        session
-            .view()
-            .item(DRAGGED)
-            .expect("the item survives")
-            .root(),
+        session.view().item(DRAGGED).unwrap().root(),
         FLOATING_ROOT,
-        "a dropped output cannot authorize the docking mutation"
+        "the dropped preview cannot authorize the terminal docking mutation"
     );
 
-    let later_output = paint(&mut session);
-    let later_artifact = later_output.presentation_artifact();
+    let replacement = paint(&mut session);
+    let replacement_artifact = replacement.presentation_artifact();
     session
-        .report_surface_presentation(later_output, SurfacePresentationResult::Presented)
-        .expect("a later complete output reaches presentation");
+        .report_surface_presentation(replacement, SurfacePresentationResult::Presented)
+        .unwrap();
+    let report = settle(&mut session);
     assert!(
-        settle(&mut session)
+        report
             .surface_presentation_commits()
             .iter()
-            .any(|commit| commit.presents(later_artifact))
+            .any(|commit| commit.settles(replacement_artifact))
     );
-    assert!(session.view().contained(FLOATING).is_some());
-    assert!(!session.has_active_gesture());
+    assert!(report.workspace_changed());
+    assert!(!session.has_pending_presentation());
+    assert!(session.view().contained(FLOATING).is_none());
     assert_eq!(
-        session
-            .view()
-            .item(DRAGGED)
-            .expect("the item survives")
-            .root(),
-        FLOATING_ROOT,
-        "later presentation cannot authorize a release consumed without authority"
+        session.view().item(DRAGGED).unwrap().root(),
+        MAIN_ROOT,
+        "only the fresh exact terminal presentation delivers the pending release"
     );
+    assert!(!settle(&mut session).workspace_changed());
 }
 
 #[test]
-fn a_later_dropped_output_revokes_an_already_painted_preview() {
+fn a_later_dropped_output_preserves_an_already_presented_preview() {
     let (mut session, target, preview) = dragging_fixture();
     let presented = paint(&mut session);
+    let presented_artifact = presented.presentation_artifact();
     session
         .report_surface_presentation(presented, SurfacePresentationResult::Presented)
-        .expect("the first preview output reaches presentation");
+        .unwrap();
     settle(&mut session);
     assert_eq!(
         inspect_feedback(&mut session),
@@ -470,49 +463,29 @@ fn a_later_dropped_output_revokes_an_already_painted_preview() {
     );
 
     let dropped = paint(&mut session);
-    let artifact = dropped.presentation_artifact();
+    let dropped_artifact = dropped.presentation_artifact();
     session
         .report_surface_presentation(dropped, SurfacePresentationResult::Dropped)
-        .expect("the successor output is dropped");
+        .unwrap();
     let report = settle(&mut session);
-    assert!(
-        report
-            .surface_presentation_commits()
-            .iter()
-            .any(|commit| commit.retires(artifact))
-    );
+    let commit = report
+        .surface_presentation_commits()
+        .iter()
+        .find(|commit| commit.settles(dropped_artifact))
+        .unwrap();
+    assert!(commit.retires(dropped_artifact));
+    assert!(commit.presents(presented_artifact));
     assert_eq!(
-        inspect_feedback(&mut session).0,
-        None,
-        "an old painted flag must not preserve feedback after authority is revoked"
+        inspect_feedback(&mut session),
+        (Some(preview), SurfacePaintDisposition::Visible)
     );
-    assert!(session.host_pointer_hit(SURFACE, target).is_none());
+    assert!(session.host_pointer_hit(SURFACE, target).is_some());
     release(&mut session, target);
-    assert!(session.view().contained(FLOATING).is_some());
+    assert!(session.view().contained(FLOATING).is_none());
+    assert_eq!(session.view().item(DRAGGED).unwrap().root(), MAIN_ROOT);
     assert!(!session.has_active_gesture());
-
-    let later_output = paint(&mut session);
-    let later_artifact = later_output.presentation_artifact();
-    session
-        .report_surface_presentation(later_output, SurfacePresentationResult::Presented)
-        .expect("a later complete output reaches presentation");
-    assert!(
-        settle(&mut session)
-            .surface_presentation_commits()
-            .iter()
-            .any(|commit| commit.presents(later_artifact))
-    );
-    assert!(session.view().contained(FLOATING).is_some());
-    assert!(!session.has_active_gesture());
-    assert_eq!(
-        session
-            .view()
-            .item(DRAGGED)
-            .expect("the item survives")
-            .root(),
-        FLOATING_ROOT,
-        "a revoked preview cannot regain release authority from a later output"
-    );
+    assert!(!session.has_pending_presentation());
+    assert!(!settle(&mut session).workspace_changed());
 }
 
 #[test]

@@ -2177,7 +2177,83 @@ fn application_workspace_commands_cannot_reuse_retired_presentation_identities()
 }
 
 #[test]
-fn workspace_replacement_cannot_revive_a_retired_presentation_identity() {
+fn application_workspace_commands_reject_reserved_identities_in_the_same_epoch() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut engine =
+        single_surface_engine_with_policy(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1), policy);
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let surface = engine.reserve_presentation_surface_identity().unwrap();
+    let root = engine.reserve_presentation_root_identity().unwrap();
+    let floating = engine.reserve_presentation_floating_identity().unwrap();
+    let frontier = engine.presentation_identity_frontier();
+    let before = engine.version();
+    let workspace = engine.workspace().clone();
+
+    for (command, expected_error) in [
+        (
+            WorkspaceCommand::CreateSurfaceRoot {
+                surface,
+                root: RootId::new(3),
+                content: RootContent::OpenItem(ItemId::new(2)),
+            },
+            CommandError::RetiredSurfaceId {
+                surface,
+                frontier: frontier.last_surface(),
+            },
+        ),
+        (
+            WorkspaceCommand::CreateContainedRoot {
+                surface: SOURCE_SURFACE,
+                root,
+                floating: FloatingPresentationId::new(2),
+                rect: test_rect(),
+                position: ContainedPosition::Front,
+                content: RootContent::OpenItem(ItemId::new(2)),
+            },
+            CommandError::RetiredRootId {
+                root,
+                frontier: frontier.last_root(),
+            },
+        ),
+        (
+            WorkspaceCommand::CreateContainedRoot {
+                surface: SOURCE_SURFACE,
+                root: RootId::new(3),
+                floating,
+                rect: test_rect(),
+                position: ContainedPosition::Front,
+                content: RootContent::OpenItem(ItemId::new(2)),
+            },
+            CommandError::RetiredFloatingId {
+                floating,
+                frontier: frontier.last_floating(),
+            },
+        ),
+    ] {
+        let transition = submit_test_input(
+            &mut engine,
+            host,
+            EngineInput::WorkspaceCommand {
+                expected: before,
+                command,
+            },
+        )
+        .expect("same-epoch identity rejection must reduce normally");
+        assert!(matches!(
+            transition.reduced_inputs()[0].outcome(),
+            InputOutcome::CommandRejected { error, .. } if *error == expected_error
+        ));
+        assert_eq!(engine.version(), before);
+        assert_eq!(engine.workspace(), &workspace);
+        assert_eq!(engine.presentation_identity_frontier(), frontier);
+    }
+}
+
+#[test]
+fn workspace_replacement_preserves_retired_semantic_identities_in_a_new_epoch() {
     let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
     let host = engine
         .create_presentation_host()
@@ -2185,36 +2261,77 @@ fn workspace_replacement_cannot_revive_a_retired_presentation_identity() {
     engine
         .reserve_presentation_surface_identity()
         .expect("surface tombstone must reserve");
+    engine.reserve_presentation_root_identity().unwrap();
+    engine.reserve_presentation_root_identity().unwrap();
+    engine.reserve_presentation_floating_identity().unwrap();
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ItemId::new(2)]));
+    let contained = builder.insert_node(Node::tabs([ItemId::new(3)]));
     builder.set_root(RootId::new(2), RootRecord::new(tabs));
+    builder.set_root(RootId::new(3), RootRecord::new(contained));
     builder.set_surface(
         SurfaceId::new(2),
         SurfacePresentation::with_main(RootId::new(2)),
     );
+    builder.set_contained_floating(
+        FloatingPresentationId::new(1),
+        ContainedFloating::new(RootId::new(3), test_rect()),
+    );
+    builder
+        .attach_contained(SurfaceId::new(2), FloatingPresentationId::new(1))
+        .unwrap();
     let replacement = builder
         .build()
         .expect("replacement workspace must be valid");
 
     let before = engine.candidate();
+    let old_action = engine.prepare_select_item(ItemId::new(1));
     let mut frame = begin_test_host_frame(&engine, host);
     let mut stream = TestInputStream::resume(&engine, ENGINE_TEST_INPUT_SOURCE);
-    assert_eq!(
-        stream.append(&mut frame, EngineInput::ReplaceWorkspace(replacement)),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
-        "a retired presentation identity fails while reducing the input prefix",
-    );
-    let error = frame
-        .finish(&mut engine)
-        .expect_err("replacement must not revive a retired surface identity");
-    assert!(matches!(
-        error,
-        EngineError::WorkspaceReplacementIdentityRetired {
-            source: CommandError::RetiredSurfaceId { surface, frontier: 2 },
-            ..
-        } if surface == SurfaceId::new(2)
-    ));
+    stream
+        .append(
+            &mut frame,
+            EngineInput::ReplaceWorkspace(replacement.clone()),
+        )
+        .expect("replacement may restore declared identities below the frontier");
+    drop(frame);
     assert_eq!(engine, before);
+
+    submit_test_input(
+        &mut engine,
+        host,
+        EngineInput::ReplaceWorkspace(replacement.clone()),
+    )
+    .expect("replacement must preserve every declared semantic identity");
+    assert_eq!(engine.workspace(), &replacement);
+    assert_eq!(
+        engine.version().epoch().get(),
+        before.version().epoch().get() + 1
+    );
+    assert_eq!(engine.version().revision(), WorkspaceRevision::default());
+    assert_eq!(
+        engine.presentation_identity_frontier(),
+        before.presentation_identity_frontier()
+    );
+    let stale = engine.accept_prepared_action(old_action).unwrap();
+    let rejected = submit_test_input(&mut engine, host, stale).unwrap();
+    assert!(matches!(
+        rejected.reduced_inputs()[0].outcome(),
+        InputOutcome::StaleRejected { expected, accepted_base }
+            if *expected == before.version() && *accepted_base == engine.version()
+    ));
+    assert_eq!(
+        engine.reserve_presentation_surface_identity().unwrap(),
+        SurfaceId::new(3)
+    );
+    assert_eq!(
+        engine.reserve_presentation_root_identity().unwrap(),
+        RootId::new(4)
+    );
+    assert_eq!(
+        engine.reserve_presentation_floating_identity().unwrap(),
+        FloatingPresentationId::new(2)
+    );
 }
 
 #[test]

@@ -2777,7 +2777,7 @@ fn exact_surface_tab_list_actions_open_and_select_from_the_current_candidate() {
 }
 
 #[test]
-fn non_owner_popup_backdrop_dismisses_the_active_menu() {
+fn only_the_popup_owner_draws_and_prepares_its_backdrop_dismissal() {
     let mut session = multiview_overflow_session();
     let mut initial = session
         .begin_host_frame()
@@ -2833,8 +2833,8 @@ fn non_owner_popup_backdrop_dismisses_the_active_menu() {
 
     let mut prepare_dismiss = session
         .begin_host_frame()
-        .expect("non-owner backdrop paint frame begins");
-    let dismiss = {
+        .expect("owner backdrop paint frame begins");
+    {
         let non_owner = prepare_dismiss
             .paint_plan(SURFACE)
             .expect("non-owner popup plan lookup succeeds")
@@ -2865,13 +2865,12 @@ fn non_owner_popup_backdrop_dismisses_the_active_menu() {
             !popup_menu_seen,
             "a non-owner surface must not reconstruct the owner's menu"
         );
-        non_owner
-            .prepare_tab_list_menu_dismiss(
-                backdrop.expect("the non-owner surface retains the popup backdrop"),
-            )
-            .expect("the non-owner backdrop prepares a dismiss action")
-    };
-    {
+        assert!(
+            backdrop.is_none(),
+            "an unrelated surface has no popup visual"
+        );
+    }
+    let dismiss = {
         let owner = prepare_dismiss
             .paint_plan(TARGET_SURFACE)
             .expect("owner popup plan lookup succeeds")
@@ -2884,7 +2883,19 @@ fn non_owner_popup_backdrop_dismisses_the_active_menu() {
             control.menu_open(),
             "the popup owner must expose an expanded menu control"
         );
-    }
+        let mut backdrop = None;
+        owner
+            .visit_surface_program(|step| {
+                if let SurfacePaintProgramStep::PopupBackdrop(current) = step {
+                    assert!(backdrop.replace(current).is_none());
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        owner
+            .prepare_tab_list_menu_dismiss(backdrop.expect("the owner paints its backdrop"))
+            .unwrap()
+    };
     prepare_dismiss
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("popup inspection retains both surface candidates");
@@ -2894,16 +2905,16 @@ fn non_owner_popup_backdrop_dismisses_the_active_menu() {
 
     let mut dismiss_frame = session
         .begin_host_frame()
-        .expect("non-owner backdrop dismiss frame begins");
+        .expect("owner backdrop dismiss frame begins");
     dismiss_frame
         .submit_surface_action(dismiss)
-        .expect("non-owner backdrop dismiss action is accepted");
+        .expect("owner backdrop dismiss action is accepted");
     dismiss_frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("non-owner backdrop dismissal defers remeasurement");
+        .expect("owner backdrop dismissal defers remeasurement");
     dismiss_frame
         .commit()
-        .expect("non-owner backdrop dismissal commits");
+        .expect("owner backdrop dismissal commits");
 
     let mut publish_closed = session
         .begin_host_frame()

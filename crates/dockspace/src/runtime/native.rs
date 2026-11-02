@@ -60,24 +60,32 @@ pub use pointer::{
 };
 pub use storage::{NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit};
 
-/// Adapter-owned opaque native-window token.
+/// Opaque native-window resource key.
 ///
-/// A token may be reused after exact destruction. It is not sufficient input
+/// [`Self::new`] selects the adapter-owned namespace. Runtime-created windows
+/// receive opaque keys in a separate namespace, so any adapter value is valid
+/// without advancing or colliding with the managed-window allocator.
+/// A key may be reused after exact destruction. It is not sufficient input
 /// authority by itself; every observation also carries a core-minted
 /// [`NativeSurfaceBinding`].
+/// Managed keys cannot be imported through external registration. Equality is
+/// meaningful only within its issuing session; route callbacks by the full binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct HostWindowToken(u64);
+pub struct HostWindowToken(WindowToken);
 
 impl HostWindowToken {
     /// Creates a stable adapter token without exposing an operating-system handle.
     #[must_use]
     pub const fn new(value: u64) -> Self {
-        Self(value)
+        Self(WindowToken::new(value))
     }
 
-    const fn into_core(self) -> WindowToken {
-        WindowToken::new(self.0)
+    fn into_core(self) -> Result<WindowToken, NativePlatformError> {
+        self.0
+            .is_host()
+            .then_some(self.0)
+            .ok_or(NativePlatformError::InvalidRegistrationToken)
     }
 }
 
@@ -344,10 +352,10 @@ impl NativeSurfaceBinding {
         self.binding.surface()
     }
 
-    /// Returns the reusable adapter-owned window token.
+    /// Returns the opaque resource key in its original host or managed namespace.
     #[must_use]
     pub const fn window_token(self) -> HostWindowToken {
-        HostWindowToken(self.binding.token().get())
+        HostWindowToken(self.binding.token())
     }
 
     /// Reports whether two provider-bound handles name the same native lifetime.
@@ -786,6 +794,9 @@ impl NativeHostErrorKind {
 /// Exact native lifecycle failure retained inside the runtime implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub(super) enum NativePlatformError {
+    /// A managed token was supplied to an external resource registration.
+    #[error("managed window tokens cannot register external resources")]
+    InvalidRegistrationToken,
     /// No native provider was enrolled for this session.
     #[error("no facade-owned native platform provider is active")]
     ProviderUnavailable,
@@ -915,6 +926,7 @@ impl NativePlatformError {
                 NativeHostErrorKind::StaleBinding
             }
             Self::DuplicateSurface { .. }
+            | Self::InvalidRegistrationToken
             | Self::IncompleteRoster
             | Self::ContentSizeBoundsMismatch { .. }
             | Self::InvalidWorkAreaRoster

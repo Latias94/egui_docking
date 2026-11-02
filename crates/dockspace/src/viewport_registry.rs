@@ -264,6 +264,14 @@ impl ViewportRecord {
         self.presentation_observations.current()
     }
 
+    pub(crate) fn staging_presentation_is_continuous_since(
+        &self,
+        generation: crate::viewport::PresentationObservationGeneration,
+    ) -> bool {
+        self.presentation_observations
+            .is_continuous_since(generation)
+    }
+
     pub(crate) const fn create_preparation(&self) -> Option<WindowCreatePreparationObservation> {
         self.create_preparation_observations.current()
     }
@@ -471,7 +479,7 @@ impl ViewportRegistry {
             authority_domain,
             records: BTreeMap::new(),
             token_to_surface: BTreeMap::new(),
-            last_token: WindowToken::new(0),
+            last_token: WindowToken::managed(0),
             last_incarnation: WindowIncarnation::new(0),
             native_binding_allocation_budget: None,
             inventory_generation: InventoryGeneration::new(0),
@@ -543,6 +551,9 @@ impl ViewportRegistry {
         ownership: ViewportOwnership,
         admission: ViewportAdmission,
     ) -> Result<ViewportBinding, ViewportRegistryError> {
+        if !token.is_host() {
+            return Err(ViewportRegistryError::ManagedTokenCannotRegister { token });
+        }
         if self.records.contains_key(&surface) {
             return Err(ViewportRegistryError::SurfaceAlreadyRegistered { surface });
         }
@@ -553,7 +564,6 @@ impl ViewportRegistry {
             return Err(ViewportRegistryError::NativeBindingCapacity);
         }
         let incarnation = self.next_incarnation()?;
-        self.last_token = WindowToken::new(self.last_token.get().max(token.get()));
         let binding = self.insert_binding(
             ViewportBinding::new(self.authority_domain, epoch, surface, token, incarnation),
             role,
@@ -951,18 +961,29 @@ impl ViewportRegistry {
             record
                 .input_observations
                 .observe(record.binding, observation.input_observation());
-            let presentation_observation = observation
-                .presentation_observation()
-                .map(|observation| observation.with_inventory_generation(generation));
-            record
-                .presentation_observations
-                .observe(record.binding, presentation_observation);
+            let previous_readiness = record
+                .create_preparation()
+                .and_then(WindowCreatePreparationObservation::known_readiness);
             record.create_preparation_observations.observe(
                 record.binding,
                 observation
                     .create_preparation()
                     .map(|preparation| preparation.with_inventory_generation(generation)),
             );
+            let readiness = record
+                .create_preparation()
+                .and_then(WindowCreatePreparationObservation::known_readiness);
+            // A consumed ACK is not a readiness change. Unknown or changed
+            // preparation cuts the interval before accepting a new presentation.
+            if readiness.is_none() || previous_readiness != readiness {
+                record.presentation_observations.revoke_continuity();
+            }
+            let presentation_observation = observation
+                .presentation_observation()
+                .map(|observation| observation.with_inventory_generation(generation));
+            record
+                .presentation_observations
+                .observe(record.binding, presentation_observation);
             let presentation_changed =
                 previous_presentation != record.presentation_observations.current();
             let coordinates = record
@@ -1530,6 +1551,8 @@ pub enum ViewportRegistryError {
     SurfaceAlreadyRegistered { surface: SurfaceId },
     #[error("window token {token:?} is already registered")]
     TokenAlreadyRegistered { token: WindowToken },
+    #[error("managed window token {token:?} cannot register an external resource")]
+    ManagedTokenCannotRegister { token: WindowToken },
     #[error("logical surface {surface:?} is not registered")]
     MissingSurface { surface: SurfaceId },
     #[error("viewport binding is stale: {binding:?}")]
@@ -1570,6 +1593,55 @@ pub enum ViewportRegistryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_resource_values_do_not_control_or_alias_managed_window_allocation() {
+        let mut registry = ViewportRegistry::default();
+        let epoch = WorkspaceEpoch::new(0);
+        let external = registry
+            .register_existing(
+                epoch,
+                SurfaceId::new(1),
+                WindowToken::new(1),
+                ViewportRole::Root,
+            )
+            .unwrap();
+        registry
+            .register_owned_child(epoch, SurfaceId::new(2), WindowToken::new(u64::MAX))
+            .unwrap();
+        let managed = registry
+            .reserve(epoch, SurfaceId::new(3), ViewportRole::Child)
+            .unwrap();
+        assert_ne!(external.token(), managed.token());
+        assert_eq!(managed.token(), WindowToken::managed(1));
+        let before = registry.clone();
+        assert!(matches!(
+            registry.register_existing(
+                epoch,
+                SurfaceId::new(4),
+                managed.token(),
+                ViewportRole::Root
+            ),
+            Err(ViewportRegistryError::ManagedTokenCannotRegister { .. })
+        ));
+        assert!(matches!(
+            registry.register_owned_child(epoch, SurfaceId::new(4), managed.token()),
+            Err(ViewportRegistryError::ManagedTokenCannotRegister { .. })
+        ));
+        assert_eq!(registry, before);
+        assert!(matches!(
+            registry.register_owned_child(epoch, SurfaceId::new(4), WindowToken::new(1)),
+            Err(ViewportRegistryError::TokenAlreadyRegistered { .. })
+        ));
+        assert_eq!(
+            registry.record(external.surface()).unwrap().binding(),
+            external
+        );
+        assert_eq!(
+            registry.record(managed.surface()).unwrap().binding(),
+            managed
+        );
+    }
     use crate::geometry::{LogicalRect, PhysicalRect, ScaleFactor};
     use crate::intent::AuthorityUnavailableReason;
     use crate::platform::{

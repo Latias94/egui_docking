@@ -37,14 +37,8 @@ mod surface_contribution;
 mod surface_runtime;
 mod surface_vacancy;
 mod tab_strip_input;
-mod workspace_rebase;
 
 pub(crate) use native_projection::NativeFirstLiveProjectionStamp;
-#[cfg(feature = "serde")]
-pub(crate) use workspace_rebase::WorkspaceRebaseEntity;
-pub(crate) use workspace_rebase::{
-    RebasedWorkspace, WorkspaceRebaseError, rebase_workspace_presentation_identities,
-};
 
 #[cfg(test)]
 use crate::behavior_tests::support as test_support;
@@ -887,15 +881,6 @@ pub enum EngineError {
     /// Initial or replacement workspace violated a durable invariant.
     #[error("workspace is invalid: {0}")]
     InvalidWorkspace(#[source] WorkspaceValidationErrors),
-    /// A replacement attempted to revive a presentation identity retired by this engine.
-    #[error("workspace replacement input {input} rejected: {source}")]
-    WorkspaceReplacementIdentityRetired {
-        /// Input which attempted the replacement.
-        input: InputSequence,
-        /// Exact retired identity rejection.
-        #[source]
-        source: CommandError,
-    },
     /// Current policy prevents an application-requested layout replacement.
     #[error("workspace replacement input {input} rejected by policy: {reason}")]
     WorkspaceReplacementPolicyDenied {
@@ -2302,8 +2287,8 @@ impl DockEngine {
         &self.presentation_authority.scene
     }
 
-    /// Returns one exact interaction projection after the workspace-global
-    /// popup presentation gate authorizes the complete surface roster.
+    /// Returns one exact, independently presented interaction projection under
+    /// the current workspace popup routing identity.
     #[must_use]
     pub fn interaction_projection(
         &self,
@@ -2325,16 +2310,13 @@ impl DockEngine {
     fn freeze_interaction_projection(
         projection: SurfaceInteractionProjection<'_>,
     ) -> FrozenPresentationAuthority {
-        FrozenPresentationAuthority::new(projection.authority(), projection.popup_gate_revision())
+        FrozenPresentationAuthority::new(projection.authority(), projection.popup_revision())
     }
 
     fn freeze_journal_presentation(
         presentation: &JournalSurfacePresentation,
     ) -> FrozenPresentationAuthority {
-        FrozenPresentationAuthority::new(
-            presentation.authority(),
-            presentation.popup_gate_revision(),
-        )
+        FrozenPresentationAuthority::new(presentation.authority(), presentation.popup_revision())
     }
 
     fn presentation_authority_is_current(&self, frozen: FrozenPresentationAuthority) -> bool {
@@ -2342,7 +2324,7 @@ impl DockEngine {
             .scene
             .interaction_projection(frozen.surface())
             .is_some_and(|current| {
-                current.popup_gate_revision() == frozen.popup_gate_revision
+                current.popup_revision() == frozen.popup_revision
                     && current
                         .authority()
                         .same_interaction_semantics(frozen.presented)
@@ -3782,8 +3764,6 @@ impl DockEngine {
         workspace
             .validate()
             .map_err(EngineError::InvalidWorkspace)?;
-        self.validate_workspace_replacement_identity_freshness(workspace)
-            .map_err(|source| EngineError::WorkspaceReplacementIdentityRetired { input, source })?;
         let previous_focus = self.viewport_focus.workspace_replacement_focus();
         let mut native_focus_surfaces = self
             .viewport
@@ -4561,25 +4541,7 @@ impl DockEngine {
     ) -> CoreContainedCandidate {
         let (root, floating, source_rect, initial_pointer, minimum_size, position) =
             match &drag.origin {
-                FrozenDragOrigin::Contained(origin) => {
-                    if current_pointer.surface() != origin.surface {
-                        return CoreContainedCandidate::None;
-                    }
-                    let Some(record) = self.workspace.contained_floating(origin.floating) else {
-                        return CoreContainedCandidate::Rejected;
-                    };
-                    if record.root != origin.root || record.rect != origin.source_rect {
-                        return CoreContainedCandidate::Rejected;
-                    }
-                    (
-                        origin.root,
-                        origin.floating,
-                        origin.source_rect,
-                        origin.initial_pointer,
-                        origin.minimum_size,
-                        ContainedPosition::Front,
-                    )
-                }
+                FrozenDragOrigin::Contained(_) => return CoreContainedCandidate::Rejected,
                 FrozenDragOrigin::Workspace => {
                     let Some(offer) = drag.contained_offer else {
                         return CoreContainedCandidate::None;
