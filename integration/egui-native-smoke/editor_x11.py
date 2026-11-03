@@ -234,12 +234,6 @@ def run(binary: Path) -> None:
                         "root-rebind-layout-requested", "root-rebind-layout-committed",
                         "root-rebind-layout-presented",
                     ])
-                    if profile == "serde":
-                        edits.append("ROOT_REBIND_DOCUMENT_EDIT")
-                        operations.extend([
-                            "root-rebind-document-requested", "root-rebind-document-committed",
-                            "root-rebind-document-presented",
-                        ])
                     edits.append("ROOT_REBIND_DEFAULT_EDIT")
                     operations.extend([
                         "root-rebind-default-requested", "root-rebind-default-committed",
@@ -250,6 +244,11 @@ def run(binary: Path) -> None:
                         operations.extend([
                             "root-rebind-preset-requested", "root-rebind-preset-committed",
                             "root-rebind-preset-presented",
+                        ])
+                        edits.append("ROOT_REBIND_DOCUMENT_EDIT")
+                        operations.extend([
+                            "root-rebind-document-requested", "root-rebind-document-committed",
+                            "root-rebind-document-presented",
                         ])
                 operations.append("final-quiescence")
                 if int(count) != len(edits):
@@ -297,16 +296,13 @@ def run(binary: Path) -> None:
                         raise RuntimeError("the eighth edit preceded destruction of both old children")
                 if marker.startswith("ROOT_REBIND_"):
                     after_input = {
-                        "ROOT_REBIND_LAYOUT_EDIT": (
-                            "root-rebind-document-requested" if profile == "serde"
-                            else "root-rebind-default-requested"
-                        ),
-                        "ROOT_REBIND_DOCUMENT_EDIT": "root-rebind-default-requested",
+                        "ROOT_REBIND_LAYOUT_EDIT": "root-rebind-default-requested",
+                        "ROOT_REBIND_DOCUMENT_EDIT": "final-quiescence",
                         "ROOT_REBIND_DEFAULT_EDIT": (
                             "root-rebind-preset-requested" if profile == "serde"
                             else "final-quiescence"
                         ),
-                        "ROOT_REBIND_PRESET_EDIT": "final-quiescence",
+                        "ROOT_REBIND_PRESET_EDIT": "root-rebind-document-requested",
                     }[marker]
                     if expected_programmatic != after_input or target != original_root:
                         raise RuntimeError("Root input preceded fresh presentation in the original OS window")
@@ -438,9 +434,9 @@ def run(binary: Path) -> None:
                     prior_root_edits = {
                         "capture": 0,
                         "layout": 0,
-                        "document": 1,
-                        "default": 2 if profile == "serde" else 1,
-                        "preset": 3,
+                        "document": 3,
+                        "default": 1,
+                        "preset": 2,
                     }[operation.split("-")[2]]
                     expected_edits = edits[:base_edits + prior_root_edits]
                 elif operation.startswith("multi-") or operation == "capture-multi-preset":
