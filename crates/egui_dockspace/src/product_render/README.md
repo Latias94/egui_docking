@@ -100,6 +100,22 @@ Overlapping equal rectangles can represent different widgets. A hover-only or
 disabled declaration must not remove an unknown application interactive rectangle,
 even when their bounds are identical.
 
+### Child UI layout precision
+
+Core geometry remains continuous. Its paint bounds, receiver descriptors, clips
+and pointer positions are not snapped to egui's layout grid. When constructing a
+pane content Ui or a splitter-junction accessibility Ui, the adapter fits only
+that child's layout rectangle inside the semantic region on `GUI_ROUNDING`
+boundaries. Each edge moves inward by less than one grid step (1/32 logical
+point), so application widget declarations remain inside the original pane.
+Regions without a positive grid-aligned interior do not create a child Ui;
+their core-owned background and pointer receivers remain available.
+
+The debug `show_unaligned` overlay stays enabled. Adapter regressions inspect
+the emitted shapes for `Unaligned` labels at several scales, including fractional
+split and contained bounds. The actual editor docking smoke also rejects these
+labels while exercising real input.
+
 `guides.rs` registers drop guides with `Sense::hover()`, so their bindings have
 `interactive == false`. The accessibility label for the center guide does not turn
 it into an interactive widget. The `DropTarget` program step itself does not create

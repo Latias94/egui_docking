@@ -141,6 +141,67 @@ fn run_frame(
     }
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn fractional_split_and_contained_layouts_do_not_emit_unaligned_debug_overlays() {
+    fn unaligned_labels(shape: &egui::Shape) -> usize {
+        match shape {
+            egui::Shape::Text(text) => usize::from(text.galley.job.text == "Unaligned"),
+            egui::Shape::Vec(shapes) => shapes.iter().map(unaligned_labels).sum(),
+            _ => 0,
+        }
+    }
+
+    let contained_layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::tabs([FIRST, SECOND])),
+    )
+    .with_contained(dockspace::model::DockspaceContainedLayout::new(
+        dockspace::model::FloatingPresentationId::new(1),
+        DockspaceRootLayout::new(RootId::new(2), DockspaceNode::tabs([THIRD])),
+        dockspace::geometry::LogicalRect::new(100.1, 80.3, 321.7, 247.9).unwrap(),
+    ))])
+    .unwrap();
+
+    for (layout, pixels_per_point) in
+        [magnetic_layout(), contained_layout]
+            .into_iter()
+            .flat_map(|layout| {
+                [1.0, 1.25, 1.5, 2.0]
+                    .into_iter()
+                    .map(move |scale| (layout.clone(), scale))
+            })
+    {
+        let context = Context::default();
+        context.set_pixels_per_point(pixels_per_point);
+        context.global_style_mut(|style| style.debug.show_unaligned = true);
+        let mut dockspace = Dockspace::builder("aligned-fractional-splits", layout)
+            .build()
+            .unwrap();
+        let mut panes = MagneticPanes::new();
+
+        for frame in 0..4 {
+            panes.target_rect.set(None);
+            let output = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+            assert!(
+                panes.target_rect.get().is_some(),
+                "the pane must be painted"
+            );
+            assert!(context.global_style().debug.show_unaligned);
+            let labels: usize = output
+                .output
+                .shapes
+                .iter()
+                .map(|shape| unaligned_labels(&shape.shape))
+                .sum();
+            assert_eq!(
+                labels, 0,
+                "fractional dock layout emitted Unaligned overlays: scale={pixels_per_point}, frame={frame}",
+            );
+        }
+    }
+}
+
 #[test]
 fn ordered_pointer_transport_preserves_explicit_batch_clock_and_unknown_samples() {
     use dockspace::runtime::{

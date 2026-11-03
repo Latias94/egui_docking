@@ -12,7 +12,7 @@ use egui::{
 };
 
 use super::actions::{button_activated, effective_enabled};
-use super::geometry::{accesskit_bounds, egui_rect};
+use super::geometry::{accesskit_bounds, egui_rect, inset_ui_rect};
 use super::measurement::TabPaintResource;
 use super::{ProductReceiverBinding, RenderContext};
 
@@ -58,10 +58,13 @@ pub(crate) fn paint_pane(
     let Some(item) = pane.selected() else {
         return;
     };
+    let Some(content_rect) = inset_ui_rect(pane_rect) else {
+        return;
+    };
     let mut child = context.ui.new_child(
         UiBuilder::new()
             .id_salt((context.instance_id, "pane", pane.visual_id()))
-            .max_rect(pane_rect)
+            .max_rect(content_rect)
             .layout(Layout::top_down(Align::Min)),
     );
     if paint_omitted {

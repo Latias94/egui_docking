@@ -62,6 +62,22 @@ foreign capture, and unknown/foreign release delivery. This is production-adapte
 event replay; physical macOS mouse injection is unavailable in the current
 environment and is not claimed by these results.
 
+## 2026-11-03 egui unaligned layout follow-up
+
+The debug `show_unaligned` overlay exposed fractional child-Ui bounds from
+renderer-neutral pane splits. The egui adapter now insets only pane-content and
+splitter-junction child layout rectangles to `GUI_ROUNDING` grid boundaries.
+Painted workspace/pane bounds, receiver descriptors, pointer coordinates and
+hit proofs retain their exact core geometry. Regions without a positive aligned
+interior omit their child Ui rather than expanding beyond their semantic bounds.
+
+Regression renders fractional split and contained layouts at 1.0, 1.25, 1.5
+and 2.0 pixels per point with `show_unaligned` explicitly enabled; all four
+frames per case emit zero `Unaligned` text shapes. The actual native eight-pane
+editor applies the same assertion to completed egui outputs, and all five real
+X11 tab-docking cases pass with zero overlays. The adapter's 75 unit tests and
+the native workspace's 598 tests pass (one platform-specific skip).
+
 ## 2026-11-03 native interaction and visual continuity repair
 
 Manual use after `63112e0` exposed an intermediate blank-frame path and

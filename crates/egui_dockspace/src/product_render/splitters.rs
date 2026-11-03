@@ -9,7 +9,7 @@ use egui::{CursorIcon, EventFilter, Key, Sense, UiBuilder};
 
 use super::RenderContext;
 use super::actions::effective_enabled;
-use super::geometry::{accesskit_bounds, egui_rect};
+use super::geometry::{accesskit_bounds, egui_rect, inset_ui_rect};
 pub(crate) fn paint_splitter(
     context: &mut RenderContext<'_, '_, '_>,
     splitter: dockspace::runtime::SplitterPaintRecord<'_>,
@@ -141,8 +141,11 @@ pub(crate) fn paint_junction(
         if !present {
             continue;
         }
-        let axis_response =
-            junction_axis_response(context.ui, hit, response.id, id, axis, axis_operable);
+        let Some(axis_response) =
+            junction_axis_response(context.ui, hit, response.id, id, axis, axis_operable)
+        else {
+            continue;
+        };
         if !axis_operable {
             continue;
         }
@@ -217,11 +220,12 @@ fn junction_axis_response(
     junction_id: egui::Id,
     axis: DockspaceAxis,
     enabled: bool,
-) -> egui::Response {
+) -> Option<egui::Response> {
+    let layout_rect = inset_ui_rect(hit)?;
     let mut axis_ui = ui.new_child(
         UiBuilder::new()
             .id_salt((junction_id, "axis", axis))
-            .max_rect(hit)
+            .max_rect(layout_rect)
             .sense(if enabled {
                 Sense::focusable_noninteractive()
             } else {
@@ -229,7 +233,7 @@ fn junction_axis_response(
             })
             .accessibility_parent(parent_id),
     );
-    axis_ui.expand_to_include_rect(hit);
+    axis_ui.expand_to_include_rect(layout_rect);
     let response = axis_ui.response();
     axis_ui.ctx().accesskit_node_builder(response.id, |node| {
         node.set_role(Role::Splitter);
@@ -254,7 +258,7 @@ fn junction_axis_response(
         }
     });
     drop(axis_ui);
-    response
+    Some(response)
 }
 
 fn splitter_adjustment(

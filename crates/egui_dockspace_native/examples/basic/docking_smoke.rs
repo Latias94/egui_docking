@@ -20,6 +20,20 @@ impl egui::plugin::Plugin for TabProbe {
 
     #[allow(clippy::cast_possible_truncation)]
     fn output_hook(&mut self, _: &egui::Context, output: &mut egui::FullOutput) {
+        fn unaligned_labels(shape: &egui::Shape) -> usize {
+            match shape {
+                egui::Shape::Text(text) => usize::from(text.galley.job.text == "Unaligned"),
+                egui::Shape::Vec(shapes) => shapes.iter().map(unaligned_labels).sum(),
+                _ => 0,
+            }
+        }
+        let unaligned: usize = output
+            .shapes
+            .iter()
+            .map(|shape| unaligned_labels(&shape.shape))
+            .sum();
+        assert_eq!(unaligned, 0, "the actual editor emitted Unaligned overlays");
+
         let Some(update) = &output.platform_output.accesskit_update else {
             return;
         };
