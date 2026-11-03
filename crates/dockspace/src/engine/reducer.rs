@@ -251,6 +251,7 @@ impl DockEngine {
             staged_presentation_outputs,
             staged_presentation_output_surfaces: _,
             surface_contributions,
+            compiled_surface_outcomes,
             presentation_phase_started: _,
             configuration_phase_started: _,
             input_terminated_for_overload: _,
@@ -484,16 +485,17 @@ impl DockEngine {
         }
         let presentation_attempt = presentation_obligations.attempt();
         let presentation_dispositions = presentation_obligations.dispositions();
-        let contribution_roster_matches = surface_contributions.len()
-            == presentation_surface_scope.len()
-            && surface_contributions
-                .keys()
-                .copied()
-                .eq(presentation_surface_scope.iter().copied());
+        let contributed_surfaces = surface_contributions
+            .keys()
+            .chain(compiled_surface_outcomes.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let contribution_roster_matches =
+            contributed_surfaces.is_subset(&presentation_surface_scope);
         if !contribution_roster_matches {
             return Err(EngineError::HostFrameContributionRosterIncomplete {
                 expected: presentation_surface_scope.into_iter().collect(),
-                submitted: surface_contributions.keys().copied().collect(),
+                submitted: contributed_surfaces.into_iter().collect(),
             });
         }
         let fence = self.host_frame_commit_fence(runtime_retention_revision);
@@ -517,6 +519,7 @@ impl DockEngine {
             presentation_dispositions,
             staged_presentation_outputs,
             surface_contributions,
+            compiled_surface_outcomes,
             platform_effect_delivery_limit,
         )?;
         Ok(OwnedPreparedHostFrameCommit {
@@ -657,6 +660,7 @@ impl DockEngine {
         presentation_dispositions: Vec<HostPresentationDispositionOutcome>,
         staged_presentation_outputs: Vec<StagedPresentationOutput>,
         surface_contributions: BTreeMap<SurfaceId, PreparedSurfaceContribution>,
+        compiled_surface_outcomes: BTreeMap<SurfaceId, SurfaceContributionOutcome>,
         platform_effect_delivery_limit: Option<usize>,
     ) -> Result<(DockEngine, EngineTransition), EngineError> {
         let before = self.version;
@@ -685,10 +689,21 @@ impl DockEngine {
             .presentation_authority
             .scene
             .interaction_authorities();
-        let mut changed_contribution_surfaces = BTreeSet::new();
-        let mut contribution_outcomes = Vec::with_capacity(surface_contributions.len());
+        let mut changed_contribution_surfaces = compiled_surface_outcomes
+            .values()
+            .filter(|outcome| outcome.changes_surface_authority())
+            .map(SurfaceContributionOutcome::surface)
+            .collect::<BTreeSet<_>>();
+        let compiled_surfaces = compiled_surface_outcomes
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut contribution_outcomes = compiled_surface_outcomes.into_values().collect::<Vec<_>>();
         for contribution in surface_contributions.into_values() {
             let surface = contribution.surface();
+            if compiled_surfaces.contains(&surface) {
+                continue;
+            }
             let before_stamp = candidate.scene().surface(surface).map(SurfaceScene::stamp);
             let outcome = if changed_resize_surfaces.contains(&surface)
                 && !candidate.prepared_surface_matches_resize_projection(
@@ -710,6 +725,7 @@ impl DockEngine {
             }
             contribution_outcomes.push(outcome);
         }
+        contribution_outcomes.sort_by_key(SurfaceContributionOutcome::surface);
         let after_contribution_authorities = candidate
             .presentation_authority
             .scene
@@ -875,6 +891,7 @@ impl DockEngine {
             presentation_attempt,
             staged_presentation_outputs,
         )?;
+        candidate.reconcile_viewport_focus_authority();
         if !presentation_emissions.is_empty() {
             let _ = candidate.reconcile_pointer_provider_scope(
                 ReductionCause::SurfaceContributionBatch { tick },
@@ -976,6 +993,7 @@ impl DockEngine {
                     staged.endpoint,
                     staged.payload,
                     continuation,
+                    staged.scene,
                 )
                 .map_err(presentation_ledger_error)?;
             self.bind_pending_mutation_output(output)?;
@@ -1380,6 +1398,10 @@ impl DockEngine {
                 expected_epoch,
                 observation,
             } => Ok(self.reduce_pane_focus_request_observation(*expected_epoch, *observation)),
+            EngineInput::PublishHostFocusObservation {
+                expected_epoch,
+                observation,
+            } => Ok(self.reduce_host_focus_observation(*expected_epoch, *observation)),
             EngineInput::CancelNativeCreate { expected, saga } => {
                 self.reduce_native_create_cancellation(input.sequence, *expected, *saga)
             }
@@ -1586,6 +1608,21 @@ impl DockEngine {
                 *scene,
                 *target,
                 tick_start.policy,
+            ),
+            EngineInput::ApplyDeferredSurfaceAction {
+                expected,
+                witness,
+                action,
+            } => self.reduce_deferred_surface_action(
+                input.sequence,
+                cause,
+                focus_causal,
+                *expected,
+                witness,
+                action,
+                tick_start.policy,
+                events,
+                interaction_events,
             ),
             EngineInput::RequestLocalSceneClose {
                 expected,

@@ -23,6 +23,7 @@ mod guide_paint;
 pub mod native_support;
 mod output_proof;
 mod pass_settlement;
+mod product_focus;
 mod product_pointer;
 mod product_render;
 #[path = "product_response.rs"]

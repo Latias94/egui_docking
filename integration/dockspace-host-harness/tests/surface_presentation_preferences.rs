@@ -4,20 +4,25 @@
 
 use std::cell::Cell;
 
-use dockspace::geometry::{LogicalRect, PhysicalRect, PhysicalSize, ScaleFactor};
+use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, PhysicalSize, ScaleFactor};
 use dockspace::model::{
     DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, DockspaceView, FloatingPresentationId, ItemId, RootId, SurfaceId,
+    DockspaceSurfaceLayout, DockspaceView, FloatingPresentationId, ItemId, LogicalSurfaceRejection,
+    NativeWindowPlacement, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceHostFrame,
     DockspaceNativeSurfaceHosting, DockspacePersistenceErrorKind, DockspaceSession,
     DockspaceSurfacePresentationPreference, DockspaceWindowPresentationPreference, HostFrameReport,
-    HostInputOutcome, HostWindowToken, NativeCloseState, NativeCreateStrategy,
-    NativeHostCapabilities, NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaRoster, SurfaceUnavailableReason,
+    HostInputOutcome, HostWindowToken, HostWorkAreaToken, NativeCloseState,
+    NativeCreateEffectAcknowledgement, NativeCreateReadiness, NativeCreateStrategy,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeHostCapabilities,
+    NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
+    NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
+    NativeWorkAreaRoster, PaintedNativeStagingOutput, PaintedSurfaceOutput,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 
 const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x70; 16]);
@@ -124,6 +129,19 @@ fn commit_deferred(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
 }
 
 fn register_windows(session: &mut DockspaceSession) -> [NativeSurfaceBinding; 2] {
+    register_windows_with_capabilities(
+        session,
+        NativeHostCapabilities::none_supported()
+            .with(NativeHostCapability::AuthoritativeInventory)
+            .with(NativeHostCapability::GlobalWindowPlacement)
+            .with(NativeHostCapability::NativeWindowLifecycle),
+    )
+}
+
+fn register_windows_with_capabilities(
+    session: &mut DockspaceSession,
+    capabilities: NativeHostCapabilities,
+) -> [NativeSurfaceBinding; 2] {
     assert!(
         session
             .enable_managed_native_host(
@@ -134,12 +152,7 @@ fn register_windows(session: &mut DockspaceSession) -> [NativeSurfaceBinding; 2]
             .is_empty()
     );
     session
-        .configure_managed_native_capabilities(
-            NativeHostCapabilities::none_supported()
-                .with(NativeHostCapability::AuthoritativeInventory)
-                .with(NativeHostCapability::GlobalWindowPlacement)
-                .with(NativeHostCapability::NativeWindowLifecycle),
-        )
+        .configure_managed_native_capabilities(capabilities)
         .unwrap();
     session
         .register_native_root(HOST, HostWindowToken::new(91))
@@ -425,6 +438,7 @@ fn capture_preserves_registered_hosting_and_observed_physical_geometry() {
         assert!(value.window_presentation().is_none());
     }
     let bindings = register_windows(&mut source);
+    assert_hosting(&read_preferences(&source), HOST, CHILD);
     let hosting_bytes = source.save_document_json().unwrap();
     let hosting = read_preferences(&source);
     assert_hosting(&hosting, HOST, CHILD);
@@ -479,7 +493,7 @@ fn pending_child_without_a_current_window_retains_hosting_on_its_first_document_
     let mut source = persistent_session();
     let original_content = assert_complete_content(source.view());
     let [host, child] = register_windows(&mut source);
-    assert!(read_preferences(&source).is_empty());
+    assert_hosting(&read_preferences(&source), HOST, CHILD);
     source
         .report_managed_native_snapshot(
             [
@@ -693,4 +707,528 @@ fn v1_documents_reject_before_payload_decoding_or_identity_recognition() {
         assert_eq!(assert_complete_content(session.view()), content);
         assert_keys(&session);
     }
+}
+
+#[test]
+fn review_removing_a_recovery_host_keeps_the_surviving_child_document_saveable() {
+    let bytes = saved_native_document();
+    let mut session =
+        DockspaceSession::from_document_json(&bytes, DockPolicy::default(), recognize).unwrap();
+    assert!(!session.has_pending_native_create());
+    let before = session.version();
+    let generation = session.next_document_generation();
+    let original_preferences = read_preferences(&session);
+    let expected_child = original_preferences
+        .iter()
+        .find(|preference| preference.surface() == CHILD)
+        .copied()
+        .unwrap();
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        CHILD,
+        DockspaceRootLayout::new(
+            CHILD_ROOT,
+            DockspaceNode::central_tabs([MAIN_ITEM, MAIN_DETAIL]),
+        ),
+    )])
+    .unwrap();
+    let reset = session.prepare_layout_reset(layout).unwrap();
+    let mut abandoned = session.begin_host_frame().unwrap();
+    abandoned.submit_layout_reset(&reset).unwrap();
+    drop(abandoned);
+    assert_eq!(session.version(), before);
+    assert_eq!(session.next_document_generation(), generation);
+    assert_eq!(read_preferences(&session), original_preferences);
+
+    let mut failed = session.begin_host_frame().unwrap();
+    failed.submit_layout_reset(&reset).unwrap();
+    failed
+        .measure_surface(
+            CHILD,
+            UniformSurfaceMetrics::new(
+                LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+                LogicalSize::new(48.0, 32.0).unwrap(),
+                96.0,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(failed.select_item_current(MAIN_ITEM).is_err());
+    assert!(
+        failed
+            .defer_surface(CHILD, SurfaceUnavailableReason::Deferred)
+            .is_err()
+    );
+    assert!(failed.commit().is_err());
+    assert_eq!(session.version(), before);
+    assert_eq!(session.next_document_generation(), generation);
+    assert_eq!(read_preferences(&session), original_preferences);
+
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_layout_reset(&reset).unwrap();
+    let mut report = commit_deferred(frame);
+    assert!(report.workspace_changed());
+    assert_no_native_outputs(&mut report);
+    assert!(session.view().surface(HOST).is_none());
+    assert!(session.view().surface(CHILD).is_some());
+    assert_eq!(session.view().item(MAIN_ITEM).unwrap().surface(), CHILD);
+    assert_eq!(session.view().item(MAIN_DETAIL).unwrap().surface(), CHILD);
+    let published = read_preferences(&session);
+    assert_eq!(published.len(), 1);
+    let child = published[0];
+    assert_eq!(child.surface(), CHILD);
+    assert!(child.native_hosting().is_none());
+    assert_eq!(child.outer_rect(), expected_child.outer_rect());
+    assert_eq!(child.inner_size_hint(), expected_child.inner_size_hint());
+    assert_eq!(
+        child.scale_factor_hint(),
+        expected_child.scale_factor_hint()
+    );
+    assert_eq!(
+        child.window_presentation(),
+        expected_child.window_presentation()
+    );
+    assert_eq!(session.next_document_generation(), generation);
+    let saved = session
+        .save_document_json()
+        .expect("removing an unbound recovery host must leave the surviving child saveable");
+    let restored =
+        DockspaceSession::from_document_json(&saved, DockPolicy::default(), recognize).unwrap();
+    assert_eq!(read_preferences(&restored), published);
+    assert!(!restored.has_pending_native_create());
+}
+
+#[test]
+fn retiring_an_unbound_recovery_host_repairs_preferences_before_save_and_does_not_revive_on_attach()
+{
+    let bytes = saved_native_document();
+    let mut session =
+        DockspaceSession::from_document_json(&bytes, DockPolicy::default(), recognize).unwrap();
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(
+            HOST,
+            DockspaceRootLayout::new(HOST_ROOT, DockspaceNode::central_tabs([])),
+        ),
+        DockspaceSurfaceLayout::new(
+            CHILD,
+            DockspaceRootLayout::new(
+                CHILD_ROOT,
+                DockspaceNode::central_tabs([MAIN_ITEM, MAIN_DETAIL]),
+            ),
+        ),
+    ])
+    .unwrap();
+    let reset = session.prepare_layout_reset(layout).unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_layout_reset(&reset).unwrap();
+    commit_deferred(frame);
+    assert_hosting(&read_preferences(&session), HOST, CHILD);
+
+    let generation = session.next_document_generation();
+    let mut frame = session.begin_host_frame().unwrap();
+    let retirement = frame.retire_empty_surface_current(HOST).unwrap();
+    let report = commit_deferred(frame);
+    assert!(matches!(
+        report.submitted_action_outcome(retirement),
+        Some(HostInputOutcome::LogicalSurfaceRetired { surface: HOST, .. })
+    ));
+    let preferences = read_preferences(&session);
+    assert_eq!(preferences.len(), 1);
+    assert_eq!(preferences[0].surface(), CHILD);
+    assert_eq!(preferences[0].native_hosting(), None);
+    assert_eq!(preferences[0].outer_rect(), Some(geometry(CHILD).0));
+    assert_eq!(session.next_document_generation(), generation);
+    session.save_document_json().unwrap();
+
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.attach_empty_surface_current(HOST, HOST_ROOT).unwrap();
+    commit_deferred(frame);
+    assert!(session.view().surface(HOST).is_some());
+    assert_eq!(read_preferences(&session), preferences);
+    let saved = session.save_document_json().unwrap();
+    let restored =
+        DockspaceSession::from_document_json(&saved, DockPolicy::default(), recognize).unwrap();
+    assert_eq!(read_preferences(&restored), preferences);
+    assert!(restored.view().surface(HOST).is_some());
+}
+
+#[test]
+fn a_live_native_owner_cannot_be_retired_by_clearing_its_durable_declaration() {
+    let mut session = persistent_session();
+    let [host, child] = register_windows(&mut session);
+    let before = session.version();
+    let preferences = read_preferences(&session);
+    assert_hosting(&preferences, HOST, CHILD);
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    let retirement = frame.retire_empty_surface_current(HOST).unwrap();
+    let mut report = commit_deferred(frame);
+    assert_eq!(
+        report.submitted_action_outcome(retirement),
+        Some(&HostInputOutcome::LogicalSurfaceRejected {
+            surface: HOST,
+            reason: LogicalSurfaceRejection::NativeBindingPresent,
+        })
+    );
+    assert_eq!(session.version(), before);
+    assert!(report.take_native_effects().is_empty());
+    assert!(session.is_current_native_binding(host));
+    assert!(session.is_current_native_binding(child));
+    assert_eq!(read_preferences(&session), preferences);
+    session.save_document_json().unwrap();
+}
+
+fn native_preference_frame(session: &mut DockspaceSession) -> DockspaceHostFrame<'_> {
+    session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap()
+}
+
+fn native_preference_snapshot(
+    session: &mut DockspaceSession,
+    bindings: [NativeSurfaceBinding; 2],
+    staging: Option<(NativeSurfaceBinding, NativeWindowFacts)>,
+) -> HostFrameReport {
+    let mut observations = bindings
+        .map(|binding| {
+            let (outer, content, native_scale, presentation_scale) = geometry(binding.surface());
+            (
+                binding,
+                NativeWindowFacts::live()
+                    .with_outer_bounds(outer)
+                    .with_content_bounds(content)
+                    .with_native_scale_factor(native_scale)
+                    .with_presentation_scale_factor(presentation_scale)
+                    .with_input(NativeWindowInputState::ReceivesInput, None)
+                    .with_presentation(NativeWindowPresentationState::Visible, None),
+            )
+        })
+        .to_vec();
+    observations.extend(staging);
+    session
+        .report_managed_native_snapshot(
+            observations,
+            NativeWorkAreaRoster::Exact(vec![NativeWorkAreaFacts::new(
+                HostWorkAreaToken::new(1),
+                PhysicalRect::new(-1920.0, 0.0, 3840.0, 1080.0).unwrap(),
+                ScaleFactor::new(1.0).unwrap(),
+            )]),
+        )
+        .unwrap();
+    commit_deferred(native_preference_frame(session))
+}
+
+fn native_preference_paint(
+    session: &mut DockspaceSession,
+    surface: SurfaceId,
+) -> PaintedSurfaceOutput {
+    let mut frame = native_preference_frame(session);
+    frame
+        .measure_surface(
+            surface,
+            UniformSurfaceMetrics::new(
+                LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+                LogicalSize::new(32.0, 24.0).unwrap(),
+                96.0,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    commit_deferred(frame);
+    let mut frame = native_preference_frame(session);
+    let receipt = frame
+        .paint_plan(surface)
+        .unwrap()
+        .expect("the exact measured native surface must expose its docking program")
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .unwrap();
+    frame.confirm_surface_painted(receipt).unwrap();
+    let mut report = commit_deferred(frame);
+    let [output] = report.take_painted_outputs().try_into().unwrap();
+    output
+}
+
+fn native_preference_staging_paint(
+    session: &mut DockspaceSession,
+    binding: NativeSurfaceBinding,
+    phase: NativeStagingPresentationPhase,
+) -> PaintedNativeStagingOutput {
+    let mut frame = native_preference_frame(session);
+    let requests = frame.native_staging_paints().collect::<Vec<_>>();
+    let [request] = requests.as_slice() else {
+        panic!("one exact staging output must be requested");
+    };
+    assert_eq!(request.binding(), binding);
+    assert_eq!(request.phase(), phase);
+    frame.confirm_native_staging_painted(*request).unwrap();
+    let mut report = commit_deferred(frame);
+    let [output] = report
+        .take_painted_native_staging_outputs()
+        .try_into()
+        .unwrap();
+    output
+}
+
+fn pending_native_preference_tear_off() -> (
+    DockspaceSession,
+    [NativeSurfaceBinding; 2],
+    NativeSurfaceBinding,
+    NativeCreateEffectAcknowledgement,
+) {
+    let mut session = persistent_session();
+    let bindings = register_windows_with_capabilities(
+        &mut session,
+        NativeHostCapabilities::none_supported()
+            .with(NativeHostCapability::AuthoritativeInventory)
+            .with(NativeHostCapability::GlobalWindowPlacement)
+            .with(NativeHostCapability::NativeWindowLifecycle)
+            .with(NativeHostCapability::WorkArea)
+            .with(NativeHostCapability::PointerHitTestObservation)
+            .with(NativeHostCapability::CloseCancellation),
+    );
+    native_preference_snapshot(&mut session, bindings, None);
+    for binding in bindings {
+        let output = native_preference_paint(&mut session, binding.surface());
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        commit_deferred(native_preference_frame(&mut session));
+    }
+    session.save_document_json().unwrap();
+    let before = session.version();
+    let generation = session.next_document_generation();
+    let preferences = read_preferences(&session);
+    let placement = NativeWindowPlacement::new(geometry(CHILD).0);
+    let mut dropped = native_preference_frame(&mut session);
+    dropped
+        .move_root_to_new_window_current(BACK_ROOT, placement)
+        .unwrap();
+    assert_eq!(dropped.view().surfaces().count(), 2);
+    assert_eq!(dropped.view().item(BACK_ITEM).unwrap().surface(), CHILD);
+    drop(dropped);
+    assert_eq!(session.version(), before);
+    assert_eq!(session.next_document_generation(), generation);
+    assert_eq!(read_preferences(&session), preferences);
+    assert!(!session.has_pending_native_create());
+
+    let mut frame = native_preference_frame(&mut session);
+    frame
+        .move_root_to_new_window_current(BACK_ROOT, placement)
+        .unwrap();
+    let mut report = commit_deferred(frame);
+    assert!(!report.workspace_changed());
+    let [create] = report.take_native_effects().try_into().unwrap();
+    let binding = match create.operation() {
+        NativeEffectOperation::CreateWindow {
+            binding,
+            strategy: NativeCreateStrategy::Staged,
+            ..
+        } => *binding,
+        operation => panic!("expected a staged native create, got {operation:?}"),
+    };
+    let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
+        panic!("creation must retain its exact readiness acknowledgement");
+    };
+    assert!(session.view().surface(binding.surface()).is_none());
+    assert_eq!(session.view().item(BACK_ITEM).unwrap().surface(), CHILD);
+    assert_eq!(read_preferences(&session), preferences);
+    let saved = session.save_document_json().unwrap();
+    let restored =
+        DockspaceSession::from_document_json(&saved, DockPolicy::default(), recognize).unwrap();
+    assert!(restored.view().surface(binding.surface()).is_none());
+    assert_eq!(read_preferences(&restored), preferences);
+    (session, bindings, binding, created)
+}
+
+fn native_preference_child_facts() -> NativeWindowFacts {
+    let bounds = geometry(CHILD).0;
+    NativeWindowFacts::live()
+        .with_content_bounds(bounds)
+        .with_outer_bounds(bounds)
+        .with_native_scale_factor(ScaleFactor::new(1.0).unwrap())
+        .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap())
+        .with_input(NativeWindowInputState::ReceivesInput, None)
+        .with_create_readiness(NativeCreateReadiness::Created, None)
+}
+
+#[test]
+fn persistent_native_staging_can_be_cancelled_without_publishing_a_surface_preference() {
+    let (mut session, bindings, staging, created) = pending_native_preference_tear_off();
+    let version = session.version();
+    let preferences = read_preferences(&session);
+    native_preference_snapshot(
+        &mut session,
+        bindings,
+        Some((
+            staging,
+            native_preference_child_facts()
+                .with_presentation(NativeWindowPresentationState::Hidden, None)
+                .with_create_readiness(NativeCreateReadiness::Created, Some(created)),
+        )),
+    );
+    let output = native_preference_staging_paint(
+        &mut session,
+        staging,
+        NativeStagingPresentationPhase::PreShow,
+    );
+    session
+        .report_native_staging_presentation(output, SurfacePresentationResult::Dropped)
+        .unwrap();
+    let mut report = commit_deferred(native_preference_frame(&mut session));
+    assert!(report.take_native_effects().is_empty());
+    assert!(report.native_admissions().is_empty());
+    session.save_document_json().unwrap();
+    let generation = session.next_document_generation();
+    let mut dropped = native_preference_frame(&mut session);
+    assert!(dropped.cancel_next_native_create().unwrap());
+    drop(dropped);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.next_document_generation(), generation);
+    assert!(session.has_pending_native_create());
+    assert_eq!(read_preferences(&session), preferences);
+
+    let mut frame = native_preference_frame(&mut session);
+    assert!(frame.cancel_next_native_create().unwrap());
+    let mut report = commit_deferred(frame);
+    let [close] = report.take_native_effects().try_into().unwrap();
+    assert!(matches!(close.operation(),
+        NativeEffectOperation::CompensatingClose { binding } if *binding == staging));
+    let Some(NativeEffectAcknowledgement::Close(closed)) = close.accepted() else {
+        panic!("staging cancellation must retain its exact close acknowledgement");
+    };
+    assert!(!session.has_pending_native_create());
+    assert_eq!(session.version(), version);
+    assert_eq!(session.view().item(BACK_ITEM).unwrap().surface(), CHILD);
+    assert_eq!(read_preferences(&session), preferences);
+    session.save_document_json().unwrap();
+    native_preference_snapshot(
+        &mut session,
+        bindings,
+        Some((staging, NativeWindowFacts::destroyed_after(closed))),
+    );
+    session.report_native_binding_quiescence(staging).unwrap();
+    commit_deferred(native_preference_frame(&mut session));
+    assert_eq!(read_preferences(&session), preferences);
+    session.save_document_json().unwrap();
+}
+
+#[test]
+fn persistent_native_staging_publishes_hosting_only_with_exact_first_live_output() {
+    let (mut session, bindings, staging, created) = pending_native_preference_tear_off();
+    let before = session.version();
+    let preferences = read_preferences(&session);
+    native_preference_snapshot(
+        &mut session,
+        bindings,
+        Some((
+            staging,
+            native_preference_child_facts()
+                .with_presentation(NativeWindowPresentationState::Hidden, None)
+                .with_create_readiness(NativeCreateReadiness::Created, Some(created)),
+        )),
+    );
+    let output = native_preference_staging_paint(
+        &mut session,
+        staging,
+        NativeStagingPresentationPhase::PreShow,
+    );
+    session
+        .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let mut report = commit_deferred(native_preference_frame(&mut session));
+    let [show] = report.take_native_effects().try_into().unwrap();
+    assert!(matches!(show.operation(),
+        NativeEffectOperation::ShowWindow { binding } if *binding == staging));
+    let Some(NativeEffectAcknowledgement::Presentation(shown)) = show.accepted() else {
+        panic!("staging visibility needs its exact Show acknowledgement");
+    };
+    native_preference_snapshot(
+        &mut session,
+        bindings,
+        Some((
+            staging,
+            native_preference_child_facts()
+                .with_presentation(NativeWindowPresentationState::Visible, Some(shown)),
+        )),
+    );
+    native_preference_snapshot(
+        &mut session,
+        bindings,
+        Some((
+            staging,
+            native_preference_child_facts()
+                .with_presentation(NativeWindowPresentationState::Visible, None),
+        )),
+    );
+    let output = native_preference_staging_paint(
+        &mut session,
+        staging,
+        NativeStagingPresentationPhase::PostShow,
+    );
+    session
+        .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let report = commit_deferred(native_preference_frame(&mut session));
+    assert!(report.native_admissions().is_empty());
+    assert_eq!(session.version(), before);
+    assert_eq!(read_preferences(&session), preferences);
+    session.save_document_json().unwrap();
+
+    let dropped = native_preference_paint(&mut session, staging.surface());
+    session
+        .report_surface_presentation(dropped, SurfacePresentationResult::Dropped)
+        .unwrap();
+    let report = commit_deferred(native_preference_frame(&mut session));
+    assert!(report.native_admissions().is_empty());
+    assert_eq!(session.view().item(BACK_ITEM).unwrap().surface(), CHILD);
+    assert_eq!(read_preferences(&session), preferences);
+    session.save_document_json().unwrap();
+
+    let output = native_preference_paint(&mut session, staging.surface());
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let mut dropped = native_preference_frame(&mut session);
+    assert_eq!(
+        dropped.view().item(BACK_ITEM).unwrap().surface(),
+        staging.surface()
+    );
+    dropped
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    drop(dropped);
+    assert_eq!(session.version(), before);
+    assert_eq!(read_preferences(&session), preferences);
+    assert_eq!(session.view().item(BACK_ITEM).unwrap().surface(), CHILD);
+    let report = commit_deferred(native_preference_frame(&mut session));
+    assert_eq!(report.native_admissions(), &[staging]);
+    assert_eq!(
+        session.view().item(BACK_ITEM).unwrap().surface(),
+        staging.surface()
+    );
+    assert_eq!(
+        session.view().item(BACK_DETAIL).unwrap().surface(),
+        staging.surface()
+    );
+    assert!(!session.has_pending_native_create());
+    let published = read_preferences(&session);
+    assert_eq!(published.len(), 3);
+    assert_eq!(
+        published
+            .iter()
+            .find(|value| value.surface() == staging.surface())
+            .unwrap()
+            .native_hosting(),
+        Some(DockspaceNativeSurfaceHosting::Child {
+            recovery_host: HOST
+        }),
+    );
+    let saved = session.save_document_json().unwrap();
+    let restored =
+        DockspaceSession::from_document_json(&saved, DockPolicy::default(), recognize).unwrap();
+    assert_eq!(
+        restored.view().item(BACK_ITEM).unwrap().surface(),
+        staging.surface()
+    );
+    assert_eq!(read_preferences(&restored).len(), 3);
 }

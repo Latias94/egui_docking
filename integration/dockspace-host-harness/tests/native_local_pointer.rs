@@ -10,10 +10,9 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceManipulationDelivery as Delivery, DockspaceManipulationFeedback,
-    DockspaceManipulationId, DockspaceManipulationPendingReason as PendingReason,
-    DockspaceManipulationStatus as Status, DockspacePreviewVisual, DockspaceReceiverDescriptor,
-    DockspaceReceiverRole, DockspaceSession, HostFrameReport, HostWindowToken,
-    NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
+    DockspaceManipulationId, DockspaceManipulationStatus as Status, DockspacePreviewVisual,
+    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, HostFrameReport,
+    HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
     NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativeLocalCoordinateError,
     NativeLocalCoordinates, NativeLocalGeometry, NativeLocalPointerFact,
     NativeLocalPointerLocation, NativeLocalPointerSample, NativePointerButton as Button,
@@ -22,7 +21,8 @@ use dockspace::runtime::{
     NativeReceiverQuery, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
     NativeWindowPresentationState, NativeWorkAreaRoster, PaintedSurfaceOutput,
     SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
-    SurfacePresentationResult as Disposition, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    SurfacePresentationResult as Disposition, SurfaceUnavailableReason, SurfaceWork,
+    SurfaceWorkDeferred, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -252,7 +252,30 @@ impl Scene {
     }
 }
 
-fn render(frame: &mut DockspaceHostFrame<'_>, surface: SurfaceId) -> Scene {
+fn render(
+    frame: &mut DockspaceHostFrame<'_>,
+    surface: SurfaceId,
+    geometry: NativeLocalGeometry,
+) -> Scene {
+    if matches!(
+        frame.surface_work(surface).unwrap(),
+        SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured)
+    ) {
+        let size = geometry.content_size();
+        let scale = geometry.presentation_scale_factor().get();
+        frame
+            .measure_surface(
+                surface,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, size.width() / scale, size.height() / scale)
+                        .unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
     let plan = frame.paint_plan(surface).unwrap().unwrap();
     let mut tabs = Vec::new();
     let mut dragged_item = None;
@@ -311,11 +334,12 @@ fn output(
 fn paint(
     session: &mut DockspaceSession,
     binding: NativeSurfaceBinding,
+    geometry: NativeLocalGeometry,
 ) -> (Scene, PaintedSurfaceOutput) {
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
-    let scene = render(&mut frame, binding.surface());
+    let scene = render(&mut frame, binding.surface(), geometry);
     let mut report = finish(frame);
     let output = output(&mut report, &scene, binding);
     (scene, output)
@@ -355,9 +379,9 @@ fn fixture() -> (DockspaceSession, [NativeSurfaceBinding; 2], Scene) {
         .unwrap();
     measure(&mut frame, geometry());
     assert!(!finish(frame).workspace_changed());
-    let (scene, output) = paint(&mut session, bindings[0]);
+    let (scene, output) = paint(&mut session, bindings[0], geometry());
     assert!(!present(&mut session, output, Disposition::Presented).workspace_changed());
-    let (_, output) = paint(&mut session, bindings[1]);
+    let (_, output) = paint(&mut session, bindings[1], geometry());
     assert!(!present(&mut session, output, Disposition::Presented).workspace_changed());
     for binding in bindings {
         assert!(session.native_local_coordinates(binding).is_some());
@@ -469,7 +493,7 @@ fn refresh(
         .unwrap();
     measure(&mut frame, geometry);
     finish(frame);
-    let (scene, output) = paint(session, binding);
+    let (scene, output) = paint(session, binding, geometry);
     assert!(
         present(session, output, Disposition::Presented)
             .manipulation_feedback()
@@ -492,32 +516,30 @@ fn deliver_reorder(
     let mut frame = session
         .begin_native_host_frame(|query| scene.answer(query))
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A, geometry);
+    successor.assert_preview(false);
     let mut report = finish(frame);
-    assert!(!report.workspace_changed());
-    let pending = feedback(&report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    assert_eq!(session.version(), version);
-    assert_eq!(order(session), [FIRST, SECOND, THIRD]);
-    assert!(!session.has_active_gesture());
-    let exact = output(&mut report, &preview, binding);
-    let delivered = present(session, exact, Disposition::Presented);
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
+    let terminal = feedback(&report);
     assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert!(delivered.workspace_changed());
+    assert!(report.workspace_changed());
+    assert_eq!(report.before(), version);
+    assert_eq!(report.after(), session.version());
     assert_eq!(order(session), [SECOND, THIRD, FIRST]);
     assert_ne!(session.version(), version);
+    assert!(!session.has_active_gesture());
+    let committed = session.version();
+    let exact = output(&mut report, &successor, binding);
+    let settled = present(session, exact, Disposition::Presented);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(session.version(), committed);
+    assert_eq!(order(session), [SECOND, THIRD, FIRST]);
     assert_clean_idle(session);
     terminal.manipulation_id()
 }
 
 #[test]
-fn size_only_reorder_retries_frames_and_delivers_only_the_exact_presented_preview() {
+fn size_only_reorder_retries_the_release_frame_and_settles_its_output_without_redelivery() {
     let (mut session, bindings, scene) = fixture();
     let binding = bindings[0];
     let version = session.version();
@@ -532,8 +554,11 @@ fn size_only_reorder_retries_frames_and_delivers_only_the_exact_presented_previe
         let mut abandoned = session
             .begin_native_host_frame(|query| scene.answer(query))
             .unwrap();
-        render(&mut abandoned, A).assert_preview(true);
-        assert_eq!(abandoned.version(), version);
+        render(&mut abandoned, A, geometry()).assert_preview(false);
+        assert_eq!(
+            abandoned.view().item(FIRST).unwrap().tabs().items(),
+            [SECOND, THIRD, FIRST]
+        );
     }
     assert_eq!(session.version(), version);
     assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
@@ -545,23 +570,23 @@ fn size_only_reorder_retries_frames_and_delivers_only_the_exact_presented_previe
     let mut frame = session
         .begin_native_host_frame(|query| scene.answer(query))
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A, geometry());
+    successor.assert_preview(false);
     let mut report = finish(frame);
-    let pending = feedback(&report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    assert!(!report.workspace_changed());
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-    assert_eq!(session.version(), version);
+    let terminal = feedback(&report);
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert!(report.workspace_changed());
+    assert_eq!(report.before(), version);
+    assert_eq!(report.after(), session.version());
+    assert_ne!(session.version(), version);
+    let committed = session.version();
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+    assert_eq!(session.native_input_recorded_count(), recorded + 3);
     assert!(!session.has_pending_native_input());
     assert!(!session.has_active_gesture());
     assert!(idle(&mut session).manipulation_feedback().is_empty());
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
 
-    let exact = output(&mut report, &preview, binding);
+    let exact = output(&mut report, &successor, binding);
     let artifact = exact.presentation_artifact();
     session
         .report_surface_presentation(exact, Disposition::Presented)
@@ -571,29 +596,25 @@ fn size_only_reorder_retries_frames_and_delivers_only_the_exact_presented_previe
             .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
             .unwrap(),
     );
-    assert_eq!(session.version(), version);
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-    let delivered = idle(&mut session);
+    assert_eq!(session.version(), committed);
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+    let settled = idle(&mut session);
     assert!(
-        delivered
+        settled
             .surface_presentation_commits()
             .iter()
             .any(|ack| ack.settles(artifact))
     );
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_ne!(terminal.id(), pending.id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert!(delivered.workspace_changed());
-    assert_eq!(delivered.before(), version);
-    assert_eq!(delivered.after(), session.version());
-    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(session.version(), committed);
+    assert_eq!(session.native_input_recorded_count(), recorded + 4);
     assert!(session.is_current_native_binding(binding));
     assert_clean_idle(&mut session);
 }
 
 #[test]
-fn dropped_reorder_preview_preserves_order_and_the_same_pointer_can_start_again() {
+fn dropped_reorder_output_preserves_delivery_and_the_same_pointer_can_start_again() {
     let (mut session, bindings, scene) = fixture();
     let binding = bindings[0];
     let version = session.version();
@@ -603,28 +624,47 @@ fn dropped_reorder_preview_preserves_order_and_the_same_pointer_can_start_again(
     let mut frame = session
         .begin_native_host_frame(|query| scene.answer(query))
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A, geometry());
+    successor.assert_preview(false);
     let mut report = finish(frame);
-    let pending = feedback(&report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-    let exact = output(&mut report, &preview, binding);
+    let terminal = feedback(&report);
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert!(report.workspace_changed());
+    assert_ne!(session.version(), version);
+    let committed = session.version();
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+    let exact = output(&mut report, &successor, binding);
     let dropped = present(&mut session, exact, Disposition::Dropped);
-    let terminal = feedback(&dropped);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert!(matches!(terminal.status(), Status::Cancelled(_)));
+    assert!(dropped.manipulation_feedback().is_empty());
     assert!(!dropped.workspace_changed());
-    assert_eq!(session.version(), version);
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert_eq!(session.version(), committed);
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
     assert_clean_idle(&mut session);
 
-    let scene = refresh(&mut session, binding, geometry());
-    let next = deliver_reorder(&mut session, binding, &scene, geometry());
-    assert_ne!(next, terminal.manipulation_id());
+    let current = refresh(&mut session, binding, geometry());
+    let cap = session.native_local_coordinates(binding).unwrap();
+    let source = sample(
+        cap,
+        binding,
+        geometry(),
+        current.tab(FIRST).receiver.center(),
+    );
+    let target = sample(cap, binding, geometry(), current.insertion(SECOND, true));
+    session
+        .record_native_pointer_batch([
+            located(binding, Event::ButtonPressed(Button::Primary), source),
+            located(binding, Event::Moved, target),
+            located(binding, Event::ButtonReleased(Button::Primary), target),
+        ])
+        .unwrap();
+    let frame = session
+        .begin_native_host_frame(|query| current.answer(query))
+        .unwrap();
+    let next = feedback(&finish(frame));
+    assert_eq!(next.status(), Status::Delivered(Delivery::Dock));
+    assert_ne!(next.manipulation_id(), terminal.manipulation_id());
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert_clean_idle(&mut session);
 }
 
 #[test]
@@ -736,7 +776,7 @@ fn identical_geometry_cannot_lend_capabilities_to_another_window_or_session() {
 
     // Even a valid sample from this provider's other window cannot authorize
     // native delivery or capture owned by A. Supply B's real presented receiver.
-    let (sibling_scene, sibling_output) = paint(&mut session, bindings[1]);
+    let (sibling_scene, sibling_output) = paint(&mut session, bindings[1], geometry());
     present(&mut session, sibling_output, Disposition::Presented);
     let sibling_sample = sample(
         sibling,
@@ -797,7 +837,7 @@ fn local_coordinate_capabilities_only_follow_committed_snapshots_even_after_fram
     assert!(session.native_local_coordinates(binding).is_none());
     // Measurement does not establish an active presentation endpoint. A real
     // committed output must first bind this native surface to its host.
-    let (_, exact) = paint(&mut session, binding);
+    let (_, exact) = paint(&mut session, binding, geometry());
     present(&mut session, exact, Disposition::Presented);
     let original = session.native_local_coordinates(binding).unwrap();
     assert_eq!(original.geometry(), geometry());
@@ -956,10 +996,11 @@ fn outside_and_unknown_releases_cancel_without_poisoning_the_same_pointer() {
 }
 
 #[test]
-fn inactive_tab_source_continues_but_its_stale_output_cannot_authorize_hover() {
+fn inactive_tab_selection_preserves_its_actual_output_until_the_successor_is_presented() {
     let (mut session, bindings, original) = fixture();
     let binding = bindings[0];
     let cap = session.native_local_coordinates(binding).unwrap();
+    let presented = session.presented_surface(A).unwrap();
     let source = sample(
         cap,
         binding,
@@ -991,24 +1032,24 @@ fn inactive_tab_source_continues_but_its_stale_output_cannot_authorize_hover() {
         report.workspace_changed(),
         "the native mouse press activates its source tab"
     );
-    assert_eq!(
-        hover_queries, 0,
-        "source continuation grants no authority to the invalidated hover output"
+    assert!(
+        hover_queries > 0,
+        "selection preserves the actual output and its semantically current hover target"
     );
     assert!(report.manipulation_feedback().is_empty());
     assert!(session.view().item(SECOND).unwrap().is_selected());
     assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
     assert!(session.has_active_gesture());
-    assert!(session.presented_surface(A).is_none());
+    assert_eq!(session.presented_surface(A), Some(presented));
     assert_eq!(session.native_local_coordinates(binding), Some(cap));
 
-    let (current, painted) = paint(&mut session, binding);
+    let (current, painted) = paint(&mut session, binding, geometry());
     assert_eq!(
         current.dragged_item,
         Some(SECOND),
         "the exact source continuation must actually cross the drag threshold"
     );
-    current.assert_preview(false);
+    current.assert_preview(true);
     assert!(
         present(&mut session, painted, Disposition::Presented)
             .manipulation_feedback()
@@ -1038,22 +1079,21 @@ fn inactive_tab_source_continues_but_its_stale_output_cannot_authorize_hover() {
             current.answer(query)
         })
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A, geometry());
+    successor.assert_preview(false);
     let mut report = finish(frame);
     assert!(rejected_old_hover > 0);
-    let pending = feedback(&report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-    assert_eq!(session.version(), version);
-    let exact = output(&mut report, &preview, binding);
-    let delivered = present(&mut session, exact, Disposition::Presented);
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
+    let terminal = feedback(&report);
     assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert!(report.workspace_changed());
+    assert_eq!(order(&session), [SECOND, FIRST, THIRD]);
+    assert_ne!(session.version(), version);
+    let committed = session.version();
+    let exact = output(&mut report, &successor, binding);
+    let settled = present(&mut session, exact, Disposition::Presented);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(session.version(), committed);
     assert_eq!(order(&session), [SECOND, FIRST, THIRD]);
     assert!(session.view().item(SECOND).unwrap().is_selected());
     assert_clean_idle(&mut session);
@@ -1078,7 +1118,7 @@ fn the_next_gesture_on_the_same_native_pointer_can_choose_the_desktop_lane() {
         .unwrap();
     measure(&mut frame, geometry());
     finish(frame);
-    let (scene, exact) = paint(&mut session, binding);
+    let (scene, exact) = paint(&mut session, binding, geometry());
     present(&mut session, exact, Disposition::Presented);
     let cap = session.native_local_coordinates(binding).unwrap();
     deliver_reorder(&mut session, binding, &scene, geometry());

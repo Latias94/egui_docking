@@ -332,8 +332,8 @@ fn edge_scroll_yields_to_explicit_scroll_then_menu_selection_and_reveal() {
     assert!(dockspace.session.pointer_continuation().is_some());
     let manual = semantic_action(&output, Role::Button, "Scroll tabs forward");
     frame(&context, &mut dockspace, 1.09, vec![manual]);
-    assert!(dockspace.session.pointer_continuation().is_none());
     let output = frame(&context, &mut dockspace, 1.1, Vec::new());
+    assert!(dockspace.session.pointer_continuation().is_none());
     let offset = overflow(&mut dockspace).1;
     assert!(offset > 40.0, "manual scroll uses its own aligned offset");
     assert_eq!(dockspace.version(), original);

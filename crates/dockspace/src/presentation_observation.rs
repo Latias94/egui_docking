@@ -9,6 +9,7 @@
 mod retention;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -21,13 +22,13 @@ use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::interaction::{ContainedTransformPreviewToken, PreviewToken};
 use crate::platform_provider::PlatformObservationLease;
 use crate::retention::PresentationHostRetentionManifest;
-use crate::scene::SurfaceSceneStamp;
+use crate::scene::{SurfacePlanScene, SurfaceSceneStamp};
 use crate::surface_recovery::SurfaceRecoveryObligationId;
 use crate::viewport::{CoordinateGeneration, PresentationObservationGeneration, ViewportBinding};
 
 use self::retention::RetiredPresentationHostRanges;
 
-/// Monotonic engine-local identity of one committed semantic presentation output.
+/// Monotonic engine-local identity of one allocated semantic presentation output.
 ///
 /// The representation remains crate-private so adapters cannot infer or mint
 /// future tickets from an observed value.
@@ -41,11 +42,8 @@ impl PresentationOutputSerial {
         Self(value)
     }
 
-    pub(crate) const fn checked_next(self) -> Option<Self> {
-        match self.0.checked_add(1) {
-            Some(value) => Some(Self(value)),
-            None => None,
-        }
+    pub(crate) const fn from_allocation(value: u64) -> Self {
+        Self(value)
     }
 
     #[cfg(test)]
@@ -1183,7 +1181,7 @@ pub(crate) enum PresentationHostRetirementStatus {
     Compacted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct PresentationStreamState {
     host: PresentationHostLease,
     surface: SurfaceId,
@@ -1192,39 +1190,53 @@ struct PresentationStreamState {
     next_output_ordinal: u64,
     last_capture_generation: Option<HostPresentationCaptureGeneration>,
     settled_through: Option<HostFrameKey>,
-    pending: BTreeMap<HostFrameKey, HostPresentationOutputPayload>,
+    pending: BTreeMap<HostFrameKey, PendingPresentationScene>,
+}
+
+/// An admitted emission keeps the immutable scene required by its later result.
+/// Retirement of this entry releases that ownership; a promoted scene is then
+/// retained by the surface's existing actual-presentation owner.
+#[derive(Debug, Clone, PartialEq)]
+struct PendingPresentationScene {
+    payload: HostPresentationOutputPayload,
+    scene: Option<Arc<SurfacePlanScene>>,
 }
 
 /// Internal candidate that may grant scene interaction authority after the
 /// ledger has accepted a valid final-presentation observation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PresentationPromotionCandidate {
     stream: HostPresentationStreamId,
     key: HostFrameKey,
     surface: SurfaceId,
     endpoint: HostPresentationEndpoint,
     payload: HostPresentationOutputPayload,
+    scene: Option<Arc<SurfacePlanScene>>,
 }
 
 impl PresentationPromotionCandidate {
-    pub(crate) const fn stream(self) -> HostPresentationStreamId {
+    pub(crate) const fn stream(&self) -> HostPresentationStreamId {
         self.stream
     }
 
-    pub(crate) const fn key(self) -> HostFrameKey {
+    pub(crate) const fn key(&self) -> HostFrameKey {
         self.key
     }
 
-    pub(crate) const fn endpoint(self) -> HostPresentationEndpoint {
+    pub(crate) const fn endpoint(&self) -> HostPresentationEndpoint {
         self.endpoint
     }
 
-    pub(crate) const fn payload(self) -> HostPresentationOutputPayload {
+    pub(crate) const fn payload(&self) -> HostPresentationOutputPayload {
         self.payload
+    }
+
+    pub(crate) fn scene(&self) -> Option<&SurfacePlanScene> {
+        self.scene.as_deref()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PresentationObservationReduction {
     outcomes: Vec<HostPresentationObservationOutcome>,
     promotions: Vec<PresentationPromotionCandidate>,
@@ -1399,7 +1411,7 @@ pub(crate) enum PresentationLedgerError {
 /// reports only lossless capture facts; core owns stream ownership, pending
 /// watermarks, and the rule that a retired stream can never regain interaction
 /// authority after another stream owns the same surface.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PresentationLedger {
     authority_domain: EngineAuthorityDomainId,
     last_host_serial: PresentationHostSerial,
@@ -2035,6 +2047,7 @@ impl PresentationLedger {
             endpoint,
             payload,
             HostPresentationContinuation::None,
+            None,
         )
     }
 
@@ -2045,6 +2058,7 @@ impl PresentationLedger {
         endpoint: HostPresentationEndpoint,
         payload: HostPresentationOutputPayload,
         continuation: HostPresentationContinuation,
+        scene: Option<Arc<SurfacePlanScene>>,
     ) -> Result<HostPresentationOutput, PresentationLedgerError> {
         self.validate_lease(lease)?;
         if let HostPresentationOutputPayload::Paint { scene, .. } = payload
@@ -2076,7 +2090,9 @@ impl PresentationLedger {
             .ok_or(PresentationLedgerError::OutputOrdinalExhausted { stream })?;
         state.next_output_ordinal = ordinal;
         let key = HostFrameKey { stream, ordinal };
-        let previous = state.pending.insert(key, payload);
+        let previous = state
+            .pending
+            .insert(key, PendingPresentationScene { payload, scene });
         debug_assert!(previous.is_none());
         Ok(HostPresentationOutput {
             key,
@@ -2434,7 +2450,7 @@ impl PresentationLedger {
                                 None,
                             ));
                         }
-                        let Some(payload) = state.pending.get(&key).copied() else {
+                        let Some(output) = state.pending.get(&key).cloned() else {
                             return Ok((
                                 HostPresentationObservationOutcome::Rejected {
                                     stream,
@@ -2446,7 +2462,7 @@ impl PresentationLedger {
                                 None,
                             ));
                         };
-                        Some((key, payload))
+                        Some((key, output))
                     }
                     Authority::Known(None) | Authority::Unknown(_) => None,
                 };
@@ -2455,10 +2471,10 @@ impl PresentationLedger {
                 state.pending.retain(|key, _| *key > settled_through);
                 state.last_capture_generation = Some(generation);
                 state.settled_through = Some(settled_through);
-                let promotion = presented_output.and_then(|(key, payload)| {
+                let promotion = presented_output.and_then(|(key, output)| {
                     let active = active_stream.is_some_and(|active| active == stream)
                         && state.lifecycle == PresentationStreamLifecycle::Active;
-                    match (active, payload) {
+                    match (active, output.payload) {
                         (
                             true,
                             HostPresentationOutputPayload::Paint { .. }
@@ -2468,7 +2484,8 @@ impl PresentationLedger {
                             key,
                             surface: state.surface,
                             endpoint: state.endpoint,
-                            payload,
+                            payload: output.payload,
+                            scene: output.scene,
                         }),
                         (false, _)
                         | (_, HostPresentationOutputPayload::Bootstrap)

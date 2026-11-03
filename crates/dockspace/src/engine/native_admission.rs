@@ -309,11 +309,7 @@ impl DockEngine {
         }
         let plan = candidate.plan().clone();
         let coordinates = candidate.coordinate_capture();
-        let serial = self
-            .presentation_authority
-            .last_presentation_output_serial
-            .checked_next()
-            .ok_or(EngineError::PresentationOutputSerialExhausted)?;
+        let serial = self.presentation_authority.issue_scene_output()?;
         self.presentation_authority
             .scene
             .invalidate_presentation_input(surface)

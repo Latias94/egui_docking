@@ -231,6 +231,16 @@ impl ViewportPlacementPreferences {
         self.surfaces.get(&surface)?.native_host
     }
 
+    pub(crate) fn clear_native_host(&mut self, surface: SurfaceId) {
+        let Some(entry) = self.surfaces.get_mut(&surface) else {
+            return;
+        };
+        entry.native_host = None;
+        if entry.placement.is_none() {
+            self.surfaces.remove(&surface);
+        }
+    }
+
     pub(crate) fn surface_ids(&self) -> impl ExactSizeIterator<Item = SurfaceId> + '_ {
         self.surfaces.keys().copied()
     }

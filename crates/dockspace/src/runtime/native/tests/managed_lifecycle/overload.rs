@@ -696,27 +696,25 @@ fn overload_cancel_restores_durable_contained_projection_without_changing_worksp
     assert!(!session.has_active_gesture());
 }
 
-fn assert_release_survives_reset(
+fn assert_delivered_release_survives_reset(
     mut session: DockspaceSession,
     mut release_report: HostFrameReport,
     delivery: DockspaceManipulationDelivery,
     reset: FiniteReset,
 ) {
-    let pending = (
-        session.engine.pending_release_preview(),
-        session.engine.pending_contained_transform_release_preview(),
+    assert!(release_report.workspace_changed());
+    assert!(release_report.take_painted_outputs().is_empty());
+    assert!(!session.has_active_gesture());
+    assert_eq!(session.engine.pending_release_preview(), None);
+    let [feedback] = release_report.manipulation_feedback() else {
+        panic!("a successful release must deliver one terminal: {release_report:?}");
+    };
+    assert_eq!(
+        feedback.status(),
+        DockspaceManipulationStatus::Delivered(delivery)
     );
-    assert!(
-        pending.0.is_some() || pending.1.is_some(),
-        "the fixture must retain a real consumed release"
-    );
-    let feedback = release_report
-        .manipulation_feedback()
-        .iter()
-        .find(|feedback| matches!(feedback.status(), DockspaceManipulationStatus::Pending(_)))
-        .unwrap();
-    let manipulation = feedback.manipulation_id();
-    let output = release_report.take_painted_outputs().pop().unwrap();
+    // A successor output is independent of the already committed edit.
+    let (output, _) = paint_native_output(&mut session);
     let key = output.presentation_artifact().output().key();
     let version = session.version();
     let workspace = session.engine.workspace().clone();
@@ -736,13 +734,11 @@ fn assert_release_survives_reset(
         recorded + reset.recorded_delta()
     );
     assert_eq!(
-        (
-            session.engine.pending_release_preview(),
-            session.engine.pending_contained_transform_release_preview()
-        ),
-        pending,
+        session.engine.workspace(),
+        &workspace,
         "dropping the reset candidate preserves the accepted release: {reset:?}"
     );
+    assert_eq!(session.version(), version);
     let report = match reset {
         FiniteReset::Overload => cancel_and_commit(&mut session),
         FiniteReset::DeviceRemoval | FiniteReset::BindingRetired => {
@@ -772,57 +768,48 @@ fn assert_release_survives_reset(
         report.manipulation_feedback().is_empty(),
         "accepted release is not a live gesture to cancel"
     );
-    assert_eq!(
-        (
-            session.engine.pending_release_preview(),
-            session.engine.pending_contained_transform_release_preview()
-        ),
-        pending
-    );
+    assert_eq!(session.engine.pending_release_preview(), None);
     assert!(
         session
             .engine
             .presentation_retention_manifest()
             .retains(key),
-        "the accepted output obligation must survive cancellation"
+        "the successor output must survive input cancellation"
     );
     assert_eq!(session.engine.workspace(), &workspace);
     assert_eq!(session.version(), version);
 
     session
-        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .report_surface_presentation(output, SurfacePresentationResult::Dropped)
         .unwrap();
-    let delivered = commit_managed_frame_report(&mut session);
-    let feedback = delivered
-        .manipulation_feedback()
-        .iter()
-        .filter(|feedback| feedback.manipulation_id() == manipulation)
-        .collect::<Vec<_>>();
-    assert_eq!(feedback.len(), 1);
-    assert_eq!(
-        feedback[0].status(),
-        DockspaceManipulationStatus::Delivered(delivery)
-    );
+    let dropped = commit_managed_frame_report(&mut session);
+    assert!(!dropped.workspace_changed());
+    assert!(dropped.manipulation_feedback().is_empty());
     assert_eq!(session.engine.pending_release_preview(), None);
-    assert_eq!(
-        session.engine.pending_contained_transform_release_preview(),
-        None
+    assert!(
+        !session
+            .engine
+            .presentation_retention_manifest()
+            .retains(key)
     );
-    assert_ne!(session.version(), version);
-    let delivered_version = session.version();
+    assert_eq!(session.engine.workspace(), &workspace);
+    assert_eq!(session.version(), version);
     assert!(
         reset_and_commit(&mut session, reset)
             .manipulation_feedback()
             .is_empty()
     );
-    assert_eq!(session.version(), delivered_version);
+    assert_eq!(session.engine.workspace(), &workspace);
+    assert_eq!(session.version(), version);
 }
 
 #[test]
-fn overload_cancel_preserves_pending_contained_release_and_its_exact_output() {
+fn overload_cancel_preserves_delivered_contained_release_and_its_successor_output() {
     for reset in FiniteReset::RELEASE_RESETS {
         let (mut session, binding) = programmatic_tear_off_session();
         let receiver = contained_resize_receiver(&mut session);
+        let floating = FloatingPresentationId::new(1);
+        let original = session.view().contained(floating).unwrap().rect();
         let moved = LogicalPoint::new(receiver.center().x() + 32.0, receiver.center().y()).unwrap();
         session
             .record_native_pointer_batch([
@@ -841,11 +828,24 @@ fn overload_cancel_preserves_pending_contained_release_and_its_exact_output() {
                 ),
             ])
             .unwrap();
-        let frame = session
+        let mut frame = session
             .begin_native_host_frame(|query| receiver_answer(query, receiver))
             .unwrap();
-        let report = paint_and_commit(frame);
-        assert_release_survives_reset(
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        assert_eq!(
+            session.view().contained(floating).unwrap().rect(),
+            crate::geometry::LogicalRect::new(
+                original.x(),
+                original.y(),
+                original.width() + 32.0,
+                original.height()
+            )
+            .unwrap()
+        );
+        assert_delivered_release_survives_reset(
             session,
             report,
             DockspaceManipulationDelivery::ContainedTransform,
@@ -858,6 +858,8 @@ fn overload_cancel_preserves_pending_contained_release_and_its_exact_output() {
 fn overload_cancel_preserves_a_release_accepted_earlier_in_the_same_frame() {
     let (mut session, binding) = programmatic_tear_off_session();
     let receiver = contained_resize_receiver(&mut session);
+    let floating = FloatingPresentationId::new(1);
+    let original = session.view().contained(floating).unwrap().rect();
     let moved = LogicalPoint::new(receiver.center().x() + 32.0, receiver.center().y()).unwrap();
     session
         .record_native_pointer_batch([
@@ -880,20 +882,25 @@ fn overload_cancel_preserves_a_release_accepted_earlier_in_the_same_frame() {
         .begin_native_host_frame(|query| receiver_answer(query, receiver))
         .unwrap();
     let submitted = frame.cancel_native_input_for_overload().unwrap();
-    assert!(
-        frame
-            .paint_plan(SURFACE)
-            .unwrap()
-            .unwrap()
-            .has_manipulation_preview(),
-        "the consumed release, unlike a live gesture, still owns its projected preview"
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert_eq!(
+        session.view().contained(floating).unwrap().rect(),
+        crate::geometry::LogicalRect::new(
+            original.x(),
+            original.y(),
+            original.width() + 32.0,
+            original.height()
+        )
+        .unwrap()
     );
-    let report = paint_and_commit(frame);
     assert_eq!(
         report.submitted_action_outcome(submitted),
         Some(&HostInputOutcome::NativeInputCancelledForOverload)
     );
-    assert_release_survives_reset(
+    assert_delivered_release_survives_reset(
         session,
         report,
         DockspaceManipulationDelivery::ContainedTransform,
@@ -917,7 +924,7 @@ fn overload_cancel_cannot_be_recorded_as_an_ordinary_backend_action() {
 }
 
 #[test]
-fn overload_cancel_preserves_pending_drag_release_and_its_exact_output() {
+fn overload_cancel_preserves_delivered_drag_release_and_its_successor_output() {
     for reset in FiniteReset::RELEASE_RESETS {
         let mut builder = Workspace::builder();
         let source_tabs = builder.insert_node(Node::tabs([ITEM, SECOND_ITEM]));
@@ -956,7 +963,7 @@ fn overload_cancel_preserves_pending_drag_release_and_its_exact_output() {
                 ),
             ])
             .unwrap();
-        let frame = session
+        let mut frame = session
             .begin_native_host_frame(|query| {
                 receiver_answer(
                     query,
@@ -968,8 +975,24 @@ fn overload_cancel_preserves_pending_drag_release_and_its_exact_output() {
                 )
             })
             .unwrap();
-        let report = paint_and_commit(frame);
-        assert_release_survives_reset(session, report, DockspaceManipulationDelivery::Dock, reset);
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        assert_eq!(
+            session.view().item(ITEM).unwrap().tabs().items(),
+            &[ItemId::new(3), ITEM]
+        );
+        assert_eq!(
+            session.view().item(SECOND_ITEM).unwrap().tabs().items(),
+            &[SECOND_ITEM]
+        );
+        assert_delivered_release_survives_reset(
+            session,
+            report,
+            DockspaceManipulationDelivery::Dock,
+            reset,
+        );
     }
 }
 

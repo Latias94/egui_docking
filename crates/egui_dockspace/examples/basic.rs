@@ -262,6 +262,9 @@ mod tests {
             })],
         );
 
+        // Current-pass chrome actions enter the next update before encoding.
+        assert!(app.dockspace.view().item(EDITOR).is_some());
+        let _ = run_frame(&context, &mut app, Vec::new());
         assert!(app.dockspace.view().item(EDITOR).is_none());
         assert!(app.dockspace.view().item(PREVIEW).is_some());
         let closed_version = app.dockspace.version();

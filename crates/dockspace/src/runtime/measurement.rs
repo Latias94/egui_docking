@@ -204,7 +204,7 @@ impl DockspaceHostFrame<'_> {
         mut resolve: impl FnMut(SurfaceMeasurementRequest) -> SurfaceMeasurementAnswer,
     ) -> Result<(), DockspaceRuntimeError> {
         self.complete_pointer_journal()?;
-        if self.surface_answered(surface) {
+        if self.surface_answered(surface) || self.frame.surface_is_measured(surface) {
             return Err(DockspaceInteractionError::SurfaceAlreadyAnswered { surface }.into());
         }
         self.frame.refresh_contained_layout_except(Some(surface))?;
@@ -286,7 +286,7 @@ impl DockspaceHostFrame<'_> {
             .frame
             .view()
             .prepare_surface_contribution(token, measurements)?;
-        self.frame.push_surface_contribution(contribution)?;
+        self.frame.compile_surface_contribution(contribution)?;
         Ok(())
     }
 
@@ -302,6 +302,9 @@ impl DockspaceHostFrame<'_> {
         reason: SurfaceUnavailableReason,
     ) -> Result<(), DockspaceRuntimeError> {
         self.complete_pointer_input()?;
+        if reason == SurfaceUnavailableReason::Deferred {
+            return Ok(());
+        }
         let surfaces = self.frame.surfaces().collect::<Vec<_>>();
         for surface in surfaces {
             if self.surface_answered(surface) {

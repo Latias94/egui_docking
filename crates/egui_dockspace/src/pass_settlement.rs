@@ -11,7 +11,7 @@ use egui::{Context, FullOutput, Id, RawInput, Ui, UiBuilder, UiStackInfo, Viewpo
 use crate::output_proof::{SurfaceOutputProof, scrub_private_markers};
 use crate::pane::PaneFocusState;
 
-const RUN_SCOPE_TAG: &str = "egui_dockspace::official_run_scope";
+pub(super) const RUN_SCOPE_TAG: &str = "egui_dockspace::official_run_scope";
 
 /// Complete egui output and the affine receipt for its docking emissions.
 ///
@@ -25,6 +25,9 @@ pub struct DockspaceOutput {
 }
 
 impl DockspaceOutput {
+    pub(super) fn new(output: FullOutput, receipt: DockspaceOutputReceipt) -> Self {
+        Self { output, receipt }
+    }
     /// Transfers the output and its one-use settlement receipt to the host.
     ///
     /// The host must report `Presented` only after this complete output reaches
@@ -342,7 +345,7 @@ struct SurfaceDelivery {
     needs_repaint: bool,
 }
 
-struct ProductPassSettlementRun {
+pub(super) struct ProductPassSettlementRun {
     context: Context,
     context_identity: Arc<ContextIdentity>,
     viewport: ViewportId,
@@ -352,7 +355,7 @@ struct ProductPassSettlementRun {
 }
 
 impl ProductPassSettlementRun {
-    fn begin(context: &Context, input: &RawInput) -> Self {
+    pub(super) fn begin(context: &Context, input: &RawInput) -> Self {
         if let Some(active) = active_run_portal(context) {
             active
                 .lock()
@@ -383,7 +386,7 @@ impl ProductPassSettlementRun {
         }
     }
 
-    fn begin_pass(&self, ui: &Ui) -> Option<RunScope> {
+    pub(super) fn begin_pass(&self, ui: &Ui) -> Option<RunScope> {
         if ui.ctx().viewport_id() != self.viewport
             || !Arc::ptr_eq(&context_identity(ui.ctx()), &self.context_identity)
         {
@@ -403,7 +406,7 @@ impl ProductPassSettlementRun {
         })
     }
 
-    fn complete(mut self, output: &mut FullOutput) -> DockspaceOutputReceipt {
+    pub(super) fn complete(mut self, output: &mut FullOutput) -> DockspaceOutputReceipt {
         let terminal = self.take_terminal();
         let mut deliveries = Vec::new();
         if let Some((run, pass, poisoned, participants)) = terminal {
@@ -485,6 +488,15 @@ impl ProductPassSettlementRun {
             deliveries,
             discarded: self.discarded.take(),
         }
+    }
+
+    pub(super) fn owns_only(&self, settlement: &ProductPassSettlement) -> bool {
+        let portal = self.portal.lock().unwrap_or_else(PoisonError::into_inner);
+        !portal.poisoned
+            && portal.participants.len() == 1
+            && portal.participants[0]
+                .upgrade()
+                .is_some_and(|state| Arc::ptr_eq(&state, &settlement.state))
     }
 
     fn take_terminal(
@@ -591,7 +603,7 @@ pub(super) fn pointer_packet(ui: &Ui) -> Option<ProductPointerPacket> {
 }
 
 #[derive(Clone)]
-struct RunScope {
+pub(super) struct RunScope {
     run: Arc<RunIdentity>,
     pass: u64,
 }

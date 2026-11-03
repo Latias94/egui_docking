@@ -6,7 +6,7 @@ use dockspace::model::{
 };
 use dockspace::runtime::{
     DockspaceManipulationCancelReason, DockspaceManipulationStatus, DockspaceSession,
-    SurfacePointerEvent,
+    SurfacePointerEvent, SurfaceUnavailableReason,
 };
 use egui::accesskit::Role;
 use egui::{
@@ -125,10 +125,16 @@ fn modifier_only_input_remembers_shift_without_enrolling_a_pointer() {
             ..RawInput::default()
         },
         |ui| {
-            submissions += pointer
-                .submit(&mut session, SURFACE, ui, false)
-                .unwrap()
-                .len();
+            let mut frame = session.begin_host_frame().unwrap();
+            let mut draft = pointer.clone();
+            let input = draft.prepare(&frame, SURFACE, ui, false);
+            submissions += usize::from(!input.is_empty());
+            input.submit_into(&mut frame).unwrap();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            frame.commit().unwrap();
+            pointer = draft;
         },
     )
     .into_parts();

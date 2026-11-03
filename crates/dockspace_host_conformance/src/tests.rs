@@ -13,29 +13,30 @@ use dockspace::runtime::{
     ContainedPaintRecord, ContainedResizeDirection, DockspaceCloseOutcome, DockspaceClosePlan,
     DockspaceCloseResolution, DockspaceDragDecoration, DockspaceDragPreview,
     DockspaceDropDirection, DockspaceDropEligibility, DockspaceHostFrame,
-    DockspaceInteractionError, DockspacePreviewVisual, DockspaceReceiverDescriptor,
-    DockspaceReceiverRole, DockspaceRuntimeError, DockspaceSession, DockspaceVisualKind,
-    DropAffordanceTargetPaintRecord, DropGuidePaintRecord, HostCloseRequestOrigin, HostFrameReport,
-    HostInputOutcome, HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken,
-    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
-    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativePointerButton,
-    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
-    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose,
-    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
-    NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
-    NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPlacement, NativeWindowPresentationState,
-    NativeWorkAreaFacts, NativeWorkAreaRoster, PanePaintRecord, PresentedDockReceiver,
-    PresentedDockspaceSurface, SplitterJunctionPaintRecord, SplitterPaintRecord,
-    SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
-    SurfacePaintPlan, SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePointerButton,
-    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
-    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
-    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
-    SurfaceSplitterAdjustment, SurfaceUnavailableReason, TabBarPaintRecord, TabPaintRecord,
-    TabStripMetrics, UniformSurfaceMetrics,
+    DockspaceInteractionError, DockspaceManipulationDelivery, DockspaceManipulationStatus,
+    DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceReceiverRole,
+    DockspaceRuntimeError, DockspaceSession, DockspaceVisualKind, DropAffordanceTargetPaintRecord,
+    DropGuidePaintRecord, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
+    HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken, NativeCloseState,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeEffectAcknowledgement,
+    NativeEffectOperation, NativeEffectRequest, NativeHostCapabilities, NativeHostCapability,
+    NativeHostErrorKind, NativePointerButton, NativePointerEvent, NativePointerHover,
+    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
+    NativeReceiverAnswer, NativeReceiverPurpose, NativeScrollDelta, NativeScrollDeviceId,
+    NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
+    NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeStagingPresentationPhase,
+    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPlacement,
+    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PanePaintRecord,
+    PresentedDockReceiver, PresentedDockspaceSurface, SplitterJunctionPaintRecord,
+    SplitterPaintRecord, SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer,
+    SurfaceMeasurementRequest, SurfacePaintPlan, SurfacePaintProgramOperation,
+    SurfacePaintProgramStep, SurfacePointerButton, SurfacePointerCancelReason,
+    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
+    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
+    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceSplitterAdjustment,
+    SurfaceUnavailableReason, TabBarPaintRecord, TabPaintRecord, TabStripMetrics,
+    UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -152,6 +153,18 @@ fn program_records<'frame>(plan: SurfacePaintPlan<'frame>) -> ProgramRecords<'fr
     })
     .expect("the paint plan must expose one valid surface program");
     records
+}
+
+fn assert_dock_delivered_once(report: &HostFrameReport) {
+    assert!(report.workspace_changed());
+    assert_ne!(report.after(), report.before());
+    let [feedback] = report.manipulation_feedback() else {
+        panic!("one ordinary release must publish exactly one terminal manipulation result");
+    };
+    assert_eq!(
+        feedback.status(),
+        DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock),
+    );
 }
 
 fn full_managed_capabilities() -> NativeHostCapabilities {
@@ -339,11 +352,9 @@ impl TransactionalMultiSurfaceFixture {
 
     fn publish_complete_roster(&mut self) {
         let metrics = self.metrics;
-        self.host
-            .run(|frame| Self::measure_complete_roster(frame, metrics));
-
         let mut source_tab = None;
         let mut report = self.host.run(|frame| {
+            Self::measure_complete_roster(frame, metrics);
             for surface in [SURFACE, SECOND_SURFACE] {
                 let plan = frame
                     .paint_plan(surface)
@@ -616,15 +627,12 @@ impl MagneticJourneyFixture {
         let minimum = LogicalSize::new(0.0, 0.0).expect("the L03 minimum is valid");
         let metrics =
             UniformSurfaceMetrics::new(bounds, minimum, 72.0).expect("the L03 metrics are valid");
-        host.run(|frame| {
-            frame
-                .measure_surface(SURFACE, metrics)
-                .expect("the L03 fixture measures its complete surface");
-        });
-
         let mut source = None;
         let mut target_bounds = None;
         let paint = host.run(|frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the L03 fixture measures and compiles in its paint update");
             let plan = frame
                 .paint_plan(SURFACE)
                 .expect("the initial L03 plan lookup succeeds")
@@ -750,7 +758,7 @@ impl MagneticJourneyFixture {
         });
     }
 
-    fn submit_release(&mut self, point: LogicalPoint) {
+    fn submit_release(&mut self, point: LogicalPoint) -> HostFrameReport {
         let surface = self.surface();
         self.host.run(|frame| {
             frame
@@ -762,10 +770,10 @@ impl MagneticJourneyFixture {
                     SurfacePointerReceiverFacts::no_hover(&surface),
                 ))
                 .expect("the shared L03 release uses the current pane observation");
-        });
+        })
     }
 
-    fn submit_burst(&mut self, point: LogicalPoint) {
+    fn submit_burst(&mut self, point: LogicalPoint) -> HostFrameReport {
         let source = self.source();
         let surface = self.surface();
         let press = source.center();
@@ -804,10 +812,10 @@ impl MagneticJourneyFixture {
                     ),
                 ])
                 .expect("the shared L03 burst preserves press, motion, and release order");
-        });
+        })
     }
 
-    fn submit_final_move_and_release(&mut self, point: LogicalPoint) {
+    fn submit_final_move_and_release(&mut self, point: LogicalPoint) -> HostFrameReport {
         let surface = self.surface();
         self.host.run(|frame| {
             frame
@@ -828,12 +836,16 @@ impl MagneticJourneyFixture {
                     ),
                 ])
                 .expect("the final L03 move and release share one public input batch");
-        });
+        })
     }
 
     fn present_preview(&mut self, point: LogicalPoint) -> crate::scenario::MagneticDockBasin {
+        let metrics = self.metrics;
         let mut observed = None;
         let preview_report = self.host.run(|frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the active L03 drag measures and compiles in its preview update");
             let plan = frame
                 .paint_plan(SURFACE)
                 .expect("the L03 preview plan lookup succeeds")
@@ -925,12 +937,10 @@ impl MagneticJourneyFixture {
 
         let settled_version = self.host.version();
         let metrics = self.metrics;
-        self.host.run(|frame| {
+        let paint = self.host.run(|frame| {
             frame
                 .measure_surface(SURFACE, metrics)
-                .expect("the committed L03 layout is remeasured");
-        });
-        let paint = self.host.run(|frame| {
+                .expect("the committed L03 layout measures and compiles in its paint update");
             let plan = frame
                 .paint_plan(SURFACE)
                 .expect("the settled L03 plan lookup succeeds")
@@ -955,18 +965,14 @@ impl MagneticJourneyFixture {
         assert_eq!(case.source(), ItemAlias::Secondary);
         assert_eq!(case.target(), ItemAlias::Primary);
         let target = self.point(case.sample());
-        let observed = match case.cadence() {
-            CadenceProfile::Burst => {
-                self.submit_burst(target);
-                self.present_preview(target)
-            }
+        let (preview_basin, mut released) = match case.cadence() {
+            CadenceProfile::Burst => (None, self.submit_burst(target)),
             CadenceProfile::Stepwise => {
                 self.submit_press();
                 self.submit_threshold_move();
                 self.submit_target_move(target);
                 let observed = self.present_preview(target);
-                self.submit_release(target);
-                observed
+                (Some(observed), self.submit_release(target))
             }
             CadenceProfile::Hesitant => {
                 self.submit_press();
@@ -976,8 +982,7 @@ impl MagneticJourneyFixture {
                 self.submit_target_move(self.tangent_point(target, case.basin(), -3.0));
                 self.submit_target_move(target);
                 let observed = self.present_preview(target);
-                self.submit_release(target);
-                observed
+                (Some(observed), self.submit_release(target))
             }
             CadenceProfile::ReleaseWithFinalMove => {
                 self.submit_press();
@@ -985,13 +990,18 @@ impl MagneticJourneyFixture {
                 let acquired = self.tangent_point(target, case.basin(), -4.0);
                 self.submit_target_move(acquired);
                 let observed = self.present_preview(acquired);
-                self.submit_final_move_and_release(target);
-                observed
+                (Some(observed), self.submit_final_move_and_release(target))
             }
             cadence => panic!("unsupported L03 cadence: {cadence:?}"),
         };
-        assert_eq!(observed, case.basin());
-        self.assert_committed_and_quiescent(observed);
+        if let Some(observed) = preview_basin {
+            assert_eq!(observed, case.basin());
+        }
+        assert_dock_delivered_once(&released);
+        assert!(released.take_painted_outputs().is_empty());
+        assert!(!self.host.session.has_active_gesture());
+        assert!(!self.host.session.has_pending_presentation());
+        self.assert_committed_and_quiescent(case.basin());
         case.expected_observations()
     }
 }
@@ -1290,7 +1300,11 @@ fn private_multi_surface_fixture_rejects_a_stale_target_without_partial_commit()
 fn private_multi_surface_fixture_keeps_the_newer_output_when_an_older_one_is_abandoned() {
     let mut fixture = TransactionalMultiSurfaceFixture::new();
     fixture.publish_complete_roster();
+    let metrics = fixture.metrics;
     let mut first = fixture.host.run(|frame| {
+        frame
+            .measure_surface(SECOND_SURFACE, metrics)
+            .expect("the first target output measures in its paint update");
         frame
             .confirm_surface_program(SECOND_SURFACE)
             .expect("the first target output is painted");
@@ -1300,6 +1314,9 @@ fn private_multi_surface_fixture_keeps_the_newer_output_when_an_older_one_is_aba
         .pop()
         .expect("the first target output capability exists");
     let mut second = fixture.host.run(|frame| {
+        frame
+            .measure_surface(SECOND_SURFACE, metrics)
+            .expect("the successor target output measures in its paint update");
         frame
             .confirm_surface_program(SECOND_SURFACE)
             .expect("the successor target output is painted");
@@ -1689,7 +1706,6 @@ impl ManagedLifecycleScenarioFixture {
             metrics,
             work_areas,
         };
-        fixture.measure_all();
         fixture.paint_and_present_all();
         fixture
     }
@@ -1850,12 +1866,12 @@ impl ManagedLifecycleScenarioFixture {
     }
 
     fn present_first_live(&mut self, child: NativeSurfaceBinding) {
-        self.measure_all();
         let mut frame = self
             .host
             .session
             .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
             .expect("the first-live frame begins");
+        Self::measure_all(&mut frame, self.metrics);
         assert!(
             frame
                 .paint_plan(child.surface())
@@ -1936,27 +1952,21 @@ impl ManagedLifecycleScenarioFixture {
         assert!(!self.host.session.recognizes_native_binding(child));
     }
 
-    fn measure_all(&mut self) {
-        let mut frame = self
-            .host
-            .session
-            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-            .expect("the lifecycle measurement frame begins");
+    fn measure_all(frame: &mut DockspaceHostFrame<'_>, metrics: UniformSurfaceMetrics) {
         for surface in frame.surfaces() {
             frame
-                .measure_surface(surface, self.metrics)
-                .expect("the complete lifecycle surface roster measures");
+                .measure_surface(surface, metrics)
+                .expect("the complete lifecycle roster measures in the paint update");
         }
-        frame.commit().expect("the lifecycle measurements commit");
     }
 
     fn paint_and_present_all(&mut self) -> HostFrameReport {
-        self.measure_all();
         let mut frame = self
             .host
             .session
             .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
             .expect("the lifecycle paint frame begins");
+        Self::measure_all(&mut frame, self.metrics);
         for surface in frame.surfaces() {
             assert!(
                 frame
@@ -2066,7 +2076,9 @@ fn private_multi_surface_fixture_unknown_owner_cannot_start_a_drag() {
             .expect("unknown capture is recorded as fail-closed owner evidence");
     });
     assert!(!fixture.host.session.has_active_gesture());
+    let metrics = fixture.metrics;
     fixture.host.run(|frame| {
+        TransactionalMultiSurfaceFixture::measure_complete_roster(frame, metrics);
         let plan = frame
             .paint_plan(SURFACE)
             .expect("the unknown-owner plan resolves")
@@ -2147,22 +2159,16 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
     let minimum = LogicalSize::new(0.0, 0.0).expect("the minimum is valid");
     let metrics = UniformSurfaceMetrics::new(logical_bounds, minimum, 72.0)
         .expect("the target-destruction metrics are valid");
-    host.run_native(
-        |_| NativeReceiverAnswer::Unknown,
-        |frame| {
-            for surface in frame.surfaces() {
-                frame
-                    .measure_surface(surface, metrics)
-                    .expect("the complete native roster is measured");
-            }
-        },
-    );
-
     let mut source_tab = None;
     let mut target_drop = None;
     let mut painted = host.run_native(
         |_| NativeReceiverAnswer::Unknown,
         |frame| {
+            for surface in frame.surfaces() {
+                frame
+                    .measure_surface(surface, metrics)
+                    .expect("the complete native roster measures in its paint update");
+            }
             for surface in frame.surfaces() {
                 let plan = frame
                     .paint_plan(surface)
@@ -2249,6 +2255,11 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
         },
         |frame| {
             for surface in frame.surfaces() {
+                frame
+                    .measure_surface(surface, metrics)
+                    .expect("the cross-surface drag measures in its preview update");
+            }
+            for surface in frame.surfaces() {
                 if let Some(plan) = frame
                     .paint_plan(surface)
                     .expect("the exact cross-surface drag plan resolves")
@@ -2314,18 +2325,13 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
         "destroying only the target must not cancel the source-owned gesture",
     );
 
-    host.run_native(
-        |_| NativeReceiverAnswer::Unknown,
-        |frame| {
-            frame
-                .measure_surface(SURFACE, metrics)
-                .expect("the surviving source surface is remeasured");
-        },
-    );
     let mut fresh_target = None;
     let mut surviving = host.run_native(
         |_| NativeReceiverAnswer::Unknown,
         |frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the surviving source measures in its paint update");
             let plan = frame
                 .paint_plan(SURFACE)
                 .expect("the surviving source plan resolves")
@@ -2382,10 +2388,30 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
         },
         |frame| {
             frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the committed source measures in its release update");
+            let plan = frame
+                .paint_plan(SURFACE)
+                .expect("the committed source plan resolves")
+                .expect("the committed source is paintable");
+            assert!(program_drag_preview(plan).is_none());
+            assert!(program_drag_decoration(plan).is_none());
+            frame
                 .confirm_surface_program(SURFACE)
-                .expect("the fresh release preview output is painted");
+                .expect("the committed source output is painted");
         },
     );
+    assert_dock_delivered_once(&released);
+    assert_eq!(released.after(), host.version());
+    assert!(!host.session.has_active_gesture());
+    assert!(!host.session.has_pending_presentation());
+    assert_eq!(
+        tabs_containing(host.view(), B)
+            .expect("the release immediately publishes the source item in the fresh target")
+            .items(),
+        &[B, A],
+    );
+    let committed_version = host.version();
     assert!(
         released.take_native_effects().is_empty(),
         "releasing an External Root content drag needs no pass-through restore",
@@ -2394,25 +2420,19 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
     assert_eq!(
         released_outputs.len(),
         1,
-        "the fresh target release must paint its exact preview output",
+        "the release update must paint its exact committed source output",
     );
     for output in released_outputs {
         host.session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
-            .expect("the fresh release preview terminal records");
+            .expect("the committed source output terminal records");
     }
-    host.run_native(|_| NativeReceiverAnswer::Unknown, |_| {});
-    host.run_native(
+    let settled = host.run_native(
         |_| NativeReceiverAnswer::Unknown,
         |frame| {
             frame
                 .measure_surface(SURFACE, metrics)
-                .expect("the settled source layout is remeasured");
-        },
-    );
-    host.run_native(
-        |_| NativeReceiverAnswer::Unknown,
-        |frame| {
+                .expect("the settled source layout measures in its inspection update");
             let plan = frame
                 .paint_plan(SURFACE)
                 .expect("the settled source plan resolves")
@@ -2421,13 +2441,16 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
             assert!(program_drag_decoration(plan).is_none());
         },
     );
+    assert_eq!(host.version(), committed_version);
+    assert!(!settled.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
     assert!(
         !host.session.has_active_gesture(),
         "the fresh target release must reset the surviving source gesture",
     );
     assert!(
         !host.session.has_pending_presentation(),
-        "the fresh target release must settle its exact presentation obligation",
+        "the ordinary source release must leave no presentation obligation",
     );
     assert_eq!(
         tabs_containing(host.view(), B)
@@ -2443,14 +2466,11 @@ fn pointer_close_host() -> (DeterministicHost, DockspaceReceiverDescriptor) {
     let minimum = LogicalSize::new(0.0, 0.0).expect("the minimum is valid");
     let metrics =
         UniformSurfaceMetrics::new(bounds, minimum, 72.0).expect("the measurements are valid");
-    host.run(|frame| {
-        frame
-            .measure_surface(SURFACE, metrics)
-            .expect("the close fixture measures its surface");
-    });
-
     let mut close = None;
     let paint = host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the close fixture measures and compiles in its paint update");
         let plan = frame
             .paint_plan(SURFACE)
             .expect("the pointer phase closes before paint")
@@ -3317,6 +3337,7 @@ fn ogc_02_merge_and_close_select_the_visual_successor_atomically() {
 
 struct InteractionFixture {
     host: DeterministicHost,
+    metrics: UniformSurfaceMetrics,
     source: DockspaceReceiverDescriptor,
     target: DockspaceReceiverDescriptor,
 }
@@ -3339,15 +3360,12 @@ impl InteractionFixture {
         let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
         let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
             .expect("the fixture measurements are valid");
-        host.run(|frame| {
-            frame
-                .measure_surface(SURFACE, metrics)
-                .expect("the first pass measures the complete surface");
-        });
-
         let mut source = None;
         let mut target = None;
         let paint = host.run(|frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the interaction fixture measures and compiles in its paint update");
             let plan = frame
                 .paint_plan(SURFACE)
                 .expect("the pointer-input phase must close before paint")
@@ -3372,6 +3390,7 @@ impl InteractionFixture {
 
         Self {
             host,
+            metrics,
             source: source.expect("source descriptor was captured while painting"),
             target: target.expect("target descriptor was captured while painting"),
         }
@@ -3442,7 +3461,11 @@ impl InteractionFixture {
     }
 
     fn paint_preview(&mut self) {
+        let metrics = self.metrics;
         let paint = self.host.run(|frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the active drag measures and compiles in its preview update");
             let plan = frame
                 .paint_plan(SURFACE)
                 .expect("the pointer-input phase must close before paint")
@@ -3496,19 +3519,13 @@ impl InteractionFixture {
         self.host
             .report_native_snapshot([(binding, ready_window_facts(physical, scale))]);
 
-        let bounds =
-            LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
-        let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
-        let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
-            .expect("the fixture measurements are valid");
-        self.host.run(|frame| {
-            frame
-                .measure_surface(SURFACE, metrics)
-                .expect("native coordinate authority admits a fresh measurement");
-        });
+        let metrics = self.metrics;
         let mut source = None;
         let mut target = None;
         let paint = self.host.run(|frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("native coordinate authority admits measurement in the paint update");
             let plan = frame
                 .paint_plan(SURFACE)
                 .expect("the fresh native plan is inspectable")
@@ -3773,13 +3790,13 @@ fn runtime_pointer_batch_routes_discrete_and_smooth_scroll_to_the_core_owner() {
 }
 
 #[test]
-fn ogc_03_release_on_first_target_hit_is_inert_without_a_painted_preview() {
+fn ogc_03_release_on_first_target_hit_commits_without_a_painted_preview() {
     let mut fixture = InteractionFixture::new();
     fixture.begin_drag_without_target();
     let target = fixture.current_target();
     let before = fixture.host.version();
 
-    fixture.host.run(|frame| {
+    let mut released = fixture.host.run(|frame| {
         frame
             .submit_surface_pointer(SurfacePointerInput::new(
                 SurfacePointerId::new(1),
@@ -3791,7 +3808,29 @@ fn ogc_03_release_on_first_target_hit_is_inert_without_a_painted_preview() {
             .expect("the first target hit is reported exactly on release");
     });
 
-    assert_eq!(fixture.host.version(), before);
+    assert_eq!(released.before(), before);
+    assert_eq!(released.after(), fixture.host.version());
+    assert_dock_delivered_once(&released);
+    assert!(released.take_painted_outputs().is_empty());
+    assert!(!fixture.host.session.has_active_gesture());
+    assert!(!fixture.host.session.has_pending_presentation());
+    assert_eq!(
+        tabs_containing(fixture.host.view(), C)
+            .expect("the first-hit release publishes the source item in the target tabs")
+            .items(),
+        &[C, A],
+    );
+    assert_eq!(
+        tabs_containing(fixture.host.view(), B)
+            .expect("the first-hit release preserves the remaining source item")
+            .items(),
+        &[B],
+    );
+    let committed = fixture.host.version();
+    let settled = fixture.host.run(|_| {});
+    assert_eq!(fixture.host.version(), committed);
+    assert!(!settled.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
 }
 
 #[test]
@@ -3864,7 +3903,7 @@ fn ogc_03_current_painted_preview_commits_exactly_once() {
     fixture.paint_preview();
     let target = fixture.current_target();
 
-    fixture.host.run(|frame| {
+    let released = fixture.host.run(|frame| {
         frame
             .submit_surface_pointer(SurfacePointerInput::new(
                 SurfacePointerId::new(1),
@@ -3876,9 +3915,52 @@ fn ogc_03_current_painted_preview_commits_exactly_once() {
             .expect("the current receiver reports release over the painted preview");
     });
 
+    assert_dock_delivered_once(&released);
+    assert_eq!(released.after(), fixture.host.version());
+    assert!(!fixture.host.session.has_active_gesture());
+    assert!(!fixture.host.session.has_pending_presentation());
     let target_tabs = tabs_containing(fixture.host.view(), C)
         .expect("the delivered target tabs remain product-visible");
     assert_eq!(target_tabs.items(), &[C, A]);
+
+    let committed = fixture.host.version();
+    let metrics = fixture.metrics;
+    let mut painted = fixture.host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the committed dock measures in its paint update");
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the committed dock plan resolves")
+            .expect("the committed dock remains paintable");
+        assert!(program_drag_preview(plan).is_none());
+        assert!(program_drag_decoration(plan).is_none());
+        frame
+            .confirm_surface_program(SURFACE)
+            .expect("the committed dock output is painted");
+    });
+    assert!(!painted.workspace_changed());
+    assert!(painted.manipulation_feedback().is_empty());
+    let [output] = painted
+        .take_painted_outputs()
+        .try_into()
+        .unwrap_or_else(|outputs: Vec<_>| panic!("expected one dock output, got {outputs:?}"));
+    fixture
+        .host
+        .session
+        .report_surface_presentation(output, SurfacePresentationResult::Dropped)
+        .expect("a later dropped output retires only that exact output");
+    let settled = fixture.host.run(|_| {});
+    assert_eq!(fixture.host.version(), committed);
+    assert!(!settled.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!fixture.host.session.has_pending_presentation());
+    assert_eq!(
+        tabs_containing(fixture.host.view(), C)
+            .expect("dropping the output preserves the committed dock")
+            .items(),
+        &[C, A],
+    );
 }
 
 #[test]

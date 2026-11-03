@@ -427,12 +427,12 @@ fn paint_child_output(
     native: &mut NativeCoordinator,
     child: NativeSurfaceBinding,
 ) -> PaintedSurfaceOutput {
-    let mut measured = native
+    let mut painted = native
         .session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
-    assert!(measured.surfaces().contains(&child.surface()));
-    measured
+    assert!(painted.surfaces().contains(&child.surface()));
+    painted
         .measure_surface(
             child.surface(),
             UniformSurfaceMetrics::new(
@@ -442,16 +442,6 @@ fn paint_child_output(
             )
             .unwrap(),
         )
-        .unwrap();
-    measured
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    let report = measured.commit().unwrap();
-    assert!(report.native_admissions().is_empty());
-
-    let mut painted = native
-        .session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
     let mut panes = Vec::new();
     let receipt = painted

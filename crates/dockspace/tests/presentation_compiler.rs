@@ -60,9 +60,15 @@ fn ordinary_noncentral_panes_keep_uniform_five_way_square_guides() {
             .expect("every ordinary noncentral pane keeps its inner guide");
         assert_eq!(cluster.targets().count(), 5);
         let activation = cluster.activation().rect();
-        let scale = (activation.width() / INNER_GUIDE_REFERENCE_SPAN)
+        let maximum_scale = (activation.width() / INNER_GUIDE_REFERENCE_SPAN)
             .min(activation.height() / INNER_GUIDE_REFERENCE_SPAN)
             .min(1.0);
+        let center = cluster
+            .target(DropGuideSlot::Center)
+            .expect("center exists")
+            .draw();
+        let scale = center.width() / GUIDE_EXTENT;
+        assert!(scale > 0.0 && scale <= maximum_scale);
         let expected_extent = GUIDE_EXTENT * scale;
         let expected_hit_extent = GUIDE_HIT_EXTENT * scale;
         let expected_inner_offset = GUIDE_INNER_OFFSET * scale;
@@ -74,15 +80,38 @@ fn ordinary_noncentral_panes_keep_uniform_five_way_square_guides() {
             DropGuideSlot::Edge(Edge::Bottom),
         ] {
             let target = cluster.target(slot).expect("all five slots exist");
+            let identity = match slot {
+                DropGuideSlot::Center => DropTargetId::Center {
+                    surface: SURFACE,
+                    root: ROOT,
+                    tabs,
+                },
+                DropGuideSlot::Edge(edge) => DropTargetId::InnerEdge {
+                    surface: SURFACE,
+                    root: ROOT,
+                    node: tabs,
+                    edge,
+                },
+            };
+            assert_eq!(target.id(), identity);
+            let canonical = canonical_target(&ready, target);
+            assert_eq!(target.target(), canonical);
+            assert_eq!(target.hit(), canonical.region());
             assert_close(target.draw().width(), expected_extent);
             assert_close(target.draw().height(), expected_extent);
             assert_close(target.hit().rect().width(), expected_hit_extent);
             assert_close(target.hit().rect().height(), expected_hit_extent);
+            assert!(
+                ready
+                    .drop_guide_clusters()
+                    .iter()
+                    .filter(|cluster| cluster.id().scope == DropGuideScope::Outer)
+                    .flat_map(|cluster| cluster.targets())
+                    .all(|(_, outer)| !rects_overlap(target.hit().rect(), outer.hit().rect())),
+                "joint placement keeps every inner guide clear of outer guide hits"
+            );
         }
-        let center = cluster
-            .target(DropGuideSlot::Center)
-            .expect("center exists")
-            .draw();
+        assert_compact_cluster_geometry(cluster, guide_sized_bounds);
         let left_draw = cluster
             .target(DropGuideSlot::Edge(Edge::Left))
             .expect("left exists")

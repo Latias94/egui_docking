@@ -56,6 +56,8 @@ impl Replacement {
 }
 
 enum Step {
+    FocusRequested,
+    Focused,
     Committed,
     Presented,
     Input,
@@ -86,35 +88,18 @@ impl RootRebinding {
         let window_id = Self::root_window(app).ok_or("the current Editor has no Root output")?;
         let layout = editor_layout_on_surface(false, INCOMING_ROOT);
         let tabs = Self::layout_tabs(smoke, &layout);
-        #[cfg(feature = "serde")]
-        let document = {
-            let bytes = app
-                .dockspace
-                .save_document_json()
-                .map_err(|error| error.to_string())?;
-            let tabs = smoke.capture_tabs(app)?;
-            eprintln!(
-                "editor-smoke: programmatic=root-rebind-capture incoming_surface={} window_id={window_id} registry=8 text=preserved tabs=preserved selected=preserved",
-                old_surface.get()
-            );
-            Some((bytes, old_surface, tabs))
-        };
-        let request = app
-            .dockspace
-            .request_layout_reset_rebinding_root(layout, INCOMING_ROOT);
+        // Replacement inherits actual focus. Establish that antecedent after
+        // the preceding child retirements instead of assuming a central pane
+        // owns focus merely because it is selected in the incoming layout.
+        let request = app.dockspace.request_select_item(EDITOR);
         smoke.submit(
             app,
             request,
-            "Smoke: rebind Root with layout reset",
+            "Smoke: focus Document before Root rebinding",
             Stage::RootRebinding,
         )?;
-        eprintln!(
-            "editor-smoke: programmatic=root-rebind-layout-requested old_surface={} incoming_surface={} window_id={window_id}",
-            old_surface.get(),
-            INCOMING_ROOT.get()
-        );
         Ok(Self {
-            step: Step::Committed,
+            step: Step::FocusRequested,
             old_surface,
             incoming_surface: INCOMING_ROOT,
             current_surface: old_surface,
@@ -122,7 +107,7 @@ impl RootRebinding {
             tabs,
             replacement: Replacement::Layout,
             #[cfg(feature = "serde")]
-            document,
+            document: None,
             #[cfg(feature = "serde")]
             preset: None,
         })
@@ -135,6 +120,67 @@ impl RootRebinding {
     ) -> Result<bool, String> {
         let operation = self.replacement.operation();
         match self.step {
+            Step::FocusRequested => {
+                let Some(status) = smoke.take_status(app)? else {
+                    return Ok(false);
+                };
+                if !matches!(
+                    status,
+                    NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                        DockspaceActionOutcome::Selected { item: EDITOR, .. }
+                    ))
+                ) {
+                    return Err(format!(
+                        "Document focus before Root rebinding failed: {status:?}"
+                    ));
+                }
+                self.step = Step::Focused;
+            }
+            Step::Focused if smoke.settled(app) => {
+                let focused = app.dockspace.with_panes(|panes| {
+                    panes.panes[&EDITOR]
+                        .input
+                        .is_some_and(|(viewport, _, focused, _)| {
+                            viewport == egui::ViewportId::ROOT && focused
+                        })
+                });
+                if !focused {
+                    return Ok(false);
+                }
+                if Self::root_window(app) != Some(self.window_id) {
+                    return Err("Document focus changed the original Root window".to_owned());
+                }
+                #[cfg(feature = "serde")]
+                {
+                    let bytes = app
+                        .dockspace
+                        .save_document_json()
+                        .map_err(|error| error.to_string())?;
+                    self.document = Some((bytes, self.old_surface, smoke.capture_tabs(app)?));
+                    eprintln!(
+                        "editor-smoke: programmatic=root-rebind-capture incoming_surface={} window_id={} registry=8 text=preserved tabs=preserved selected=preserved",
+                        self.old_surface.get(),
+                        self.window_id
+                    );
+                }
+                let request = app.dockspace.request_layout_reset_rebinding_root(
+                    editor_layout_on_surface(false, INCOMING_ROOT),
+                    INCOMING_ROOT,
+                );
+                smoke.submit(
+                    app,
+                    request,
+                    "Smoke: rebind Root with layout reset",
+                    Stage::RootRebinding,
+                )?;
+                eprintln!(
+                    "editor-smoke: programmatic=root-rebind-layout-requested old_surface={} incoming_surface={} window_id={}",
+                    self.old_surface.get(),
+                    self.incoming_surface.get(),
+                    self.window_id
+                );
+                self.step = Step::Committed;
+            }
             Step::Committed => {
                 let Some(status) = smoke.take_status(app)? else {
                     return Ok(false);
@@ -198,7 +244,9 @@ impl RootRebinding {
                     self.preset = Some((self.current_surface, smoke.capture_tabs(app)?));
                 }
                 #[cfg(feature = "serde")]
-                if let Some((bytes, incoming_surface, tabs)) = self.document.take() {
+                if matches!(self.replacement, Replacement::Preset)
+                    && let Some((bytes, incoming_surface, tabs)) = self.document.take()
+                {
                     let keys = app.dockspace.with_panes(|panes| {
                         panes
                             .panes
@@ -230,13 +278,7 @@ impl RootRebinding {
                     );
                     return Ok(false);
                 }
-                let reset_default = match self.replacement {
-                    Replacement::Layout => true,
-                    #[cfg(feature = "serde")]
-                    Replacement::Document => true,
-                    _ => false,
-                };
-                if reset_default {
+                if matches!(self.replacement, Replacement::Layout) {
                     let request = app.request_default_layout();
                     smoke.submit(
                         app,
@@ -258,7 +300,9 @@ impl RootRebinding {
                     return Ok(false);
                 }
                 #[cfg(feature = "serde")]
-                if let Some((incoming_surface, tabs)) = self.preset.take() {
+                if matches!(self.replacement, Replacement::Default)
+                    && let Some((incoming_surface, tabs)) = self.preset.take()
+                {
                     app.preset_name = REBOUND_PRESET.to_owned();
                     let request = app.request_named_preset();
                     smoke.submit(

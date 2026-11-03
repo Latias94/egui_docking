@@ -6,10 +6,9 @@ use std::time::{Duration, Instant};
 
 use egui::{Context, FullOutput, ViewportId};
 use egui_dockspace::{
-    Dockspace, DockspaceAxis, DockspaceCapability, DockspaceContainedLayout, DockspaceLayout,
-    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, DockspaceUnavailableReason,
-    FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId, SurfaceId,
-    SurfacePresentationResult, run_ui,
+    Dockspace, DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
+    DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
+    PaneView, RootId, SurfaceId, SurfacePresentationResult,
 };
 use egui_wgpu::wgpu;
 use winit::application::ApplicationHandler;
@@ -242,8 +241,6 @@ struct OfficialDemoHost {
     viewport_info: egui::ViewportInfo,
     dockspace: Dockspace,
     panes: DemoPanes,
-    presentation_settlement: DockspaceCapability,
-    error: Option<String>,
     next_repaint: Option<Instant>,
 }
 
@@ -260,10 +257,6 @@ impl OfficialDemoHost {
                 .build()
                 .expect("the static demo layout is valid"),
             panes: DemoPanes::new(),
-            presentation_settlement: DockspaceCapability::Unavailable(
-                DockspaceUnavailableReason::PresentationSettlementRequired,
-            ),
-            error: None,
             next_repaint: None,
         }
     }
@@ -280,41 +273,19 @@ impl OfficialDemoHost {
         };
 
         let input = egui_winit.take_egui_input(window);
-        let mut presentation_settlement = self.presentation_settlement;
-        let mut error = self.error.take();
-        let output = run_ui(&self.context, input, |ui| {
-            egui::Panel::top("official-demo-help").show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong("Official crates.io caller-owned run");
-                    ui.separator();
-                    ui.label(
-                        "Drag a tab body into the center or edge of another pane. Drag the dotted Inspector title strip to move the full floating window.",
-                    );
-                    ui.separator();
-                    ui.monospace(format!("Settlement: {presentation_settlement:?}"));
-                });
-            });
-            if let Some(message) = error.as_deref() {
-                egui::Panel::bottom("official-demo-error").show(ui, |ui| {
-                    ui.colored_label(ui.visuals().error_fg_color, message);
-                });
-            }
-            egui::CentralPanel::default().show(ui, |ui| {
-                match self
-                    .dockspace
-                    .show_single_surface(SURFACE, ui, &mut self.panes)
-                {
-                    Ok(response) => {
-                        presentation_settlement = response.presentation_settlement_capability();
-                        error = None;
-                    }
-                    Err(current) => error = Some(current.to_string()),
+        let (output, _) =
+            match self
+                .dockspace
+                .run_single_surface(&self.context, input, SURFACE, &mut self.panes)
+            {
+                Ok(published) => published,
+                Err(error) => {
+                    window.set_title(&format!("Dockspace update rejected: {error}"));
+                    window.request_redraw();
+                    return;
                 }
-            });
-        });
+            };
         let (output, receipt) = output.into_parts();
-        self.presentation_settlement = presentation_settlement;
-        self.error = error;
 
         let FullOutput {
             platform_output,

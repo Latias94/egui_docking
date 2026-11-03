@@ -1,16 +1,17 @@
 //! Ordered transport for the official host-local pointer lane.
 
+use std::time::Duration;
+
 use dockspace::geometry::LogicalPoint;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceInteractionError, DockspaceRuntimeError, DockspaceSession, HostFrameReport,
-    HostPointerInput, HostPointerRoute, PointerDeviceKind, PointerEventMetadata,
-    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
+    DockspaceHostFrame, DockspaceInteractionError, DockspacePointerContinuation,
+    DockspaceRuntimeError, DockspaceSession, HostPointerInput, HostPointerRoute, PointerDeviceKind,
+    PointerEventMetadata, PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
     SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
     SurfacePointerReceiverFacts, SurfacePresentationArtifact, SurfacePresentationCommit,
-    SurfaceUnavailableReason,
 };
-use egui::{Event, Key, LayerId, PointerButton, Pos2, Ui};
+use egui::{Event, Id, Key, LayerId, PointerButton, Pos2, Ui};
 
 use crate::pass_settlement::{ProductPointerPacket, pointer_packet};
 use crate::product_render::ProductReceiverBinding;
@@ -22,15 +23,17 @@ mod tests;
 
 use touch::TouchContacts;
 
+#[derive(Clone)]
 struct PointerScene {
     artifact: SurfacePresentationArtifact,
     layer: LayerId,
     completed_pass: u64,
     coordinates_supported: bool,
     receivers: Vec<ProductReceiverBinding>,
+    focus_bindings: Vec<(dockspace::model::ItemId, Id)>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ProductPointer {
     pending: Vec<PointerScene>,
     presented: Option<PointerScene>,
@@ -75,10 +78,91 @@ struct Edge {
     event: SurfacePointerEvent,
     point: Option<LogicalPoint>,
     surface: Option<PresentedDockspaceSurface>,
+    manipulation_surface: Option<PresentedDockspaceSurface>,
     delivery: Option<PresentedDockReceiver>,
     drag_delivery: Option<PresentedDockReceiver>,
     blocked: bool,
     magnetic_targeting: Option<bool>,
+}
+
+/// One normalized run, prepared against this update's presented output.
+///
+/// Prepare on a pointer draft and install that draft only after publication.
+/// Normalization errors travel with the affine input, so a failed run cannot
+/// be prepared again with different contact identities or receiver facts.
+#[must_use = "submit the prepared input into its update before publishing the pointer draft"]
+pub(crate) struct PreparedProductPointerInput {
+    input: Result<PreparedPointerEdges, DockspaceRuntimeError>,
+    observed_at: Option<Duration>,
+}
+
+#[derive(Default)]
+struct PreparedPointerEdges {
+    raw: Vec<Edge>,
+    continuation: Option<QualifiedPointerContinuation>,
+    deferred_focus: Vec<Id>,
+}
+
+struct QualifiedPointerContinuation {
+    request: DockspacePointerContinuation,
+    edge: Edge,
+}
+
+impl PreparedProductPointerInput {
+    /// Returns the run's original clock sample for post-publication scheduling.
+    pub(crate) const fn observed_at(&self) -> Option<Duration> {
+        self.observed_at
+    }
+
+    #[cfg(test)]
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.input
+            .as_ref()
+            .is_ok_and(|input| input.raw.is_empty() && input.continuation.is_none())
+    }
+
+    /// Appends raw input and then an exact surviving stationary request.
+    ///
+    /// The returned widget IDs request focus only after this update publishes.
+    /// No framework hit test is performed against post-input geometry. A new
+    /// or changed request remains core-owned for the next update; the host must
+    /// call `schedule_pointer_continuation` after publication, even when this
+    /// input is empty. Raw events must never be replayed to service that wake.
+    pub(crate) fn submit_into(
+        self,
+        frame: &mut DockspaceHostFrame<'_>,
+    ) -> Result<Vec<Id>, DockspaceRuntimeError> {
+        let input = self.input?;
+        if !input.raw.is_empty() {
+            frame.submit_host_pointer_batch(
+                input
+                    .raw
+                    .iter()
+                    .map(|edge| pointer_input(edge, self.observed_at)),
+            )?;
+        }
+        if let Some(probe) = input.continuation
+            && let Some(request) = frame.pointer_continuation()
+            && request.pointer() == probe.request.pointer()
+            && request.surface() == probe.request.surface()
+            && request.deadline() == probe.request.deadline()
+            && request.position() == probe.request.position()
+            && probe.edge.point == Some(probe.request.position())
+            && probe.edge.surface == frame.presented_surface(probe.request.surface())
+        {
+            // A release or cancellation in the raw prefix revokes the request
+            // before this check. Motion can refresh its token while retaining
+            // the same dwell deadline. Reuse only the exact pre-input framework
+            // proof at the unchanged point and output, with the current token.
+            let edge = Edge {
+                event: request.event(),
+                ..probe.edge
+            };
+            frame.submit_host_pointer(pointer_input(&edge, self.observed_at))?;
+        }
+        Ok(input.deferred_focus)
+    }
 }
 
 impl ProductPointer {
@@ -98,6 +182,7 @@ impl ProductPointer {
         completed_pass: u64,
         coordinates_supported: bool,
         receivers: Vec<ProductReceiverBinding>,
+        focus_bindings: Vec<(dockspace::model::ItemId, Id)>,
     ) {
         self.pending.push(PointerScene {
             artifact,
@@ -105,7 +190,23 @@ impl ProductPointer {
             completed_pass,
             coordinates_supported,
             receivers,
+            focus_bindings,
         });
+    }
+
+    pub(crate) fn presented_focus_bindings(
+        &self,
+        frame: &DockspaceHostFrame<'_>,
+        surface: SurfaceId,
+    ) -> &[(dockspace::model::ItemId, Id)] {
+        let Some(current) = frame.presented_surface(surface) else {
+            return &[];
+        };
+        self.presented
+            .iter()
+            .chain(self.pending.iter())
+            .find(|scene| current.matches_presentation_artifact(scene.artifact))
+            .map_or(&[], |scene| scene.focus_bindings.as_slice())
     }
 
     pub(crate) fn observe(&mut self, commits: &[SurfacePresentationCommit]) {
@@ -118,31 +219,88 @@ impl ProductPointer {
         }
     }
 
-    pub(crate) fn submit(
+    fn sync_presented(&mut self, frame: &DockspaceHostFrame<'_>, surface: SurfaceId) {
+        let Some(current) = frame.presented_surface(surface) else {
+            return;
+        };
+        if self
+            .presented
+            .as_ref()
+            .is_some_and(|scene| current.matches_presentation_artifact(scene.artifact))
+        {
+            return;
+        }
+        if let Some(scene) = self
+            .pending
+            .iter()
+            .rev()
+            .find(|scene| current.matches_presentation_artifact(scene.artifact))
+        {
+            // The prelude may have accepted this artifact without publishing
+            // it yet. Keep pending intact until the committed report settles it.
+            self.presented = Some(scene.clone());
+        }
+    }
+
+    pub(crate) fn prepare(
         &mut self,
-        session: &mut DockspaceSession,
+        frame: &DockspaceHostFrame<'_>,
         surface: SurfaceId,
         ui: &Ui,
         cancel: bool,
-    ) -> Result<Vec<HostFrameReport>, DockspaceRuntimeError> {
+    ) -> PreparedProductPointerInput {
+        self.sync_presented(frame, surface);
         let Some(packet) = pointer_packet(ui) else {
-            return Ok(Vec::new());
+            return PreparedProductPointerInput {
+                input: Ok(PreparedPointerEdges::default()),
+                observed_at: None,
+            };
         };
-        if self
+        let observed_at = packet.observed_at();
+        let input = if self
             .consumed_run
             .as_ref()
             .is_some_and(|previous| previous.same_run(&packet))
         {
-            return Ok(Vec::new());
-        }
-        if self
+            Ok(PreparedPointerEdges::default())
+        } else if self
             .rejected_run
             .as_ref()
             .is_some_and(|previous| previous.same_run(&packet))
         {
-            return Err(DockspaceInteractionError::PointerInputAlreadySubmitted.into());
+            Err(DockspaceInteractionError::PointerInputAlreadySubmitted.into())
+        } else {
+            let input = self.prepare_packet(frame, surface, ui, cancel, &packet);
+            if input.is_ok() {
+                self.consumed_run = Some(packet);
+                self.rejected_run = None;
+            }
+            input
+        };
+        PreparedProductPointerInput { input, observed_at }
+    }
+
+    /// A failed frame may not reinterpret the same raw run on a later pass.
+    pub(crate) fn record_rejected_run(&mut self, draft: &Self) {
+        if let Some(packet) = draft.rejected_run.as_ref().or(draft.consumed_run.as_ref())
+            && self
+                .consumed_run
+                .as_ref()
+                .is_none_or(|previous| !previous.same_run(packet))
+        {
+            self.rejected_run = Some(packet.clone());
         }
-        let current = session.presented_surface(surface);
+    }
+
+    fn prepare_packet(
+        &mut self,
+        frame: &DockspaceHostFrame<'_>,
+        surface: SurfaceId,
+        ui: &Ui,
+        cancel: bool,
+        packet: &ProductPointerPacket,
+    ) -> Result<PreparedPointerEdges, DockspaceRuntimeError> {
+        let current = frame.presented_surface(surface);
         let scene = self.presented.as_ref().filter(|scene| {
             current.is_some_and(|surface| surface.matches_presentation_artifact(scene.artifact))
         });
@@ -288,35 +446,8 @@ impl ProductPointer {
                 records.push(PointerSample::generic(event, position, magnetic_targeting));
             }
         }
-        if records.is_empty()
-            && let Some(request) = session.pointer_continuation()
-            && request.surface() == surface
-            && packet
-                .observed_at()
-                .is_some_and(|now| now >= request.deadline())
-        {
-            // This is an explicit stationary recheck. It does not claim that
-            // the pointer moved; the ordinary receiver path below must prove
-            // current framework clearance at its retained logical point.
-            if let Some(sample) = continuation_sample(
-                &touches,
-                position,
-                magnetic_targeting,
-                request.pointer(),
-                request.event(),
-            ) {
-                records.push(sample);
-            }
-        }
-        if records.is_empty() {
-            schedule_pointer_continuation(session, ui, packet.observed_at());
-            self.magnetic_targeting = magnetic_targeting;
-            self.consumed_run = Some(packet);
-            self.rejected_run = None;
-            return Ok(Vec::new());
-        }
         let interactive = ui.ctx().interactive_rects_last_pass();
-        let edge_at = |sample: PointerSample, session: &DockspaceSession| {
+        let edge_at = |sample: PointerSample| {
             if matches!(
                 sample.event,
                 SurfacePointerEvent::MagneticTargetingChanged { .. }
@@ -328,6 +459,7 @@ impl ProductPointer {
                     event: sample.event,
                     point: None,
                     surface: None,
+                    manipulation_surface: None,
                     delivery: None,
                     drag_delivery: None,
                     blocked: false,
@@ -340,9 +472,8 @@ impl ProductPointer {
                 .and_then(|position| {
                     LogicalPoint::new(f64::from(position.x), f64::from(position.y)).ok()
                 });
-            let hit = point.and_then(|point| {
-                session.host_pointer_hit_for_device(surface, point, sample.device)
-            });
+            let hit = point
+                .and_then(|point| frame.host_pointer_hit_for_device(surface, point, sample.device));
             let qualified = scene.zip(position).is_some_and(|(scene, position)| {
                 if !ui.is_enabled()
                     || ui.ctx().cumulative_pass_nr() != scene.completed_pass
@@ -391,6 +522,10 @@ impl ProductPointer {
                 event: sample.event,
                 point,
                 surface: hit.map(|hit| hit.surface()),
+                manipulation_surface: frame
+                    .host_pointer_manipulation_surface(sample.pointer)
+                    .filter(|source| coordinates_supported && source.surface() == surface)
+                    .or_else(|| hit.map(|hit| hit.surface())),
                 delivery: qualified
                     .then(|| hit.and_then(|hit| hit.delivery()))
                     .flatten(),
@@ -401,48 +536,30 @@ impl ProductPointer {
                 magnetic_targeting: sample.magnetic_targeting,
             }
         };
-        let edges = records
-            .into_iter()
-            .map(|sample| edge_at(sample, session))
-            .collect::<Vec<_>>();
-        let observed_at = packet.observed_at();
-        let inputs = edges.iter().map(|edge| pointer_input(edge, observed_at));
-        let mut frame = session.begin_host_frame()?;
-        frame.submit_host_pointer_batch(inputs)?;
-        frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-        let report = frame.commit()?;
-        // The raw boundary accepted these identities and positions. A later
-        // continuation failure must not roll their roster back.
-        self.position = position;
-        self.generic_live = generic_live;
-        self.magnetic_targeting = magnetic_targeting;
-        self.touches = touches;
-        let mut reports = vec![report];
-        if let (Some(request), Some(now)) = (session.pointer_continuation(), observed_at)
-            && now >= request.deadline()
-            && request.surface() == surface
-            && current.is_some()
-            && current == session.presented_surface(surface)
-            && let Some(sample) = continuation_sample(
-                &self.touches,
-                self.position,
-                self.magnetic_targeting,
+        let edges = records.into_iter().map(&edge_at).collect::<Vec<_>>();
+        let continuation = frame.pointer_continuation().and_then(|request| {
+            if request.surface() != surface
+                || !packet
+                    .observed_at()
+                    .is_some_and(|now| now >= request.deadline())
+            {
+                return None;
+            }
+            let sample = continuation_sample(
+                &touches,
+                position,
+                magnetic_targeting,
                 request.pointer(),
                 request.event(),
-            )
-        {
-            // Complete accepted raw input first. A release in that batch ends
-            // the gesture before any deadline task can change its target scene.
-            // A surviving due action uses the same current framework facts in
-            // an explicit next journal edge; moving pointers need not go idle.
-            let edge = edge_at(sample, session);
-            if edge.point == Some(request.position()) && edge.surface == current {
-                let mut frame = session.begin_host_frame()?;
-                frame.submit_host_pointer(pointer_input(&edge, observed_at))?;
-                frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                reports.push(frame.commit()?);
-            }
-        }
+            )?;
+            let edge = edge_at(sample);
+            (!edge.blocked
+                && edge.point == Some(request.position())
+                && edge.surface.is_some()
+                && edge.surface == current)
+                .then_some(QualifiedPointerContinuation { request, edge })
+        });
+        let mut deferred_focus = Vec::new();
         if let Some(scene) = scene {
             for edge in &edges {
                 if matches!(
@@ -457,15 +574,19 @@ impl ProductPointer {
                         .iter()
                         .find(|binding| binding.receiver == receiver.descriptor())
                 {
-                    ui.ctx()
-                        .memory_mut(|memory| memory.request_focus(binding.widget_id));
+                    deferred_focus.push(binding.widget_id);
                 }
             }
         }
-        schedule_pointer_continuation(session, ui, packet.observed_at());
-        self.consumed_run = Some(packet);
-        self.rejected_run = None;
-        Ok(reports)
+        self.position = position;
+        self.generic_live = generic_live;
+        self.magnetic_targeting = magnetic_targeting;
+        self.touches = touches;
+        Ok(PreparedPointerEdges {
+            raw: edges,
+            continuation,
+            deferred_focus,
+        })
     }
 }
 
@@ -496,9 +617,15 @@ fn update_magnetic_targeting(current: &mut Option<bool>, event: &Event) -> Optio
     changed.then_some(enabled)
 }
 
-fn pointer_input(edge: &Edge, observed_at: Option<std::time::Duration>) -> HostPointerInput<'_> {
+fn pointer_input(edge: &Edge, observed_at: Option<Duration>) -> HostPointerInput<'_> {
     let route = edge
         .surface
+        .zip(edge.point)
+        .map_or(HostPointerRoute::Unknown, |(surface, point)| {
+            HostPointerRoute::new(surface, point)
+        });
+    let manipulation = edge
+        .manipulation_surface
         .zip(edge.point)
         .map_or(HostPointerRoute::Unknown, |(surface, point)| {
             HostPointerRoute::new(surface, point)
@@ -531,7 +658,7 @@ fn pointer_input(edge: &Edge, observed_at: Option<std::time::Duration>) -> HostP
     HostPointerInput::new(
         edge.pointer,
         edge.event,
-        route,
+        manipulation,
         route,
         SurfacePointerCapture::None,
         facts,
@@ -539,13 +666,17 @@ fn pointer_input(edge: &Edge, observed_at: Option<std::time::Duration>) -> HostP
     .with_metadata(metadata)
 }
 
-fn schedule_pointer_continuation(
+/// Schedules retained stationary work from the state that actually published.
+///
+/// Call after every successful update, including one that could not safely
+/// append a continuation. The next run rechecks fresh output facts without
+/// replaying the previous run's raw packet.
+pub(crate) fn schedule_pointer_continuation(
     session: &DockspaceSession,
-    ui: &Ui,
-    observed_at: Option<std::time::Duration>,
+    context: &egui::Context,
+    observed_at: Option<Duration>,
 ) {
     if let (Some(request), Some(now)) = (session.pointer_continuation(), observed_at) {
-        ui.ctx()
-            .request_repaint_after(request.deadline().saturating_sub(now));
+        context.request_repaint_after(request.deadline().saturating_sub(now));
     }
 }

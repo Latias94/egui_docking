@@ -45,6 +45,7 @@ pub(super) const fn host_frame_error_kind(error: &CoreHostFrameError) -> Dockspa
         }
         Error::PointerReceiverAttempt { source } => pointer_receiver_attempt_error_kind(*source),
         Error::BackendIngressRequired
+        | Error::HostFocusOwnerMismatch { .. }
         | Error::BackendIngressUnexpected
         | Error::DuplicateBackendIngressBatch
         | Error::BackendIngressReceiptsUnexpected
@@ -504,6 +505,7 @@ pub(super) const fn interaction_error_kind(
         | DockspaceInteractionError::PresentationAuthorityUnavailable { .. }
         | DockspaceInteractionError::SurfaceNotPaintable { .. }
         | DockspaceInteractionError::PointerInputAlreadySubmitted
+        | DockspaceInteractionError::EncodingPassUnavailable
         | DockspaceInteractionError::PointerFrameInFlight => {
             DockspaceRuntimeErrorKind::OperationConflict
         }
@@ -517,6 +519,7 @@ pub(super) const fn interaction_error_kind(
         | DockspaceInteractionError::SurfaceOutsideRoster { .. }
         | DockspaceInteractionError::SurfaceAlreadyAnswered { .. }
         | DockspaceInteractionError::SurfaceProgramExecutionMismatch { .. }
+        | DockspaceInteractionError::EncodingPassExhausted
         | DockspaceInteractionError::MeasurementAnswerMismatch
         | DockspaceInteractionError::PointerBatchEmpty
         | DockspaceInteractionError::InvalidScrollSample => DockspaceRuntimeErrorKind::HostProtocol,

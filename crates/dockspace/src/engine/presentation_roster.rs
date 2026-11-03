@@ -199,28 +199,32 @@ impl HostPresentationObligation {
     }
 }
 
-/// Non-rollbackable issuer shared by every speculative engine candidate.
+/// Non-rollbackable allocation shared by every speculative engine candidate.
+/// Attempts and scene outputs keep separate typed identity sequences.
 #[derive(Debug)]
-pub(super) struct HostPresentationObligationIssuer {
+pub(super) struct PresentationAllocationIssuer {
     authority_domain: EngineAuthorityDomainId,
     last_attempt: AtomicU64,
+    last_output: AtomicU64,
 }
 
-impl PartialEq for HostPresentationObligationIssuer {
+impl PartialEq for PresentationAllocationIssuer {
     fn eq(&self, other: &Self) -> bool {
         self.authority_domain == other.authority_domain
             && self.last_attempt.load(Ordering::Acquire)
                 == other.last_attempt.load(Ordering::Acquire)
+            && self.last_output.load(Ordering::Acquire) == other.last_output.load(Ordering::Acquire)
     }
 }
 
-impl Eq for HostPresentationObligationIssuer {}
+impl Eq for PresentationAllocationIssuer {}
 
-impl HostPresentationObligationIssuer {
+impl PresentationAllocationIssuer {
     pub(super) const fn new(authority_domain: EngineAuthorityDomainId) -> Self {
         Self {
             authority_domain,
             last_attempt: AtomicU64::new(0),
+            last_output: AtomicU64::new(0),
         }
     }
 
@@ -238,6 +242,19 @@ impl HostPresentationObligationIssuer {
             self.authority_domain,
             serial,
         ))
+    }
+
+    pub(super) fn issue_output(&self) -> Result<PresentationOutputSerial, EngineError> {
+        let previous = self
+            .last_output
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |last| {
+                last.checked_add(1)
+            })
+            .map_err(|_| EngineError::PresentationOutputSerialExhausted)?;
+        let serial = previous
+            .checked_add(1)
+            .ok_or(EngineError::PresentationOutputSerialExhausted)?;
+        Ok(PresentationOutputSerial::from_allocation(serial))
     }
 }
 

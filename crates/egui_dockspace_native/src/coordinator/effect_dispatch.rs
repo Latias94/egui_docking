@@ -42,12 +42,16 @@ impl NativeCoordinator {
         request: NativeEffectRequest,
         close: dockspace::runtime::NativeSurfaceCloseRequest,
     ) -> Result<(), NativeRuntimeError> {
+        let dispatch = request.begin_dispatch();
         let Some(viewport) =
             self.resolve_exact_close(context, close, eframe::NativeViewportCloseDecision::Veto)
         else {
-            return self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected);
+            return self.report_derived_effect_result(
+                close.binding(),
+                dispatch.not_applied(NativeDispatchFailure::AdapterRejected),
+            );
         };
-        let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = request.accepted() else {
+        let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = dispatch.accepted() else {
             return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
         };
         if self
@@ -145,10 +149,11 @@ impl NativeCoordinator {
             binding,
             ViewportFailureOrigin::RetirementDispatch,
         )?;
-        let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = request.accepted() else {
+        let dispatch = request.begin_dispatch();
+        self.retire_deferred_sidecars(viewport, binding);
+        let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = dispatch.accepted() else {
             return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
         };
-        self.retire_deferred_sidecars(viewport, binding);
         let inserted = self
             .bridge
             .retirement_begin_release(viewport, binding, acknowledgement);
@@ -252,21 +257,24 @@ impl NativeCoordinator {
                     debug_assert_eq!(plan.placement(), placement);
                     debug_assert_eq!(plan.role(), role);
                     debug_assert_eq!(plan.kind(), kind);
-                    let inserted = self
-                        .deferred_viewports
-                        .insert(viewport, binding, placement, role);
-                    assert!(inserted, "preflighted deferred viewport must insert");
-                    if let Some(predecessor) = predecessor {
-                        assert!(
-                            self.bridge
-                                .retirement_retire_committed_route_for_replacement(
-                                    viewport,
-                                    predecessor
-                                ),
-                            "preflighted predecessor route must retire through replacement"
-                        );
-                        self.receivers.retire_binding(predecessor);
-                    }
+                    let declared = self.effects.dispatch_viewport(plan, || {
+                        let inserted = self
+                            .deferred_viewports
+                            .insert(viewport, binding, placement, role);
+                        assert!(inserted, "preflighted deferred viewport must insert");
+                        if let Some(predecessor) = predecessor {
+                            assert!(
+                                self.bridge
+                                    .retirement_retire_committed_route_for_replacement(
+                                        viewport,
+                                        predecessor
+                                    ),
+                                "preflighted predecessor route must retire through replacement"
+                            );
+                            self.receivers.retire_binding(predecessor);
+                        }
+                    });
+                    assert!(declared, "the admitted viewport retains its exact effect");
                 }
                 NativeEffectOperation::ShowWindow { binding } => {
                     let binding = *binding;
@@ -292,14 +300,16 @@ impl NativeCoordinator {
                         self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
                         continue;
                     }
-                    let shown = self.deferred_viewports.set_visible(binding);
-                    assert_eq!(shown, Some(viewport));
+                    let deferred_viewports = &mut self.deferred_viewports;
                     self.effects
-                        .retain_show(binding, viewport, window, token, request)
+                        .dispatch_show(binding, viewport, window, token, request, || {
+                            let shown = deferred_viewports.set_visible(binding);
+                            assert_eq!(shown, Some(viewport));
+                            prepared.enqueue(context);
+                        })
                         .map_err(|_| {
                             NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
                         })?;
-                    prepared.enqueue(context);
                 }
                 NativeEffectOperation::ReleaseChild { binding }
                 | NativeEffectOperation::CompensatingClose { binding } => {
@@ -318,22 +328,32 @@ impl NativeCoordinator {
                                             .bridge
                                             .retirement_can_begin_release(viewport, close.binding())
                                 });
-                            if !can_retire
-                                || self
-                                    .resolve_exact_close(
-                                        context,
-                                        close,
-                                        eframe::NativeViewportCloseDecision::Allow,
-                                    )
-                                    .is_none()
-                            {
+                            if !can_retire {
                                 self.submit_failed_effect(
                                     request,
                                     NativeDispatchFailure::AdapterRejected,
                                 )?;
                                 continue;
                             }
-                            self.accept_retirement_effect(request, close.binding())?;
+                            let dispatch = request.begin_dispatch();
+                            if self
+                                .resolve_exact_close(
+                                    context,
+                                    close,
+                                    eframe::NativeViewportCloseDecision::Allow,
+                                )
+                                .is_none()
+                            {
+                                self.report_derived_effect_result(
+                                    close.binding(),
+                                    dispatch.not_applied(NativeDispatchFailure::AdapterRejected),
+                                )?;
+                                continue;
+                            }
+                            self.accept_retirement_effect(
+                                dispatch.await_observation(),
+                                close.binding(),
+                            )?;
                             if !self
                                 .bridge
                                 .with_close_control(|control| control.accept_close(close))

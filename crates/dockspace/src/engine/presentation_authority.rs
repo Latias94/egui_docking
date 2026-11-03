@@ -1,7 +1,7 @@
 //! Presentation requirements, scene authority, and output reconciliation.
 
 use super::native_projection::NativeFirstLiveProjection;
-use super::presentation_roster::HostPresentationObligationIssuer;
+use super::presentation_roster::PresentationAllocationIssuer;
 use super::*;
 
 /// Sole owner of renderer-neutral presentation state for one engine domain.
@@ -11,9 +11,8 @@ use super::*;
 /// authorities without advancing the others through the engine reducer.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PresentationAuthorityState {
-    /// Non-rollbackable physical-presentation attempt authority shared by all
-    /// speculative candidates.
-    host_obligation_issuer: Arc<HostPresentationObligationIssuer>,
+    /// Non-rollbackable attempt and output allocation shared by all candidates.
+    allocation_issuer: Arc<PresentationAllocationIssuer>,
     pub(super) presentation_config: DockPresentationConfig,
     pub(super) presentation_config_revision: PresentationConfigRevision,
     pub(super) presentation_requirements: SceneRequirementManifest,
@@ -42,9 +41,7 @@ impl PresentationAuthorityState {
         presentation: PresentationLedger,
     ) -> Self {
         Self {
-            host_obligation_issuer: Arc::new(HostPresentationObligationIssuer::new(
-                authority_domain,
-            )),
+            allocation_issuer: Arc::new(PresentationAllocationIssuer::new(authority_domain)),
             presentation_config,
             presentation_config_revision,
             presentation_requirements,
@@ -60,7 +57,11 @@ impl PresentationAuthorityState {
     pub(super) fn issue_host_presentation_attempt(
         &self,
     ) -> Result<HostPresentationAttemptId, CoreHostFrameError> {
-        self.host_obligation_issuer.issue()
+        self.allocation_issuer.issue()
+    }
+
+    pub(super) fn issue_scene_output(&self) -> Result<PresentationOutputSerial, EngineError> {
+        self.allocation_issuer.issue_output()
     }
 }
 
@@ -95,7 +96,7 @@ impl DockEngine {
             .checked_next()
             .ok_or(EngineError::WorkspaceRevisionExhausted { input })?;
         self.version = WorkspaceVersion::new(self.version.epoch(), revision);
-        self.close.invalidate_stale(self.close_authority());
+        self.reconcile_close_scopes();
         self.rebuild_presentation_requirements(input)?;
         Ok(())
     }
@@ -127,7 +128,7 @@ impl DockEngine {
             }
         })?;
         self.version = WorkspaceVersion::new(self.version.epoch(), revision);
-        self.close.invalidate_stale(self.close_authority());
+        self.reconcile_close_scopes();
         self.try_rebuild_presentation_requirements(influence)
             .map_err(|source| EngineError::PointerInteractionInvariant {
                 cause,
@@ -416,12 +417,31 @@ impl DockEngine {
             .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
         self.presentation_authority.presentation_requirements = requirements;
         self.presentation_authority.tab_strip_states = tab_strip_states;
+        let changed_stacking = surface_semantic_snapshots
+            .iter()
+            .filter_map(|(surface, current)| {
+                self.presentation_authority
+                    .surface_semantic_snapshots
+                    .get(surface)
+                    .filter(|previous| {
+                        !previous
+                            .contained
+                            .iter()
+                            .map(|record| record.floating)
+                            .eq(current.contained.iter().map(|record| record.floating))
+                    })
+                    .map(|_| *surface)
+            })
+            .collect::<BTreeSet<_>>();
         self.presentation_authority.surface_semantic_snapshots = surface_semantic_snapshots;
         self.presentation_authority.surface_requirement_revisions = surface_requirement_revisions;
         self.presentation_authority
             .scene
             .reconcile_manifest(&self.presentation_authority.presentation_requirements)
             .map_err(PresentationRequirementFailure::Scene)?;
+        self.presentation_authority
+            .scene
+            .revoke_surface_input(&changed_stacking);
         for surface in current_surface_roster {
             self.presentation_authority
                 .scene
@@ -1106,11 +1126,7 @@ impl DockEngine {
                         (id, record.scroll_offset(), selected)
                     })
                     .collect::<Vec<_>>();
-                let output_serial = self
-                    .presentation_authority
-                    .last_presentation_output_serial
-                    .checked_next()
-                    .ok_or(EngineError::PresentationOutputSerialExhausted)?;
+                let output_serial = self.presentation_authority.issue_scene_output()?;
                 let (stamp, ticket) = self
                     .presentation_authority
                     .scene
@@ -1647,11 +1663,38 @@ impl DockEngine {
                 continue;
             };
             let promotion_stream = BTreeSet::from([promotion.stream()]);
-            let Ok(capture) = self
-                .presentation_authority
-                .scene
-                .retained_output_capture(ticket)
-            else {
+            let exact_first_live_projection = self
+                .scene()
+                .native_first_live_projection(ticket.surface())
+                .is_some_and(|stamp| {
+                    promotion.endpoint() == HostPresentationEndpoint::Native(stamp.binding)
+                        && self.native_first_live_projection_is_current(stamp)
+                        && self
+                            .scene()
+                            .ready_candidate(ticket.surface())
+                            .is_some_and(|candidate| candidate.output_ticket() == ticket)
+                });
+            if !exact_first_live_projection
+                && promotion.scene().is_some_and(|output| {
+                    !self.presented_layering_is_current(output.plan())
+                        || !self.presented_transient_geometry_is_current(output.plan())
+                })
+            {
+                changed_surfaces.extend(
+                    self.invalidate_interaction_authority_for_current_streams(&promotion_stream),
+                );
+                continue;
+            }
+            let capture = promotion
+                .scene()
+                .map(|scene| scene.coordinate_capture())
+                .or_else(|| {
+                    self.presentation_authority
+                        .scene
+                        .retained_output_capture(ticket)
+                        .ok()
+                });
+            let Some(capture) = capture else {
                 changed_surfaces.extend(
                     self.invalidate_interaction_authority_for_current_streams(&promotion_stream),
                 );
@@ -1670,6 +1713,18 @@ impl DockEngine {
                 continue;
             }
             if capture.authority_generation() != coordinate_generation {
+                changed_surfaces.extend(
+                    self.invalidate_interaction_authority_for_current_streams(&promotion_stream),
+                );
+                continue;
+            }
+            if let Some(output) = promotion.scene()
+                && self
+                    .presentation_authority
+                    .scene
+                    .retain_emitted_scene(output)
+                    .is_err()
+            {
                 changed_surfaces.extend(
                     self.invalidate_interaction_authority_for_current_streams(&promotion_stream),
                 );
@@ -1807,6 +1862,13 @@ impl DockEngine {
         ) && let Some(authority) = self.interaction.active_presentation_authority()
             && changed_surfaces.contains(&authority.surface())
             && self.interaction_projection(authority.surface()).is_none()
+            && !self
+                .interaction
+                .active_scene_gesture_continuation()
+                .is_some_and(|continuation| {
+                    self.scene_gesture_continuation_is_current(continuation)
+                })
+            && !self.resize_continuation_is_current(authority)
             && let Some(owner) = self.interaction.active_owner()
         {
             self.cancel_gesture_owner(
@@ -1833,15 +1895,7 @@ impl DockEngine {
             .is_some_and(|pending| {
                 changed_surfaces.contains(&pending.preview.scene().surface())
                     && !self.drag_preview_authority_is_current(&pending.drag)
-            })
-            || self
-                .pending_mutation
-                .as_ref()
-                .and_then(PendingMutation::contained_release)
-                .is_some_and(|pending| {
-                    changed_surfaces.contains(&pending.transform.surface)
-                        && !self.current_contained_projection_is_owned(pending.transform.surface)
-                });
+            });
         if pending_projection_lost {
             self.cancel_pending_release_obligations_caused(
                 cause,
@@ -1888,6 +1942,16 @@ impl DockEngine {
                     .active_drag(session)
                     .map_err(|source| Self::contribution_invariant(cause, format!("{source:?}")))?
                     .clone();
+                if matches!(cause, ReductionCause::SurfaceContributionBatch { .. })
+                    && drag.preview().is_some_and(|preview| {
+                        !matches!(preview.proof(), PreviewProof::Native { .. })
+                            && self.drag_preview_authority_is_current(&drag)
+                    })
+                {
+                    // Compiling a successor does not revoke a proposal resolved
+                    // against the exact output which is still actually visible.
+                    return Ok(());
+                }
                 // Promoting the exact preview is an authority change, not a
                 // loss of its target. Retirements still remove ready_surface.
                 if matches!(

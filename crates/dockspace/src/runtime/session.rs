@@ -1,6 +1,7 @@
 //! Session ownership and host-frame preparation.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Weak};
 
 use crate::command::ContentCloseTarget;
 use crate::engine::{DockEngine, EngineError};
@@ -12,7 +13,7 @@ use crate::presentation_observation::PresentationHostLease;
 use super::close::PreparedCloseRequest;
 use super::host_frame::DockspaceHostFrame;
 use super::{
-    DockPresentationConfig, DockspacePresentationCommands, DockspaceRuntimeError,
+    DockPresentationConfig, DockspacePresentationCommands, DockspaceRuntimeError, DockspaceUpdate,
     NativeInputBudget, NativePlatformError, NativeReceiverAnswer, NativeReceiverQuery,
     NativeWindowPlacement, PreparedDockAction,
 };
@@ -35,6 +36,7 @@ pub struct DockspaceSession {
     pub(super) abandoned_native_effects: native_effect::NativeEffectDropQueue,
     pub(super) native_report_storage_limit: Option<native::NativeReportStorageLimit>,
     pub(super) committed_source_sequence: u64,
+    active_update: Weak<()>,
 }
 
 impl DockspaceSession {
@@ -130,6 +132,7 @@ impl DockspaceSession {
             abandoned_native_effects: native_effect::NativeEffectDropQueue::default(),
             native_report_storage_limit: None,
             committed_source_sequence: 0,
+            active_update: Weak::new(),
         }
     }
 
@@ -153,6 +156,19 @@ impl DockspaceSession {
     #[must_use]
     pub fn view(&self) -> DockspaceView<'_> {
         self.engine.product_view()
+    }
+
+    /// Sets the admitted output and retained stream bound, which defaults to 64.
+    /// Native transport owns this budget after bounded report storage is configured.
+    pub fn configure_output_capacity(
+        &mut self,
+        slots: std::num::NonZeroUsize,
+    ) -> Result<(), DockspaceRuntimeError> {
+        if self.native_report_storage_limit.is_some() {
+            return Err(NativePlatformError::ProtocolInvariant.into());
+        }
+        self.presentation.configure_output_capacity(slots.get())?;
+        Ok(())
     }
 
     /// Returns the current durable workspace version.
@@ -328,6 +344,50 @@ impl DockspaceSession {
         )
     }
 
+    /// Begins one owned, rollbackable update without borrowing the session.
+    ///
+    /// Resume it through [`Self::resume_update`] to use the host-frame API.
+    /// Dropping it releases the active-update lease and discards its candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`super::DockspaceRuntimeErrorKind::UpdateInProgress`] while a
+    /// suspended update is active, or any ordinary host-frame prelude error.
+    pub fn begin_update(&mut self) -> Result<DockspaceUpdate, DockspaceRuntimeError> {
+        Ok(self.begin_host_frame()?.suspend())
+    }
+
+    /// Resumes the exact active update through a temporary session borrow.
+    ///
+    /// This moves the existing candidate; it does not repeat the frame prelude.
+    /// Only [`DockspaceHostFrame::commit`] publishes it and revalidates the core
+    /// authority fence. On failure, the update is discarded and its originating
+    /// session's active-update lease is released.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`super::DockspaceRuntimeErrorKind::ForeignUpdate`] when this
+    /// session does not own the update's active lease, or its exact host or input
+    /// producer authority changed while the update was suspended.
+    pub fn resume_update(
+        &mut self,
+        update: DockspaceUpdate,
+    ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
+        if !self
+            .active_update
+            .ptr_eq(&Arc::downgrade(&update.update_lease))
+        {
+            return Err(DockspaceRuntimeError::foreign_update());
+        }
+        update.resume(self)
+    }
+
+    pub(super) fn lease_update(&mut self) -> Arc<()> {
+        let lease = Arc::new(());
+        self.active_update = Arc::downgrade(&lease);
+        lease
+    }
+
     /// Begins one affine application host frame.
     ///
     /// Pending output observations are supplied from the facade-owned
@@ -336,7 +396,7 @@ impl DockspaceSession {
     /// # Errors
     ///
     /// Returns an error when presentation output is awaiting an explicit host
-    /// observation or the core rejects the frame prelude.
+    /// observation, another update is active, or the core rejects the frame prelude.
     pub fn begin_host_frame(&mut self) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
         self.begin_host_frame_with_native_resolver(None)
     }
@@ -424,6 +484,9 @@ impl DockspaceSession {
         resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
         budget: Option<&mut NativeInputBudget>,
     ) -> Result<Option<DockspaceHostFrame<'_>>, DockspaceRuntimeError> {
+        if self.active_update.strong_count() != 0 {
+            return Err(DockspaceRuntimeError::update_in_progress());
+        }
         let pending = self
             .native
             .as_mut()
@@ -519,6 +582,7 @@ impl DockspaceSession {
             .map(interaction::RuntimePointerState::committed_sequence);
         let host_frame = DockspaceHostFrame {
             session: self,
+            update_lease: None,
             frame,
             next_source_sequence,
             next_pointer_sequence,
@@ -526,6 +590,10 @@ impl DockspaceSession {
             native_input_pending,
             submitted_presentation,
             painted_surfaces: BTreeMap::new(),
+            encoding_surfaces: BTreeSet::new(),
+            encoding_started: std::cell::Cell::new(false),
+            encoding_checkpoint: None,
+            encoding_pass: 0,
             painted_native_staging: BTreeSet::new(),
             replacement_submitted: false,
             #[cfg(feature = "serde")]

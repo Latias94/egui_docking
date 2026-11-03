@@ -4,6 +4,7 @@ mod close_workflow;
 mod contained_adjustment;
 mod contained_geometry;
 mod contained_projection;
+mod deferred_action;
 mod host_frame;
 mod input;
 mod logical_surface;
@@ -25,6 +26,7 @@ mod presentation_authority;
 mod presentation_identity;
 mod presentation_rehome;
 mod presentation_roster;
+mod presented_input;
 mod product_action;
 mod provider_lifecycle;
 mod reducer;
@@ -63,7 +65,6 @@ use self::contained_geometry::{
     cardinal_contained_resize_requested_rect, clamp_contained_rect, clamp_moved_contained_rect,
     contained_resize_edges, contained_transform_requested_rect, translated_contained_rect,
 };
-pub(crate) use self::input::LocalTabChromeAction;
 use self::input::TabScrollAdjustmentKind;
 pub use self::input::{
     EngineInput, PreparedTabListMenuDismiss, PreparedTabListMenuNavigation,
@@ -71,6 +72,7 @@ pub use self::input::{
     PreparedTabStripScroll, TabListMenuNavigation, TabScrollAdjustment, TabScrollAdjustmentError,
     ValidatedWorkspaceRestore,
 };
+pub(crate) use self::input::{LocalSurfaceAction, LocalTabChromeAction};
 use self::native_admission::NativeAdmissionState;
 use self::pending_mutation::{PendingMutation, PendingPresentationTracker};
 use self::presentation_authority::PresentationAuthorityState;
@@ -103,6 +105,7 @@ use crate::backend_ingress::{
     BackendIngressPayload, BackendIngressPrefixRetirementReceipt,
     BackendIngressProviderReplacementTicket, BackendIngressRecorder,
 };
+use crate::close_plan::prepare_scoped_content_close as prepare_content_close;
 use crate::close_plan::{
     CloseAdvanceOutcome, CloseAuthority, CloseCancellationProof, CloseCoordinator, CloseDecision,
     CloseDecisionToken, CloseDestroyedProof, CloseItemRequirement, CloseNativeSettlement,
@@ -120,7 +123,8 @@ use crate::coordinates::{
     solve_tear_off_placement,
 };
 use crate::drop_resolver::{
-    DropAffordance, DropResolution, DropResolutionError, resolve_presented_drop_with_magnetic,
+    DropAffordance, DropResolution, DropResolutionError, PreparedDropMutation,
+    resolve_presented_drop_with_magnetic,
 };
 use crate::effect::{
     EffectDispatchResult, EffectId, EffectResult, EffectTransition, NativeCloseResolution,
@@ -164,8 +168,7 @@ use crate::interaction::{
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::{DockspaceLayout, DockspaceView, ProductAction};
 use crate::operation::{
-    PreparedContentClose, PreparedSurfaceContentClose, authorize_captured_drag_source,
-    prepare_content_close, prepare_surface_content_close,
+    PreparedSurfaceContentClose, authorize_captured_drag_source, prepare_surface_content_close,
 };
 use crate::platform::{
     CloseEffectAcknowledgement, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
@@ -247,7 +250,9 @@ use crate::tab_strip::{
     PopupRoutingRevision, TabListMenuSessionId, TabStripControlId, TabStripInfluenceDomain,
     TabStripStateDelta, TabStripStateError, TabStripStateKey, TabStripStateStore,
 };
+#[cfg(test)]
 use crate::transaction::WorkspaceTransaction;
+
 use crate::transition::{
     BackendIngressProviderReplacementStart, ContentCloseRequestRejection, EngineTransition,
     EngineTransitionParts, InputOutcome, InputPriority, PresentationHostRetirementOutcome,
@@ -266,6 +271,7 @@ use crate::viewport_focus::{
     ViewportFocusError,
 };
 use crate::viewport_registry::{NativeCloseEdgeDisposition, ViewportAdmission, ViewportOwnership};
+pub(crate) use host_frame::CoreEncodingCheckpoint;
 use pointer_handoff::NativePointerHandoffProjection;
 
 pub(crate) const BACKEND_INGRESS_INPUT_SOURCE: StableInputSourceId =
@@ -308,6 +314,13 @@ pub enum BackendIngressProgress {
 /// Invalid construction of one core-owned host frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum CoreHostFrameError {
+    #[error(
+        "host focus observation belongs to {submitted:?}, but this frame belongs to {expected:?}"
+    )]
+    HostFocusOwnerMismatch {
+        expected: PresentationHostLease,
+        submitted: PresentationHostLease,
+    },
     /// Native platform or desktop pointer facts bypassed the joined ingress lane.
     #[error("native backend facts must be submitted through the joined backend ingress batch")]
     BackendIngressRequired,
@@ -632,12 +645,13 @@ impl CoreCausalStamp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct StagedPresentationOutput {
     request: HostPresentationEmissionRequest,
     surface: SurfaceId,
     endpoint: HostPresentationEndpoint,
     payload: HostPresentationOutputPayload,
+    scene: Option<Arc<crate::scene::SurfacePlanScene>>,
 }
 
 /// Observation-only admission stage of one core-owned host frame.
@@ -819,6 +833,8 @@ pub struct CoreHostFrame {
     staged_presentation_outputs: Vec<StagedPresentationOutput>,
     staged_presentation_output_surfaces: BTreeSet<SurfaceId>,
     surface_contributions: BTreeMap<SurfaceId, PreparedSurfaceContribution>,
+    /// Measurement results already installed in this update's private candidate.
+    compiled_surface_outcomes: BTreeMap<SurfaceId, SurfaceContributionOutcome>,
     presentation_phase_started: bool,
     configuration_phase_started: bool,
     input_terminated_for_overload: bool,
@@ -1681,7 +1697,7 @@ enum ContainedPlacementAuthority {
 
 #[derive(Debug, Clone, PartialEq)]
 enum PreparedCloseOperation {
-    Content(PreparedContentClose),
+    Content(crate::close_plan::ContentCloseScope),
     SurfaceRetain {
         roster: SurfaceRosterDisposition,
         recovery_focus: PaneFocusDisposition,
@@ -1800,18 +1816,6 @@ struct PendingDragRelease {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct PendingContainedTransformRelease {
-    source_version: WorkspaceVersion,
-    policy_revision: PolicyRevision,
-    cause: ReductionCause,
-    session: ContainedTransformSessionId,
-    transform: ActiveContainedTransform,
-    placement: ContainedTransformPlacement,
-    preview: crate::interaction::ContainedTransformPreviewToken,
-    presentation: PendingPresentationTracker,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 struct PendingPresentationRehome {
     source_version: WorkspaceVersion,
     policy_revision: PolicyRevision,
@@ -1839,6 +1843,7 @@ struct PreviewEvaluation {
     affordance: Option<DropAffordance>,
     observation: crate::runtime::direct_manipulation::TargetObservation,
     target_layout_basis: Option<SurfaceSceneStamp>,
+    prepared_mutation: Option<PreparedDropMutation>,
 }
 
 struct StagedJournalWorkspaceCommand {
@@ -1867,6 +1872,7 @@ impl PreviewEvaluation {
             affordance,
             observation,
             target_layout_basis,
+            prepared_mutation: None,
         }
     }
 
@@ -2844,6 +2850,7 @@ impl DockEngine {
             candidate.rebuild_presentation_requirements(candidate.last_input)?;
         }
         candidate.settle_retired_presentation_hosts()?;
+        candidate.reconcile_viewport_focus_authority();
 
         let platform_effects = candidate
             .viewport
@@ -2945,21 +2952,6 @@ impl DockEngine {
             .map(|pending| (pending.session, pending.preview))
     }
 
-    /// Returns the exact contained-transform release preview retained until the
-    /// host proves that it was presented.
-    #[must_use]
-    pub fn pending_contained_transform_release_preview(
-        &self,
-    ) -> Option<(
-        ContainedTransformSessionId,
-        crate::interaction::ContainedTransformPreviewToken,
-    )> {
-        self.pending_mutation
-            .as_ref()
-            .and_then(PendingMutation::contained_release)
-            .map(|pending| (pending.session, pending.preview))
-    }
-
     /// Returns the drag preview which must be represented by the next host
     /// presentation, including a release preview whose gesture is already idle.
     #[must_use]
@@ -2985,13 +2977,7 @@ impl DockEngine {
     /// next host presentation, including a release preview after gesture end.
     #[must_use]
     pub fn presentation_contained_transform_preview(&self) -> Option<&ContainedTransformPreview> {
-        self.interaction.contained_transform_preview().or_else(|| {
-            self.pending_mutation
-                .as_ref()
-                .and_then(PendingMutation::contained_release)
-                .and_then(|pending| pending.transform.preview.as_ref())
-                .map(crate::interaction::PublishedContainedTransformPreview::public)
-        })
+        self.interaction.contained_transform_preview()
     }
 
     /// Returns the latest public state of one exact close request.
@@ -3364,10 +3350,12 @@ impl DockEngine {
             policy,
             WorkspacePublicationAuthority::Ordinary,
             JournalDeliveryActivation::None,
+            None,
             events,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_journal_workspace_command_with_authority(
         &mut self,
         cause: ReductionCause,
@@ -3375,11 +3363,33 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         authority: WorkspacePublicationAuthority,
         activation: JournalDeliveryActivation,
+        prepared: Option<PreparedDropMutation>,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<Result<(CommandOutcome, bool), CommandError>, EngineError> {
-        let staged = match self.stage_journal_workspace_command_with_authority(
-            cause, command, policy, authority, activation,
-        )? {
+        let prepared = prepared.filter(|prepared| prepared.matches(self.version, policy, command));
+        let staged = if let Some(prepared) = prepared {
+            // Release still checks the exact current command and policy. Only
+            // its already validated, uniquely owned graph draft is reused.
+            if let Err(error) =
+                crate::operation::authorize_workspace_command(&self.workspace, policy, command)
+            {
+                return Ok(Err(error));
+            }
+            let (workspace, report) =
+                prepared
+                    .into_owned_draft()
+                    .ok_or(EngineError::ReductionCauseInvariant {
+                        detail: "a release preflight still has another graph draft owner",
+                    })?;
+            self.stage_journal_workspace_draft(
+                cause, policy, authority, activation, workspace, &report,
+            )?
+        } else {
+            self.stage_journal_workspace_command_with_authority(
+                cause, command, policy, authority, activation,
+            )?
+        };
+        let staged = match staged {
             Ok(staged) => staged,
             Err(source) => return Ok(Err(source)),
         };
@@ -3426,11 +3436,12 @@ impl DockEngine {
         authority: WorkspacePublicationAuthority,
         activation: JournalDeliveryActivation,
     ) -> Result<Result<StagedJournalWorkspaceCommand, CommandError>, EngineError> {
-        let mut workspace = self.clone_workspace_candidate();
-        let report = match WorkspaceTransaction::from_commands([command.clone()])
-            .apply(&mut workspace, policy)
-        {
-            Ok(report) => report,
+        let prepared = match crate::operation::prepare_transaction(
+            self.workspace.as_ref(),
+            policy,
+            std::slice::from_ref(command),
+        ) {
+            Ok(prepared) => prepared,
             Err(TransactionError::Command { index: 0, source })
                 if source.is_expected_rejection() =>
             {
@@ -3443,6 +3454,19 @@ impl DockEngine {
                 });
             }
         };
+        let (workspace, report) = prepared.into_parts(self.workspace.as_ref());
+        self.stage_journal_workspace_draft(cause, policy, authority, activation, workspace, &report)
+    }
+
+    fn stage_journal_workspace_draft(
+        &self,
+        cause: ReductionCause,
+        policy: &DockPolicySnapshot,
+        authority: WorkspacePublicationAuthority,
+        activation: JournalDeliveryActivation,
+        mut workspace: Workspace,
+        report: &crate::transaction::TransactionReport,
+    ) -> Result<Result<StagedJournalWorkspaceCommand, CommandError>, EngineError> {
         let mut changed = report.changed();
         // A successful manipulation may activate its delivered content. Stage
         // that command against the post-move source and publish both together;
@@ -3467,24 +3491,24 @@ impl DockEngine {
                 Ok(None) => continue,
                 Err(source) => return Ok(Err(source)),
             };
-            let activated = match WorkspaceTransaction::from_commands([command])
-                .apply(&mut workspace, policy)
-            {
-                Ok(report) => report,
-                Err(TransactionError::Command { index: 0, source })
-                    if source.is_expected_rejection() =>
+            let activated =
+                match crate::operation::apply_owned_draft_command(&mut workspace, policy, &command)
                 {
-                    return Ok(Err(source));
-                }
-                Err(source) => {
-                    return Err(EngineError::PointerInteractionInvariant {
-                        cause,
-                        detail: source.to_string(),
-                    });
-                }
-            };
-            changed |= activated.changed();
-            activation_outcomes.extend(activated.into_outcomes());
+                    Ok(outcome) => outcome,
+                    Err(TransactionError::Command { index: 0, source })
+                        if source.is_expected_rejection() =>
+                    {
+                        return Ok(Err(source));
+                    }
+                    Err(source) => {
+                        return Err(EngineError::PointerInteractionInvariant {
+                            cause,
+                            detail: source.to_string(),
+                        });
+                    }
+                };
+            changed = workspace != *self.workspace;
+            activation_outcomes.push(activated);
         }
         if let Some(surface) =
             self.first_pending_presentation_source_mismatch(&workspace, authority)
@@ -3494,16 +3518,13 @@ impl DockEngine {
         if let Some(surface) = self.first_workspace_publication_mismatch(&workspace, None, None) {
             return Ok(Err(CommandError::SurfaceLifecycleFrozen { surface }));
         }
-        let mut outcomes = report.into_outcomes();
-        if outcomes.len() != 1 {
+        let [outcome] = report.outcomes() else {
             return Err(EngineError::PointerInteractionInvariant {
                 cause,
                 detail: "one journal drop command produced a non-unit outcome roster".to_owned(),
             });
-        }
-        let outcome = outcomes
-            .pop()
-            .expect("unit outcome roster was checked before extraction");
+        };
+        let outcome = outcome.clone();
         let publication =
             match self.stage_workspace_publication_with_authority(workspace, policy, authority) {
                 Ok(publication) => publication,
@@ -3797,7 +3818,8 @@ impl DockEngine {
                 }
             }
         }
-        self.viewport_focus.reconcile_workspace_replacement();
+        self.viewport_focus
+            .reconcile_workspace_replacement(reconciliation.rebound());
         self.version = WorkspaceVersion::new(epoch, WorkspaceRevision::default());
         self.close.invalidate_stale(self.close_authority());
         self.rebuild_presentation_requirements(input)?;
@@ -4677,6 +4699,30 @@ impl DockEngine {
                 InteractionRejection::SplitterGestureCoordinateAuthorityUnavailable { surface },
             ));
         }
+        let painted = painted.frozen_witness();
+        self.adjust_splitter_from_candidate(
+            input,
+            &painted,
+            splitter,
+            delta,
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn adjust_splitter_from_candidate(
+        &mut self,
+        input: InputSequence,
+        painted: &crate::scene::SurfacePlanScene,
+        splitter: SplitterSceneId,
+        delta: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let surface = painted.stamp().surface();
         let record = match painted.plan().splitter_record(splitter).cloned() {
             Some(record) if record.operable() => record,
             None => {
@@ -4749,13 +4795,37 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        let surface = scene.surface();
+        let painted = match self.semantic_candidate(scene) {
+            Ok(painted) => painted.frozen_witness(),
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        self.adjust_splitter_junction_from_candidate(
+            input,
+            &painted,
+            junction,
+            axis,
+            delta,
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn adjust_splitter_junction_from_candidate(
+        &mut self,
+        input: InputSequence,
+        painted: &crate::scene::SurfacePlanScene,
+        junction: crate::scene::SplitterJunctionId,
+        axis: crate::model::DockspaceAxis,
+        delta: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let surface = painted.stamp().surface();
         let axis = axis.into();
         let handles = {
-            let painted = match self.semantic_candidate(scene) {
-                Ok(painted) => painted,
-                Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-            };
             let Some(record) = painted
                 .plan()
                 .splitter_junction_records()
@@ -4820,10 +4890,6 @@ impl DockEngine {
             sources.push((source, record));
         }
 
-        let painted = match self.semantic_candidate(scene) {
-            Ok(painted) => painted,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
         let groups = match self.prepare_checked_resize_axis_groups(painted.plan(), sources, policy)
         {
             Ok(groups) => groups,
@@ -5571,11 +5637,12 @@ impl DockEngine {
                 CommandApplication::Rejected(CommandError::SurfaceLifecycleFrozen { surface }),
             ));
         }
-        let mut candidate = self.clone_workspace_candidate();
-        let report = match WorkspaceTransaction::from_commands([command.clone()])
-            .apply(&mut candidate, policy)
-        {
-            Ok(report) => report,
+        let prepared = match crate::operation::prepare_transaction(
+            self.workspace.as_ref(),
+            policy,
+            std::slice::from_ref(command),
+        ) {
+            Ok(prepared) => prepared,
             Err(TransactionError::Command { index: 0, source })
                 if source.is_expected_rejection() =>
             {
@@ -5583,6 +5650,7 @@ impl DockEngine {
             }
             Err(source) => return Err(EngineError::Command { input, source }),
         };
+        let (candidate, report) = prepared.into_parts(self.workspace.as_ref());
         if let Some(surface) =
             self.first_pending_presentation_source_mismatch(&candidate, authority)
         {
@@ -5765,7 +5833,6 @@ impl DockEngine {
         })
     }
 
-    #[inline]
     fn clone_workspace_candidate(&self) -> Workspace {
         #[cfg(test)]
         crate::drop_resolver::structural_work::record_engine_workspace_candidate_clone(

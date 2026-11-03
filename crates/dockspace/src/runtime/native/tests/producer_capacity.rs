@@ -128,7 +128,7 @@ fn producer_enrollment_prepays_the_complete_peak_and_one_byte_short_is_inert() {
     );
     commit(&mut session);
     let native = session.native.as_ref().unwrap();
-    let prepared = native.prepare_native_commit(&session.engine).unwrap();
+    let prepared = native.prepare_native_commit(&session.engine, &[]).unwrap();
     let overlapping_backing = session.native_input_producer_storage_capacity_bytes()
         + prepared.next_producer.owned_capacity_bytes()
         + (prepared.report.bindings.capacity() + prepared.report.admissions.capacity())
@@ -544,7 +544,7 @@ fn dropping_both_prepared_candidates_keeps_one_exact_registration_retry() {
             .native
             .as_ref()
             .unwrap()
-            .prepare_native_commit(prepared_core.candidate_engine())
+            .prepare_native_commit(prepared_core.candidate_engine(), &[])
             .unwrap();
         assert_eq!(prepared_native.report.bindings.len(), 1);
         assert_eq!(session.native.as_ref().unwrap().producer.bindings, before);

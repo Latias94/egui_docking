@@ -165,21 +165,27 @@ pub(super) fn resolve<'frame>(
     let plan = scenes.surface(source_surface)?.ready()?.candidate().plan();
     match payload {
         MovePayload::Item(source) => {
-            let tab = plan.tab_records().iter().find(|record| {
+            let bar = plan.tab_bar_records().iter().find(|record| {
                 let id = record.id();
-                id.root == source.root() && id.tabs == source.tabs() && id.item == source.item()
+                id.root == source.root() && id.tabs == source.tabs()
             })?;
+            // Strip members retain exact source geometry even after scrolling clips its paint.
+            let member = bar
+                .members()
+                .iter()
+                .find(|member| member.tab().item == source.item())?;
+            let tab = member.tab();
             let projection = source_projection(plan, source_surface, source.root(), drag.session());
             Some(DockspaceDragDecoration {
                 source_surface,
                 kind: DockspaceDragSourceKind::Item,
-                source_visual: DockspaceVisualId(VisualIdentity::Tab(*tab.id())),
-                source_bounds: tab.full_bounds(),
+                source_visual: DockspaceVisualId(VisualIdentity::Tab(tab)),
+                source_bounds: member.full_bounds(),
                 projected_root_bounds: projection,
                 source_is_projected: projection.is_some(),
                 item: Some(source.item()),
                 ghost_item: Some(source.item()),
-                source: DragDecorationSource::Item(*tab.id()),
+                source: DragDecorationSource::Item(tab),
             })
         }
         MovePayload::Tabs(source) => {

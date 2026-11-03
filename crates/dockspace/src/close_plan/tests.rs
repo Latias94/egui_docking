@@ -385,7 +385,7 @@ fn identities_are_non_zero_monotonic_and_item_order_is_stable() {
 }
 
 #[test]
-fn active_target_lookup_reuses_only_current_non_terminal_plan() {
+fn active_target_lookup_reuses_reconciled_content_across_unrelated_revisions() {
     let mut coordinator = coordinator();
     let target = ClosePlanTarget::Root { root: ROOT };
     let first = root_plan(
@@ -400,10 +400,11 @@ fn active_target_lookup_reuses_only_current_non_terminal_plan() {
             .map(ClosePlan::request),
         Some(first.request())
     );
-    assert!(
+    assert_eq!(
         coordinator
             .active_plan_for_target(target, authority(3, 6))
-            .is_none()
+            .map(ClosePlan::request),
+        Some(first.request())
     );
 
     coordinator
@@ -431,7 +432,7 @@ fn active_target_lookup_reuses_only_current_non_terminal_plan() {
         Some(second.request())
     );
     assert_eq!(
-        coordinator.invalidate_stale(authority(4, 5)),
+        coordinator.invalidate_stale_with(authority(4, 5), |_| false),
         vec![second.request()]
     );
     assert!(
@@ -666,7 +667,40 @@ fn veto_is_terminal_and_late_votes_are_inert() {
 }
 
 #[test]
-fn authority_change_marks_plan_stale_and_never_reinterprets_old_vote() {
+fn reconciled_content_keeps_its_deferred_token_across_revision_changes() {
+    let mut coordinator = coordinator();
+    let plan = root_plan(
+        &mut coordinator,
+        [requirement(ITEM_A, CloseCapability::DeferredAllowed)],
+    );
+    let request = plan.request();
+    let Ok(CloseResolutionOutcome::Deferred { continuation, .. }) = coordinator.resolve(
+        request,
+        plan.items()[0].token(),
+        authority(3, 5),
+        CloseDecision::Deferred,
+    ) else {
+        panic!("the exact initial token must mint a continuation");
+    };
+    let current = authority(40, 60);
+    assert!(
+        coordinator
+            .invalidate_stale_with(current, |_| true)
+            .is_empty()
+    );
+    assert_eq!(
+        coordinator
+            .continue_deferred(request, continuation, current, DeferredCloseDecision::Allow,),
+        CloseResolutionOutcome::Approved { request },
+    );
+    assert_eq!(
+        coordinator.approved(request, current).unwrap().prepared(),
+        &"frozen-root-fingerprint",
+    );
+}
+
+#[test]
+fn epoch_change_marks_content_plan_stale_and_never_reinterprets_old_vote() {
     let mut coordinator = coordinator();
     let plan = root_plan(
         &mut coordinator,
@@ -674,7 +708,11 @@ fn authority_change_marks_plan_stale_and_never_reinterprets_old_vote() {
     );
     let request = plan.request();
     let token = plan.items()[0].token();
-    let actual = authority(4, 5);
+    let actual = CloseAuthority::new(
+        domain(),
+        WorkspaceVersion::new(WorkspaceEpoch::new(8), WorkspaceRevision::new(4)),
+        PolicyRevision::new(5),
+    );
 
     assert_eq!(
         coordinator.resolve(request, token, actual, CloseDecision::Allow),
@@ -2221,7 +2259,7 @@ fn plan_inventory_retains_terminal_snapshots_and_filters_active_plans() {
 }
 
 #[test]
-fn explicit_invalidation_marks_all_active_authority_mismatches_once() {
+fn explicit_scope_invalidation_marks_content_plans_once() {
     let mut coordinator = coordinator();
     let first = root_plan(
         &mut coordinator,
@@ -2233,10 +2271,14 @@ fn explicit_invalidation_marks_all_active_authority_mismatches_once() {
     );
 
     assert_eq!(
-        coordinator.invalidate_stale(authority(3, 6)),
+        coordinator.invalidate_stale_with(authority(3, 6), |_| false),
         vec![first.request(), second.request()]
     );
-    assert!(coordinator.invalidate_stale(authority(3, 6)).is_empty());
+    assert!(
+        coordinator
+            .invalidate_stale_with(authority(3, 6), |_| false)
+            .is_empty()
+    );
     assert_eq!(
         coordinator.plan(first.request()).map(ClosePlan::phase),
         Some(ClosePlanPhase::Stale)

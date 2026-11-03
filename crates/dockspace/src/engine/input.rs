@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::intent::PointerId;
+use crate::scene::{ContainedResizeDirection, SplitterJunctionId, TabSceneId};
 
 /// A document-validated workspace replacement carrying its opaque allocator lineage.
 ///
@@ -318,6 +319,195 @@ pub(crate) enum LocalTabChromeAction {
     },
 }
 
+impl LocalTabChromeAction {
+    fn same_intent(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::ActivateControl(a), Self::ActivateControl(b)) => {
+                a.key == b.key && a.record.id() == b.record.id()
+            }
+            (
+                Self::ScrollStrip {
+                    key: a,
+                    adjustment: ad,
+                    ..
+                },
+                Self::ScrollStrip {
+                    key: b,
+                    adjustment: bd,
+                    ..
+                },
+            ) => a == b && ad == bd,
+            (Self::ActivateMenuRow(a), Self::ActivateMenuRow(b)) => {
+                a.session == b.session && a.record.tab() == b.record.tab()
+            }
+            (Self::DismissMenu { session: a, .. }, Self::DismissMenu { session: b, .. }) => a == b,
+            (Self::DismissMenuFromBackdrop(a), Self::DismissMenuFromBackdrop(b)) => {
+                a.session == b.session
+            }
+            (Self::DismissMenu { session, .. }, Self::DismissMenuFromBackdrop(backdrop))
+            | (Self::DismissMenuFromBackdrop(backdrop), Self::DismissMenu { session, .. }) => {
+                *session == backdrop.session
+            }
+            (
+                Self::ScrollMenu {
+                    session: a,
+                    adjustment: ad,
+                    ..
+                },
+                Self::ScrollMenu {
+                    session: b,
+                    adjustment: bd,
+                    ..
+                },
+            ) => a == b && ad == bd,
+            (
+                Self::NavigateMenu {
+                    session: a,
+                    target: at,
+                    ..
+                },
+                Self::NavigateMenu {
+                    session: b,
+                    target: bt,
+                    ..
+                },
+            ) => a == b && at == bt,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum LocalSurfaceAction {
+    SelectTab {
+        scene: SurfaceSceneStamp,
+        tab: TabSceneId,
+    },
+    Close {
+        scene: SurfaceSceneStamp,
+        target: CloseSceneTarget,
+    },
+    CloseRoot {
+        scene: SurfaceSceneStamp,
+        root: crate::ids::RootId,
+    },
+    PresentationCommand {
+        scene: SurfaceSceneStamp,
+        action: crate::model::ProductAction,
+    },
+    TabChrome {
+        scene: SurfaceSceneStamp,
+        action: LocalTabChromeAction,
+    },
+    AdjustSplitter {
+        scene: SurfaceSceneStamp,
+        splitter: SplitterSceneId,
+        delta: f64,
+    },
+    AdjustSplitterJunction {
+        scene: SurfaceSceneStamp,
+        junction: SplitterJunctionId,
+        axis: crate::model::DockspaceAxis,
+        delta: f64,
+    },
+    AdjustContainedResize {
+        scene: SurfaceSceneStamp,
+        floating: FloatingPresentationId,
+        direction: ContainedResizeDirection,
+        delta: f64,
+    },
+    CancelWithEscape {
+        status: InteractionStatus,
+    },
+}
+
+impl LocalSurfaceAction {
+    pub(crate) fn same_intent(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::SelectTab { tab: a, .. }, Self::SelectTab { tab: b, .. }) => a == b,
+            (Self::Close { target: a, .. }, Self::Close { target: b, .. }) => a == b,
+            (Self::CloseRoot { root: a, .. }, Self::CloseRoot { root: b, .. }) => a == b,
+            (
+                Self::PresentationCommand { action: a, .. },
+                Self::PresentationCommand { action: b, .. },
+            ) => a == b,
+            (Self::TabChrome { action: a, .. }, Self::TabChrome { action: b, .. }) => {
+                a.same_intent(b)
+            }
+            (
+                Self::AdjustSplitter {
+                    splitter: a,
+                    delta: ad,
+                    ..
+                },
+                Self::AdjustSplitter {
+                    splitter: b,
+                    delta: bd,
+                    ..
+                },
+            ) => a == b && ad == bd,
+            (
+                Self::AdjustSplitterJunction {
+                    junction: a,
+                    axis: aa,
+                    delta: ad,
+                    ..
+                },
+                Self::AdjustSplitterJunction {
+                    junction: b,
+                    axis: ba,
+                    delta: bd,
+                    ..
+                },
+            ) => a == b && aa == ba && ad == bd,
+            (
+                Self::AdjustContainedResize {
+                    floating: a,
+                    direction: aa,
+                    delta: ad,
+                    ..
+                },
+                Self::AdjustContainedResize {
+                    floating: b,
+                    direction: ba,
+                    delta: bd,
+                    ..
+                },
+            ) => a == b && aa == ba && ad == bd,
+            (Self::CancelWithEscape { status: a }, Self::CancelWithEscape { status: b }) => a == b,
+            _ => false,
+        }
+    }
+
+    pub(super) const fn scene(&self) -> Option<SurfaceSceneStamp> {
+        match self {
+            Self::SelectTab { scene, .. }
+            | Self::Close { scene, .. }
+            | Self::CloseRoot { scene, .. }
+            | Self::PresentationCommand { scene, .. }
+            | Self::TabChrome { scene, .. }
+            | Self::AdjustSplitter { scene, .. }
+            | Self::AdjustSplitterJunction { scene, .. }
+            | Self::AdjustContainedResize { scene, .. } => Some(*scene),
+            Self::CancelWithEscape { .. } => None,
+        }
+    }
+
+    pub(crate) const fn kind(&self) -> &'static str {
+        match self {
+            Self::SelectTab { .. } => "select-tab",
+            Self::Close { .. } => "close",
+            Self::CloseRoot { .. } => "close-root",
+            Self::PresentationCommand { .. } => "presentation-command",
+            Self::TabChrome { .. } => "tab-chrome",
+            Self::AdjustSplitter { .. } => "adjust-splitter",
+            Self::AdjustSplitterJunction { .. } => "adjust-splitter-junction",
+            Self::AdjustContainedResize { .. } => "adjust-contained-resize",
+            Self::CancelWithEscape { .. } => "cancel-with-escape",
+        }
+    }
+}
+
 /// Input accepted by the U3 engine boundary.
 #[allow(
     private_interfaces,
@@ -325,6 +515,12 @@ pub(crate) enum LocalTabChromeAction {
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineInput {
+    /// Apply an owned local action using its core-issued frozen semantic witness.
+    ApplyDeferredSurfaceAction {
+        expected: WorkspaceVersion,
+        witness: Arc<crate::scene::SurfacePlanScene>,
+        action: LocalSurfaceAction,
+    },
     /// Attach an empty central logical surface using declared semantic identities.
     AttachEmptySurface {
         expected: WorkspaceVersion,
@@ -486,6 +682,11 @@ pub enum EngineInput {
         expected_epoch: crate::ids::WorkspaceEpoch,
         /// Opaque request identity, target, native guard, and exact result.
         observation: PaneFocusRequestObservation,
+    },
+    /// Reports the host's current UI focus independently of pane history.
+    PublishHostFocusObservation {
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        observation: crate::viewport_focus::HostFocusObservation,
     },
     /// Explicitly cancel one unresolved native-create saga.
     ///
@@ -864,7 +1065,8 @@ impl EngineInput {
             | Self::ObserveNativeInputBindingRetired { .. }
             | Self::ReportPlatformEffect { .. } => InputPriority::PlatformObservation,
             Self::PublishPaneFocusObservation { .. }
-            | Self::PublishPaneFocusRequestObservation { .. } => InputPriority::PlatformObservation,
+            | Self::PublishPaneFocusRequestObservation { .. }
+            | Self::PublishHostFocusObservation { .. } => InputPriority::PlatformObservation,
             Self::ActivateViewport { .. }
             | Self::UpdatePointerMagneticTargeting { .. }
             | Self::UpdateNativeMagneticTargeting { .. }
@@ -884,6 +1086,7 @@ impl EngineInput {
             | Self::BringContainedIntoView { .. }
             | Self::RequestContentClose { .. }
             | Self::RequestSceneClose { .. }
+            | Self::ApplyDeferredSurfaceAction { .. }
             | Self::RequestLocalSceneClose { .. }
             | Self::RequestLocalRootClose { .. }
             | Self::SelectLocalSceneTab { .. }

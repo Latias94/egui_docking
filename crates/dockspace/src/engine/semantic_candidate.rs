@@ -3,6 +3,46 @@
 use super::*;
 
 impl DockEngine {
+    pub(super) fn reduce_host_focus_observation(
+        &mut self,
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        observation: crate::viewport_focus::HostFocusObservation,
+    ) -> InputOutcome {
+        if expected_epoch != self.version.epoch() {
+            return InputOutcome::PaneFocusObservationStale {
+                expected_epoch,
+                current_epoch: self.version.epoch(),
+            };
+        }
+        let scope = self
+            .presentation_authority
+            .presentation
+            .active_surface_scope(observation.surface());
+        let scope_is_current = scope.is_some_and(|(stream, host, _)| {
+            stream == observation.stream() && host == observation.host()
+        }) && self.workspace.surface(observation.surface()).is_some()
+            && scope.is_some_and(|(_, _, endpoint)| match endpoint {
+                HostPresentationEndpoint::Headless => true,
+                HostPresentationEndpoint::Native(binding) => {
+                    self.viewport_focus_binding(observation.surface()) == Some(binding)
+                }
+            });
+        let native_guard = scope
+            .and_then(|(_, _, endpoint)| match endpoint {
+                HostPresentationEndpoint::Native(binding) => Some(binding),
+                HostPresentationEndpoint::Headless => None,
+            })
+            .filter(|binding| self.viewport_focus_binding(observation.surface()) == Some(*binding));
+        let items = self.surface_items(observation.surface());
+        let transition = self.viewport_focus.publish_host_focus_observation(
+            observation,
+            |_| scope_is_current,
+            native_guard,
+            |surface, item| surface == observation.surface() && items.contains(&item),
+        );
+        InputOutcome::PaneFocusObservationPublished { transition }
+    }
+
     pub(super) fn reduce_pane_focus_request_observation(
         &mut self,
         expected_epoch: crate::ids::WorkspaceEpoch,
@@ -21,6 +61,21 @@ impl DockEngine {
             |binding| current_binding == Some(binding),
             |surface, item| surface == observation.surface() && items.contains(&item),
         );
+        if matches!(
+            transition,
+            crate::viewport_focus::PaneFocusObservationTransition::Focused { .. }
+        ) && let Some((stream, host, _)) = self
+            .presentation_authority
+            .presentation
+            .active_surface_scope(observation.surface())
+        {
+            self.viewport_focus.bind_current_host_focus_scope(
+                observation.surface(),
+                observation.native_guard(),
+                host,
+                stream,
+            );
+        }
         InputOutcome::PaneFocusObservationPublished { transition }
     }
 
@@ -62,11 +117,34 @@ impl DockEngine {
             });
         }
 
+        let candidate = match self.semantic_candidate(scene) {
+            Ok(candidate) => candidate.frozen_witness(),
+            Err(error) => return Ok(self.candidate_action_rejection(error)),
+        };
+        self.select_tab_from_candidate(
+            input,
+            focus_causal,
+            &candidate,
+            tab,
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn select_tab_from_candidate(
+        &mut self,
+        input: InputSequence,
+        focus_causal: FocusCausalStamp,
+        candidate: &crate::scene::SurfacePlanScene,
+        tab: crate::scene::TabSceneId,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        let scene = candidate.stamp();
         let (source, raise) = {
-            let candidate = match self.semantic_candidate(scene) {
-                Ok(candidate) => candidate,
-                Err(error) => return Ok(self.candidate_action_rejection(error)),
-            };
             let Some(record) = candidate
                 .plan()
                 .tab_records()
@@ -188,8 +266,8 @@ impl DockEngine {
         } else {
             self.reduce_workspace_command(
                 input,
-                expected,
-                application_base,
+                self.version,
+                self.version,
                 &selection,
                 policy,
                 events,
@@ -219,11 +297,12 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        let mut workspace = self.clone_workspace_candidate();
-        let report = match WorkspaceTransaction::from_commands([raise, selection])
-            .apply(&mut workspace, policy)
-        {
-            Ok(report) => report,
+        let prepared = match crate::operation::prepare_transaction(
+            &self.workspace,
+            policy,
+            &[raise, selection],
+        ) {
+            Ok(prepared) => prepared,
             Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
                 return Ok(InputOutcome::CommandRejected {
                     error: source,
@@ -232,6 +311,7 @@ impl DockEngine {
             }
             Err(source) => return Err(EngineError::Command { input, source }),
         };
+        let (workspace, report) = prepared.into_parts(&self.workspace);
         if let Some(surface) = self.first_pending_presentation_source_mismatch(
             &workspace,
             WorkspacePublicationAuthority::Ordinary,
@@ -316,24 +396,45 @@ impl DockEngine {
                 accepted_base: application_base,
             });
         }
-        let plan = match self.semantic_candidate(scene) {
-            Ok(candidate) => candidate.plan().clone(),
+        let candidate = match self.semantic_candidate(scene) {
+            Ok(candidate) => candidate.frozen_witness(),
             Err(error) => return Ok(self.candidate_action_rejection(error)),
         };
+        self.apply_tab_chrome_from_candidate(
+            cause,
+            focus_causal,
+            &candidate,
+            action,
+            policy,
+            events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn apply_tab_chrome_from_candidate(
+        &mut self,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
+        candidate: &crate::scene::SurfacePlanScene,
+        action: &LocalTabChromeAction,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        let plan = candidate.plan();
         let outcome = match action {
             LocalTabChromeAction::ActivateControl(control) => {
-                self.finish_journal_tab_strip_control(cause, control, &plan)?
+                self.finish_journal_tab_strip_control(cause, control, plan)?
             }
             LocalTabChromeAction::ScrollStrip {
                 key,
                 record,
                 adjustment,
-            } => self.finish_tab_strip_scroll(cause, &plan, *key, record, adjustment)?,
+            } => self.finish_tab_strip_scroll(cause, plan, *key, record, adjustment)?,
             LocalTabChromeAction::ActivateMenuRow(row) => self.finish_journal_tab_list_menu_row(
                 cause,
                 focus_causal,
                 row,
-                &plan,
+                plan,
                 policy,
                 events,
             )?,
@@ -343,10 +444,10 @@ impl DockEngine {
                 record,
                 backdrop,
             } => self.finish_tab_list_menu_dismiss(
-                cause, &plan, *session, *revision, record, *backdrop,
+                cause, plan, *session, *revision, record, *backdrop,
             )?,
             LocalTabChromeAction::DismissMenuFromBackdrop(backdrop) => {
-                self.finish_journal_tab_list_menu_backdrop(cause, backdrop, &plan)?
+                self.finish_journal_tab_list_menu_backdrop(cause, backdrop, plan)?
             }
             LocalTabChromeAction::ScrollMenu {
                 session,
@@ -354,7 +455,7 @@ impl DockEngine {
                 record,
                 adjustment,
             } => self.finish_tab_list_menu_scroll(
-                cause, &plan, *session, *revision, record, adjustment,
+                cause, plan, *session, *revision, record, adjustment,
             )?,
             LocalTabChromeAction::NavigateMenu {
                 session,
@@ -362,7 +463,7 @@ impl DockEngine {
                 record,
                 target,
             } => self.finish_tab_list_menu_navigation(
-                cause, &plan, *session, *revision, record, *target,
+                cause, plan, *session, *revision, record, *target,
             )?,
         };
         Ok(InputOutcome::InteractionProcessed {

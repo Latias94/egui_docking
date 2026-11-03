@@ -394,28 +394,114 @@ fn multiple_policy_replacements_correlate_noops_changes_and_intermediate_version
 }
 
 #[test]
-fn pending_query_omits_plans_invalidated_by_workspace_or_policy_changes() {
+fn pending_query_preserves_target_scope_across_selection_and_unrelated_policy_changes() {
     let mut session = session();
+    let prepared = session.prepare_close_root(ROOT);
     let mut frame = session.begin_host_frame().unwrap();
-    let _: () = frame.request_close_root_current(ROOT).unwrap();
-    commit(frame);
-    assert_eq!(session.pending_content_close_plans().count(), 1);
+    let requested = frame.submit_prepared_close_request(prepared).unwrap();
+    let report = commit(frame);
+    let plan = requested_plan(&report, requested);
 
     let mut frame = session.begin_host_frame().unwrap();
     frame.select_item_current(SECOND).unwrap();
     commit(frame);
-    assert_eq!(session.pending_content_close_plans().count(), 0);
-
-    let mut frame = session.begin_host_frame().unwrap();
-    let _: () = frame.request_close_item_current(FIRST).unwrap();
-    commit(frame);
-    assert_eq!(session.pending_content_close_plans().count(), 1);
+    assert_eq!(
+        session.pending_content_close_plans().collect::<Vec<_>>(),
+        [plan.clone()]
+    );
     let mut replacement = session.policy().clone();
     replacement.set_allow_tab_merge(false);
     let mut frame = session.begin_host_frame().unwrap();
     frame.replace_policy(replacement).unwrap();
     commit(frame);
+    assert_eq!(
+        session.pending_content_close_plans().collect::<Vec<_>>(),
+        [plan.clone()]
+    );
+
+    let mut frame = session.begin_host_frame().unwrap();
+    let first = frame
+        .resolve_close(
+            plan.request(),
+            plan.items()[0].token(),
+            CloseDecision::Allow,
+        )
+        .unwrap();
+    let second = frame
+        .resolve_close(
+            plan.request(),
+            plan.items()[1].token(),
+            CloseDecision::Allow,
+        )
+        .unwrap();
+    let report = commit(frame);
+    assert!(matches!(
+        report.submitted_action_outcome(first),
+        Some(HostInputOutcome::CloseDecisionProcessed {
+            resolution: DockspaceCloseResolution::Recorded { item: FIRST, .. },
+            application: None,
+            changed: false,
+            ..
+        })
+    ));
+    assert!(matches!(
+        report.submitted_action_outcome(second),
+        Some(HostInputOutcome::CloseDecisionProcessed {
+            resolution: DockspaceCloseResolution::Approved { request },
+            application: Some(Ok(DockspaceCloseOutcome::RootClosed { root: ROOT, items })),
+            changed: true,
+            ..
+        }) if *request == plan.request() && items == &[FIRST, SECOND]
+    ));
     assert_eq!(session.pending_content_close_plans().count(), 0);
+    assert!(session.view().root(ROOT).is_none());
+    assert!(session.view().item(THIRD).is_some());
+    assert!(session.view().item(FOURTH).is_some());
+}
+
+#[test]
+fn pending_query_retires_target_scope_after_effective_close_policy_changes() {
+    let mut session = session();
+    let prepared = session.prepare_close_root(ROOT);
+    let mut frame = session.begin_host_frame().unwrap();
+    let requested = frame.submit_prepared_close_request(prepared).unwrap();
+    let report = commit(frame);
+    let plan = requested_plan(&report, requested);
+
+    let original = session.policy().clone();
+    let mut replacement = original.clone();
+    replacement.set_close_capability(CloseCapability::Disabled);
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.replace_policy(replacement).unwrap();
+    commit(frame);
+    assert_eq!(session.pending_content_close_plans().count(), 0);
+
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.replace_policy(original).unwrap();
+    commit(frame);
+    let before = session.version();
+    let mut frame = session.begin_host_frame().unwrap();
+    let stale = frame
+        .resolve_close(
+            plan.request(),
+            plan.items()[0].token(),
+            CloseDecision::Allow,
+        )
+        .unwrap();
+    let report = commit(frame);
+    assert!(matches!(
+        report.submitted_action_outcome(stale),
+        Some(HostInputOutcome::CloseDecisionProcessed {
+            resolution: DockspaceCloseResolution::Inert(_),
+            application: None,
+            changed: false,
+            ..
+        })
+    ));
+    assert_eq!(session.version(), before);
+    assert_eq!(session.pending_content_close_plans().count(), 0);
+    assert!(session.view().item(FIRST).is_some());
+    assert!(session.view().item(SECOND).is_some());
 }
 
 #[test]

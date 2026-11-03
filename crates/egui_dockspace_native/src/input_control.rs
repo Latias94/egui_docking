@@ -338,31 +338,45 @@ impl NativeInputControl {
         matches!(pending.state, PendingNativeInputState::Queued(_)).then(|| pending.command())
     }
 
+    /// Holds the started request locally across the actual backend handoff.
+    /// Unwinding queues its indeterminate terminal instead of leaving an
+    /// undispatched owner behind in the input lane.
+    pub(crate) fn dispatch(
+        &mut self,
+        expected: NativePointerPassthroughCommand,
+        token: NativeViewportPointerPassthroughCommandToken,
+        enqueue: impl FnOnce(),
+    ) -> bool {
+        if !self.pending.front().is_some_and(|pending| {
+            pending.command() == expected
+                && matches!(pending.state, PendingNativeInputState::Queued(_))
+        }) {
+            return false;
+        }
+        let mut pending = self
+            .pending
+            .pop_front()
+            .expect("the exact queued input request was inspected");
+        let PendingNativeInputState::Queued(request) = pending.state else {
+            unreachable!("the exact queued input request remains queued")
+        };
+        let dispatch = request.begin_dispatch();
+        enqueue();
+        pending.state = PendingNativeInputState::AwaitingCallback {
+            request: dispatch.await_observation(),
+            token,
+        };
+        self.pending.push_front(pending);
+        true
+    }
+
+    #[cfg(test)]
     pub(crate) fn mark_dispatched(
         &mut self,
         expected: NativePointerPassthroughCommand,
         token: NativeViewportPointerPassthroughCommandToken,
     ) -> bool {
-        let Some(pending) = self.pending.front_mut() else {
-            return false;
-        };
-        if pending.command() != expected {
-            return false;
-        }
-        let state = std::mem::replace(
-            &mut pending.state,
-            PendingNativeInputState::AwaitingSnapshot,
-        );
-        match state {
-            PendingNativeInputState::Queued(request) => {
-                pending.state = PendingNativeInputState::AwaitingCallback { request, token };
-                true
-            }
-            state => {
-                pending.state = state;
-                false
-            }
-        }
+        self.dispatch(expected, token, || {})
     }
 
     pub(crate) fn classify(
@@ -502,7 +516,16 @@ impl NativeInputControl {
         record: NativePointerPassthroughRecord,
         reason: NativeDispatchFailure,
     ) -> Option<NativeEffectResult> {
-        self.take_failure_result(record, |request| request.dispatch_failed(reason))
+        self.take_failure_result(record, |request| request.not_applied(reason))
+    }
+
+    pub(crate) fn take_indeterminate_result(
+        &mut self,
+        record: NativePointerPassthroughRecord,
+    ) -> Option<NativeEffectResult> {
+        self.take_failure_result(record, |request| {
+            request.indeterminate(NativeIndeterminateReason::AcknowledgementLost)
+        })
     }
 
     fn take_failure_result(

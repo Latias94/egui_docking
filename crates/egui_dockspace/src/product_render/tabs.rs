@@ -11,7 +11,7 @@ use egui::{
     UiBuilder, pos2,
 };
 
-use super::actions::{button_activated, effective_enabled};
+use super::actions::{button_activation_origin, effective_enabled};
 use super::geometry::{accesskit_bounds, egui_rect, inset_ui_rect};
 use super::measurement::TabPaintResource;
 use super::{ProductReceiverBinding, RenderContext};
@@ -100,6 +100,25 @@ pub(crate) fn paint_pane(
             *context.pane_focus_target = Some(target);
         }
         context.panes.ui(item, &mut child);
+        if let Some(target) = context.panes.focus_target(item)
+            && child.ctx().viewport(|viewport| {
+                viewport
+                    .this_pass
+                    .widgets
+                    .get(target)
+                    .is_some_and(|widget| {
+                        widget.enabled
+                            && widget.visible
+                            && widget.sense.is_focusable()
+                            && widget.layer_id == child.layer_id()
+                            && widget.rect.is_finite()
+                            && widget.rect.is_positive()
+                            && pane_rect.contains_rect(widget.rect)
+                    })
+            })
+        {
+            context.pane_focus_bindings.push((item, target));
+        }
         if let Some(receiver) = pane_receiver
             && pane_rect.is_finite()
             && pane_rect.is_positive()
@@ -411,21 +430,35 @@ fn capture_tab_actions(
 ) {
     let id = response.id;
     let keyboard_activation = focused
-        && context.ui.input(|input| {
-            input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
-        });
+        .then(|| {
+            context.ui.input(|input| {
+                [Key::Enter, Key::Space]
+                    .into_iter()
+                    .find(|&key| input.key_pressed(key))
+            })
+        })
+        .flatten();
     let accesskit_activation = context.ui.input(|input| {
-        input.has_accesskit_action_request(id, Action::Click)
-            || input.has_accesskit_action_request(id, Action::Focus)
+        if input.has_accesskit_action_request(id, Action::Click) {
+            Some(id.with("accesskit-click"))
+        } else if input.has_accesskit_action_request(id, Action::Focus) {
+            Some(id.with("accesskit-focus"))
+        } else {
+            None
+        }
     });
     let pointer_activation = context.pointer_authority.accepts_local_pointer_actions()
         && response.clicked_by(PointerButton::Primary);
-    if pointer_activation || keyboard_activation || accesskit_activation {
+    let origin = keyboard_activation
+        .map(|key| id.with(("keyboard-activate", key)))
+        .or(accesskit_activation)
+        .or_else(|| pointer_activation.then(|| id.with("pointer-click")));
+    if let Some(origin) = origin {
         response.request_focus();
-        if (!tab.selected() || keyboard_activation || accesskit_activation)
+        if (!tab.selected() || keyboard_activation.is_some() || accesskit_activation.is_some())
             && let Some(action) = context.plan.prepare_tab_select(tab.item())
         {
-            context.push_local_action(action);
+            context.push_local_action(origin, action);
         }
     }
     if focused {
@@ -440,19 +473,19 @@ fn capture_tab_actions(
         });
         let navigation = context.ui.input_mut(|input| {
             if input.consume_key(egui::Modifiers::NONE, Key::ArrowLeft) {
-                Some(SurfaceTabNavigation::Previous)
+                Some((Key::ArrowLeft, SurfaceTabNavigation::Previous))
             } else if input.consume_key(egui::Modifiers::NONE, Key::ArrowRight) {
-                Some(SurfaceTabNavigation::Next)
+                Some((Key::ArrowRight, SurfaceTabNavigation::Next))
             } else if input.consume_key(egui::Modifiers::NONE, Key::Home) {
-                Some(SurfaceTabNavigation::First)
+                Some((Key::Home, SurfaceTabNavigation::First))
             } else if input.consume_key(egui::Modifiers::NONE, Key::End) {
-                Some(SurfaceTabNavigation::Last)
+                Some((Key::End, SurfaceTabNavigation::Last))
             } else {
                 None
             }
         });
-        if let Some(action) = navigation
-            .and_then(|navigation| context.plan.prepare_tab_navigation(tab.item(), navigation))
+        if let Some((key, navigation)) = navigation
+            && let Some(action) = context.plan.prepare_tab_navigation(tab.item(), navigation)
         {
             context
                 .ui
@@ -468,7 +501,7 @@ fn capture_tab_actions(
                     ));
                 });
             }
-            context.push_local_action(action);
+            context.push_local_action(id.with(("keyboard-navigation", key)), action);
         }
     }
     if let Some(close_bounds) = tab.close_bounds().and_then(egui_rect) {
@@ -538,10 +571,11 @@ fn paint_close(
         }
     });
     if enabled
-        && button_activated(context.ui, &response, context.pointer_authority)
+        && let Some(origin) =
+            button_activation_origin(context.ui, &response, context.pointer_authority)
         && let Some(action) = context.plan.prepare_tab_close(item)
     {
-        context.push_local_action(action);
+        context.push_local_action(origin, action);
     }
 }
 

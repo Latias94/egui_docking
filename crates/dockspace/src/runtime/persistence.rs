@@ -308,11 +308,12 @@ impl fmt::Debug for PreparedDockspaceDocumentRestore {
 }
 
 impl DockspaceSession {
-    /// Returns saved surface preferences from the committed document binding.
+    /// Returns surface preferences from the committed document binding.
     ///
     /// Reading this projection neither captures new OS facts nor advances the
-    /// save generation. An unbound session yields no preferences. Save a native
-    /// snapshot to capture its currently established hosting and placement facts.
+    /// save generation. Hosting declarations follow successful publication and
+    /// never retain a removed recovery host. Saving a native snapshot captures
+    /// its current observed placement; an unbound session yields no preferences.
     pub fn surface_presentation_preferences(
         &self,
     ) -> impl Iterator<Item = DockspaceSurfacePresentationPreference> + '_ {
@@ -905,7 +906,7 @@ impl DockspacePersistenceError {
         }
     }
 
-    fn capture(error: DockspaceDocumentCaptureError) -> Self {
+    pub(super) fn capture(error: DockspaceDocumentCaptureError) -> Self {
         Self {
             source: DockspacePersistenceErrorSource::Capture(error),
         }

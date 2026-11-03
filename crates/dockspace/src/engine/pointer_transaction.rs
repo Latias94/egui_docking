@@ -384,11 +384,6 @@ impl DockEngine {
                 InteractionOutcome::ReleasePending { session, .. } => {
                     Some(InteractionEventKind::ReleasePending { session: *session })
                 }
-                InteractionOutcome::ContainedTransformReleasePending { session, .. } => {
-                    Some(InteractionEventKind::ContainedTransformReleasePending {
-                        session: *session,
-                    })
-                }
                 _ => None,
             };
             if let Some(kind) = kind {
@@ -415,7 +410,6 @@ impl DockEngine {
                     | InteractionEventKind::ResizeDelivered { .. }
                     | InteractionEventKind::ContainedTransformDelivered { .. }
                     | InteractionEventKind::ReleasePending { .. }
-                    | InteractionEventKind::ContainedTransformReleasePending { .. }
                     | InteractionEventKind::NativePresentationRequested(_)
             )
         });
@@ -631,6 +625,11 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<Option<InteractionOutcome>, EngineError> {
+        if !self.presented_receiver_is_current(presentation.plan(), region) {
+            return Ok(Some(InteractionOutcome::Rejected(
+                InteractionRejection::StaleScene,
+            )));
+        }
         match region.kind() {
             PresentationHitRegionKind::TabBody(tab) => {
                 let source = TabGestureSource::Item(tab);
@@ -1386,12 +1385,13 @@ impl DockEngine {
                 let stream = owner.stream();
                 let position = journal_position_key(self, stream, edge);
                 let mut revalidated_preview = None;
+                let prepared_mutation;
                 // Release is always resolved against its own edge facts. This
                 // keeps same-point blocker/receiver changes from authorizing a
                 // cached preview, while the outside-all native route remains
                 // independently resolvable without a hover receipt.
                 {
-                    let evaluation = self.resolve_journal_drag_preview(
+                    let mut evaluation = self.resolve_journal_drag_preview(
                         cause,
                         &drag,
                         position,
@@ -1401,6 +1401,7 @@ impl DockEngine {
                         desktop_hover_route,
                         policy,
                     )?;
+                    prepared_mutation = evaluation.prepared_mutation.take();
                     if let Some(outcome) = self.apply_position_evaluation(
                         cause,
                         owner,
@@ -1423,11 +1424,12 @@ impl DockEngine {
                         return Ok(outcomes);
                     }
                 }
-                let outcome = self.finish_drag_release_after_evaluation(
+                let outcome = self.finish_drag_release_with_prepared_mutation(
                     cause,
                     focus_causal,
                     owner,
                     session,
+                    prepared_mutation,
                     policy,
                     events,
                     interaction_events,
@@ -1777,6 +1779,11 @@ impl DockEngine {
         point: crate::geometry::LogicalPoint,
         policy: &DockPolicySnapshot,
     ) -> Result<Option<InteractionOutcome>, EngineError> {
+        if !self.presented_receiver_is_current(presentation.plan(), region) {
+            return Ok(Some(InteractionOutcome::Rejected(
+                InteractionRejection::StaleScene,
+            )));
+        }
         if presentation.scene().requirement().workspace_epoch() != self.version.epoch() {
             return Ok(Some(InteractionOutcome::Rejected(
                 InteractionRejection::StaleScene,
@@ -2126,6 +2133,17 @@ impl DockEngine {
             return true;
         }
         let scene = preview.public().token().scene();
+        if self
+            .interaction_projection(scene.surface())
+            .is_some_and(|projection| {
+                projection.plan_stamp() == scene
+                    && (preview.target_layout_basis().is_none()
+                        || (preview.target_layout_basis() == Some(scene)
+                            && projection.plan().contained_projection().is_none()))
+            })
+        {
+            return true;
+        }
         self.presentation_authority
             .scene
             .ready_candidate(scene.surface())
@@ -2218,6 +2236,7 @@ impl DockEngine {
             pending.session,
             pending.drag,
             pending.release_decision,
+            None,
             &policy,
             events,
             interaction_events,
@@ -2233,6 +2252,7 @@ impl DockEngine {
         Ok(true)
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_drag_release_after_evaluation(
         &mut self,
@@ -2240,6 +2260,30 @@ impl DockEngine {
         focus_causal: FocusCausalStamp,
         owner: GestureOwner,
         session: crate::interaction::DragSessionId,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        self.finish_drag_release_with_prepared_mutation(
+            cause,
+            focus_causal,
+            owner,
+            session,
+            None,
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_drag_release_with_prepared_mutation(
+        &mut self,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
+        owner: GestureOwner,
+        session: crate::interaction::DragSessionId,
+        prepared_mutation: Option<PreparedDropMutation>,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -2319,7 +2363,7 @@ impl DockEngine {
                 InteractionRejection::TargetChanged,
             ));
         }
-        if !preview.painted() {
+        if !preview.painted() && self.drag_release_has_native_resource_obligation(&drag) {
             return self.defer_drag_release(
                 cause,
                 focus_causal,
@@ -2336,10 +2380,40 @@ impl DockEngine {
             session,
             drag,
             release_decision,
+            prepared_mutation,
             policy,
             events,
             interaction_events,
         )
+    }
+
+    fn drag_release_has_native_resource_obligation(
+        &self,
+        drag: &crate::interaction::ActiveDrag,
+    ) -> bool {
+        let Some(preview) = drag.preview() else {
+            return false;
+        };
+        if matches!(preview.proof(), PreviewProof::Native { .. }) {
+            return true;
+        }
+        if preview.public().visual().surface() == drag.source_surface
+            || !self
+                .bound_surface_recoveries
+                .contains_key(&drag.source_surface)
+        {
+            return false;
+        }
+        let source_items = self.surface_items(drag.source_surface);
+        let moved_items = match &drag.payload {
+            MovePayload::Item(source) => BTreeSet::from([source.item()]),
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => self
+                .workspace
+                .collect_items_in_subtree(source.node())
+                .into_iter()
+                .collect(),
+        };
+        source_items == moved_items
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2350,6 +2424,7 @@ impl DockEngine {
         session: crate::interaction::DragSessionId,
         drag: crate::interaction::ActiveDrag,
         release_decision: PreviewDecision,
+        prepared_mutation: Option<PreparedDropMutation>,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -2422,6 +2497,7 @@ impl DockEngine {
             policy,
             WorkspacePublicationAuthority::Ordinary,
             activation,
+            prepared_mutation,
             events,
         )? {
             Ok(result) => result,
@@ -2653,6 +2729,13 @@ impl DockEngine {
                 },
             });
         }
+        if claimed
+            .is_some_and(|region| !self.presented_receiver_is_current(presentation.plan(), region))
+        {
+            return Ok(PreviewEvaluation::without_affordance(
+                PreviewDecision::Clear(PreviewResolutionStatus::Rejected),
+            ));
+        }
         // Framework clearance and the source-suppressed semantic winner are
         // proven independently. The existing solver remains the only target
         // policy; adapters never reconstruct payload membership.
@@ -2672,6 +2755,7 @@ impl DockEngine {
                 detail: source.to_string(),
             })?;
         let (resolution, affordance, observation) = query.into_evaluation_parts();
+        let mut prepared_mutation = None;
         let decision = match resolution {
             DropResolution::Resolved(resolved) => {
                 if resolved.session() != drag.session || resolved.source() != &drag.payload {
@@ -2681,26 +2765,42 @@ impl DockEngine {
                     });
                 }
                 let target = resolved.target_id();
+                let valid = presentation
+                    .hit_manifest()
+                    .region_for_kind(PresentationHitRegionKind::DropTarget(target))
+                    .is_some_and(|region| {
+                        self.presented_receiver_is_current(presentation.plan(), region.id())
+                    });
+                if !valid {
+                    return Ok(PreviewEvaluation::without_affordance(
+                        PreviewDecision::Clear(PreviewResolutionStatus::Rejected),
+                    ));
+                }
+                let scene = resolved.scene_stamp();
+                let rect = resolved.visual().rect();
+                let command = resolved.command().clone();
+                prepared_mutation = Some(resolved.into_prepared_mutation());
                 PreviewDecision::Publish {
-                    scene: resolved.scene_stamp(),
+                    scene,
                     visual: PreviewVisual::Dock {
                         surface: presentation.surface(),
                         target,
-                        rect: resolved.visual().rect(),
+                        rect,
                     },
-                    proof: Box::new(PreviewProof::Dock {
-                        target,
-                        command: resolved.into_command(),
-                    }),
+                    proof: Box::new(PreviewProof::Dock { target, command }),
                 }
             }
-            DropResolution::KnownNone(_) => self.resolve_journal_local_contained_candidate(
-                cause,
-                drag,
-                position,
-                SurfacePointer::new(presentation.surface(), point),
-                policy,
-            )?,
+            DropResolution::KnownNone(_) => {
+                let (decision, mutation) = self.resolve_journal_local_contained_candidate(
+                    cause,
+                    drag,
+                    position,
+                    SurfacePointer::new(presentation.surface(), point),
+                    policy,
+                )?;
+                prepared_mutation = mutation;
+                decision
+            }
             DropResolution::Rejected(_) => {
                 PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
             }
@@ -2723,12 +2823,10 @@ impl DockEngine {
             affordance.bind_target_layout_basis(target_layout_basis);
             affordance
         });
-        Ok(PreviewEvaluation::new(
-            decision,
-            affordance,
-            observation,
-            Some(target_layout_basis),
-        ))
+        let mut evaluation =
+            PreviewEvaluation::new(decision, affordance, observation, Some(target_layout_basis));
+        evaluation.prepared_mutation = prepared_mutation;
+        Ok(evaluation)
     }
 
     pub(super) fn resolve_presented_drop_with_current_index(
@@ -2956,8 +3054,8 @@ impl DockEngine {
             // Input-state observation cannot replace the current edge's independent
             // delivery/capture facts. Release keeps its validated pre-edge capture.
             edge.delivery_owner() == Authority::Known(PointerEventDeliveryOwner::Native(binding))
-                && self.interaction.active_journal_capture_authority()
-                    == Some(Authority::Known(PointerCaptureOwner::Native(binding)))
+                && matches!(self.interaction.active_journal_capture_authority(),
+                    Some(Authority::Known(PointerCaptureOwner::Native(current))) if current == binding)
         } else {
             true
         }
@@ -2980,7 +3078,7 @@ impl DockEngine {
         position: ManipulationPositionKey,
         pointer: SurfacePointer,
         policy: &DockPolicySnapshot,
-    ) -> Result<PreviewDecision, EngineError> {
+    ) -> Result<(PreviewDecision, Option<PreparedDropMutation>), EngineError> {
         let candidate = match &drag.origin {
             FrozenDragOrigin::Contained(origin) => {
                 self.core_contained_move_candidate(drag, origin, position, pointer.surface())
@@ -2988,9 +3086,10 @@ impl DockEngine {
             FrozenDragOrigin::Workspace => self.core_contained_candidate(drag, pointer, None),
         };
         match candidate {
-            CoreContainedCandidate::None => {
-                Ok(PreviewDecision::Clear(PreviewResolutionStatus::KnownNone))
-            }
+            CoreContainedCandidate::None => Ok((
+                PreviewDecision::Clear(PreviewResolutionStatus::KnownNone),
+                None,
+            )),
             CoreContainedCandidate::Proposal(proposal) => self.resolve_contained_proposal(
                 cause,
                 drag,
@@ -2998,10 +3097,11 @@ impl DockEngine {
                 ContainedPlacementAuthority::PresentedCoordinates,
                 policy,
             ),
-            CoreContainedCandidate::Rejected => {
-                Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected))
-            }
-            CoreContainedCandidate::Cancel(reason) => Ok(PreviewDecision::Cancel(reason)),
+            CoreContainedCandidate::Rejected => Ok((
+                PreviewDecision::Clear(PreviewResolutionStatus::Rejected),
+                None,
+            )),
+            CoreContainedCandidate::Cancel(reason) => Ok((PreviewDecision::Cancel(reason), None)),
         }
     }
 
@@ -3108,7 +3208,7 @@ impl DockEngine {
         proposal: crate::intent::ContainedTearOffProposal,
         authority: ContainedPlacementAuthority,
         policy: &DockPolicySnapshot,
-    ) -> Result<PreviewDecision, EngineError> {
+    ) -> Result<(PreviewDecision, Option<PreparedDropMutation>), EngineError> {
         let Some(command) = self.contained_presentation_command(
             &drag.payload,
             proposal,
@@ -3118,7 +3218,10 @@ impl DockEngine {
                 FrozenDragOrigin::Workspace => None,
             },
         ) else {
-            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
+            return Ok((
+                PreviewDecision::Clear(PreviewResolutionStatus::Rejected),
+                None,
+            ));
         };
         let valid = match &drag.origin {
             FrozenDragOrigin::Contained(origin) => {
@@ -3129,26 +3232,73 @@ impl DockEngine {
                 self.valid_core_contained_command(drag, proposal, &command, authority)
             }
         };
-        if !valid
-            || self
-                .stage_journal_workspace_command(cause, &command, policy)?
-                .is_err()
-        {
-            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
+        if !valid {
+            return Ok((
+                PreviewDecision::Clear(PreviewResolutionStatus::Rejected),
+                None,
+            ));
         }
-        Ok(PreviewDecision::Publish {
-            scene: proposal.placement().scene(),
-            visual: PreviewVisual::Contained {
-                surface: proposal.surface(),
-                rect: proposal.rect(),
-                fallback: false,
+        let prepared = match crate::operation::prepare_transaction(
+            self.workspace.as_ref(),
+            policy,
+            std::slice::from_ref(&command),
+        ) {
+            Ok(prepared) => prepared,
+            Err(TransactionError::Command { index: 0, source })
+                if source.is_expected_rejection() =>
+            {
+                return Ok((
+                    PreviewDecision::Clear(PreviewResolutionStatus::Rejected),
+                    None,
+                ));
+            }
+            Err(source) => {
+                return Err(EngineError::PointerInteractionInvariant {
+                    cause,
+                    detail: source.to_string(),
+                });
+            }
+        };
+        let (workspace, report) = prepared.into_parts(self.workspace.as_ref());
+        let staged = match self.stage_journal_workspace_draft(
+            cause,
+            policy,
+            WorkspacePublicationAuthority::Ordinary,
+            JournalDeliveryActivation::None,
+            workspace,
+            &report,
+        )? {
+            Ok(staged) => staged,
+            Err(_) => {
+                return Ok((
+                    PreviewDecision::Clear(PreviewResolutionStatus::Rejected),
+                    None,
+                ));
+            }
+        };
+        let mutation = PreparedDropMutation::new(
+            self.version,
+            policy.revision(),
+            command.clone(),
+            staged.publication.workspace,
+            report,
+        );
+        Ok((
+            PreviewDecision::Publish {
+                scene: proposal.placement().scene(),
+                visual: PreviewVisual::Contained {
+                    surface: proposal.surface(),
+                    rect: proposal.rect(),
+                    fallback: false,
+                },
+                proof: Box::new(PreviewProof::Contained {
+                    command,
+                    proposal,
+                    fallback: false,
+                }),
             },
-            proof: Box::new(PreviewProof::Contained {
-                command,
-                proposal,
-                fallback: false,
-            }),
-        })
+            Some(mutation),
+        ))
     }
 
     pub(super) fn apply_preview_evaluation(
@@ -3164,6 +3314,7 @@ impl DockEngine {
             affordance,
             observation,
             target_layout_basis,
+            prepared_mutation: _,
         } = evaluation;
         let mut acquisition = observation.acquisition();
         let mut decision = decision;
@@ -3284,6 +3435,7 @@ impl DockEngine {
             mut affordance,
             observation,
             target_layout_basis,
+            prepared_mutation: _,
         } = evaluation;
         let latch_observation = match observation {
             crate::runtime::direct_manipulation::TargetObservation::Surface {
@@ -3690,23 +3842,24 @@ impl DockEngine {
             }
         }
         if !commands.is_empty() {
-            let mut workspace = self.clone_workspace_candidate();
-            let report = match WorkspaceTransaction::from_commands(commands)
-                .apply(&mut workspace, policy)
-            {
-                Ok(report) => report,
-                Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::CommandRejected(source),
-                    ));
-                }
-                Err(source) => {
-                    return Err(EngineError::PointerInteractionInvariant {
-                        cause,
-                        detail: source.to_string(),
-                    });
-                }
-            };
+            let prepared =
+                match crate::operation::prepare_transaction(&self.workspace, policy, &commands) {
+                    Ok(prepared) => prepared,
+                    Err(TransactionError::Command { source, .. })
+                        if source.is_expected_rejection() =>
+                    {
+                        return Ok(InteractionOutcome::Rejected(
+                            InteractionRejection::CommandRejected(source),
+                        ));
+                    }
+                    Err(source) => {
+                        return Err(EngineError::PointerInteractionInvariant {
+                            cause,
+                            detail: source.to_string(),
+                        });
+                    }
+                };
+            let (workspace, report) = prepared.into_parts(&self.workspace);
             if let Some(surface) = self.first_pending_presentation_source_mismatch(
                 &workspace,
                 WorkspacePublicationAuthority::Ordinary,

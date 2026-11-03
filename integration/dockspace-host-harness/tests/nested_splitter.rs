@@ -501,9 +501,9 @@ fn pointer_resize(
     let (geometry, output) = paint(&mut fixture.session);
     assert_geometry(&geometry);
     if let Some(pending) = pending {
-        // The preview was never presented before its candidate was replaced.
-        // Its late renderer report must retire the exact obsolete output.
-        report_presentation(&mut fixture.session, pending, false);
+        // The accepted resize makes this exact proposal the durable geometry.
+        // Its late observation can retain the displayed snapshot without replaying delivery.
+        report_presentation(&mut fixture.session, pending, true);
     }
     present(&mut fixture.session, output);
     assert_eq!(durable(&fixture.session), after);
@@ -738,7 +738,11 @@ fn four_arm_junction_failed_or_dropped_candidate_rolls_back_every_split_and_retr
         // A complete release batch need not leave a Ready paint candidate.
         // The durable candidate view still exposes every tentative split update.
         if fail_commit {
-            assert!(frame.select_item_current(A).is_err());
+            assert!(
+                frame
+                    .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
+                    .is_err()
+            );
             assert!(frame.commit().is_err());
         } else {
             drop(frame);
@@ -796,8 +800,8 @@ fn four_arm_junction_return_to_origin_restores_original_weight_bits_without_a_co
         press(&mut fixture, start, target);
         let moved = point(start.x() + 64.0, start.y() + 48.0);
         assert!(!edge(&mut fixture, Event::Moved, moved).workspace_changed());
-        let (geometry, output) = paint(&mut fixture.session);
-        assert_junction_resized(&geometry);
+        let (resized_geometry, output) = paint(&mut fixture.session);
+        assert_junction_resized(&resized_geometry);
         let pending = match timing {
             OutputTiming::Immediate => {
                 present(&mut fixture.session, output);
@@ -826,6 +830,15 @@ fn four_arm_junction_return_to_origin_restores_original_weight_bits_without_a_co
         assert_eq!(durable(&fixture.session), before);
         if let Some(pending) = pending {
             report_presentation(&mut fixture.session, pending, false);
+            for splitter in &resized_geometry.splitters {
+                assert!(
+                    fixture
+                        .session
+                        .bind_presented_receiver(&splitter.receiver)
+                        .is_none(),
+                    "an unpresented resize projection cannot authorize a new gesture after returning to the original geometry"
+                );
+            }
         }
         present(&mut fixture.session, returned_output);
         let (geometry, output) = paint(&mut fixture.session);

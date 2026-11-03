@@ -4020,17 +4020,26 @@ fn unknown_capture_with_exact_source_delivery_advances_drag_move() {
 }
 
 #[test]
-fn unknown_capture_with_exact_source_delivery_reaches_release_pending() {
-    let ActiveNativeDragFixture {
+fn unknown_capture_with_exact_source_delivery_commits_an_ordinary_release_once() {
+    let DesktopNativeFixture {
         mut engine,
         mut host,
         provider,
         source_binding,
         target_binding,
         target_tabs,
-        target_point,
-    } = active_native_drag();
+    } = desktop_native_fixture();
+    let target_point = arm_native_drag(
+        &mut engine,
+        &mut host,
+        provider,
+        source_binding,
+        target_binding,
+        target_tabs,
+        0,
+    );
     let before = engine.workspace().clone();
+    let version = engine.version();
     let transition = submit_active_drag_edge(
         &mut engine,
         &mut host,
@@ -4046,18 +4055,53 @@ fn unknown_capture_with_exact_source_delivery_reaches_release_pending() {
     let [edge] = transition.reduced_pointer_edges() else {
         panic!("terminal release must reduce exactly one pointer edge");
     };
-    assert!(matches!(
-        edge.interaction_outcomes(),
-        [
-            InteractionOutcome::PreviewUpdated {
-                status: PreviewResolutionStatus::Resolved,
+    assert!(
+        matches!(
+            edge.interaction_outcomes(),
+            [InteractionOutcome::DragDelivered {
+                delivery: InteractionDelivery::Workspace { changed: true, .. },
                 ..
-            },
-            InteractionOutcome::ReleasePending { .. }
-        ] | [InteractionOutcome::ReleasePending { .. }]
+            }]
+        ),
+        "an exact source-delivered release must deliver once: {:?}",
+        edge.interaction_outcomes()
+    );
+    assert_ne!(engine.workspace(), &before);
+    assert_ne!(engine.version(), version);
+    assert!(matches!(
+        engine.workspace().node(target_tabs),
+        Some(Node::Tabs { items, .. })
+            if items.as_slice() == [ItemId::new(2), ItemId::new(1)]
     ));
-    assert_eq!(engine.workspace(), &before);
+    assert_eq!(engine.pending_release_preview(), None);
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+    assert_eq!(
+        transition
+            .interaction_events()
+            .iter()
+            .filter(|event| matches!(
+                event.kind(),
+                dockspace::interaction::InteractionEventKind::Delivered { .. }
+            ))
+            .count(),
+        1
+    );
+    let delivered = engine.workspace().clone();
+    let delivered_version = engine.version();
+    let mut idle = host.begin(&engine);
+    let through = PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH + 1);
+    idle.submit_pointer_journal(
+        provider,
+        PointerEdgeJournal::new(through, through, Vec::new()).unwrap(),
+    )
+    .unwrap();
+    idle.submit_pointer_receiver_receipts(PointerReceiverReceiptBatch::new([]).unwrap())
+        .unwrap();
+    complete(&engine, &mut idle);
+    let settled = host.finish(idle, &mut engine);
+    assert_eq!(engine.workspace(), &delivered);
+    assert_eq!(engine.version(), delivered_version);
+    assert!(settled.interaction_events().is_empty());
 }
 
 #[test]

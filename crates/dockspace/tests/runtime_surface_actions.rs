@@ -10,7 +10,8 @@ use crate::policy::{
 };
 use crate::runtime::{
     ContainedResizeDirection, DockspaceDragDecoration, DockspaceDragPreview,
-    DockspaceDragSourceKind, DockspacePaneFocusObservation, DockspacePresentationCommandKind,
+    DockspaceDragSourceKind, DockspaceManipulationDelivery, DockspaceManipulationStatus,
+    DockspacePaneFocusObservation, DockspacePresentationCommandKind,
     DockspacePresentationCommandUnavailable, DockspacePresentationMenuAnchorKind,
     DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceRuntimeErrorKind,
     DockspaceSession, DockspaceVisualId, DockspaceVisualKind, HostCloseRequestOrigin,
@@ -1580,6 +1581,14 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
     let mut session = contained_session(DockPolicy::default());
     install_ready_candidate(&mut session);
     present_pointer_surface(&mut session);
+    let mut expected_items = session
+        .view()
+        .item(FIRST)
+        .expect("the main group exists before redocking")
+        .tabs()
+        .items()
+        .to_vec();
+    expected_items.push(SECOND);
     let (initial, target) = inspect_surface(&mut session, |plan| {
         let contained = plan
             .contained()
@@ -1611,7 +1620,8 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
         );
         (initial, target)
     });
-    submit_host_edges(
+    let version = session.version();
+    let report = submit_host_edges(
         &mut session,
         &[
             (
@@ -1625,53 +1635,60 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
             ),
         ],
     );
-    assert!(
-        session.view().contained(FLOATING).is_some(),
-        "a complete Burst still waits for its exact preview presentation"
+    assert!(report.workspace_changed());
+    assert_ne!(session.version(), version);
+    let [terminal] = report.manipulation_feedback() else {
+        panic!("the Burst must deliver one redock terminal: {report:?}");
+    };
+    assert_eq!(
+        terminal.status(),
+        DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
     );
     assert!(
-        !session.has_active_gesture(),
-        "release leaves the input owner before the output barrier settles"
+        session.view().contained(FLOATING).is_none(),
+        "a successful Burst commits its ordinary redock before any new paint"
     );
+    let moved = session
+        .view()
+        .item(SECOND)
+        .expect("the redocked item remains open");
+    assert_eq!(moved.surface(), SURFACE);
+    assert_eq!(moved.root(), ROOT);
+    assert_eq!(moved.contained(), None);
+    assert_eq!(moved.tabs().items(), expected_items.as_slice());
+    assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
+    let delivered_version = session.version();
     inspect_surface(&mut session, |plan| {
-        assert!(matches!(
-            program_drag_preview(plan)
-                .expect("the release-pending pane target remains visible")
-                .visual(),
-            crate::runtime::DockspacePreviewVisual::Dock {
-                surface: SURFACE,
-                ..
-            }
-        ));
+        assert!(program_drag_preview(plan).is_none());
     });
     let output = paint_pointer_surface(&mut session);
     let artifact = output.presentation_artifact();
     session
         .report_surface_presentation(output, SurfacePresentationResult::Presented)
-        .expect("the exact Burst preview reaches presentation");
+        .expect("the successor redocked layout reaches presentation");
     let mut settle = session
         .begin_host_frame()
-        .expect("the pending Burst release settlement begins");
+        .expect("successor output settlement begins");
     settle
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("release settlement retains geometry until the exact preview is consumed");
+        .expect("output settlement retains the committed layout");
     let report = settle
         .commit()
-        .expect("the presented Burst release settles");
-    assert!(
-        report.workspace_changed(),
-        "the exact output observation must deliver the redock"
-    );
+        .expect("the redocked layout presentation settles");
+    assert!(!report.workspace_changed());
+    assert!(report.manipulation_feedback().is_empty());
+    assert_eq!(session.version(), delivered_version);
     assert!(
         report
             .surface_presentation_commits()
             .iter()
-            .any(|commit| commit.retires(artifact)),
-        "redock changes topology and retires its consumed preview, rather than granting new receiver authority"
+            .any(|commit| commit.presents(artifact)),
+        "the successor paint grants authority without repeating the accepted edit"
     );
     assert!(
         session.view().contained(FLOATING).is_none(),
-        "presenting the exact Burst preview redocks the item"
+        "presentation preserves the already committed redock"
     );
     let moved = session
         .view()
@@ -1684,60 +1701,88 @@ fn contained_tab_exits_its_source_rect_then_redocks_through_the_pane_basin() {
 }
 
 #[test]
-fn contained_release_owns_pending_presentation_after_the_gesture_ends() {
-    let mut session = contained_session(DockPolicy::default());
-    install_ready_candidate(&mut session);
-    present_pointer_surface(&mut session);
-    let original = contained_rect(&session);
-    let point = inspect_surface(&mut session, |plan| {
-        let contained = plan
-            .contained()
-            .find(|contained| contained.floating() == FLOATING)
-            .unwrap();
-        let east = contained
-            .resize()
-            .find(|resize| resize.direction() == ContainedResizeDirection::East)
-            .unwrap();
-        plan.receiver_for_contained_resize(contained, east)
-            .unwrap()
-            .center()
-    });
-    let moved = LogicalPoint::new(point.x() + 18.0, point.y()).unwrap();
-    let report = submit_host_edges(
-        &mut session,
-        &[
-            (
-                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
-                Some(point),
-            ),
-            (SurfacePointerEvent::Moved, Some(moved)),
-            (
-                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
-                Some(moved),
-            ),
-        ],
-    );
-    assert!(!session.has_active_gesture());
-    assert!(session.has_pending_presentation());
-    assert!(session.surface_requires_presentation(SURFACE));
-    assert!(!session.surface_requires_presentation(TARGET_SURFACE));
-    assert!(report.repaint_surfaces().contains(&SURFACE));
-    assert_eq!(contained_rect(&session), original);
+fn contained_release_commits_before_presentation_and_successor_disposition_cannot_undo_it() {
+    for disposition in [
+        SurfacePresentationResult::Presented,
+        SurfacePresentationResult::Dropped,
+    ] {
+        let mut session = contained_session(DockPolicy::default());
+        install_ready_candidate(&mut session);
+        present_pointer_surface(&mut session);
+        let original = contained_rect(&session);
+        let point = inspect_surface(&mut session, |plan| {
+            let contained = plan
+                .contained()
+                .find(|contained| contained.floating() == FLOATING)
+                .unwrap();
+            let east = contained
+                .resize()
+                .find(|resize| resize.direction() == ContainedResizeDirection::East)
+                .unwrap();
+            plan.receiver_for_contained_resize(contained, east)
+                .unwrap()
+                .center()
+        });
+        let moved = LogicalPoint::new(point.x() + 18.0, point.y()).unwrap();
+        let expected = LogicalRect::new(
+            original.x(),
+            original.y(),
+            original.width() + 18.0,
+            original.height(),
+        )
+        .unwrap();
+        let version = session.version();
+        let report = submit_host_edges(
+            &mut session,
+            &[
+                (
+                    SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                    Some(point),
+                ),
+                (SurfacePointerEvent::Moved, Some(moved)),
+                (
+                    SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                    Some(moved),
+                ),
+            ],
+        );
+        assert!(!session.has_active_gesture());
+        assert!(!session.has_pending_presentation());
+        assert!(!session.surface_requires_presentation(SURFACE));
+        assert!(!session.surface_requires_presentation(TARGET_SURFACE));
+        assert!(report.repaint_surfaces().contains(&SURFACE));
+        assert!(report.workspace_changed());
+        assert_ne!(session.version(), version);
+        assert_eq!(contained_rect(&session), expected);
+        let [terminal] = report.manipulation_feedback() else {
+            panic!("the release must deliver one contained transform: {report:?}");
+        };
+        assert_eq!(
+            terminal.status(),
+            DockspaceManipulationStatus::Delivered(
+                DockspaceManipulationDelivery::ContainedTransform
+            )
+        );
+        let delivered_version = session.version();
 
-    let output = paint_pointer_surface(&mut session);
-    assert!(session.has_pending_presentation());
-    assert!(session.surface_requires_presentation(SURFACE));
-    session
-        .report_surface_presentation(output, SurfacePresentationResult::Presented)
-        .unwrap();
-    let mut settle = session.begin_host_frame().unwrap();
-    settle
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    assert!(settle.commit().unwrap().workspace_changed());
-    assert!(!session.has_pending_presentation());
-    assert!(!session.surface_requires_presentation(SURFACE));
-    assert!(contained_rect(&session).width() > original.width());
+        let output = paint_pointer_surface(&mut session);
+        assert!(!session.has_pending_presentation());
+        assert_eq!(contained_rect(&session), expected);
+        session
+            .report_surface_presentation(output, disposition)
+            .unwrap();
+        let mut settle = session.begin_host_frame().unwrap();
+        settle
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = settle.commit().unwrap();
+        assert!(!report.workspace_changed());
+        assert!(report.manipulation_feedback().is_empty());
+        assert!(!session.has_pending_presentation());
+        assert!(!session.surface_requires_presentation(SURFACE));
+        assert_eq!(contained_rect(&session), expected);
+        assert_eq!(session.version(), delivered_version);
+    }
 }
 
 #[test]

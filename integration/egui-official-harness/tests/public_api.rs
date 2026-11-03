@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use dockspace::policy::DockPolicy;
@@ -19,7 +18,6 @@ const SECOND_ITEM: ItemId = ItemId::new(2);
 #[derive(Default)]
 struct SmokePanes {
     paint_count: usize,
-    focus_target_requests: Cell<usize>,
     focus_namespace: Option<egui::Id>,
 }
 
@@ -50,11 +48,7 @@ impl PaneView for SmokePanes {
     }
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
-        matches!(item, ITEM | SECOND_ITEM).then(|| {
-            self.focus_target_requests
-                .set(self.focus_target_requests.get() + 1);
-            self.focus_id(item)
-        })
+        matches!(item, ITEM | SECOND_ITEM).then(|| self.focus_id(item))
     }
 }
 
@@ -144,10 +138,34 @@ fn selected_second_pane() -> (Context, Dockspace, SmokePanes) {
     });
     output.textures_delta.clear();
     assert!(
+        !dockspace
+            .view()
+            .item(SECOND_ITEM)
+            .is_some_and(|item| item.is_selected()),
+        "encoding queues the selection without publishing it",
+    );
+    assert_ne!(
+        context.memory(|memory| memory.focused()),
+        Some(panes.focus_id(SECOND_ITEM)),
+        "an unpublished selection cannot acquire pane focus",
+    );
+    // Encoding captures the original UI event; the next update applies it.
+    let mut output = run_headless(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the queued selection publishes before encoding");
+    });
+    output.textures_delta.clear();
+    assert!(
         dockspace
             .view()
             .item(SECOND_ITEM)
             .is_some_and(|item| item.is_selected())
+    );
+    assert_ne!(
+        context.memory(|memory| memory.focused()),
+        Some(panes.focus_id(SECOND_ITEM)),
+        "the selection update publishes its intent before requesting focus",
     );
     (context, dockspace, panes)
 }
@@ -157,6 +175,9 @@ fn official_raw_egui_host_owns_terminal_settlement() {
     let _native_options = eframe::NativeOptions::default();
     let context = Context::default();
     context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
     let mut policy = DockPolicy::default();
     policy.set_allow_resize_axis(DockspaceAxis::Vertical, false);
     let mut dockspace = Dockspace::builder("official-egui-consumer", product_layout())
@@ -223,17 +244,61 @@ fn official_raw_egui_host_owns_terminal_settlement() {
             .expect("the supported host selects the second tab");
     });
     output.textures_delta.clear();
-    let mut settled_request_count = None;
-    for step in 0..5 {
+    let target = panes.focus_id(SECOND_ITEM);
+    assert_ne!(context.memory(|memory| memory.focused()), Some(target));
+    let mut output = run_headless(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the queued selection publishes its pane-focus intent");
+    });
+    output.textures_delta.clear();
+    assert_ne!(
+        context.memory(|memory| memory.focused()),
+        Some(target),
+        "the intent must publish before its target can acquire focus",
+    );
+
+    let mut output = run_headless(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the supported host requests the published pane focus");
+    });
+    assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+    assert_eq!(
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("the terminal output exposes pane focus")
+            .focus,
+        target.accesskit_id(),
+    );
+    output.textures_delta.clear();
+
+    let (mut output, receipt) = run_ui(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the exact presented observation completes pane focus");
+    })
+    .into_parts();
+    output.textures_delta.clear();
+    assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+    // This acknowledgement output must not supply a second Focused receipt.
+    receipt.report(SurfacePresentationResult::Dropped);
+    context.memory_mut(|memory| memory.surrender_focus(target));
+    assert_ne!(context.memory(|memory| memory.focused()), Some(target));
+    for _ in 0..2 {
         let mut output = run_headless(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
-                .expect("the supported host settles pane focus");
+                .expect("the settled request stays complete after focus is surrendered");
         });
         output.textures_delta.clear();
-        if step == 3 {
-            settled_request_count = Some(panes.focus_target_requests.get());
-        }
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(target),
+            "terminal focus evidence is consumed once instead of reclaiming focus",
+        );
     }
 
     assert!(panes.paint_count > 0, "the product pane must paint");
@@ -251,11 +316,6 @@ fn official_raw_egui_host_owns_terminal_settlement() {
             .view()
             .item(SECOND_ITEM)
             .is_some_and(|item| item.is_selected()),
-    );
-    assert_eq!(
-        Some(panes.focus_target_requests.get()),
-        settled_request_count,
-        "terminal focus evidence is consumed once instead of replaying",
     );
 }
 
@@ -283,10 +343,11 @@ fn missing_or_dropped_host_receipt_cannot_complete_pane_focus() {
         })
         .into_parts();
         output.textures_delta.clear();
-        let observed_requests = panes.focus_target_requests.get();
-        assert!(
-            observed_requests > 0,
-            "the output must carry a focus observation"
+        let target = panes.focus_id(SECOND_ITEM);
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(target),
+            "the output must acquire the pending focus before {result:?}",
         );
         let pending = match result {
             HostResult::Unreported => Some(receipt),
@@ -308,31 +369,49 @@ fn missing_or_dropped_host_receipt_cannot_complete_pane_focus() {
             }
         };
 
+        context.memory_mut(|memory| memory.surrender_focus(target));
+        assert_ne!(context.memory(|memory| memory.focused()), Some(target));
         let mut output = run_headless(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the unpresented observation leaves pane focus pending");
         });
         output.textures_delta.clear();
-        let retry_requests = panes.focus_target_requests.get();
-        assert!(
-            retry_requests > observed_requests,
-            "{result:?} must not complete the focus request",
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(target),
+            "{result:?} must leave the request pending so a legal retry reacquires focus",
         );
         drop(pending);
-        let mut output = run_headless(&context, raw_input(), |ui| {
+        let (mut output, receipt) = run_ui(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the presented retry completes the exact focus request");
+        })
+        .into_parts();
+        output.textures_delta.clear();
+        assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+        receipt.report(SurfacePresentationResult::Dropped);
+        context.memory_mut(|memory| memory.surrender_focus(target));
+        assert_ne!(context.memory(|memory| memory.focused()), Some(target));
+        let mut output = run_headless(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the acknowledged retry no longer reclaims surrendered focus");
         });
         output.textures_delta.clear();
-        assert_eq!(panes.focus_target_requests.get(), retry_requests);
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(target),
+            "only the presented retry may complete the request after {result:?}",
+        );
     }
 }
 
 #[test]
 fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
     let (context, mut dockspace, mut panes) = selected_second_pane();
+    let target = panes.focus_id(SECOND_ITEM);
     let (mut output_a, receipt_a) = run_ui(&context, raw_input(), |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
@@ -340,6 +419,9 @@ fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
     })
     .into_parts();
     output_a.textures_delta.clear();
+    assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+    context.memory_mut(|memory| memory.surrender_focus(target));
+    assert_ne!(context.memory(|memory| memory.focused()), Some(target));
     let (mut output_b, receipt_b) = run_ui(&context, raw_input(), |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
@@ -353,11 +435,17 @@ fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
             .as_ref()
             .expect("output B publishes the real focused pane")
             .focus,
-        panes.focus_id(SECOND_ITEM).accesskit_id(),
+        target.accesskit_id(),
     );
     output_b.textures_delta.clear();
-    let requests_after_b = panes.focus_target_requests.get();
+    assert_eq!(
+        context.memory(|memory| memory.focused()),
+        Some(target),
+        "the unreported output A cannot complete the pending request",
+    );
     receipt_b.report(SurfacePresentationResult::Presented);
+    context.memory_mut(|memory| memory.surrender_focus(target));
+    assert_ne!(context.memory(|memory| memory.focused()), Some(target));
 
     let (mut output_c, receipt_c) = run_ui(&context, raw_input(), |ui| {
         dockspace
@@ -366,14 +454,16 @@ fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
     })
     .into_parts();
     output_c.textures_delta.clear();
-    let requests_after_c = panes.focus_target_requests.get();
-    assert!(
-        requests_after_c > requests_after_b,
-        "B's renderer report alone cannot complete focus before core accepts its prefix",
+    assert_eq!(
+        context.memory(|memory| memory.focused()),
+        Some(target),
+        "B's report cannot settle focus before core accepts its exact prefix; C must reacquire it",
     );
 
     // Keep C unreported so its result cannot replace B in the next core acknowledgement.
     receipt_a.report(SurfacePresentationResult::Dropped);
+    context.memory_mut(|memory| memory.surrender_focus(target));
+    assert_ne!(context.memory(|memory| memory.focused()), Some(target));
     let (mut output_d, receipt_d) = run_ui(&context, raw_input(), |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
@@ -381,13 +471,19 @@ fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
     })
     .into_parts();
     output_d.textures_delta.clear();
-    assert_eq!(
-        panes.focus_target_requests.get(),
-        requests_after_c,
-        "B's retained exact observation must complete focus without another target request",
+    assert_ne!(
+        context.memory(|memory| memory.focused()),
+        Some(target),
+        "retiring A must accept B's retained exact observation without reclaiming focus",
     );
-    assert!(context.memory(|memory| memory.has_focus(panes.focus_id(SECOND_ITEM))));
     drop((receipt_c, receipt_d));
+    let mut output = run_headless(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("later receipt retirement preserves B's completed request");
+    });
+    output.textures_delta.clear();
+    assert_ne!(context.memory(|memory| memory.focused()), Some(target));
 }
 
 #[test]
@@ -427,7 +523,25 @@ fn delayed_host_receipt_cannot_replace_a_newer_output() {
         })
         .into_parts();
         output.textures_delta.clear();
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(panes.focus_id(ITEM)),
+            "the newly queued selection cannot focus its unpublished target",
+        );
         selection_receipt.report(SurfacePresentationResult::Dropped);
+        let (mut output, applied_receipt) = run_ui(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the queued selection publishes before issuing its focus request");
+        })
+        .into_parts();
+        output.textures_delta.clear();
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(panes.focus_id(ITEM)),
+            "the replacement intent must publish before it can request pane focus",
+        );
+        applied_receipt.report(SurfacePresentationResult::Dropped);
         let (mut output, current_receipt) = run_ui(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
@@ -435,23 +549,39 @@ fn delayed_host_receipt_cannot_replace_a_newer_output() {
         })
         .into_parts();
         output.textures_delta.clear();
-        let current_requests = panes.focus_target_requests.get();
-        assert!(context.memory(|memory| memory.has_focus(pane_focus_target(ITEM))));
+        let target = panes.focus_id(ITEM);
+        assert_eq!(context.memory(|memory| memory.focused()), Some(target));
         current_receipt.report(SurfacePresentationResult::Presented);
         match result {
             Some(result) => old_receipt.report(result),
             None => drop(old_receipt),
         }
-        let mut output = run_headless(&context, raw_input(), |ui| {
+        let (mut output, receipt) = run_ui(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the current output retains its own presentation result");
+        })
+        .into_parts();
+        output.textures_delta.clear();
+        assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+        receipt.report(SurfacePresentationResult::Dropped);
+        context.memory_mut(|memory| memory.surrender_focus(target));
+        assert_ne!(context.memory(|memory| memory.focused()), Some(target));
+        let mut output = run_headless(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the current request stays complete after the delayed old receipt");
         });
         output.textures_delta.clear();
-        assert_eq!(
-            panes.focus_target_requests.get(),
-            current_requests,
-            "an old receipt cannot complete stale focus or prevent the current focus from completing",
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(target),
+            "an old {result:?} receipt cannot prevent the current request from completing",
+        );
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(panes.focus_id(SECOND_ITEM)),
+            "a delayed receipt cannot restore the superseded pane's focus",
         );
     }
 }
@@ -553,16 +683,24 @@ fn official_eframe_app_reports_missing_terminal_settlement() {
             .is_some_and(|item| item.is_selected()),
         "the AccessKit action must select the second tab through App::ui",
     );
-    let focus_requests_before = app.panes.focus_target_requests.get();
-    let mut output = context.run_ui(raw_input(), |ui| {
-        eframe::App::ui(&mut app, ui, &mut frame);
-    });
-    output.textures_delta.clear();
-    assert_eq!(
-        app.panes.focus_target_requests.get(),
-        focus_requests_before,
-        "a capability-negative eframe callback must not repeatedly query a focus provider it cannot settle",
+    let target = app.panes.focus_id(SECOND_ITEM);
+    assert_ne!(
+        context.memory(|memory| memory.focused()),
+        Some(target),
+        "the eframe callback cannot acquire pane focus without terminal presentation authority",
     );
+    context.memory_mut(|memory| memory.surrender_focus(target));
+    for _ in 0..2 {
+        let mut output = context.run_ui(raw_input(), |ui| {
+            eframe::App::ui(&mut app, ui, &mut frame);
+        });
+        output.textures_delta.clear();
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(target),
+            "a capability-negative eframe callback cannot reclaim pane focus",
+        );
+    }
 }
 
 #[test]
@@ -618,11 +756,16 @@ fn manual_pass_keeps_local_actions_but_cannot_mint_terminal_evidence() {
     let mut output = context.end_pass();
     output.textures_delta.clear();
     assert!(
-        dockspace
+        !dockspace
             .view()
             .item(SECOND_ITEM)
             .is_some_and(|item| item.is_selected()),
-        "the manual pass still commits its discrete AccessKit action",
+        "the manual pass queues its discrete AccessKit action for the next update",
+    );
+    assert_ne!(
+        context.memory(|memory| memory.focused()),
+        Some(panes.focus_id(SECOND_ITEM)),
+        "a manual pass cannot focus an unpublished selection",
     );
 
     let mut capability = None;
@@ -633,13 +776,28 @@ fn manual_pass_keeps_local_actions_but_cannot_mint_terminal_evidence() {
         capability = Some(response.presentation_settlement_capability());
     });
     output.textures_delta.clear();
+    assert!(
+        dockspace
+            .view()
+            .item(SECOND_ITEM)
+            .is_some_and(|item| item.is_selected()),
+        "the queued manual-pass action publishes once in the next update",
+    );
     assert_eq!(capability, Some(DockspaceCapability::Supported));
+    assert_ne!(
+        context.memory(|memory| memory.focused()),
+        Some(panes.focus_id(SECOND_ITEM)),
+        "the later owned update must publish the intent before requesting focus",
+    );
 }
 
 #[test]
 fn caller_owned_run_fans_out_terminal_settlement_to_multiple_dockspaces() {
     let context = Context::default();
     context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
     let mut left = Dockspace::builder("official-egui-left", product_layout())
         .build()
         .expect("the left Dockspace initializes");
@@ -687,37 +845,143 @@ fn caller_owned_run_fans_out_terminal_settlement_to_multiple_dockspaces() {
         2,
         "the two Dockspaces expose distinct semantic second tabs",
     );
-    let mut selection_input = raw_input();
-    selection_input
-        .events
-        .extend(second_tabs.into_iter().map(accesskit_activate));
-    let mut output = run_headless(&context, selection_input, |ui| {
-        ui.columns(2, |columns| {
-            left.show_single_surface(SURFACE, &mut columns[0], &mut left_panes)
-                .expect("the left Dockspace selects its second tab");
+    assert_ne!(second_tabs[0], second_tabs[1]);
+    let left_target = left_panes.focus_id(SECOND_ITEM);
+    let right_target = right_panes.focus_id(SECOND_ITEM);
+    assert_ne!(left_target, right_target);
+
+    // One Context has one focus owner. Settle each participant in a shared run,
+    // then surrender its focus before activating the other participant.
+    for second_tab in second_tabs {
+        let was_selected = (
+            left.view()
+                .item(SECOND_ITEM)
+                .is_some_and(|item| item.is_selected()),
             right
-                .show_single_surface(SURFACE, &mut columns[1], &mut right_panes)
-                .expect("the right Dockspace selects its second tab");
-        });
-    });
-    output.textures_delta.clear();
-    let mut settled_requests = None;
-    for step in 0..5 {
-        let mut output = run_headless(&context, raw_input(), |ui| {
+                .view()
+                .item(SECOND_ITEM)
+                .is_some_and(|item| item.is_selected()),
+        );
+        let mut selection_input = raw_input();
+        selection_input.events.push(accesskit_activate(second_tab));
+        let mut output = run_headless(&context, selection_input, |ui| {
             ui.columns(2, |columns| {
                 left.show_single_surface(SURFACE, &mut columns[0], &mut left_panes)
-                    .expect("the left Dockspace settles terminal focus evidence");
+                    .expect("the left Dockspace queues its selection if targeted");
                 right
                     .show_single_surface(SURFACE, &mut columns[1], &mut right_panes)
-                    .expect("the right Dockspace settles terminal focus evidence");
+                    .expect("the right Dockspace queues its selection if targeted");
             });
         });
         output.textures_delta.clear();
-        if step == 3 {
-            settled_requests = Some((
-                left_panes.focus_target_requests.get(),
-                right_panes.focus_target_requests.get(),
-            ));
+        assert_eq!(
+            (
+                left.view()
+                    .item(SECOND_ITEM)
+                    .is_some_and(|item| item.is_selected()),
+                right
+                    .view()
+                    .item(SECOND_ITEM)
+                    .is_some_and(|item| item.is_selected()),
+            ),
+            was_selected,
+            "the shared encoding run cannot publish either queued selection",
+        );
+        assert_ne!(context.memory(|memory| memory.focused()), Some(left_target));
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(right_target)
+        );
+
+        let mut output = run_headless(&context, raw_input(), |ui| {
+            ui.columns(2, |columns| {
+                left.show_single_surface(SURFACE, &mut columns[0], &mut left_panes)
+                    .expect("the left Dockspace publishes any queued selection");
+                right
+                    .show_single_surface(SURFACE, &mut columns[1], &mut right_panes)
+                    .expect("the right Dockspace publishes any queued selection");
+            });
+        });
+        output.textures_delta.clear();
+        let is_selected = (
+            left.view()
+                .item(SECOND_ITEM)
+                .is_some_and(|item| item.is_selected()),
+            right
+                .view()
+                .item(SECOND_ITEM)
+                .is_some_and(|item| item.is_selected()),
+        );
+        let target = match (was_selected, is_selected) {
+            ((false, previous), (true, current)) if previous == current => left_target,
+            ((previous, false), (current, true)) if previous == current => right_target,
+            state => panic!("one semantic tab must select exactly one Dockspace: {state:?}"),
+        };
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(target),
+            "the participant must publish its intent before acquiring focus",
+        );
+
+        let (mut output, receipt) = run_ui(&context, raw_input(), |ui| {
+            ui.columns(2, |columns| {
+                left.show_single_surface(SURFACE, &mut columns[0], &mut left_panes)
+                    .expect("the shared output includes the left participant");
+                right
+                    .show_single_surface(SURFACE, &mut columns[1], &mut right_panes)
+                    .expect("the shared output includes the right participant");
+            });
+        })
+        .into_parts();
+        assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+        assert_eq!(
+            output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .expect("the shared output exposes its sole pane focus owner")
+                .focus,
+            target.accesskit_id(),
+        );
+        output.textures_delta.clear();
+        receipt.report(SurfacePresentationResult::Presented);
+
+        let (mut output, receipt) = run_ui(&context, raw_input(), |ui| {
+            ui.columns(2, |columns| {
+                left.show_single_surface(SURFACE, &mut columns[0], &mut left_panes)
+                    .expect("the shared receipt reaches the left participant");
+                right
+                    .show_single_surface(SURFACE, &mut columns[1], &mut right_panes)
+                    .expect("the shared receipt reaches the right participant");
+            });
+        })
+        .into_parts();
+        output.textures_delta.clear();
+        assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+        receipt.report(SurfacePresentationResult::Dropped);
+        context.memory_mut(|memory| memory.surrender_focus(target));
+        assert_ne!(context.memory(|memory| memory.focused()), Some(target));
+        for _ in 0..2 {
+            let mut output = run_headless(&context, raw_input(), |ui| {
+                ui.columns(2, |columns| {
+                    left.show_single_surface(SURFACE, &mut columns[0], &mut left_panes)
+                        .expect("the left participant preserves completed focus requests");
+                    right
+                        .show_single_surface(SURFACE, &mut columns[1], &mut right_panes)
+                        .expect("the right participant preserves completed focus requests");
+                });
+            });
+            output.textures_delta.clear();
+            assert_ne!(
+                context.memory(|memory| memory.focused()),
+                Some(left_target),
+                "the left participant must not replay a settled focus request",
+            );
+            assert_ne!(
+                context.memory(|memory| memory.focused()),
+                Some(right_target),
+                "the right participant must not replay a settled focus request",
+            );
         }
     }
 
@@ -738,14 +1002,6 @@ fn caller_owned_run_fans_out_terminal_settlement_to_multiple_dockspaces() {
                 .view()
                 .item(SECOND_ITEM)
                 .is_some_and(|item| item.is_selected()),
-    );
-    assert_eq!(
-        Some((
-            left_panes.focus_target_requests.get(),
-            right_panes.focus_target_requests.get(),
-        )),
-        settled_requests,
-        "both participants consume terminal focus results without replay",
     );
 }
 
@@ -923,40 +1179,77 @@ fn denied_max_pass_discard_still_terminally_settles_output() {
     output.textures_delta.clear();
 
     let mut output = run_headless(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the selection publishes before the max-pass focus output");
+    });
+    output.textures_delta.clear();
+    let target = panes.focus_id(SECOND_ITEM);
+    assert!(
+        dockspace
+            .view()
+            .item(SECOND_ITEM)
+            .is_some_and(|item| item.is_selected()),
+    );
+    assert_ne!(context.memory(|memory| memory.focused()), Some(target));
+
+    let (mut output, receipt) = run_ui(&context, raw_input(), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the max-pass frame advances");
         capability = Some(response.presentation_settlement_capability());
         ui.ctx()
             .request_discard("the configured max-pass boundary denies this request");
-    });
+    })
+    .into_parts();
     assert_eq!(output.platform_output.num_completed_passes, 1);
+    assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+    assert_eq!(
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("the denied discard keeps its terminal focused output")
+            .focus,
+        target.accesskit_id(),
+    );
     output.textures_delta.clear();
     assert_eq!(capability, Some(DockspaceCapability::Supported));
+    receipt.report(SurfacePresentationResult::Presented);
 
-    let mut settled_request_count = None;
-    for step in 0..4 {
+    let (mut output, receipt) = run_ui(&context, raw_input(), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the denied discard's exact terminal observation completes focus");
+    })
+    .into_parts();
+    output.textures_delta.clear();
+    assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+    receipt.report(SurfacePresentationResult::Dropped);
+    context.memory_mut(|memory| memory.surrender_focus(target));
+    assert_ne!(context.memory(|memory| memory.focused()), Some(target));
+    for _ in 0..2 {
         let mut output = run_headless(&context, raw_input(), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
-                .expect("the denied discard's terminal evidence remains consumable");
+                .expect("the max-pass terminal acknowledgement stays consumed");
         });
         output.textures_delta.clear();
-        if step == 2 {
-            settled_request_count = Some(panes.focus_target_requests.get());
-        }
+        assert_ne!(
+            context.memory(|memory| memory.focused()),
+            Some(target),
+            "the max-pass terminal output settles focus exactly once",
+        );
     }
-    assert_eq!(
-        Some(panes.focus_target_requests.get()),
-        settled_request_count,
-        "the max-pass terminal output settles focus exactly once",
-    );
 }
 
 #[test]
 fn non_root_caller_owned_run_settles_focus_from_its_final_accesskit_output() {
     let context = Context::default();
     context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
     let child = ViewportId::from_hash_of("official-egui-child");
     let mut dockspace = Dockspace::builder("official-egui-child-dockspace", product_layout())
         .build()
@@ -986,43 +1279,85 @@ fn non_root_caller_owned_run_settles_focus_from_its_final_accesskit_output() {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the child tab selection advances");
+        assert_ne!(
+            ui.memory(|memory| memory.focused()),
+            Some(panes.focus_id(SECOND_ITEM)),
+            "the child selection cannot acquire focus before publication",
+        );
     });
     output.textures_delta.clear();
 
-    let mut saw_target_focus = false;
-    let mut requests_after_settlement = None;
-    let mut observed_accesskit = Vec::new();
-    for step in 0..5 {
+    let target = panes.focus_id(SECOND_ITEM);
+    let mut output = run_headless(&context, raw_input_for(child), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the child update publishes its pane-focus intent");
+        assert_ne!(
+            ui.memory(|memory| memory.focused()),
+            Some(target),
+            "the child intent must publish before requesting focus",
+        );
+    });
+    output.textures_delta.clear();
+    assert!(
+        dockspace
+            .view()
+            .item(SECOND_ITEM)
+            .is_some_and(|item| item.is_selected()),
+    );
+
+    let (mut output, receipt) = run_ui(&context, raw_input_for(child), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the published child intent acquires its pane focus");
+        assert_eq!(ui.memory(|memory| memory.focused()), Some(target));
+    })
+    .into_parts();
+    assert_eq!(
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("the child final output exposes its focused pane node")
+            .focus,
+        target.accesskit_id(),
+        "the child final output owns the pane focus node",
+    );
+    output.textures_delta.clear();
+    receipt.report(SurfacePresentationResult::Presented);
+
+    let (mut output, receipt) = run_ui(&context, raw_input_for(child), |ui| {
+        dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .expect("the exact child terminal observation completes pane focus");
+        assert_eq!(ui.memory(|memory| memory.focused()), Some(target));
+        ui.memory_mut(|memory| memory.surrender_focus(target));
+        assert_ne!(ui.memory(|memory| memory.focused()), Some(target));
+    })
+    .into_parts();
+    output.textures_delta.clear();
+    receipt.report(SurfacePresentationResult::Dropped);
+    for _ in 0..2 {
         let mut output = run_headless(&context, raw_input_for(child), |ui| {
             dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
-                .expect("the child viewport frame advances");
+                .expect("the child acknowledgement stays complete after surrendering focus");
+            assert_ne!(
+                ui.memory(|memory| memory.focused()),
+                Some(target),
+                "the exact child observation completes the request instead of reclaiming focus",
+            );
         });
-        if let Some(update) = output.platform_output.accesskit_update.as_ref() {
-            observed_accesskit.push((
-                update.focus,
-                update
-                    .nodes
-                    .iter()
-                    .map(|(id, node)| (*id, node.role(), node.label().map(str::to_owned)))
-                    .collect::<Vec<_>>(),
-            ));
-            saw_target_focus |= update.focus == pane_focus_target(SECOND_ITEM).accesskit_id();
-        }
+        assert_ne!(
+            output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .expect("the child final output reports its current focus owner")
+                .focus,
+            target.accesskit_id(),
+            "the terminal child output must preserve surrendered focus",
+        );
         output.textures_delta.clear();
-        if step == 3 {
-            requests_after_settlement = Some(panes.focus_target_requests.get());
-        }
     }
-
-    assert!(
-        saw_target_focus,
-        "the child final output owns the pane focus node; observed={observed_accesskit:?}; requests={}",
-        panes.focus_target_requests.get(),
-    );
-    assert_eq!(
-        Some(panes.focus_target_requests.get()),
-        requests_after_settlement,
-        "the exact child observation completes the focus request instead of replaying it",
-    );
 }

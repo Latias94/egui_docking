@@ -464,35 +464,64 @@ fn surface_scene_set_roster_is_exact_and_stably_ordered() {
 }
 
 #[test]
-fn inactive_requirement_change_preserves_sibling_interaction_authority() {
+fn semantic_requirement_change_retains_exact_presented_outputs_independently() {
     let changed = SurfaceId::new(10);
     let retained = SurfaceId::new(11);
     let initial = manifest([(changed, 1), (retained, 1)], 1);
     let mut scenes = SurfaceSceneSet::new(&initial).expect("scene set initializes");
     let mut painted = BTreeMap::new();
+    let mut outputs = BTreeMap::new();
 
     for surface in [changed, retained] {
         let ticket = initial.surface(surface).expect("surface exists").ticket();
         let (stamp, output) = install_ready(&mut scenes, ticket, headless_capture(), surface.get());
         acknowledge_ready(&mut scenes, output, 1);
         painted.insert(surface, stamp);
+        outputs.insert(surface, output);
     }
 
+    let changed_manifest = manifest([(changed, 2), (retained, 1)], 2);
     scenes
-        .reconcile_manifest(&manifest([(changed, 2), (retained, 1)], 2))
+        .reconcile_manifest(&changed_manifest)
         .expect("requirements reconcile");
 
     let changed_scene = scenes.surface(changed).expect("changed surface remains");
     let SurfaceScene::Stale(changed_scene) = changed_scene else {
-        panic!("changed surface must retain a paint-only fallback");
+        panic!("changed surface must retain the actual presented fallback");
     };
     assert_eq!(
         changed_scene.reason(),
         StaleSurfaceSceneReason::RequirementsChanged
     );
     assert_eq!(changed_scene.paint_fallback().stamp(), painted[&changed]);
-    assert!(scenes.ready_surface(changed).is_none());
-    assert!(scenes.ready_surface(retained).is_some());
+    for surface in [changed, retained] {
+        let interaction = scenes
+            .interaction_projection(surface)
+            .expect("the actual output remains retained");
+        assert_eq!(interaction.plan_stamp(), painted[&surface]);
+        assert_eq!(interaction.output_ticket(), outputs[&surface]);
+        assert_eq!(interaction.authority().ticket(), outputs[&surface]);
+    }
+
+    let ticket = changed_manifest
+        .surface(changed)
+        .expect("changed surface exists")
+        .ticket();
+    let (pending, pending_output) = install_ready(&mut scenes, ticket, headless_capture(), 100);
+    assert_ne!(pending, painted[&changed]);
+    assert_ne!(pending_output, outputs[&changed]);
+    assert_eq!(
+        scenes
+            .ready_candidate(changed)
+            .map(SurfacePlanScene::output_ticket),
+        Some(pending_output)
+    );
+    assert_eq!(
+        scenes
+            .interaction_projection(changed)
+            .map(SurfaceInteractionProjection::output_ticket),
+        Some(outputs[&changed])
+    );
     assert_eq!(
         scenes
             .surface(retained)

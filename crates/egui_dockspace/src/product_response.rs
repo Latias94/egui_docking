@@ -333,6 +333,8 @@ impl DockspaceCloseResult {
 /// Product-level terminal status of one surface contribution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DockspaceSurfaceCommitStatus {
+    /// This update published input without producing a surface contribution.
+    Deferred,
     /// A complete next presentation candidate was installed.
     Ready,
     /// The current candidate was retained unchanged.
@@ -467,39 +469,6 @@ impl DockspaceResponse {
         feedback.append(&mut self.mutation.manipulation_feedback);
         self.mutation.manipulation_feedback = feedback;
     }
-    pub(crate) fn include_preceding_reports(&mut self, reports: &[HostFrameReport]) {
-        if let Some(first) = reports.first() {
-            self.mutation.before = first.before();
-        }
-        let mut close_requests = Vec::new();
-        let mut touch_events = Vec::new();
-        for report in reports {
-            self.mutation.workspace_changed |= report.workspace_changed();
-            self.mutation.published_state_changed |= report.published_state_changed();
-            self.mutation
-                .affected_surfaces
-                .extend_from_slice(report.affected_surfaces());
-            close_requests.extend(report.inputs().iter().filter_map(|input| match input {
-                HostInputOutcome::CloseRequested {
-                    plan,
-                    reused,
-                    origin: HostCloseRequestOrigin::Interaction,
-                } => Some(DockspaceCloseRequest::new(plan, *reused)),
-                _ => None,
-            }));
-            touch_events.extend(report.inputs().iter().filter_map(|input| match input {
-                HostInputOutcome::Touch(event) => Some(*event),
-                _ => None,
-            }));
-        }
-        self.mutation.affected_surfaces.sort_unstable();
-        self.mutation.affected_surfaces.dedup();
-        close_requests.append(&mut self.close_requests);
-        self.close_requests = close_requests;
-        touch_events.append(&mut self.touch_events);
-        self.touch_events = touch_events;
-    }
-
     pub(crate) fn from_product_report(
         report: &HostFrameReport,
         surface: SurfaceId,
@@ -514,11 +483,12 @@ impl DockspaceResponse {
             .iter()
             .copied()
             .filter(|commit| commit.surface() == surface);
-        let status = match surface_commits.next()?.status() {
-            HostSurfaceCommitStatus::Ready => DockspaceSurfaceCommitStatus::Ready,
-            HostSurfaceCommitStatus::Retained => DockspaceSurfaceCommitStatus::Retained,
-            HostSurfaceCommitStatus::Unavailable => DockspaceSurfaceCommitStatus::Unavailable,
-            HostSurfaceCommitStatus::Rejected => DockspaceSurfaceCommitStatus::Rejected,
+        let status = match surface_commits.next().map(|commit| commit.status()) {
+            Some(HostSurfaceCommitStatus::Ready) => DockspaceSurfaceCommitStatus::Ready,
+            Some(HostSurfaceCommitStatus::Retained) => DockspaceSurfaceCommitStatus::Retained,
+            Some(HostSurfaceCommitStatus::Unavailable) => DockspaceSurfaceCommitStatus::Unavailable,
+            Some(HostSurfaceCommitStatus::Rejected) => DockspaceSurfaceCommitStatus::Rejected,
+            None => DockspaceSurfaceCommitStatus::Deferred,
         };
         if surface_commits.next().is_some() {
             return None;

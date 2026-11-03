@@ -1,6 +1,7 @@
 //! Content and native-surface close planning, settlement, and commit.
 
 use super::*;
+use crate::close_plan::{ContentCloseScope, prepare_scoped_content_close};
 
 impl DockEngine {
     pub(super) fn capture_content_close(
@@ -8,27 +9,27 @@ impl DockEngine {
         target: ContentCloseTarget,
         policy: &DockPolicySnapshot,
     ) -> Result<FrozenCloseClick, ContentCloseRequestRejection> {
-        let expected_items = self.workspace.item_multiset();
         match target {
             ContentCloseTarget::Item(item) => {
-                if !expected_items.contains_key(&item) {
+                let Some((root, tabs, _)) = self.workspace.locate_item_by_id(item) else {
                     return Err(ContentCloseRequestRejection::ItemUnavailable { item });
-                }
+                };
                 let capability = policy.pane_close_capability(item);
                 if !capability.allows_close() {
                     return Err(ContentCloseRequestRejection::ItemCloseDisabled { item });
                 }
-                let source = self
+                let owner = self
                     .workspace
-                    .capture_item_source_by_id(item)
-                    .map_err(ContentCloseRequestRejection::SourceUnavailable)?
-                    .ok_or(ContentCloseRequestRejection::ItemUnavailable { item })?;
+                    .presentation_for_root(root)
+                    .ok_or(ContentCloseRequestRejection::RootUnavailable { root })?;
                 Ok(FrozenCloseClick {
                     target: ClosePlanTarget::Item { item },
                     requirements: vec![CloseItemRequirement::new(item, capability)],
-                    prepared: PreparedContentClose::Item {
-                        source,
-                        expected_items,
+                    prepared: ContentCloseScope::Item {
+                        root,
+                        tabs,
+                        item,
+                        owner,
                         requirement: CloseItemRequirement::new(item, capability),
                     },
                 })
@@ -37,10 +38,10 @@ impl DockEngine {
                 let Some(record) = self.workspace.root(root) else {
                     return Err(ContentCloseRequestRejection::RootUnavailable { root });
                 };
-                let source = self
+                let owner = self
                     .workspace
-                    .capture_node_source(root, record.node)
-                    .map_err(ContentCloseRequestRejection::SourceUnavailable)?;
+                    .presentation_for_root(root)
+                    .ok_or(ContentCloseRequestRejection::RootUnavailable { root })?;
                 let items = self.workspace.collect_items_in_subtree(record.node);
                 if items.is_empty() {
                     return Err(ContentCloseRequestRejection::RootEmpty { root });
@@ -56,10 +57,10 @@ impl DockEngine {
                 Ok(FrozenCloseClick {
                     target: ClosePlanTarget::Root { root },
                     requirements: requirements.clone(),
-                    prepared: PreparedContentClose::Root {
-                        source,
-                        items,
-                        expected_items,
+                    prepared: ContentCloseScope::Root {
+                        root,
+                        owner,
+                        items: items.into_iter().collect(),
                         requirements,
                     },
                 })
@@ -94,6 +95,7 @@ impl DockEngine {
         activation: CloseActivation,
         policy: &DockPolicySnapshot,
     ) -> Result<InteractionOutcome, EngineError> {
+        self.reconcile_close_scopes();
         let surface = scene.surface();
         let painted = match activation {
             CloseActivation::CurrentCandidate => self.semantic_candidate(scene),
@@ -400,12 +402,12 @@ impl DockEngine {
                 if !roster.matches_workspace(&self.workspace) {
                     return Ok(false);
                 }
-                let mut candidate = self.clone_workspace_candidate();
-                Ok(
-                    WorkspaceTransaction::from_commands(transaction.commands().iter().cloned())
-                        .apply(&mut candidate, &self.policy)
-                        .is_ok(),
+                Ok(crate::operation::prepare_transaction(
+                    &self.workspace,
+                    &self.policy,
+                    transaction.commands(),
                 )
+                .is_ok())
             }
             PreparedCloseOperation::SurfaceContent {
                 roster, prepared, ..
@@ -536,6 +538,24 @@ impl DockEngine {
         CloseAuthority::new(self.authority_domain, self.version, self.policy.revision())
     }
 
+    /// Retires changed content scopes without cancelling unrelated approvals.
+    ///
+    /// Run after each semantic/policy change and before consuming a decision.
+    /// Once a scope becomes stale it stays terminal even if a later change
+    /// restores the same membership, owner or effective capability.
+    pub(super) fn reconcile_close_scopes(&mut self) {
+        let authority = self.close_authority();
+        let workspace = self.workspace.as_ref();
+        let policy = &self.policy;
+        self.close
+            .invalidate_stale_with(authority, |prepared| match prepared {
+                PreparedCloseOperation::Content(scope) => scope.matches(workspace, policy),
+                PreparedCloseOperation::SurfaceRetain { .. }
+                | PreparedCloseOperation::SurfaceRehome { .. }
+                | PreparedCloseOperation::SurfaceContent { .. } => true,
+            });
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_close_decision(
         &mut self,
@@ -547,6 +567,7 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
+        self.reconcile_close_scopes();
         let authority = self.close_authority();
         let resolution = self
             .close
@@ -576,6 +597,7 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
+        self.reconcile_close_scopes();
         let authority = self.close_authority();
         let resolution = self
             .close
@@ -700,7 +722,7 @@ impl DockEngine {
                 detail: format!("local close {request} has a non-content prepared payload"),
             });
         };
-        let commit = match prepare_content_close(&self.workspace, &self.policy, &prepared) {
+        let commit = match prepare_scoped_content_close(&self.workspace, &self.policy, &prepared) {
             Ok(commit) => commit,
             Err(TransactionError::Command { index: 0, source })
                 if source.is_expected_rejection() =>
@@ -773,13 +795,10 @@ impl DockEngine {
 
     fn content_close_focus_successor(
         &self,
-        prepared: &PreparedContentClose,
+        prepared: &ContentCloseScope,
         candidate: &Workspace,
     ) -> Option<(SurfaceId, PanelFocus)> {
-        let root = match prepared {
-            PreparedContentClose::Item { source, .. } => source.root(),
-            PreparedContentClose::Root { source, .. } => source.root(),
-        };
+        let root = prepared.root();
         let surface = self.root_surface(root)?;
         candidate.surface(surface)?;
         let observed = self.viewport_focus.panel_focus(surface);
@@ -787,30 +806,27 @@ impl DockEngine {
         let focused = match self.viewport_focus.pending_pane_intent() {
             Some(intent) if intent.surface() == surface => intent.item(),
             Some(_) => None,
-            None => match observed {
-                PanelFocusRecord::Item(item) => Some(item),
-                PanelFocusRecord::NoHistory | PanelFocusRecord::None => None,
-            },
+            None => self.viewport_focus.current_pane_focus(surface),
         }?;
         let is_closed = |item| match prepared {
-            PreparedContentClose::Item { source, .. } => source.item() == item,
-            PreparedContentClose::Root { items, .. } => items.contains(&item),
+            ContentCloseScope::Item { item: closed, .. } => *closed == item,
+            ContentCloseScope::Root { items, .. } => items.contains(&item),
         };
         if !is_closed(focused) {
             return None;
         }
         let successor = match prepared {
-            PreparedContentClose::Item { source, .. } => {
-                let Some(Node::Tabs { items, .. }) = self.workspace.node(source.tabs()) else {
+            ContentCloseScope::Item { tabs, item, .. } => {
+                let Some(Node::Tabs { items, .. }) = self.workspace.node(*tabs) else {
                     return None;
                 };
-                let index = items.iter().position(|item| *item == source.item())?;
+                let index = items.iter().position(|entry| entry == item)?;
                 items
                     .get(index + 1)
                     .or_else(|| items[..index].last())
                     .copied()
             }
-            PreparedContentClose::Root { .. } => match observed {
+            ContentCloseScope::Root { .. } => match observed {
                 PanelFocusRecord::Item(item)
                     if !is_closed(item) && candidate.locate_item_by_id(item).is_some() =>
                 {
@@ -900,6 +916,7 @@ impl DockEngine {
         target: ContentCloseTarget,
         policy: &DockPolicySnapshot,
     ) -> Result<InputOutcome, EngineError> {
+        self.reconcile_close_scopes();
         if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
                 expected,
@@ -1439,9 +1456,7 @@ impl DockEngine {
         // the surface request. Recovery application itself is intentionally
         // policy-independent because an already-destroyed window must not be
         // left with a half-applied topology.
-        let mut candidate = self.clone_workspace_candidate();
-        match WorkspaceTransaction::from_commands(transaction.commands().iter().cloned())
-            .apply(&mut candidate, policy)
+        match crate::operation::prepare_transaction(&self.workspace, policy, transaction.commands())
         {
             Ok(_) => {}
             Err(TransactionError::Command {

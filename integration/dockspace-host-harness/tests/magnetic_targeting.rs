@@ -8,13 +8,13 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceManipulationDelivery as Delivery,
-    DockspaceManipulationFeedback as Feedback, DockspaceManipulationPendingReason as PendingReason,
-    DockspaceManipulationStatus as Status, DockspacePreviewVisual, DockspaceSession,
-    HostFrameReport, HostInputOutcome, HostPointerInput, HostPointerRoute, PaintedSurfaceOutput,
-    PointerDeviceKind, PointerEventMetadata, PresentedDockReceiver, PresentedDockspaceSurface,
-    SurfacePaintProgramStep as Step, SurfacePointerButton as Button, SurfacePointerCapture,
-    SurfacePointerEvent as Event, SurfacePointerId, SurfacePointerReceiverFacts,
-    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    DockspaceManipulationFeedback as Feedback, DockspaceManipulationStatus as Status,
+    DockspacePreviewVisual, DockspaceSession, HostFrameReport, HostInputOutcome, HostPointerInput,
+    HostPointerRoute, PaintedSurfaceOutput, PointerDeviceKind, PointerEventMetadata,
+    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePaintProgramStep as Step,
+    SurfacePointerButton as Button, SurfacePointerCapture, SurfacePointerEvent as Event,
+    SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -53,8 +53,20 @@ fn settle(session: &mut DockspaceSession) -> HostFrameReport {
     commit(session.begin_host_frame().unwrap())
 }
 
+fn metrics() -> UniformSurfaceMetrics {
+    UniformSurfaceMetrics::new(
+        LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+        LogicalSize::new(64.0, 48.0).unwrap(),
+        96.0,
+    )
+    .unwrap()
+}
+
 fn record(frame: &mut DockspaceHostFrame<'_>) -> [RecordingRenderer; 2] {
     [A, B].map(|surface| {
+        if frame.paint_plan(surface).unwrap().is_none() {
+            frame.measure_surface(surface, metrics()).unwrap();
+        }
         let plan = frame.paint_plan(surface).unwrap().unwrap();
         let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
         frame.confirm_surface_painted(receipt).unwrap();
@@ -85,6 +97,9 @@ fn paint(session: &mut DockspaceSession) -> ([RecordingRenderer; 2], Vec<Painted
 fn inspect(session: &mut DockspaceSession) -> [RecordingRenderer; 2] {
     let mut frame = session.begin_host_frame().unwrap();
     [A, B].map(|surface| {
+        if frame.paint_plan(surface).unwrap().is_none() {
+            frame.measure_surface(surface, metrics()).unwrap();
+        }
         RecordingRenderer::execute(frame.paint_plan(surface).unwrap().unwrap())
             .unwrap()
             .0
@@ -292,26 +307,23 @@ fn assert_docked(session: &DockspaceSession, items: &[ItemId]) {
     assert!(!session.has_active_gesture());
 }
 
-fn assert_pending(report: &HostFrameReport) -> Feedback {
+#[track_caller]
+fn assert_delivered(report: &HostFrameReport) -> Feedback {
     let [feedback] = report.manipulation_feedback() else {
-        panic!("the exact unpresented release must remain pending: {report:?}");
+        panic!("one accepted release must deliver exactly once: {report:?}");
     };
-    assert_eq!(
-        feedback.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    assert!(!report.workspace_changed());
+    assert!(report.workspace_changed());
+    assert_eq!(feedback.status(), Status::Delivered(Delivery::Dock));
     *feedback
 }
 
-fn assert_delivered(report: &HostFrameReport, pending: Feedback) {
-    let [feedback] = report.manipulation_feedback() else {
-        panic!("the exact frozen output must deliver once: {report:?}");
-    };
-    assert_eq!(feedback.status(), Status::Delivered(Delivery::Dock));
-    assert_eq!(feedback.manipulation_id(), pending.manipulation_id());
-    assert_ne!(feedback.id(), pending.id());
-    assert!(report.workspace_changed());
+#[track_caller]
+fn assert_no_replay(report: &HostFrameReport, delivered: Feedback) {
+    assert!(!report.workspace_changed());
+    assert!(
+        report.manipulation_feedback().is_empty(),
+        "the terminal already delivered: {delivered:?}"
+    );
 }
 
 #[test]
@@ -446,11 +458,13 @@ fn marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition() 
             metadata(),
         ))
         .unwrap();
-    let pending = assert_pending(&commit(release));
-    assert_undocked(&session);
+    let terminal = assert_delivered(&commit(release));
+    assert_docked(&session, &[THIRD, FOURTH, FIRST]);
+    let version = session.version();
     assert!(!session.has_active_gesture());
-    let delivered = present(&mut session, fresh_outputs);
-    assert_delivered(&delivered, pending);
+    let settled = present(&mut session, fresh_outputs);
+    assert_no_replay(&settled, terminal);
+    assert_eq!(session.version(), version);
     assert_docked(&session, &[THIRD, FOURTH, FIRST]);
     assert!(settle(&mut session).manipulation_feedback().is_empty());
 }
@@ -504,7 +518,6 @@ fn suppressed_press_or_move_survives_release_none_and_preserves_direct_targets()
             .unwrap();
         let recordings = record(&mut frame);
         let mut released = commit(frame);
-        assert_undocked(&session);
         assert!(!session.has_active_gesture());
         if target_kind == "magnetic" {
             assert!(previews(&recordings).is_empty());
@@ -524,10 +537,15 @@ fn suppressed_press_or_move_survives_release_none_and_preserves_direct_targets()
             assert_eq!(session.version(), before);
             assert_undocked(&session);
         } else {
-            assert_dock_preview(&recordings);
-            let pending = assert_pending(&released);
-            let delivered = present(&mut session, released.take_painted_outputs());
-            assert_delivered(&delivered, pending);
+            assert!(
+                previews(&recordings).is_empty(),
+                "accepted release paints the committed layout"
+            );
+            let terminal = assert_delivered(&released);
+            let version = session.version();
+            let settled = present(&mut session, released.take_painted_outputs());
+            assert_no_replay(&settled, terminal);
+            assert_eq!(session.version(), version);
             let items = if target_kind == "tab_gap" {
                 [THIRD, FIRST, FOURTH]
             } else {
@@ -539,7 +557,7 @@ fn suppressed_press_or_move_survives_release_none_and_preserves_direct_targets()
 }
 
 #[test]
-fn late_targeting_markers_do_not_change_a_pending_releases_exact_output() {
+fn late_targeting_markers_do_not_change_a_delivered_release_or_replay_its_terminal() {
     let (mut session, geometry) = fixture();
     let a = session.presented_surface(A).unwrap();
     let b = session.presented_surface(B).unwrap();
@@ -562,11 +580,11 @@ fn late_targeting_markers_do_not_change_a_pending_releases_exact_output() {
             ),
         ])
         .unwrap();
-    let pending = assert_pending(&commit(frame));
+    let terminal = assert_delivered(&commit(frame));
     assert!(!session.has_active_gesture());
-    assert_undocked(&session);
+    assert_docked(&session, &[THIRD, FOURTH, FIRST]);
     let (frozen_recordings, frozen_outputs) = paint(&mut session);
-    assert_dock_preview(&frozen_recordings);
+    assert!(previews(&frozen_recordings).is_empty());
     let before = session.version();
 
     let mut late = session.begin_host_frame().unwrap();
@@ -599,14 +617,14 @@ fn late_targeting_markers_do_not_change_a_pending_releases_exact_output() {
     assert!(report.manipulation_feedback().is_empty());
     assert_eq!(session.version(), before);
     assert!(!session.has_active_gesture());
-    assert_undocked(&session);
+    assert_docked(&session, &[THIRD, FOURTH, FIRST]);
     assert_eq!(
         previews(&inspect(&mut session)),
         previews(&frozen_recordings)
     );
 
-    let delivered = present(&mut session, frozen_outputs);
-    assert_delivered(&delivered, pending);
+    let settled = present(&mut session, frozen_outputs);
+    assert_no_replay(&settled, terminal);
     assert_docked(&session, &[THIRD, FOURTH, FIRST]);
     let after = session.version();
     let unchanged = settle(&mut session);

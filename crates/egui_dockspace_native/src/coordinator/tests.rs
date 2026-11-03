@@ -20,6 +20,7 @@ mod budget;
 mod callback_prefix;
 mod close;
 mod combined_soak;
+mod dispatch_terminal;
 mod first_live_cancellation;
 mod focus;
 mod held_close;
@@ -396,25 +397,15 @@ fn paint_and_present_all_surfaces(coordinator: &mut NativeCoordinator) -> HostFr
         80.0,
     )
     .expect("test metrics validate");
-    let mut measurement = coordinator
-        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("native roster measurement frame begins");
-    for surface in measurement.frame.surfaces() {
-        measurement
-            .frame
-            .measure_surface(surface, metrics)
-            .expect("native roster surface measures");
-    }
-    let mut measurement_report = measurement
-        .commit()
-        .expect("native roster measurement frame commits");
-    assert!(measurement_report.take_native_effects().is_empty());
-
     let mut paint = coordinator
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("native roster paint frame begins");
     let surfaces = paint.frame.surfaces();
     for surface in &surfaces {
+        paint
+            .frame
+            .measure_surface(*surface, metrics)
+            .expect("native roster surface measures in its paint update");
         let receipt = paint
             .frame
             .paint_plan(*surface)

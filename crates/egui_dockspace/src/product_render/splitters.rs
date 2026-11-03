@@ -63,13 +63,12 @@ pub(crate) fn paint_splitter(
             );
         });
     }
-    let adjustment = splitter_adjustment(context.ui, id, horizontal, focused);
-    if let Some(action) = adjustment.and_then(|adjustment| {
-        context
+    if let Some((origin, adjustment)) = splitter_adjustment(context.ui, id, horizontal, focused)
+        && let Some(action) = context
             .plan
             .prepare_splitter_adjustment(splitter.visual_id(), adjustment)
-    }) {
-        context.push_local_action(action);
+    {
+        context.push_local_action(origin, action);
     }
     if drag_enabled && response.hovered() {
         context.ui.ctx().set_cursor_icon(match splitter.axis() {
@@ -162,20 +161,17 @@ pub(crate) fn paint_junction(
                 );
             });
         }
-        if let Some(action) = splitter_adjustment(
+        if let Some((origin, adjustment)) = splitter_adjustment(
             context.ui,
             axis_response.id,
             horizontal,
             axis_response.has_focus(),
-        )
-        .and_then(|adjustment| {
-            context.plan.prepare_splitter_junction_adjustment(
-                junction.visual_id(),
-                axis,
-                adjustment,
-            )
-        }) {
-            context.push_local_action(action);
+        ) && let Some(action) = context.plan.prepare_splitter_junction_adjustment(
+            junction.visual_id(),
+            axis,
+            adjustment,
+        ) {
+            context.push_local_action(origin, action);
         }
     }
     let paint_omitted = context.source_gap_active(paint);
@@ -266,7 +262,7 @@ fn splitter_adjustment(
     id: egui::Id,
     horizontal: bool,
     focused: bool,
-) -> Option<SurfaceSplitterAdjustment> {
+) -> Option<(egui::Id, SurfaceSplitterAdjustment)> {
     if !effective_enabled(ui, true) {
         return None;
     }
@@ -283,9 +279,15 @@ fn splitter_adjustment(
                 Key::ArrowDown
             };
             if input.consume_key(egui::Modifiers::NONE, decrement) {
-                Some(SurfaceSplitterAdjustment::Decrement)
+                Some((
+                    id.with(("keyboard-adjust", decrement)),
+                    SurfaceSplitterAdjustment::Decrement,
+                ))
             } else if input.consume_key(egui::Modifiers::NONE, increment) {
-                Some(SurfaceSplitterAdjustment::Increment)
+                Some((
+                    id.with(("keyboard-adjust", increment)),
+                    SurfaceSplitterAdjustment::Increment,
+                ))
             } else {
                 None
             }
@@ -296,9 +298,15 @@ fn splitter_adjustment(
     }
     ui.input(|input| {
         if input.has_accesskit_action_request(id, Action::Decrement) {
-            Some(SurfaceSplitterAdjustment::Decrement)
+            Some((
+                id.with("accesskit-decrement"),
+                SurfaceSplitterAdjustment::Decrement,
+            ))
         } else if input.has_accesskit_action_request(id, Action::Increment) {
-            Some(SurfaceSplitterAdjustment::Increment)
+            Some((
+                id.with("accesskit-increment"),
+                SurfaceSplitterAdjustment::Increment,
+            ))
         } else {
             None
         }

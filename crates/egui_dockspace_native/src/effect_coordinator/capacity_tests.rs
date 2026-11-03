@@ -336,12 +336,12 @@ fn create_and_show_share_one_slot_and_only_exact_visibility_can_settle_it() {
     let token = eframe::prepare_native_viewport_visibility(show_viewport, true).token();
     let plan = effects.plan(create_viewport, &create.request).unwrap();
     effects.insert(plan, create.request).unwrap();
-    let identity = format!("{show:?}");
+    let operation = show.operation().clone();
     assert!(!effects.preflight_can_retain_show(binding));
     let show = effects
         .retain_show(binding, show_viewport, window, token, show)
         .unwrap_err();
-    assert_eq!(format!("{show:?}"), identity);
+    assert_eq!(show.operation(), &operation);
     let create_request = effects
         .take_for_output(create_viewport, plan.binding())
         .unwrap();
@@ -349,7 +349,7 @@ fn create_and_show_share_one_slot_and_only_exact_visibility_can_settle_it() {
     let show = effects
         .retain_show(plan.binding(), show_viewport, window, token, show)
         .unwrap_err();
-    assert_eq!(format!("{show:?}"), identity);
+    assert_eq!(show.operation(), &operation);
     assert!(!effects.has_pending_show(plan.binding()));
     effects
         .retain_show(binding, show_viewport, window, token, show)
@@ -384,7 +384,7 @@ fn create_and_show_share_one_slot_and_only_exact_visibility_can_settle_it() {
     let show = effects
         .take_show(record(token, show_viewport, window, binding, true))
         .unwrap();
-    assert_eq!(format!("{show:?}"), identity);
+    assert_eq!(show.operation(), &operation);
     assert!(
         effects
             .take_show(record(token, show_viewport, window, binding, true))

@@ -10,10 +10,9 @@ use std::time::{Duration, Instant};
 
 use dockspace::model::{DockspaceContainedLayout, FloatingPresentationId};
 use dockspace::runtime::{
-    DockspaceManipulationDelivery, DockspaceManipulationFeedback,
-    DockspaceManipulationPendingReason, DockspaceManipulationStatus, DockspaceReceiverDescriptor,
-    NativeMonotonicClock, NativeReceiverPurpose, NativeReceiverQuery, SurfacePaintProgramOperation,
-    SurfacePresentationArtifact,
+    DockspaceManipulationDelivery, DockspaceManipulationFeedback, DockspaceManipulationStatus,
+    DockspaceReceiverDescriptor, NativeMonotonicClock, NativeReceiverPurpose, NativeReceiverQuery,
+    SurfacePaintProgramOperation, SurfacePresentationArtifact,
 };
 
 use super::*;
@@ -76,10 +75,10 @@ fn fixture(clock: NativeMonotonicClock) -> (NativeCoordinator, Receivers) {
     .unwrap();
     let binding = register_source(&mut native);
     publish_desktop_authority(&mut native, binding);
-    let mut measured = native
+    let mut painted = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
-    measured
+    painted
         .frame
         .measure_surface(
             SOURCE_SURFACE,
@@ -90,13 +89,6 @@ fn fixture(clock: NativeMonotonicClock) -> (NativeCoordinator, Receivers) {
             )
             .unwrap(),
         )
-        .unwrap();
-    measured
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    measured.commit().unwrap();
-    let mut painted = native
-        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
     let plan = painted.frame.paint_plan(SOURCE_SURFACE).unwrap().unwrap();
     let source = plan.tab_receiver(SOURCE_ITEM).unwrap();
@@ -210,6 +202,20 @@ fn dispatch(
             .poll_host_frame(&mut budget, |query| receivers.resolve(query))
             .unwrap()
             .expect("a 16-edge controlled slice fits the shared dispatch budget");
+        if paint_release && frame.frame.paint_plan(SOURCE_SURFACE).unwrap().is_none() {
+            frame
+                .frame
+                .measure_surface(
+                    SOURCE_SURFACE,
+                    UniformSurfaceMetrics::new(
+                        LogicalRect::new(0.0, 0.0, 640.0, 360.0).unwrap(),
+                        LogicalSize::new(0.0, 0.0).unwrap(),
+                        80.0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
         if let Some(plan) = frame.frame.paint_plan(SOURCE_SURFACE).unwrap() {
             preview |= program_has_drag_preview(plan);
             if paint_release {
@@ -228,8 +234,7 @@ fn dispatch(
         );
         assert!(!report.native_input_pending());
         if let Some(artifact) = expected_settlement {
-            // Dock delivery replaces the preview scene, so the accepted release
-            // artifact is settled without remaining current receiver authority.
+            // The output terminal settles rendering without replaying the accepted edit.
             settled_outputs += report
                 .surface_presentation_commits()
                 .iter()
@@ -339,31 +344,35 @@ fn controlled_one_kilohertz_active_drag_preserves_all_edges_and_delivers_release
     ticks.store(MOVES + CADENCE, Ordering::SeqCst);
     let (feedback, _, output) = dispatch(&mut native, receivers, &clock, 1, true, None);
     peak_owned_input_bytes = peak_owned_input_bytes.max(sampled_owned_input_bytes(&native));
-    let [pending] = feedback.as_slice() else {
-        panic!("one release must wait for its exact output terminal: {feedback:?}");
-    };
-    assert_eq!(
-        pending.status(),
-        DockspaceManipulationStatus::Pending(
-            DockspaceManipulationPendingReason::AwaitingPresentation
-        )
-    );
-    assert_eq!(
-        native.session.view().item(SOURCE_ITEM).unwrap().root(),
-        SOURCE_ROOT,
-        "the release frame may not mutate layout before exact output settlement"
-    );
-    ticks.store(MOVES + 2 * CADENCE, Ordering::SeqCst);
-    let (settled, _, _) = dispatch(&mut native, receivers, &clock, 0, false, output);
-    peak_owned_input_bytes = peak_owned_input_bytes.max(sampled_owned_input_bytes(&native));
-    let [terminal] = settled.as_slice() else {
-        panic!("the exact presentation must deliver one terminal result: {settled:?}");
+    let [terminal] = feedback.as_slice() else {
+        panic!("the successful release must deliver once: {feedback:?}");
     };
     assert_eq!(
         terminal.status(),
         DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
     );
-    assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
+    assert_eq!(
+        native.session.view().item(SOURCE_ITEM).unwrap().root(),
+        TARGET_ROOT,
+        "the release update must publish ordinary ownership before output settlement"
+    );
+    let delivered_version = native.session.version();
+    assert_eq!(
+        native.session.native_input_recorded_count(),
+        baseline + MOVES + 2
+    );
+    ticks.store(MOVES + 2 * CADENCE, Ordering::SeqCst);
+    let (settled, _, _) = dispatch(&mut native, receivers, &clock, 0, false, output);
+    peak_owned_input_bytes = peak_owned_input_bytes.max(sampled_owned_input_bytes(&native));
+    assert!(
+        settled.is_empty(),
+        "the output terminal cannot repeat delivery"
+    );
+    assert_eq!(native.session.version(), delivered_version);
+    assert_eq!(
+        native.session.native_input_recorded_count(),
+        baseline + MOVES + 3
+    );
     assert!(clock.now() - accepted_release <= Duration::from_millis(100));
     assert_eq!(
         native.session.view().item(SOURCE_ITEM).unwrap().root(),
@@ -495,6 +504,23 @@ fn wall_time_active_prefix_and_receiver_deadline_preserve_exact_release() {
                 completed += completed_records;
 
                 if let Some(mut frame) = frame {
+                    if phase == "release"
+                        && !frame.native_input_pending()
+                        && frame.frame.paint_plan(SOURCE_SURFACE).unwrap().is_none()
+                    {
+                        frame
+                            .frame
+                            .measure_surface(
+                                SOURCE_SURFACE,
+                                UniformSurfaceMetrics::new(
+                                    LogicalRect::new(0.0, 0.0, 640.0, 360.0).unwrap(),
+                                    LogicalSize::new(0.0, 0.0).unwrap(),
+                                    80.0,
+                                )
+                                .unwrap(),
+                            )
+                            .unwrap();
+                    }
                     if !frame.native_input_pending()
                         && let Some(plan) = frame.frame.paint_plan(SOURCE_SURFACE).unwrap()
                     {
@@ -521,14 +547,16 @@ fn wall_time_active_prefix_and_receiver_deadline_preserve_exact_release() {
                             .filter(|commit| commit.settles(artifact))
                             .count();
                     }
-                    if settled_outputs == 0 {
-                        assert_eq!(
-                            native.session.view().item(SOURCE_ITEM).unwrap().root(),
-                            SOURCE_ROOT,
-                            "the accepted release must await its exact presentation"
-                        );
-                    }
                     feedback.extend_from_slice(report.manipulation_feedback());
+                    assert_eq!(
+                        native.session.view().item(SOURCE_ITEM).unwrap().root(),
+                        if feedback.is_empty() {
+                            SOURCE_ROOT
+                        } else {
+                            TARGET_ROOT
+                        },
+                        "ordinary ownership changes in the release update"
+                    );
                     let effects = report.take_native_effects();
                     assert!(effects.iter().all(|effect| matches!(
                         effect.operation(),
@@ -636,14 +664,12 @@ fn wall_time_active_prefix_and_receiver_deadline_preserve_exact_release() {
             );
         }
         if phase == "release" {
-            let [pending] = feedback.as_slice() else {
-                panic!("the release must publish exactly one pending outcome: {feedback:?}");
+            let [terminal] = feedback.as_slice() else {
+                panic!("the release must publish exactly one terminal outcome: {feedback:?}");
             };
             assert_eq!(
-                pending.status(),
-                DockspaceManipulationStatus::Pending(
-                    DockspaceManipulationPendingReason::AwaitingPresentation
-                )
+                terminal.status(),
+                DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
             );
         }
     }
@@ -679,14 +705,13 @@ fn wall_time_active_prefix_and_receiver_deadline_preserve_exact_release() {
             .count(),
         samples.iter().map(|sample| sample.elapsed).max(),
     );
-    let [pending, terminal] = feedback.as_slice() else {
-        panic!("one release must publish one pending and one terminal: {feedback:?}");
+    let [terminal] = feedback.as_slice() else {
+        panic!("one release must publish exactly one terminal: {feedback:?}");
     };
     assert_eq!(
         terminal.status(),
         DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
     );
-    assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
     assert_eq!(settled_outputs, 1);
     assert_eq!(claimed, ACTIVE_MOVES + 4);
     assert_eq!(completed, ACTIVE_MOVES + 5);
@@ -710,7 +735,7 @@ fn wall_time_active_prefix_and_receiver_deadline_preserve_exact_release() {
 }
 
 #[test]
-fn pending_release_prevents_native_quiescence_until_matching_presentation_commits() {
+fn ordinary_release_reaches_quiescence_without_waiting_for_rendering() {
     let clock = NativeMonotonicClock::new(|| Duration::ZERO);
     let (mut native, receivers) = fixture(clock.clone());
     let press = receivers.source.center();
@@ -729,31 +754,30 @@ fn pending_release_prevents_native_quiescence_until_matching_presentation_commit
     assert!(feedback.is_empty() && preview && native.session.has_active_gesture());
     capture(&native, 3, target, Some(ElementState::Released));
     let (feedback, preview, output) = dispatch(&mut native, receivers, &clock, 1, false, None);
-    let [pending] = feedback.as_slice() else {
-        panic!("the unpainted release must publish one pending result: {feedback:?}");
+    let [terminal] = feedback.as_slice() else {
+        panic!("the unpainted release must publish one terminal result: {feedback:?}");
     };
     assert_eq!(
-        pending.status(),
-        DockspaceManipulationStatus::Pending(
-            DockspaceManipulationPendingReason::AwaitingPresentation
-        )
+        terminal.status(),
+        DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
     );
-    assert!(preview && output.is_none());
+    assert!(!preview && output.is_none());
     assert!(!native.session.has_active_gesture());
     assert_eq!(
         native.session.view().item(SOURCE_ITEM).unwrap().root(),
-        SOURCE_ROOT
+        TARGET_ROOT
     );
+    let delivered_version = native.session.version();
 
-    // Settle the undispatched property effects through their real failure path. Empty native
-    // queues must leave the core release obligation as the reason this host is not quiescent.
+    // Settle the independent property effects through their real failure path.
+    // An unpainted ordinary edit no longer creates a native resource obligation.
     for _ in 0..8 {
         if let Some(command) = native.pointer_passthrough_command() {
             assert!(native.fail_pointer_passthrough_dispatch(command));
         }
         native.try_report_pending_effect_results().unwrap();
         let (feedback, preview, output) = dispatch(&mut native, receivers, &clock, 0, false, None);
-        assert!(feedback.is_empty() && preview && output.is_none());
+        assert!(feedback.is_empty() && !preview && output.is_none());
         if native.pending_effect_results.is_empty() && !native.input_control.has_pending_work() {
             break;
         }
@@ -767,36 +791,33 @@ fn pending_release_prevents_native_quiescence_until_matching_presentation_commit
     assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
     assert!(!native.session.has_pending_native_input());
     assert!(!native.session.has_pending_native_create());
-    assert!(native.session.has_pending_presentation());
-    assert!(native.session.surface_requires_presentation(SOURCE_SURFACE));
+    assert!(!native.session.has_pending_presentation());
+    assert!(!native.session.surface_requires_presentation(SOURCE_SURFACE));
     assert!(
-        !native.is_quiescent(),
-        "an idle gesture and empty native queues do not settle an unpainted release"
+        native.is_quiescent(),
+        "ordinary delivery has no remaining native owner"
     );
+    assert_eq!(native.session.version(), delivered_version);
 
-    // The helper executes the real surface program and retains its affine output in the
-    // session as Presented. That terminal fact still needs its own successful core commit.
+    // This model has core affine outputs but no OS/GPU token. Its later output
+    // observation must still settle once without repeating the ordinary edit.
     let (feedback, preview, output) = dispatch(&mut native, receivers, &clock, 0, true, None);
-    assert!(feedback.is_empty() && preview);
-    let output = output.expect("the pending release must emit its exact preview artifact");
-    assert!(native.session.has_pending_presentation());
-    assert!(!native.is_quiescent());
+    assert!(feedback.is_empty() && !preview);
+    let output = output.expect("the committed layout must emit its successor artifact");
+    assert!(!native.session.has_pending_presentation());
     assert_eq!(
         native.session.view().item(SOURCE_ITEM).unwrap().root(),
-        SOURCE_ROOT,
-        "reporting Presented alone cannot transfer source ownership"
+        TARGET_ROOT,
+        "reporting Presented cannot alter already delivered ownership"
     );
 
     let (feedback, _, output) = dispatch(&mut native, receivers, &clock, 0, false, Some(output));
     assert!(output.is_none());
-    let [terminal] = feedback.as_slice() else {
-        panic!("the matching presentation must deliver one terminal result: {feedback:?}");
-    };
-    assert_eq!(
-        terminal.status(),
-        DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
+    assert!(
+        feedback.is_empty(),
+        "output settlement must not repeat the terminal"
     );
-    assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
+    assert_eq!(native.session.version(), delivered_version);
     assert_eq!(
         native.session.view().item(SOURCE_ITEM).unwrap().root(),
         TARGET_ROOT
@@ -1051,6 +1072,18 @@ fn combined_pressure_preserves_an_accepted_release_and_reserved_terminals_throug
                 .poll_host_frame(&mut budget, |query| receivers.resolve(query))
                 .unwrap()
                 .unwrap();
+            frame
+                .frame
+                .measure_surface(
+                    SOURCE_SURFACE,
+                    UniformSurfaceMetrics::new(
+                        LogicalRect::new(0.0, 0.0, 640.0, 360.0).unwrap(),
+                        LogicalSize::new(0.0, 0.0).unwrap(),
+                        80.0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
             let plan = frame.frame.paint_plan(SOURCE_SURFACE).unwrap().unwrap();
             let receipt = plan.execute_surface_program(|_| Ok::<(), ()>(())).unwrap();
             frame.frame.confirm_surface_painted(receipt).unwrap();
@@ -1077,21 +1110,28 @@ fn combined_pressure_preserves_an_accepted_release_and_reserved_terminals_throug
                 outcome.status(),
                 DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
             ) {
-                assert!(artifact.is_some());
-                assert_eq!(
-                    settled_outputs, 1,
-                    "delivery must follow the exact output settlement"
+                assert!(
+                    release && dropped_release,
+                    "delivery belongs to the retried release update"
                 );
+                assert!(report.workspace_changed());
+                assert!(
+                    artifact.is_none(),
+                    "delivery precedes successor output emission"
+                );
+                assert_eq!(settled_outputs, 0);
             }
         }
-        if settled_outputs == 0 {
-            assert_eq!(
-                native.session.view().item(SOURCE_ITEM).unwrap().root(),
-                SOURCE_ROOT,
-                "accepted release cannot publish ownership before exact presentation"
-            );
-        }
         feedback.extend_from_slice(report.manipulation_feedback());
+        assert_eq!(
+            native.session.view().item(SOURCE_ITEM).unwrap().root(),
+            if feedback.is_empty() {
+                SOURCE_ROOT
+            } else {
+                TARGET_ROOT
+            },
+            "pressure and cancellation cannot undo a committed ordinary release"
+        );
         native
             .accept_native_effects(&context, report.take_native_effects())
             .unwrap();
@@ -1132,20 +1172,13 @@ fn combined_pressure_preserves_an_accepted_release_and_reserved_terminals_throug
     assert!(dropped_release && artifact.is_some());
     assert!(terminal_roster_queued);
     assert_eq!(settled_outputs, 1);
-    let [pending, terminal] = feedback.as_slice() else {
-        panic!("one accepted release must publish one pending and one terminal: {feedback:?}");
+    let [terminal] = feedback.as_slice() else {
+        panic!("one accepted release must publish exactly one terminal: {feedback:?}");
     };
-    assert_eq!(
-        pending.status(),
-        DockspaceManipulationStatus::Pending(
-            DockspaceManipulationPendingReason::AwaitingPresentation
-        )
-    );
     assert_eq!(
         terminal.status(),
         DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
     );
-    assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
     assert_eq!(
         native.session.view().item(SOURCE_ITEM).unwrap().root(),
         TARGET_ROOT

@@ -17,6 +17,7 @@ use crate::event::ReductionCause;
 use crate::frame::PanelFocus;
 use crate::ids::{ItemId, NativeCreateSagaId, SurfaceId};
 use crate::intent::{Authority, AuthorityUnavailableReason};
+use crate::presentation_observation::{HostPresentationStreamId, PresentationHostLease};
 use crate::viewport::ViewportBinding;
 
 macro_rules! focus_generation {
@@ -270,7 +271,10 @@ impl FocusObservationStream {
     }
 }
 
-/// The last actually observed pane-focus state for one logical surface.
+/// The last observed pane-focus history for one logical surface.
+///
+/// History remains available after focus leaves this surface. It does not prove
+/// that the recorded pane currently owns framework or native-window focus.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum PanelFocusRecord {
     /// No adapter fact has ever established pane focus for this surface.
@@ -298,6 +302,115 @@ impl PanelFocusRecord {
             Self::Item(item) => Some(PanelFocus::Item(item)),
             Self::None => Some(PanelFocus::None),
         }
+    }
+}
+
+/// An adapter's actual UI focus within one owned surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostFocusState {
+    /// This exact pane owns framework focus.
+    Pane(ItemId),
+    /// The dock workspace itself owns framework focus.
+    Workspace,
+    /// Focus belongs to application UI outside this dock workspace.
+    External,
+    /// The adapter positively observed that no UI target owns focus.
+    None,
+    /// The adapter cannot establish the current UI focus target.
+    Unknown,
+}
+
+/// Actual UI focus, independent from restoration history and pending requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CurrentUiFocus {
+    /// An exact pane currently owns framework focus.
+    Pane { surface: SurfaceId, item: ItemId },
+    /// The surface workspace currently owns framework focus.
+    Workspace { surface: SurfaceId },
+    /// Application UI outside the docking workspace owns focus.
+    External,
+    /// The responsible provider positively observed no focused target.
+    None,
+    /// Current focus cannot be established from available authority.
+    Unknown,
+}
+
+impl CurrentUiFocus {
+    const fn from_host(surface: SurfaceId, state: HostFocusState) -> Self {
+        match state {
+            HostFocusState::Pane(item) => Self::Pane { surface, item },
+            HostFocusState::Workspace => Self::Workspace { surface },
+            HostFocusState::External => Self::External,
+            HostFocusState::None => Self::None,
+            HostFocusState::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CurrentUiFocusRecord {
+    focus: CurrentUiFocus,
+    scope: Option<(SurfaceId, Option<ViewportBinding>)>,
+    host_scope: Option<(PresentationHostLease, HostPresentationStreamId)>,
+}
+
+/// One independent UI focus fact captured within an exact presentation owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostFocusObservation {
+    generation: PaneFocusObservationGeneration,
+    host: PresentationHostLease,
+    stream: HostPresentationStreamId,
+    surface: SurfaceId,
+    state: HostFocusState,
+}
+
+impl HostFocusObservation {
+    /// Captures one generation in an exact host-owned presentation stream.
+    #[must_use]
+    pub const fn new(
+        generation: PaneFocusObservationGeneration,
+        host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+        surface: SurfaceId,
+        state: HostFocusState,
+    ) -> Self {
+        Self {
+            generation,
+            host,
+            stream,
+            surface,
+            state,
+        }
+    }
+
+    /// Returns the monotonic pane-observation generation.
+    #[must_use]
+    pub const fn generation(self) -> PaneFocusObservationGeneration {
+        self.generation
+    }
+
+    /// Returns the host which captured this UI fact.
+    #[must_use]
+    pub const fn host(self) -> PresentationHostLease {
+        self.host
+    }
+
+    /// Returns the exact stream whose current ownership must still validate.
+    #[must_use]
+    pub const fn stream(self) -> HostPresentationStreamId {
+        self.stream
+    }
+
+    /// Returns the logical surface delimiting this observation's scope.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns the independently observed UI focus state.
+    #[must_use]
+    pub const fn state(self) -> HostFocusState {
+        self.state
     }
 }
 
@@ -1258,6 +1371,7 @@ impl PaneFocusObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PaneFocusObservationRejection {
     StaleBinding,
+    StaleHostScope,
     ItemUnavailable { item: ItemId },
     UnknownIntent { intent: PaneFocusIntentId },
     IntentNotPublished { intent: PaneFocusIntentId },
@@ -1445,6 +1559,7 @@ struct PaneIntentInstall {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ViewportFocusCleanup {
     global_authority_removed: bool,
+    current_focus_changed: bool,
     panel_record_removed: bool,
     pane_observation_removed: bool,
     pending_activation_cancelled: Option<(ActivationGeneration, ActivationCancellation)>,
@@ -1456,6 +1571,7 @@ impl ViewportFocusCleanup {
     #[must_use]
     pub const fn changed(self) -> bool {
         self.global_authority_removed
+            || self.current_focus_changed
             || self.panel_record_removed
             || self.pane_observation_removed
             || self.pending_activation_cancelled.is_some()
@@ -1589,6 +1705,7 @@ impl FocusEffectChange {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FocusDelta {
     global_observation: Option<FocusValueChange<FocusObservationEnvelope>>,
+    current_focus: Option<FocusValueChange<CurrentUiFocus>>,
     pending_activation: Option<FocusValueChange<PendingViewportActivation>>,
     observe_only_activation: Option<FocusValueChange<RecordedObserveOnlyActivation>>,
     pane_intent: Option<FocusValueChange<PaneFocusIntent>>,
@@ -1600,6 +1717,7 @@ impl FocusDelta {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.global_observation.is_none()
+            && self.current_focus.is_none()
             && self.pending_activation.is_none()
             && self.observe_only_activation.is_none()
             && self.pane_intent.is_none()
@@ -1610,6 +1728,12 @@ impl FocusDelta {
     #[must_use]
     pub const fn global_observation(&self) -> Option<&FocusValueChange<FocusObservationEnvelope>> {
         self.global_observation.as_ref()
+    }
+
+    /// Returns the net change in observed UI focus, excluding requests and history.
+    #[must_use]
+    pub const fn current_focus(&self) -> Option<&FocusValueChange<CurrentUiFocus>> {
+        self.current_focus.as_ref()
     }
 
     #[must_use]
@@ -1651,6 +1775,7 @@ impl FocusDelta {
                 before.focus_observations.current(),
                 after.focus_observations.current(),
             ),
+            current_focus: FocusValueChange::between(before.current_focus(), after.current_focus()),
             pending_activation: FocusValueChange::between(
                 before.focus_lane.driving,
                 after.focus_lane.driving,
@@ -1747,7 +1872,9 @@ pub struct ViewportFocusCoordinator {
     pending_pane_intent: Option<PaneFocusIntent>,
     admitted_observe_only_activation: Option<ActivationGeneration>,
     admitted_pane_intent: Option<PaneFocusIntentId>,
+    current_ui_focus: Option<CurrentUiFocusRecord>,
     panel_focus_by_surface: BTreeMap<SurfaceId, PanelFocusRecord>,
+    host_focus_observation_by_surface: BTreeMap<SurfaceId, HostFocusObservation>,
     pane_observation_by_surface: BTreeMap<SurfaceId, PanelFocusObservationRecord>,
     pane_request_observation_by_surface: BTreeMap<SurfaceId, PaneFocusRequestObservationRecord>,
 }
@@ -2214,12 +2341,161 @@ impl ViewportFocusCoordinator {
             .unwrap_or_default()
     }
 
+    /// Returns actual observed focus; `None` means that no fact was established.
+    #[must_use]
+    pub const fn current_focus(&self) -> Option<CurrentUiFocus> {
+        match self.current_ui_focus {
+            Some(record) => Some(record.focus),
+            None => None,
+        }
+    }
+
+    pub(crate) fn matches_current_host_focus(&self, observation: HostFocusObservation) -> bool {
+        self.current_ui_focus.is_some_and(|record| {
+            record.focus == CurrentUiFocus::from_host(observation.surface, observation.state)
+                && record
+                    .scope
+                    .is_some_and(|(surface, _)| surface == observation.surface)
+                && record.host_scope == Some((observation.host, observation.stream))
+        })
+    }
+
+    /// Returns the current pane on this surface, without consulting its history.
+    #[must_use]
+    pub const fn current_pane_focus(&self, surface: SurfaceId) -> Option<ItemId> {
+        match self.current_focus() {
+            Some(CurrentUiFocus::Pane {
+                surface: current,
+                item,
+            }) if current.get() == surface.get() => Some(item),
+            _ => None,
+        }
+    }
+
+    fn record_current_ui_focus(
+        &mut self,
+        surface: SurfaceId,
+        state: HostFocusState,
+        native_guard: Option<ViewportBinding>,
+    ) -> bool {
+        if self.focus_observations.last_generation.is_some()
+            && !self.focus_observations.current().is_some_and(|observation| {
+                matches!(observation.focused, Authority::Known(GlobalFocusedWindow::Dock(binding))
+                    if Some(binding) == native_guard)
+            })
+        {
+            return false;
+        }
+        let owns_focus = matches!(state, HostFocusState::Pane(_) | HostFocusState::Workspace);
+        if !owns_focus
+            && self.current_ui_focus.is_some_and(|record| {
+                record
+                    .scope
+                    .is_some_and(|(current, guard)| current != surface || guard != native_guard)
+            })
+        {
+            return false;
+        }
+        self.current_ui_focus = Some(CurrentUiFocusRecord {
+            focus: CurrentUiFocus::from_host(surface, state),
+            scope: Some((surface, native_guard)),
+            host_scope: None,
+        });
+        true
+    }
+
+    fn record_platform_ui_focus(&mut self, focused: Option<GlobalFocusedWindow>) {
+        let (focus, scope) = match focused {
+            Some(GlobalFocusedWindow::Dock(binding)) => {
+                let scope = Some((binding.surface(), Some(binding)));
+                if self
+                    .current_ui_focus
+                    .is_some_and(|record| record.scope == scope)
+                {
+                    return;
+                }
+                (CurrentUiFocus::Unknown, scope)
+            }
+            Some(GlobalFocusedWindow::Foreign) => (CurrentUiFocus::External, None),
+            Some(GlobalFocusedWindow::None) => (CurrentUiFocus::None, None),
+            None => (CurrentUiFocus::Unknown, None),
+        };
+        self.current_ui_focus = Some(CurrentUiFocusRecord {
+            focus,
+            scope,
+            host_scope: None,
+        });
+    }
+
+    fn invalidate_current_ui_focus(&mut self) -> bool {
+        let unknown = CurrentUiFocusRecord {
+            focus: CurrentUiFocus::Unknown,
+            scope: None,
+            host_scope: None,
+        };
+        if self.current_ui_focus.is_none() || self.current_ui_focus == Some(unknown) {
+            return false;
+        }
+        self.current_ui_focus = Some(unknown);
+        true
+    }
+
+    pub(crate) fn bind_current_host_focus_scope(
+        &mut self,
+        surface: SurfaceId,
+        native_guard: Option<ViewportBinding>,
+        host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+    ) {
+        if let Some(current) = self.current_ui_focus.as_mut()
+            && current.scope == Some((surface, native_guard))
+        {
+            current.host_scope = Some((host, stream));
+        }
+    }
+
+    pub(crate) fn reconcile_host_focus_scopes(
+        &mut self,
+        is_current_scope: impl Fn(SurfaceId, PresentationHostLease, HostPresentationStreamId) -> bool,
+    ) -> ViewportFocusCleanup {
+        let mut cleanup = ViewportFocusCleanup::default();
+        if let Some(current) = self.current_ui_focus
+            && let Some((surface, _)) = current.scope
+            && let Some((host, stream)) = current.host_scope
+            && !is_current_scope(surface, host, stream)
+        {
+            cleanup.current_focus_changed = self.invalidate_current_ui_focus();
+        }
+        self.host_focus_observation_by_surface
+            .retain(|surface, observation| {
+                let keep = is_current_scope(*surface, observation.host, observation.stream);
+                cleanup.pane_observation_removed |= !keep;
+                keep
+            });
+        cleanup
+    }
+
     /// Captures semantic focus without choosing among unrelated surface histories.
     pub(crate) fn workspace_replacement_focus(&self) -> WorkspaceReplacementFocus {
         if let Some(intent) = self.pending_pane_intent {
             return WorkspaceReplacementFocus::Dock {
                 surface: intent.surface(),
                 item: intent.item(),
+            };
+        }
+        if let Some(current) = self.current_focus() {
+            return match current {
+                CurrentUiFocus::Pane { surface, item } => WorkspaceReplacementFocus::Dock {
+                    surface,
+                    item: Some(item),
+                },
+                CurrentUiFocus::Workspace { surface } => WorkspaceReplacementFocus::Dock {
+                    surface,
+                    item: None,
+                },
+                CurrentUiFocus::External | CurrentUiFocus::None | CurrentUiFocus::Unknown => {
+                    WorkspaceReplacementFocus::OutsideDock
+                }
             };
         }
         let Some(target) = self
@@ -3038,7 +3314,13 @@ impl ViewportFocusCoordinator {
             raw_transition
         };
         match transition {
-            FocusObservationStreamTransition::Current => {}
+            FocusObservationStreamTransition::Current => {
+                let focused = match observation.focused {
+                    Authority::Known(focused) => Some(focused),
+                    Authority::Unknown(_) => None,
+                };
+                self.record_platform_ui_focus(focused);
+            }
             FocusObservationStreamTransition::Duplicate => {
                 return Ok(FocusObservationTransition::Duplicate);
             }
@@ -3046,6 +3328,7 @@ impl ViewportFocusCoordinator {
                 return Ok(FocusObservationTransition::Stale { current });
             }
             FocusObservationStreamTransition::AuthorityRevoked { generation, reason } => {
+                self.record_platform_ui_focus(None);
                 let mut effect_settlement = FocusObservationApplied::default();
                 if matches!(reason, FocusAuthorityRevocation::Unknown(_)) {
                     self.reduce_focus_hazards(
@@ -3080,6 +3363,7 @@ impl ViewportFocusCoordinator {
                 });
             }
             FocusObservationStreamTransition::TombstoneRequired { generation } => {
+                self.record_platform_ui_focus(None);
                 let cleanup = self.clear_focus_stream_authority(previous.is_some());
                 return Ok(FocusObservationTransition::TombstoneRequired {
                     generation,
@@ -3467,6 +3751,97 @@ impl ViewportFocusCoordinator {
         applied.cancelled_activation = Some((pending.generation, reason));
     }
 
+    /// Records an independent UI focus fact within one exact, current host scope.
+    ///
+    /// This does not acknowledge a pending request or create native activation
+    /// authority. A fact for another native window may update its restoration
+    /// history, but cannot replace the provider's global focus owner.
+    pub fn publish_host_focus_observation(
+        &mut self,
+        observation: HostFocusObservation,
+        is_current_scope: impl FnOnce(HostFocusObservation) -> bool,
+        native_guard: Option<ViewportBinding>,
+        item_is_on_surface: impl FnOnce(SurfaceId, ItemId) -> bool,
+    ) -> PaneFocusObservationTransition {
+        if !is_current_scope(observation) {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::StaleHostScope,
+            );
+        }
+        if native_guard.is_some_and(|binding| binding.surface() != observation.surface) {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::StaleBinding,
+            );
+        }
+        if let HostFocusState::Pane(item) = observation.state
+            && !item_is_on_surface(observation.surface, item)
+        {
+            return PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::ItemUnavailable { item },
+            );
+        }
+        if let Some(current) = self.pane_observation_generation(observation.surface) {
+            if observation.generation < current {
+                return PaneFocusObservationTransition::Stale { current };
+            }
+            if observation.generation == current {
+                return if self
+                    .host_focus_observation_by_surface
+                    .get(&observation.surface)
+                    == Some(&observation)
+                {
+                    PaneFocusObservationTransition::Duplicate
+                } else {
+                    PaneFocusObservationTransition::EqualGenerationConflict {
+                        generation: current,
+                    }
+                };
+            }
+        }
+        match observation.state {
+            HostFocusState::Pane(item) => {
+                self.panel_focus_by_surface
+                    .insert(observation.surface, PanelFocusRecord::Item(item));
+            }
+            HostFocusState::Workspace => {
+                self.panel_focus_by_surface
+                    .insert(observation.surface, PanelFocusRecord::None);
+            }
+            HostFocusState::External | HostFocusState::None | HostFocusState::Unknown => {}
+        }
+        if self.record_current_ui_focus(observation.surface, observation.state, native_guard) {
+            self.bind_current_host_focus_scope(
+                observation.surface,
+                native_guard,
+                observation.host,
+                observation.stream,
+            );
+        }
+        self.host_focus_observation_by_surface
+            .insert(observation.surface, observation);
+        PaneFocusObservationTransition::Applied {
+            cleared_intent: None,
+        }
+    }
+
+    fn host_focus_generation_conflict(
+        &self,
+        surface: SurfaceId,
+        generation: PaneFocusObservationGeneration,
+    ) -> Option<PaneFocusObservationTransition> {
+        let current = self
+            .host_focus_observation_by_surface
+            .get(&surface)?
+            .generation;
+        if generation < current {
+            Some(PaneFocusObservationTransition::Stale { current })
+        } else if generation == current {
+            Some(PaneFocusObservationTransition::EqualGenerationConflict { generation })
+        } else {
+            None
+        }
+    }
+
     /// Records an exact pane-focus fact and consumes only its matching pending intent.
     pub fn publish_pane_focus_observation(
         &mut self,
@@ -3488,6 +3863,11 @@ impl ViewportFocusCoordinator {
         }
 
         let surface = observation.binding.surface();
+        if let Some(transition) =
+            self.host_focus_generation_conflict(surface, observation.generation)
+        {
+            return transition;
+        }
         if let Some(current) = self
             .pane_request_observation_by_surface
             .get(&surface)
@@ -3566,6 +3946,14 @@ impl ViewportFocusCoordinator {
 
         self.panel_focus_by_surface
             .insert(surface, PanelFocusRecord::from_focus(observation.focus));
+        self.record_current_ui_focus(
+            surface,
+            match observation.focus {
+                PanelFocus::Item(item) => HostFocusState::Pane(item),
+                PanelFocus::None => HostFocusState::Workspace,
+            },
+            Some(observation.binding),
+        );
         self.pane_observation_by_surface
             .insert(surface, PanelFocusObservationRecord { observation });
         PaneFocusObservationTransition::Applied { cleared_intent }
@@ -3619,6 +4007,11 @@ impl ViewportFocusCoordinator {
             return PaneFocusObservationTransition::Rejected(
                 PaneFocusObservationRejection::ItemUnavailable { item },
             );
+        }
+        if let Some(transition) =
+            self.host_focus_generation_conflict(observation.surface, observation.generation)
+        {
+            return transition;
         }
         if intent
             .pane_observation_baseline
@@ -3680,6 +4073,13 @@ impl ViewportFocusCoordinator {
                 self.clear_admitted_pane_intent(intent.id);
                 self.panel_focus_by_surface
                     .insert(intent.surface, PanelFocusRecord::from_focus(intent.focus()));
+                self.record_current_ui_focus(
+                    intent.surface,
+                    intent
+                        .item
+                        .map_or(HostFocusState::Workspace, HostFocusState::Pane),
+                    intent.native_guard(),
+                );
                 PaneFocusObservationTransition::Focused {
                     cleared_intent: intent.id,
                 }
@@ -3695,6 +4095,13 @@ impl ViewportFocusCoordinator {
     /// Removes binding-scoped pending state while preserving per-surface focus history.
     pub fn clear_binding(&mut self, binding: ViewportBinding) -> ViewportFocusCleanup {
         let mut cleanup = ViewportFocusCleanup::default();
+        if self.current_ui_focus.is_some_and(|record| {
+            record
+                .scope
+                .is_some_and(|(_, guard)| guard == Some(binding))
+        }) {
+            cleanup.current_focus_changed = self.invalidate_current_ui_focus();
+        }
         let reservation_count = self.focus_lane.native_reservations.len();
         self.focus_lane
             .native_reservations
@@ -3766,6 +4173,16 @@ impl ViewportFocusCoordinator {
                     .is_some(),
             ..ViewportFocusCleanup::default()
         };
+        cleanup.pane_observation_removed |= self
+            .host_focus_observation_by_surface
+            .remove(&surface)
+            .is_some();
+        if self
+            .current_ui_focus
+            .is_some_and(|record| record.scope.is_some_and(|(current, _)| current == surface))
+        {
+            cleanup.current_focus_changed = self.invalidate_current_ui_focus();
+        }
         let reservation_count = self.focus_lane.native_reservations.len();
         self.focus_lane
             .native_reservations
@@ -3814,6 +4231,10 @@ impl ViewportFocusCoordinator {
     /// Removes focus history and commands for an item which no longer exists on its surface.
     pub fn clear_item(&mut self, item: ItemId) -> ViewportFocusCleanup {
         let mut cleanup = ViewportFocusCleanup::default();
+        if matches!(self.current_focus(), Some(CurrentUiFocus::Pane { item: focused, .. }) if focused == item)
+        {
+            cleanup.current_focus_changed = self.invalidate_current_ui_focus();
+        }
         let reservation_count = self.focus_lane.native_reservations.len();
         self.focus_lane
             .native_reservations
@@ -3933,6 +4354,17 @@ impl ViewportFocusCoordinator {
         item_is_on_surface: impl Fn(SurfaceId, ItemId) -> bool + Copy,
     ) -> ViewportFocusCleanup {
         let mut cleanup = ViewportFocusCleanup::default();
+
+        if let Some(record) = self.current_ui_focus
+            && let Some((surface, guard)) = record.scope
+            && (!surface_exists(surface)
+                || guard.is_some_and(|binding| !can_observe_binding(binding))
+                || matches!(record.focus, CurrentUiFocus::Pane { item, .. } if !item_is_on_surface(surface, item)))
+        {
+            cleanup.current_focus_changed = self.invalidate_current_ui_focus();
+        }
+        self.host_focus_observation_by_surface
+            .retain(|surface, _| surface_exists(*surface));
 
         self.focus_lane
             .quarantined
@@ -4061,6 +4493,14 @@ impl ViewportFocusCoordinator {
         &mut self,
         global_authority_removed: bool,
     ) -> ViewportFocusCleanup {
+        let current_focus_changed = if self
+            .current_ui_focus
+            .is_some_and(|record| record.scope.is_none_or(|(_, guard)| guard.is_some()))
+        {
+            self.invalidate_current_ui_focus()
+        } else {
+            false
+        };
         let pending_activation_cancelled = self.focus_lane.driving.take().map(|pending| {
             self.cancel_lifecycle_focus_barrier(pending.generation);
             (
@@ -4092,6 +4532,7 @@ impl ViewportFocusCoordinator {
         }
         ViewportFocusCleanup {
             global_authority_removed,
+            current_focus_changed,
             pending_activation_cancelled,
             pending_intent_removed,
             observe_only_activation_removed,
@@ -4100,8 +4541,45 @@ impl ViewportFocusCoordinator {
     }
 
     /// Clears workspace-bound focus authority while preserving monotonic identities.
-    pub fn reconcile_workspace_replacement(&mut self) {
-        self.focus_observations.reset_for_provider_replacement();
+    pub(crate) fn reconcile_workspace_replacement(
+        &mut self,
+        root_continuations: &[(ViewportBinding, ViewportBinding)],
+    ) {
+        let had_focus_fact = self.current_ui_focus.is_some()
+            || self.focus_observations.last_generation.is_some()
+            || self.focus_observations.requires_tombstone;
+        let continued_focus = self.focus_observations.current().and_then(|observed| {
+            let Authority::Known(GlobalFocusedWindow::Dock(focused)) = observed.focused else {
+                return None;
+            };
+            let successor = root_continuations
+                .iter()
+                .find_map(|&(before, after)| (before == focused).then_some(after))?;
+            Some(FocusObservationEnvelope::new(
+                observed.generation,
+                Authority::Known(GlobalFocusedWindow::Dock(successor)),
+                Authority::Known(None),
+            ))
+        });
+        if let Some(observation) = continued_focus {
+            // The exact resource continuation preserves physical window focus.
+            // Old pane state and focus-effect acknowledgements do not transfer.
+            self.focus_observations.current = Some(observation);
+            self.focus_observations.last_envelope = Some(observation);
+        } else if self
+            .focus_observations
+            .current()
+            .is_some_and(|observation| {
+                matches!(
+                    observation.focused,
+                    Authority::Known(GlobalFocusedWindow::Dock(_))
+                )
+            })
+        {
+            self.focus_observations.current = None;
+        }
+        // Layout replacement retains the provider and its replay watermark.
+        // Foreign/absent focus and transport revocation must survive it too.
         self.destroyed_previous_focus = None;
         self.focus_lane = FocusLane::default();
         self.pane_intent_watermark = None;
@@ -4109,7 +4587,19 @@ impl ViewportFocusCoordinator {
         self.pending_pane_intent = None;
         self.admitted_observe_only_activation = None;
         self.admitted_pane_intent = None;
+        self.current_ui_focus = None;
+        if had_focus_fact {
+            let focused =
+                self.focus_observations.current().and_then(|observation| {
+                    match observation.focused {
+                        Authority::Known(focused) => Some(focused),
+                        Authority::Unknown(_) => None,
+                    }
+                });
+            self.record_platform_ui_focus(focused);
+        }
         self.panel_focus_by_surface.clear();
+        self.host_focus_observation_by_surface.clear();
         self.pane_observation_by_surface.clear();
         self.pane_request_observation_by_surface.clear();
     }
@@ -4265,7 +4755,7 @@ impl ViewportFocusCoordinator {
         })
     }
 
-    fn pane_observation_generation(
+    pub(crate) fn pane_observation_generation(
         &self,
         surface: SurfaceId,
     ) -> Option<PaneFocusObservationGeneration> {
@@ -4277,6 +4767,11 @@ impl ViewportFocusCoordinator {
                 self.pane_request_observation_by_surface
                     .get(&surface)
                     .map(|record| record.observation.generation),
+            )
+            .chain(
+                self.host_focus_observation_by_surface
+                    .get(&surface)
+                    .map(|record| record.generation),
             )
             .max()
     }
@@ -5219,7 +5714,134 @@ mod tests {
     }
 
     #[test]
-    fn workspace_replacement_resets_the_focus_provider_namespace() {
+    fn exact_root_continuation_preserves_only_the_current_physical_focus_fact() {
+        let predecessor = binding();
+        let successor = ViewportBinding::new(
+            EngineAuthorityDomainId::new_for_test(1),
+            WorkspaceEpoch::new(2),
+            SurfaceId::new(2),
+            WindowToken::new(1),
+            WindowIncarnation::new(2),
+        );
+        for focus in [
+            GlobalFocusedWindow::Dock(predecessor),
+            GlobalFocusedWindow::Dock(successor),
+            GlobalFocusedWindow::Foreign,
+            GlobalFocusedWindow::None,
+        ] {
+            let mut coordinator = ViewportFocusCoordinator::default();
+            publish_platform_focus(
+                &mut coordinator,
+                focus_observation(5, focus),
+                1,
+                PlatformFocusRestoreGate::KnownAllReleased,
+            );
+            coordinator.reconcile_workspace_replacement(&[(predecessor, successor)]);
+            let expected_ui_focus = match focus {
+                GlobalFocusedWindow::Foreign => CurrentUiFocus::External,
+                GlobalFocusedWindow::None => CurrentUiFocus::None,
+                GlobalFocusedWindow::Dock(_) => CurrentUiFocus::Unknown,
+            };
+            assert_eq!(coordinator.current_focus(), Some(expected_ui_focus));
+            assert_eq!(coordinator.pending_pane_intent(), None);
+            assert_eq!(
+                coordinator.panel_focus(predecessor.surface()),
+                PanelFocusRecord::NoHistory
+            );
+            if focus == GlobalFocusedWindow::Dock(predecessor) {
+                let expected = focus_observation(5, GlobalFocusedWindow::Dock(successor));
+                assert_eq!(coordinator.focus_observation(), Some(expected));
+                assert!(matches!(
+                    publish_platform_focus(
+                        &mut coordinator,
+                        expected,
+                        2,
+                        PlatformFocusRestoreGate::KnownAllReleased,
+                    ),
+                    FocusObservationTransition::Duplicate
+                ));
+                assert!(matches!(
+                    publish_platform_focus(
+                        &mut coordinator,
+                        focus_observation(6, GlobalFocusedWindow::Foreign),
+                        3,
+                        PlatformFocusRestoreGate::KnownAllReleased,
+                    ),
+                    FocusObservationTransition::Applied(_)
+                ));
+                assert_eq!(coordinator.current_focus(), Some(CurrentUiFocus::External));
+            } else if matches!(
+                focus,
+                GlobalFocusedWindow::Foreign | GlobalFocusedWindow::None
+            ) {
+                assert_eq!(
+                    coordinator.focus_observation(),
+                    Some(focus_observation(5, focus))
+                );
+            } else {
+                assert_eq!(coordinator.focus_observation(), None);
+            }
+        }
+        let mut revoked = ViewportFocusCoordinator::default();
+        publish_platform_focus(
+            &mut revoked,
+            focus_observation(5, GlobalFocusedWindow::Dock(predecessor)),
+            1,
+            PlatformFocusRestoreGate::KnownAllReleased,
+        );
+        revoked.focus_observations.observe(None);
+        revoked.reconcile_workspace_replacement(&[(predecessor, successor)]);
+        assert_eq!(
+            revoked.focus_observation(),
+            None,
+            "continuation cannot revive revoked authority"
+        );
+        assert_eq!(revoked.current_focus(), Some(CurrentUiFocus::Unknown));
+    }
+
+    #[test]
+    fn repeated_workspace_replacement_cannot_turn_revoked_focus_into_no_history() {
+        for last in [
+            focus_tombstone(5),
+            focus_observation(5, GlobalFocusedWindow::Dock(binding())),
+        ] {
+            let mut coordinator = ViewportFocusCoordinator::default();
+            publish_platform_focus(
+                &mut coordinator,
+                focus_observation(3, GlobalFocusedWindow::Dock(binding())),
+                1,
+                PlatformFocusRestoreGate::KnownAllReleased,
+            );
+            publish_platform_focus(
+                &mut coordinator,
+                last,
+                2,
+                PlatformFocusRestoreGate::KnownAllReleased,
+            );
+            let stream = coordinator.focus_observations;
+            for _ in 0..2 {
+                coordinator.reconcile_workspace_replacement(&[]);
+                assert_eq!(coordinator.focus_observations, stream);
+                assert_eq!(coordinator.current_focus(), Some(CurrentUiFocus::Unknown));
+                assert_eq!(
+                    coordinator.workspace_replacement_focus(),
+                    WorkspaceReplacementFocus::OutsideDock
+                );
+                assert_eq!(coordinator.pending_pane_intent(), None);
+            }
+        }
+
+        let mut unobserved = ViewportFocusCoordinator::default();
+        unobserved.reconcile_workspace_replacement(&[]);
+        assert_eq!(unobserved.current_focus(), None);
+        assert_eq!(
+            unobserved.workspace_replacement_focus(),
+            WorkspaceReplacementFocus::NoHistory
+        );
+    }
+
+    #[test]
+    fn workspace_replacement_preserves_the_focus_provider_replay_watermark() {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
@@ -5228,7 +5850,7 @@ mod tests {
             PlatformFocusRestoreGate::KnownAllReleased,
         );
 
-        coordinator.reconcile_workspace_replacement();
+        coordinator.reconcile_workspace_replacement(&[]);
         let replacement = focus_observation(1, GlobalFocusedWindow::Dock(second_binding()));
         assert!(matches!(
             publish_platform_focus(
@@ -5236,6 +5858,17 @@ mod tests {
                 replacement,
                 2,
                 PlatformFocusRestoreGate::KnownAllReleased,
+            ),
+            FocusObservationTransition::Stale { .. }
+        ));
+        assert_eq!(coordinator.focus_observation(), None);
+        let replacement = focus_observation(100, GlobalFocusedWindow::Dock(second_binding()));
+        assert!(matches!(
+            publish_platform_focus(
+                &mut coordinator,
+                replacement,
+                3,
+                PlatformFocusRestoreGate::KnownAllReleased
             ),
             FocusObservationTransition::Applied(_)
         ));

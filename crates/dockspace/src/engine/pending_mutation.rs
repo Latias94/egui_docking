@@ -5,7 +5,6 @@ use super::*;
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum PendingMutation {
     DragRelease(PendingDragRelease),
-    ContainedRelease(PendingContainedTransformRelease),
     Rehome(PendingPresentationRehome),
 }
 
@@ -57,35 +56,27 @@ impl PendingMutation {
     pub(super) fn drag_release(&self) -> Option<&PendingDragRelease> {
         match self {
             Self::DragRelease(pending) => Some(pending),
-            Self::ContainedRelease(_) | Self::Rehome(_) => None,
-        }
-    }
-
-    pub(super) fn contained_release(&self) -> Option<&PendingContainedTransformRelease> {
-        match self {
-            Self::ContainedRelease(pending) => Some(pending),
-            Self::DragRelease(_) | Self::Rehome(_) => None,
+            Self::Rehome(_) => None,
         }
     }
 
     pub(super) fn rehome(&self) -> Option<&PendingPresentationRehome> {
         match self {
             Self::Rehome(pending) => Some(pending),
-            Self::DragRelease(_) | Self::ContainedRelease(_) => None,
+            Self::DragRelease(_) => None,
         }
     }
 
     pub(super) fn rehome_mut(&mut self) -> Option<&mut PendingPresentationRehome> {
         match self {
             Self::Rehome(pending) => Some(pending),
-            Self::DragRelease(_) | Self::ContainedRelease(_) => None,
+            Self::DragRelease(_) => None,
         }
     }
 
     pub(super) fn presentation(&self) -> &PendingPresentationTracker {
         match self {
             Self::DragRelease(pending) => &pending.presentation,
-            Self::ContainedRelease(pending) => &pending.presentation,
             Self::Rehome(pending) => &pending.presentation,
         }
     }
@@ -93,7 +84,6 @@ impl PendingMutation {
     pub(super) fn presentation_mut(&mut self) -> &mut PendingPresentationTracker {
         match self {
             Self::DragRelease(pending) => &mut pending.presentation,
-            Self::ContainedRelease(pending) => &mut pending.presentation,
             Self::Rehome(pending) => &mut pending.presentation,
         }
     }
@@ -107,13 +97,6 @@ impl PendingMutation {
                 .public()
                 .visual()
                 .surface(),
-            Self::ContainedRelease(pending) => pending
-                .transform
-                .preview
-                .as_ref()
-                .expect("pending contained release retains its exact preview")
-                .public()
-                .surface(),
             Self::Rehome(pending) => pending.target_surface,
         }
     }
@@ -121,9 +104,6 @@ impl PendingMutation {
     pub(super) fn matches_interaction(&self, interaction: HostInteractionPresentation) -> bool {
         match self {
             Self::DragRelease(pending) => interaction.drag_preview() == Some(pending.preview),
-            Self::ContainedRelease(pending) => {
-                interaction.contained_transform_preview() == Some(pending.preview)
-            }
             Self::Rehome(pending) => {
                 interaction.drag_preview() == Some(pending.preview.public().token())
             }
@@ -138,12 +118,6 @@ impl PendingMutation {
                     session: pending.session,
                 },
             )),
-            Self::ContainedRelease(pending) => Some((
-                pending.transform.owner.lease(),
-                InteractionStatus::ContainedTransforming {
-                    session: pending.session,
-                },
-            )),
             Self::Rehome(_) => None,
         }
     }
@@ -151,7 +125,6 @@ impl PendingMutation {
     pub(super) fn source_presentation(&self) -> HostFrameKey {
         match self {
             Self::DragRelease(pending) => pending.drag.presentation.presented.emission(),
-            Self::ContainedRelease(pending) => pending.transform.presentation.presented.emission(),
             Self::Rehome(pending) => pending.source_presentation.emission(),
         }
     }
@@ -187,8 +160,6 @@ impl DockEngine {
             Some(PendingMutation::DragRelease(_)) => {
                 self.settle_presented_pending_drag_release(events, interaction_events)
             }
-            Some(PendingMutation::ContainedRelease(_)) => self
-                .settle_presented_pending_contained_transform_release(events, interaction_events),
             Some(PendingMutation::Rehome(_)) => {
                 self.settle_presented_pending_presentation_rehome(events)
             }

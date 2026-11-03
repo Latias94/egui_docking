@@ -11,6 +11,7 @@ pub(crate) use timed::{
 
 use thiserror::Error;
 
+use crate::close_plan::ContentCloseScope;
 use crate::close_plan::{CloseItemRequirement, ClosePlan, ClosePlanTarget};
 use crate::command::{
     CommandOutcome, ContainedRosterSource, MovePayload, NodeSource, SplitResize, WorkspaceCommand,
@@ -32,7 +33,6 @@ use crate::intent::{
     PointerId, SurfaceBackgroundRootOffer, SurfacePointer, TabGestureSource,
 };
 use crate::model::{DockspaceActionOutcome, DockspaceActionRejection};
-use crate::operation::PreparedContentClose;
 use crate::pointer_journal::{
     DesktopRouteValidation, HostLocalPointerRoute, NativeLocalPointerRoute, PointerCaptureOwner,
     PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope, PointerStreamId,
@@ -423,7 +423,7 @@ pub enum EscapeDelivery {
 pub(crate) struct FrozenCloseClick {
     pub(crate) target: ClosePlanTarget,
     pub(crate) requirements: Vec<CloseItemRequirement>,
-    pub(crate) prepared: PreparedContentClose,
+    pub(crate) prepared: ContentCloseScope,
 }
 
 /// Exact tab-strip control action frozen by an authoritative Click-lane press.
@@ -1629,12 +1629,6 @@ pub enum InteractionOutcome {
         session: ContainedTransformSessionId,
         preview: ContainedTransformPreview,
     },
-    /// Release was consumed, but the exact contained rectangle is waiting for
-    /// a final-presentation observation before it can become durable.
-    ContainedTransformReleasePending {
-        session: ContainedTransformSessionId,
-        preview: ContainedTransformPreviewToken,
-    },
     /// The first authoritative matching transform release committed exactly once.
     ContainedTransformDelivered {
         session: ContainedTransformSessionId,
@@ -1708,10 +1702,6 @@ impl InteractionEvent {
 pub enum InteractionEventKind {
     /// A consumed drag release awaits exact final presentation.
     ReleasePending { session: DragSessionId },
-    /// A consumed contained release awaits exact final presentation.
-    ContainedTransformReleasePending {
-        session: ContainedTransformSessionId,
-    },
     /// One consumed release or otherwise unowned press was rejected once.
     Rejected {
         /// Gesture identity retained from before the terminal edge, or `Idle` for a press.
@@ -2398,10 +2388,6 @@ impl PublishedContainedTransformPreview {
 
     pub(crate) const fn placement(&self) -> ContainedTransformPlacement {
         self.placement
-    }
-
-    pub(crate) const fn painted(&self) -> bool {
-        self.painted
     }
 }
 

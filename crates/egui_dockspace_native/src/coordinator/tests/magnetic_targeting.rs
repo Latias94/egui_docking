@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use dockspace::geometry::LogicalPoint;
 use dockspace::runtime::{
+    DockspaceManipulationDelivery as Delivery, DockspaceManipulationStatus as Status,
     DockspacePreviewVisual, DockspaceReceiverDescriptor, NativeInputStorageLimit,
     NativeReceiverPurpose,
 };
@@ -9,7 +10,6 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute};
 use winit::keyboard::ModifiersState;
 
-use super::callback_prefix::commit_boundary;
 use super::*;
 
 fn captured_record(
@@ -193,6 +193,20 @@ fn resolve(
 }
 
 fn preview(frame: &mut NativeHostFrame<'_>) -> Option<DockspacePreviewVisual> {
+    if frame.frame.paint_plan(FIRST_SURFACE).unwrap().is_none() {
+        frame
+            .frame
+            .measure_surface(
+                FIRST_SURFACE,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    80.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
     let mut preview = None;
     frame
         .frame
@@ -214,6 +228,13 @@ fn finish(mut frame: NativeHostFrame<'_>) -> HostFrameReport {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     frame.commit().unwrap()
+}
+
+fn commit_boundary(native: &mut NativeCoordinator) -> HostFrameReport {
+    let frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    finish(frame)
 }
 
 #[test]
@@ -412,16 +433,9 @@ fn same_batch_press_modifier_move_and_release_choose_the_owner_during_reduction(
             .begin_host_frame(|query| resolve(query, &receiver))
             .unwrap();
         let expected = preview(&mut dropped);
-        assert_eq!(
-            matches!(
-                expected,
-                Some(DockspacePreviewVisual::Dock {
-                    surface: FIRST_SURFACE,
-                    ..
-                })
-            ),
-            !shift,
-            "missing modifiers on subsequent real edges and fresh queries must preserve Shift"
+        assert!(
+            expected.is_none(),
+            "a completed release leaves no active preview"
         );
         drop(dropped);
         assert_eq!(native.session.version(), version);
@@ -431,13 +445,52 @@ fn same_batch_press_modifier_move_and_release_choose_the_owner_during_reduction(
             .unwrap();
         assert_eq!(preview(&mut retry), expected);
         let report = finish(retry);
-        assert!(!report.workspace_changed());
+        assert_eq!(report.workspace_changed(), !shift);
+        let [terminal] = report.manipulation_feedback() else {
+            panic!("one release must publish exactly one result: {report:?}");
+        };
+        if shift {
+            assert!(matches!(
+                terminal.status(),
+                Status::Rejected(_) | Status::Cancelled(_)
+            ));
+            assert_eq!(native.session.version(), version);
+            assert_eq!(
+                native
+                    .session
+                    .view()
+                    .item(ItemId::new(2))
+                    .unwrap()
+                    .surface(),
+                SECOND_SURFACE
+            );
+        } else {
+            assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+            assert_ne!(native.session.version(), version);
+            assert_eq!(
+                native
+                    .session
+                    .view()
+                    .item(ItemId::new(2))
+                    .unwrap()
+                    .surface(),
+                FIRST_SURFACE
+            );
+        }
         assert!(!native.session.has_pending_native_input());
+        assert!(!native.session.has_active_gesture());
+        assert!(!native.session.has_pending_presentation());
+        assert_eq!(native.session.native_input_recorded_count(), recorded + 4);
+        let committed = native.session.version();
+        let repeated = commit_boundary(&mut native);
+        assert!(repeated.manipulation_feedback().is_empty());
+        assert!(!repeated.workspace_changed());
+        assert_eq!(native.session.version(), committed);
     }
 }
 
 #[test]
-fn pending_release_keeps_its_dock_preview_after_late_shift() {
+fn committed_release_survives_late_shift_and_a_dropped_successor_output() {
     let (mut native, _, binding) = presented_routes();
     let (receiver, source, target) = source_and_target(&mut native);
     for (ordinal, point, state, hover) in [
@@ -452,20 +505,40 @@ fn pending_release_keeps_its_dock_preview_after_late_shift() {
             mouse_event(point, state, hover, None),
         );
     }
+    let version = native.session.version();
     let mut release = native
         .begin_host_frame(|query| resolve(query, &receiver))
         .unwrap();
-    let frozen = preview(&mut release);
-    assert!(matches!(
-        frozen,
-        Some(DockspacePreviewVisual::Dock {
-            surface: FIRST_SURFACE,
-            ..
-        })
-    ));
-    finish(release);
-    assert!(native.session.has_pending_presentation());
+    assert!(preview(&mut release).is_none());
+    let receipt = release
+        .frame
+        .paint_plan(FIRST_SURFACE)
+        .unwrap()
+        .unwrap()
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .unwrap();
+    release.frame.confirm_surface_painted(receipt).unwrap();
+    let mut released = finish(release);
+    let [terminal] = released.manipulation_feedback() else {
+        panic!("the successful release must deliver once: {released:?}");
+    };
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert!(released.workspace_changed());
+    assert_ne!(native.session.version(), version);
+    let committed = native.session.version();
+    assert_eq!(
+        native
+            .session
+            .view()
+            .item(ItemId::new(2))
+            .unwrap()
+            .surface(),
+        FIRST_SURFACE
+    );
+    assert!(!native.session.has_pending_presentation());
     assert!(!native.session.has_active_gesture());
+    let [output] = released.take_painted_outputs().try_into().unwrap();
+    let artifact = output.presentation_artifact();
     let late_shift = captured_record(
         &native,
         binding,
@@ -482,9 +555,36 @@ fn pending_release_keeps_its_dock_preview_after_late_shift() {
     let mut frame = native
         .begin_host_frame(|query| resolve(query, &receiver))
         .unwrap();
-    assert_eq!(preview(&mut frame), frozen);
-    assert!(!finish(frame).workspace_changed());
-    assert!(native.session.has_pending_presentation());
+    assert!(preview(&mut frame).is_none());
+    let late = finish(frame);
+    assert!(!late.workspace_changed());
+    assert!(late.manipulation_feedback().is_empty());
+    native
+        .session
+        .report_surface_presentation(output, SurfacePresentationResult::Dropped)
+        .unwrap();
+    let settled = commit_boundary(&mut native);
+    assert_eq!(
+        settled
+            .surface_presentation_commits()
+            .iter()
+            .filter(|commit| commit.settles(artifact))
+            .count(),
+        1
+    );
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(native.session.version(), committed);
+    assert_eq!(
+        native
+            .session
+            .view()
+            .item(ItemId::new(2))
+            .unwrap()
+            .surface(),
+        FIRST_SURFACE
+    );
+    assert!(!native.session.has_pending_presentation());
 }
 
 #[test]
@@ -633,13 +733,27 @@ fn shift_keeps_direct_guide_targeting_available() {
     let mut frame = native
         .begin_host_frame(|query| resolve(query, &receiver))
         .unwrap();
-    assert!(matches!(
-        preview(&mut frame),
-        Some(DockspacePreviewVisual::Dock {
-            surface: FIRST_SURFACE,
-            ..
-        })
-    ));
-    finish(frame);
-    assert!(native.session.has_pending_presentation());
+    assert!(preview(&mut frame).is_none());
+    let released = finish(frame);
+    let [terminal] = released.manipulation_feedback() else {
+        panic!("the explicit guide must deliver despite Shift: {released:?}");
+    };
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert!(released.workspace_changed());
+    assert_eq!(
+        native
+            .session
+            .view()
+            .item(ItemId::new(2))
+            .unwrap()
+            .surface(),
+        FIRST_SURFACE
+    );
+    assert!(!native.session.has_pending_presentation());
+    assert!(!native.session.has_active_gesture());
+    let version = native.session.version();
+    let settled = commit_boundary(&mut native);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(native.session.version(), version);
 }

@@ -15,5 +15,8 @@ serde = ["dockspace/serde"]
 [dependencies]
 dockspace = { path = "../../crates/dockspace", default-features = false }
 
+[dev-dependencies]
+dhat = "=0.3.3"
+
 [lints.rust]
 unsafe_code = "forbid"

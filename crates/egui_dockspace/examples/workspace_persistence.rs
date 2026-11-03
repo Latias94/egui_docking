@@ -446,6 +446,9 @@ mod tests {
             })],
         );
 
+        // The encoded close action is consumed by the next update.
+        assert!(app.dockspace.view().item(document).is_some());
+        let _ = run_frame(&context, &mut app, Vec::new());
         assert!(app.dockspace.view().item(document).is_none());
         assert_eq!(
             app.panes

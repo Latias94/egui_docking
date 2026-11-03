@@ -229,7 +229,7 @@ fn submit_empty_core_pointer(
 }
 
 #[test]
-fn retained_target_preview_cannot_borrow_an_unpresented_measurement_basis_on_release() {
+fn presented_target_preview_survives_unpresented_measurements_without_borrowing_them() {
     let (mut engine, mut host) = core_fixture();
     let version = engine.version();
     let presented = engine.interaction_projection(SURFACE).unwrap();
@@ -371,17 +371,87 @@ fn retained_target_preview_cannot_borrow_an_unpresented_measurement_basis_on_rel
     );
     assert!(engine.current_contained_projection_is_owned(SURFACE));
     assert!(
-        !engine.drag_preview_authority_is_current(&drag),
-        "source-only C derived from B cannot authorize A's target proof"
+        engine.drag_preview_authority_is_current(&drag),
+        "actual A independently authorizes its own target proof despite unpresented B and C"
     );
 
-    // Exercise release after evaluation without a fresh C hover replacing A's proof.
     let cause = ReductionCause::SurfaceContribution {
         tick: engine.last_reducer_tick(),
         surface: SURFACE,
         base: source_only_stamp,
     };
     let policy = engine.policy.clone();
+    let crate::interaction::PreviewProof::Dock { command, .. } = drag.preview().unwrap().proof()
+    else {
+        panic!("A must retain the exact docking proposal solved from its presented layout");
+    };
+    let mut expected_workspace = engine.workspace().clone();
+    let expected = crate::transaction::WorkspaceTransaction::from_commands([command.clone()])
+        .apply(&mut expected_workspace, &policy)
+        .unwrap();
+    assert!(expected.changed());
+
+    // Without actual A, source-only C must not substitute its unpresented B basis.
+    let mut without_actual = engine.candidate();
+    without_actual
+        .presentation_authority
+        .scene
+        .revoke_interaction_authority_for_streams(&std::collections::BTreeSet::from([
+            authority.stream()
+        ]));
+    assert!(without_actual.interaction_projection(SURFACE).is_none());
+    assert!(without_actual.current_contained_projection_is_owned(SURFACE));
+    assert_eq!(
+        without_actual
+            .scene()
+            .ready_candidate(SURFACE)
+            .unwrap()
+            .stamp(),
+        source_only_stamp
+    );
+    assert!(!without_actual.drag_preview_authority_is_current(&drag));
+    let mut rejected_events = Vec::new();
+    let rejected = without_actual
+        .finish_drag_release_after_evaluation(
+            cause,
+            FocusCausalStamp::new(PaneFocusIntentGeneration::new(1), cause),
+            drag.owner,
+            session,
+            &policy,
+            &mut rejected_events,
+            &mut Vec::new(),
+        )
+        .unwrap();
+    assert!(matches!(
+        rejected,
+        InteractionOutcome::Cancelled {
+            reason: InteractionCancelReason::UnknownTargetAuthority,
+            ..
+        }
+    ));
+    assert!(rejected_events.is_empty());
+    assert!(without_actual.pending_mutation.is_none());
+    assert_eq!(
+        without_actual.interaction().status(),
+        InteractionStatus::Idle
+    );
+    assert_eq!(without_actual.version(), version);
+    assert_eq!(without_actual.workspace(), engine.workspace());
+    assert_eq!(
+        without_actual
+            .workspace()
+            .contained_floating(FLOATING)
+            .unwrap()
+            .rect,
+        initial_rect()
+    );
+
+    // The original engine still owns actual A and must deliver that same proposal now.
+    assert_eq!(
+        engine.interaction_projection(SURFACE).unwrap().plan_stamp(),
+        target_basis
+    );
+    assert!(engine.drag_preview_authority_is_current(&drag));
     let mut events = Vec::new();
     let outcome = engine
         .finish_drag_release_after_evaluation(
@@ -396,14 +466,21 @@ fn retained_target_preview_cannot_borrow_an_unpresented_measurement_basis_on_rel
         .unwrap();
     assert!(matches!(
         outcome,
-        InteractionOutcome::Cancelled {
-            reason: InteractionCancelReason::UnknownTargetAuthority,
-            ..
-        }
+        InteractionOutcome::DragDelivered {
+            session: delivered,
+            delivery: crate::interaction::InteractionDelivery::Workspace {
+                kind: crate::interaction::WorkspaceDeliveryKind::Dock,
+                changed: true,
+                ..
+            },
+        } if delivered == session
     ));
-    assert!(
-        events.is_empty(),
-        "release must never deliver the stale dock command"
+    let [event] = events.as_slice() else {
+        panic!("the release must commit exactly the docking proposal from A");
+    };
+    assert_eq!(
+        event.kind(),
+        &crate::event::WorkspaceEventKind::CommandCommitted(expected.outcomes()[0].clone())
     );
     assert!(
         engine
@@ -413,15 +490,8 @@ fn retained_target_preview_cannot_borrow_an_unpresented_measurement_basis_on_rel
             .is_none()
     );
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
-    assert_eq!(engine.version(), version);
-    assert_eq!(
-        engine
-            .workspace()
-            .contained_floating(FLOATING)
-            .unwrap()
-            .rect,
-        initial_rect()
-    );
+    assert_ne!(engine.version(), version);
+    assert_eq!(engine.workspace(), &expected_workspace);
 }
 
 #[test]
@@ -574,6 +644,17 @@ fn cancelled_presented_resize_cannot_rearm_title_resize_or_tab_from_old_projecti
             initial_rect()
         );
 
+        let descriptor = match source {
+            "title" => projected.title,
+            "resize" => projected.resize,
+            "tab" => tab,
+            "splitter" => splitter,
+            _ => unreachable!(),
+        };
+        let receiver = session
+            .bind_presented_receiver(&descriptor)
+            .expect("the presented projection still belongs to the active resize");
+
         let surface = session.presented_surface(SURFACE).unwrap();
         let route = HostPointerRoute::new(surface, moved);
         let mut frame = session.begin_host_frame().unwrap();
@@ -594,14 +675,10 @@ fn cancelled_presented_resize_cannot_rearm_title_resize_or_tab_from_old_projecti
         assert!(!session.has_active_gesture());
         let surface = session.presented_surface(SURFACE).unwrap();
         assert!(surface.matches_presentation_artifact(artifact));
-        let descriptor = match source {
-            "title" => projected.title,
-            "resize" => projected.resize,
-            "tab" => tab,
-            "splitter" => splitter,
-            _ => unreachable!(),
-        };
-        let receiver = session.bind_presented_receiver(&descriptor).unwrap();
+        assert!(
+            session.bind_presented_receiver(&descriptor).is_none(),
+            "{source}: cancelled geometry cannot mint a fresh receiver"
+        );
         let start = receiver.center();
         let moved = offset(start, 10.0, 0.0);
         let press_route = HostPointerRoute::new(surface, start);

@@ -11,14 +11,13 @@ use std::time::Duration;
 
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalSize};
 use dockspace::runtime::{
-    DockspaceManipulationDelivery, DockspaceManipulationFeedback,
-    DockspaceManipulationPendingReason, DockspaceManipulationStatus, DockspaceReceiverDescriptor,
-    NativeCreateReadiness, NativeEffectAcknowledgement, NativeEffectOperation,
-    NativeInputStorageLimit, NativeLocalGeometry, NativeLocalPointerLocation,
-    NativeProducerStorageLimit, NativeReceiverPurpose, NativeReceiverQuery,
-    NativeReportStorageLimit, NativeStagingPresentationPhase, NativeSurfaceBinding,
-    PaintedSurfaceOutput, SurfacePaintProgramOperation, SurfacePaintProgramStep,
-    SurfacePresentationResult, UniformSurfaceMetrics,
+    DockspaceManipulationDelivery, DockspaceManipulationFeedback, DockspaceManipulationStatus,
+    DockspaceReceiverDescriptor, NativeCreateReadiness, NativeEffectAcknowledgement,
+    NativeEffectOperation, NativeInputStorageLimit, NativeLocalGeometry,
+    NativeLocalPointerLocation, NativeProducerStorageLimit, NativeReceiverPurpose,
+    NativeReceiverQuery, NativeReportStorageLimit, NativeStagingPresentationPhase,
+    NativeSurfaceBinding, PaintedSurfaceOutput, SurfacePaintProgramOperation,
+    SurfacePaintProgramStep, SurfacePresentationResult, UniformSurfaceMetrics,
 };
 use winit::dpi::{PhysicalPosition, PhysicalSize as WinitPhysicalSize};
 use winit::event::{
@@ -271,6 +270,20 @@ impl Scene {
 }
 
 fn paint(frame: &mut NativeHostFrame<'_>) -> Scene {
+    if frame.frame.paint_plan(SOURCE).unwrap().is_none() {
+        frame
+            .frame
+            .measure_surface(
+                SOURCE,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
     let plan = frame.frame.paint_plan(SOURCE).unwrap().unwrap();
     let mut tabs = Vec::new();
     let receipt = plan
@@ -292,11 +305,11 @@ fn paint(frame: &mut NativeHostFrame<'_>) -> Scene {
 }
 
 fn present_source(state: &mut NativeRuntimeState<Panes>, source: NativeSurfaceBinding) -> Scene {
-    let mut measured = state
+    let mut frame = state
         .coordinator
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
-    measured
+    frame
         .frame
         .measure_surface(
             SOURCE,
@@ -307,11 +320,6 @@ fn present_source(state: &mut NativeRuntimeState<Panes>, source: NativeSurfaceBi
             )
             .unwrap(),
         )
-        .unwrap();
-    finish(measured);
-    let mut frame = state
-        .coordinator
-        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
     let scene = paint(&mut frame);
     let mut report = finish(frame);
@@ -412,6 +420,7 @@ fn accepted_release(
     let press = scene.point(FIRST, 0.25);
     let target = scene.point(SECOND, 0.625);
     let context = egui::Context::default();
+    let version = state.coordinator.session().version();
     for (ordinal, point, button) in [
         (2, press, Some(ElementState::Pressed)),
         (3, target, None),
@@ -434,24 +443,25 @@ fn accepted_release(
         if button == Some(ElementState::Released) {
             paint(&mut frame);
             let mut report = finish(frame);
-            let [pending] = report.manipulation_feedback() else {
-                panic!("one accepted release must publish one pending result: {report:?}");
+            let [terminal] = report.manipulation_feedback() else {
+                panic!("one accepted release must publish exactly one terminal: {report:?}");
             };
-            let pending = *pending;
+            let terminal = *terminal;
             assert_eq!(
-                pending.status(),
-                DockspaceManipulationStatus::Pending(
-                    DockspaceManipulationPendingReason::AwaitingPresentation
-                )
+                terminal.status(),
+                DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
             );
+            assert!(report.workspace_changed());
+            assert_ne!(state.coordinator.session().version(), version);
             let [output] = report.take_painted_outputs().try_into().unwrap();
             assert!(output.matches_native_binding(source));
             state.coordinator.settle_host_frame_report(&report).unwrap();
             assert!(!state.coordinator.session().has_active_gesture());
-            assert!(state.coordinator.session().has_pending_presentation());
+            assert!(!state.coordinator.session().has_pending_presentation());
             let view = state.coordinator.session().view();
-            assert_eq!(view.item(FIRST).unwrap().tabs().items(), [FIRST, SECOND]);
-            return (pending, output);
+            assert_eq!(view.item(FIRST).unwrap().tabs().items(), [SECOND, FIRST]);
+            assert_eq!(view.item(FIRST).unwrap().surface(), SOURCE);
+            return (terminal, output);
         }
         let report = finish(frame);
         assert!(report.manipulation_feedback().is_empty());
@@ -493,6 +503,8 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
         coordinator,
         root_surface: SURFACE,
         instance_id: egui::Id::unique("elapsed-service-three-owners"),
+        owned_update: None,
+        pending_service: false,
         style: DockStyle::default(),
         panes: Panes(Vec::new()),
         application_actions: Default::default(),
@@ -570,16 +582,18 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
     });
     assert_eq!(close.binding(), root);
     let accepted_at = clock.now();
-    let (pending, output) = accepted_release(&mut state, source, &scene, &clock);
+    let (delivered, output) = accepted_release(&mut state, source, &scene, &clock);
+    let release_elapsed = clock.now() - accepted_at;
+    assert!(release_elapsed <= Duration::from_millis(100));
     let artifact = output.presentation_artifact();
-    let observed = Arc::new(std::sync::Mutex::new((0_usize, 0_usize)));
+    let observed = Arc::new(std::sync::Mutex::new((1_usize, 0_usize)));
     let observer = Arc::clone(&observed);
     state.coordinator.observe_reports_for_test(move |report| {
         let mut counts = observer.lock().unwrap();
         for feedback in report
             .manipulation_feedback()
             .iter()
-            .filter(|feedback| feedback.manipulation_id() == pending.manipulation_id())
+            .filter(|feedback| feedback.manipulation_id() == delivered.manipulation_id())
         {
             assert_eq!(
                 feedback.status(),
@@ -619,8 +633,6 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
     let mut close_turn = None;
     let mut create_turn = None;
     let mut child = None;
-    let mut terminal = None;
-    let mut release_elapsed = None;
     let mut settlements = 0;
     let captured_before_refill = bridge.captured_through_for_test();
     for turn in 0..INPUT_TURNS + DRAIN_TURNS {
@@ -662,23 +674,13 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
                     .iter()
                     .filter(|commit| commit.settles(artifact))
                     .count();
-                for feedback in report.manipulation_feedback() {
-                    assert!(
-                        terminal.replace(*feedback).is_none(),
-                        "release must terminate once"
-                    );
-                    assert_eq!(feedback.manipulation_id(), pending.manipulation_id());
-                    assert_ne!(feedback.id(), pending.id());
-                    assert_eq!(
-                        feedback.status(),
-                        DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
-                    );
-                    let elapsed = clock.now() - accepted_at;
-                    assert!(elapsed <= Duration::from_millis(100));
-                    release_elapsed = Some(elapsed);
-                }
+                assert!(
+                    report.manipulation_feedback().is_empty(),
+                    "output settlement cannot repeat delivery"
+                );
+                assert!(!report.workspace_changed());
                 state
-                    .settle_terminal_action_report(
+                    .settle_published_report(
                         &context,
                         None,
                         SURFACE,
@@ -689,11 +691,10 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
                     )
                     .unwrap();
                 state.settle_internal_application_transitions().unwrap();
-                if terminal.is_some() {
+                if settlements == 1 {
                     break;
                 }
             }
-            assert!(terminal.is_some());
             assert_eq!(settlements, 1);
             assert!(!state.coordinator.session().has_pending_presentation());
         }
@@ -752,6 +753,7 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
         for item in [FIRST, SECOND] {
             assert_eq!(view.item(item).unwrap().surface(), SOURCE);
         }
+        assert_eq!(view.item(FIRST).unwrap().tabs().items(), [SECOND, FIRST]);
         assert_eq!(view.item(WAITING_ITEM).unwrap().surface(), WAITING);
         bridge.with_close_control(|control| {
             assert_eq!(control.request_for_binding(root), Some(close));
@@ -782,7 +784,6 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
     assert!(exhausted_turns >= 3);
     assert!(close_turn.is_some_and(|turn| turn < INPUT_TURNS - 1));
     assert!(create_turn.is_some_and(|turn| turn < INPUT_TURNS - 1));
-    assert!(terminal.is_some());
     assert_eq!(settlements, 1);
     assert_eq!(
         bridge.captured_through_for_test(),
@@ -818,6 +819,6 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
     assert!(controlled_elapsed <= Duration::from_millis(100));
     eprintln!(
         "elapsed-service: exhausted_turns={exhausted_turns} close_turn={close_turn:?} create_turn={create_turn:?} release={:?} controlled_elapsed={controlled_elapsed:?} translation_cost=3ms hard_realtime=false",
-        release_elapsed.unwrap(),
+        release_elapsed,
     );
 }

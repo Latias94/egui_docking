@@ -977,8 +977,18 @@ fn dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_onc
         .create_native_surface_current(TARGET, HOST, NativeWindowPlacement::new(placement()))
         .unwrap();
     frame
+        .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert_eq!(
+        frame
+            .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+            .unwrap_err()
+            .kind(),
+        DockspaceRuntimeErrorKind::HostProtocol
+    );
+    frame
         .commit()
-        .expect_err("an incomplete creation frame must roll back");
+        .expect_err("a duplicate contribution must roll back native creation");
     fixture.assert_unchanged();
     assert_eq!(fixture.session.native_input_recorded_count(), recorded);
     assert_eq!(
@@ -1016,10 +1026,20 @@ fn dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_onc
     let frame = native_frame(&mut fixture.session);
     drop(frame);
     fixture.assert_pending(child);
-    let frame = native_frame(&mut fixture.session);
+    let mut frame = native_frame(&mut fixture.session);
+    frame
+        .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert_eq!(
+        frame
+            .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+            .unwrap_err()
+            .kind(),
+        DockspaceRuntimeErrorKind::HostProtocol
+    );
     frame
         .commit()
-        .expect_err("an incomplete readiness frame must roll back");
+        .expect_err("a duplicate contribution must roll back native readiness");
     fixture.assert_pending(child);
     let ready = idle(&mut fixture.session);
     assert!(ready.native_admissions().is_empty());
@@ -1045,10 +1065,20 @@ fn dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_onc
         .unwrap();
     drop(frame);
     fixture.assert_pending(child);
-    let frame = native_frame(&mut fixture.session);
+    let mut frame = native_frame(&mut fixture.session);
+    frame
+        .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert_eq!(
+        frame
+            .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+            .unwrap_err()
+            .kind(),
+        DockspaceRuntimeErrorKind::HostProtocol
+    );
     frame
         .commit()
-        .expect_err("an incomplete admission frame must roll back");
+        .expect_err("a duplicate contribution must roll back native admission");
     fixture.assert_pending(child);
     let admitted = idle(&mut fixture.session);
     fixture.assert_admitted(child, artifact, &admitted);
@@ -1126,8 +1156,18 @@ fn cancellation_retry_keeps_its_owner_and_rejects_a_late_create_ack_for_the_new_
             drop(frame);
         } else {
             frame
+                .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            assert_eq!(
+                frame
+                    .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+                    .unwrap_err()
+                    .kind(),
+                DockspaceRuntimeErrorKind::HostProtocol
+            );
+            frame
                 .commit()
-                .expect_err("an incomplete cancellation frame must retain its original owner");
+                .expect_err("a duplicate contribution must retain the original cancellation owner");
         }
         fixture.assert_pending(child);
         assert!(fixture.session.has_pending_native_create());

@@ -712,19 +712,20 @@ impl DockEngine {
             .workspace
             .capture_item_source(tab.root, tab.tabs, tab.item)
             .map_err(|error| invariant(error.to_string()))?;
-        let mut candidate = self.clone_workspace_candidate();
-        let report =
-            match WorkspaceTransaction::from_commands([WorkspaceCommand::Select { source }])
-                .apply(&mut candidate, policy)
-            {
-                Ok(report) => report,
-                Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::CommandRejected(source),
-                    ));
-                }
-                Err(error) => return Err(invariant(error.to_string())),
-            };
+        let prepared = match crate::operation::prepare_transaction(
+            &self.workspace,
+            policy,
+            &[WorkspaceCommand::Select { source }],
+        ) {
+            Ok(prepared) => prepared,
+            Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::CommandRejected(source),
+                ));
+            }
+            Err(error) => return Err(invariant(error.to_string())),
+        };
+        let (candidate, report) = prepared.into_parts(&self.workspace);
         if let Some(surface) = self
             .first_pending_presentation_source_mismatch(
                 &candidate,

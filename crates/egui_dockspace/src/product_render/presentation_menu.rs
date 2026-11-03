@@ -7,11 +7,12 @@ use dockspace::runtime::{
     DockspaceRuntimeError, PresentationMenuAnchorPaintRecord, SurfacePaintDisposition,
 };
 use egui::accesskit::{Action, HasPopup, Role};
-use egui::{Button, Popup, Sense, vec2};
+use egui::{Button, Popup, Sense, UiBuilder, vec2};
 
 use crate::touch_menu::take_touch_context_menu;
 
 use super::RenderContext;
+use super::actions::clicked_response_origin;
 use super::geometry::{accesskit_bounds, egui_rect};
 
 const COMMANDS: [DockspacePresentationCommandKind; 8] = [
@@ -104,7 +105,7 @@ pub(super) fn paint(
         .flatten()
         .collect::<Vec<_>>();
     let mut activated = None;
-    let mut close_group = false;
+    let mut close_group = None;
     let popup = Popup::menu(&response).id(popup_id);
     let popup = if touch_requested {
         popup.open_memory(None)
@@ -119,7 +120,12 @@ pub(super) fn paint(
         for command in commands.iter().copied() {
             let label = command_label(command.kind());
             let enabled = ui_enabled && command.is_ready();
-            let response = ui.add_enabled(enabled, Button::new(label));
+            let response = ui
+                .scope_builder(
+                    UiBuilder::new().scope_id(popup_id.with(("command", command.kind()))),
+                    |ui| ui.add_enabled(enabled, Button::new(label)),
+                )
+                .inner;
             ui.ctx().accesskit_node_builder(response.id, |node| {
                 node.set_role(Role::MenuItem);
                 node.set_label(label);
@@ -139,16 +145,23 @@ pub(super) fn paint(
             } else {
                 response
             };
-            if response.clicked() {
-                activated = Some(command);
+            if let Some(origin) = clicked_response_origin(ui, &response) {
+                activated = Some((origin, command));
                 ui.close();
             }
         }
         ui.separator();
-        let response = ui.add_enabled(
-            ui_enabled && context.plan.prepare_root_close(anchor.root()).is_some(),
-            Button::new("Close Group"),
-        );
+        let response = ui
+            .scope_builder(
+                UiBuilder::new().scope_id(popup_id.with("close-group")),
+                |ui| {
+                    ui.add_enabled(
+                        ui_enabled && context.plan.prepare_root_close(anchor.root()).is_some(),
+                        Button::new("Close Group"),
+                    )
+                },
+            )
+            .inner;
         ui.ctx().accesskit_node_builder(response.id, |node| {
             node.set_role(Role::MenuItem);
             node.set_label("Close Group");
@@ -160,19 +173,21 @@ pub(super) fn paint(
                 node.clear_actions();
             }
         });
-        if response.clicked() {
-            close_group = true;
+        if let Some(origin) = clicked_response_origin(ui, &response) {
+            close_group = Some(origin);
             ui.close();
         }
     });
 
-    if let Some(command) = activated
+    if let Some((origin, command)) = activated
         && let Some(action) = context.plan.prepare_presentation_command(command)
     {
-        context.push_local_action(action);
+        context.push_local_action(origin, action);
     }
-    if close_group && let Some(action) = context.plan.prepare_root_close(anchor.root()) {
-        context.push_local_action(action);
+    if let Some(origin) = close_group
+        && let Some(action) = context.plan.prepare_root_close(anchor.root())
+    {
+        context.push_local_action(origin, action);
     }
     Ok(())
 }

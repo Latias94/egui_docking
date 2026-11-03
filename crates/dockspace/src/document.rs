@@ -393,6 +393,16 @@ impl BoundDocumentState {
         Arc::clone(&self.item_identity_scope)
     }
 
+    pub(crate) fn prepare_publication(
+        &self,
+        engine: &DockEngine,
+    ) -> Result<Self, DockspaceDocumentCaptureError> {
+        let viewport_placements = self.reconciled_native_host_preferences(engine)?;
+        let mut binding = self.clone();
+        binding.viewport_placements = viewport_placements;
+        Ok(binding)
+    }
+
     pub(crate) fn prepare_capture(
         &self,
         engine: &DockEngine,
@@ -459,16 +469,18 @@ impl BoundDocumentState {
         document
     }
 
-    fn reconciled_viewport_placements(
+    fn reconciled_native_host_preferences(
         &self,
         engine: &DockEngine,
     ) -> Result<ViewportPlacementPreferences, DockspaceDocumentCaptureError> {
         let mut placements = self.viewport_placements.clone();
         let mut surfaces = BTreeSet::new();
+        let mut owned_surfaces = BTreeSet::new();
         for (surface, _) in engine.workspace().surfaces() {
             surfaces.insert(surface);
-            let record = engine.viewport().viewport(surface);
-            let identity = record
+            let identity = engine
+                .viewport()
+                .viewport(surface)
                 .map(|record| (record.role(), record.binding()))
                 .or_else(|| {
                     engine
@@ -487,6 +499,7 @@ impl BoundDocumentState {
                 }
                 continue;
             };
+            owned_surfaces.insert(surface);
             let native_host = match role {
                 ViewportRole::Root => NativeSurfaceHostPreference::Root,
                 ViewportRole::Child => NativeSurfaceHostPreference::Child {
@@ -496,7 +509,53 @@ impl BoundDocumentState {
                 },
             };
             placements.set_native_host(surface, native_host);
-            let Some(record) = record else {
+        }
+        // Native-create and cleanup owners can retain bindings before their
+        // prospective surfaces acquire durable graph membership.
+        if let Some(surface) = engine
+            .viewport()
+            .registry()
+            .records()
+            .filter(|(_, record)| !engine.viewport().is_staging_binding(record.binding()))
+            .map(|(surface, _)| surface)
+            .chain(
+                engine
+                    .viewport()
+                    .pending_recoveries()
+                    .map(|(surface, _)| surface),
+            )
+            .find(|surface| !surfaces.contains(surface))
+        {
+            return Err(DockspaceDocumentCaptureError::UnknownPlacementSurface(
+                surface,
+            ));
+        }
+        placements.retain_surfaces(&surfaces);
+        // Inspect the complete pre-clear relation so a recovery chain cannot
+        // acquire a different meaning merely because its host sorts first.
+        let mut clear_hosting = Vec::new();
+        for surface in placements.surface_ids() {
+            let Some(error) = native_host_preference_error(surface, &surfaces, &placements) else {
+                continue;
+            };
+            if owned_surfaces.contains(&surface) {
+                return Err(error.into());
+            }
+            clear_hosting.push(surface);
+        }
+        for surface in clear_hosting {
+            placements.clear_native_host(surface);
+        }
+        Ok(placements)
+    }
+
+    fn reconciled_viewport_placements(
+        &self,
+        engine: &DockEngine,
+    ) -> Result<ViewportPlacementPreferences, DockspaceDocumentCaptureError> {
+        let mut placements = self.reconciled_native_host_preferences(engine)?;
+        for (surface, _) in engine.workspace().surfaces() {
+            let Some(record) = engine.viewport().viewport(surface) else {
                 continue;
             };
             if record.admission() != ViewportAdmission::Admitted
@@ -526,7 +585,6 @@ impl BoundDocumentState {
             }
             placements.set(preference);
         }
-        placements.retain_surfaces(&surfaces);
         Ok(placements)
     }
 }
@@ -678,10 +736,8 @@ impl PendingRuntimeDocumentRestore {
         {
             return Err(RuntimeDocumentRestoreError::EnginePublicationMismatch);
         }
-        Ok(PreparedRuntimeDocumentPublication {
-            core,
-            binding: self.binding,
-        })
+        let binding = self.binding.prepare_publication(core.candidate_engine())?;
+        Ok(PreparedRuntimeDocumentPublication { core, binding })
     }
 }
 
@@ -954,6 +1010,8 @@ pub(crate) enum RuntimeDocumentRestoreError {
     Restore(#[from] DockspaceDocumentRestoreError),
     #[error("external item identity reconciliation failed: {0}")]
     Reconcile(#[from] ExternalItemKeyReconcileError),
+    #[error("document preferences cannot publish: {0}")]
+    Publication(#[from] DockspaceDocumentCaptureError),
 }
 
 fn transition_authorizes_document_restore(
@@ -1215,31 +1273,40 @@ fn validate_native_host_preferences(
         .map(|surface| crate::ids::SurfaceId::new(surface.id))
         .collect::<BTreeSet<_>>();
     for surface in viewport_placements.surface_ids() {
-        let Some(NativeSurfaceHostPreference::Child { recovery_host }) =
-            viewport_placements.native_host(surface)
-        else {
-            continue;
-        };
-        if !surfaces.contains(&recovery_host) {
-            return Err(NativeSurfaceHostPreferenceError::UnknownRecoveryHost {
-                surface,
-                recovery_host,
-            });
-        }
-        if recovery_host == surface {
-            return Err(NativeSurfaceHostPreferenceError::SelfRecoveryHost { surface });
-        }
-        if matches!(
-            viewport_placements.native_host(recovery_host),
-            Some(NativeSurfaceHostPreference::Child { .. })
-        ) {
-            return Err(NativeSurfaceHostPreferenceError::ChildRecoveryHost {
-                surface,
-                recovery_host,
-            });
+        if let Some(error) = native_host_preference_error(surface, &surfaces, viewport_placements) {
+            return Err(error);
         }
     }
     Ok(())
+}
+
+fn native_host_preference_error(
+    surface: SurfaceId,
+    surfaces: &BTreeSet<SurfaceId>,
+    viewport_placements: &ViewportPlacementPreferences,
+) -> Option<NativeSurfaceHostPreferenceError> {
+    let NativeSurfaceHostPreference::Child { recovery_host } =
+        viewport_placements.native_host(surface)?
+    else {
+        return None;
+    };
+    if !surfaces.contains(&recovery_host) {
+        return Some(NativeSurfaceHostPreferenceError::UnknownRecoveryHost {
+            surface,
+            recovery_host,
+        });
+    }
+    if recovery_host == surface {
+        return Some(NativeSurfaceHostPreferenceError::SelfRecoveryHost { surface });
+    }
+    matches!(
+        viewport_placements.native_host(recovery_host),
+        Some(NativeSurfaceHostPreference::Child { .. })
+    )
+    .then_some(NativeSurfaceHostPreferenceError::ChildRecoveryHost {
+        surface,
+        recovery_host,
+    })
 }
 
 fn validate_external_item_associations(
@@ -1501,6 +1568,128 @@ mod tests {
                     if actual == expected
             ));
         }
+    }
+
+    #[test]
+    fn publication_clears_a_removed_recovery_host_but_keeps_independent_placement() {
+        let child = SurfaceId::new(2);
+        let mut preferences = profile_preferences();
+        let placement = ViewportPlacementPreference::new(
+            child,
+            PhysicalRect::new(-120.0, 80.0, 640.0, 480.0).unwrap(),
+        )
+        .unwrap()
+        .with_scale_factor(ScaleFactor::new(1.5).unwrap())
+        .with_presentation(crate::viewport_persistence::WindowPresentationPreference::Maximized);
+        preferences.set(placement);
+        let bound = BoundDocumentState::from_parts(
+            DOCUMENT_ID,
+            Some(7),
+            profile_item_keys(),
+            preferences.clone(),
+        );
+        let engine = profile_engine(&[2, 3]);
+        let candidate = bound.prepare_publication(&engine).unwrap();
+        assert_eq!(bound.viewport_placements(), &preferences);
+        assert_eq!(candidate.next_generation(), Some(7));
+        assert_eq!(candidate.document_id(), DOCUMENT_ID);
+        assert_eq!(candidate.viewport_placements().native_host(child), None);
+        assert_eq!(candidate.viewport_placements().get(child), Some(&placement));
+        assert_eq!(
+            candidate
+                .viewport_placements()
+                .surface_ids()
+                .collect::<Vec<_>>(),
+            [child, SurfaceId::new(3)]
+        );
+        DockspaceDocument::capture_state(
+            DOCUMENT_ID,
+            7,
+            &engine,
+            &candidate.external_item_keys,
+            candidate.viewport_placements(),
+        )
+        .unwrap()
+        .restore(|_, _| true)
+        .unwrap();
+    }
+
+    #[test]
+    fn publication_clears_invalid_unbound_chains_and_self_references_without_order_dependence() {
+        let first = SurfaceId::new(1);
+        let second = SurfaceId::new(2);
+        let third = SurfaceId::new(3);
+        for (source, intermediate, host) in [(first, second, third), (third, second, first)] {
+            let mut preferences = ViewportPlacementPreferences::new();
+            preferences.set_native_host(
+                source,
+                NativeSurfaceHostPreference::Child {
+                    recovery_host: intermediate,
+                },
+            );
+            preferences.set_native_host(
+                intermediate,
+                NativeSurfaceHostPreference::Child {
+                    recovery_host: host,
+                },
+            );
+            preferences.set_native_host(host, NativeSurfaceHostPreference::Root);
+            let bound = BoundDocumentState::from_parts(
+                DOCUMENT_ID,
+                Some(0),
+                profile_item_keys(),
+                preferences.clone(),
+            );
+            let candidate = bound
+                .prepare_publication(&profile_engine(&[1, 2, 3]))
+                .unwrap();
+            assert_eq!(candidate.viewport_placements().native_host(source), None);
+            assert_eq!(
+                candidate.viewport_placements().native_host(intermediate),
+                Some(NativeSurfaceHostPreference::Child {
+                    recovery_host: host
+                })
+            );
+            assert_eq!(bound.viewport_placements(), &preferences);
+
+            let without_host = bound
+                .prepare_publication(&profile_engine(&[source.get(), intermediate.get()]))
+                .unwrap();
+            assert!(without_host.viewport_placements().is_empty());
+        }
+        let mut preferences = profile_preferences();
+        preferences.set_native_host(
+            second,
+            NativeSurfaceHostPreference::Child {
+                recovery_host: second,
+            },
+        );
+        let bound =
+            BoundDocumentState::from_parts(DOCUMENT_ID, Some(0), profile_item_keys(), preferences);
+        let candidate = bound
+            .prepare_publication(&profile_engine(&[1, 2, 3]))
+            .unwrap();
+        assert_eq!(candidate.viewport_placements().native_host(second), None);
+        assert_eq!(candidate.viewport_placements().len(), 2);
+    }
+
+    #[test]
+    fn publication_removes_a_retired_child_row_and_its_hints() {
+        let child = SurfaceId::new(2);
+        let mut preferences = profile_preferences();
+        preferences.set(
+            ViewportPlacementPreference::new(
+                child,
+                PhysicalRect::new(10.0, 20.0, 640.0, 480.0).unwrap(),
+            )
+            .unwrap(),
+        );
+        let bound =
+            BoundDocumentState::from_parts(DOCUMENT_ID, Some(0), profile_item_keys(), preferences);
+        let candidate = bound.prepare_publication(&profile_engine(&[1, 3])).unwrap();
+        assert_eq!(candidate.viewport_placements().native_host(child), None);
+        assert!(candidate.viewport_placements().get(child).is_none());
+        assert_eq!(candidate.viewport_placements().len(), 2);
     }
 
     #[test]

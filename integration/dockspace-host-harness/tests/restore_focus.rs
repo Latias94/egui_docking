@@ -2,6 +2,7 @@
 
 #![cfg(feature = "serde")]
 
+use dockspace::close::CloseDecision;
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::model::{
     DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
@@ -9,10 +10,10 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceFocusTarget, DockspaceHostFrame,
-    DockspacePaneFocusObservation, DockspacePaneFocusRequest, DockspaceSession, HostFrameReport,
-    HostInputOutcome, SurfacePaintDisposition, SurfacePresentationResult, SurfaceUnavailableReason,
-    UniformSurfaceMetrics,
+    DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceFocusTarget, DockspaceHostFocus,
+    DockspaceHostFrame, DockspacePaneFocusObservation, DockspacePaneFocusRequest, DockspaceSession,
+    HostFrameReport, HostInputOutcome, SurfacePaintDisposition, SurfacePresentationResult,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -120,6 +121,8 @@ fn observe(
     let plan = frame.paint_plan(request.surface()).unwrap().unwrap();
     assert_eq!(plan.pane_focus_request(), Some(request));
     let observed = plan.prepare_pane_focus_observation(request, state).unwrap();
+    drop(frame);
+    let mut frame = session.begin_host_frame().unwrap();
     frame.submit_pane_focus_observation(observed).unwrap();
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -157,6 +160,35 @@ fn restore(session: &mut DockspaceSession, bytes: &[u8]) {
         [HostInputOutcome::DocumentRestored { .. }]
     ));
     paint_and_present(session);
+}
+
+fn allow_close(session: &mut DockspaceSession, item: ItemId) {
+    let prepared = session.prepare_close_item(item);
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_prepared_close_request(prepared).unwrap();
+    let report = commit_measured(frame);
+    let [HostInputOutcome::CloseRequested { plan, .. }] = report.inputs() else {
+        panic!("the pane must publish its exact close plan");
+    };
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .resolve_close(
+            plan.request(),
+            plan.items()[0].token(),
+            CloseDecision::Allow,
+        )
+        .unwrap();
+    commit_measured(frame);
+    paint_and_present(session);
+}
+
+fn report_focus(session: &mut DockspaceSession, surface: SurfaceId, state: DockspaceHostFocus) {
+    let mut frame = session.begin_host_frame().unwrap();
+    assert!(frame.report_host_focus(surface, state).unwrap());
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
 }
 
 #[test]
@@ -378,6 +410,8 @@ fn dropped_restore_preserves_pending_focus_and_retry_rejects_old_observation() {
             .prepare_pane_focus_observation(old, DockspacePaneFocusObservation::Focused)
             .is_none()
     );
+    drop(frame);
+    let mut frame = session.begin_host_frame().unwrap();
     frame
         .submit_pane_focus_observation(old_observation)
         .unwrap();
@@ -394,4 +428,217 @@ fn dropped_restore_preserves_pending_focus_and_retry_rejects_old_observation() {
     assert_eq!(requests(&mut session), [fresh]);
     observe(&mut session, fresh, DockspacePaneFocusObservation::Focused);
     assert!(requests(&mut session).is_empty());
+}
+
+#[test]
+fn review_closing_a_background_pane_preserves_confirmed_focus_on_another_surface() {
+    let mut session = persistent(layout([
+        surface(SURFACE, 1, DockspaceNode::central_tabs([FIRST, SECOND])),
+        surface(OTHER_SURFACE, 2, DockspaceNode::central_tabs([THIRD])),
+    ]));
+    let first = select(&mut session, FIRST);
+    observe(&mut session, first, DockspacePaneFocusObservation::Focused);
+    let foreground = select(&mut session, THIRD);
+    observe(
+        &mut session,
+        foreground,
+        DockspacePaneFocusObservation::Focused,
+    );
+    assert!(requests(&mut session).is_empty());
+
+    let prepared = session.prepare_close_item(FIRST);
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_prepared_close_request(prepared).unwrap();
+    let report = commit_measured(frame);
+    let [HostInputOutcome::CloseRequested { plan, .. }] = report.inputs() else {
+        panic!("the background pane must publish its close plan");
+    };
+    let request = plan.request();
+    let token = plan.items()[0].token();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .resolve_close(request, token, CloseDecision::Allow)
+        .unwrap();
+    commit_measured(frame);
+    assert!(session.view().item(FIRST).is_none());
+    assert!(session.view().item(SECOND).unwrap().is_selected());
+    assert!(session.view().item(THIRD).unwrap().is_selected());
+    paint_and_present(&mut session);
+    let pending = requests(&mut session);
+    assert!(
+        pending.is_empty(),
+        "closing a background pane must not request focus away from the confirmed foreground: {pending:?}"
+    );
+}
+
+#[test]
+fn independent_host_focus_updates_current_without_creating_a_focus_request() {
+    let mut session = persistent(layout([
+        surface(SURFACE, 1, DockspaceNode::central_tabs([FIRST, SECOND])),
+        surface(OTHER_SURFACE, 2, DockspaceNode::central_tabs([THIRD])),
+    ]));
+    paint_and_present(&mut session);
+    report_focus(&mut session, SURFACE, DockspaceHostFocus::Pane(FIRST));
+    report_focus(&mut session, OTHER_SURFACE, DockspaceHostFocus::Pane(THIRD));
+    assert!(requests(&mut session).is_empty());
+
+    allow_close(&mut session, FIRST);
+
+    assert!(session.view().item(FIRST).is_none());
+    assert!(requests(&mut session).is_empty());
+}
+
+#[test]
+fn repeated_current_host_focus_is_idle_and_can_be_reasserted_after_revocation() {
+    let mut session = persistent(layout([surface(
+        SURFACE,
+        1,
+        DockspaceNode::central_tabs([FIRST, SECOND]),
+    )]));
+    paint_and_present(&mut session);
+    report_focus(&mut session, SURFACE, DockspaceHostFocus::Pane(FIRST));
+    let mut frame = session.begin_host_frame().unwrap();
+    assert!(
+        frame
+            .report_host_focus(SURFACE, DockspaceHostFocus::Pane(FIRST))
+            .unwrap()
+    );
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let duplicate = frame.commit().unwrap();
+    assert!(!duplicate.published_state_changed());
+    assert!(duplicate.inputs().is_empty());
+
+    report_focus(&mut session, SURFACE, DockspaceHostFocus::Unknown);
+    report_focus(&mut session, SURFACE, DockspaceHostFocus::Pane(FIRST));
+    allow_close(&mut session, FIRST);
+    let pending = requests(&mut session);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].target(), DockspaceFocusTarget::Pane(SECOND));
+}
+
+#[test]
+fn closing_the_current_host_focused_pane_requests_its_actual_successor() {
+    let mut session = persistent(layout([surface(
+        SURFACE,
+        1,
+        DockspaceNode::central_tabs([FIRST, SECOND]),
+    )]));
+    paint_and_present(&mut session);
+    report_focus(&mut session, SURFACE, DockspaceHostFocus::Pane(FIRST));
+
+    allow_close(&mut session, FIRST);
+
+    let pending = requests(&mut session);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].target(), DockspaceFocusTarget::Pane(SECOND));
+}
+
+#[test]
+fn outside_absent_and_unknown_focus_do_not_turn_history_into_a_close_successor() {
+    for state in [
+        DockspaceHostFocus::External,
+        DockspaceHostFocus::None,
+        DockspaceHostFocus::Unknown,
+    ] {
+        let mut session = persistent(layout([surface(
+            SURFACE,
+            1,
+            DockspaceNode::central_tabs([FIRST, SECOND]),
+        )]));
+        let first = select(&mut session, FIRST);
+        observe(&mut session, first, DockspacePaneFocusObservation::Focused);
+        report_focus(&mut session, SURFACE, state);
+
+        allow_close(&mut session, FIRST);
+
+        assert!(
+            requests(&mut session).is_empty(),
+            "{state:?} must not fabricate current pane focus from history"
+        );
+    }
+}
+
+#[test]
+fn a_background_surfaces_negative_focus_fact_cannot_erase_foreground_current_focus() {
+    let mut session = persistent(layout([
+        surface(SURFACE, 1, DockspaceNode::central_tabs([FIRST])),
+        surface(
+            OTHER_SURFACE,
+            2,
+            DockspaceNode::central_tabs([SECOND, THIRD]),
+        ),
+    ]));
+    paint_and_present(&mut session);
+    report_focus(&mut session, SURFACE, DockspaceHostFocus::Pane(FIRST));
+    report_focus(
+        &mut session,
+        OTHER_SURFACE,
+        DockspaceHostFocus::Pane(SECOND),
+    );
+    report_focus(&mut session, SURFACE, DockspaceHostFocus::Unknown);
+
+    allow_close(&mut session, SECOND);
+
+    let pending = requests(&mut session);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].target(), DockspaceFocusTarget::Pane(THIRD));
+}
+
+#[test]
+fn invalid_membership_and_abandoned_host_focus_facts_preserve_current_focus() {
+    let mut session = persistent(layout([
+        surface(SURFACE, 1, DockspaceNode::central_tabs([FIRST, SECOND])),
+        surface(OTHER_SURFACE, 2, DockspaceNode::central_tabs([THIRD])),
+    ]));
+    paint_and_present(&mut session);
+    report_focus(&mut session, SURFACE, DockspaceHostFocus::Pane(FIRST));
+    report_focus(&mut session, SURFACE, DockspaceHostFocus::Pane(THIRD));
+    {
+        let mut frame = session.begin_host_frame().unwrap();
+        assert!(
+            frame
+                .report_host_focus(OTHER_SURFACE, DockspaceHostFocus::Pane(THIRD))
+                .unwrap()
+        );
+    }
+
+    allow_close(&mut session, FIRST);
+
+    let pending = requests(&mut session);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].target(), DockspaceFocusTarget::Pane(SECOND));
+}
+
+#[test]
+fn repeated_restore_with_known_outside_or_unavailable_focus_preserves_that_decision() {
+    let bytes = saved(layout([surface(
+        SURFACE,
+        1,
+        DockspaceNode::central_tabs([SECOND]),
+    )]));
+    for state in [
+        DockspaceHostFocus::External,
+        DockspaceHostFocus::None,
+        DockspaceHostFocus::Unknown,
+    ] {
+        let mut session = persistent(layout([surface(
+            SURFACE,
+            10,
+            DockspaceNode::central_tabs([FIRST]),
+        )]));
+        let first = select(&mut session, FIRST);
+        observe(&mut session, first, DockspacePaneFocusObservation::Focused);
+        report_focus(&mut session, SURFACE, state);
+
+        for replacement in 0..3 {
+            restore(&mut session, &bytes);
+
+            assert!(
+                requests(&mut session).is_empty(),
+                "{state:?} must not fall back to the saved selection on replacement {replacement}"
+            );
+        }
+    }
 }

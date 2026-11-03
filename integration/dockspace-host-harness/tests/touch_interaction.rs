@@ -11,15 +11,14 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     ContainedResizeDirection, DockspaceHostFrame, DockspaceManipulationDelivery,
-    DockspaceManipulationPendingReason, DockspaceManipulationStatus, DockspacePaneFocusRequest,
-    DockspacePreviewVisual, DockspaceRuntimeErrorKind, DockspaceSession, DockspaceTouchEvent,
-    DockspaceVisualKind, HostFrameReport, HostInputOutcome, HostPointerInput, HostPointerRoute,
-    PointerDeviceKind, PointerEventMetadata, PresentedDockReceiver,
-    SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
-    SurfacePointerButton, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerReceiverFacts, SurfacePresentationResult, SurfaceScrollDelta,
-    SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers, SurfaceScrollMomentum,
-    SurfaceScrollPhase, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    DockspaceManipulationStatus, DockspacePaneFocusRequest, DockspacePreviewVisual,
+    DockspaceRuntimeErrorKind, DockspaceSession, DockspaceTouchEvent, DockspaceVisualKind,
+    HostFrameReport, HostInputOutcome, HostPointerInput, HostPointerRoute, PointerDeviceKind,
+    PointerEventMetadata, PresentedDockReceiver, SurfacePaintProgramOperation as Operation,
+    SurfacePaintProgramStep as Step, SurfacePointerButton, SurfacePointerCapture,
+    SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
+    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -46,15 +45,18 @@ fn session() -> DockspaceSession {
     session
 }
 
-fn measure(frame: &mut DockspaceHostFrame<'_>) {
-    let metrics = UniformSurfaceMetrics::new(
+fn metrics() -> UniformSurfaceMetrics {
+    UniformSurfaceMetrics::new(
         LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
         LogicalSize::new(64.0, 48.0).unwrap(),
         96.0,
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn measure(frame: &mut DockspaceHostFrame<'_>) {
     for surface in frame.surfaces() {
-        frame.measure_surface(surface, metrics).unwrap();
+        frame.measure_surface(surface, metrics()).unwrap();
     }
 }
 
@@ -77,6 +79,9 @@ fn paint(
     Option<DockspacePaneFocusRequest>,
 ) {
     let mut frame = session.begin_host_frame().unwrap();
+    if frame.paint_plan(SURFACE).unwrap().is_none() {
+        frame.measure_surface(SURFACE, metrics()).unwrap();
+    }
     let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
     let descriptor = plan.tab_receiver(SECOND).unwrap();
     let focus = plan.pane_focus_request();
@@ -431,7 +436,7 @@ fn touch_movement_yields_to_content_and_untimed_touch_can_still_tap() {
 }
 
 #[test]
-fn armed_touch_reuses_splitter_terminal_and_contained_presentation_barriers() {
+fn armed_touch_splitter_and_contained_releases_deliver_once_before_presentation() {
     #[derive(Clone, Copy, Debug)]
     enum Gesture {
         Splitter,
@@ -627,8 +632,8 @@ fn armed_touch_reuses_splitter_terminal_and_contained_presentation_barriers() {
         assert!(session.pointer_continuation().is_none());
 
         // Inspect the committed motion's proposal without presenting it.
-        // Contained delivery waits for its exact output; splitter release uses
-        // its already presented source handle and frozen resize constraints.
+        // Each ordinary release uses its exact source continuation and frozen constraints;
+        // inspecting a proposal does not grant new input authority.
         let proposal = {
             let mut inspect = session.begin_host_frame().unwrap();
             let plan = inspect.paint_plan(SURFACE).unwrap().unwrap();
@@ -665,84 +670,15 @@ fn armed_touch_reuses_splitter_terminal_and_contained_presentation_barriers() {
         let mut frame = session.begin_host_frame().unwrap();
         frame.submit_host_pointer(input).unwrap();
         let released = commit(frame);
-        if matches!(gesture, Gesture::Splitter) {
-            assert!(released.workspace_changed());
-            let [terminal] = released.manipulation_feedback() else {
-                panic!("one shared splitter terminal is required: {released:?}")
-            };
-            assert_eq!(
-                terminal.status(),
-                DockspaceManipulationStatus::Delivered(
-                    DockspaceManipulationDelivery::SplitterResize
-                )
-            );
-            let committed = durable(&session);
-            assert!(committed.0[0] < initial_durable.0[0]);
-            assert_eq!(committed.1, initial_durable.1);
-            assert!(!session.has_active_gesture());
-            assert!(session.pointer_continuation().is_none());
-            let version = session.version();
-            for _ in 0..2 {
-                let repeated = settle(&mut session);
-                assert!(!repeated.workspace_changed());
-                assert!(repeated.manipulation_feedback().is_empty());
-                assert_eq!(session.version(), version);
-                assert_eq!(durable(&session), committed);
-            }
-            continue;
-        }
         assert!(
-            !released.workspace_changed(),
-            "{gesture:?}: release must wait for presentation"
+            released.workspace_changed(),
+            "{gesture:?}: the accepted release commits now"
         );
-        assert_eq!(session.version(), before);
-        assert_eq!(durable(&session), initial_durable);
-        assert!(!session.has_active_gesture());
-        assert!(session.pointer_continuation().is_none());
-        let [pending] = released.manipulation_feedback() else {
-            panic!("{gesture:?}: exactly one pending release is required: {released:?}")
+        assert_eq!(released.before(), before);
+        assert_eq!(released.after(), session.version());
+        let [terminal] = released.manipulation_feedback() else {
+            panic!("{gesture:?}: one ordinary terminal is required: {released:?}")
         };
-        assert_eq!(
-            pending.status(),
-            DockspaceManipulationStatus::Pending(
-                DockspaceManipulationPendingReason::AwaitingPresentation
-            )
-        );
-        let pending_id = pending.manipulation_id();
-        assert!(!settle(&mut session).workspace_changed());
-
-        let mut frame = session.begin_host_frame().unwrap();
-        let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
-        let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
-        assert_eq!(geometry(&recording), geometry(&proposal), "{gesture:?}");
-        frame.confirm_surface_painted(receipt).unwrap();
-        let mut report = frame.commit().unwrap();
-        assert!(!report.workspace_changed());
-        let mut outputs = report.take_painted_outputs();
-        assert_eq!(outputs.len(), 1);
-        let output = outputs.pop().unwrap();
-        assert!(
-            matches!(recording.records.last(), Some(OwnedRecord::SurfaceEnd(semantic))
-            if output.matches_semantic_output(*semantic))
-        );
-        let artifact = output.presentation_artifact();
-        assert_eq!(session.version(), before);
-        assert_eq!(durable(&session), initial_durable);
-        session
-            .report_surface_presentation(output, SurfacePresentationResult::Presented)
-            .unwrap();
-        assert_eq!(session.version(), before);
-        assert_eq!(durable(&session), initial_durable);
-        let settled = settle(&mut session);
-        let [ack] = settled.surface_presentation_commits() else {
-            panic!("{gesture:?}: the exact release output must settle once")
-        };
-        assert!(ack.settles(artifact));
-        assert!(settled.workspace_changed());
-        let [terminal] = settled.manipulation_feedback() else {
-            panic!("{gesture:?}: exactly one terminal is required: {settled:?}")
-        };
-        assert_eq!(terminal.manipulation_id(), pending_id);
         assert_eq!(
             terminal.status(),
             DockspaceManipulationStatus::Delivered(match gesture {
@@ -752,7 +688,6 @@ fn armed_touch_reuses_splitter_terminal_and_contained_presentation_barriers() {
             })
         );
         let committed = durable(&session);
-        assert_ne!(session.version(), before);
         assert_eq!(committed.1, expected_rect);
         match gesture {
             Gesture::Splitter => assert!(committed.0[0] < initial_durable.0[0]),
@@ -761,6 +696,38 @@ fn armed_touch_reuses_splitter_terminal_and_contained_presentation_barriers() {
         assert!(!session.has_active_gesture());
         assert!(session.pointer_continuation().is_none());
         let version = session.version();
+        let mut frame = session.begin_host_frame().unwrap();
+        if frame.paint_plan(SURFACE).unwrap().is_none() {
+            frame.measure_surface(SURFACE, metrics()).unwrap();
+        }
+        let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+        let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
+        assert_eq!(geometry(&recording), geometry(&proposal), "{gesture:?}");
+        assert!(recording.records.iter().all(|record| !matches!(
+            record,
+            OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
+        )));
+        frame.confirm_surface_painted(receipt).unwrap();
+        let mut report = frame.commit().unwrap();
+        assert!(!report.workspace_changed());
+        assert!(report.manipulation_feedback().is_empty());
+        let outputs = report.take_painted_outputs();
+        assert_eq!(outputs.len(), 1);
+        for output in outputs {
+            let artifact = output.presentation_artifact();
+            assert!(
+                matches!(recording.records.last(), Some(OwnedRecord::SurfaceEnd(semantic)) if output.matches_semantic_output(*semantic))
+            );
+            session
+                .report_surface_presentation(output, SurfacePresentationResult::Dropped)
+                .unwrap();
+            let settled = settle(&mut session);
+            assert!(
+                matches!(settled.surface_presentation_commits(), [ack] if ack.retires(artifact))
+            );
+            assert!(!settled.workspace_changed());
+            assert!(settled.manipulation_feedback().is_empty());
+        }
         for _ in 0..2 {
             let repeated = settle(&mut session);
             assert!(!repeated.workspace_changed());
@@ -772,7 +739,7 @@ fn armed_touch_reuses_splitter_terminal_and_contained_presentation_barriers() {
 }
 
 #[test]
-fn armed_touch_first_move_and_contact_end_batch_defers_source_activation_until_dock_presented() {
+fn armed_touch_first_move_and_contact_end_batch_commits_source_activation_once() {
     let third = ItemId::new(3);
     let fourth = ItemId::new(4);
     let fifth = ItemId::new(5);
@@ -950,73 +917,59 @@ fn armed_touch_first_move_and_contact_end_batch_defers_source_activation_until_d
             ))
             .unwrap();
         let released = commit(frame);
-        assert!(
-            released.inputs().is_empty(),
-            "rear_title={rear_title}: {released:?}"
-        );
-        assert!(!released.workspace_changed());
-        assert_eq!(session.version(), before);
-        assert_eq!(
-            durable(&session),
-            initial_durable,
-            "move and contact end must not eagerly select, raise, or change durable geometry"
-        );
+        assert!(released.workspace_changed());
+        assert_eq!(released.before(), before);
+        assert_eq!(released.after(), session.version());
         assert!(!session.has_active_gesture());
         assert!(session.pointer_continuation().is_none());
-        let [pending] = released.manipulation_feedback() else {
-            panic!("rear_title={rear_title}: one docking latch is required: {released:?}")
+        let [terminal] = released.manipulation_feedback() else {
+            panic!("rear_title={rear_title}: one delivered dock is required: {released:?}")
         };
-        assert_eq!(
-            pending.status(),
-            DockspaceManipulationStatus::Pending(
-                DockspaceManipulationPendingReason::AwaitingPresentation
-            )
-        );
-        let pending_id = pending.manipulation_id();
-
-        let mut frame = session.begin_host_frame().unwrap();
-        let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
-        assert_eq!(plan.pane_focus_request(), focus_before);
-        let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
-        assert!(
-            recording.records.iter().any(|record| matches!(
-                record,
-                OwnedRecord::Preview(DockspacePreviewVisual::Dock { surface: SURFACE, rect })
-                    if rect.contains(target)
-            )),
-            "rear_title={rear_title}: the unoccluded main pane must own the real target preview"
-        );
-        frame.confirm_surface_painted(receipt).unwrap();
-        let mut report = frame.commit().unwrap();
-        assert!(!report.workspace_changed());
-        let mut outputs = report.take_painted_outputs();
-        assert_eq!(outputs.len(), 1);
-        let output = outputs.pop().unwrap();
-        assert!(
-            matches!(recording.records.last(), Some(OwnedRecord::SurfaceEnd(semantic))
-                if output.matches_semantic_output(*semantic))
-        );
-        let artifact = output.presentation_artifact();
-        assert_eq!(durable(&session), initial_durable);
-        session
-            .report_surface_presentation(output, SurfacePresentationResult::Presented)
-            .unwrap();
-        assert_eq!(session.version(), before);
-        assert_eq!(durable(&session), initial_durable);
-        let settled = settle(&mut session);
-        let [ack] = settled.surface_presentation_commits() else {
-            panic!("the exact burst-release output must settle once")
-        };
-        assert!(ack.settles(artifact));
-        assert!(settled.workspace_changed());
-        let [terminal] = settled.manipulation_feedback() else {
-            panic!("rear_title={rear_title}: one delivered dock is required: {settled:?}")
-        };
-        assert_eq!(terminal.manipulation_id(), pending_id);
         assert_eq!(
             terminal.status(),
             DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
         );
+        let accepted = durable(&session);
+        let accepted_version = session.version();
+        assert!(
+            session
+                .bind_presented_receiver(&source_descriptor)
+                .is_none(),
+            "a moved item or retired contained root cannot grant a new press through its old receiver"
+        );
+        let mut frame = session.begin_host_frame().unwrap();
+        if frame.paint_plan(SURFACE).unwrap().is_none() {
+            frame.measure_surface(SURFACE, metrics()).unwrap();
+        }
+        let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+        let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
+        assert!(recording.records.iter().all(|record| !matches!(
+            record,
+            OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
+        )));
+        frame.confirm_surface_painted(receipt).unwrap();
+        let mut report = frame.commit().unwrap();
+        assert!(!report.workspace_changed());
+        assert!(report.manipulation_feedback().is_empty());
+        let outputs = report.take_painted_outputs();
+        assert_eq!(outputs.len(), 1);
+        for output in outputs {
+            assert!(
+                matches!(recording.records.last(), Some(OwnedRecord::SurfaceEnd(semantic)) if output.matches_semantic_output(*semantic))
+            );
+            let artifact = output.presentation_artifact();
+            session
+                .report_surface_presentation(output, SurfacePresentationResult::Presented)
+                .unwrap();
+            let settled = settle(&mut session);
+            assert!(
+                matches!(settled.surface_presentation_commits(), [ack] if ack.presents(artifact))
+            );
+            assert!(!settled.workspace_changed());
+            assert!(settled.manipulation_feedback().is_empty());
+            assert_eq!(durable(&session), accepted);
+            assert_eq!(session.version(), accepted_version);
+        }
         assert!(session.view().item(FIRST).unwrap().is_selected());
         assert_eq!(session.view().contained(front).unwrap().rect(), front_rect);
         if rear_title {

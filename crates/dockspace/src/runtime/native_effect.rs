@@ -165,8 +165,9 @@ enum NativeEffectCorrelationKind {
 /// One affine core-emitted request which has not yet been classified by the host.
 ///
 /// The type deliberately does not implement `Clone` or `Copy`. The request is
-/// itself the sole response capability: inspect [`Self::operation`], execute it,
-/// then consume the request through one terminal method.
+/// itself the sole response capability. Retain it while dispatch is queued,
+/// then consume it through [`Self::begin_dispatch`] immediately before handing
+/// the operation to the backend. The returned guard owns uncertain completion.
 #[must_use = "native effects must be dispatched, rejected, or retained explicitly"]
 #[derive(Debug)]
 pub struct NativeEffectRequest {
@@ -180,6 +181,7 @@ pub struct NativeEffectRequest {
     destructive_cleanup: bool,
     storage: Option<NativeEffectStorageLease>,
     armed: bool,
+    dispatch_started: bool,
 }
 
 impl NativeEffectRequest {
@@ -308,6 +310,7 @@ impl NativeEffectRequest {
             destructive_cleanup: emission.effect().is_destructive_cleanup(),
             storage: None,
             armed: false,
+            dispatch_started: false,
         }
     }
 
@@ -315,6 +318,17 @@ impl NativeEffectRequest {
     #[must_use]
     pub const fn operation(&self) -> &NativeEffectOperation {
         &self.operation
+    }
+
+    /// Starts the irreversible handoff to the backend.
+    ///
+    /// The guard keeps the request's prepaid terminal slot. Dropping it,
+    /// including during unwinding, records an indeterminate result rather
+    /// than claiming that the backend never received the operation.
+    #[must_use]
+    pub fn begin_dispatch(mut self) -> NativeEffectDispatch {
+        self.dispatch_started = true;
+        NativeEffectDispatch { request: self }
     }
 
     /// Records successful dispatch and returns any exact later-observation capability.
@@ -368,9 +382,26 @@ impl NativeEffectRequest {
         }
     }
 
-    /// Reports that the adapter could not dispatch the operation.
+    /// Reports that the adapter could not start dispatching the operation.
+    ///
+    /// Once dispatch has started this cannot establish non-delivery, so the
+    /// result remains indeterminate. An exact backend rejection can instead
+    /// be reported with [`Self::not_applied`].
     #[must_use]
     pub fn dispatch_failed(self, reason: NativeDispatchFailure) -> NativeEffectResult {
+        if self.dispatch_started {
+            self.indeterminate(NativeIndeterminateReason::AcknowledgementLost)
+        } else {
+            self.not_applied(reason)
+        }
+    }
+
+    /// Reports an authoritative backend result proving the operation was not applied.
+    ///
+    /// Unlike [`Self::dispatch_failed`], this requires a definitive response,
+    /// not the loss of a callback or the retirement of a local route.
+    #[must_use]
+    pub fn not_applied(self, reason: NativeDispatchFailure) -> NativeEffectResult {
         self.result(EffectDispatchResult::DispatchFailed(reason.into()))
     }
 
@@ -407,6 +438,7 @@ impl PartialEq for NativeEffectRequest {
             && self.correlation == other.correlation
             && self.cleanup == other.cleanup
             && self.destructive_cleanup == other.destructive_cleanup
+            && self.dispatch_started == other.dispatch_started
     }
 }
 
@@ -424,11 +456,68 @@ impl Drop for NativeEffectRequest {
             result: EffectResult::new(
                 self.effect,
                 self.epoch,
-                EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
+                if self.dispatch_started {
+                    EffectDispatchResult::Indeterminate(
+                        EffectIndeterminateReason::AcknowledgementLost,
+                    )
+                } else {
+                    EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped)
+                },
             ),
             cleanup_relay_eligible: self.destructive_cleanup,
             storage: None,
         });
+    }
+}
+
+/// Affine guard for an operation whose backend handoff has started.
+///
+/// This state never returns to an undispatched request. The same prepaid
+/// terminal slot follows it into a result or a deferred observation owner.
+#[must_use = "started native effects need a definitive result or an observation owner"]
+#[derive(Debug)]
+pub struct NativeEffectDispatch {
+    request: NativeEffectRequest,
+}
+
+impl NativeEffectDispatch {
+    /// Returns the exact operation being dispatched.
+    #[must_use]
+    pub const fn operation(&self) -> &NativeEffectOperation {
+        self.request.operation()
+    }
+
+    /// Finishes a successful synchronous dispatch.
+    #[must_use]
+    pub fn accepted(self) -> Option<NativeEffectAcknowledgement> {
+        self.request.accepted()
+    }
+
+    /// Transfers a successful handoff to its exact deferred callback owner.
+    ///
+    /// The returned request remains started. Dropping it before a definitive
+    /// callback records an indeterminate result using its original reservation.
+    #[must_use]
+    pub fn await_observation(self) -> NativeEffectRequest {
+        self.request
+    }
+
+    /// Finishes with an authoritative backend rejection.
+    #[must_use]
+    pub fn not_applied(self, reason: NativeDispatchFailure) -> NativeEffectResult {
+        self.request.not_applied(reason)
+    }
+
+    /// Finishes with an authoritative unsupported result.
+    #[must_use]
+    pub fn unsupported(self, reason: NativeUnsupportedReason) -> NativeEffectResult {
+        self.request.unsupported(reason)
+    }
+
+    /// Finishes without establishing whether the operation was applied.
+    #[must_use]
+    pub fn indeterminate(self, reason: NativeIndeterminateReason) -> NativeEffectResult {
+        self.request.indeterminate(reason)
     }
 }
 
@@ -883,6 +972,9 @@ impl From<NativeIndeterminateReason> for EffectIndeterminateReason {
 
 #[cfg(test)]
 mod storage_tests;
+
+#[cfg(test)]
+mod dispatch_tests;
 
 #[cfg(test)]
 mod tests {

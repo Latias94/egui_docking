@@ -5,11 +5,12 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceReceiverRole,
-    DockspaceSession, DockspaceVisualId, DockspaceVisualKind, HostFrameReport, HostInputOutcome,
-    HostPointerInput, HostPointerRoute, PaintedSurfaceOutput, PresentedDockReceiver,
-    PresentedDockspaceSurface, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
-    SurfacePaintDisposition, SurfacePaintProgramOperation as Operation,
+    DockspaceHostFrame, DockspaceManipulationDelivery as Delivery, DockspaceManipulationFeedback,
+    DockspaceManipulationStatus as Status, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceReceiverRole, DockspaceSession, DockspaceVisualId, DockspaceVisualKind,
+    HostFrameReport, HostInputOutcome, HostPointerInput, HostPointerRoute, PaintedSurfaceOutput,
+    PresentedDockReceiver, PresentedDockspaceSurface, SurfaceMeasurementAnswer,
+    SurfaceMeasurementRequest, SurfacePaintDisposition, SurfacePaintProgramOperation as Operation,
     SurfacePaintProgramStep as Step, SurfacePointerButton, SurfacePointerCapture,
     SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts,
     SurfacePresentationResult as ResultKind, SurfaceScrollDelta, SurfaceScrollDeviceId,
@@ -21,10 +22,12 @@ use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
 const A: SurfaceId = SurfaceId::new(1);
 const B: SurfaceId = SurfaceId::new(2);
+const C: SurfaceId = SurfaceId::new(3);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 const THIRD: ItemId = ItemId::new(3);
 const FOURTH: ItemId = ItemId::new(4);
+const FIFTH: ItemId = ItemId::new(5);
 
 fn bounds(width: f64) -> LogicalRect {
     LogicalRect::new(0.0, 0.0, width, 600.0).unwrap()
@@ -937,14 +940,14 @@ fn late_presented_output_of_redocked_surface_retires_without_reviving_authority(
 }
 
 #[test]
-fn late_presented_output_cannot_authorize_a_scene_invalidated_by_selection() {
+fn late_presented_output_keeps_its_exact_tab_receivers_after_selection() {
     let mut session = session();
     let (older_records, older_output) = paint(&mut session, A);
     let older_artifact = older_output.presentation_artifact();
     let older_receiver = tab_receiver(&older_records);
 
-    // Selecting another pane changes its measurement requirement. The old,
-    // never-presented scene cannot survive that change as a confirmed fallback.
+    // Selection changes the next layout, while the eventual actual output still
+    // identifies the same tabs. Its receivers require current semantic admission.
     let action = session.prepare_select_item(SECOND);
     let mut selection = session.begin_host_frame().unwrap();
     let submitted = selection.submit_prepared_action(action).unwrap();
@@ -968,13 +971,13 @@ fn late_presented_output_cannot_authorize_a_scene_invalidated_by_selection() {
         .unwrap();
     let retired = settle(&mut session);
     let [retired_ack] = retired.surface_presentation_commits() else {
-        panic!("the invalidated scene's late output must settle without promotion")
+        panic!("the exact delayed output must settle independently of the newer candidate")
     };
-    assert!(retired_ack.retires(older_artifact));
-    assert!(!retired_ack.presents(older_artifact));
+    assert!(!retired_ack.retires(older_artifact));
+    assert!(retired_ack.presents(older_artifact));
     assert!(session.view().surface(A).is_some());
-    assert!(session.presented_surface(A).is_none());
-    assert!(session.bind_presented_receiver(&older_receiver).is_none());
+    assert!(session.presented_surface(A).is_some());
+    assert!(session.bind_presented_receiver(&older_receiver).is_some());
 
     let (current_records, current_output) = paint(&mut session, A);
     assert!(current_records.records.iter().any(|record| matches!(
@@ -1141,6 +1144,45 @@ struct HostPointerScene {
 }
 
 impl HostPointerScene {
+    fn from_presented(
+        session: &DockspaceSession,
+        source_surface: SurfaceId,
+        target_surface: SurfaceId,
+        source_descriptor: DockspaceReceiverDescriptor,
+        target_descriptor: DockspaceReceiverDescriptor,
+        source_recording: &RecordingRenderer,
+    ) -> Self {
+        let source_visual = source_recording
+            .records
+            .iter()
+            .find_map(|record| match record {
+                OwnedRecord::Geometry { visual, bounds, .. }
+                    if visual.kind() == DockspaceVisualKind::Tab
+                        && bounds.contains(source_descriptor.center()) =>
+                {
+                    Some(*visual)
+                }
+                _ => None,
+            })
+            .expect("the presented source has an actual recorded tab visual");
+        let scene = Self {
+            a: session.presented_surface(source_surface).unwrap(),
+            b: session.presented_surface(target_surface).unwrap(),
+            source: session.bind_presented_receiver(&source_descriptor).unwrap(),
+            target: session.bind_presented_receiver(&target_descriptor).unwrap(),
+            source_visual,
+            moved: LogicalPoint::new(
+                source_descriptor.bounds().x() + source_descriptor.bounds().width() * 0.9,
+                source_descriptor.center().y(),
+            )
+            .unwrap(),
+        };
+        assert!(scene.source.bounds().contains(scene.moved));
+        assert!(scene.moved.x() - scene.source.center().x() >= 12.0);
+        assert_ne!(scene.moved, scene.target.center());
+        scene
+    }
+
     fn press(&self) -> HostPointerInput<'_> {
         let route = HostPointerRoute::new(self.a, self.source.center());
         HostPointerInput::new(
@@ -1235,35 +1277,82 @@ fn host_pointer_fixture_for_item(source_item: ItemId) -> (DockspaceSession, Host
     assert_eq!(source_descriptor.bounds(), sibling_descriptor.bounds());
     assert_eq!(source_descriptor.center(), sibling_descriptor.center());
     assert_ne!(source_descriptor, sibling_descriptor);
-    let source_visual = a_records
-        .records
-        .iter()
-        .find_map(|record| match record {
-            OwnedRecord::Geometry { visual, bounds, .. }
-                if visual.kind() == DockspaceVisualKind::Tab
-                    && bounds.contains(source_descriptor.center()) =>
-            {
-                Some(*visual)
-            }
-            _ => None,
-        })
-        .unwrap();
-    let scene = HostPointerScene {
-        a: session.presented_surface(A).unwrap(),
-        b: session.presented_surface(B).unwrap(),
-        source: session.bind_presented_receiver(&source_descriptor).unwrap(),
-        target: session.bind_presented_receiver(&target_descriptor).unwrap(),
-        source_visual,
-        moved: LogicalPoint::new(
-            source_descriptor.bounds().x() + source_descriptor.bounds().width() * 0.9,
-            source_descriptor.center().y(),
-        )
-        .unwrap(),
-    };
-    assert!(scene.source.bounds().contains(scene.moved));
-    assert!(scene.moved.x() - scene.source.center().x() >= 12.0);
-    assert_ne!(scene.moved, scene.target.center());
+    let scene = HostPointerScene::from_presented(
+        &session,
+        A,
+        B,
+        source_descriptor,
+        target_descriptor,
+        &a_records,
+    );
     (session, scene)
+}
+
+fn host_pointer_independent_targets_fixture() -> (DockspaceSession, [HostPointerScene; 2]) {
+    let mut session = session();
+    let mut attach = session.begin_host_frame().unwrap();
+    attach
+        .attach_empty_surface_current(C, RootId::new(3))
+        .unwrap();
+    attach
+        .open_item_current(
+            FIFTH,
+            DockPlacement::Center(DockAnchor::Central(RootId::new(3))),
+        )
+        .unwrap();
+    measure(&mut attach, 800.0);
+    attach.commit().unwrap();
+    session.enable_host_pointer().unwrap();
+
+    let mut initial = session.begin_host_frame().unwrap();
+    let sources = [FIRST, SECOND].map(|item| {
+        initial
+            .paint_plan(A)
+            .unwrap()
+            .unwrap()
+            .tab_receiver(item)
+            .unwrap()
+    });
+    let targets = [(B, THIRD), (C, FIFTH)].map(|(surface, item)| {
+        initial
+            .paint_plan(surface)
+            .unwrap()
+            .unwrap()
+            .center_drop_receiver_for_item(item)
+            .unwrap()
+    });
+    let [a_recording, _] = record_host_pointer_surfaces(&mut initial);
+    let (_, receipt) = RecordingRenderer::execute(initial.paint_plan(C).unwrap().unwrap()).unwrap();
+    initial.confirm_surface_painted(receipt).unwrap();
+    let outputs = initial.commit().unwrap().take_painted_outputs();
+    assert_eq!(outputs.len(), 3);
+    for output in outputs {
+        session
+            .report_surface_presentation(output, ResultKind::Presented)
+            .unwrap();
+    }
+    assert_eq!(settle(&mut session).surface_presentation_commits().len(), 3);
+    let scenes = [B, C].map(|surface| {
+        let index = usize::from(surface == C);
+        HostPointerScene::from_presented(
+            &session,
+            A,
+            surface,
+            sources[index],
+            targets[index],
+            &a_recording,
+        )
+    });
+    (session, scenes)
+}
+
+fn assert_immediate_dock(report: &HostFrameReport) -> DockspaceManipulationFeedback {
+    assert!(report.workspace_changed());
+    let [delivered] = report.manipulation_feedback() else {
+        panic!("an ordinary release must publish exactly one immediate terminal")
+    };
+    assert_eq!(delivered.status(), Status::Delivered(Delivery::Dock));
+    *delivered
 }
 
 fn assert_target_preview(recording: &RecordingRenderer) {
@@ -1318,31 +1407,382 @@ fn settle_pointer_outputs(
 }
 
 #[test]
-fn host_pointer_same_batch_release_waits_for_the_actual_target_preview() {
+fn host_pointer_ordinary_release_delivers_in_its_successful_frame_without_preview_paint() {
+    let (mut session, scene) = host_pointer_fixture();
+    assert_ne!(scene.moved, scene.target.center());
+    let before = session.version();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_host_pointer_batch(scene.batch()).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = frame.commit().unwrap();
+
+    assert_immediate_dock(&report);
+    assert_ne!(session.version(), before);
+    assert!(report.take_painted_outputs().is_empty());
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
+    assert_eq!(
+        session.view().item(SECOND).unwrap().tabs().items(),
+        &[SECOND]
+    );
+    assert_eq!(
+        session.view().item(FIRST).unwrap().tabs().items(),
+        &[THIRD, FOURTH, FIRST]
+    );
+    assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
+    let unchanged = settle(&mut session);
+    assert!(!unchanged.workspace_changed());
+    assert!(unchanged.manipulation_feedback().is_empty());
+}
+
+#[test]
+fn host_pointer_new_press_and_dropped_successor_cannot_undo_an_ordinary_release() {
+    let (mut session, scene) = host_pointer_fixture();
+    let mut inspect = session.begin_host_frame().unwrap();
+    let second_descriptor = inspect
+        .paint_plan(A)
+        .unwrap()
+        .unwrap()
+        .tab_receiver(SECOND)
+        .unwrap();
+    drop(inspect);
+    let second = session.bind_presented_receiver(&second_descriptor).unwrap();
+    let route = HostPointerRoute::new(scene.a, second.center());
+
+    let mut release = session.begin_host_frame().unwrap();
+    release.submit_host_pointer_batch(scene.batch()).unwrap();
+    release
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let delivered = assert_immediate_dock(&release.commit().unwrap());
+    let delivered_version = session.version();
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
+
+    // Encode P1, but keep P0 on screen throughout the next press.
+    let mut render = session.begin_host_frame().unwrap();
+    measure(&mut render, 800.0);
+    record_host_pointer_surfaces(&mut render);
+    let successor_outputs = render.commit().unwrap().take_painted_outputs();
+    assert_eq!(successor_outputs.len(), 2);
+    assert_eq!(session.presented_surface(A), Some(scene.a));
+    assert_eq!(
+        session.bind_presented_receiver(&second_descriptor),
+        Some(second)
+    );
+
+    let mut press = session.begin_host_frame().unwrap();
+    press
+        .submit_host_pointer(HostPointerInput::new(
+            SurfacePointerId::new(1),
+            SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+            route,
+            route,
+            SurfacePointerCapture::ProviderEndpoint,
+            SurfacePointerReceiverFacts::delivery(&second),
+        ))
+        .unwrap();
+    press
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let pressed = press.commit().unwrap();
+    assert!(!pressed.workspace_changed());
+    assert!(pressed.manipulation_feedback().is_empty());
+    assert!(session.has_active_gesture());
+    assert_eq!(session.version(), delivered_version);
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
+
+    let mut artifacts = Vec::new();
+    for output in successor_outputs {
+        artifacts.push(output.presentation_artifact());
+        session
+            .report_surface_presentation(output, ResultKind::Dropped)
+            .unwrap();
+    }
+    let dropped = settle(&mut session);
+    for artifact in artifacts {
+        assert!(
+            dropped
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.retires(artifact))
+        );
+    }
+    assert!(!dropped.workspace_changed());
+    assert!(
+        dropped
+            .manipulation_feedback()
+            .iter()
+            .all(|feedback| feedback.manipulation_id() != delivered.manipulation_id())
+    );
+    assert_eq!(session.version(), delivered_version);
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
+
+    let mut end = session.begin_host_frame().unwrap();
+    end.submit_host_pointer(HostPointerInput::new(
+        SurfacePointerId::new(1),
+        SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+        route,
+        route,
+        SurfacePointerCapture::ProviderEndpoint,
+        SurfacePointerReceiverFacts::delivery(&second),
+    ))
+    .unwrap();
+    end.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let ended = end.commit().unwrap();
+    assert!(!ended.workspace_changed());
+    assert!(
+        ended
+            .manipulation_feedback()
+            .iter()
+            .all(|feedback| feedback.manipulation_id() != delivered.manipulation_id())
+    );
+    assert!(!session.has_active_gesture());
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
+}
+
+#[test]
+fn host_pointer_two_ordinary_releases_against_p0_are_invariant_under_batch_partition() {
+    let partitions: &[&[usize]] = &[&[6], &[3, 3], &[2, 2, 2], &[1, 1, 1, 1, 1, 1]];
+    let topology = |session: &DockspaceSession| {
+        [FIRST, SECOND, THIRD, FOURTH, FIFTH].map(|item| {
+            let view = session.view().item(item).unwrap();
+            (
+                item,
+                view.surface(),
+                view.root(),
+                view.tabs().items().to_vec(),
+                view.tabs().selected(),
+            )
+        })
+    };
+    let mut baseline = None;
+    for partition in partitions {
+        let (mut session, scenes) = host_pointer_independent_targets_fixture();
+        // P0 is presented once. All six edges retain those exact capabilities;
+        // the only later presentation observation is P1 after both releases.
+        let trace = [scenes[0].batch(), scenes[1].batch()].concat();
+        let mut consumed = 0;
+        let mut deliveries = Vec::new();
+        for &count in *partition {
+            let mut frame = session.begin_host_frame().unwrap();
+            frame
+                .submit_host_pointer_batch(trace[consumed..consumed + count].iter().copied())
+                .unwrap();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            let mut report = frame.commit().unwrap();
+            assert!(report.take_painted_outputs().is_empty());
+            deliveries.extend_from_slice(report.manipulation_feedback());
+            consumed += count;
+            assert_eq!(
+                deliveries.len(),
+                usize::from(consumed >= 3) + usize::from(consumed >= 6),
+                "each ordinary release publishes its terminal in that committed batch: {partition:?}"
+            );
+            assert_eq!(
+                session.view().item(FIRST).unwrap().surface(),
+                if consumed >= 3 { B } else { A },
+                "{partition:?}"
+            );
+            assert_eq!(
+                session.view().item(SECOND).unwrap().surface(),
+                if consumed >= 6 { C } else { A },
+                "{partition:?}"
+            );
+        }
+        assert_eq!(consumed, trace.len());
+        assert_eq!(deliveries.len(), 2, "{partition:?}");
+        assert!(
+            deliveries
+                .iter()
+                .all(|feedback| feedback.status() == Status::Delivered(Delivery::Dock)),
+            "{partition:?}"
+        );
+        assert_ne!(
+            deliveries[0].manipulation_id(),
+            deliveries[1].manipulation_id()
+        );
+        assert!(!session.has_active_gesture());
+        assert!(!session.has_pending_presentation());
+        assert_eq!(
+            session.view().item(FIRST).unwrap().tabs().items(),
+            &[THIRD, FOURTH, FIRST]
+        );
+        assert_eq!(
+            session.view().item(SECOND).unwrap().tabs().items(),
+            &[FIFTH, SECOND]
+        );
+        let accepted = topology(&session);
+
+        let mut render = session.begin_host_frame().unwrap();
+        measure(&mut render, 800.0);
+        for surface in render.surfaces() {
+            let (_, receipt) =
+                RecordingRenderer::execute(render.paint_plan(surface).unwrap().unwrap()).unwrap();
+            render.confirm_surface_painted(receipt).unwrap();
+        }
+        let outputs = render.commit().unwrap().take_painted_outputs();
+        assert_eq!(outputs.len(), 3);
+        for output in outputs {
+            session
+                .report_surface_presentation(output, ResultKind::Presented)
+                .unwrap();
+        }
+        let presented = settle(&mut session);
+        assert_eq!(presented.surface_presentation_commits().len(), 3);
+        assert!(!presented.workspace_changed());
+        assert!(presented.manipulation_feedback().is_empty());
+        assert_eq!(topology(&session), accepted);
+        if let Some(expected) = &baseline {
+            assert_eq!(&accepted, expected, "{partition:?}");
+        } else {
+            baseline = Some(accepted);
+        }
+    }
+}
+
+#[test]
+fn host_pointer_old_group_grip_rejects_unseen_members_but_current_item_stays_usable() {
+    let (mut session, scene) = host_pointer_fixture();
+    let mut inspect = session.begin_host_frame().unwrap();
+    let plan = inspect.paint_plan(A).unwrap().unwrap();
+    let mut grip_descriptor = None;
+    plan.visit_surface_program(|step| {
+        if let Step::Operation {
+            operation: Operation::TabBar(bar),
+            ..
+        } = step
+        {
+            grip_descriptor = plan.receiver_for_tab_group_grip(bar);
+        }
+        Ok::<(), ()>(())
+    })
+    .unwrap();
+    let grip_descriptor = grip_descriptor.expect("P0 exposes A's whole-group grip");
+    drop(inspect);
+    let grip = session.bind_presented_receiver(&grip_descriptor).unwrap();
+
+    let mut add = session.begin_host_frame().unwrap();
+    add.open_item_current(FIFTH, DockPlacement::After(SECOND))
+        .unwrap();
+    add.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut added = add.commit().unwrap();
+    assert!(added.workspace_changed());
+    assert!(added.take_painted_outputs().is_empty());
+    assert_eq!(
+        session.view().item(FIFTH).unwrap().tabs().items(),
+        &[FIRST, SECOND, FIFTH]
+    );
+    assert_eq!(session.presented_surface(A), Some(scene.a));
+    assert!(
+        session.bind_presented_receiver(&grip_descriptor).is_none(),
+        "P0's [FIRST, SECOND] grip must not capture the unpainted FIFTH"
+    );
+    assert_eq!(
+        session.bind_presented_receiver(&scene.source.descriptor()),
+        Some(scene.source)
+    );
+
+    let route = HostPointerRoute::new(scene.a, grip.center());
+    let moved = LogicalPoint::new(grip.center().x() + 32.0, grip.center().y()).unwrap();
+    let target_edge = |event| {
+        HostPointerInput::new(
+            SurfacePointerId::new(1),
+            event,
+            HostPointerRoute::new(scene.a, moved),
+            HostPointerRoute::new(scene.b, scene.target.center()),
+            SurfacePointerCapture::ProviderEndpoint,
+            SurfacePointerReceiverFacts::unknown()
+                .with_drag_delivery(&grip)
+                .with_hover(&scene.target),
+        )
+    };
+    let mut stale_press = session.begin_host_frame().unwrap();
+    stale_press
+        .submit_host_pointer_batch([
+            HostPointerInput::new(
+                SurfacePointerId::new(1),
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                route,
+                route,
+                SurfacePointerCapture::ProviderEndpoint,
+                SurfacePointerReceiverFacts::unknown().with_drag_delivery(&grip),
+            ),
+            target_edge(SurfacePointerEvent::Moved),
+            target_edge(SurfacePointerEvent::ButtonReleased(
+                SurfacePointerButton::Primary,
+            )),
+        ])
+        .unwrap();
+    stale_press
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let stale = stale_press.commit().unwrap();
+    assert!(!stale.workspace_changed());
+    assert!(
+        stale
+            .manipulation_feedback()
+            .iter()
+            .all(|feedback| !matches!(
+                feedback.status(),
+                Status::Delivered(_) | Status::Pending(_)
+            ))
+    );
+    assert_eq!(
+        session.view().item(FIFTH).unwrap().tabs().items(),
+        &[FIRST, SECOND, FIFTH]
+    );
+    assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
+
+    // The same visible output can still name an unchanged individual item.
+    let mut item_press = session.begin_host_frame().unwrap();
+    item_press.submit_host_pointer_batch(scene.batch()).unwrap();
+    item_press
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert_immediate_dock(&item_press.commit().unwrap());
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
+    assert_eq!(session.view().item(FIFTH).unwrap().surface(), A);
+    assert_eq!(
+        session.view().item(FIFTH).unwrap().tabs().items(),
+        &[SECOND, FIFTH]
+    );
+}
+
+#[test]
+fn host_pointer_same_batch_release_delivers_before_the_target_output_settles() {
     for target_result in [ResultKind::Presented, ResultKind::Dropped] {
         let (mut session, scene) = host_pointer_fixture();
         let mut frame = session.begin_host_frame().unwrap();
         frame.submit_host_pointer_batch(scene.batch()).unwrap();
+        measure(&mut frame, 800.0);
         let recordings = record_host_pointer_surfaces(&mut frame);
-        assert_target_preview(&recordings[1]);
+        assert_no_pointer_preview(&recordings);
         let mut report = frame.commit().unwrap();
-        assert!(!report.workspace_changed());
-        assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+        assert_immediate_dock(&report);
+        let delivered_version = session.version();
+        assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
         assert!(
             !session.has_active_gesture(),
             "release must relinquish the active pointer owner"
         );
-        assert!(session.has_pending_presentation());
-        assert!(session.surface_requires_presentation(B));
+        assert!(!session.has_pending_presentation());
+        assert!(!session.surface_requires_presentation(B));
         assert!(!session.surface_requires_presentation(A));
 
         let settled = settle_pointer_outputs(&mut session, &mut report, target_result);
-        let presented = target_result == ResultKind::Presented;
-        assert_eq!(
-            session.view().item(FIRST).unwrap().surface(),
-            if presented { B } else { A }
-        );
-        assert_eq!(settled.workspace_changed(), presented);
+        assert!(!settled.workspace_changed());
+        assert!(settled.manipulation_feedback().is_empty());
+        assert!(settled.presentation_transitions().is_empty());
+        assert_eq!(session.version(), delivered_version);
+        assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
         assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
         assert_eq!(session.view().item(THIRD).unwrap().surface(), B);
         assert_eq!(session.view().item(FOURTH).unwrap().surface(), B);
@@ -1368,27 +1808,35 @@ fn host_pointer_unselected_source_continues_same_batch_drag_after_selection() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     let mut input_report = frame.commit().unwrap();
+    assert_immediate_dock(&input_report);
+    let delivered_version = session.version();
     assert!(input_report.take_painted_outputs().is_empty());
-    assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), B);
     assert!(session.view().item(SECOND).unwrap().is_selected());
     assert!(!session.has_active_gesture());
-    assert!(session.has_pending_presentation());
-    assert!(session.surface_requires_presentation(B));
+    assert!(!session.has_pending_presentation());
+    assert!(!session.surface_requires_presentation(B));
     assert!(!session.surface_requires_presentation(A));
     assert!(input_report.repaint_surfaces().contains(&B));
 
-    // The committed measurements become Ready for a separate real paint pass.
+    // A later paint describes the accepted edit and cannot deliver it again.
     let mut paint_frame = session.begin_host_frame().unwrap();
     let recordings = record_host_pointer_surfaces(&mut paint_frame);
-    assert_target_preview(&recordings[1]);
+    assert_no_pointer_preview(&recordings);
     let mut report = paint_frame.commit().unwrap();
-    assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
+    assert!(!report.workspace_changed());
+    assert!(report.manipulation_feedback().is_empty());
+    assert_eq!(session.version(), delivered_version);
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), B);
     assert!(!session.has_active_gesture());
-    assert!(session.has_pending_presentation());
-    assert!(session.surface_requires_presentation(B));
+    assert!(!session.has_pending_presentation());
+    assert!(!session.surface_requires_presentation(B));
 
     let settled = settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented);
-    assert!(settled.workspace_changed());
+    assert!(!settled.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(settled.presentation_transitions().is_empty());
+    assert_eq!(session.version(), delivered_version);
     assert_eq!(session.view().item(SECOND).unwrap().surface(), B);
     assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
     assert_eq!(session.view().item(THIRD).unwrap().surface(), B);
@@ -1615,19 +2063,31 @@ fn host_pointer_unknown_release_on_current_target_clears_preview_without_poisoni
 #[test]
 fn host_pointer_dropped_frame_retries_the_batch_and_duplicate_release_cannot_deliver_twice() {
     let (mut session, scene) = host_pointer_fixture();
+    let before = session.version();
     let mut abandoned = session.begin_host_frame().unwrap();
     abandoned.submit_host_pointer_batch(scene.batch()).unwrap();
+    assert_ne!(abandoned.version(), before);
+    assert_eq!(abandoned.view().item(FIRST).unwrap().surface(), B);
     drop(abandoned);
+    assert_eq!(session.version(), before);
     assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
     assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+    assert_eq!(session.presented_surface(A), Some(scene.a));
+    assert_eq!(session.presented_surface(B), Some(scene.b));
 
     let mut retry = session.begin_host_frame().unwrap();
     retry
         .submit_host_pointer_batch(scene.batch())
         .expect("dropping a frame must not consume its sequence or button edges");
+    measure(&mut retry, 800.0);
     let recordings = record_host_pointer_surfaces(&mut retry);
-    assert_target_preview(&recordings[1]);
+    assert_no_pointer_preview(&recordings);
     let mut report = retry.commit().unwrap();
+    assert_immediate_dock(&report);
+    assert_eq!(report.before(), before);
+    let delivered_version = session.version();
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
 
     let mut repeated = session.begin_host_frame().unwrap();
     let duplicate = scene.target_edge(SurfacePointerEvent::ButtonReleased(
@@ -1639,14 +2099,20 @@ fn host_pointer_dropped_frame_retries_the_batch_and_duplicate_release_cannot_del
             .unwrap();
         let repeated = repeated.commit().unwrap();
         assert!(!repeated.workspace_changed());
+        assert!(repeated.manipulation_feedback().is_empty());
         assert!(repeated.presentation_transitions().is_empty());
     } else {
         drop(repeated);
     }
+    assert_eq!(session.version(), delivered_version);
     assert!(!session.has_active_gesture());
-    assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+    assert!(!session.has_pending_presentation());
+    assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
     let settled = settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented);
-    assert!(settled.workspace_changed());
+    assert!(!settled.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(settled.presentation_transitions().is_empty());
+    assert_eq!(session.version(), delivered_version);
     assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
     assert_eq!(
         session
@@ -1662,7 +2128,9 @@ fn host_pointer_dropped_frame_retries_the_batch_and_duplicate_release_cannot_del
     );
     assert!(!session.has_active_gesture());
     let unchanged = settle(&mut session);
+    assert_eq!(session.version(), delivered_version);
     assert!(!unchanged.workspace_changed());
+    assert!(unchanged.manipulation_feedback().is_empty());
     assert!(unchanged.surface_presentation_commits().is_empty());
     assert!(unchanged.presentation_transitions().is_empty());
     assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
@@ -2044,6 +2512,7 @@ fn host_pointer_wrong_winner_suffix_rolls_back_its_valid_prefix_and_retries_once
     assert!(!session.view().item(SECOND).unwrap().is_selected());
     assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
     assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
     assert_eq!(session.presented_surface(A), Some(a_before));
     assert_eq!(session.presented_surface(B), Some(b_before));
 
@@ -2056,18 +2525,28 @@ fn host_pointer_wrong_winner_suffix_rolls_back_its_valid_prefix_and_retries_once
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     let mut input_report = retry.commit().unwrap();
+    assert_immediate_dock(&input_report);
+    assert_eq!(input_report.before(), before);
+    let delivered_version = session.version();
     assert!(input_report.take_painted_outputs().is_empty());
     assert!(session.view().item(SECOND).unwrap().is_selected());
-    assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), B);
     assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
 
     let mut paint_frame = session.begin_host_frame().unwrap();
     let recordings = record_host_pointer_surfaces(&mut paint_frame);
-    assert_target_preview(&recordings[1]);
+    assert_no_pointer_preview(&recordings);
     let mut report = paint_frame.commit().unwrap();
-    assert_eq!(session.view().item(SECOND).unwrap().surface(), A);
-    let delivered = settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented);
-    assert!(delivered.workspace_changed());
+    assert!(!report.workspace_changed());
+    assert!(report.manipulation_feedback().is_empty());
+    assert_eq!(session.version(), delivered_version);
+    assert_eq!(session.view().item(SECOND).unwrap().surface(), B);
+    let settled = settle_pointer_outputs(&mut session, &mut report, ResultKind::Presented);
+    assert!(!settled.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(settled.presentation_transitions().is_empty());
+    assert_eq!(session.version(), delivered_version);
     assert_eq!(session.view().item(SECOND).unwrap().surface(), B);
     assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
     assert_eq!(
@@ -2082,10 +2561,10 @@ fn host_pointer_wrong_winner_suffix_rolls_back_its_valid_prefix_and_retries_once
             .count(),
         1,
     );
-    let delivered_version = session.version();
     let unchanged = settle(&mut session);
     assert_eq!(session.version(), delivered_version);
     assert!(!unchanged.workspace_changed());
+    assert!(unchanged.manipulation_feedback().is_empty());
     assert!(unchanged.surface_presentation_commits().is_empty());
     assert!(unchanged.presentation_transitions().is_empty());
     assert!(!session.has_active_gesture());

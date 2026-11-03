@@ -7,7 +7,7 @@ guides, and contained floating presentations.
 
 ```rust
 use egui_dockspace::{
-    run_ui, Dockspace, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    Dockspace, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
     DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
 };
 
@@ -26,25 +26,26 @@ assert!(dockspace.view().item(item).is_some());
 
 Provide a `PaneView` implementation to measure and paint application panes.
 When the integration owns the complete official-egui run, use
-`egui_dockspace::run_ui` to retain complete output ownership after every
-output hook succeeds:
+`Dockspace::run_single_surface` to retain one private candidate until the
+terminal output and every output hook succeed:
 
 ```rust,ignore
-let output = run_ui(&context, raw_input, |ui| {
-    let response = dockspace
-        .show_single_surface(surface, ui, panes)
-        .expect("the Dockspace frame advances");
-    assert_eq!(
-        response.presentation_settlement_capability(),
-        egui_dockspace::DockspaceCapability::Supported,
-    );
-});
+let (output, response) = dockspace
+    .run_single_surface(&context, raw_input, surface, panes)
+    .expect("the Dockspace update publishes");
+assert_eq!(
+    response.presentation_settlement_capability(),
+    egui_dockspace::DockspaceCapability::Supported,
+);
 let (full_output, receipt) = output.into_parts();
 let result = renderer.present(full_output); // Host-owned Presented or Dropped result.
 receipt.report(result);
 ```
 
-The callback can run more than once when egui discards a pass. Split the returned
+Pane callbacks run once per actual egui pass. Repeated passes re-encode the
+same accepted input candidate; only the intact terminal pass publishes. A failed
+run leaves core state and producer watermarks unchanged and never automatically
+replays application callbacks. Split the returned
 `DockspaceOutput` at the renderer boundary with `into_parts()`. This transfers
 `FullOutput` and an affine `DockspaceOutputReceipt` to the host. Report
 `SurfacePresentationResult::Presented` only after that complete output is
@@ -71,7 +72,7 @@ magnetic preview without reporting mouse motion. Releasing Shift leaves that
 preview absent until a subsequent real Move or Release resolves a fresh target.
 Explicit docking guides and tab-gap targets remain available, and contained
 content keeps its current drag position. This intent is independent from the
-arrangement lock and cannot alter a release already waiting for presentation.
+arrangement lock and cannot alter an ordinary release which already committed.
 
 The same finite continuation drives stationary overflow-edge scrolling during
 a local drag. `DockStyle::tab_strip_edge_scroll_band` defaults to 24 points and
@@ -102,8 +103,10 @@ remains separate work.
 
 The adapter validates the complete ordered surface span after all output hooks,
 including ordinary geometry, previews, clipping and transforms. Pane drawing must
-be synchronous and append-only on the supplied Ui layer; another-layer write or
-an earlier-shape mutation conservatively disables settlement. Honor the supplied
+be synchronous and append-only on the supplied Ui layer; another-layer pane write or
+an earlier-shape mutation conservatively disables settlement. Adapter-owned popup
+chrome may append to registered foreground layers, with each owned suffix checked
+by the same terminal proof. Honor the supplied
 opacity and source-gap suppression. Private markers are removed while user
 shapes and callbacks remain intact. Shape comparison cannot inspect callback
 internals. After `into_parts()`, preserving the exact complete output is the
@@ -123,7 +126,15 @@ surrounding `RawInput` and terminal `FullOutput`. That path truthfully reports
 discrete keyboard/AccessKit actions remain available, while pointer gestures
 that require preview or focus settlement are disabled. See the packaged
 `basic` example for this boundary and the fork-backed native example for the
-full draggable editor path.
+full draggable editor path. Each accepted callback publishes independently;
+late hooks or an enclosing run cannot roll that publication back. The composed
+`egui_dockspace::run_ui` wrapper offers output settlement for callback integration
+with the same limitation. UI-generated actions are bounded and enter the next
+update before its encoding phase.
+
+An ordinary logical release commits once with accepted input, including when
+output capacity defers rendering. Later dropped output does not cancel it.
+Native resource transfers keep their separate first-live ownership barriers.
 
 For a non-root caller-owned viewport, terminal pane-focus confirmation uses the
 viewport's final AccessKit tree. Enable AccessKit and ensure the `focus_target`

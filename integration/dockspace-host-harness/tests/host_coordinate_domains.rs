@@ -8,11 +8,11 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceManipulationDelivery as Delivery,
-    DockspaceManipulationPendingReason as Pending, DockspaceManipulationStatus as Status,
-    DockspacePreviewVisual, DockspaceSession, HostFrameReport, HostPointerInput, HostPointerRoute,
-    SurfacePaintDisposition, SurfacePaintProgramStep as Step, SurfacePointerButton,
-    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts,
-    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    DockspaceManipulationStatus as Status, DockspacePreviewVisual, DockspaceSession,
+    HostFrameReport, HostPointerInput, HostPointerRoute, SurfacePaintDisposition,
+    SurfacePaintProgramStep as Step, SurfacePointerButton, SurfacePointerCapture,
+    SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -123,6 +123,19 @@ fn paint(
     let mut commands = [Vec::new(), Vec::new()];
     let records = [A, B].map(|surface| {
         let index = usize::from(surface == B);
+        if frame.paint_plan(surface).unwrap().is_none() {
+            frame
+                .measure_surface(
+                    surface,
+                    UniformSurfaceMetrics::new(
+                        LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+                        LogicalSize::new(64.0, 48.0).unwrap(),
+                        96.0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
         let plan = frame.paint_plan(surface).unwrap().unwrap();
         let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
         if matches!(mode, Consumption::Immediate) {
@@ -162,10 +175,6 @@ fn present_exact(
     report: &mut HostFrameReport,
     records: &[RecordingRenderer; 2],
 ) -> HostFrameReport {
-    let release_settlement = report
-        .manipulation_feedback()
-        .iter()
-        .any(|feedback| feedback.status() == Status::Pending(Pending::AwaitingPresentation));
     let outputs = report.take_painted_outputs();
     assert_eq!(outputs.len(), 2);
     let artifacts: Vec<_> = outputs
@@ -191,12 +200,8 @@ fn present_exact(
             .filter(|ack| ack.settles(artifact))
             .collect();
         assert_eq!(acknowledgements.len(), 1);
-        if !release_settlement {
-            assert!(acknowledgements[0].presents(artifact));
-            assert!(!acknowledgements[0].retires(artifact));
-        }
-        // Delivery may retire its own source geometry after changing topology.
-        // The caller checks the exact pending manipulation's Delivered terminal.
+        assert!(acknowledgements[0].presents(artifact));
+        assert!(!acknowledgements[0].retires(artifact));
     }
     settled
 }
@@ -405,49 +410,50 @@ fn window_dpi_and_framebuffer_density_are_independent_for_cross_surface_batches(
                     ])
                     .unwrap();
                 let (mut released, previews, commands) = paint(frame, mapping, mode);
-                let preview_rect = previews[1]
+                let pane_rect = previews[1]
                     .records
                     .iter()
                     .find_map(|record| match record {
-                        OwnedRecord::Preview(DockspacePreviewVisual::Dock { surface: B, rect }) => {
-                            Some(*rect)
-                        }
+                        OwnedRecord::PaneContent {
+                            item: Some(FIRST),
+                            bounds,
+                            paint: SurfacePaintDisposition::Visible,
+                            ..
+                        } => Some(*bounds),
                         _ => None,
                     })
-                    .expect("the target owns the exact release preview");
-                assert!(commands[1].iter().any(|draw| draw.logical == preview_rect));
-                assert!(!released.workspace_changed());
-                assert_eq!(session.version(), initial_version);
-                assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
-                assert!(!session.has_active_gesture());
-                let [pending] = released.manipulation_feedback() else {
-                    panic!("one pending release")
-                };
-                assert_eq!(
-                    pending.status(),
-                    Status::Pending(Pending::AwaitingPresentation)
+                    .expect("the same update paints FIRST in its committed target pane");
+                assert!(commands[1].iter().any(|draw| draw.logical == pane_rect));
+                assert!(
+                    previews
+                        .iter()
+                        .flat_map(|recording| &recording.records)
+                        .all(|record| !matches!(record, OwnedRecord::Preview(_)))
                 );
-                let pending_id = pending.manipulation_id();
-                let pending_feedback_id = pending.id();
+                assert!(released.workspace_changed());
+                assert_eq!(released.before(), initial_version);
+                assert_eq!(released.after(), session.version());
+                assert_ne!(session.version(), initial_version);
+                assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
+                assert!(!session.has_active_gesture());
+                assert!(!session.has_pending_presentation());
+                let [terminal] = released.manipulation_feedback() else {
+                    panic!("the ordinary release delivers once in its successful update")
+                };
+                assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+                let terminal = *terminal;
+                let delivered_version = session.version();
                 let waiting = settle(&mut session);
                 assert!(!waiting.workspace_changed());
                 assert!(waiting.manipulation_feedback().is_empty());
-                assert_eq!(session.version(), initial_version);
-
-                // Dropped-output denial is covered by public_contract.rs's same-batch negative.
-                let delivered = present_exact(&mut session, &mut released, &previews);
-                assert!(delivered.workspace_changed());
-                assert_eq!(delivered.before(), initial_version);
-                assert_eq!(delivered.after(), session.version());
-                // The public version is opaque. This consumer verifies one changed
-                // publication and delivery; core regressions own exact revision counts.
-                assert_ne!(session.version(), initial_version);
-                let [terminal] = delivered.manipulation_feedback() else {
-                    panic!("one typed delivery")
-                };
-                assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-                assert_eq!(terminal.manipulation_id(), pending_id);
-                assert_ne!(terminal.id(), pending_feedback_id);
+                assert_eq!(session.version(), delivered_version);
+                let settled = present_exact(&mut session, &mut released, &previews);
+                assert!(!settled.workspace_changed());
+                assert_eq!(session.version(), delivered_version);
+                assert!(
+                    settled.manipulation_feedback().is_empty(),
+                    "no replay of {terminal:?}"
+                );
                 assert_eq!(session.view().surfaces().count(), 2);
                 let topology: Vec<_> = [FIRST, SECOND, THIRD]
                     .map(|item| {

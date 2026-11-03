@@ -8,6 +8,17 @@ pub struct WorkspaceVersion {
 }
 
 impl WorkspaceVersion {
+    /// Compares replacement epochs for versions from the same session.
+    ///
+    /// Ordinary mutations preserve this relationship; layout/document
+    /// replacement breaks it even when stable item identities are reused.
+    /// Versions alone cannot identify a session. This comparison grants no
+    /// source, receiver or action authority across sessions.
+    #[must_use]
+    pub const fn is_same_epoch(self, other: Self) -> bool {
+        self.epoch.get() == other.epoch.get()
+    }
+
     /// Returns the initial version of a newly constructed workspace.
     #[must_use]
     pub(crate) const fn initial() -> Self {

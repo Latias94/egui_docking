@@ -13,13 +13,17 @@ root patch from silently changing the compatibility gate.
 
 The tests keep two official-host tiers distinct:
 
-- A caller that owns `Context::run_ui` uses `egui_dockspace::run_ui` and
-  receives an owned complete output and an affine renderer settlement receipt.
+- A caller that owns `RawInput` uses `Dockspace::run_single_surface` and receives
+  an owned complete output, a publication response and an affine renderer
+  settlement receipt. Input, measurement and terminal encoding publish once.
 - An unmodified `eframe::App::ui` callback keeps rendering and current-pass
   local actions, but reports `PresentationSettlementRequired` for preview and
   pane-focus finality because eframe owns the surrounding input and output.
 
-Passing the second test is a capability-negative result, not a claim that
+The composed `egui_dockspace::run_ui` callback wrapper also checks final output,
+but each callback's accepted update has already published. Only the owned entry
+point keeps the semantic candidate private through late hooks and discard passes.
+Passing the callback test is a capability-negative result, not a claim that
 ordinary eframe provides full draggable docking.
 
 The wrapper verifies the complete surface shape span after output hooks, then
@@ -31,8 +35,9 @@ while retaining texture deltas for a later successful upload. Receipt drop never
 grants authority. Core, official and native adapters share exact output reporting;
 there is no public preview-only acknowledgement bypass.
 
-This conservative official path admits synchronous append-only drawing on the
-supplied Ui layer. Cross-layer pane output makes settlement unavailable. Shape
+This conservative official path admits synchronous append-only pane drawing on
+the supplied Ui layer. Adapter-owned popup chrome also retains exact append-only
+spans on registered foreground layers. Cross-layer pane output makes settlement unavailable. Shape
 checks include ordinary contents, clips, transforms and order, but cannot inspect
 application callback internals. The renderer must preserve the complete output
 after taking it; the receipt does not automatically observe later edits or GPU

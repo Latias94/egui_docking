@@ -39,14 +39,16 @@ impl CapacityPeaks {
     }
 }
 
+#[track_caller]
 fn settle_report(native: &mut NativeCoordinator, mut report: HostFrameReport) -> HostFrameReport {
     assert!(
         !report.native_input_pending(),
         "each model boundary must commit its complete accepted prefix"
     );
+    let effects = report.take_native_effects();
     assert!(
-        report.take_native_effects().is_empty(),
-        "external root lifetimes must not leave an unconsumed native request"
+        effects.is_empty(),
+        "external root lifetimes must not leave an unconsumed native request: {effects:?}"
     );
     native
         .settle_host_frame_report(&report)
@@ -54,6 +56,7 @@ fn settle_report(native: &mut NativeCoordinator, mut report: HostFrameReport) ->
     report
 }
 
+#[track_caller]
 fn commit_boundary(native: &mut NativeCoordinator) -> HostFrameReport {
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -65,6 +68,23 @@ fn commit_boundary(native: &mut NativeCoordinator) -> HostFrameReport {
         .commit()
         .expect("the complete native boundary commits");
     settle_report(native, report)
+}
+
+fn measure_current_surface(frame: &mut NativeHostFrame<'_>, surface: SurfaceId) {
+    if frame.frame.paint_plan(surface).unwrap().is_none() {
+        frame
+            .frame
+            .measure_surface(
+                surface,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    80.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
 }
 
 fn reset_layout(
@@ -694,6 +714,7 @@ fn settle_model_focus(
     native: &mut NativeCoordinator,
     context: &egui::Context,
     focus: NativeViewportFocusRecord,
+    successor: Option<NativeSurfaceBinding>,
 ) {
     assert_eq!(native.bridge.front_viewport_focus(), Some(focus));
     let captured = native.bridge.captured_through_for_test();
@@ -722,7 +743,25 @@ fn settle_model_focus(
             .unwrap()
             .is_none()
     );
-    let report = commit_boundary(native);
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = frame.commit().unwrap();
+    let effects = report.take_native_effects();
+    if let Some(binding) = successor {
+        assert!(
+            matches!(effects.as_slice(), [request]
+            if request.operation() == &NativeEffectOperation::RequestFocus { binding }),
+            "the committed release's focus successor starts when the preceding owner retires: {effects:?}"
+        );
+        native.accept_native_effects(context, effects).unwrap();
+    } else {
+        assert!(effects.is_empty());
+    }
+    let report = settle_report(native, report);
     assert!(report.manipulation_feedback().is_empty());
     assert!(!native.session.has_pending_native_input());
     native.bridge.push_record(HostRecord::ViewportFocus(focus));
@@ -920,9 +959,8 @@ fn assert_close_create_and_output_pressure(
         NativeWindowPlacement,
     };
     use dockspace::runtime::{
-        DockspaceManipulationDelivery, DockspaceManipulationPendingReason,
-        DockspaceManipulationStatus, NativeProducerStorageLimit, NativeReceiverPurpose,
-        NativeReportStorageLimit,
+        DockspaceManipulationDelivery, DockspaceManipulationStatus, NativeProducerStorageLimit,
+        NativeReceiverPurpose, NativeReportStorageLimit,
     };
     use winit::dpi::{PhysicalPosition, PhysicalSize};
     use winit::event::{
@@ -1227,6 +1265,7 @@ fn assert_close_create_and_output_pressure(
         let mut paint = native
             .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
             .unwrap();
+        measure_current_surface(&mut paint, input_surface);
         let plan = paint.frame.paint_plan(input_surface).unwrap().unwrap();
         let receivers = [
             plan.tab_receiver(ItemId::new(3)).unwrap(),
@@ -1256,6 +1295,7 @@ fn assert_close_create_and_output_pressure(
         })
         .unwrap();
         for surface in [input_surface, bindings[0].surface()] {
+            measure_current_surface(&mut paint, surface);
             let receipt = paint
                 .frame
                 .paint_plan(surface)
@@ -1646,6 +1686,7 @@ fn assert_close_create_and_output_pressure(
         };
         if release {
             assert!(!dropped_release);
+            measure_current_surface(&mut frame, input_surface);
             let receipt = frame
                 .frame
                 .paint_plan(input_surface)
@@ -1680,6 +1721,7 @@ fn assert_close_create_and_output_pressure(
                 .poll_host_frame(&mut budget, resolve)
                 .unwrap()
                 .unwrap();
+            measure_current_surface(&mut frame, input_surface);
             let plan = frame.frame.paint_plan(input_surface).unwrap().unwrap();
             let mut preview = false;
             let receipt = plan
@@ -1689,8 +1731,8 @@ fn assert_close_create_and_output_pressure(
                 })
                 .unwrap();
             assert!(
-                preview,
-                "the actual retried release must paint its docking preview"
+                !preview,
+                "the retried ordinary release paints its committed successor layout"
             );
             frame.frame.confirm_surface_painted(receipt).unwrap();
             dropped_release = true;
@@ -1706,16 +1748,16 @@ fn assert_close_create_and_output_pressure(
                 .contains(&HostInputOutcome::NativeInputCancelledForOverload)
         );
         if release {
-            let [pending] = report.manipulation_feedback() else {
-                panic!("the accepted release must publish one pending outcome: {report:?}");
+            let [terminal] = report.manipulation_feedback() else {
+                panic!("the accepted release must publish exactly one terminal: {report:?}");
             };
             assert_eq!(
-                pending.status(),
-                DockspaceManipulationStatus::Pending(
-                    DockspaceManipulationPendingReason::AwaitingPresentation
-                )
+                terminal.status(),
+                DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
             );
-            release_feedback.push(*pending);
+            assert!(report.workspace_changed());
+            assert_ne!(native.session.version(), version);
+            release_feedback.push(*terminal);
             let [output] = report.take_painted_outputs().try_into().unwrap();
             assert!(output.matches_native_binding(input_binding));
             assert!(release_output.replace(output).is_none());
@@ -1724,7 +1766,14 @@ fn assert_close_create_and_output_pressure(
             assert!(report.take_painted_outputs().is_empty());
         }
         if with_accepted_release {
-            assert_eq!(tab_order(&native), INITIAL_TABS);
+            assert_eq!(
+                tab_order(&native),
+                if dropped_release {
+                    REORDERED_TABS
+                } else {
+                    INITIAL_TABS
+                }
+            );
         }
         native.settle_host_frame_report(&report).unwrap();
         peaks.observe(&native, 0);
@@ -1815,7 +1864,7 @@ fn assert_close_create_and_output_pressure(
     assert_eq!(native.focus_control.has_pending_work(), with_ordinary_focus);
     if with_accepted_release {
         assert_eq!(release_feedback.len(), 1);
-        assert_eq!(tab_order(&native), INITIAL_TABS);
+        assert_eq!(tab_order(&native), REORDERED_TABS);
         assert!(!native.session.has_active_gesture());
     }
     drop(cancelled);
@@ -1898,10 +1947,10 @@ fn assert_close_create_and_output_pressure(
     assert!(native.session.recognizes_native_binding(child));
     assert!(native.bridge.retirement_is_quiescence_candidate(child));
     if let Some(focus) = predecessor_focus {
-        settle_model_focus(&mut native, &context, focus);
+        settle_model_focus(&mut native, &context, focus, Some(input_binding));
         assert_eq!(native.bridge.captured_through_for_test(), terminal_through);
         assert_eq!(native.close_progress().cancellations_committed(), 0);
-        assert_eq!(tab_order(&native), INITIAL_TABS);
+        assert_eq!(tab_order(&native), REORDERED_TABS);
         peaks.observe(&native, 0);
     }
     assert!(native.try_report_retirement_quiescence().unwrap());
@@ -1923,7 +1972,7 @@ fn assert_close_create_and_output_pressure(
     peaks.observe(&native, 0);
 
     if let Some(output) = release_output.take() {
-        assert_eq!(tab_order(&native), INITIAL_TABS);
+        assert_eq!(tab_order(&native), REORDERED_TABS);
         assert!(!native.is_quiescent());
         let unrelated = unrelated_output.take().unwrap();
         let unrelated_artifact = unrelated.presentation_artifact();
@@ -1941,7 +1990,7 @@ fn assert_close_create_and_output_pressure(
             1
         );
         assert!(unrelated.manipulation_feedback().is_empty());
-        assert_eq!(tab_order(&native), INITIAL_TABS);
+        assert_eq!(tab_order(&native), REORDERED_TABS);
         drop(unrelated);
         let artifact = output.presentation_artifact();
         native
@@ -1958,16 +2007,12 @@ fn assert_close_create_and_output_pressure(
         drop(settlement);
         let recorded = native.session.native_input_recorded_count();
         assert_eq!(native.session.version(), version);
-        assert_eq!(tab_order(&native), INITIAL_TABS);
+        assert_eq!(tab_order(&native), REORDERED_TABS);
         assert_eq!(native.close_progress().cancellations_committed(), 0);
         for (index, &binding) in bindings[..2].iter().enumerate() {
             assert_eq!(successor_capture(&native, binding), Some(captures[index]));
         }
-        let delivered = if with_ordinary_focus {
-            commit_model_focus_request(&mut native, &context, input_binding)
-        } else {
-            commit_boundary(&mut native)
-        };
+        let delivered = commit_boundary(&mut native);
         assert_eq!(native.session.native_input_recorded_count(), recorded);
         assert_eq!(
             delivered
@@ -1978,15 +2023,16 @@ fn assert_close_create_and_output_pressure(
             1
         );
         release_feedback.extend_from_slice(delivered.manipulation_feedback());
-        let [pending, terminal] = release_feedback.as_slice() else {
-            panic!("one release must have one pending and one terminal: {release_feedback:?}");
+        assert!(delivered.manipulation_feedback().is_empty());
+        let [terminal] = release_feedback.as_slice() else {
+            panic!("one release must have exactly one terminal: {release_feedback:?}");
         };
-        assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
         assert_eq!(
             terminal.status(),
             DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock)
         );
-        assert!(delivered.workspace_changed());
+        assert!(!delivered.workspace_changed());
+        assert_eq!(native.session.version(), version);
         assert_eq!(tab_order(&native), REORDERED_TABS);
         let successor_focus = with_ordinary_focus.then(|| {
             let successor = dispatch_model_focus(&mut native, &context, &mut peaks);
@@ -2062,7 +2108,7 @@ fn assert_close_create_and_output_pressure(
                 NativeHostWake::RepaintRootAfterCurrent
             );
             assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
-            settle_model_focus(&mut native, &context, successor);
+            settle_model_focus(&mut native, &context, successor, None);
             assert_eq!(native.bridge.captured_through_for_test(), captured + 1);
             assert!(!native.effects.has_pending_work());
             assert_eq!(

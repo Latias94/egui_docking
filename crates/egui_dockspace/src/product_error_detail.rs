@@ -21,6 +21,9 @@ pub(crate) enum DockspaceErrorSource {
     /// The renderer-neutral session rejected a host-frame operation.
     #[error("dockspace runtime failed: {0}")]
     Runtime(#[from] DockspaceRuntimeError),
+    /// An exact renderer report no longer belongs to this output lane.
+    #[error("dockspace presentation report failed: {0}")]
+    PresentationReport(#[from] dockspace::runtime::SurfacePresentationReportError),
     /// The session-owned document boundary rejected persistence input or output.
     #[cfg(feature = "serde")]
     #[error("dockspace persistence failed: {0}")]
@@ -53,7 +56,9 @@ impl DockspaceErrorSource {
             Self::SingleSurfaceRequiresOne { .. } | Self::PassSettlementConflict => {
                 DockspaceErrorKind::OperationConflict
             }
-            Self::SurfaceOutsideRoster { .. } => DockspaceErrorKind::HostProtocol,
+            Self::SurfaceOutsideRoster { .. } | Self::PresentationReport(_) => {
+                DockspaceErrorKind::HostProtocol
+            }
             #[cfg(feature = "serde")]
             Self::Persistence(_) => DockspaceErrorKind::Persistence,
             Self::Runtime(error) => match error.kind() {
@@ -66,10 +71,12 @@ impl DockspaceErrorSource {
                 dockspace::runtime::DockspaceRuntimeErrorKind::Unsupported => {
                     DockspaceErrorKind::Unsupported
                 }
-                dockspace::runtime::DockspaceRuntimeErrorKind::OperationConflict => {
+                dockspace::runtime::DockspaceRuntimeErrorKind::OperationConflict
+                | dockspace::runtime::DockspaceRuntimeErrorKind::UpdateInProgress => {
                     DockspaceErrorKind::OperationConflict
                 }
-                dockspace::runtime::DockspaceRuntimeErrorKind::HostProtocol => {
+                dockspace::runtime::DockspaceRuntimeErrorKind::HostProtocol
+                | dockspace::runtime::DockspaceRuntimeErrorKind::ForeignUpdate => {
                     DockspaceErrorKind::HostProtocol
                 }
                 dockspace::runtime::DockspaceRuntimeErrorKind::Internal => {

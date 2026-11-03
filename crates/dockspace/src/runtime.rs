@@ -31,6 +31,7 @@ mod session;
 #[cfg(all(test, feature = "serde"))]
 mod terminal_replacement_tests;
 mod touch;
+mod update;
 
 pub use crate::interaction::PointerContinuationToken;
 pub use host_frame::DockspaceHostFrame;
@@ -44,6 +45,7 @@ pub use manipulation_feedback::{
 pub use pointer_continuation::DockspacePointerContinuation;
 pub use session::DockspaceSession;
 pub use touch::{DockspaceContextMenuRequest, DockspaceTouchEvent};
+pub use update::DockspaceUpdate;
 
 use error_kind::{
     engine_error_kind, host_frame_error_kind, interaction_error_kind,
@@ -65,8 +67,8 @@ pub use close::{
 };
 use focus::PreparedPaneFocusObservationAuthorityMismatch;
 pub use focus::{
-    DockspaceFocusTarget, DockspacePaneFocusObservation, DockspacePaneFocusRequest,
-    PreparedPaneFocusObservation,
+    DockspaceFocusTarget, DockspaceHostFocus, DockspacePaneFocusObservation,
+    DockspacePaneFocusRequest, PreparedPaneFocusObservation,
 };
 pub use interaction::{
     DockspaceInteractionError, HostPointerHit, HostPointerInput, HostPointerRetirement,
@@ -79,8 +81,8 @@ pub use interaction::{
 };
 use local_action::PreparedSurfaceActionAuthorityMismatch;
 pub use local_action::{
-    PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceSplitterAdjustment,
-    SurfaceTabListNavigation, SurfaceTabNavigation,
+    DeferredSurfaceAction, PreparedSurfaceAction, SurfaceContainedResizeAdjustment,
+    SurfaceSplitterAdjustment, SurfaceTabListNavigation, SurfaceTabNavigation,
 };
 pub use measurement::{
     MeasurementValueError, SurfaceMeasurementAnswer, SurfaceMeasurementRequest, TabListMenuMetrics,
@@ -109,9 +111,10 @@ pub use native::{NativePointerCaptureRequest, NativePointerContinuation};
 pub use native_effect::{
     NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseDisposition,
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeDispatchFailure,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
-    NativeEffectSubmissionError, NativeIndeterminateReason, NativeInputEffectAcknowledgement,
-    NativePresentationEffectAcknowledgement, NativeSurfaceRole, NativeUnsupportedReason,
+    NativeEffectAcknowledgement, NativeEffectDispatch, NativeEffectOperation, NativeEffectRequest,
+    NativeEffectResult, NativeEffectSubmissionError, NativeIndeterminateReason,
+    NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement, NativeSurfaceRole,
+    NativeUnsupportedReason,
 };
 pub use paint::{
     ContainedPaintRecord, ContainedResizeDirection, ContainedResizePaintRecord,
@@ -125,10 +128,11 @@ pub use paint::{
     PresentationCommandPaintRecord, PresentationMenuAnchorPaintRecord, SplitterJunctionPaintRecord,
     SplitterPaintRecord, SurfacePaintDisposition, SurfacePaintPlan, SurfacePaintProgramOperation,
     SurfacePaintProgramRoot, SurfacePaintProgramRootKind, SurfacePaintProgramStep,
-    SurfacePaintProgramVisitError, SurfaceProgramExecutionReceipt, TabBarPaintRecord,
-    TabGroupDragRegionKind, TabGroupDragRegionPaintRecord, TabListMenuBackdropPaintRecord,
-    TabListMenuPaintRecord, TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind,
-    TabStripControlPaintRecord, TabStripMemberPaintRecord, TabStripMemberVisibility,
+    SurfacePaintProgramVisitError, SurfaceProgramExecutionReceipt, SurfaceWork,
+    SurfaceWorkDeferred, TabBarPaintRecord, TabGroupDragRegionKind, TabGroupDragRegionPaintRecord,
+    TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
+    TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord, TabStripMemberPaintRecord,
+    TabStripMemberVisibility,
 };
 #[cfg(feature = "serde")]
 pub use persistence::{
@@ -788,6 +792,10 @@ pub enum DockspaceRuntimeErrorKind {
     Unsupported,
     /// A valid operation conflicts with the current affine or lifecycle state.
     OperationConflict,
+    /// A host frame or suspended update already owns this session's candidate.
+    UpdateInProgress,
+    /// The update does not match the session's active update, host, or input producer.
+    ForeignUpdate,
     /// A host supplied stale, incomplete, contradictory, or out-of-order facts.
     HostProtocol,
     /// An internal authority, counter, or invariant failed.
@@ -809,6 +817,10 @@ impl DockspaceRuntimeError {
     #[must_use]
     pub const fn kind(&self) -> DockspaceRuntimeErrorKind {
         match &self.source {
+            DockspaceRuntimeErrorSource::UpdateInProgress => {
+                DockspaceRuntimeErrorKind::UpdateInProgress
+            }
+            DockspaceRuntimeErrorSource::ForeignUpdate => DockspaceRuntimeErrorKind::ForeignUpdate,
             DockspaceRuntimeErrorSource::Engine(error) => engine_error_kind(error),
             DockspaceRuntimeErrorSource::HostFrame(error) => host_frame_error_kind(error),
             DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch(_) => {
@@ -919,6 +931,18 @@ impl DockspaceRuntimeError {
         match self.source {
             DockspaceRuntimeErrorSource::PaintObligationUnavailable { surface } => Some(surface),
             _ => None,
+        }
+    }
+
+    const fn update_in_progress() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::UpdateInProgress,
+        }
+    }
+
+    const fn foreign_update() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::ForeignUpdate,
         }
     }
 
@@ -1045,6 +1069,10 @@ impl std::error::Error for DockspaceRuntimeError {
 
 #[derive(Debug, Error)]
 enum DockspaceRuntimeErrorSource {
+    #[error("a host frame or suspended update is already active for this session")]
+    UpdateInProgress,
+    #[error("the update does not match the active session, host, or input producer")]
+    ForeignUpdate,
     #[error("the arrangement is locked; commit an unlocked policy before replacing the layout")]
     ArrangementLocked,
     #[error(transparent)]

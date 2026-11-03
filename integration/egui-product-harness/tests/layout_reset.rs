@@ -6,7 +6,7 @@ use egui::{Context, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{
     CloseDecision, Dockspace, DockspaceCloseRequestStatus, DockspaceLayout, DockspaceNode,
     DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, PaneView, RootId, SurfaceId,
-    SurfacePresentationResult, run_ui,
+    SurfacePresentationResult,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -51,18 +51,19 @@ impl PaneView for Panes {
 
 fn frame(context: &Context, dockspace: &mut Dockspace, panes: &mut Panes) {
     let surface = dockspace.view().surfaces().next().unwrap().id();
-    let (mut output, receipt) = run_ui(
-        context,
-        RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
-            focused: true,
-            ..Default::default()
-        },
-        |ui| {
-            dockspace.show_single_surface(surface, ui, panes).unwrap();
-        },
-    )
-    .into_parts();
+    let (output, _) = dockspace
+        .run_single_surface(
+            context,
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                focused: true,
+                ..Default::default()
+            },
+            surface,
+            panes,
+        )
+        .unwrap();
+    let (mut output, receipt) = output.into_parts();
     receipt.report(SurfacePresentationResult::Presented);
     output.textures_delta.clear();
 }

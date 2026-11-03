@@ -14,6 +14,7 @@ use crate::graph::{
     Workspace, WorkspaceBuilder, is_exact_tab_mru,
 };
 use crate::ids::{ItemId, NodeId, RootId};
+use crate::transaction::clone_workspace_draft;
 use crate::validation::WorkspaceValidationErrors;
 
 /// Summary of one successfully published canonicalization transaction.
@@ -169,10 +170,11 @@ pub enum CanonicalizationError {
 
 /// Rewrites a structurally sound workspace into its unique canonical form.
 ///
-/// The operation is atomic: every check and rewrite runs against a clone, and
-/// `workspace` is replaced only after strict validation and an item-multiset
-/// comparison succeed. Valid unreachable arena nodes are swept; an orphan that
-/// contains an item is rejected instead of silently discarding pane ownership.
+/// The operation is atomic: structural input checks run before cloning, and all
+/// rewrites run against that clone. `workspace` is replaced only after the item
+/// multiset comparison and strict validation succeed. Valid unreachable arena
+/// nodes are swept; an orphan containing an item is rejected instead of silently
+/// discarding pane ownership.
 ///
 /// # Errors
 ///
@@ -184,34 +186,53 @@ pub fn canonicalize_workspace(
 ) -> Result<CanonicalizationReport, CanonicalizationError> {
     validate_rewrite_input(workspace)?;
 
+    let mut candidate = clone_workspace_draft(workspace);
+    canonicalize_validated_draft(&mut candidate)?;
+
+    let report = CanonicalizationReport {
+        changed: candidate != *workspace,
+        removed_nodes: workspace.nodes.len().saturating_sub(candidate.nodes.len()),
+    };
+    *workspace = candidate;
+    Ok(report)
+}
+
+/// Normalizes a caller-owned, discardable transaction draft in place.
+///
+/// All input, item-ownership and output checks still run. On failure the draft
+/// may be partially rewritten and must be discarded rather than published.
+pub(crate) fn canonicalize_draft(workspace: &mut Workspace) -> Result<(), CanonicalizationError> {
+    validate_rewrite_input(workspace)?;
+    canonicalize_validated_draft(workspace)
+}
+
+fn canonicalize_validated_draft(workspace: &mut Workspace) -> Result<(), CanonicalizationError> {
     let original_items = workspace.item_multiset();
-    let original_node_count = workspace.nodes.len();
     let protected_central: HashSet<NodeId> = workspace
         .roots
         .values()
         .filter_map(|root| root.central)
         .collect();
 
-    let mut candidate = workspace.clone();
-    let roots: Vec<(RootId, NodeId)> = candidate
+    let roots: Vec<(RootId, NodeId)> = workspace
         .roots
         .iter()
         .map(|(root, record)| (*root, record.node))
         .collect();
 
     for (root, node) in roots {
-        let next = rewrite_subtree(&mut candidate, node, &protected_central)?
+        let next = rewrite_subtree(workspace, node, &protected_central)?
             .ok_or(CanonicalizationError::EmptyRoot { root })?;
-        if let Some(record) = candidate.roots.get_mut(&root) {
+        if let Some(record) = workspace.roots.get_mut(&root) {
             record.node = next;
         }
     }
 
-    let reachable = reachable_from_roots(&candidate)?;
-    candidate.nodes.retain(|node, _| reachable.contains(&node));
-    candidate.tab_mru.retain(|node, _| reachable.contains(node));
+    let reachable = reachable_from_roots(workspace)?;
+    workspace.nodes.retain(|node, _| reachable.contains(&node));
+    workspace.tab_mru.retain(|node, _| reachable.contains(node));
 
-    let candidate_items = candidate.item_multiset();
+    let candidate_items = workspace.item_multiset();
     if candidate_items != original_items {
         return Err(CanonicalizationError::ItemMultisetChanged {
             before: original_items,
@@ -219,16 +240,11 @@ pub fn canonicalize_workspace(
         });
     }
 
-    candidate
+    workspace
         .validate_candidate()
         .map_err(CanonicalizationError::InvalidOutput)?;
 
-    let report = CanonicalizationReport {
-        changed: candidate != *workspace,
-        removed_nodes: original_node_count.saturating_sub(candidate.nodes.len()),
-    };
-    *workspace = candidate;
-    Ok(report)
+    Ok(())
 }
 
 impl WorkspaceBuilder {
@@ -621,4 +637,124 @@ fn collect_reachable(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drop_resolver::structural_work::{self, WorkspaceCloneVolume};
+    use crate::graph::{Axis, SurfacePresentation};
+    use crate::ids::SurfaceId;
+    use crate::validation::WorkspaceValidationError;
+
+    const ROOT: RootId = RootId::new(1);
+
+    fn singleton_draft() -> (Workspace, NodeId, NodeId) {
+        let mut builder = Workspace::builder();
+        let leaf = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        let wrapper = builder.insert_node(Node::Split {
+            axis: Axis::Horizontal,
+            children: vec![leaf],
+            weights: vec![SplitWeight::new(1.0).expect("unit weight is valid")],
+        });
+        builder.set_root(ROOT, crate::graph::RootRecord::new(wrapper));
+        (builder.workspace, leaf, wrapper)
+    }
+
+    #[test]
+    fn atomic_wrapper_counts_its_full_clone_and_preserves_idempotent_reports() {
+        let (mut workspace, leaf, wrapper) = singleton_draft();
+        workspace
+            .surfaces
+            .insert(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+
+        for changed in [true, false] {
+            let volume = WorkspaceCloneVolume::capture(&workspace);
+            structural_work::reset();
+            let report = canonicalize_workspace(&mut workspace).expect("draft is canonicalizable");
+            assert_eq!(report.changed, changed);
+            assert_eq!(report.removed_nodes, usize::from(changed));
+            assert_eq!(workspace.root(ROOT).expect("root survives").node, leaf);
+            assert!(workspace.node(wrapper).is_none());
+            workspace.validate().expect("published graph is strict");
+            let clones = structural_work::snapshot().workspace_deep_clones;
+            assert_eq!(clones.transaction_candidates.calls, 1);
+            assert_eq!(clones.transaction_candidates.volume, volume);
+        }
+    }
+
+    #[test]
+    fn late_failures_dirty_only_the_discardable_draft_and_preserve_error_order() {
+        for orphan_item in [false, true] {
+            let (mut workspace, leaf, wrapper) = singleton_draft();
+            if orphan_item {
+                workspace.insert_runtime_node(Node::tabs([ItemId::new(2)]));
+            }
+            let original = workspace.clone();
+            let volume = WorkspaceCloneVolume::capture(&workspace);
+            let mut draft = workspace.clone();
+
+            structural_work::reset();
+            let error = canonicalize_draft(&mut draft).expect_err("late check must fail");
+            assert_eq!(draft.root(ROOT).expect("root survives").node, leaf);
+            assert!(draft.node(wrapper).is_none());
+            assert_ne!(draft, original);
+            assert_eq!(
+                structural_work::snapshot()
+                    .workspace_deep_clones
+                    .transaction_candidates
+                    .calls,
+                0
+            );
+            if orphan_item {
+                assert!(matches!(
+                    &error,
+                    CanonicalizationError::ItemMultisetChanged { before, after }
+                        if *before == BTreeMap::from([(ItemId::new(1), 1), (ItemId::new(2), 1)])
+                            && *after == BTreeMap::from([(ItemId::new(1), 1)])
+                ));
+            } else {
+                assert!(matches!(
+                    &error,
+                    CanonicalizationError::InvalidOutput(errors)
+                        if matches!(errors.errors(), [WorkspaceValidationError::RootNotPresented { root: ROOT }])
+                ));
+            }
+
+            for _ in 0..2 {
+                structural_work::reset();
+                assert_eq!(canonicalize_workspace(&mut workspace), Err(error.clone()));
+                assert_eq!(workspace, original);
+                let clones = structural_work::snapshot().workspace_deep_clones;
+                assert_eq!(clones.transaction_candidates.calls, 1);
+                assert_eq!(clones.transaction_candidates.volume, volume);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_input_is_rejected_before_rewriting_or_atomic_cloning() {
+        let (mut workspace, leaf, _) = singleton_draft();
+        workspace.nodes[leaf] = Node::Tabs {
+            items: vec![ItemId::new(1)],
+            selected: Some(ItemId::new(2)),
+        };
+        let original = workspace.clone();
+        let error = CanonicalizationError::InvalidSelection {
+            node: leaf,
+            selected: Some(ItemId::new(2)),
+        };
+
+        structural_work::reset();
+        assert_eq!(canonicalize_workspace(&mut workspace), Err(error.clone()));
+        assert_eq!(canonicalize_draft(&mut workspace), Err(error));
+        assert_eq!(workspace, original);
+        assert_eq!(
+            structural_work::snapshot()
+                .workspace_deep_clones
+                .transaction_candidates
+                .calls,
+            0
+        );
+    }
 }

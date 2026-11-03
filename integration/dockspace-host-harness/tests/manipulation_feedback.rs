@@ -1,19 +1,17 @@
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use dockspace::model::{
     DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
+    DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId, WorkspaceVersion,
 };
 use dockspace::policy::{CloseCapability, DockPolicy};
 use dockspace::runtime::{
-    ContainedResizeDirection, DockspaceManipulationCancelReason as CancelReason,
-    DockspaceManipulationDelivery as Delivery, DockspaceManipulationFeedback as Feedback,
-    DockspaceManipulationPendingReason as PendingReason,
-    DockspaceManipulationRejection as Rejection, DockspaceManipulationStatus as Status,
-    DockspaceRuntimeErrorKind, DockspaceSession, HostFrameReport, HostPointerInput,
-    HostPointerRoute, PaintedSurfaceOutput, SurfacePaintProgramStep as Step,
-    SurfacePointerButton as Button, SurfacePointerCapture, SurfacePointerEvent as Event,
-    SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    ContainedResizeDirection, DockspaceManipulationDelivery as Delivery,
+    DockspaceManipulationFeedback as Feedback, DockspaceManipulationRejection as Rejection,
+    DockspaceManipulationStatus as Status, DockspaceRuntimeErrorKind, DockspaceSession,
+    HostFrameReport, HostPointerInput, HostPointerRoute, PaintedSurfaceOutput,
+    SurfacePaintProgramStep as Step, SurfacePointerButton as Button, SurfacePointerCapture,
+    SurfacePointerEvent as Event, SurfacePointerId, SurfacePointerReceiverFacts,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::RecordingRenderer;
 
@@ -39,10 +37,22 @@ fn settle(session: &mut DockspaceSession) -> HostFrameReport {
     frame.commit().unwrap()
 }
 
+fn metrics() -> UniformSurfaceMetrics {
+    UniformSurfaceMetrics::new(
+        rect(0.0, 0.0, 960.0, 720.0),
+        LogicalSize::new(64.0, 48.0).unwrap(),
+        96.0,
+    )
+    .unwrap()
+}
+
 fn paint(
     session: &mut DockspaceSession,
 ) -> (PaintedSurfaceOutput, Option<LogicalPoint>, LogicalPoint) {
     let mut frame = session.begin_host_frame().unwrap();
+    if frame.paint_plan(SURFACE).unwrap().is_none() {
+        frame.measure_surface(SURFACE, metrics()).unwrap();
+    }
     let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
     let tab = plan.tab_receiver(SECOND).map(|receiver| receiver.center());
     let mut resize = None;
@@ -160,7 +170,7 @@ fn edge(
     frame.commit()
 }
 
-fn pending(
+fn release(
     session: &mut DockspaceSession,
     gesture: Gesture,
     tab: LogicalPoint,
@@ -189,6 +199,7 @@ fn pending(
     )
     .unwrap();
     assert!(motion.manipulation_feedback().is_empty());
+    let before = session.version();
     let released = edge(
         session,
         Event::ButtonReleased(Button::Primary),
@@ -197,13 +208,35 @@ fn pending(
     )
     .unwrap();
     let [feedback] = released.manipulation_feedback() else {
-        panic!("one consumed release must publish exactly one pending record: {released:?}");
+        panic!("one consumed release must publish exactly one terminal: {released:?}");
     };
     assert_eq!(
         feedback.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
+        Status::Delivered(match gesture {
+            Gesture::Dock => Delivery::Dock,
+            Gesture::ContainedResize => Delivery::ContainedTransform,
+        })
     );
-    assert_eq!(feedback.id(), released.manipulation_feedback()[0].id());
+    assert!(released.workspace_changed());
+    assert_eq!(released.before(), before);
+    assert_eq!(released.after(), session.version());
+    assert_ne!(session.version(), before);
+    assert!(!session.has_active_gesture());
+    assert!(!session.has_pending_presentation());
+    match gesture {
+        Gesture::Dock => assert_eq!(
+            session.view().item(SECOND).unwrap().tabs().items(),
+            &[FIRST, SECOND]
+        ),
+        Gesture::ContainedResize => assert_eq!(
+            session
+                .view()
+                .contained(FloatingPresentationId::new(1))
+                .unwrap()
+                .rect(),
+            rect(520.0, 160.0, 336.0, 284.0)
+        ),
+    }
     (*feedback, target)
 }
 
@@ -362,9 +395,22 @@ fn splitter_release_delivers_or_rejects_once_and_new_gestures_keep_distinct_iden
     }
 }
 
+fn durable(session: &DockspaceSession) -> (WorkspaceVersion, [Vec<ItemId>; 3], LogicalRect) {
+    (
+        session.version(),
+        [FIRST, SECOND, ItemId::new(3)]
+            .map(|item| session.view().item(item).unwrap().tabs().items().to_vec()),
+        session
+            .view()
+            .contained(FloatingPresentationId::new(1))
+            .unwrap()
+            .rect(),
+    )
+}
+
 #[cfg(feature = "serde")]
 #[test]
-fn document_restore_cancels_the_original_pending_identity_and_late_output_is_quiet() {
+fn document_restore_replaces_delivered_layout_without_cancelling_its_identity() {
     use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId, HostInputOutcome};
 
     const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x76; 16]);
@@ -380,8 +426,9 @@ fn document_restore_cancels_the_original_pending_identity_and_late_output_is_qui
             DockspaceSession::from_persistent_layout(layout(), DockPolicy::default(), bootstrap)
                 .unwrap();
         let (mut session, tab, resize) = ready_fixture(persistent);
+        let initial = durable(&session);
         let saved = session.save_document_json().unwrap();
-        let (pending, _) = pending(&mut session, gesture, tab, resize);
+        let (delivered, _) = release(&mut session, gesture, tab, resize);
         let (late_output, _, _) = paint(&mut session);
         let prepared = session
             .prepare_document_restore_json(&saved, |document, key| {
@@ -399,71 +446,59 @@ fn document_restore_cancels_the_original_pending_identity_and_late_output_is_qui
             report.inputs(),
             &[HostInputOutcome::DocumentRestored {
                 previous,
-                current: session.version(),
+                current: session.version()
             }]
         );
         assert_ne!(session.version(), previous);
-        let [cancelled] = report.manipulation_feedback() else {
-            panic!("document restore must cancel exactly one pending obligation: {report:?}");
-        };
-        assert_eq!(cancelled.manipulation_id(), pending.manipulation_id());
-        assert_ne!(cancelled.id(), pending.id());
-        assert_eq!(
-            cancelled.status(),
-            Status::Cancelled(CancelReason::WorkspaceRestored)
+        assert!(
+            report.manipulation_feedback().is_empty(),
+            "restore cannot cancel an already delivered manipulation: {delivered:?}"
         );
-        assert_eq!(report.manipulation_feedback(), &[*cancelled]);
         assert!(!session.has_active_gesture());
-        let restored_version = session.version();
+        let restored = durable(&session);
+        assert_eq!(restored.1, initial.1);
+        assert_eq!(restored.2, initial.2);
         session
             .report_surface_presentation(late_output, SurfacePresentationResult::Presented)
             .unwrap();
         for _ in 0..2 {
             assert!(settle(&mut session).manipulation_feedback().is_empty());
-            assert_eq!(session.version(), restored_version);
+            assert_eq!(durable(&session), restored);
         }
-        measure(&mut session);
         let (output, _, _) = paint(&mut session);
         session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .unwrap();
         assert!(settle(&mut session).manipulation_feedback().is_empty());
-        assert_eq!(session.version(), restored_version);
+        assert_eq!(durable(&session), restored);
     }
 }
 
 #[test]
-fn pending_terminal_feedback_keeps_identity_and_never_replays() {
+fn delivered_terminal_feedback_never_replays_after_presented_or_dropped_outputs() {
     for gesture in [Gesture::Dock, Gesture::ContainedResize] {
         for disposition in [
             SurfacePresentationResult::Presented,
             SurfacePresentationResult::Dropped,
         ] {
             let (mut session, tab, resize) = fixture();
-            let (pending, point) = pending(&mut session, gesture, tab, resize);
+            let (terminal, point) = release(&mut session, gesture, tab, resize);
+            let committed = durable(&session);
             let (output, _, _) = paint(&mut session);
             session
                 .report_surface_presentation(output, disposition)
                 .unwrap();
             let report = settle(&mut session);
-            let [terminal] = report.manipulation_feedback() else {
-                panic!("one obligation must produce exactly one terminal: {report:?}");
-            };
-            assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
-            assert_ne!(pending.id(), terminal.id());
-            let expected = if disposition == SurfacePresentationResult::Presented {
-                Status::Delivered(match gesture {
-                    Gesture::Dock => Delivery::Dock,
-                    Gesture::ContainedResize => Delivery::ContainedTransform,
-                })
-            } else {
-                Status::Cancelled(CancelReason::SceneUnavailable)
-            };
-            assert_eq!(terminal.status(), expected);
+            assert!(!report.workspace_changed());
+            assert!(
+                report.manipulation_feedback().is_empty(),
+                "the release already delivered once: {terminal:?}"
+            );
+            assert_eq!(durable(&session), committed);
             for _ in 0..2 {
                 assert!(settle(&mut session).manipulation_feedback().is_empty());
+                assert_eq!(durable(&session), committed);
             }
-            measure(&mut session);
             let (later_output, _, _) = paint(&mut session);
             session
                 .report_surface_presentation(later_output, SurfacePresentationResult::Presented)
@@ -478,39 +513,39 @@ fn pending_terminal_feedback_keeps_identity_and_never_replays() {
                 Ok(report) => assert!(report.manipulation_feedback().is_empty()),
                 Err(error) => assert_eq!(error.kind(), DockspaceRuntimeErrorKind::HostProtocol),
             }
+            assert_eq!(durable(&session), committed);
         }
     }
 }
 
 #[test]
-fn provider_retirement_returns_the_original_pending_terminal_without_replay() {
+fn provider_retirement_preserves_delivered_edits_without_another_terminal() {
     for gesture in [Gesture::Dock, Gesture::ContainedResize] {
         let (mut session, tab, resize) = fixture();
-        let (pending, _) = pending(&mut session, gesture, tab, resize);
+        let (terminal, _) = release(&mut session, gesture, tab, resize);
+        let committed = durable(&session);
         let (late_output, _, _) = paint(&mut session);
         let retired = session.disable_host_pointer().unwrap().unwrap();
-        let [cancelled] = retired.manipulation_feedback() else {
-            panic!("retirement preserves its committed terminal")
-        };
-        assert_eq!(pending.manipulation_id(), cancelled.manipulation_id());
-        assert_ne!(pending.id(), cancelled.id());
-        assert_eq!(
-            cancelled.status(),
-            Status::Cancelled(CancelReason::PointerProviderRetired)
+        assert!(
+            retired.manipulation_feedback().is_empty(),
+            "no pending obligation remains after {terminal:?}"
         );
+        assert_eq!(durable(&session), committed);
         assert!(session.disable_host_pointer().unwrap().is_none());
         session
             .report_surface_presentation(late_output, SurfacePresentationResult::Presented)
             .unwrap();
         assert!(settle(&mut session).manipulation_feedback().is_empty());
+        assert_eq!(durable(&session), committed);
     }
 }
 
 #[test]
-fn pending_policy_cancellation_keeps_identity_and_late_output_is_inert() {
+fn policy_changes_preserve_delivered_edits_and_late_output_is_inert() {
     for gesture in [Gesture::Dock, Gesture::ContainedResize] {
         let (mut session, tab, resize) = fixture();
-        let (pending, _) = pending(&mut session, gesture, tab, resize);
+        let (terminal, _) = release(&mut session, gesture, tab, resize);
+        let committed = durable(&session);
         let (late_output, _, _) = paint(&mut session);
         let mut policy = session.policy().clone();
         policy.set_close_capability(CloseCapability::Disabled);
@@ -520,26 +555,52 @@ fn pending_policy_cancellation_keeps_identity_and_late_output_is_inert() {
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .unwrap();
         let report = frame.commit().unwrap();
-        let [cancelled] = report.manipulation_feedback() else {
-            panic!("one pending obligation must be cancelled: {report:?}");
-        };
-        assert_eq!(pending.manipulation_id(), cancelled.manipulation_id());
-        assert_ne!(pending.id(), cancelled.id());
+        assert!(
+            report.manipulation_feedback().is_empty(),
+            "policy cannot cancel {terminal:?}"
+        );
+        assert_eq!(report.before(), committed.0);
+        assert_eq!(report.after(), session.version());
+        assert_ne!(
+            report.after(),
+            committed.0,
+            "the policy replacement owns its own workspace revision"
+        );
+        let after_policy = durable(&session);
         assert_eq!(
-            cancelled.status(),
-            Status::Cancelled(CancelReason::PolicyChanged)
+            after_policy.1, committed.1,
+            "policy changes cannot replay the delivered dock"
+        );
+        assert_eq!(
+            after_policy.2, committed.2,
+            "policy changes cannot undo the delivered resize"
         );
         session
             .report_surface_presentation(late_output, SurfacePresentationResult::Presented)
             .unwrap();
-        assert!(settle(&mut session).manipulation_feedback().is_empty());
+        let settled = settle(&mut session);
+        assert!(!settled.workspace_changed());
+        assert!(settled.manipulation_feedback().is_empty());
+        assert_eq!(durable(&session), after_policy);
     }
 }
 
 #[test]
-fn a_new_gesture_gets_a_new_identity_after_pending_replacement() {
+fn a_new_gesture_gets_a_distinct_identity_without_replacing_a_delivered_edit() {
     let (mut session, tab, resize) = fixture();
-    let (first, _) = pending(&mut session, Gesture::ContainedResize, tab, resize);
+    let (first, _) = release(&mut session, Gesture::ContainedResize, tab, resize);
+    let committed = durable(&session);
+    let (dropped, _, _) = paint(&mut session);
+    session
+        .report_surface_presentation(dropped, SurfacePresentationResult::Dropped)
+        .unwrap();
+    assert!(settle(&mut session).manipulation_feedback().is_empty());
+    assert_eq!(durable(&session), committed);
+    let (output, _, resize) = paint(&mut session);
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    assert!(settle(&mut session).manipulation_feedback().is_empty());
     let replacement = edge(
         &mut session,
         Event::ButtonPressed(Button::Primary),
@@ -547,14 +608,9 @@ fn a_new_gesture_gets_a_new_identity_after_pending_replacement() {
         SurfacePointerCapture::ProviderEndpoint,
     )
     .unwrap();
-    let [cancelled] = replacement.manipulation_feedback() else {
-        panic!("a new authoritative press cancels the previous obligation once");
-    };
-    assert_eq!(first.manipulation_id(), cancelled.manipulation_id());
-    assert_eq!(
-        cancelled.status(),
-        Status::Cancelled(CancelReason::ReplacedByNewGesture)
-    );
+    assert!(replacement.manipulation_feedback().is_empty());
+    assert_eq!(durable(&session), committed);
+    assert!(session.has_active_gesture());
     let point = LogicalPoint::new(resize.x() + 24.0, resize.y() + 16.0).unwrap();
     assert!(
         edge(
@@ -575,12 +631,24 @@ fn a_new_gesture_gets_a_new_identity_after_pending_replacement() {
     )
     .unwrap();
     let [next] = report.manipulation_feedback() else {
-        panic!("the new gesture publishes its own pending status");
+        panic!("the new gesture delivers its own terminal once: {report:?}")
     };
     assert_ne!(first.manipulation_id(), next.manipulation_id());
     assert_ne!(first.id(), next.id());
     assert_eq!(
         next.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
+        Status::Delivered(Delivery::ContainedTransform)
     );
+    assert!(report.workspace_changed());
+    assert_eq!(
+        session
+            .view()
+            .contained(FloatingPresentationId::new(1))
+            .unwrap()
+            .rect(),
+        rect(520.0, 160.0, 360.0, 300.0)
+    );
+    let after = durable(&session);
+    assert!(settle(&mut session).manipulation_feedback().is_empty());
+    assert_eq!(durable(&session), after);
 }

@@ -132,9 +132,36 @@ impl DockEngine {
                 accepted_base: self.version,
             });
         }
-        if let Err(error) = self.semantic_candidate(scene) {
-            return Ok(self.candidate_action_rejection(error));
-        }
+        let candidate = match self.semantic_candidate(scene) {
+            Ok(candidate) => candidate.frozen_witness(),
+            Err(error) => return Ok(self.candidate_action_rejection(error)),
+        };
+        self.reduce_presentation_command_from_candidate(
+            input,
+            cause,
+            focus_causal,
+            &candidate,
+            action,
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn reduce_presentation_command_from_candidate(
+        &mut self,
+        input: InputSequence,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
+        candidate: &crate::scene::SurfacePlanScene,
+        action: ProductAction,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        let expected = self.version;
+        let scene = candidate.stamp();
         let Some(root) = product_presentation_transition_root(action) else {
             return Err(EngineError::ReductionCauseInvariant {
                 detail: "local presentation command carried a non-presentation product action",

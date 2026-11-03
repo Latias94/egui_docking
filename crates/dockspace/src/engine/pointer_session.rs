@@ -197,7 +197,12 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<(bool, Option<InteractionOutcome>), EngineError> {
         let gate = self.journal_capture_action_gate(owner, observed, release_edge)?;
-        if !release_edge || !matches!(observed, Authority::Known(PointerCaptureOwner::None)) {
+        if !release_edge
+            || !matches!(
+                observed,
+                Authority::Known(PointerCaptureOwner::None) | Authority::Unknown(_)
+            )
+        {
             let stream = owner.stream();
             if !matches!(gate, JournalCaptureActionGate::Lost)
                 && !self
@@ -377,9 +382,6 @@ impl DockEngine {
             .as_ref()
             .and_then(|pending| match pending {
                 PendingMutation::DragRelease(pending) => {
-                    Some((pending.source_version, pending.policy_revision))
-                }
-                PendingMutation::ContainedRelease(pending) => {
                     Some((pending.source_version, pending.policy_revision))
                 }
                 PendingMutation::Rehome(_) => None,

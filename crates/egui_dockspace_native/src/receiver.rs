@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use dockspace::geometry::LogicalPoint;
-use dockspace::model::SurfaceId;
+use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
     NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
     NativeScrollReceiverChallenge, NativeSurfaceBinding, PaintedSurfaceOutput,
@@ -32,6 +32,7 @@ struct PendingReceiverSet {
     artifact: SurfacePresentationArtifact,
     receivers: Vec<NativePaintReceiver>,
     scroll_receivers: Vec<PresentedScrollReceiver>,
+    focus_bindings: Vec<(ItemId, egui::Id)>,
 }
 
 impl PendingReceiverSet {
@@ -74,6 +75,7 @@ impl PendingReceiverSet {
             artifact: output.presentation_artifact(),
             receivers,
             scroll_receivers,
+            focus_bindings: paint.pane_focus_bindings().to_vec(),
         })
     }
 }
@@ -86,6 +88,7 @@ struct PresentedReceiverSet {
     artifact: SurfacePresentationArtifact,
     receivers: Vec<NativePaintReceiver>,
     scroll_receivers: Vec<PresentedScrollReceiver>,
+    focus_bindings: Vec<(ItemId, egui::Id)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +105,30 @@ pub(crate) struct NativeReceiverStore {
 }
 
 impl NativeReceiverStore {
+    pub(crate) fn presented_focus_bindings(
+        &self,
+        surface: SurfaceId,
+        viewport: egui::ViewportId,
+        current: Option<dockspace::runtime::PresentedDockspaceSurface>,
+    ) -> &[(ItemId, egui::Id)] {
+        let Some(current) = current else {
+            return &[];
+        };
+        let Some(presented) = self.presented.get(&surface) else {
+            return &[];
+        };
+        let mut exact = presented.iter().filter(|entry| {
+            entry.viewport == viewport && current.matches_presentation_artifact(entry.artifact)
+        });
+        let Some(entry) = exact.next() else {
+            return &[];
+        };
+        if exact.next().is_some() {
+            return &[];
+        }
+        &entry.focus_bindings
+    }
+
     pub(crate) fn has_pending_commit(&self) -> bool {
         !self.awaiting_core.is_empty()
     }
@@ -219,6 +246,7 @@ impl NativeReceiverStore {
                         artifact: candidate.artifact,
                         receivers: candidate.receivers.clone(),
                         scroll_receivers: candidate.scroll_receivers.clone(),
+                        focus_bindings: candidate.focus_bindings.clone(),
                     });
                 }
                 false
@@ -558,6 +586,7 @@ mod tests {
             artifact,
             receivers: Vec::new(),
             scroll_receivers: Vec::new(),
+            focus_bindings: Vec::new(),
         }
     }
 
@@ -1284,6 +1313,7 @@ mod tests {
                     artifact,
                     receivers,
                     scroll_receivers: Vec::new(),
+                    focus_bindings: Vec::new(),
                 }],
             );
 
@@ -1400,11 +1430,10 @@ mod tests {
         let artifact = output.presentation_artifact();
         let binding = binding(31);
         let mut receivers = NativeReceiverStore::default();
-        receivers.finish_renderer_presented(
-            Some(pending_receiver(binding, egui::ViewportId::ROOT, artifact)),
-            egui::ViewportId::ROOT,
-            binding,
-        );
+        let focused = (ItemId::new(1), egui::Id::unique("presented-focus-scope"));
+        let mut pending = pending_receiver(binding, egui::ViewportId::ROOT, artifact);
+        pending.focus_bindings.push(focused);
+        receivers.finish_renderer_presented(Some(pending), egui::ViewportId::ROOT, binding);
         session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .expect("the output owner reports presentation");
@@ -1428,6 +1457,31 @@ mod tests {
             "a committed presentation must not require another input or repaint to promote receivers"
         );
         assert_eq!(receivers.presented[&SURFACE][0].artifact, artifact);
+        let current = session.presented_surface(SURFACE);
+        assert_eq!(
+            receivers.presented_focus_bindings(SURFACE, egui::ViewportId::ROOT, current),
+            &[focused]
+        );
+        assert!(
+            receivers
+                .presented_focus_bindings(
+                    SURFACE,
+                    egui::ViewportId::from_hash_of("foreign"),
+                    current
+                )
+                .is_empty()
+        );
+        assert!(
+            receivers
+                .presented_focus_bindings(SURFACE, egui::ViewportId::ROOT, None)
+                .is_empty()
+        );
+        receivers.retire_binding(binding);
+        assert!(
+            receivers
+                .presented_focus_bindings(SURFACE, egui::ViewportId::ROOT, current)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1496,6 +1550,7 @@ mod tests {
                 artifact: presentation_artifact(),
                 receivers: Vec::new(),
                 scroll_receivers: Vec::new(),
+                focus_bindings: Vec::new(),
             }],
         );
 
@@ -1525,6 +1580,7 @@ mod tests {
                 artifact: presentation_artifact(),
                 receivers: Vec::new(),
                 scroll_receivers: Vec::new(),
+                focus_bindings: Vec::new(),
             }],
         );
 
@@ -1554,6 +1610,7 @@ mod tests {
                 artifact: presentation_artifact(),
                 receivers: Vec::new(),
                 scroll_receivers: Vec::new(),
+                focus_bindings: Vec::new(),
             }],
         );
 
@@ -1958,6 +2015,7 @@ mod tests {
                     artifact,
                     receivers,
                     scroll_receivers: Vec::new(),
+                    focus_bindings: Vec::new(),
                 }],
             );
             store
@@ -2285,6 +2343,7 @@ mod tests {
                 artifact: presentation_artifact,
                 receivers: Vec::new(),
                 scroll_receivers,
+                focus_bindings: Vec::new(),
             }],
         );
 

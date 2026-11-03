@@ -14,10 +14,18 @@ after whole-surface redocking or pane-selection invalidation, abandoned outputs 
 newer presentation prefixes, and semantic layout commands without registering a pointer
 producer or enabling native hosting.
 
+The engine-first follow-up adds `update_publication`, `presented_semantic_scope`,
+`presentation_admission_scope` and `deferred_surface_actions`. They exercise
+same-update measurement/encoding, owned suspension, repeated encoding, bounded
+admission, exact immutable in-flight scenes, stale source/target rejection and
+scoped actions from discarded passes. The opt-in `frame_cost` example measures
+complete updates separately from output settlement; its methodology is recorded
+in `docs/performance/2026-11-03-engine-first-methodology.md`.
+
 The U3 host input tests submit complete ordered batches across two logical
 surfaces with identical bounds. Source manipulation and target hover carry
-independent exact presentation routes. Release waits for actual recording-output
-settlement, with no synthetic pointer events. Negative journeys exercise unknown
+independent exact presentation routes. Ordinary release commits once with its
+accepted input, and later dropped output does not undo it. Negative journeys exercise unknown
 routes, stale or foreign authority during an active gesture, failed frames, and
 producer retirement. A wrong-winner release after a selection-changing valid
 prefix must roll back the published version, selection, interaction and surface
@@ -25,7 +33,7 @@ proofs; retrying the same ordered edges must deliver exactly once. The retry
 contract also detects producer watermarks advancing during rollback.
 
 The U4 consumer checks full contained content during move and every resize
-direction, exact pending-output settlement, cancellation, changed measurements,
+direction, immediate ordinary release and exact output settlement, cancellation, changed measurements,
 and a target behind the complete source in a pre-frozen input batch. A complete
 tabs-root journey presents each source-only projection while jittering across a
 magnetic boundary: the target stays latched inside its release margin and changes
@@ -136,7 +144,7 @@ queries neither acquire native capture nor prove that native cleanup finished.
 The U6 public consumer completes item/root close plans with Allow, Veto and
 exact deferred continuations, independently of pointer registration. Feedback
 tests consume pending and terminal statuses by stable manipulation identity,
-check publication deduplication, and preserve pending cancellation on producer
+check publication deduplication, and preserve active-gesture cancellation on producer
 retirement. These recording tests distinguish command/feedback semantics from
 adapter focus execution and physical presentation.
 

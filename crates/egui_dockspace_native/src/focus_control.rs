@@ -216,10 +216,11 @@ impl<Request> NativeFocusControl<Request> {
         Ok(())
     }
 
-    pub(crate) fn mark_dispatched(
+    fn dispatch_queued(
         &mut self,
         viewport: ViewportId,
         token: NativeViewportFocusCommandToken,
+        dispatch: impl FnOnce(Request) -> Request,
     ) -> bool {
         let Some(mut pending) = self.pending.take() else {
             return false;
@@ -230,6 +231,7 @@ impl<Request> NativeFocusControl<Request> {
         }
         let changed = match pending.state {
             PendingNativeFocusState::Queued(request) => {
+                let request = dispatch(request);
                 pending.token = Some(token);
                 pending.state = PendingNativeFocusState::AwaitingCallback(request);
                 true
@@ -241,6 +243,15 @@ impl<Request> NativeFocusControl<Request> {
         };
         self.pending = Some(pending);
         changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_dispatched(
+        &mut self,
+        viewport: ViewportId,
+        token: NativeViewportFocusCommandToken,
+    ) -> bool {
+        self.dispatch_queued(viewport, token, |request| request)
     }
 
     pub(crate) fn classify(
@@ -397,5 +408,21 @@ impl<Request> NativeFocusControl<Request> {
         self.pending
             .as_ref()
             .is_some_and(|pending| pending.binding == binding)
+    }
+}
+
+impl NativeFocusControl {
+    /// Keeps the affine guard on the stack until the backend enqueue returns.
+    pub(crate) fn dispatch(
+        &mut self,
+        viewport: ViewportId,
+        token: NativeViewportFocusCommandToken,
+        enqueue: impl FnOnce(),
+    ) -> bool {
+        self.dispatch_queued(viewport, token, |request| {
+            let dispatch = request.begin_dispatch();
+            enqueue();
+            dispatch.await_observation()
+        })
     }
 }

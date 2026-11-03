@@ -67,8 +67,7 @@ use dockspace::viewport::{
 use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 use support::{
     MeasurementProfile, TestPresentationHost, append_host_input,
-    complete_host_frame_with_current_outputs, complete_host_frame_with_retained_or_unavailable,
-    measurements, publish_surface, publish_surface_with,
+    complete_host_frame_with_current_outputs, measurements, publish_surface, publish_surface_with,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -1072,8 +1071,29 @@ fn commit_empty_pointer_journal(
     host.finish(frame, engine);
 }
 
-fn complete(engine: &DockEngine, frame: &mut CoreHostFrame) {
-    complete_host_frame_with_retained_or_unavailable(engine, frame);
+fn complete(_engine: &DockEngine, frame: &mut CoreHostFrame) {
+    let submitted = frame
+        .surface_contributions()
+        .map(|contribution| contribution.surface())
+        .collect::<BTreeSet<_>>();
+    let retained = frame
+        .surfaces()
+        .filter(|surface| !submitted.contains(surface))
+        .filter(|surface| frame.view().scene().ready_candidate(*surface).is_some())
+        .collect::<Vec<_>>();
+    for surface in retained {
+        let token = frame
+            .view()
+            .begin_surface_contribution(surface)
+            .expect("retained surface remains in the current roster");
+        let contribution = frame
+            .view()
+            .prepare_surface_retained_contribution(token)
+            .expect("an input-only frame retains its exact current candidate");
+        frame
+            .push_surface_contribution(contribution)
+            .expect("each retained surface contributes at most once");
+    }
 }
 
 #[test]
@@ -1442,37 +1462,17 @@ fn point_inside_tab_group(
     (region.id(), point)
 }
 
-fn point_inside_item_pane(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
-    item: ItemId,
-    x_fraction: f64,
-    y_fraction: f64,
-) -> LogicalPoint {
-    let tab = projection
-        .plan()
-        .tab_records()
-        .iter()
-        .find(|record| record.id().item == item)
-        .expect("item has an exact tab record");
-    let pane = projection
-        .plan()
-        .pane_records()
-        .iter()
-        .find(|pane| pane.id().root == tab.id().root && pane.id().tabs == tab.id().tabs)
-        .expect("item has an exact pane record");
-    let bounds = pane.content_bounds();
-    LogicalPoint::new(
-        bounds.x() + bounds.width() * x_fraction,
-        bounds.y() + bounds.height() * y_fraction,
-    )
-    .expect("pane-relative point is finite")
-}
-
 fn point_without_hover_receiver(
     projection: dockspace::scene::SurfaceInteractionProjection<'_>,
     away_from: LogicalPoint,
 ) -> LogicalPoint {
     let bounds = projection.plan().bounds();
+    let source_pane = projection
+        .plan()
+        .pane_records()
+        .iter()
+        .find(|pane| pane.bounds().contains(away_from))
+        .expect("the sample origin belongs to one source pane");
     for y_step in 1..10 {
         for x_step in 1..10 {
             let point = LogicalPoint::new(
@@ -1487,7 +1487,28 @@ fn point_without_hover_receiver(
                     && region.lanes().contains(PresentationPointerLane::HoverDrop)
                     && region.hit().contains(point)
             });
-            if delta_x * delta_x + delta_y * delta_y > 64.0 && !has_hover_receiver {
+            let in_tab_strip = projection
+                .plan()
+                .tab_bar_records()
+                .iter()
+                .any(|bar| bar.bounds().contains(point));
+            let magnetic_target =
+                projection
+                    .plan()
+                    .magnetic_target_at(point, source_pane.layer(), |target| {
+                        target
+                            != (DropTargetId::Center {
+                                surface: SURFACE,
+                                root: source_pane.id().root,
+                                tabs: source_pane.id().tabs,
+                            })
+                    });
+            if delta_x * delta_x + delta_y * delta_y > 64.0
+                && source_pane.content_bounds().contains(point)
+                && !has_hover_receiver
+                && !in_tab_strip
+                && magnetic_target.is_none()
+            {
                 return point;
             }
         }
@@ -1982,7 +2003,7 @@ fn republish_surface_with_active_provider(
 }
 
 #[test]
-fn resolved_journal_preview_does_not_commit_before_presentation_proof() {
+fn resolved_journal_preview_cannot_authorize_an_unknown_release_hover() {
     let (workspace, target_tabs) = split_workspace();
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
@@ -2084,8 +2105,8 @@ fn resolved_journal_preview_does_not_commit_before_presentation_proof() {
             [
                 InteractionOutcome::DragBegan { .. },
                 InteractionOutcome::PreviewUpdated {
-                    preview: None,
-                    status: PreviewResolutionStatus::UnknownAuthority,
+                    preview: Some(_),
+                    status: PreviewResolutionStatus::Resolved,
                     ..
                 }
             ]
@@ -2108,16 +2129,18 @@ fn resolved_journal_preview_does_not_commit_before_presentation_proof() {
         engine.workspace().node(target_tabs),
         Some(Node::Tabs { items, .. }) if items.as_slice() == [ItemId::new(3)]
     ));
-    assert!(!transition.interaction_events().iter().any(|event| {
-        matches!(
-            event.kind(),
-            dockspace::interaction::InteractionEventKind::PreviewPublished { .. }
-        )
-    }));
+    assert_eq!(engine.pending_release_preview(), None);
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(3));
+    assert!(
+        !transition
+            .interaction_events()
+            .iter()
+            .any(|event| { matches!(event.kind(), InteractionEventKind::Delivered { .. }) })
+    );
 }
 
 #[test]
-fn inactive_tab_continuation_waits_for_fresh_target_authority_then_commits() {
+fn inactive_tab_continuation_preserves_visible_target_authority_then_commits() {
     let (workspace, target_tabs) = split_workspace();
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
@@ -2126,7 +2149,8 @@ fn inactive_tab_continuation_waits_for_fresh_target_authority_then_commits() {
     let provider = &provider;
     let projection = interaction(&engine);
     let (source_tab, press) = point_inside_inactive_tab(projection);
-    let (stale_target_region, stale_target) = point_inside_center_target(projection, target_tabs);
+    let (visible_target_region, visible_target) =
+        point_inside_center_target(projection, target_tabs);
 
     let activation = begin_journal_drag(
         &mut engine,
@@ -2134,21 +2158,21 @@ fn inactive_tab_continuation_waits_for_fresh_target_authority_then_commits() {
         provider,
         source_tab,
         press,
-        stale_target,
-        PointerReceiverHoverHitDisposition::Dock(stale_target_region),
+        visible_target,
+        PointerReceiverHoverHitDisposition::Dock(visible_target_region),
     );
     assert!(matches!(
         activation.reduced_pointer_edges()[1].interaction_outcomes(),
         [
             InteractionOutcome::DragBegan { .. },
             InteractionOutcome::PreviewUpdated {
-                preview: None,
-                status: PreviewResolutionStatus::UnknownAuthority,
+                preview: Some(_),
+                status: PreviewResolutionStatus::Resolved,
                 ..
             }
         ]
     ));
-    assert!(engine.interaction_projection(SURFACE).is_none());
+    assert!(engine.interaction_projection(SURFACE).is_some());
     assert!(matches!(
         engine.interaction().status(),
         InteractionStatus::Dragging { .. }
@@ -3700,7 +3724,7 @@ fn policy_source_and_presentation_lineage_changes_cancel_pressed_clicks() {
 }
 
 #[test]
-fn resolved_journal_preview_commits_only_after_its_exact_presentation_is_observed() {
+fn presented_journal_preview_preserves_the_active_drag_until_release() {
     let (workspace, target_tabs) = split_workspace();
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
@@ -3883,7 +3907,7 @@ fn journal_partial_subtree_known_none_uses_core_reserved_contained_identity() {
     let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
-    let target = point_inside_item_pane(projection, ItemId::new(1), 0.65, 0.65);
+    let target = point_without_hover_receiver(projection, press);
 
     let mut gesture_frame = host.begin(&engine);
     let projection = gesture_frame
@@ -4065,7 +4089,7 @@ fn journal_known_none_contained_fallback_is_rejected_by_core_policy() {
     let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
-    let target = point_inside_item_pane(projection, ItemId::new(1), 0.65, 0.65);
+    let target = point_without_hover_receiver(projection, press);
     let before_workspace = engine.workspace().clone();
     let before_frontier = engine.presentation_identity_frontier();
 
@@ -4256,7 +4280,9 @@ fn journal_partial_payload_installs_core_reserved_root_on_rootless_background() 
 }
 
 #[test]
-fn journal_contained_release_waits_for_the_release_edge_preview() {
+fn journal_contained_release_commits_the_release_edge_preview_immediately() {
+    use crate::drop_resolver::structural_work::{self, WorkspaceCloneVolume};
+
     let (workspace, _) = split_workspace();
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
@@ -4265,7 +4291,14 @@ fn journal_contained_release_waits_for_the_release_edge_preview() {
     let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
-    let first_target = point_inside_item_pane(projection, ItemId::new(1), 0.62, 0.65);
+    let source_bounds = projection
+        .plan()
+        .pane_records()
+        .iter()
+        .find(|pane| pane.id().root == ROOT && pane.selected() == Some(ItemId::new(1)))
+        .expect("the dragged group has one source pane")
+        .bounds();
+    let first_target = point_without_hover_receiver(projection, press);
 
     begin_journal_drag(
         &mut engine,
@@ -4278,10 +4311,35 @@ fn journal_contained_release_waits_for_the_release_edge_preview() {
     );
     paint_active_journal_drag(&mut engine, &mut host, provider);
     let release_projection = interaction(&engine);
-    let final_target = point_inside_item_pane(release_projection, ItemId::new(1), 0.70, 0.65);
+    let final_target = point_without_hover_receiver(release_projection, first_target);
     assert_ne!(final_target, first_target);
+    let expected_rect = LogicalRect::new(
+        (source_bounds.x() + final_target.x() - press.x())
+            .clamp(bounds().x(), bounds().max().x() - source_bounds.width()),
+        (source_bounds.y() + final_target.y() - press.y())
+            .clamp(bounds().y(), bounds().max().y() - source_bounds.height()),
+        source_bounds.width(),
+        source_bounds.height(),
+    )
+    .expect("release placement preserves the source size and press offset");
     let before = engine.workspace().clone();
+    let before_version = engine.version();
+    let volume = WorkspaceCloneVolume::capture(&before);
+    assert_eq!(
+        volume,
+        WorkspaceCloneVolume {
+            nodes: 3,
+            tab_items: 3,
+            split_child_edges: 2,
+            tab_mru_items: 3,
+            roots: 1,
+            surfaces: 1,
+            contained_records: 0,
+            contained_roster_entries: 0,
+        }
+    );
 
+    structural_work::reset();
     let release = release_journal_drag_after(
         &mut engine,
         &mut host,
@@ -4290,24 +4348,64 @@ fn journal_contained_release_waits_for_the_release_edge_preview() {
         final_target,
         PointerReceiverHoverHitDisposition::NoReceiver,
     );
+    let work = structural_work::snapshot();
+    assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
+    assert_eq!(
+        work.workspace_deep_clones.transaction_candidates.volume, volume,
+        "contained release must reuse the complete preflight graph draft"
+    );
+    assert_eq!(work.workspace_deep_clones.engine_candidates.calls, 0);
+    assert_eq!(
+        work.workspace_deep_clones.engine_candidates.volume,
+        WorkspaceCloneVolume::default()
+    );
+    assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
+    assert_eq!(
+        work.engine_deep_clones.atomic_candidates.volume,
+        WorkspaceCloneVolume::default()
+    );
+    assert_eq!(work.engine_deep_clones.shared_workspace, volume);
     assert!(matches!(
         release.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                status: PreviewResolutionStatus::Resolved,
+        [InteractionOutcome::DragDelivered {
+            delivery: dockspace::interaction::InteractionDelivery::Workspace {
+                kind: dockspace::interaction::WorkspaceDeliveryKind::Contained,
+                changed: true,
                 ..
             },
-            InteractionOutcome::ReleasePending { session, preview },
-        ]
-            if engine.pending_release_preview() == Some((*session, *preview))
+            ..
+        }]
     ));
-    assert_eq!(engine.workspace(), &before);
+    assert_ne!(engine.workspace(), &before);
+    assert_eq!(
+        engine
+            .workspace()
+            .contained_floatings()
+            .map(|(_, floating)| floating.rect)
+            .collect::<Vec<_>>(),
+        [expected_rect],
+        "the single delivered contained uses the release edge, not the painted preview"
+    );
+    assert_eq!(
+        release
+            .interaction_events()
+            .iter()
+            .filter(|event| matches!(event.kind(), InteractionEventKind::Delivered { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(engine.version().epoch(), before_version.epoch());
+    assert_eq!(
+        engine.version().revision().get(),
+        before_version.revision().get() + 1
+    );
+    assert_eq!(engine.pending_release_preview(), None);
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(3));
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
 }
 
 #[test]
-fn journal_contained_resize_commits_only_after_its_exact_preview_is_presented() {
+fn journal_contained_preview_paint_preserves_resize_until_release() {
     let mut engine =
         DockEngine::new(contained_workspace(), DockPolicy::default()).expect("valid workspace");
     let mut host = TestPresentationHost::new(&mut engine);
@@ -6409,10 +6507,9 @@ fn same_segment_drag_release_revalidates_the_move_target_with_a_release_hover_pr
 
     let release_outcomes = transition.reduced_pointer_edges()[2].interaction_outcomes();
     assert!(
-        release_outcomes.iter().any(|outcome| matches!(
-            outcome,
-            InteractionOutcome::ReleasePending { .. } | InteractionOutcome::DragDelivered { .. }
-        )),
+        release_outcomes
+            .iter()
+            .any(|outcome| matches!(outcome, InteractionOutcome::DragDelivered { .. })),
         "release did not consume the move target: {:#?}",
         transition.reduced_pointer_edges(),
     );
@@ -7372,26 +7469,14 @@ fn dragging_move_requests_hover_and_release_consumes_the_latched_target() {
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
 }
 
-type PendingDragReleaseFixture = (
+type CommittedDragReleaseFixture = (
     DockEngine,
     TestPresentationHost,
     SurfaceLocalPointerProvider,
-    Workspace,
     NodeId,
-    (
-        dockspace::interaction::DragSessionId,
-        dockspace::interaction::PreviewToken,
-    ),
 );
 
-fn pending_drag_release_fixture() -> PendingDragReleaseFixture {
-    pending_drag_release_fixture_with_evidence(None)
-        .expect("the fixture paints its exact frozen preview")
-}
-
-fn pending_drag_release_fixture_with_evidence(
-    submitted_interaction: Option<HostInteractionPresentation>,
-) -> Result<PendingDragReleaseFixture, CoreHostFrameError> {
+fn committed_drag_release_fixture() -> CommittedDragReleaseFixture {
     let (workspace, target_tabs) = split_workspace();
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
@@ -7412,6 +7497,7 @@ fn pending_drag_release_fixture_with_evidence(
     );
     paint_active_journal_drag(&mut engine, &mut host, &provider);
     let before = engine.workspace().clone();
+    let before_version = engine.version();
 
     let mut frame = host.begin(&engine);
     let projection = frame
@@ -7458,7 +7544,7 @@ fn pending_drag_release_fixture_with_evidence(
             )])
             .expect("release receipt is exact"),
         )
-        .expect("release reduces into a presentation obligation");
+        .expect("release commits the ordinary docking edit in its candidate");
     let contribution = frame
         .view()
         .begin_surface_contribution(SURFACE)
@@ -7476,48 +7562,89 @@ fn pending_drag_release_fixture_with_evidence(
         .view()
         .presentation_interaction(SURFACE)
         .expect("release paint retains interaction evidence");
-    frame.record_painted_surface_contribution(
-        obligation,
-        contribution,
-        submitted_interaction.unwrap_or(interaction),
-    )?;
+    frame
+        .record_painted_surface_contribution(obligation, contribution, interaction)
+        .expect("the release output retains its exact frozen interaction evidence");
     let transition = host.finish_presentation(frame, &mut engine);
 
     let release_outcomes = transition.reduced_pointer_edges()[1].interaction_outcomes();
-    let pending_from_outcome = release_outcomes.iter().find_map(|outcome| match outcome {
-        InteractionOutcome::ReleasePending { session, preview } => Some((*session, *preview)),
-        _ => None,
-    });
-    assert_eq!(
-        pending_from_outcome,
-        engine.pending_release_preview(),
-        "release must retain its exact pending preview after fresh authority validation"
+    assert!(
+        release_outcomes
+            .iter()
+            .any(|outcome| matches!(outcome, InteractionOutcome::DragDelivered { .. }))
     );
-    assert_eq!(engine.workspace(), &before);
+    assert_eq!(engine.pending_release_preview(), None);
+    assert_ne!(engine.workspace(), &before);
+    assert!(
+        matches!(engine.workspace().node(target_tabs), Some(Node::Tabs { items, .. })
+        if items.as_slice() == [ItemId::new(3), ItemId::new(1)])
+    );
+    assert_eq!(engine.version().epoch(), before_version.epoch());
+    assert_eq!(
+        engine.version().revision().get(),
+        before_version.revision().get() + 1
+    );
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(4));
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+    assert_eq!(
+        transition
+            .interaction_events()
+            .iter()
+            .filter(|event| matches!(event.kind(), InteractionEventKind::Delivered { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(transition.presentation_emissions().len(), 1);
 
-    let pending = engine
-        .pending_release_preview()
-        .expect("release remains pending until the emission is observed");
-    let emitted_preview = transition
-        .presentation_emissions()
-        .iter()
-        .find(|emission| emission.output().surface() == SURFACE)
-        .and_then(|emission| emission.output().payload().interaction())
-        .and_then(|interaction| interaction.drag_preview());
-    assert_eq!(emitted_preview, Some(pending.1));
-
-    Ok((engine, host, provider, before, target_tabs, pending))
+    (engine, host, provider, target_tabs)
 }
 
 #[test]
-fn pending_release_rejects_a_painted_claim_without_its_preview_token() {
-    let error = match pending_drag_release_fixture_with_evidence(Some(
-        HostInteractionPresentation::default(),
-    )) {
-        Ok(_) => panic!("missing preview evidence must not publish the release output"),
-        Err(error) => error,
-    };
+fn active_drag_rejects_a_painted_claim_without_its_preview_token() {
+    let (workspace, target_tabs) = split_workspace();
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
+    let mut host = TestPresentationHost::new(&mut engine);
+    publish_surface(&mut engine, &mut host, SURFACE, bounds());
+    let provider = create_local_provider(&mut engine, &host);
+    let projection = interaction(&engine);
+    let (source, press) = point_inside_tab(projection, ItemId::new(1));
+    let (target_region, target) = point_inside_center_target(projection, target_tabs);
+    begin_journal_drag(
+        &mut engine,
+        &mut host,
+        &provider,
+        source,
+        press,
+        target,
+        PointerReceiverHoverHitDisposition::Dock(target_region),
+    );
+    let before = engine.workspace().clone();
+    let version = engine.version();
+    let mut frame = host.begin(&engine);
+    frame
+        .submit_surface_pointer_journal(&provider, empty_journal(2))
+        .expect("preview painting preserves the active provider watermark");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new())
+                .expect("empty preview journal has an exact empty receipt set"),
+        )
+        .expect("empty preview receipts stage");
+    let mut frame = frame.into_presentation().expect("preview paint begins");
+    let contribution = frame.view().begin_surface_contribution(SURFACE).unwrap();
+    let obligation = frame
+        .take_presentation_obligations()
+        .unwrap()
+        .into_iter()
+        .find(|obligation| obligation.slot().surface() == SURFACE)
+        .unwrap();
+    let error = frame
+        .record_painted_surface_contribution(
+            obligation,
+            contribution,
+            HostInteractionPresentation::default(),
+        )
+        .expect_err("an active preview requires exact paint evidence");
     assert!(matches!(
         error,
         CoreHostFrameError::PresentationInteractionMismatch {
@@ -7527,12 +7654,21 @@ fn pending_release_rejects_a_painted_claim_without_its_preview_token() {
         } if expected.drag_preview().is_some()
             && submitted == HostInteractionPresentation::default()
     ));
+    drop(frame);
+    assert_eq!(engine.workspace(), &before);
+    assert_eq!(engine.version(), version);
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(2));
+    assert!(matches!(
+        engine.interaction().status(),
+        InteractionStatus::Dragging { .. }
+    ));
 }
 
 #[test]
-fn move_then_release_with_new_preview_waits_for_exact_presentation() {
-    let (mut engine, mut host, provider, before, _, pending) = pending_drag_release_fixture();
-    let before_version = engine.version();
+fn move_then_release_with_new_preview_commits_before_presentation() {
+    let (mut engine, mut host, provider, _) = committed_drag_release_fixture();
+    let committed = engine.workspace().clone();
+    let committed_version = engine.version();
 
     let mut unknown_prelude = engine
         .begin_host_frame(host.lease())
@@ -7552,8 +7688,9 @@ fn move_then_release_with_new_preview_waits_for_exact_presentation() {
         .expect("unknown observation receipt set stages");
     complete(&engine, &mut unknown_frame);
     host.finish(unknown_frame, &mut engine);
-    assert_eq!(engine.pending_release_preview(), Some(pending));
-    assert_eq!(engine.workspace(), &before);
+    assert_eq!(engine.pending_release_preview(), None);
+    assert_eq!(engine.workspace(), &committed);
+    assert_eq!(engine.version(), committed_version);
 
     let mut settle_frame = host.begin(&engine);
     settle_frame
@@ -7566,25 +7703,21 @@ fn move_then_release_with_new_preview_waits_for_exact_presentation() {
         )
         .expect("empty settlement receipt set stages");
     complete(&engine, &mut settle_frame);
-    let delivered = host.finish(settle_frame, &mut engine);
+    let observation = host.finish(settle_frame, &mut engine);
 
     assert_eq!(engine.pending_release_preview(), None);
-    assert_ne!(engine.workspace(), &before);
-    assert_eq!(engine.version().epoch(), before_version.epoch());
+    assert_eq!(engine.workspace(), &committed);
+    assert_eq!(engine.version(), committed_version);
     assert_eq!(
-        engine.version().revision().get(),
-        before_version.revision().get() + 1
-    );
-    assert_eq!(
-        delivered
+        observation
             .interaction_events()
             .iter()
             .filter(|event| matches!(event.kind(), InteractionEventKind::Delivered { .. }))
             .count(),
-        1
+        0,
+        "Presented must not replay the already committed release"
     );
 
-    let committed = engine.version();
     for _ in 0..2 {
         let mut frame = host.begin(&engine);
         frame
@@ -7597,7 +7730,9 @@ fn move_then_release_with_new_preview_waits_for_exact_presentation() {
             .unwrap();
         complete(&engine, &mut frame);
         let repeated = host.finish(frame, &mut engine);
-        assert_eq!(engine.version(), committed);
+        assert_eq!(engine.version(), committed_version);
+        assert_eq!(engine.workspace(), &committed);
+        assert_eq!(provider.committed_through(), PointerEdgeSequence::new(4));
         assert!(
             repeated
                 .interaction_events()
@@ -7608,8 +7743,10 @@ fn move_then_release_with_new_preview_waits_for_exact_presentation() {
 }
 
 #[test]
-fn terminal_not_presented_output_cancels_the_release_obligation() {
-    let (mut engine, mut host, provider, before, _, pending) = pending_drag_release_fixture();
+fn terminal_not_presented_output_preserves_the_committed_release() {
+    let (mut engine, mut host, provider, _) = committed_drag_release_fixture();
+    let committed = engine.workspace().clone();
+    let version = engine.version();
 
     let mut prelude = engine
         .begin_host_frame(host.lease())
@@ -7631,20 +7768,22 @@ fn terminal_not_presented_output_cancels_the_release_obligation() {
     let transition = host.finish(frame, &mut engine);
 
     assert_eq!(engine.pending_release_preview(), None);
-    assert_eq!(engine.workspace(), &before);
-    assert_ne!(engine.pending_release_preview(), Some(pending));
-    assert!(transition.interaction_events().iter().any(|event| matches!(
-        event.kind(),
-        InteractionEventKind::Cancelled {
-            status: InteractionStatus::Dragging { .. },
-            reason: InteractionCancelReason::SceneUnavailable,
-        }
-    )));
+    assert_eq!(engine.workspace(), &committed);
+    assert_eq!(engine.version(), version);
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(4));
+    assert!(
+        !transition.interaction_events().iter().any(|event| matches!(
+            event.kind(),
+            InteractionEventKind::Cancelled { .. } | InteractionEventKind::Delivered { .. }
+        ))
+    );
 }
 
 #[test]
-fn presentation_host_retirement_terminally_cancels_pending_drag_release_once() {
-    let (mut engine, host, _provider, before, _, pending) = pending_drag_release_fixture();
+fn presentation_host_retirement_preserves_committed_drag_release_once() {
+    let (mut engine, host, provider, _) = committed_drag_release_fixture();
+    let committed = engine.workspace().clone();
+    let version = engine.version();
     let lease = host.lease();
 
     let retirement = host
@@ -7655,22 +7794,20 @@ fn presentation_host_retirement_terminally_cancels_pending_drag_release_once() {
         .expect("the first retirement publishes one atomic transition");
 
     assert_eq!(engine.pending_release_preview(), None);
-    assert_eq!(engine.workspace(), &before);
-    assert_ne!(engine.pending_release_preview(), Some(pending));
+    assert_eq!(engine.workspace(), &committed);
+    assert_eq!(engine.version(), version);
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(4));
     assert_eq!(
         transition
             .interaction_events()
             .iter()
             .filter(|event| matches!(
                 event.kind(),
-                InteractionEventKind::Cancelled {
-                    status: InteractionStatus::Dragging { .. },
-                    reason: InteractionCancelReason::SceneUnavailable,
-                }
+                InteractionEventKind::Cancelled { .. } | InteractionEventKind::Delivered { .. }
             ))
             .count(),
-        1,
-        "host retirement must terminally fail the exact outstanding presentation obligation once",
+        0,
+        "retiring the renderer cannot cancel or replay a committed edit",
     );
     let diagnostics = engine.presentation_ledger_diagnostics();
     assert_eq!(diagnostics.pending_outputs(), 0);
@@ -7691,8 +7828,10 @@ fn presentation_host_retirement_terminally_cancels_pending_drag_release_once() {
 }
 
 #[test]
-fn policy_change_cancels_an_unpresented_release_obligation() {
-    let (mut engine, mut host, provider, before, _, pending) = pending_drag_release_fixture();
+fn policy_change_preserves_an_already_committed_release() {
+    let (mut engine, mut host, provider, _) = committed_drag_release_fixture();
+    let committed = engine.workspace().clone();
+    let version = engine.version();
     let mut prelude = engine
         .begin_host_frame(host.lease())
         .expect("policy frame begins");
@@ -7725,20 +7864,26 @@ fn policy_change_cancels_an_unpresented_release_obligation() {
     let transition = host.finish(frame, &mut engine);
 
     assert_eq!(engine.pending_release_preview(), None);
-    assert_eq!(engine.workspace(), &before);
-    assert!(transition.interaction_events().iter().any(|event| matches!(
-        event.kind(),
-        InteractionEventKind::Cancelled {
-            status: InteractionStatus::Dragging { .. },
-            reason: InteractionCancelReason::PolicyChanged,
-        }
-    )));
-    assert_ne!(engine.pending_release_preview(), Some(pending));
+    assert_eq!(engine.workspace(), &committed);
+    assert_eq!(engine.version().epoch(), version.epoch());
+    assert_eq!(
+        engine.version().revision().get(),
+        version.revision().get() + 1
+    );
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(4));
+    assert!(
+        !transition.interaction_events().iter().any(|event| matches!(
+            event.kind(),
+            InteractionEventKind::Cancelled { .. } | InteractionEventKind::Delivered { .. }
+        ))
+    );
 }
 
 #[test]
-fn new_authoritative_press_replaces_an_unpresented_release_obligation() {
-    let (mut engine, mut host, provider, _, target_tabs, _) = pending_drag_release_fixture();
+fn new_authoritative_press_preserves_the_already_committed_release() {
+    let (mut engine, mut host, provider, target_tabs) = committed_drag_release_fixture();
+    let committed = engine.workspace().clone();
+    let version = engine.version();
     let mut prelude = engine
         .begin_host_frame(host.lease())
         .expect("replacement press frame begins");
@@ -7783,25 +7928,27 @@ fn new_authoritative_press_replaces_an_unpresented_release_obligation() {
     assert_eq!(engine.pending_release_preview(), None);
     assert!(matches!(
         engine.workspace().node(target_tabs),
-        Some(Node::Tabs { items, .. }) if items == &[ItemId::new(3)]
+        Some(Node::Tabs { items, .. }) if items == &[ItemId::new(3), ItemId::new(1)]
     ));
     assert!(matches!(
         transition.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::Cancelled {
-                status: InteractionStatus::Dragging { .. },
-                reason: InteractionCancelReason::ReplacedByNewGesture,
-            },
-            InteractionOutcome::DragArmed { .. }
-        ]
+        [InteractionOutcome::DragArmed { .. }]
     ));
+    assert_eq!(engine.workspace(), &committed);
+    assert_eq!(engine.version(), version);
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(5));
+    assert!(
+        !transition.interaction_events().iter().any(|event| matches!(
+            event.kind(),
+            InteractionEventKind::Cancelled { .. } | InteractionEventKind::Delivered { .. }
+        ))
+    );
 }
 
-fn pending_contained_transform_release_fixture() -> (
+fn committed_contained_transform_release_fixture() -> (
     DockEngine,
     TestPresentationHost,
     SurfaceLocalPointerProvider,
-    LogicalRect,
 ) {
     let mut engine =
         DockEngine::new(contained_workspace(), DockPolicy::default()).expect("valid engine");
@@ -7843,6 +7990,7 @@ fn pending_contained_transform_release_fixture() -> (
     complete(&engine, &mut press_frame);
     host.finish(press_frame, &mut engine);
 
+    let before_version = engine.version();
     let mut release_frame = host.begin(&engine);
     submit_pointer_edge_with_observation(
         &mut release_frame,
@@ -7875,42 +8023,52 @@ fn pending_contained_transform_release_fixture() -> (
         .expect("contained release paint retains interaction evidence");
     release_frame
         .record_painted_surface_contribution(obligation, contribution, interaction)
-        .expect("the host paints the newly retained contained preview");
+        .expect("the host paints the exact retained output after release");
     let transition = host.finish_presentation(release_frame, &mut engine);
 
     assert!(matches!(
         transition.reduced_pointer_edges()[1].interaction_outcomes(),
         [
             InteractionOutcome::ContainedTransformPreviewUpdated { .. },
-            InteractionOutcome::ContainedTransformReleasePending { session, preview }
-        ] if engine.pending_contained_transform_release_preview() == Some((*session, *preview))
+            InteractionOutcome::ContainedTransformDelivered { changed: true, .. }
+        ]
     ));
+    let after = engine
+        .workspace()
+        .contained_floating(CONTAINED_FLOATING)
+        .unwrap()
+        .rect;
+    assert_eq!(after.width(), before.width() + 32.0);
+    assert_eq!(after.x(), before.x());
+    assert_eq!(after.y(), before.y());
+    assert_eq!(after.height(), before.height());
+    assert_eq!(engine.version().epoch(), before_version.epoch());
     assert_eq!(
-        engine
-            .workspace()
-            .contained_floating(CONTAINED_FLOATING)
-            .expect("contained root remains durable")
-            .rect,
-        before
+        engine.version().revision().get(),
+        before_version.revision().get() + 1
+    );
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(3));
+    assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+    assert_eq!(
+        transition
+            .interaction_events()
+            .iter()
+            .filter(|event| matches!(
+                event.kind(),
+                InteractionEventKind::ContainedTransformDelivered { .. }
+            ))
+            .count(),
+        1
     );
 
-    let pending = engine
-        .pending_contained_transform_release_preview()
-        .expect("contained release waits for presentation");
-    let emitted_preview = transition
-        .presentation_emissions()
-        .iter()
-        .find(|emission| emission.output().surface() == SURFACE)
-        .and_then(|emission| emission.output().payload().interaction())
-        .and_then(|interaction| interaction.contained_transform_preview());
-    assert_eq!(emitted_preview, Some(pending.1));
-
-    (engine, host, provider, before)
+    (engine, host, provider)
 }
 
 #[test]
-fn contained_move_then_release_with_new_preview_waits_for_exact_presentation() {
-    let (mut engine, mut host, provider, before) = pending_contained_transform_release_fixture();
+fn contained_move_then_release_with_new_preview_commits_before_presentation() {
+    let (mut engine, mut host, provider) = committed_contained_transform_release_fixture();
+    let committed = engine.workspace().clone();
+    let version = engine.version();
 
     let mut settle_frame = host.begin(&engine);
     settle_frame
@@ -7923,20 +8081,27 @@ fn contained_move_then_release_with_new_preview_waits_for_exact_presentation() {
         )
         .expect("empty settlement receipts stage");
     complete(&engine, &mut settle_frame);
-    host.finish(settle_frame, &mut engine);
+    let observation = host.finish(settle_frame, &mut engine);
 
-    assert_eq!(engine.pending_contained_transform_release_preview(), None);
-    let after = engine
-        .workspace()
-        .contained_floating(CONTAINED_FLOATING)
-        .expect("contained root remains durable")
-        .rect;
-    assert!(after.width() > before.width());
+    assert_eq!(engine.workspace(), &committed);
+    assert_eq!(engine.version(), version);
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(3));
+    assert!(
+        !observation
+            .interaction_events()
+            .iter()
+            .any(|event| matches!(
+                event.kind(),
+                InteractionEventKind::ContainedTransformDelivered { .. }
+            ))
+    );
 }
 
 #[test]
-fn presentation_host_retirement_terminally_cancels_pending_contained_release_once() {
-    let (mut engine, host, _provider, before) = pending_contained_transform_release_fixture();
+fn presentation_host_retirement_preserves_committed_contained_release_once() {
+    let (mut engine, host, provider) = committed_contained_transform_release_fixture();
+    let committed = engine.workspace().clone();
+    let version = engine.version();
     let lease = host.lease();
 
     let retirement = host
@@ -7946,29 +8111,21 @@ fn presentation_host_retirement_terminally_cancels_pending_contained_release_onc
         .transition()
         .expect("the first retirement publishes one atomic transition");
 
-    assert_eq!(engine.pending_contained_transform_release_preview(), None);
-    assert_eq!(
-        engine
-            .workspace()
-            .contained_floating(CONTAINED_FLOATING)
-            .expect("retirement preserves the contained root")
-            .rect,
-        before,
-    );
+    assert_eq!(engine.workspace(), &committed);
+    assert_eq!(engine.version(), version);
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(3));
     assert_eq!(
         transition
             .interaction_events()
             .iter()
             .filter(|event| matches!(
                 event.kind(),
-                InteractionEventKind::Cancelled {
-                    status: InteractionStatus::ContainedTransforming { .. },
-                    reason: InteractionCancelReason::SceneUnavailable,
-                }
+                InteractionEventKind::Cancelled { .. }
+                    | InteractionEventKind::ContainedTransformDelivered { .. }
             ))
             .count(),
-        1,
-        "host retirement must terminally fail the exact contained presentation obligation once",
+        0,
+        "retirement cannot undo or replay the committed resize",
     );
     let diagnostics = engine.presentation_ledger_diagnostics();
     assert_eq!(diagnostics.pending_outputs(), 0);

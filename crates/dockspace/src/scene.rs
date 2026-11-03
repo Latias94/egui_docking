@@ -573,6 +573,8 @@ pub struct PresentationPlan {
     popup_plane_bounds: Option<LogicalRect>,
     layout_facts: Option<PresentationLayoutFacts>,
     contained_projection: Option<ContainedLayoutProjection>,
+    resize_projection: Vec<crate::command::SplitResize>,
+    contained_order: Option<Vec<FloatingPresentationId>>,
     pane_records: Vec<PaneRecord>,
     tab_records: Vec<TabRecord>,
     tab_bar_records: Vec<TabBarRecord>,
@@ -664,6 +666,8 @@ impl PresentationPlan {
             popup_plane_bounds,
             layout_facts: None,
             contained_projection: None,
+            resize_projection: Vec::new(),
+            contained_order: None,
             pane_records: Vec::new(),
             tab_records: Vec::new(),
             tab_bar_records: Vec::new(),
@@ -729,6 +733,36 @@ impl PresentationPlan {
         projection: Option<ContainedLayoutProjection>,
     ) {
         self.contained_projection = projection;
+    }
+
+    pub(crate) fn set_resize_projection(
+        &mut self,
+        overrides: &[crate::layout::SplitWeightOverride<'_>],
+    ) {
+        self.resize_projection = overrides
+            .iter()
+            .filter(|entry| match entry.source().fingerprint().0.presentation {
+                crate::command::FingerprintPresentation::Main { surface }
+                | crate::command::FingerprintPresentation::Contained { surface, .. } => {
+                    surface == self.surface
+                }
+            })
+            .map(|entry| {
+                crate::command::SplitResize::new(entry.source().clone(), entry.weights().to_vec())
+            })
+            .collect();
+    }
+
+    pub(crate) fn resize_projection(&self) -> &[crate::command::SplitResize] {
+        &self.resize_projection
+    }
+
+    pub(crate) fn set_contained_order(&mut self, order: &[FloatingPresentationId]) {
+        self.contained_order = Some(order.to_vec());
+    }
+
+    pub(crate) fn contained_order(&self) -> Option<&[FloatingPresentationId]> {
+        self.contained_order.as_deref()
     }
 
     pub(crate) fn push_root_layout_facts(&mut self, facts: RootLayoutFacts) {

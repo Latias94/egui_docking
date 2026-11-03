@@ -46,6 +46,24 @@ fn has_ordinary_application_input(transition: &crate::transition::EngineTransiti
     })
 }
 
+fn workspace_root_continuations(
+    transition: &crate::transition::EngineTransition,
+) -> &[(
+    crate::viewport::ViewportBinding,
+    crate::viewport::ViewportBinding,
+)] {
+    transition
+        .reduced_inputs()
+        .iter()
+        .find_map(|input| match input.outcome() {
+            InputOutcome::WorkspaceReplaced { reconciliation, .. } => {
+                Some(reconciliation.rebound())
+            }
+            _ => None,
+        })
+        .unwrap_or(&[])
+}
+
 /// One affine, rollbackable application host frame.
 ///
 /// Dropping this value discards the private candidate and leaves the published
@@ -60,11 +78,16 @@ pub struct DockspaceHostFrame<'session> {
     pub(super) native_input_pending: bool,
     pub(super) submitted_presentation: presentation::SubmittedPresentationObservation,
     pub(super) painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
+    pub(super) encoding_surfaces: BTreeSet<SurfaceId>,
+    pub(super) encoding_started: std::cell::Cell<bool>,
+    pub(super) encoding_checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
+    pub(super) encoding_pass: u64,
     pub(super) painted_native_staging:
         BTreeSet<crate::presentation_observation::NativeStagingPresentation>,
     pub(super) replacement_submitted: bool,
     #[cfg(feature = "serde")]
     pub(super) document_restore: Option<PendingRuntimeDocumentRestore>,
+    pub(super) update_lease: Option<std::sync::Arc<()>>,
 }
 
 impl DockspaceHostFrame<'_> {
@@ -570,6 +593,24 @@ impl DockspaceHostFrame<'_> {
         self.append(input)
     }
 
+    /// Submits an action retained from an earlier framework pass or update.
+    ///
+    /// Core validates the captured target against current relevant state.
+    /// Stale or foreign witnesses produce a typed input rejection in the report.
+    /// Independent events are always reduced independently; adapters own any
+    /// deduplication of repeated passes for the same event slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when semantic ingress is closed or the input cannot be appended.
+    pub fn submit_deferred_surface_action(
+        &mut self,
+        prepared: super::local_action::DeferredSurfaceAction,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        self.append(prepared.into_engine_input())
+    }
+
     /// Submits one observation prepared from an exact published pane-focus request.
     ///
     /// The runtime assigns a non-repeating provider generation only when the
@@ -881,6 +922,7 @@ impl DockspaceHostFrame<'_> {
         self.complete_pointer_input()?;
         let Self {
             session,
+            update_lease: _update_lease,
             frame,
             next_source_sequence,
             next_pointer_sequence: _,
@@ -888,6 +930,10 @@ impl DockspaceHostFrame<'_> {
             native_input_pending,
             submitted_presentation,
             painted_surfaces,
+            encoding_surfaces: _,
+            encoding_started: _,
+            encoding_checkpoint: _,
+            encoding_pass: _,
             painted_native_staging,
             replacement_submitted: _,
             #[cfg(feature = "serde")]
@@ -954,7 +1000,12 @@ impl DockspaceHostFrame<'_> {
             let prepared_native = session
                 .native
                 .as_ref()
-                .map(|native| native.prepare_native_commit(prepared.candidate_engine()))
+                .map(|native| {
+                    native.prepare_native_commit(
+                        prepared.candidate_engine(),
+                        workspace_root_continuations(prepared.transition()),
+                    )
+                })
                 .transpose()?;
             let presentation = session
                 .presentation
@@ -967,6 +1018,12 @@ impl DockspaceHostFrame<'_> {
             (transition, presentation, effects, prepared_native)
         } else {
             let prepared = frame.prepare_owned(&session.engine)?;
+            let document = session
+                .document
+                .as_ref()
+                .map(|binding| binding.prepare_publication(prepared.candidate_engine()))
+                .transpose()
+                .map_err(DockspacePersistenceError::capture)?;
             if !accepted_native_prefix
                 && has_ordinary_application_input(prepared.transition())
                 && effect_capacity
@@ -978,7 +1035,12 @@ impl DockspaceHostFrame<'_> {
             let prepared_native = session
                 .native
                 .as_ref()
-                .map(|native| native.prepare_native_commit(prepared.candidate_engine()))
+                .map(|native| {
+                    native.prepare_native_commit(
+                        prepared.candidate_engine(),
+                        workspace_root_continuations(prepared.transition()),
+                    )
+                })
                 .transpose()?;
             let presentation = session
                 .presentation
@@ -986,12 +1048,9 @@ impl DockspaceHostFrame<'_> {
             let effects = session
                 .abandoned_native_effects
                 .prepare_emissions(prepared.transition().platform_effects())?;
-            (
-                prepared.commit(&mut session.engine)?,
-                presentation,
-                effects,
-                prepared_native,
-            )
+            let transition = prepared.commit(&mut session.engine)?;
+            session.document = document;
+            (transition, presentation, effects, prepared_native)
         };
         #[cfg(not(feature = "serde"))]
         let (transition, presentation, effects, prepared_native) = {
@@ -1007,7 +1066,12 @@ impl DockspaceHostFrame<'_> {
             let prepared_native = session
                 .native
                 .as_ref()
-                .map(|native| native.prepare_native_commit(prepared.candidate_engine()))
+                .map(|native| {
+                    native.prepare_native_commit(
+                        prepared.candidate_engine(),
+                        workspace_root_continuations(prepared.transition()),
+                    )
+                })
                 .transpose()?;
             let presentation = session
                 .presentation
@@ -1092,6 +1156,9 @@ impl DockspaceHostFrame<'_> {
     }
 
     pub(super) fn ensure_semantic_input_allowed(&self) -> Result<(), DockspaceRuntimeError> {
+        if self.encoding_started.get() {
+            return Err(crate::engine::CoreHostFrameError::InputAfterPresentation.into());
+        }
         if self.frame.input_terminated_for_overload() {
             return Err(crate::engine::CoreHostFrameError::InputAfterOverloadCancellation.into());
         }

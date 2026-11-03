@@ -9,11 +9,12 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceSession, HostFrameReport, HostInputOutcome, HostWindowToken,
-    NativeCreateStrategy, NativeHostCapabilities, NativeHostCapability, NativeInputBudget,
-    NativeMonotonicClock, NativePointerRoster, NativeSurfaceBinding, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
-    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    DockspaceHostFrame, DockspaceRuntimeErrorKind, DockspaceSession, HostFrameReport,
+    HostInputOutcome, HostWindowToken, NativeCreateStrategy, NativeHostCapabilities,
+    NativeHostCapability, NativeInputBudget, NativeMonotonicClock, NativePointerRoster,
+    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+    NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
+    UniformSurfaceMetrics,
 };
 use dockspace_host_harness::RecordingRenderer;
 
@@ -167,8 +168,18 @@ fn layout_reset_preserves_native_snapshot_settlement_and_retry_watermarks() {
             0 => drop(frame),
             1 => {
                 frame
+                    .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
+                    .unwrap();
+                assert_eq!(
+                    frame
+                        .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
+                        .unwrap_err()
+                        .kind(),
+                    DockspaceRuntimeErrorKind::HostProtocol
+                );
+                frame
                     .commit()
-                    .expect_err("missing surface contributions must retain the snapshot prefix");
+                    .expect_err("a duplicate contribution must retain the snapshot prefix");
             }
             _ => {
                 let report = commit_measured(frame);

@@ -4,12 +4,11 @@ use std::time::Duration;
 use dockspace::geometry::{LogicalPoint, PhysicalPoint, PhysicalSize};
 use dockspace::runtime::{
     DockspaceManipulationCancelReason as CancelReason, DockspaceManipulationDelivery as Delivery,
-    DockspaceManipulationFeedback, DockspaceManipulationPendingReason as PendingReason,
-    DockspaceManipulationStatus as Status, DockspacePreviewVisual, DockspaceReceiverDescriptor,
-    DockspaceSemanticOutput, NativeHostCapability, NativeLocalGeometry, NativeLocalPointerFact,
-    NativeLocalPointerLocation, NativeMonotonicClock, NativePointerButton, NativePointerEvent,
-    NativePointerId, NativePointerOwner, NativeReceiverPurpose, PointerDeviceKind,
-    PointerEventMetadata,
+    DockspaceManipulationFeedback, DockspaceManipulationStatus as Status, DockspacePreviewVisual,
+    DockspaceReceiverDescriptor, DockspaceSemanticOutput, NativeHostCapability,
+    NativeLocalGeometry, NativeLocalPointerFact, NativeLocalPointerLocation, NativeMonotonicClock,
+    NativePointerButton, NativePointerEvent, NativePointerId, NativePointerOwner,
+    NativeReceiverPurpose, PointerDeviceKind, PointerEventMetadata,
 };
 use winit::dpi::{PhysicalPosition, PhysicalSize as WinitPhysicalSize};
 use winit::event::{
@@ -98,6 +97,20 @@ impl Scene {
 }
 
 fn render(frame: &mut NativeHostFrame<'_>) -> Scene {
+    if frame.frame.paint_plan(FIRST_SURFACE).unwrap().is_none() {
+        frame
+            .frame
+            .measure_surface(
+                FIRST_SURFACE,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
     let plan = frame.frame.paint_plan(FIRST_SURFACE).unwrap().unwrap();
     let mut tabs = Vec::new();
     plan.visit_surface_program(|step| {
@@ -404,7 +417,7 @@ fn feedback(report: &HostFrameReport) -> DockspaceManipulationFeedback {
 }
 
 #[test]
-fn raw_local_reorder_retries_input_and_delivers_only_after_exact_presented_output() {
+fn raw_local_reorder_retries_input_and_delivers_before_output_settlement() {
     let (mut native, binding, scene, now) = fixture();
     let source = scene.point(FIRST, 0.25);
     let target = scene.point(THIRD, 0.625);
@@ -483,25 +496,23 @@ fn raw_local_reorder_retries_input_and_delivers_only_after_exact_presented_outpu
     let mut frame = native
         .begin_host_frame(|query| scene.answer(query, CAPTURED_AT))
         .unwrap();
-    let preview = render(&mut frame);
-    assert!(preview.preview);
+    let successor = render(&mut frame);
+    assert!(!successor.preview);
     let mut report = finish(frame);
-    let pending = feedback(&report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    assert!(!report.workspace_changed());
-    assert_eq!(native.session.version(), version);
-    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+    let terminal = feedback(&report);
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert!(report.workspace_changed());
+    assert_ne!(native.session.version(), version);
+    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
+    let delivered_version = native.session.version();
     assert_eq!(native.session.native_input_recorded_count(), recorded + 3);
     assert!(!native.session.has_active_gesture());
     assert!(!native.session.has_pending_native_input());
     assert!(native.next_window_event().unwrap().is_none());
     assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
-    let exact = take_output(&mut report, &preview, binding);
+    let exact = take_output(&mut report, &successor, binding);
     assert!(idle(&mut native).manipulation_feedback().is_empty());
-    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
 
     let artifact = exact.presentation_artifact();
     native
@@ -515,27 +526,21 @@ fn raw_local_reorder_retries_input_and_delivers_only_after_exact_presented_outpu
     );
     let presentation_recorded = native.session.native_input_recorded_count();
     assert_eq!(presentation_recorded, recorded + 4);
-    assert_eq!(native.session.version(), version);
-    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
-    let delivered = idle(&mut native);
+    assert_eq!(native.session.version(), delivered_version);
+    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
+    let settled = idle(&mut native);
     assert_eq!(
-        delivered
+        settled
             .surface_presentation_commits()
             .iter()
             .filter(|commit| commit.settles(artifact))
             .count(),
         1
     );
-    // Delivery advances the layout in this same commit. The accepted preview
-    // may therefore retire rather than remain the new layout's presentation.
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_ne!(terminal.id(), pending.id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert!(delivered.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(native.session.version(), delivered_version);
     assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
-    let delivered_version = native.session.version();
-    assert_ne!(delivered_version, version);
     assert!(idle(&mut native).manipulation_feedback().is_empty());
     assert_eq!(native.session.version(), delivered_version);
     assert_eq!(
@@ -634,21 +639,22 @@ fn raw_local_to_desktop_handoff_retries_without_releasing_source_credit_or_accep
     let mut frame = native
         .begin_host_frame(|query| scene.answer(query, Duration::from_millis(80)))
         .unwrap();
-    let desktop_preview = render(&mut frame);
-    assert!(desktop_preview.preview);
+    let successor = render(&mut frame);
+    assert!(!successor.preview);
     let mut report = finish(frame);
-    let pending = feedback(&report);
     assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
+        feedback(&report).status(),
+        Status::Delivered(Delivery::Dock)
     );
-    assert!(!report.workspace_changed());
-    assert_eq!(native.session.version(), version);
+    assert!(report.workspace_changed());
+    assert_ne!(native.session.version(), version);
+    let delivered_version = native.session.version();
+    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 4);
     assert!(!native.session.has_active_gesture());
     assert!(native.next_window_event().unwrap().is_none());
     assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
-    let exact = take_output(&mut report, &desktop_preview, binding);
+    let exact = take_output(&mut report, &successor, binding);
     let artifact = exact.presentation_artifact();
     assert_ne!(artifact, local_artifact);
 
@@ -657,36 +663,37 @@ fn raw_local_to_desktop_handoff_retries_without_releasing_source_credit_or_accep
         .report_surface_presentation(local_output, SurfacePresentationResult::Presented)
         .unwrap();
     let late = idle(&mut native);
-    assert!(
+    assert_eq!(
         late.surface_presentation_commits()
             .iter()
-            .any(|commit| commit.settles(local_artifact))
+            .filter(|commit| commit.settles(local_artifact))
+            .count(),
+        1
     );
     assert!(late.manipulation_feedback().is_empty());
     assert!(!late.workspace_changed());
-    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
-    assert_eq!(native.session.version(), version);
+    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
+    assert_eq!(native.session.version(), delivered_version);
 
     native
         .session
         .report_surface_presentation(exact, SurfacePresentationResult::Presented)
         .unwrap();
-    let delivered = idle(&mut native);
-    assert!(
-        delivered
+    let settled = idle(&mut native);
+    assert_eq!(
+        settled
             .surface_presentation_commits()
             .iter()
-            .any(|commit| commit.settles(artifact))
+            .filter(|commit| commit.settles(artifact))
+            .count(),
+        1
     );
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert!(delivered.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
     assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
     assert!(!native.session.has_pending_native_input());
     assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
     assert_eq!(native.session.native_input_recorded_count(), recorded + 6);
-    let delivered_version = native.session.version();
     assert!(idle(&mut native).manipulation_feedback().is_empty());
     assert_eq!(native.session.version(), delivered_version);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 6);
@@ -726,46 +733,23 @@ fn an_ordinary_desktop_drag_keeps_its_lane_when_a_callback_adds_local_facts() {
     let mut frame = native
         .begin_host_frame(|query| scene.answer(query, CAPTURED_AT))
         .unwrap();
-    let preview = render(&mut frame);
-    assert!(preview.preview);
+    let successor = render(&mut frame);
     let mut report = finish(frame);
-    let pending = feedback(&report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    assert_eq!(native.session.version(), version);
-    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+    assert_ne!(native.session.version(), version);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 3);
-    let exact = take_output(&mut report, &preview, binding);
-    native
-        .session
-        .report_surface_presentation(exact, SurfacePresentationResult::Presented)
-        .unwrap();
-    let delivered = idle(&mut native);
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
-    assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
-    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
-    assert!(idle(&mut native).manipulation_feedback().is_empty());
+    assert_committed_reorder_survives_presentation(&mut native, binding, &successor, &mut report);
 }
 
-fn assert_pending_reorder_delivers_after_exact_presentation(
+fn assert_committed_reorder_survives_presentation(
     native: &mut NativeCoordinator,
     binding: NativeSurfaceBinding,
-    preview: &Scene,
+    successor: &Scene,
     report: &mut HostFrameReport,
 ) {
-    let pending = feedback(report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation),
-    );
-    assert!(preview.preview);
-    assert!(!report.workspace_changed());
-    assert_eq!(order(native), [FIRST, SECOND, THIRD]);
+    assert_eq!(feedback(report).status(), Status::Delivered(Delivery::Dock));
+    assert!(!successor.preview);
+    assert!(report.workspace_changed());
+    assert_eq!(order(native), [SECOND, THIRD, FIRST]);
     assert!(!native.session.has_active_gesture());
     assert!(!native.session.has_pending_native_input());
     assert!(native.next_window_event().unwrap().is_none());
@@ -774,39 +758,35 @@ fn assert_pending_reorder_delivers_after_exact_presentation(
     assert!(native.session.is_current_native_binding(binding));
     let version = native.session.version();
     let recorded = native.session.native_input_recorded_count();
-    let exact = take_output(report, preview, binding);
+    let exact = take_output(report, successor, binding);
     let artifact = exact.presentation_artifact();
     let waiting = idle(native);
     assert!(waiting.manipulation_feedback().is_empty());
     assert!(!waiting.workspace_changed());
     assert_eq!(native.session.version(), version);
-    assert_eq!(order(native), [FIRST, SECOND, THIRD]);
+    assert_eq!(order(native), [SECOND, THIRD, FIRST]);
     native
         .session
         .report_surface_presentation(exact, SurfacePresentationResult::Presented)
         .unwrap();
-    let delivered = idle(native);
+    let settled = idle(native);
     assert_eq!(
-        delivered
+        settled
             .surface_presentation_commits()
             .iter()
             .filter(|commit| commit.settles(artifact))
             .count(),
         1,
     );
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_ne!(terminal.id(), pending.id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert!(delivered.workspace_changed());
-    assert_eq!(order(native), [SECOND, THIRD, FIRST]);
-    let delivered_version = native.session.version();
-    assert_ne!(delivered_version, version);
-    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
-    let settled = idle(native);
     assert!(settled.manipulation_feedback().is_empty());
     assert!(!settled.workspace_changed());
-    assert_eq!(native.session.version(), delivered_version);
+    assert_eq!(order(native), [SECOND, THIRD, FIRST]);
+    assert_eq!(native.session.version(), version);
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    let repeated = idle(native);
+    assert!(repeated.manipulation_feedback().is_empty());
+    assert!(!repeated.workspace_changed());
+    assert_eq!(native.session.version(), version);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
     assert!(native.session.is_current_native_binding(binding));
     assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
@@ -901,9 +881,9 @@ fn assert_reorder_survives_unknown_capture_release_motion(desktop: bool) {
         if ordinal == 4 {
             let preview = render(&mut frame);
             let mut report = finish(frame);
-            assert_eq!(native.session.version(), version);
+            assert_ne!(native.session.version(), version);
             assert_eq!(native.session.native_input_recorded_count(), recorded + 4);
-            assert_pending_reorder_delivers_after_exact_presentation(
+            assert_committed_reorder_survives_presentation(
                 &mut native,
                 binding,
                 &preview,
@@ -990,14 +970,9 @@ fn macos_capabilities_and_unknown_initial_roster_allow_same_window_reorder() {
         .unwrap();
     let preview = render(&mut frame);
     let mut report = finish(frame);
-    assert_eq!(native.session.version(), version);
+    assert_ne!(native.session.version(), version);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 3);
-    assert_pending_reorder_delivers_after_exact_presentation(
-        &mut native,
-        binding,
-        &preview,
-        &mut report,
-    );
+    assert_committed_reorder_survives_presentation(&mut native, binding, &preview, &mut report);
 }
 
 #[test]
@@ -1307,49 +1282,25 @@ fn queued_old_scale_release_cancels_through_mailbox_and_the_same_pointer_can_reo
     let mut frame = native
         .begin_host_frame(|query| scene.answer(query, captured_at))
         .unwrap();
-    let preview = render(&mut frame);
-    assert!(preview.preview);
-    let mut pending_report = finish(frame);
-    let pending = feedback(&pending_report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    assert_ne!(pending.manipulation_id(), cancellation.manipulation_id());
-    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
-    assert_eq!(native.session.version(), version);
+    let successor = render(&mut frame);
+    let mut report = finish(frame);
+    let terminal = feedback(&report);
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert_ne!(terminal.manipulation_id(), cancellation.manipulation_id());
+    assert_ne!(native.session.version(), version);
     assert_eq!(
         native.session.native_input_recorded_count(),
         recorded_after_refresh + 3
     );
-    let exact = take_output(&mut pending_report, &preview, binding);
-    native
-        .session
-        .report_surface_presentation(exact, SurfacePresentationResult::Presented)
-        .unwrap();
-    let delivered = idle(&mut native);
-    assert_eq!(
-        feedback(&delivered).status(),
-        Status::Delivered(Delivery::Dock)
-    );
-    assert_eq!(
-        feedback(&delivered).manipulation_id(),
-        pending.manipulation_id()
-    );
-    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
+    assert_committed_reorder_survives_presentation(&mut native, binding, &successor, &mut report);
     assert_eq!(
         native.session.native_input_recorded_count(),
         recorded_after_refresh + 4
     );
-    assert!(native.session.is_current_native_binding(binding));
-    assert!(!native.session.has_active_gesture());
-    assert!(!native.session.has_pending_native_input());
-    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
-    assert!(idle(&mut native).manipulation_feedback().is_empty());
 }
 
 #[test]
-fn desktop_synthetic_focus_move_preserves_the_gesture_until_exact_presented_delivery() {
+fn desktop_synthetic_focus_move_preserves_the_gesture_until_release_delivery() {
     let (mut native, binding, scene, now) = fixture_with_desktop(true);
     let source = scene.point(FIRST, 0.25);
     let target = scene.point(THIRD, 0.625);
@@ -1493,51 +1444,10 @@ fn desktop_synthetic_focus_move_preserves_the_gesture_until_exact_presented_deli
             scene.answer(query, CAPTURED_AT)
         })
         .unwrap();
-    let preview = render(&mut frame);
-    assert!(preview.preview);
-    let mut pending_report = finish(frame);
-    let pending = feedback(&pending_report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    assert!(!pending_report.workspace_changed());
-    assert_eq!(native.session.version(), version);
-    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+    let successor = render(&mut frame);
+    let mut report = finish(frame);
+    assert_ne!(native.session.version(), version);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 4);
-    assert!(!native.session.has_active_gesture());
-    assert!(!native.session.has_pending_native_input());
-    assert!(native.next_window_event().unwrap().is_none());
-    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
-    assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
-
-    let exact = take_output(&mut pending_report, &preview, binding);
-    let artifact = exact.presentation_artifact();
-    assert!(idle(&mut native).manipulation_feedback().is_empty());
-    assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
-    native
-        .session
-        .report_surface_presentation(exact, SurfacePresentationResult::Presented)
-        .unwrap();
-    let delivered = idle(&mut native);
-    assert_eq!(
-        delivered
-            .surface_presentation_commits()
-            .iter()
-            .filter(|commit| commit.settles(artifact))
-            .count(),
-        1
-    );
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_ne!(terminal.id(), pending.id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert!(delivered.workspace_changed());
-    assert_eq!(order(&native), [SECOND, THIRD, FIRST]);
-    let delivered_version = native.session.version();
-    assert_ne!(delivered_version, version);
-    assert!(idle(&mut native).manipulation_feedback().is_empty());
-    assert_eq!(native.session.version(), delivered_version);
+    assert_committed_reorder_survives_presentation(&mut native, binding, &successor, &mut report);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 5);
-    assert!(native.session.is_current_native_binding(binding));
 }

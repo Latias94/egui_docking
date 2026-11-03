@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::RootPresentationOwner;
-use crate::canonical::canonicalize_workspace;
+use crate::canonical::canonicalize_draft;
 use crate::close_plan::CloseItemRequirement;
 use crate::command::{
     CloseCommitOutcome, CommandOutcome, ContainedPosition, ContainedRosterSource, DockTarget, Edge,
@@ -22,7 +22,7 @@ use crate::policy::{
     DockPresentationTarget, DockResizePolicyRequest, DockTabBarPolicyRequest, PolicyDecision,
 };
 use crate::surface_recovery::SurfaceRecoveryTransaction;
-use crate::transaction::PreparedTransaction;
+use crate::transaction::{PreparedTransaction, clone_workspace_draft};
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
 
@@ -114,7 +114,7 @@ pub(crate) fn prepare_surface_content_close(
     policy: &DockPolicySnapshot,
     prepared: &PreparedSurfaceContentClose,
 ) -> Result<PreparedContentCloseCommit, TransactionError> {
-    let mut candidate = workspace.clone();
+    let mut candidate = clone_workspace_draft(workspace);
     if !candidate.matches_surface_roster_source(prepared.roster()) {
         return Err(TransactionError::Precondition {
             index: 0,
@@ -223,7 +223,7 @@ pub(crate) fn prepare_surface_content_close(
     }
 
     prune_vacant_surfaces(&mut candidate);
-    canonicalize_workspace(&mut candidate).map_err(TransactionError::from)?;
+    canonicalize_draft(&mut candidate).map_err(TransactionError::from)?;
     candidate.validate().map_err(TransactionError::from)?;
     let actual_after = candidate.item_multiset();
     if actual_after != expected_after {
@@ -264,7 +264,7 @@ pub(crate) fn prepare_content_close(
         });
     }
 
-    let mut candidate = workspace.clone();
+    let mut candidate = clone_workspace_draft(workspace);
     let outcome = match prepared {
         PreparedContentClose::Item {
             source,
@@ -353,7 +353,7 @@ pub(crate) fn prepare_content_close(
         }
     }
     prune_vacant_surfaces(&mut candidate);
-    canonicalize_workspace(&mut candidate).map_err(TransactionError::from)?;
+    canonicalize_draft(&mut candidate).map_err(TransactionError::from)?;
     candidate.validate().map_err(TransactionError::from)?;
     let actual_after = candidate.item_multiset();
     if actual_after != expected_after {
@@ -521,11 +521,8 @@ fn prepare_transaction_inner(
     commands: &[WorkspaceCommand],
 ) -> Result<PreparedTransaction, TransactionError> {
     #[cfg(test)]
-    {
-        crate::drop_resolver::structural_work::record_transaction_prepare(commands.len());
-        crate::drop_resolver::structural_work::record_transaction_candidate_clone(workspace);
-    }
-    let mut candidate = workspace.clone();
+    crate::drop_resolver::structural_work::record_transaction_prepare(commands.len());
+    let mut candidate = clone_workspace_draft(workspace);
     // Typed command deltas own the staged item roster. Reconcile the graph once,
     // after canonicalization, so multi-command transactions stay linear in items.
     let mut item_ledger = workspace.item_multiset();
@@ -546,7 +543,7 @@ fn prepare_transaction_inner(
     }
 
     prune_vacant_surfaces(&mut candidate);
-    canonicalize_workspace(&mut candidate)?;
+    canonicalize_draft(&mut candidate)?;
     candidate.validate()?;
     if commands.len() == 1
         && let Some(CommandOutcome::Moved { changed, .. }) = outcomes.first_mut()
@@ -565,6 +562,32 @@ fn prepare_transaction_inner(
         candidate,
         outcomes,
     })
+}
+
+/// Applies a follow-up command to an already discardable transaction draft.
+/// A failure invalidates that whole draft; the caller must not publish it.
+pub(crate) fn apply_owned_draft_command(
+    draft: &mut Workspace,
+    policy: &DockPolicySnapshot,
+    command: &WorkspaceCommand,
+) -> Result<CommandOutcome, TransactionError> {
+    let mut expected = draft.item_multiset();
+    validate_declared_open_item(&expected, command)
+        .map_err(|source| TransactionError::Command { index: 0, source })?;
+    authorize_workspace_command(draft, policy, command)
+        .map_err(|source| TransactionError::Command { index: 0, source })?;
+    let applied = apply_command(draft, command)
+        .map_err(|source| TransactionError::Command { index: 0, source })?;
+    apply_item_delta(&mut expected, applied.delta)
+        .map_err(|source| TransactionError::Command { index: 0, source })?;
+    prune_vacant_surfaces(draft);
+    canonicalize_draft(draft)?;
+    draft.validate()?;
+    let actual = draft.item_multiset();
+    if actual != expected {
+        return Err(TransactionError::ItemReconciliation { expected, actual });
+    }
+    Ok(applied.outcome)
 }
 
 pub(crate) fn authorize_workspace_command(

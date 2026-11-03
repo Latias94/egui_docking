@@ -1,14 +1,17 @@
-//! Minimal egui multipass retention for affine product actions and outputs.
+//! Bounded event-owned UI ingress and private actual-pass payloads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    PaintedSurfaceOutput, PreparedPaneFocusObservation, PreparedSurfaceAction,
+    DeferredSurfaceAction, DockspaceSession, NativeSurfaceBinding, PreparedPaneFocusObservation,
+    PresentedDockspaceSurface, SurfacePresentationArtifact, SurfacePresentationCommit,
 };
-use eframe::NativeOutputToken;
+use eframe::{NativeOutputToken, egui};
 
 use crate::host_frame::NativeSurfacePaint;
+
+const LOCAL_ACTION_CAPACITY: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativePassActionError {
@@ -16,277 +19,52 @@ pub(crate) enum NativePassActionError {
     LocalActionConflict,
 }
 
-#[derive(Debug)]
-enum DurableLocalActionState<T> {
-    /// The affine action capability is still owned by the adapter.
-    Pending(Vec<T>),
-    /// The capability moved into an exact core host frame. The marker remains
-    /// until that frame produces either a commit report or an explicit error.
-    InFlight,
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct UiActionEvent {
+    run: NativeOutputToken,
+    origin: egui::Id,
 }
 
-/// Bounded local-action ownership keyed by product surface, never by output.
-///
-/// A surface has at most one pending or in-flight batch. Multipass replay of
-/// the same batch deduplicates; ambiguous replacement fails closed.
-#[derive(Debug)]
-struct DurableLocalActions<T> {
-    by_surface: BTreeMap<SurfaceId, DurableLocalActionState<T>>,
+struct PendingLocalAction {
+    event: UiActionEvent,
+    owner: Option<NativeSurfaceBinding>,
+    action: DeferredSurfaceAction,
 }
 
-impl<T> Default for DurableLocalActions<T> {
-    fn default() -> Self {
-        Self {
-            by_surface: BTreeMap::new(),
-        }
-    }
-}
-
-impl<T> DurableLocalActions<T> {
-    fn has_work(&self) -> bool {
-        !self.by_surface.is_empty()
-    }
-
-    fn has_pending(&self, surface: SurfaceId) -> bool {
-        matches!(
-            self.by_surface.get(&surface),
-            Some(DurableLocalActionState::Pending(actions)) if !actions.is_empty()
-        )
-    }
-}
-
-impl<T: PartialEq> DurableLocalActions<T> {
-    fn retain(&mut self, surface: SurfaceId, current: Vec<T>) -> Result<(), NativePassActionError> {
-        if current.is_empty() {
-            return Ok(());
-        }
-        match self.by_surface.entry(surface) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(DurableLocalActionState::Pending(current));
-                Ok(())
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry) => match entry.get_mut() {
-                DurableLocalActionState::Pending(retained) => {
-                    merge_local_actions(retained, current)
-                }
-                DurableLocalActionState::InFlight => {
-                    Err(NativePassActionError::LocalActionConflict)
-                }
-            },
-        }
-    }
-
-    fn begin_terminal(
-        &mut self,
-        surface: SurfaceId,
-        current: Vec<T>,
-    ) -> Result<Option<DurableLocalActionSubmission<T>>, NativePassActionError> {
-        self.retain(surface, current)?;
-        let Some(state) = self.by_surface.remove(&surface) else {
-            return Ok(None);
-        };
-        match state {
-            DurableLocalActionState::Pending(actions) => {
-                self.by_surface
-                    .insert(surface, DurableLocalActionState::InFlight);
-                Ok(Some(DurableLocalActionSubmission { surface, actions }))
-            }
-            DurableLocalActionState::InFlight => {
-                self.by_surface
-                    .insert(surface, DurableLocalActionState::InFlight);
-                Ok(None)
-            }
-        }
-    }
-
-    fn begin_attempt(
-        &mut self,
-        surface: SurfaceId,
-        current: Vec<T>,
-    ) -> Result<
-        Option<(
-            DurableLocalActionSubmission<T>,
-            DurableLocalActionAttempt<'_, T>,
-        )>,
-        NativePassActionError,
-    > {
-        let Some(submission) = self.begin_terminal(surface, current)? else {
-            return Ok(None);
-        };
-        Ok(Some((
-            submission,
-            DurableLocalActionAttempt {
-                actions: self,
-                surface,
-                active: true,
-            },
-        )))
-    }
-
-    fn settle_core_commit(&mut self, surface: SurfaceId) -> Result<(), NativePassActionError> {
-        self.settle_in_flight(surface)
-    }
-
-    fn settle_core_failure(&mut self, surface: SurfaceId) -> Result<(), NativePassActionError> {
-        self.settle_in_flight(surface)
-    }
-
-    fn settle_core_attempt<R, E>(
-        &mut self,
-        surface: SurfaceId,
-        result: Result<R, E>,
-    ) -> Result<Result<R, E>, NativePassActionError> {
-        // Both outcomes are terminals for the affine capability. Retrying an
-        // opaque action after it entered a host frame could apply it twice;
-        // the caller therefore propagates an explicit failure and stops.
-        match result {
-            Ok(value) => {
-                self.settle_core_commit(surface)?;
-                Ok(Ok(value))
-            }
-            Err(error) => {
-                self.settle_core_failure(surface)?;
-                Ok(Err(error))
-            }
-        }
-    }
-
-    fn settle_in_flight(&mut self, surface: SurfaceId) -> Result<(), NativePassActionError> {
-        let Some(state) = self.by_surface.remove(&surface) else {
-            return Err(NativePassActionError::OutputChanged);
-        };
-        match state {
-            DurableLocalActionState::InFlight => Ok(()),
-            pending @ DurableLocalActionState::Pending(_) => {
-                self.by_surface.insert(surface, pending);
-                Err(NativePassActionError::OutputChanged)
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct DurableLocalActionSubmission<T> {
+/// Exact events acknowledged after publication; candidate clones leave ingress intact.
+pub(crate) struct NativeUiActionAcknowledgement {
     surface: SurfaceId,
-    actions: Vec<T>,
+    events: Vec<UiActionEvent>,
+    pane_focus: Option<(NativeOutputToken, SurfacePresentationArtifact)>,
 }
 
-impl<T> DurableLocalActionSubmission<T> {
-    pub(crate) const fn surface(&self) -> SurfaceId {
-        self.surface
-    }
-
-    #[cfg(test)]
-    fn actions(&self) -> &[T] {
-        &self.actions
-    }
-
-    pub(crate) fn into_parts(self) -> (SurfaceId, Vec<T>) {
-        (self.surface, self.actions)
-    }
-}
-
-pub(crate) type NativeLocalActionSubmission = DurableLocalActionSubmission<PreparedSurfaceAction>;
-
-/// Exact ownership of one submitted affine local-action batch.
-///
-/// Dropping the attempt during unwind terminalizes the consumed capability so
-/// a caught panic cannot leave the durable queue permanently in flight.
-#[must_use = "a local-action attempt must be settled by its exact core result"]
-pub(crate) struct DurableLocalActionAttempt<'a, T: PartialEq> {
-    actions: &'a mut DurableLocalActions<T>,
-    surface: SurfaceId,
-    active: bool,
-}
-
-impl<T: PartialEq> DurableLocalActionAttempt<'_, T> {
-    pub(crate) fn settle<R, E>(
-        mut self,
-        result: Result<R, E>,
-    ) -> Result<Result<R, E>, NativePassActionError> {
-        let settled = self.actions.settle_core_attempt(self.surface, result);
-        // `settle_core_attempt` never leaves an in-flight state behind, even
-        // when it reports an ownership mismatch and restores Pending.
-        self.active = false;
-        settled
-    }
-}
-
-impl<T: PartialEq> Drop for DurableLocalActionAttempt<'_, T> {
-    fn drop(&mut self) {
-        if !self.active {
-            return;
-        }
-        let settled = self.actions.settle_core_failure(self.surface);
-        debug_assert!(
-            std::thread::panicking() || settled.is_ok(),
-            "an active local-action attempt owns one in-flight batch"
-        );
-        self.active = false;
-    }
-}
-
-pub(crate) type NativeLocalActionAttempt<'a> = DurableLocalActionAttempt<'a, PreparedSurfaceAction>;
-
-pub(crate) struct NativePassDraft {
-    surface: SurfaceId,
-    paint: NativeSurfacePaint,
-    presentation: Vec<PreparedSurfaceAction>,
-    pane_focus_observation: Option<PreparedPaneFocusObservation>,
-    local: Vec<PreparedSurfaceAction>,
-    application_action_ready: bool,
-}
-
-impl NativePassDraft {
-    pub(crate) fn transient_visuals_complete(&self) -> bool {
-        self.paint.transient_visuals_complete()
-    }
-
-    pub(crate) fn paint_mut(&mut self) -> &mut NativeSurfacePaint {
-        &mut self.paint
-    }
-}
-
-enum StagedPass {
-    RetainPrevious { surface: SurfaceId },
-    RetainedOverlay,
-    Semantic(StagedSemanticPass),
-}
-
-struct StagedSemanticPass {
-    draft: NativePassDraft,
-    output: Option<PaintedSurfaceOutput>,
-}
-
+/// One bounded ingress, with replay suppression confined to the original input run.
 #[derive(Default)]
 pub(crate) struct NativePassActions {
-    local_actions: DurableLocalActions<PreparedSurfaceAction>,
+    local_actions: BTreeMap<SurfaceId, Vec<PendingLocalAction>>,
+    pane_focus: BTreeMap<SurfaceId, PendingPaneFocus>,
     output_surfaces: BTreeMap<NativeOutputToken, SurfaceId>,
-    staged: BTreeMap<NativeOutputToken, StagedPass>,
+    staged: BTreeMap<NativeOutputToken, NativeFinalPass>,
+}
+
+struct PendingPaneFocus {
+    origin: NativeOutputToken,
+    owner: Option<NativeSurfaceBinding>,
+    artifact: SurfacePresentationArtifact,
+    observation: PreparedPaneFocusObservation,
 }
 
 impl NativePassActions {
-    /// Returns work which survives the current egui output scope and therefore
-    /// belongs to a later core action boundary.
-    ///
-    /// A staged output token is settled by the current output hook. Its mere
-    /// presence must not make an otherwise stable runtime appear busy. Local
-    /// actions retained from a discarded pass are different: they are durable
-    /// obligations which must reach a later terminal pass.
     pub(crate) fn has_retained_action_work(&self) -> bool {
-        self.local_actions.has_work()
-    }
-
-    pub(crate) fn has_pending_local_actions(&self, surface: SurfaceId) -> bool {
-        self.local_actions.has_pending(surface)
+        !self.local_actions.is_empty() || !self.pane_focus.is_empty()
     }
 
     pub(crate) fn prepare_pass(
-        &self,
+        &mut self,
         token: NativeOutputToken,
+        owner: Option<NativeSurfaceBinding>,
         mut paint: NativeSurfacePaint,
-        application_action_ready: bool,
-    ) -> Result<NativePassDraft, NativePassActionError> {
+    ) -> Result<NativeSurfacePaint, NativePassActionError> {
         let surface = paint.surface();
         if self
             .output_surfaces
@@ -295,39 +73,185 @@ impl NativePassActions {
         {
             return Err(NativePassActionError::OutputChanged);
         }
-        Ok(NativePassDraft {
-            surface,
-            presentation: paint.take_presentation_actions(),
-            pane_focus_observation: paint.take_pane_focus_observation(),
-            local: paint.take_local_actions(),
-            application_action_ready,
-            paint,
-        })
+        let actions = paint
+            .take_local_actions()
+            .into_iter()
+            .chain(paint.take_presentation_actions())
+            .map(|record| PendingLocalAction {
+                event: UiActionEvent {
+                    run: token,
+                    origin: record.origin(),
+                },
+                owner,
+                action: record.into_deferred(),
+            })
+            .collect();
+        self.retain_local_actions(surface, actions)?;
+        Ok(paint)
     }
 
-    pub(crate) fn pass_has_actions(&self, draft: &NativePassDraft) -> bool {
-        !draft.presentation.is_empty()
-            || draft.pane_focus_observation.is_some()
-            || !draft.local.is_empty()
-            || draft.application_action_ready
-            || self.local_actions.has_pending(draft.surface)
+    fn retain_local_actions(
+        &mut self,
+        surface: SurfaceId,
+        actions: Vec<PendingLocalAction>,
+    ) -> Result<(), NativePassActionError> {
+        let retained = self.local_actions.get(&surface);
+        let mut additional: Vec<PendingLocalAction> = Vec::new();
+        for action in actions {
+            let previous = retained
+                .into_iter()
+                .flatten()
+                .chain(&additional)
+                .find(|old| old.event == action.event);
+            match previous {
+                Some(old)
+                    if old.owner != action.owner || !old.action.same_intent(&action.action) =>
+                {
+                    return Err(NativePassActionError::LocalActionConflict);
+                }
+                Some(_) => {}
+                None => additional.push(action),
+            }
+        }
+        let pending = self.local_actions.values().map(Vec::len).sum::<usize>();
+        if pending.saturating_add(additional.len()) > LOCAL_ACTION_CAPACITY {
+            return Err(NativePassActionError::LocalActionConflict);
+        }
+        if additional.is_empty() {
+            return Ok(());
+        }
+        self.local_actions
+            .entry(surface)
+            .or_default()
+            .extend(additional);
+        Ok(())
+    }
+
+    /// Clones earlier intents while retaining their originals until publication.
+    pub(crate) fn peek_deferred_actions(
+        &self,
+        token: NativeOutputToken,
+        surface: SurfaceId,
+    ) -> (Vec<DeferredSurfaceAction>, NativeUiActionAcknowledgement) {
+        let (events, actions) = self
+            .local_actions
+            .get(&surface)
+            .into_iter()
+            .flatten()
+            .filter(|pending| pending.event.run != token)
+            .map(|pending| (pending.event, pending.action.clone()))
+            .unzip();
+        (
+            actions,
+            NativeUiActionAcknowledgement {
+                surface,
+                events,
+                pane_focus: None,
+            },
+        )
+    }
+
+    /// Acknowledges only the published candidate's inputs, preserving newly emitted work.
+    pub(crate) fn acknowledge(&mut self, acknowledged: NativeUiActionAcknowledgement) {
+        if let Some(actions) = self.local_actions.get_mut(&acknowledged.surface) {
+            actions.retain(|pending| !acknowledged.events.contains(&pending.event));
+            if actions.is_empty() {
+                self.local_actions.remove(&acknowledged.surface);
+            }
+        }
+        if self
+            .pane_focus
+            .get(&acknowledged.surface)
+            .is_some_and(|pending| {
+                acknowledged.pane_focus == Some((pending.origin, pending.artifact))
+            })
+        {
+            self.pane_focus.remove(&acknowledged.surface);
+        }
+    }
+
+    pub(crate) fn peek_pane_focus(
+        &self,
+        token: NativeOutputToken,
+        presented: Option<PresentedDockspaceSurface>,
+        acknowledged: &mut NativeUiActionAcknowledgement,
+    ) -> Option<PreparedPaneFocusObservation> {
+        let pending = self
+            .pane_focus
+            .get(&acknowledged.surface)
+            .filter(|pending| {
+                pending.origin != token
+                    && presented.is_some_and(|presented| {
+                        presented.matches_presentation_artifact(pending.artifact)
+                    })
+            })?;
+        acknowledged.pane_focus = Some((pending.origin, pending.artifact));
+        Some(pending.observation.clone())
+    }
+
+    /// Retires published identities, preserving live owners awaiting first-live output.
+    pub(crate) fn retire_unavailable(&mut self, session: &DockspaceSession) {
+        let current_version = session.version();
+        let current_surfaces = session
+            .view()
+            .surfaces()
+            .map(|surface| surface.id())
+            .collect::<BTreeSet<_>>();
+        // Pending first-live owners can precede their logical surface publication.
+        let owner_is_current = |surface: &SurfaceId, owner: Option<NativeSurfaceBinding>| {
+            owner.map_or_else(
+                || current_surfaces.contains(surface),
+                |owner| owner.surface() == *surface && session.is_current_native_binding(owner),
+            )
+        };
+        self.local_actions.retain(|surface, actions| {
+            actions.retain(|pending| {
+                pending
+                    .action
+                    .expected_version()
+                    .is_same_epoch(current_version)
+                    && owner_is_current(surface, pending.owner)
+            });
+            !actions.is_empty()
+        });
+        self.pane_focus
+            .retain(|surface, pending| owner_is_current(surface, pending.owner));
+    }
+
+    pub(crate) fn retain_pane_focus(
+        &mut self,
+        token: NativeOutputToken,
+        surface: SurfaceId,
+        owner: Option<NativeSurfaceBinding>,
+        artifact: SurfacePresentationArtifact,
+        observation: PreparedPaneFocusObservation,
+    ) {
+        self.pane_focus.insert(
+            surface,
+            PendingPaneFocus {
+                origin: token,
+                owner,
+                artifact,
+                observation,
+            },
+        );
+    }
+
+    pub(crate) fn commit_presentations(&mut self, commits: &[SurfacePresentationCommit]) {
+        self.pane_focus.retain(|_, pending| {
+            !commits
+                .iter()
+                .any(|commit| commit.retires(pending.artifact))
+        });
     }
 
     pub(crate) fn stage_pass(
         &mut self,
         token: NativeOutputToken,
-        draft: NativePassDraft,
-        output: Option<PaintedSurfaceOutput>,
+        paint: NativeSurfacePaint,
     ) -> Result<(), NativePassActionError> {
-        if self.staged.contains_key(&token) {
-            return Err(NativePassActionError::OutputChanged);
-        }
-        self.remember_output_surface(token, draft.surface)?;
-        self.staged.insert(
-            token,
-            StagedPass::Semantic(StagedSemanticPass { draft, output }),
-        );
-        Ok(())
+        self.remember_output_surface(token, paint.surface())?;
+        self.stage(token, NativeFinalPass::Semantic(paint))
     }
 
     pub(crate) fn stage_retain_previous(
@@ -335,23 +259,26 @@ impl NativePassActions {
         token: NativeOutputToken,
         surface: SurfaceId,
     ) -> Result<(), NativePassActionError> {
-        if self.staged.contains_key(&token) {
-            return Err(NativePassActionError::OutputChanged);
-        }
         self.remember_output_surface(token, surface)?;
-        self.staged
-            .insert(token, StagedPass::RetainPrevious { surface });
-        Ok(())
+        self.stage(token, NativeFinalPass::RetainPrevious)
     }
 
     pub(crate) fn stage_retained_overlay(
         &mut self,
         token: NativeOutputToken,
     ) -> Result<(), NativePassActionError> {
+        self.stage(token, NativeFinalPass::RetainedOverlay)
+    }
+
+    fn stage(
+        &mut self,
+        token: NativeOutputToken,
+        pass: NativeFinalPass,
+    ) -> Result<(), NativePassActionError> {
         if self.staged.contains_key(&token) {
             return Err(NativePassActionError::OutputChanged);
         }
-        self.staged.insert(token, StagedPass::RetainedOverlay);
+        self.staged.insert(token, pass);
         Ok(())
     }
 
@@ -362,7 +289,7 @@ impl NativePassActions {
     pub(crate) fn is_retained(&self, token: NativeOutputToken) -> bool {
         matches!(
             self.staged.get(&token),
-            Some(StagedPass::RetainPrevious { .. })
+            Some(NativeFinalPass::RetainPrevious)
         )
     }
 
@@ -370,115 +297,43 @@ impl NativePassActions {
         &mut self,
         token: NativeOutputToken,
     ) -> Result<(), NativePassActionError> {
-        let Some(staged) = self.staged.remove(&token) else {
-            return Ok(());
-        };
-        let StagedPass::Semantic(StagedSemanticPass { draft, output: _ }) = staged else {
-            return Ok(());
-        };
-        // Presentation, focus, output, and the pass-local application-action
-        // readiness fact die with `staged`. The bounded application queue is
-        // sampled again by the next pass; only local UI actions survive here.
-        self.local_actions.retain(draft.surface, draft.local)
+        self.staged.remove(&token);
+        Ok(())
     }
 
     pub(crate) fn finish_pass(
         &mut self,
         token: NativeOutputToken,
     ) -> Result<Option<NativeFinalPass>, NativePassActionError> {
-        let Some(staged) = self.staged.remove(&token) else {
-            return Ok(None);
-        };
-        let expected_surface = self.output_surfaces.remove(&token);
-        let StagedSemanticPass { draft, output } = match staged {
-            StagedPass::RetainPrevious { surface } => {
-                if expected_surface.is_some_and(|expected| expected != surface) {
-                    return Err(NativePassActionError::OutputChanged);
-                }
-                return Ok(Some(NativeFinalPass::RetainPrevious {
-                    surface,
-                    local_actions_ready: self.local_actions.has_pending(surface),
-                }));
-            }
-            StagedPass::RetainedOverlay => {
-                return Ok(Some(NativeFinalPass::RetainedOverlay));
-            }
-            StagedPass::Semantic(semantic) => semantic,
-        };
-        if expected_surface.is_some_and(|expected| expected != draft.surface) {
-            return Err(NativePassActionError::OutputChanged);
-        }
-        let local_actions_ready =
-            !draft.local.is_empty() || self.local_actions.has_pending(draft.surface);
-        Ok(Some(NativeFinalPass::Semantic(NativeSemanticFinalPass {
-            presentation: draft.presentation,
-            pane_focus_observation: draft.pane_focus_observation,
-            local: draft.local,
-            local_actions_ready,
-            application_action_ready: draft.application_action_ready,
-            paint: draft.paint,
-            output,
-        })))
+        let pass = self.staged.remove(&token);
+        self.output_surfaces.remove(&token);
+        Ok(pass)
     }
 
     pub(crate) fn abandon(
         &mut self,
         token: NativeOutputToken,
     ) -> Result<(), NativePassActionError> {
+        self.discard_pass(token)?;
         self.output_surfaces.remove(&token);
-        let Some(staged) = self.staged.remove(&token) else {
-            return Ok(());
-        };
-        let StagedPass::Semantic(StagedSemanticPass { draft, output: _ }) = staged else {
-            return Ok(());
-        };
-        // Output abandonment retires only renderer/presentation evidence. A
-        // local action remains an adapter obligation until a core terminal.
-        self.local_actions.retain(draft.surface, draft.local)
+        Ok(())
     }
 
     pub(crate) fn abandon_all_outputs_into(
         &mut self,
         mut on_error: impl FnMut(NativePassActionError),
     ) {
-        loop {
-            let token = self
-                .staged
-                .first_key_value()
-                .map(|(token, _)| *token)
-                .into_iter()
-                .chain(
-                    self.output_surfaces
-                        .first_key_value()
-                        .map(|(token, _)| *token),
-                )
-                .min();
-            let Some(token) = token else {
-                break;
-            };
+        while let Some(token) = self
+            .staged
+            .keys()
+            .chain(self.output_surfaces.keys())
+            .copied()
+            .min()
+        {
             if let Err(error) = self.abandon(token) {
                 on_error(error);
             }
         }
-    }
-
-    pub(crate) fn retain_local_actions(
-        &mut self,
-        surface: SurfaceId,
-        actions: Vec<PreparedSurfaceAction>,
-    ) -> Result<bool, NativePassActionError> {
-        self.local_actions.retain(surface, actions)?;
-        Ok(self.local_actions.has_pending(surface))
-    }
-
-    pub(crate) fn begin_local_action_submission(
-        &mut self,
-        surface: SurfaceId,
-    ) -> Result<(NativeLocalActionSubmission, NativeLocalActionAttempt<'_>), NativePassActionError>
-    {
-        self.local_actions
-            .begin_attempt(surface, Vec::new())?
-            .ok_or(NativePassActionError::OutputChanged)
     }
 
     fn remember_output_surface(
@@ -486,237 +341,22 @@ impl NativePassActions {
         token: NativeOutputToken,
         surface: SurfaceId,
     ) -> Result<(), NativePassActionError> {
-        match self.output_surfaces.entry(token) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(surface);
-                Ok(())
+        if let Some(expected) = self.output_surfaces.get(&token) {
+            if *expected != surface {
+                return Err(NativePassActionError::OutputChanged);
             }
-            std::collections::btree_map::Entry::Occupied(entry) if *entry.get() == surface => {
-                Ok(())
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {
-                Err(NativePassActionError::OutputChanged)
-            }
+        } else {
+            self.output_surfaces.insert(token, surface);
         }
+        Ok(())
     }
-}
-
-pub(crate) enum NativeFinalPass {
-    RetainPrevious {
-        surface: SurfaceId,
-        local_actions_ready: bool,
-    },
-    RetainedOverlay,
-    Semantic(NativeSemanticFinalPass),
-}
-
-pub(crate) struct NativeSemanticFinalPass {
-    presentation: Vec<PreparedSurfaceAction>,
-    pane_focus_observation: Option<PreparedPaneFocusObservation>,
-    local: Vec<PreparedSurfaceAction>,
-    local_actions_ready: bool,
-    application_action_ready: bool,
-    paint: NativeSurfacePaint,
-    output: Option<PaintedSurfaceOutput>,
-}
-
-impl NativeSemanticFinalPass {
-    pub(crate) fn paint_surface(&self) -> SurfaceId {
-        self.paint.surface()
-    }
-
-    pub(crate) fn has_actions(&self) -> bool {
-        !self.presentation.is_empty()
-            || self.pane_focus_observation.is_some()
-            || self.local_actions_ready
-    }
-
-    pub(crate) const fn application_action_ready(&self) -> bool {
-        self.application_action_ready
-    }
-
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        Vec<PreparedSurfaceAction>,
-        Option<PreparedPaneFocusObservation>,
-        Vec<PreparedSurfaceAction>,
-        bool,
-        NativeSurfacePaint,
-        Option<PaintedSurfaceOutput>,
-    ) {
-        (
-            self.presentation,
-            self.pane_focus_observation,
-            self.local,
-            self.application_action_ready,
-            self.paint,
-            self.output,
-        )
-    }
-}
-
-fn merge_local_actions<T: PartialEq>(
-    retained: &mut Vec<T>,
-    current: Vec<T>,
-) -> Result<(), NativePassActionError> {
-    if current.is_empty() {
-        return Ok(());
-    }
-    if retained.is_empty() {
-        *retained = current;
-        return Ok(());
-    }
-    if *retained == current {
-        return Ok(());
-    }
-    Err(NativePassActionError::LocalActionConflict)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    #[test]
-    fn local_actions_are_retained_deduplicated_and_conflict_closed() {
-        let mut retained = Vec::new();
-        merge_local_actions(&mut retained, vec![1, 2]).expect("first pass is retained");
-        merge_local_actions(&mut retained, Vec::new()).expect("missing final action preserves it");
-        merge_local_actions(&mut retained, vec![1, 2]).expect("same final action deduplicates");
-        assert_eq!(retained, vec![1, 2]);
-        assert_eq!(
-            merge_local_actions(&mut retained, vec![2, 1]),
-            Err(NativePassActionError::LocalActionConflict)
-        );
-    }
-
-    #[test]
-    fn an_empty_current_output_scope_is_not_committed_boundary_work() {
-        assert!(!NativePassActions::default().has_retained_action_work());
-    }
-
-    #[test]
-    fn durable_local_actions_cross_output_origins_and_wait_for_core_terminal() {
-        let surface = SurfaceId::new(1);
-        let mut actions = DurableLocalActions::<u8>::default();
-
-        actions
-            .retain(surface, vec![1, 2])
-            .expect("a discarded pass retains its local actions");
-        assert!(actions.has_work());
-
-        let submission = actions
-            .begin_terminal(surface, Vec::new())
-            .expect("a later output may deliver durable local actions")
-            .expect("the durable action batch is submitted");
-        assert_eq!(submission.surface(), surface);
-        assert_eq!(submission.actions(), &[1, 2]);
-        assert!(actions.has_work(), "submission is not a core terminal");
-
-        actions
-            .settle_core_commit(surface)
-            .expect("the exact core terminal retires the batch");
-        assert!(!actions.has_work());
-    }
-
-    #[test]
-    fn durable_local_actions_are_bounded_and_conflict_closed() {
-        let surface = SurfaceId::new(1);
-        let mut actions = DurableLocalActions::<u8>::default();
-
-        actions
-            .retain(surface, vec![1, 2])
-            .expect("the first batch becomes durable");
-        actions
-            .retain(surface, vec![1, 2])
-            .expect("the same pass may replay the same batch");
-        assert_eq!(
-            actions.retain(surface, vec![2, 1]),
-            Err(NativePassActionError::LocalActionConflict)
-        );
-
-        let _submission = actions
-            .begin_terminal(surface, Vec::new())
-            .expect("an unambiguous later terminal may submit the batch")
-            .expect("the durable batch is present");
-        assert_eq!(
-            actions.retain(surface, vec![3]),
-            Err(NativePassActionError::LocalActionConflict)
-        );
-    }
-
-    #[test]
-    fn only_an_in_flight_core_submission_can_settle_durable_actions() {
-        let surface = SurfaceId::new(1);
-        let mut actions = DurableLocalActions::<u8>::default();
-
-        actions
-            .retain(surface, vec![1])
-            .expect("the local action becomes durable");
-        assert_eq!(
-            actions.settle_core_commit(surface),
-            Err(NativePassActionError::OutputChanged)
-        );
-        assert!(
-            actions.has_work(),
-            "an unrelated terminal cannot clear work"
-        );
-
-        let _submission = actions
-            .begin_terminal(surface, Vec::new())
-            .expect("the pending batch can enter a core frame")
-            .expect("the batch remains available after the rejected terminal");
-        actions
-            .settle_core_commit(surface)
-            .expect("the matching core terminal clears the in-flight marker");
-        assert!(!actions.has_work());
-    }
-
-    #[test]
-    fn submit_or_commit_failure_terminal_does_not_leave_an_in_flight_tombstone() {
-        for error in [
-            "submit_surface_action rejected the capability",
-            "host_frame.commit rejected the frame",
-        ] {
-            let surface = SurfaceId::new(1);
-            let mut actions = DurableLocalActions::<u8>::default();
-
-            actions
-                .retain(surface, vec![1])
-                .expect("the local action becomes durable");
-            let (_submission, attempt) = actions
-                .begin_attempt(surface, Vec::new())
-                .expect("the pending batch enters the core frame")
-                .expect("the durable action is submitted");
-
-            let result = attempt
-                .settle(Err::<(), _>(error))
-                .expect("the failed core attempt has a matching in-flight batch");
-            assert_eq!(result, Err(error));
-            assert!(!actions.has_work());
-        }
-    }
-
-    #[test]
-    fn unwound_core_attempt_does_not_leave_an_in_flight_tombstone() {
-        let surface = SurfaceId::new(1);
-        let mut actions = DurableLocalActions::<u8>::default();
-        actions
-            .retain(surface, vec![1])
-            .expect("the local action becomes durable");
-
-        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (_submission, _attempt) = actions
-                .begin_attempt(surface, Vec::new())
-                .expect("the pending batch can enter a core attempt")
-                .expect("the durable batch is submitted");
-            panic!("the core host frame unwound");
-        }));
-
-        assert!(unwind.is_err());
-        assert!(
-            !actions.has_work(),
-            "unwind is a terminal failure for the consumed affine capability"
-        );
-    }
+pub(crate) enum NativeFinalPass {
+    RetainPrevious,
+    RetainedOverlay,
+    Semantic(NativeSurfacePaint),
 }

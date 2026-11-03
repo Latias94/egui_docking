@@ -88,21 +88,11 @@ fn main() {
 
     // Application commands use stable item identities without pointer registration.
     let select = session.prepare_select_item(SECOND);
-    let mut frame = session.begin_host_frame().unwrap();
-    let submitted = frame.submit_prepared_action(select).unwrap();
-    measure(&mut frame);
-    let selected = frame.commit().unwrap();
-    match selected.submitted_action_outcome(submitted) {
-        Some(HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
-            item: SECOND,
-            changed: true,
-        })) => println!("selected item {SECOND:?}"),
-        other => panic!("unexpected selection result: {other:?}"),
-    }
-    consume_feedback(&mut seen_feedback, selected.manipulation_feedback());
-
     let (recordings, mut painted) = {
         let mut frame = session.begin_host_frame().unwrap();
+        let submitted = frame.submit_prepared_action(select).unwrap();
+        frame.begin_encoding_pass().unwrap();
+        measure(&mut frame);
         let mut recordings = Vec::new();
         for surface in frame.surfaces() {
             let plan = frame.paint_plan(surface).unwrap().unwrap();
@@ -110,7 +100,15 @@ fn main() {
             frame.confirm_surface_painted(receipt).unwrap();
             recordings.push((surface, recording));
         }
-        (recordings, frame.commit().unwrap())
+        let published = frame.commit().unwrap();
+        match published.submitted_action_outcome(submitted) {
+            Some(HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
+                item: SECOND,
+                changed: true,
+            })) => println!("selected item {SECOND:?}"),
+            other => panic!("unexpected selection result: {other:?}"),
+        }
+        (recordings, published)
     };
 
     // The frame borrow is over. An engine can enqueue these owned records unchanged.

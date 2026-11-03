@@ -12,8 +12,7 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceManipulationDelivery as Delivery,
-    DockspaceManipulationPendingReason as PendingReason, DockspaceManipulationStatus as Status,
-    DockspacePaneFocusRequest, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceManipulationStatus as Status, DockspacePaneFocusRequest, DockspaceReceiverDescriptor,
     DockspaceReceiverRole, DockspaceSession, DockspaceTouchEvent, HostFrameReport,
     HostInputOutcome, HostPointerInput, HostPointerRoute, HostWindowToken, NativeCreateStrategy,
     NativeDesktopPointerLocation, NativeDesktopPosition, NativeDragSourceInput,
@@ -30,7 +29,7 @@ use dockspace::runtime::{
     SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
     SurfacePointerButton, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
     SurfacePointerReceiverFacts, SurfacePresentationResult as Disposition,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    SurfaceUnavailableReason, SurfaceWork, SurfaceWorkDeferred, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -179,18 +178,23 @@ impl Scene {
         }
     }
 
-    fn assert_preview(&self) {
-        assert!(self.recording.records.iter().any(|record| matches!(
-            record,
-            OwnedRecord::Preview(DockspacePreviewVisual::Dock {
-                surface: SURFACE,
-                ..
-            })
-        )));
+    fn assert_no_preview(&self) {
+        assert!(
+            self.recording
+                .records
+                .iter()
+                .all(|record| !matches!(record, OwnedRecord::Preview(_)))
+        );
     }
 }
 
-fn render(frame: &mut DockspaceHostFrame<'_>) -> Scene {
+fn render(frame: &mut DockspaceHostFrame<'_>, width: f64) -> Scene {
+    if matches!(
+        frame.surface_work(SURFACE).unwrap(),
+        SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured)
+    ) {
+        measure(frame, width);
+    }
     let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
     let focus = plan.pane_focus_request();
     let mut tabs = Vec::new();
@@ -263,7 +267,7 @@ fn paint(
     let mut frame = session
         .begin_native_host_frame(|_| panic!("painting does not sample native input"))
         .unwrap();
-    let scene = render(&mut frame);
+    let scene = render(&mut frame, 800.0);
     let mut report = finish(frame);
     let output = take_output(&mut report, &scene, binding);
     (scene, output)
@@ -672,7 +676,7 @@ fn a_surface_owned_wake_is_never_projected_as_native_stationary_work() {
     measure(&mut frame, 800.0);
     finish(frame);
     let mut frame = session.begin_host_frame().unwrap();
-    let scene = render(&mut frame);
+    let scene = render(&mut frame, 800.0);
     let mut report = finish(frame);
     let [output] = report.take_painted_outputs().try_into().unwrap();
     assert!(matches!(
@@ -725,7 +729,7 @@ fn a_surface_owned_wake_is_never_projected_as_native_stationary_work() {
 }
 
 #[test]
-fn native_touch_long_press_arms_then_contact_end_waits_for_the_exact_reorder_output() {
+fn native_touch_long_press_arms_then_contact_end_delivers_before_its_reorder_output() {
     for lane in [Lane::Local, Lane::Desktop] {
         let (mut session, binding, scene) = fixture(lane == Lane::Desktop);
         let version = session.version();
@@ -803,28 +807,26 @@ fn native_touch_long_press_arms_then_contact_end_waits_for_the_exact_reorder_out
         let mut frame = session
             .begin_native_host_frame(|query| scene.answer(query))
             .unwrap();
-        let preview = render(&mut frame);
-        preview.assert_preview();
+        let successor = render(&mut frame, 800.0);
+        successor.assert_no_preview();
         let mut report = finish(frame);
-        let [pending] = report.manipulation_feedback() else {
-            panic!("one native touch release must wait for presentation: {report:?}");
+        let [terminal] = report.manipulation_feedback() else {
+            panic!("one native touch release must deliver in its update: {report:?}");
         };
-        let pending_id = pending.manipulation_id();
-        assert_eq!(
-            pending.status(),
-            Status::Pending(PendingReason::AwaitingPresentation)
-        );
-        assert_eq!(session.version(), version);
-        assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+        assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+        assert!(report.workspace_changed());
+        assert_eq!(report.before(), version);
+        assert_eq!(report.after(), session.version());
+        assert_ne!(session.version(), version);
+        assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+        let committed = session.version();
         assert!(!session.has_active_gesture());
         assert!(session.native_pointer_continuation().is_none());
-        let output = take_output(&mut report, &preview, binding);
-        let delivered = present(&mut session, output);
-        let [terminal] = delivered.manipulation_feedback() else {
-            panic!("the exact native touch output must deliver once: {delivered:?}");
-        };
-        assert_eq!(terminal.manipulation_id(), pending_id);
-        assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+        let output = take_output(&mut report, &successor, binding);
+        let settled = present(&mut session, output);
+        assert!(settled.manipulation_feedback().is_empty());
+        assert!(!settled.workspace_changed());
+        assert_eq!(session.version(), committed);
         assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
         assert!(!session.has_pending_native_input());
         assert!(idle(&mut session).inputs().is_empty());
@@ -982,6 +984,7 @@ fn native_dwell_unknown_delivery_preserves_the_held_gesture_for_rearm_and_releas
             assert!(session.native_pointer_continuation().is_none());
             let (current, output) = paint(&mut session, binding);
             present(&mut session, output);
+            let release_version = session.version();
 
             session
                 .record_native_pointer(input(
@@ -999,26 +1002,25 @@ fn native_dwell_unknown_delivery_preserves_the_held_gesture_for_rearm_and_releas
             let mut frame = session
                 .begin_native_host_frame(|query| current.answer(query))
                 .unwrap();
-            let preview = render(&mut frame);
-            preview.assert_preview();
+            let successor = render(&mut frame, 800.0);
+            successor.assert_no_preview();
             let mut report = finish(frame);
-            let [pending] = report.manipulation_feedback() else {
-                panic!("the surviving gesture must release normally: {report:?}");
+            let [terminal] = report.manipulation_feedback() else {
+                panic!("the surviving gesture must deliver in its release update: {report:?}");
             };
-            let pending_id = pending.manipulation_id();
-            assert_eq!(
-                pending.status(),
-                Status::Pending(PendingReason::AwaitingPresentation)
-            );
-            assert!(!session.has_active_gesture());
-            assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-            let output = take_output(&mut report, &preview, binding);
-            let delivered = present(&mut session, output);
-            let [terminal] = delivered.manipulation_feedback() else {
-                panic!("the exact surviving gesture output must deliver once: {delivered:?}");
-            };
-            assert_eq!(terminal.manipulation_id(), pending_id);
             assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+            assert!(report.workspace_changed());
+            assert_eq!(report.before(), release_version);
+            assert_eq!(report.after(), session.version());
+            assert_ne!(session.version(), release_version);
+            let committed = session.version();
+            assert!(!session.has_active_gesture());
+            assert_eq!(order(&session), [SECOND, FIRST, THIRD]);
+            let output = take_output(&mut report, &successor, binding);
+            let settled = present(&mut session, output);
+            assert!(settled.manipulation_feedback().is_empty());
+            assert!(!settled.workspace_changed());
+            assert_eq!(session.version(), committed);
             assert_eq!(order(&session), [SECOND, FIRST, THIRD]);
             assert!(!session.has_pending_native_input());
             assert!(session.native_pointer_continuation().is_none());
@@ -1550,24 +1552,24 @@ fn an_obsolete_local_token_after_handoff_cannot_cancel_the_desktop_drag() {
     let mut frame = session
         .begin_native_host_frame(|query| scene.answer(query))
         .unwrap();
-    let preview = render(&mut frame);
-    preview.assert_preview();
+    let successor = render(&mut frame, 800.0);
+    successor.assert_no_preview();
     let mut report = finish(frame);
-    let [pending] = report.manipulation_feedback() else {
-        panic!("the surviving desktop owner must release normally: {report:?}");
+    let [terminal] = report.manipulation_feedback() else {
+        panic!("the surviving desktop owner must deliver in its release update: {report:?}");
     };
-    let pending_id = pending.manipulation_id();
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    let output = take_output(&mut report, &preview, binding);
-    let delivered = present(&mut session, output);
-    let [terminal] = delivered.manipulation_feedback() else {
-        panic!("the handoff must preserve its terminal identity: {delivered:?}");
-    };
-    assert_eq!(terminal.manipulation_id(), pending_id);
     assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert!(report.workspace_changed());
+    assert_eq!(report.before(), version);
+    assert_eq!(report.after(), session.version());
+    assert_ne!(session.version(), version);
+    assert_eq!(order(&session), [SECOND, FIRST, THIRD]);
+    let committed = session.version();
+    let output = take_output(&mut report, &successor, binding);
+    let settled = present(&mut session, output);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(session.version(), committed);
     assert_eq!(order(&session), [SECOND, FIRST, THIRD]);
     assert!(!session.has_active_gesture());
 }
@@ -2242,7 +2244,7 @@ fn native_capture_acquisition_restarts_edge_scroll_and_waits_for_the_exact_outpu
         maximum > 40.0,
         "expected overflow: viewport={viewport:?}, offset={offset}, maximum={maximum}"
     );
-    let scene = render(&mut frame);
+    let scene = render(&mut frame, 200.0);
     let mut report = finish(frame);
     let output = take_output(&mut report, &scene, binding);
     present(&mut session, output);
@@ -2321,7 +2323,7 @@ fn native_capture_acquisition_restarts_edge_scroll_and_waits_for_the_exact_outpu
         })
         .unwrap();
     assert_eq!(strip(&mut frame), (viewport, 40.0, maximum));
-    let scrolled = render(&mut frame);
+    let scrolled = render(&mut frame, 200.0);
     assert_eq!(scrolled.focus, scene.focus);
     let mut report = finish(frame);
     assert!(!report.workspace_changed());

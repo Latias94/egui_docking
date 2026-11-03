@@ -394,11 +394,21 @@ pub(super) enum PresentationObservationError {
     BackendReportConflict,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct RuntimePresentationState {
     pending: PresentationOutputs,
     streams: Vec<RuntimePresentationStream>,
     slot_limit: Option<usize>,
+}
+
+impl Default for RuntimePresentationState {
+    fn default() -> Self {
+        Self {
+            pending: PresentationOutputs::default(),
+            streams: Vec::new(),
+            slot_limit: Some(64),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -559,6 +569,64 @@ impl SubmittedPresentationObservation {
 }
 
 impl RuntimePresentationState {
+    pub(super) fn configure_output_capacity(
+        &mut self,
+        slots: usize,
+    ) -> Result<(), NativePlatformError> {
+        if self.pending.lock().len() > slots || self.streams.len() > slots {
+            return Err(NativePlatformError::InputCapacity);
+        }
+        self.slot_limit = Some(slots);
+        Ok(())
+    }
+
+    pub(super) fn reserve_output(
+        &mut self,
+        submitted: &SubmittedPresentationObservation,
+        observations: &[HostPresentationObservationOutcome],
+        reserved: usize,
+        stream: Option<HostPresentationStreamId>,
+        reserved_streams: impl Iterator<Item = Option<HostPresentationStreamId>>,
+    ) -> Result<bool, NativePlatformError> {
+        let mut pending = self.pending.lock();
+        let surviving = pending
+            .iter()
+            .filter(|entry| {
+                !observations
+                    .iter()
+                    .filter_map(|outcome| submitted_retirement(outcome, submitted))
+                    .any(|(stream, through)| {
+                        entry.output.stream() == stream && entry.output.key() <= through
+                    })
+            })
+            .count();
+        let Some(total) = surviving
+            .checked_add(reserved)
+            .and_then(|value| value.checked_add(1))
+        else {
+            return Ok(false);
+        };
+        let new_streams = reserved_streams
+            .chain(std::iter::once(stream))
+            .filter(|stream| {
+                stream.is_none_or(|stream| !self.streams.iter().any(|state| state.stream == stream))
+            })
+            .count();
+        if self.slot_limit.is_some_and(|limit| {
+            total > limit || self.streams.len().saturating_add(new_streams) > limit
+        }) {
+            return Ok(false);
+        }
+        let additional = total.saturating_sub(pending.len());
+        pending
+            .try_reserve_exact(additional)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        self.streams
+            .try_reserve_exact(new_streams)
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        Ok(true)
+    }
+
     /// Counts the original pending store and its in-place result slots once.
     pub(super) fn owned_data_capacity_bytes(&self) -> usize {
         size_of::<Self>()
@@ -1182,18 +1250,11 @@ mod tests {
         let version = session.version();
         let capacity = session.presentation.pending.lock().capacity();
         let mut frame = session.begin_host_frame().unwrap();
-        let receipt = frame
-            .paint_plan(SurfaceId::new(1))
-            .unwrap()
-            .unwrap()
-            .execute_surface_program(|_| Ok::<(), ()>(()))
-            .unwrap();
-        frame.confirm_surface_painted(receipt).unwrap();
-        let error = frame.commit().unwrap_err();
-        assert_eq!(
-            error.native_kind(),
-            Some(super::super::NativeHostErrorKind::InputCapacity)
-        );
+        assert!(matches!(
+            frame.surface_work(SurfaceId::new(1)).unwrap(),
+            super::super::SurfaceWork::Deferred(super::super::SurfaceWorkDeferred::OutputCapacity)
+        ));
+        assert!(frame.commit().unwrap().take_painted_outputs().is_empty());
         assert_eq!(session.version(), version);
         assert_eq!(session.engine.presentation_identity_frontier(), frontier);
         assert_eq!(session.presentation.pending.lock().capacity(), capacity);

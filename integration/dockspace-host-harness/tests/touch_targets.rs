@@ -10,8 +10,8 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    ContainedResizeDirection, DockspaceHostFrame, DockspaceManipulationDelivery as Delivery,
-    DockspaceManipulationPendingReason as PendingReason, DockspaceManipulationStatus as Status,
+    ContainedResizeDirection, DockPresentationConfig, DockspaceHostFrame,
+    DockspaceManipulationDelivery as Delivery, DockspaceManipulationStatus as Status,
     DockspaceReceiverDescriptor, DockspaceReceiverRole as Role, DockspaceRuntimeErrorKind,
     DockspaceSession, DockspaceTouchEvent, HostFrameReport, HostInputOutcome, HostPointerInput,
     HostPointerRoute, PaintedSurfaceOutput, PointerDeviceKind as Device, PointerEventMetadata,
@@ -237,7 +237,7 @@ fn present(
     assert_eq!(
         durable(session),
         before,
-        "reporting alone cannot publish a resize"
+        "recording an output disposition cannot change durable state"
     );
     let report = settle(session);
     let matching = report
@@ -431,6 +431,165 @@ fn arm(session: &mut DockspaceSession, press: LogicalPoint) -> PresentedDockspac
 }
 
 #[test]
+fn review_expanded_touch_targets_preserve_each_visible_parallel_splitter_center() {
+    for axis in [DockspaceAxis::Horizontal, DockspaceAxis::Vertical] {
+        for (scale, origin, extent) in [
+            (1.0, point(0.0, 0.0), 256.0),
+            (0.5, point(13.25, -37.5), 256.0),
+            (2.5, point(-20.0, 10.0), f64::MAX),
+        ] {
+            let node = DockspaceNode::equal_split(
+                axis,
+                [
+                    DockspaceNode::tabs([ItemId::new(1)]),
+                    DockspaceNode::tabs([ItemId::new(2)]),
+                    DockspaceNode::tabs([ItemId::new(3)]),
+                ],
+            )
+            .unwrap();
+            let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                SURFACE,
+                DockspaceRootLayout::new(ROOT, node),
+            )])
+            .unwrap();
+            let config = DockPresentationConfig::builder()
+                .touch_resize_hit_extent(extent)
+                .build()
+                .unwrap();
+            let mut session = DockspaceSession::from_layout_with_presentation_config(
+                layout,
+                DockPolicy::default(),
+                config,
+            )
+            .unwrap();
+            let (width, height) = match axis {
+                DockspaceAxis::Horizontal => (362.0 * scale, 600.0 * scale),
+                DockspaceAxis::Vertical => (600.0 * scale, 362.0 * scale),
+            };
+            let mut frame = session.begin_host_frame().unwrap();
+            frame
+                .measure_surface(
+                    SURFACE,
+                    UniformSurfaceMetrics::new(
+                        rect(origin.x(), origin.y(), width, height),
+                        LogicalSize::new(80.0 * scale, 48.0 * scale).unwrap(),
+                        96.0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            commit(frame);
+            let (geometry, _, output) = paint(&mut session);
+            assert_eq!(geometry.splitters.len(), 2);
+            present(&mut session, output, Disposition::Presented);
+            for (receiver, _, draw_bounds) in geometry.splitters {
+                for at in [0.25, 0.5, 0.75] {
+                    let sample = match axis {
+                        DockspaceAxis::Horizontal => point(
+                            draw_bounds.x() + draw_bounds.width() * at,
+                            center(draw_bounds).y(),
+                        ),
+                        DockspaceAxis::Vertical => point(
+                            center(draw_bounds).x(),
+                            draw_bounds.y() + draw_bounds.height() * at,
+                        ),
+                    };
+                    for device in [Device::Mouse, Device::Touch] {
+                        let hit = session
+                            .host_pointer_hit_for_device(SURFACE, sample, device)
+                            .expect("expansion must preserve each visible parallel handle");
+                        assert_eq!(hit.drag_delivery().unwrap().descriptor(), receiver);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn neighboring_junctions_and_visible_arms_remain_reachable_with_large_touch_bands() {
+    let column = |first| {
+        DockspaceNode::equal_split(
+            DockspaceAxis::Vertical,
+            [
+                DockspaceNode::tabs([ItemId::new(first)]),
+                DockspaceNode::tabs([ItemId::new(first + 1)]),
+            ],
+        )
+        .unwrap()
+    };
+    let node = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [column(1), column(3), DockspaceNode::tabs([ItemId::new(5)])],
+    )
+    .unwrap();
+    let config = DockPresentationConfig::builder()
+        .touch_resize_hit_extent(256.0)
+        .build()
+        .unwrap();
+    let mut session = DockspaceSession::from_layout_with_presentation_config(
+        DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(ROOT, node),
+        )])
+        .unwrap(),
+        DockPolicy::default(),
+        config,
+    )
+    .unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .measure_surface(
+            SURFACE,
+            UniformSurfaceMetrics::new(
+                rect(0.0, 0.0, 362.0, 600.0),
+                LogicalSize::new(80.0, 48.0).unwrap(),
+                96.0,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    commit(frame);
+    let (geometry, _, output) = paint(&mut session);
+    assert!(geometry.junctions.len() >= 2);
+    present(&mut session, output, Disposition::Presented);
+    for (expected, sample) in geometry
+        .splitters
+        .iter()
+        .flat_map(|(receiver, axis, draw)| {
+            // The geometric center can belong to a crossing junction. Sample
+            // both exposed arms and keep the separate junction-center checks.
+            [0.25, 0.75].map(|fraction| {
+                let sample = match axis {
+                    DockspaceAxis::Horizontal => {
+                        point(center(*draw).x(), draw.y() + draw.height() * fraction)
+                    }
+                    DockspaceAxis::Vertical => {
+                        point(draw.x() + draw.width() * fraction, center(*draw).y())
+                    }
+                };
+                (*receiver, sample)
+            })
+        })
+        .chain(
+            geometry
+                .junctions
+                .iter()
+                .map(|receiver| (*receiver, receiver.center())),
+        )
+    {
+        for device in [Device::Mouse, Device::Touch] {
+            let actual = session
+                .host_pointer_hit_for_device(SURFACE, sample, device)
+                .expect("neighboring junction halos must retain a unique receiver")
+                .drag_delivery()
+                .unwrap();
+            assert_eq!(actual.descriptor(), expected, "{device:?} at {sample:?}");
+        }
+    }
+}
+
+#[test]
 fn false_touch_drag_absence_rejects_atomically_and_corrected_press_retries_once() {
     let node = DockspaceNode::equal_split(
         DockspaceAxis::Horizontal,
@@ -619,7 +778,7 @@ fn expanded_splitter_and_junction_start_from_touch_only_points_without_a_first_m
 }
 
 #[test]
-fn expanded_contained_edge_and_corner_wait_for_exact_output_and_preserve_the_press_offset() {
+fn expanded_contained_edge_and_corner_deliver_on_release_and_preserve_the_press_offset() {
     for direction in [
         ContainedResizeDirection::East,
         ContainedResizeDirection::SouthEast,
@@ -683,42 +842,42 @@ fn expanded_contained_edge_and_corner_wait_for_exact_output_and_preserve_the_pre
                 370,
                 false,
             );
-            assert!(!released.workspace_changed());
-            assert_eq!(durable(&session), before);
-            let [pending] = released.manipulation_feedback() else {
-                panic!("one exact-output obligation is required: {released:?}")
+            assert!(released.workspace_changed());
+            let after = durable(&session);
+            assert_ne!(after.version, before.version);
+            assert_eq!(after.contained, [(FLOATING, expected)]);
+            let [terminal] = released.manipulation_feedback() else {
+                panic!("one resize terminal is required at release: {released:?}")
             };
             assert_eq!(
-                pending.status(),
-                Status::Pending(PendingReason::AwaitingPresentation)
+                terminal.status(),
+                Status::Delivered(Delivery::ContainedTransform)
             );
+            assert!(!session.has_active_gesture());
+            assert!(!session.has_pending_presentation());
+            assert!(session.pointer_continuation().is_none());
+
+            let mut measured = session.begin_host_frame().unwrap();
+            measure(&mut measured, bounds(), false);
+            let measured = commit(measured);
+            assert!(!measured.workspace_changed());
+            assert!(measured.manipulation_feedback().is_empty());
             let (_, recording, output) = paint(&mut session);
+            assert!(recording.records.iter().any(|record| matches!(record,
+                    OwnedRecord::Geometry { bounds, .. } if *bounds == expected)));
             assert!(
                 recording
                     .records
-                    .contains(&OwnedRecord::TransformPreview(FLOATING, expected))
+                    .iter()
+                    .all(|record| !matches!(record, OwnedRecord::TransformPreview(..)))
             );
-            assert_eq!(durable(&session), before);
+            assert_eq!(durable(&session), after);
             let settled = present(&mut session, output, disposition);
-            let [terminal] = settled.manipulation_feedback() else {
-                panic!("one resize terminal is required: {settled:?}")
-            };
-            assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-            if disposition == Disposition::Presented {
-                assert!(settled.workspace_changed());
-                assert_eq!(
-                    terminal.status(),
-                    Status::Delivered(Delivery::ContainedTransform)
-                );
-                assert_eq!(durable(&session).contained, [(FLOATING, expected)]);
-            } else {
-                assert!(!settled.workspace_changed());
-                assert!(matches!(terminal.status(), Status::Cancelled(_)));
-                assert_eq!(durable(&session), before);
-            }
+            assert!(!settled.workspace_changed());
+            assert!(settled.manipulation_feedback().is_empty());
+            assert_eq!(durable(&session), after);
             assert!(!session.has_active_gesture());
             assert!(session.pointer_continuation().is_none());
-            let after = durable(&session);
             assert!(settle(&mut session).manipulation_feedback().is_empty());
             assert_eq!(durable(&session), after);
         }
@@ -768,35 +927,41 @@ fn fully_clipped_base_west_resize_keeps_its_visible_touch_fragment_and_exact_del
         370,
         false,
     );
-    assert!(!released.workspace_changed());
-    assert_eq!(durable(&session), before);
-    let [pending] = released.manipulation_feedback() else {
-        panic!("the West resize must await its exact output: {released:?}")
+    assert!(released.workspace_changed());
+    let after = durable(&session);
+    assert_ne!(after.version, before.version);
+    assert_eq!(after.contained, [(FLOATING, expected)]);
+    let [terminal] = released.manipulation_feedback() else {
+        panic!("the West resize must deliver at release: {released:?}")
     };
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    let (_, recording, output) = paint(&mut session);
-    assert!(
-        recording
-            .records
-            .contains(&OwnedRecord::TransformPreview(FLOATING, expected))
-    );
-    assert_eq!(durable(&session), before);
-    let settled = present(&mut session, output, Disposition::Presented);
-    let [terminal] = settled.manipulation_feedback() else {
-        panic!("the exact West resize output must deliver once: {settled:?}")
-    };
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
     assert_eq!(
         terminal.status(),
         Status::Delivered(Delivery::ContainedTransform)
     );
-    assert!(settled.workspace_changed());
-    assert_eq!(durable(&session).contained, [(FLOATING, expected)]);
+    assert!(!session.has_pending_presentation());
+    let mut measured = session.begin_host_frame().unwrap();
+    measure(&mut measured, bounds(), false);
+    let measured = commit(measured);
+    assert!(!measured.workspace_changed());
+    assert!(measured.manipulation_feedback().is_empty());
+    let (_, recording, output) = paint(&mut session);
+    assert!(recording.records.iter().any(|record| matches!(record,
+            OwnedRecord::Geometry { bounds, .. } if *bounds == expected)));
+    assert!(
+        recording
+            .records
+            .iter()
+            .all(|record| !matches!(record, OwnedRecord::TransformPreview(..)))
+    );
+    assert_eq!(durable(&session), after);
+    let settled = present(&mut session, output, Disposition::Presented);
+    assert!(!settled.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
+    assert_eq!(durable(&session), after);
     assert!(!session.has_active_gesture());
     assert!(session.pointer_continuation().is_none());
+    assert!(settle(&mut session).manipulation_feedback().is_empty());
+    assert_eq!(durable(&session), after);
 }
 
 #[test]

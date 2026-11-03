@@ -3,9 +3,9 @@ use egui_dockspace::{
     CloseDecision, Dockspace, DockspaceAxis, DockspaceCloseRequestStatus, DockspaceContainedLayout,
     DockspaceLayout, DockspaceManipulationCancelReason as CancelReason,
     DockspaceManipulationDelivery as Delivery, DockspaceManipulationFeedback as Feedback,
-    DockspaceManipulationPendingReason as PendingReason, DockspaceManipulationStatus as Status,
-    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId,
-    LogicalRect, PaneView, RootId, SurfaceId, SurfacePresentationResult, run_ui,
+    DockspaceManipulationStatus as Status, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId,
+    SurfaceId, SurfacePresentationResult,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -49,14 +49,11 @@ fn frame(
         events,
         ..RawInput::default()
     };
-    let mut feedback = Vec::new();
-    let (mut output, receipt) = run_ui(context, input, |ui| {
-        let response = dockspace
-            .show_single_surface(SURFACE, ui, &mut Panes)
-            .unwrap();
-        feedback.extend_from_slice(response.manipulation_feedback());
-    })
-    .into_parts();
+    let (output, response) = dockspace
+        .run_single_surface(context, input, SURFACE, &mut Panes)
+        .unwrap();
+    let feedback = response.manipulation_feedback().to_vec();
+    let (mut output, receipt) = output.into_parts();
     receipt.report(disposition);
     // This recording host inspects semantics without uploading GPU textures.
     output.textures_delta.clear();
@@ -159,7 +156,7 @@ fn escape_and_context_retirement_publish_one_terminal_without_focus_theft() {
             SurfacePresentationResult::Presented,
         );
         let [terminal] = terminal.as_slice() else {
-            panic!("one committed cancellation: {terminal:?}")
+            panic!("one committed cancellation (escape={escape}): {terminal:?}")
         };
         assert_eq!(
             terminal.status(),
@@ -191,7 +188,7 @@ fn escape_and_context_retirement_publish_one_terminal_without_focus_theft() {
 }
 
 #[test]
-fn preceding_presentation_report_preserves_feedback_identity_and_terminal_once() {
+fn ordinary_release_delivers_once_independently_of_its_output_disposition() {
     for disposition in [
         SurfacePresentationResult::Presented,
         SurfacePresentationResult::Dropped,
@@ -215,40 +212,43 @@ fn preceding_presentation_report_preserves_feedback_identity_and_terminal_once()
             assert!(motion.is_empty());
         }
         let target = Pos2::new(400.0, 528.0);
+        let before = dockspace.version();
         let (_, released) = frame(
             &context,
             &mut dockspace,
             vec![Event::PointerMoved(target), button(target, false)],
             disposition,
         );
-        let [pending] = released.as_slice() else {
-            panic!("the release must publish one pending feedback record: {released:?}");
+        let [terminal] = released.as_slice() else {
+            panic!("the release must publish one terminal feedback record: {released:?}");
         };
+        assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+        assert_ne!(dockspace.version(), before);
+        let delivered_version = dockspace.version();
+        let root = dockspace.view().root(RootId::new(1)).unwrap();
+        let split = root.content().unwrap().split().unwrap();
+        assert_eq!(split.axis(), DockspaceAxis::Vertical);
         assert_eq!(
-            pending.status(),
-            Status::Pending(PendingReason::AwaitingPresentation)
+            split
+                .children()
+                .map(|child| child.tabs().unwrap().items().to_vec())
+                .collect::<Vec<_>>(),
+            [vec![ItemId::new(1)], vec![ItemId::new(2)]],
+            "the release position, not the preceding top preview, decides the result",
         );
-        // This invocation consumes the prior output observation before its paint
-        // report. include_preceding_reports must preserve that terminal feedback.
+        // Presentation reports acknowledge output; neither disposition can
+        // undo or repeat a successfully published ordinary input update.
         let (_, settled) = frame(
             &context,
             &mut dockspace,
             Vec::new(),
             SurfacePresentationResult::Presented,
         );
-        let [terminal] = settled.as_slice() else {
-            panic!("the preceding report must forward exactly one terminal record: {settled:?}");
-        };
-        assert_eq!(pending.manipulation_id(), terminal.manipulation_id());
-        assert_ne!(pending.id(), terminal.id());
-        assert_eq!(
-            terminal.status(),
-            if disposition == SurfacePresentationResult::Presented {
-                Status::Delivered(Delivery::Dock)
-            } else {
-                Status::Cancelled(CancelReason::SceneUnavailable)
-            }
+        assert!(
+            settled.is_empty(),
+            "terminal feedback is returned by the release update"
         );
+        assert_eq!(dockspace.version(), delivered_version);
         for _ in 0..2 {
             let (_, repeated) = frame(
                 &context,
@@ -257,12 +257,13 @@ fn preceding_presentation_report_preserves_feedback_identity_and_terminal_once()
                 SurfacePresentationResult::Presented,
             );
             assert!(repeated.is_empty());
+            assert_eq!(dockspace.version(), delivered_version);
         }
     }
 }
 
 #[test]
-fn programmatic_dock_back_and_close_return_pending_cancellation_in_their_mutation() {
+fn programmatic_dock_back_and_close_cancel_an_active_transform_in_their_mutation() {
     for close in [false, true] {
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             SURFACE,
@@ -293,33 +294,21 @@ fn programmatic_dock_back_and_close_return_pending_cancellation_in_their_mutatio
             ((bounds.x0 + bounds.x1) * 0.5) as f32,
             ((bounds.y0 + bounds.y1) * 0.5) as f32,
         );
-        frame(
+        let (_, press) = frame(
             &context,
             &mut dockspace,
             vec![Event::PointerMoved(source), button(source, true)],
             SurfacePresentationResult::Presented,
         );
         let moved = source + vec2(24.0, 0.0);
-        frame(
+        assert!(press.is_empty());
+        let (_, motion) = frame(
             &context,
             &mut dockspace,
             vec![Event::PointerMoved(moved)],
             SurfacePresentationResult::Presented,
         );
-        let released = source + vec2(48.0, 0.0);
-        let (_, feedback) = frame(
-            &context,
-            &mut dockspace,
-            vec![Event::PointerMoved(released), button(released, false)],
-            SurfacePresentationResult::Presented,
-        );
-        let [pending] = feedback.as_slice() else {
-            panic!("release must wait: {feedback:?}")
-        };
-        assert_eq!(
-            pending.status(),
-            Status::Pending(PendingReason::AwaitingPresentation)
-        );
+        assert!(motion.is_empty(), "a held transform has no terminal result");
         let cancelled = if close {
             let request = dockspace
                 .request_close_root_current(RootId::new(2))
@@ -349,13 +338,21 @@ fn programmatic_dock_back_and_close_return_pending_cancellation_in_their_mutatio
         let [terminal] = cancelled.as_slice() else {
             panic!("command must return one terminal: {cancelled:?}")
         };
-        assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-        assert_ne!(terminal.id(), pending.id());
         assert_eq!(
             terminal.status(),
             Status::Cancelled(CancelReason::WorkspaceChanged)
         );
         assert_eq!(dockspace.view().item(ItemId::new(2)).is_none(), close);
+        let (_, released) = frame(
+            &context,
+            &mut dockspace,
+            vec![Event::PointerMoved(moved), button(moved, false)],
+            SurfacePresentationResult::Presented,
+        );
+        assert!(
+            released.is_empty(),
+            "the stale physical release cannot finish a cancelled transform"
+        );
         for _ in 0..3 {
             let (_, repeated) = frame(
                 &context,

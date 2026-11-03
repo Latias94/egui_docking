@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// Derived encoding state retained while one host run tries its actual passes.
+/// The semantic workspace and input journals stay in their single candidate.
+#[derive(Debug)]
+pub(crate) struct CoreEncodingCheckpoint {
+    presentation: PresentationAuthorityState,
+    interaction: InteractionState,
+    roster: HostPresentationRoster,
+    snapshot_changed: bool,
+    projection_changed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PointerJournalSubmissionAuthority {
     RawLease,
@@ -68,7 +79,6 @@ const fn pointer_move_outcome_allows_local_presentation_refresh(
         | InteractionOutcome::ResizeDelivered { .. }
         | InteractionOutcome::ContainedPlacementApplied { .. }
         | InteractionOutcome::ContainedTransformBegan { .. }
-        | InteractionOutcome::ContainedTransformReleasePending { .. }
         | InteractionOutcome::ContainedTransformDelivered { .. } => false,
     }
 }
@@ -1023,6 +1033,71 @@ impl<'frame> HostFrameView<'frame> {
 }
 
 impl CoreHostFrame {
+    pub(crate) fn candidate_engine(&self) -> &DockEngine {
+        &self.candidate
+    }
+
+    pub(crate) fn capture_encoding_checkpoint(
+        &mut self,
+    ) -> Result<CoreEncodingCheckpoint, CoreHostFrameError> {
+        self.begin_presentation_phase()?;
+        Ok(CoreEncodingCheckpoint {
+            presentation: self.candidate.presentation_authority.clone(),
+            interaction: self.candidate.interaction.clone(),
+            roster: self.frozen_presentation_roster.clone(),
+            snapshot_changed: self.presentation_snapshot_changed,
+            projection_changed: self.presentation_projection_changed,
+        })
+    }
+
+    pub(crate) fn restart_encoding_from(
+        &mut self,
+        checkpoint: &CoreEncodingCheckpoint,
+    ) -> Result<(), CoreHostFrameError> {
+        if let Some(error) = self.poison {
+            return Err(error);
+        }
+        let mut presentation = checkpoint.presentation.clone();
+        presentation
+            .scene
+            .preserve_revision_frontier(&self.candidate.presentation_authority.scene);
+        presentation.last_presentation_output_serial =
+            presentation.last_presentation_output_serial.max(
+                self.candidate
+                    .presentation_authority
+                    .last_presentation_output_serial,
+            );
+        self.candidate.presentation_authority = presentation;
+        self.candidate.interaction = checkpoint.interaction.clone();
+        self.frozen_presentation_roster = checkpoint.roster.clone();
+        self.presentation_snapshot_changed = checkpoint.snapshot_changed;
+        self.presentation_projection_changed = checkpoint.projection_changed;
+        self.surface_contributions.clear();
+        self.compiled_surface_outcomes.clear();
+        self.staged_presentation_outputs.clear();
+        self.staged_presentation_output_surfaces.clear();
+        Ok(())
+    }
+
+    pub(crate) fn capture_host_focus_observation(
+        &self,
+        surface: SurfaceId,
+        generation: crate::viewport_focus::PaneFocusObservationGeneration,
+        state: crate::viewport_focus::HostFocusState,
+    ) -> Option<crate::viewport_focus::HostFocusObservation> {
+        let (stream, host, _) = self
+            .candidate
+            .presentation_authority
+            .presentation
+            .active_surface_scope(surface)?;
+        (host == self.presentation_host && self.candidate.workspace.surface(surface).is_some())
+            .then(|| {
+                crate::viewport_focus::HostFocusObservation::new(
+                    generation, host, stream, surface, state,
+                )
+            })
+    }
+
     pub(crate) const fn presentation_attempt(&self) -> HostPresentationAttemptId {
         self.presentation_obligations.attempt()
     }
@@ -1144,6 +1219,7 @@ impl CoreHostFrame {
             staged_presentation_outputs: Vec::new(),
             staged_presentation_output_surfaces: BTreeSet::new(),
             surface_contributions: BTreeMap::new(),
+            compiled_surface_outcomes: BTreeMap::new(),
             presentation_phase_started: false,
             configuration_phase_started: false,
             input_terminated_for_overload: false,
@@ -2305,6 +2381,14 @@ impl CoreHostFrame {
         if let Some(error) = self.poison {
             return Err(error);
         }
+        if let EngineInput::PublishHostFocusObservation { observation, .. } = &input
+            && observation.host() != self.presentation_host
+        {
+            return self.reject(CoreHostFrameError::HostFocusOwnerMismatch {
+                expected: self.presentation_host,
+                submitted: observation.host(),
+            });
+        }
         if self.input_terminated_for_overload {
             return self.reject(CoreHostFrameError::InputAfterOverloadCancellation);
         }
@@ -2600,12 +2684,22 @@ impl CoreHostFrame {
             attempt,
             ordinal,
         );
+        let scene = if let HostPresentationOutputPayload::Paint { scene: ticket, .. } = payload {
+            let Some(scene) = self.candidate.scene().emitted_scene(ticket) else {
+                return self
+                    .reject_value(CoreHostFrameError::PresentationOutputUnavailable { surface });
+            };
+            Some(Arc::new(scene.clone()))
+        } else {
+            None
+        };
         self.staged_presentation_outputs
             .push(StagedPresentationOutput {
                 request,
                 surface,
                 endpoint,
                 payload,
+                scene,
             });
         Ok(request)
     }
@@ -2711,6 +2805,12 @@ impl CoreHostFrame {
         }
         self.ensure_backend_ingress_complete()?;
         let surface = contribution.surface();
+        if self.compiled_surface_outcomes.contains_key(&surface)
+            && !matches!(&contribution.state, PreparedSurfaceContributionState::Retained { ticket }
+                if self.candidate.scene().ready_candidate(surface).is_some_and(|candidate| candidate.output_ticket() == *ticket))
+        {
+            return self.reject(CoreHostFrameError::DuplicateSurfaceContribution { surface });
+        }
         if !self.frozen_presentation_roster.contains_surface(surface) {
             return self.reject(CoreHostFrameError::SurfaceOutsideRoster { surface });
         }
@@ -2724,6 +2824,60 @@ impl CoreHostFrame {
         };
         slot.insert(contribution);
         Ok(())
+    }
+
+    /// Compiles and installs measured geometry in the private update, before encoding.
+    /// Publication still happens only when the complete host frame commits.
+    pub(crate) fn compile_surface_contribution(
+        &mut self,
+        contribution: PreparedSurfaceContribution,
+    ) -> Result<(), CoreHostFrameError> {
+        self.ensure_input_prefix_complete()?;
+        self.presentation_phase_started = true;
+        let surface = contribution.surface();
+        if self.compiled_surface_outcomes.contains_key(&surface)
+            || self.surface_contributions.contains_key(&surface)
+        {
+            return self.reject(CoreHostFrameError::DuplicateSurfaceContribution { surface });
+        }
+        let outcome = match self.candidate.reduce_surface_contribution(
+            self.tick,
+            contribution,
+            &self.tick_policy,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.input_prefix_error = Some(error);
+                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            }
+        };
+        self.compiled_surface_outcomes.insert(surface, outcome);
+        if let Err(error) = self.refresh_presentation_snapshot() {
+            self.input_prefix_error = Some(error);
+            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn surface_is_measured(&self, surface: SurfaceId) -> bool {
+        self.compiled_surface_outcomes.contains_key(&surface)
+    }
+
+    pub(crate) fn output_admission_facts(
+        &self,
+        surface: SurfaceId,
+    ) -> (
+        &[HostPresentationObservationOutcome],
+        Option<HostPresentationStreamId>,
+    ) {
+        (
+            &self.presentation_observation_outcomes,
+            self.candidate
+                .presentation_authority
+                .presentation
+                .active_surface_scope(surface)
+                .map(|(stream, _, _)| stream),
+        )
     }
 
     fn ensure_backend_ingress_complete(&mut self) -> Result<(), CoreHostFrameError> {
@@ -2763,7 +2917,7 @@ impl CoreHostFrame {
     }
 
     /// Closes this capability's semantic input prefix in place.
-    fn begin_presentation_phase(&mut self) -> Result<(), CoreHostFrameError> {
+    pub(crate) fn begin_presentation_phase(&mut self) -> Result<(), CoreHostFrameError> {
         self.ensure_input_prefix_complete()?;
         self.refresh_contained_layout()?;
         // Semantic input in this same frame may have retired the frozen

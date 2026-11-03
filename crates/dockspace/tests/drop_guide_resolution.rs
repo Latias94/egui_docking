@@ -883,6 +883,80 @@ fn suppressing_source_occlusion_keeps_the_frontmost_sibling_floating_authoritati
 }
 
 #[test]
+fn full_surface_source_reveals_latent_guides_without_suppressing_a_sibling() {
+    for sibling in [rect(500.0, 340.0, 120.0, 120.0), surface_bounds()] {
+        let fixture = build_fixture(
+            vec![ItemId::new(20)],
+            false,
+            false,
+            surface_bounds(),
+            sibling,
+        );
+        let scene = painted_scene_set(&fixture);
+        let latent = guide_point(
+            target_plan(&scene),
+            TARGET_ROOT,
+            DropGuideScope::Inner(fixture.target_tabs),
+            DropGuideSlot::Center,
+        );
+        let at = if sibling == surface_bounds() {
+            guide_point(
+                target_plan(&scene),
+                OTHER_FLOATING_ROOT,
+                DropGuideScope::Inner(fixture.workspace.root(OTHER_FLOATING_ROOT).unwrap().node),
+                DropGuideSlot::Center,
+            )
+        } else {
+            latent
+        };
+        let result = query(
+            &fixture,
+            &scene,
+            &DockPolicy::default(),
+            floating_item_payload(&fixture),
+            at,
+        );
+        let expected = if sibling == surface_bounds() {
+            OTHER_FLOATING_ROOT
+        } else {
+            TARGET_ROOT
+        };
+        let affordance = result
+            .affordance()
+            .expect("one non-source root owns the guides");
+        assert!(
+            affordance
+                .clusters()
+                .iter()
+                .all(|cluster| cluster.id().root == expected)
+        );
+        let DropResolution::Resolved(resolved) = result.resolution() else {
+            panic!("the visible non-source guide must resolve: {result:?}");
+        };
+        assert!(
+            matches!(resolved.target_id(), DropTargetId::Center { root, .. } if root == expected)
+        );
+
+        let unrelated = query(
+            &fixture,
+            &scene,
+            &DockPolicy::default(),
+            item_payload(&fixture),
+            at,
+        );
+        assert!(
+            unrelated.affordance().is_some_and(|affordance| {
+                affordance
+                    .clusters()
+                    .iter()
+                    .all(|cluster| cluster.id().root != TARGET_ROOT)
+            }),
+            "an unrelated drag must not expose covered main-root guides"
+        );
+    }
+}
+
+#[test]
 fn rejected_core_guide_does_not_fall_through_after_policy_rejection() {
     let fixture = fixture();
     let scene = painted_scene_set(&fixture);

@@ -179,8 +179,18 @@ fn ordinary_terminal_restore_retries_atomically_and_recognizes_unloaded_content(
             0 => drop(frame),
             1 => {
                 frame
+                    .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
+                    .unwrap();
+                assert_eq!(
+                    frame
+                        .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
+                        .unwrap_err()
+                        .kind(),
+                    DockspaceRuntimeErrorKind::HostProtocol
+                );
+                frame
                     .commit()
-                    .expect_err("missing surface contributions must reject the whole publication");
+                    .expect_err("a duplicate contribution must reject the whole publication");
             }
             _ => {
                 // Identity recognition needs no application content object or pane UI.
@@ -352,6 +362,16 @@ fn bounded_native_prefix_and_terminal_restore_share_retry_watermarks_and_root_su
         match attempt {
             0 => drop(frame),
             1 => {
+                frame
+                    .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
+                    .unwrap();
+                assert_eq!(
+                    frame
+                        .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
+                        .unwrap_err()
+                        .kind(),
+                    DockspaceRuntimeErrorKind::HostProtocol
+                );
                 frame
                     .commit()
                     .expect_err("a failed restore commit must retain the native input suffix");

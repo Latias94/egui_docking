@@ -2,8 +2,7 @@
 
 use dockspace::model::{DockspaceView, SurfaceId};
 use dockspace::runtime::{
-    HostFrameReport, HostInputOutcome, HostWindowToken, NativeInputBudget,
-    PreparedPaneFocusObservation, PreparedSurfaceAction, SurfaceUnavailableReason,
+    HostFrameReport, HostInputOutcome, HostWindowToken, NativeInputBudget, SurfaceUnavailableReason,
 };
 use eframe::egui::emath::GuiRounding;
 use eframe::egui::{self, Id, ViewportId};
@@ -26,25 +25,17 @@ use crate::mailbox::NativeDispatch;
 use crate::pass_actions::{NativeFinalPass, NativePassActionError, NativePassActions};
 
 mod application;
+#[path = "native_owned_update.rs"]
+mod native_owned_update;
+
+use native_owned_update::{NativeOwnedUpdate, NativeUpdatePublication, NativeUpdateRun};
 
 const ROOT_WINDOW_TOKEN: HostWindowToken = HostWindowToken::new(1);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SurfaceFrameDisposition {
-    ConfirmPainted,
-    Defer,
-    RejectIncompletePaint,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeSurfaceUpdate {
     Semantic,
     RetainPrevious,
-}
-
-enum NativeSurfaceProgress {
-    Updated(NativeSurfaceUpdate),
-    MeasurementCommitted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,19 +48,40 @@ pub(crate) enum NativeErrorPresentation {
 enum RetainedOutputKind {
     Skip,
     Overlay,
+    Rejected,
 }
 
 impl RetainedOutputKind {
     const fn omits_accessibility_when_retained(self) -> bool {
-        matches!(self, Self::Skip)
+        matches!(self, Self::Skip | Self::Rejected)
     }
 
     fn request(self) -> bool {
         match self {
             Self::Skip => eframe::retain_current_native_output(),
             Self::Overlay => eframe::retain_current_native_output_with_overlay(),
+            Self::Rejected => {
+                if eframe::retain_current_native_output() {
+                    true
+                } else {
+                    // The checked active token has no exact framebuffer. The
+                    // fork selects NoFrame on a failed overlay request; the
+                    // rejected shapes have already been removed.
+                    eframe::retain_current_native_output_with_overlay()
+                }
+            }
         }
     }
+}
+
+fn discard_unproven_output(output: &mut egui::FullOutput) {
+    output.shapes.clear();
+    output.platform_output.accesskit_update = None;
+    output.platform_output.events.clear();
+    output.platform_output.ime = None;
+    output.platform_output.mutable_text_under_cursor = false;
+    // Textures and explicit clipboard/URL/viewport commands still belong to
+    // this actual pass and must reach the integration once.
 }
 
 fn finalize_retained_accessibility(
@@ -146,21 +158,6 @@ fn paint_native_error_status(
     );
 }
 
-const fn surface_frame_disposition(
-    transient_visuals_complete: bool,
-    has_actions: bool,
-) -> SurfaceFrameDisposition {
-    if !transient_visuals_complete {
-        SurfaceFrameDisposition::RejectIncompletePaint
-    } else if !has_actions {
-        // A preview defers feeding geometry back into measurement, not the
-        // completed renderer receipt required to settle its pending release.
-        SurfaceFrameDisposition::ConfirmPainted
-    } else {
-        SurfaceFrameDisposition::Defer
-    }
-}
-
 const fn should_retain_previous_output(
     output_prefix_pending: bool,
     callback_reduced: bool,
@@ -221,6 +218,8 @@ pub(crate) struct NativeRuntimeState<P> {
     panes: P,
     application_actions: NativeApplicationActions,
     pass_actions: NativePassActions,
+    owned_update: Option<NativeOwnedUpdate>,
+    pending_service: bool,
     close_policy: NativeWindowClosePolicy,
     root_context: Option<egui::Context>,
     shutdown: Option<NativeShutdownState>,
@@ -248,6 +247,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
         context: &egui::Context,
         token: NativeOutputToken,
     ) -> Result<eframe::NativeOutputInputAdmission, NativeRuntimeError> {
+        self.abandon_unfinalized_output_passes(context)?;
+        if let Some(update) = &self.owned_update {
+            self.pending_service = true;
+            if update.run.token == token {
+                return Ok(eframe::NativeOutputInputAdmission::Proceed);
+            }
+            return self.defer_output_input(token);
+        }
         let bridge = self.coordinator.dispatch_bridge();
         if self.shutdown.is_some()
             || bridge.is_control_output(token)
@@ -287,6 +294,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
         &mut self,
         context: &egui::Context,
     ) -> Result<NativeHostWake, NativeRuntimeError> {
+        self.abandon_unfinalized_output_passes(context)?;
+        if self.owned_update.is_some() {
+            self.pending_service = true;
+            return Ok(NativeHostWake::ServiceAfterCurrent);
+        }
         if self.shutdown.is_some() {
             return Ok(NativeHostWake::RepaintRootAfterCurrent);
         }
@@ -307,10 +319,25 @@ impl<P: PaneView> NativeRuntimeState<P> {
         surface: SurfaceId,
         budget: &mut NativeInputBudget,
     ) -> Result<bool, NativeRuntimeError> {
+        if self.owned_update.is_some() {
+            self.pending_service = true;
+            return Ok(false);
+        }
+        self.pending_service = false;
         let bridge = self.coordinator.dispatch_bridge();
         self.abandon_unfinalized_output_passes(context)?;
         self.coordinator
             .drive_pointer_capture(context, budget, self.shutdown.is_none())?;
+        if self.coordinator.drive_close_policy(
+            context,
+            self.close_policy,
+            self.root_surface,
+            budget,
+        )? {
+            self.pass_actions
+                .retire_unavailable(self.coordinator.session());
+            self.settle_internal_application_transitions()?;
+        }
         loop {
             let before = budget.remaining_records();
             let pending_output = self.coordinator.has_pending_output_prefix();
@@ -365,9 +392,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             }
             frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
             let report = frame.commit()?;
-            self.settle_terminal_action_report(
-                context, token, surface, None, report, budget, false,
-            )?;
+            self.settle_published_report(context, token, surface, None, report, budget, false)?;
             self.settle_internal_application_transitions()?;
             let pending_create = self.shutdown.is_none()
                 && bridge.accepts_new_work()
@@ -474,6 +499,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
             panes,
             application_actions: NativeApplicationActions::default(),
             pass_actions: NativePassActions::default(),
+            owned_update: None,
+            pending_service: false,
             close_policy,
             root_context: None,
             shutdown: None,
@@ -546,16 +573,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     pub(crate) fn is_quiescent(&self) -> bool {
-        committed_boundary_is_quiescent(
-            self.shutdown.is_some(),
-            self.coordinator
-                .session()
-                .presented_surface(self.root_surface)
-                .is_some(),
-            self.application_actions.is_occupied(),
-            self.pass_actions.has_retained_action_work(),
-            self.coordinator.is_quiescent(),
-        )
+        // Queries made while painting observe the committed boundary. An
+        // ordinary private encoding pass is not pending semantic or OS work.
+        !self.pending_service
+            && committed_boundary_is_quiescent(
+                self.shutdown.is_some(),
+                self.coordinator
+                    .session()
+                    .presented_surface(self.root_surface)
+                    .is_some(),
+                self.application_actions.is_occupied(),
+                self.pass_actions.has_retained_action_work(),
+                self.coordinator.is_quiescent(),
+            )
     }
 
     pub(crate) fn is_shutdown_drained(&self) -> bool {
@@ -620,409 +650,283 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let mut budget = bridge
             .dispatch_budget(token)
             .ok_or(NativeHostProtocolError::OutputBudgetUnavailable)?;
-        let mut measured = false;
-        loop {
-            let before = budget.remaining_records();
-            let progress = self.update_surface_budgeted(ui, surface, &mut budget, measured)?;
-            let update = match progress {
-                NativeSurfaceProgress::Updated(update) => update,
-                NativeSurfaceProgress::MeasurementCommitted => {
-                    // Measurement does not invoke application UI or consume its layout.
-                    // Paint the committed scene in this same egui pass, including hosts
-                    // configured for a single pass or unable to retain after a resize.
-                    debug_assert!(!measured);
-                    measured = true;
-                    self.pass_actions
-                        .discard_pass(token)
-                        .map_err(map_pass_action_error)?;
-                    continue;
-                }
-            };
-            if update != NativeSurfaceUpdate::RetainPrevious
-                || budget.is_exhausted()
-                || budget.remaining_records() == before
-                || !(self.coordinator.has_pending_callback_records()
-                    || self.coordinator.session().has_pending_native_input())
-            {
-                return Ok(update);
-            }
-            // Output/lifecycle barriers can split active motion into short prefixes.
-            // Commit each through the existing path without paying for another OS
-            // paint cycle. The token keeps its original shared dispatch budget.
-            // Only an inert retained pass can be replaced before the finalizer;
-            // an empty queue must not create a Presented -> paint feedback loop.
-            if !self.pass_actions.is_retained(token) {
-                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-            }
-            self.pass_actions
-                .discard_pass(token)
-                .map_err(map_pass_action_error)?;
-        }
+        self.update_surface_budgeted(ui, surface, token, &mut budget)
     }
 
     fn update_surface_budgeted(
         &mut self,
         ui: &mut egui::Ui,
         surface: SurfaceId,
+        token: NativeOutputToken,
         budget: &mut NativeInputBudget,
-        measured: bool,
-    ) -> Result<NativeSurfaceProgress, NativeRuntimeError> {
+    ) -> Result<NativeSurfaceUpdate, NativeRuntimeError> {
         let context = ui.ctx().clone();
         if surface == self.root_surface {
             self.root_context = Some(context.clone());
         }
-        let token = eframe::current_native_output_token()
-            .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
-        self.abandon_unfinalized_output_passes(&context)?;
-        self.coordinator
-            .stage_stationary_observation(&context, token, budget);
-        let prelude = {
-            let coordinator = &mut self.coordinator;
-            (|| {
-                let output_prefix_pending = coordinator.has_pending_output_prefix();
-                let pending_effect_reported = coordinator.try_report_pending_effect_results()?;
-                let quiescence_recorded = surface == self.root_surface
-                    && coordinator.try_report_retirement_quiescence()?;
-                let reduced_callback = coordinator
-                    .reduce_callback_prefix(&context, budget)?
-                    .is_some();
-                let callback_error = coordinator.take_callback_error();
-                Ok::<_, NativeRuntimeError>((
-                    output_prefix_pending,
-                    pending_effect_reported,
-                    quiescence_recorded,
-                    reduced_callback,
-                    callback_error,
-                ))
-            })()
-        };
-        let internal_action_settled = self.settle_internal_application_transitions()?;
-        let (
-            output_prefix_pending,
-            pending_effect_reported,
-            quiescence_recorded,
-            reduced_callback,
-            callback_error,
-        ) = prelude?;
-        if let Some(error) = callback_error {
-            return Err(error);
-        }
-        let coordinator = &mut self.coordinator;
-        let prepared_retirements = if surface == self.root_surface {
-            coordinator.prepare_committed_retirements()?
-        } else {
-            None
-        };
-        let mut no_frame_invalidations = coordinator.prepare_no_frame_invalidations()?;
-        let no_frame_invalidation_pending = coordinator.has_pending_no_frame_invalidation(surface);
-
-        let instance_id = self.instance_id.with(surface.get());
-        let style = &self.style;
-        let panes = &mut self.panes;
-        let pass_actions = &mut self.pass_actions;
-        let root_surface = self.root_surface;
-        let bridge = coordinator.dispatch_bridge();
-        let control_output = bridge.is_control_output(token);
-        let surface_is_presented = coordinator.session().presented_surface(surface).is_some();
-        let active_gesture = coordinator.session().has_active_gesture();
-        let Some(mut host_frame) = coordinator.poll_resolved_host_frame(&context, budget)? else {
-            if surface != root_surface {
-                bridge.block_semantic_viewport(token.viewport_id());
-            }
-            pass_actions
+        let bridge = self.coordinator.dispatch_bridge();
+        if self
+            .owned_update
+            .as_ref()
+            .is_some_and(|update| update.run.token != token)
+        {
+            self.pending_service = true;
+            self.pass_actions
                 .stage_retain_previous(token, surface)
                 .map_err(map_pass_action_error)?;
-            require_durable_root_cycle(coordinator, token, true)?;
-            context.request_repaint_once_of(ViewportId::ROOT);
-            context.request_repaint_once_of(token.viewport_id());
-            return Ok(NativeSurfaceProgress::Updated(
-                NativeSurfaceUpdate::RetainPrevious,
-            ));
-        };
-        let native_input_pending = host_frame.native_input_pending();
-        let prepared_retirements = if native_input_pending {
-            None
-        } else {
-            prepared_retirements
-        };
-        let frame_surfaces = host_frame.frame.surfaces();
-        // A queued native callback can outlive this surface's presentation
-        // eligibility. Only the current frame roster permits paint or measure.
-        let surface_outside_frame = !frame_surfaces.contains(&surface);
-        no_frame_invalidations.select_for_surfaces(&frame_surfaces, true);
-        for viewport in &no_frame_invalidations.repaint_viewports {
-            context.request_repaint_once_of(*viewport);
+            require_durable_root_cycle(&self.coordinator, token, true)?;
+            return Ok(NativeSurfaceUpdate::RetainPrevious);
         }
-        let no_frame_invalidations = no_frame_invalidations.ready;
-        // A renderer terminal callback must commit before any later callback,
-        // but confirming another painted output in that settlement frame
-        // creates an unbounded Presented -> repaint -> Presented loop. Retain
-        // the existing framebuffer for this exact pass. If the settlement
-        // changes product authority, the committed report requests the next
-        // semantic frame explicitly.
-        // A root close pass has no future native boundary after event-loop exit.
-        // Settle its accepted work without issuing another affine semantic paint.
-        // Held OS closes have already been removed from raw input by the fork.
-        let root_is_closing =
-            surface == root_surface && context.input(|input| input.viewport().close_requested());
-        let mut retain_previous_output = control_output
-            || root_is_closing
-            || bridge
-                .output_reservation(token)
-                .is_some_and(|reservation| reservation.is_abandoned())
-            || surface_outside_frame
-            || native_input_pending
-            || should_retain_previous_output(output_prefix_pending, reduced_callback)
-            || no_frame_invalidation_pending
-            || !no_frame_invalidations.is_empty();
-        if surface != root_surface
-            && (surface_outside_frame
-                || native_input_pending
-                || retained_pass_requires_semantic_retry(
-                    retain_previous_output,
-                    surface_is_presented,
-                    false,
-                ))
+
+        let (mut host_frame, run, mut publication) = if let Some(update) = self.owned_update.take()
         {
-            // Claiming a semantic child pass consumes its wake. A retained
-            // prefix must carry that paint obligation through the final commit.
-            bridge.block_semantic_viewport(token.viewport_id());
-        }
-        let mut pass_draft = None;
-        let mut painted_output_expected = false;
-        let mut measurement_committed = false;
-        let (has_ready_plan, should_measure) = if retain_previous_output {
-            (false, false)
+            let NativeOwnedUpdate {
+                host,
+                mut run,
+                publication,
+            } = update;
+            if publication.surface != surface {
+                return Err(NativeHostProtocolError::MultipassOutputChanged.into());
+            }
+            run.begin_repeated_pass(&context, token)?;
+            (self.coordinator.resume_host_update(host)?, run, publication)
         } else {
-            let plan = host_frame.frame.paint_plan(surface)?;
+            self.abandon_unfinalized_output_passes(&context)?;
+            self.coordinator
+                .stage_stationary_observation(&context, token, budget);
+            let output_prefix_pending = self.coordinator.has_pending_output_prefix();
+            let pending_effect_reported = self.coordinator.try_report_pending_effect_results()?;
+            let quiescence_recorded = surface == self.root_surface
+                && self.coordinator.try_report_retirement_quiescence()?;
+            let reduced_callback = self
+                .coordinator
+                .reduce_callback_prefix(&context, budget)?
+                .is_some();
+            let internal_action_settled = self.settle_internal_application_transitions()?;
+            if let Some(error) = self.coordinator.take_callback_error() {
+                return Err(error);
+            }
+            let retirements = if surface == self.root_surface {
+                self.coordinator.prepare_committed_retirements()?
+            } else {
+                None
+            };
+            let mut invalidations = self.coordinator.prepare_no_frame_invalidations()?;
+            let no_frame_invalidation_pending =
+                self.coordinator.has_pending_no_frame_invalidation(surface);
+            let published = self.coordinator.session().version();
+            let Some(mut host_frame) = self
+                .coordinator
+                .poll_resolved_host_frame(&context, budget)?
+            else {
+                if surface != self.root_surface {
+                    bridge.block_semantic_viewport(token.viewport_id());
+                }
+                self.pass_actions
+                    .stage_retain_previous(token, surface)
+                    .map_err(map_pass_action_error)?;
+                require_durable_root_cycle(&self.coordinator, token, true)?;
+                context.request_repaint_once_of(ViewportId::ROOT);
+                context.request_repaint_once_of(token.viewport_id());
+                return Ok(NativeSurfaceUpdate::RetainPrevious);
+            };
+            let native_input_pending = host_frame.native_input_pending();
+            let control_output = bridge.is_control_output(token);
+            let mut ui_actions = None;
+            if !native_input_pending && !control_output {
+                let dock_rect = ui.available_rect_before_wrap();
+                let focus_route_matches = token.viewport_id() == context.viewport_id()
+                    && context.input(|input| input.focused)
+                    && bridge
+                        .output_reservation(token)
+                        .and_then(|reservation| reservation.binding())
+                        .is_some_and(|binding| binding.surface() == surface);
+                let actual_focus = host_frame
+                    .frame
+                    .view()
+                    .surface(surface)
+                    .filter(|_| focus_route_matches)
+                    .map(|view| {
+                        egui_dockspace::native_support::sample_host_focus(
+                            &context,
+                            view,
+                            &self.panes,
+                            ui.make_persistent_id((
+                                self.instance_id.with(surface.get()),
+                                "workspace-focus",
+                                surface,
+                            )),
+                            context
+                                .layer_transform_to_global(ui.layer_id())
+                                .map_or(dock_rect, |transform| transform * dock_rect),
+                            host_frame.presented_focus_bindings(surface, token.viewport_id()),
+                        )
+                    });
+                let (actions, mut acknowledgement) =
+                    self.pass_actions.peek_deferred_actions(token, surface);
+                if let Some(observation) = self.pass_actions.peek_pane_focus(
+                    token,
+                    host_frame.frame.presented_surface(surface),
+                    &mut acknowledgement,
+                ) {
+                    host_frame.submit_pane_focus_observation(observation)?;
+                }
+                if let Some(actual_focus) = actual_focus {
+                    host_frame.frame.report_host_focus(surface, actual_focus)?;
+                }
+                for action in actions {
+                    host_frame.frame.submit_deferred_surface_action(action)?;
+                }
+                ui_actions = Some(acknowledgement);
+            }
+            let application_submission = if !native_input_pending
+                && !control_output
+                && surface == self.root_surface
+                && self.application_actions.has_queued()
+            {
+                Some(
+                    self.application_actions
+                        .take()
+                        .ok_or(NativeHostProtocolError::MultipassOutputChanged)?
+                        .submit(&mut host_frame.frame, published)?,
+                )
+            } else {
+                None
+            };
+            let application_action = application_submission
+                .map(|submission| submission.finish(&mut host_frame.frame))
+                .transpose()?;
+            let surfaces = host_frame.frame.surfaces();
+            invalidations.select_for_surfaces(&surfaces, true);
+            for viewport in &invalidations.repaint_viewports {
+                context.request_repaint_once_of(*viewport);
+            }
+            let retain_previous = control_output
+                || (surface == self.root_surface
+                    && context.input(|input| input.viewport().close_requested()))
+                || bridge
+                    .output_reservation(token)
+                    .is_some_and(|reservation| reservation.is_abandoned())
+                || !surfaces.contains(&surface)
+                || native_input_pending
+                || should_retain_previous_output(output_prefix_pending, reduced_callback)
+                || no_frame_invalidation_pending
+                || !invalidations.ready.is_empty();
+            host_frame.frame.begin_encoding_pass()?;
             (
-                plan.is_some(),
-                !measured
-                    && plan.is_none_or(|plan| {
-                        // A discarded pass can retain scene-bound keyboard/accessibility
-                        // actions. Settle them before refreshing otherwise-ready geometry.
-                        !(active_gesture
-                            || plan.has_manipulation_preview()
-                            || pass_actions.has_pending_local_actions(surface))
-                    }),
+                host_frame,
+                NativeUpdateRun::begin(&context, token),
+                NativeUpdatePublication {
+                    surface,
+                    no_frame_invalidations: invalidations.ready,
+                    retirements: if native_input_pending {
+                        None
+                    } else {
+                        retirements
+                    },
+                    application_action,
+                    ui_actions,
+                    native_input_pending,
+                    retain_previous,
+                    follow_up: output_prefix_pending
+                        || pending_effect_reported
+                        || quiescence_recorded
+                        || reduced_callback
+                        || internal_action_settled
+                        || native_input_pending,
+                },
             )
         };
 
-        let render_result = if retain_previous_output {
-            for invalidation in no_frame_invalidations
-                .iter()
-                .filter(|_| !native_input_pending)
-            {
-                host_frame.defer_surface(
-                    invalidation.surface(),
-                    SurfaceUnavailableReason::SurfaceUnavailable,
-                )?;
+        let mut retain_previous = publication.retain_previous;
+        let active_gesture = host_frame.frame.has_active_gesture();
+        let should_measure = if retain_previous {
+            false
+        } else {
+            match host_frame.frame.surface_work(surface)? {
+                dockspace::runtime::SurfaceWork::Ready(plan) => {
+                    !(active_gesture || plan.has_manipulation_preview())
+                }
+                dockspace::runtime::SurfaceWork::Deferred(
+                    dockspace::runtime::SurfaceWorkDeferred::Unmeasured,
+                ) => true,
+                dockspace::runtime::SurfaceWork::Deferred(
+                    dockspace::runtime::SurfaceWorkDeferred::OutputCapacity,
+                ) => {
+                    retain_previous = true;
+                    false
+                }
             }
-            host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        } else if should_measure {
+        };
+        if should_measure {
             let dock_rect = ui.available_rect_before_wrap();
             let popup_rect = context.input(egui::InputState::content_rect).round_ui();
-            host_frame.measure_surface(surface, ui, dock_rect, popup_rect, panes, style)?;
-            retain_previous_output = true;
-            measurement_committed = true;
-            host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        } else if !has_ready_plan {
-            retain_previous_output = true;
-            host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        } else {
-            (|| -> Result<(), NativeRuntimeError> {
-                let paint = host_frame.paint_surface(instance_id, surface, ui, panes, style)?;
-                let application_action_ready =
-                    surface == root_surface && self.application_actions.has_queued();
-                let mut draft = pass_actions
-                    .prepare_pass(token, paint, application_action_ready)
-                    .map_err(map_pass_action_error)?;
-                let has_actions = pass_actions.pass_has_actions(&draft);
-                // A frame that can mutate workspace or interaction authority
-                // cannot also publish paint captured against the pre-action
-                // workspace. Its terminal action frame schedules a fresh paint.
-                let disposition =
-                    surface_frame_disposition(draft.transient_visuals_complete(), has_actions);
-                if disposition == SurfaceFrameDisposition::RejectIncompletePaint {
-                    return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
-                }
-
-                match disposition {
-                    SurfaceFrameDisposition::ConfirmPainted => {
-                        if !draft.paint_mut().confirm_into(&mut host_frame.frame)? {
-                            return Err(
-                                NativeHostProtocolError::IncompleteTransientPaint(surface).into()
-                            );
-                        }
-                        host_frame
-                            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                        painted_output_expected = true;
-                    }
-                    SurfaceFrameDisposition::Defer => {
-                        host_frame
-                            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                    }
-                    SurfaceFrameDisposition::RejectIncompletePaint => unreachable!(
-                        "incomplete transient paint is rejected before submitting surface actions"
-                    ),
-                }
-                pass_draft = Some(draft);
-                Ok(())
-            })()
-        };
-        render_result?;
-
-        let mut report = host_frame.commit()?;
-        if !native_input_pending {
-            coordinator.finish_no_frame_invalidations(&no_frame_invalidations);
+            host_frame.measure_surface(
+                surface,
+                ui,
+                dock_rect,
+                popup_rect,
+                &self.panes,
+                &self.style,
+            )?;
         }
-        let mut application_action_settled = self
-            .application_actions
-            .settle(None, report.presentation_transitions())
-            .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
-        let coordinator = &mut self.coordinator;
-        let native_snapshot_applied = coordinator.settle_host_frame_report(&report)?;
-        let native_close_settled = coordinator.settle_close_control_report(&report)?;
-        let native_admission_settled =
-            coordinator.settle_native_admissions(report.native_admissions())?;
-        let retirement_committed = prepared_retirements.is_some();
-        if let Some(prepared_retirements) = prepared_retirements {
-            let mut first_error = None;
-            for token in coordinator.commit_retirements(prepared_retirements) {
-                if let Err(error) = self.pass_actions.abandon(token) {
-                    first_error.get_or_insert_with(|| map_pass_action_error(error));
-                }
+        if !retain_previous
+            && !matches!(
+                host_frame.frame.surface_work(surface)?,
+                dockspace::runtime::SurfaceWork::Ready(_)
+            )
+        {
+            retain_previous = true;
+        }
+        if retain_previous {
+            egui_dockspace::native_support::retain_presented_pane_focus(
+                &context,
+                host_frame.presented_focus_bindings(surface, token.viewport_id()),
+            );
+            if surface != self.root_surface {
+                bridge.block_semantic_viewport(token.viewport_id());
             }
-            if let Some(error) = first_error {
-                return Err(error);
-            }
-        }
-        if surface == self.root_surface {
-            Self::bind_root_registration(coordinator, self.root_surface, token, report.inputs())?;
-        }
-        let native_effects = report.take_native_effects();
-        let mut outputs = report.take_painted_outputs();
-        let mut painted_output = if painted_output_expected {
-            if outputs.len() != 1 {
-                let actual = outputs.len();
-                drop(outputs);
-                return Err(NativeHostProtocolError::PaintedOutputCountMismatch {
-                    expected: 1,
-                    actual,
-                }
-                .into());
-            }
-            outputs.pop()
-        } else {
-            if !outputs.is_empty() {
-                let actual = outputs.len();
-                drop(outputs);
-                return Err(NativeHostProtocolError::PaintedOutputCountMismatch {
-                    expected: 0,
-                    actual,
-                }
-                .into());
-            }
-            None
-        };
-        let coordinator = &mut self.coordinator;
-        let native_effects_emitted = !native_effects.is_empty();
-        coordinator.accept_native_effects(&context, native_effects)?;
-        let native_close_progress =
-            coordinator.drive_close_policy(&context, self.close_policy, self.root_surface, budget);
-        let internal_transitions = coordinator.take_internal_presentation_transitions();
-        if !internal_transitions.is_empty() {
-            application_action_settled |= self
-                .application_actions
-                .settle_presentation_transitions(&internal_transitions)
-                .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
-        }
-        let native_close_progress = native_close_progress?;
-        if native_close_progress {
-            // Close policy commits a later core frame than the one that
-            // produced this paint. Dropping the old affine output forces the
-            // follow-up cycle to publish semantics from the new workspace.
-            painted_output = None;
-        }
-        let post_output_quiescence_recorded = surface == self.root_surface
-            && output_prefix_pending
-            && coordinator.try_report_retirement_quiescence()?;
-        if retain_previous_output {
-            // Eframe retains the previous visual immediately, but the newly
-            // announced output token is not abandoned until this egui pass is
-            // known to be terminal.
             self.pass_actions
                 .stage_retain_previous(token, surface)
                 .map_err(map_pass_action_error)?;
         } else {
+            let paint = host_frame.paint_surface(
+                self.instance_id.with(surface.get()),
+                surface,
+                ui,
+                &mut self.panes,
+                &self.style,
+            )?;
+            let owner = host_frame
+                .frame
+                .proposed_native_bindings()
+                .find(|binding| binding.surface() == surface)
+                .or_else(|| {
+                    bridge
+                        .output_reservation(token)
+                        .and_then(|reservation| reservation.binding())
+                });
+            let paint = self
+                .pass_actions
+                .prepare_pass(token, owner, paint)
+                .map_err(map_pass_action_error)?;
+            if !paint.transient_visuals_complete() {
+                return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
+            }
             self.pass_actions
-                .stage_pass(
-                    token,
-                    pass_draft.expect("a semantic surface owns pass paint metadata"),
-                    painted_output,
-                )
+                .stage_pass(token, paint)
                 .map_err(map_pass_action_error)?;
         }
-        coordinator.dispatch_viewport_commands(&context)?;
-        coordinator.drive_pointer_capture(&context, budget, self.shutdown.is_none())?;
-        if let Some(command) = coordinator.pointer_passthrough_command() {
-            if !coordinator.dispatch_pointer_passthrough(&context, command) {
-                let removed = coordinator.fail_pointer_passthrough_dispatch(command);
-                if !removed {
-                    return Err(NativeHostProtocolError::NativeInputDispatchChanged.into());
-                }
-                context.request_repaint_once_of(egui::ViewportId::ROOT);
-            }
-        }
-        for repaint_surface in report.repaint_surfaces() {
-            match coordinator.repaint_viewport(*repaint_surface) {
-                Some(egui::ViewportId::ROOT) | None if *repaint_surface == self.root_surface => {
-                    context.request_repaint_once_of(egui::ViewportId::ROOT);
-                }
-                Some(viewport) => context.request_repaint_once_of(viewport),
-                None => {}
-            }
-        }
-        let pending_callback_records = coordinator.has_pending_callback_records();
-        request_follow_up_root_cycle(
-            &context,
-            retirement_committed,
-            pending_effect_reported
-                || quiescence_recorded
-                || reduced_callback
-                || native_snapshot_applied
-                || native_admission_settled
-                || internal_action_settled
-                || application_action_settled
-                || native_effects_emitted
-                || native_close_settled
-                || native_close_progress
-                || post_output_quiescence_recorded
-                || native_input_pending
-                || pending_callback_records,
-        );
-        let semantic_retry_pending = retained_pass_requires_semantic_retry(
-            retain_previous_output,
-            coordinator.session().presented_surface(surface).is_some(),
-            self.application_actions.has_queued() || report.repaint_surfaces().contains(&surface),
-        );
-        let durable_armed = surface_outside_frame
-            || internal_action_settled
-            || native_input_pending
-            || application_action_settled
-            || native_admission_settled
-            || !report.repaint_surfaces().is_empty()
-            || semantic_retry_pending;
-        require_durable_root_cycle(coordinator, token, durable_armed)?;
-        coordinator.stage_stationary_observation(&context, token, budget);
-        Ok(if measurement_committed {
-            NativeSurfaceProgress::MeasurementCommitted
+        publication.follow_up |= self.pass_actions.has_retained_action_work();
+        self.owned_update = Some(NativeOwnedUpdate {
+            host: host_frame.suspend(),
+            run,
+            publication,
+        });
+        Ok(if retain_previous {
+            NativeSurfaceUpdate::RetainPrevious
         } else {
-            NativeSurfaceProgress::Updated(if retain_previous_output {
-                NativeSurfaceUpdate::RetainPrevious
-            } else {
-                NativeSurfaceUpdate::Semantic
-            })
+            NativeSurfaceUpdate::Semantic
         })
     }
 
@@ -1035,6 +939,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .coordinator
             .next_unfinalized_not_presented_output(&mut prefix)?
         {
+            let interrupted_update = self
+                .owned_update
+                .as_ref()
+                .is_some_and(|update| update.run.token == token);
+            if interrupted_update {
+                self.owned_update = None;
+            }
             self.pass_actions
                 .abandon(token)
                 .map_err(map_pass_action_error)?;
@@ -1052,6 +963,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 context.request_repaint_once_of(egui::ViewportId::ROOT);
             }
             context.request_repaint_once_of(token.viewport_id());
+            if interrupted_update {
+                // An unwound run cannot replay application callbacks or a
+                // consumed input capability through a replacement candidate.
+                return Err(NativeHostProtocolError::MultipassOutputChanged.into());
+            }
         }
         Ok(())
     }
@@ -1079,7 +995,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         budget: &mut NativeInputBudget,
     ) -> Result<(), NativeRuntimeError> {
         self.settle_final_output_pass(context, output, token, discarded, budget)?;
-        if !discarded {
+        if !discarded && self.owned_update.is_none() {
             self.coordinator
                 .schedule_stationary_observation(context, token, budget)?;
         }
@@ -1097,10 +1013,35 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if !self.pass_actions.has_staged(token) {
             return Ok(());
         }
+        let owns_update = self
+            .owned_update
+            .as_ref()
+            .is_some_and(|update| update.run.token == token);
+        if owns_update {
+            self.owned_update
+                .as_mut()
+                .expect("the run was checked")
+                .run
+                .finish_pass(context, token)?;
+        }
         if discarded {
             self.pass_actions
                 .discard_pass(token)
                 .map_err(map_pass_action_error)?;
+            if owns_update {
+                let NativeOwnedUpdate {
+                    host,
+                    run,
+                    publication,
+                } = self.owned_update.take().expect("the run was checked");
+                let mut host = self.coordinator.resume_host_update(host)?;
+                host.frame.restart_encoding_pass()?;
+                self.owned_update = Some(NativeOwnedUpdate {
+                    host: host.suspend(),
+                    run,
+                    publication,
+                });
+            }
             return Ok(());
         }
 
@@ -1108,97 +1049,154 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .pass_actions
             .finish_pass(token)
             .map_err(map_pass_action_error)?
-            .expect("a checked staged native pass remains available");
-        let final_pass = match final_pass {
-            NativeFinalPass::RetainPrevious {
-                surface,
-                local_actions_ready,
-            } => {
-                let control_output = self.coordinator.dispatch_bridge().is_control_output(token);
-                let application_action_ready = !control_output
-                    && surface == self.root_surface
-                    && self.application_actions.has_queued();
-                if !control_output && (local_actions_ready || application_action_ready) {
-                    self.commit_terminal_actions(
-                        context,
-                        token,
-                        surface,
-                        Vec::new(),
-                        None,
-                        local_actions_ready,
-                        application_action_ready,
-                        budget,
-                    )?;
+            .expect("the staged native pass remains available");
+        let Some(NativeOwnedUpdate {
+            host,
+            run: _,
+            publication,
+        }) = self
+            .owned_update
+            .take_if(|update| update.run.token == token)
+        else {
+            let kind = match final_pass {
+                NativeFinalPass::RetainPrevious => RetainedOutputKind::Skip,
+                NativeFinalPass::RetainedOverlay => RetainedOutputKind::Overlay,
+                NativeFinalPass::Semantic(_) => {
+                    return Err(NativeHostProtocolError::MultipassOutputChanged.into());
                 }
-                self.settle_retained_egui_output(context, output, token, RetainedOutputKind::Skip)?;
-                return Ok(());
-            }
-            NativeFinalPass::RetainedOverlay => {
-                self.settle_retained_egui_output(
-                    context,
-                    output,
-                    token,
-                    RetainedOutputKind::Overlay,
-                )?;
-                return Ok(());
-            }
-            NativeFinalPass::Semantic(final_pass) => final_pass,
+            };
+            return self.settle_retained_egui_output(context, output, token, kind);
         };
-        let surface = final_pass.paint_surface();
-        let has_application_action = final_pass.application_action_ready();
-        let has_actions = final_pass.has_actions() || has_application_action;
-        let (
-            presentation_actions,
-            pane_focus_observation,
-            local_actions,
-            application_action_ready,
-            paint,
-            painted_output,
-        ) = final_pass.into_parts();
-        debug_assert_eq!(has_application_action, application_action_ready);
-        let local_actions_ready = self
-            .pass_actions
-            .retain_local_actions(surface, local_actions)
-            .map_err(map_pass_action_error)?;
-        if has_actions && painted_output.is_some() {
+        let surface = publication.surface;
+        let mut paint = match final_pass {
+            NativeFinalPass::Semantic(paint) => Some(paint),
+            NativeFinalPass::RetainPrevious | NativeFinalPass::RetainedOverlay => None,
+        };
+        let mut host = self.coordinator.resume_host_update(host)?;
+        let mut rejected_retention = None;
+        let confirmed = if let Some(paint) = paint.as_mut() {
+            if paint.validate_final_output(output) {
+                if !paint.confirm_into(&mut host.frame)? {
+                    return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
+                }
+                true
+            } else {
+                // Keep the accepted input and its queued UI actions. Only this
+                // pass's private geometry and renderer payload are discarded.
+                discard_unproven_output(output);
+                if eframe::current_native_output_token() != Some(token) {
+                    return Err(NativeHostProtocolError::MultipassOutputChanged.into());
+                }
+                rejected_retention = Some(RetainedOutputKind::Rejected.request());
+                host.frame.restart_encoding_pass()?;
+                false
+            }
+        } else {
+            false
+        };
+        if !publication.native_input_pending {
+            for invalidation in &publication.no_frame_invalidations {
+                host.defer_surface(
+                    invalidation.surface(),
+                    SurfaceUnavailableReason::SurfaceUnavailable,
+                )?;
+            }
+        }
+        host.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+        // This is the only publication of the run. The bridge keeps staging,
+        // route replacement and core publication under the existing lock.
+        let mut report = host.commit_publishing_root(&mut self.root_surface)?;
+        if let Some(acknowledged) = publication.ui_actions {
+            self.pass_actions.acknowledge(acknowledged);
+        }
+        self.pass_actions
+            .retire_unavailable(self.coordinator.session());
+        if !publication.native_input_pending {
+            self.coordinator
+                .finish_no_frame_invalidations(&publication.no_frame_invalidations);
+        }
+        if let Some(retirements) = publication.retirements {
+            for retired in self.coordinator.commit_retirements(retirements) {
+                self.pass_actions
+                    .abandon(retired)
+                    .map_err(map_pass_action_error)?;
+            }
+        }
+        let mut outputs = report.take_painted_outputs();
+        if outputs.len() != usize::from(confirmed) {
             return Err(NativeHostProtocolError::PaintedOutputCountMismatch {
-                expected: 0,
-                actual: 1,
+                expected: usize::from(confirmed),
+                actual: outputs.len(),
             }
             .into());
         }
-
-        if has_actions {
-            if !self.commit_terminal_actions(
-                context,
-                token,
-                surface,
-                presentation_actions,
-                pane_focus_observation,
-                local_actions_ready,
-                has_application_action,
-                budget,
-            )? {
-                self.settle_retained_egui_output(context, output, token, RetainedOutputKind::Skip)?;
-                return Ok(());
-            }
-        }
-
-        if let Some(output) = painted_output {
-            if let Err(error) = self
-                .coordinator
-                .bind_painted_surface(context, token, output, &paint)
+        let painted_output = outputs.pop();
+        let repaint_surface = report.repaint_surfaces().contains(&surface);
+        self.settle_published_report(
+            context,
+            Some(token),
+            surface,
+            publication.application_action,
+            report,
+            budget,
+            true,
+        )?;
+        let mut focus_pending = false;
+        if let Some(painted_output) = painted_output {
+            let artifact = painted_output.presentation_artifact();
+            let paint = paint
+                .as_mut()
+                .expect("a confirmed pass owns its paint metadata");
+            if let Err(error) =
+                self.coordinator
+                    .bind_painted_surface(context, token, painted_output, paint)
             {
                 let kind = error.kind();
                 drop(error.into_output());
                 let _ = self.coordinator.abandon_output_token(token);
                 return Err(NativeHostProtocolError::OutputBindingFailed(kind).into());
             }
-        } else if matches!(
-            self.coordinator.abandon_output_token(token),
-            NativeHostWake::RepaintRoot
-        ) {
-            context.request_repaint_once_of(egui::ViewportId::ROOT);
+            if let Some(observation) = paint.take_pane_focus_observation() {
+                self.pass_actions.retain_pane_focus(
+                    token,
+                    surface,
+                    self.coordinator.viewport_binding(token.viewport_id()),
+                    artifact,
+                    observation,
+                );
+                focus_pending = true;
+            }
+        } else {
+            if let Some(retained) = rejected_retention {
+                self.settle_egui_retention(
+                    context,
+                    output,
+                    token,
+                    RetainedOutputKind::Rejected,
+                    retained,
+                )?;
+            } else {
+                self.settle_retained_egui_output(context, output, token, RetainedOutputKind::Skip)?;
+            }
+        }
+        let semantic_retry = retained_pass_requires_semantic_retry(
+            !confirmed,
+            self.coordinator
+                .session()
+                .presented_surface(surface)
+                .is_some(),
+            self.application_actions.has_queued() || repaint_surface,
+        );
+        let follow_up = publication.follow_up
+            || self.pending_service
+            || focus_pending
+            || self.pass_actions.has_retained_action_work()
+            || semantic_retry
+            || self.coordinator.has_pending_callback_records();
+        require_durable_root_cycle(&self.coordinator, token, follow_up)?;
+        if follow_up {
+            context.request_repaint_of(ViewportId::ROOT);
+            context.request_repaint_of(token.viewport_id());
         }
         Ok(())
     }
@@ -1210,7 +1208,17 @@ impl<P: PaneView> NativeRuntimeState<P> {
         token: NativeOutputToken,
         kind: RetainedOutputKind,
     ) -> Result<(), NativeRuntimeError> {
-        let retained = kind.request();
+        self.settle_egui_retention(context, output, token, kind, kind.request())
+    }
+
+    fn settle_egui_retention(
+        &mut self,
+        context: &egui::Context,
+        output: &mut egui::FullOutput,
+        token: NativeOutputToken,
+        kind: RetainedOutputKind,
+        retained: bool,
+    ) -> Result<(), NativeRuntimeError> {
         finalize_retained_accessibility(output, kind, retained);
         let wake = self
             .coordinator
@@ -1222,130 +1230,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn commit_terminal_actions(
-        &mut self,
-        context: &egui::Context,
-        token: NativeOutputToken,
-        surface: SurfaceId,
-        presentation_actions: Vec<PreparedSurfaceAction>,
-        pane_focus_observation: Option<PreparedPaneFocusObservation>,
-        local_actions_ready: bool,
-        application_action_ready: bool,
-        budget: &mut NativeInputBudget,
-    ) -> Result<bool, NativeRuntimeError> {
-        if self.coordinator.has_pending_callback_records()
-            && !self
-                .coordinator
-                .dispatch_bridge()
-                .callback_boundary_pending()
-        {
-            // The output finalizer cannot translate a later callback prefix.
-            // Keep queued actions owned until the next root prelude drains it.
-            require_durable_root_cycle(&self.coordinator, token, true)?;
-            context.request_repaint_once_of(ViewportId::ROOT);
-            context.request_repaint_once_of(token.viewport_id());
-            return Ok(false);
-        }
-        let published = self.coordinator.session().version();
-        let Some(mut host_frame) = self.coordinator.poll_resolved_host_frame(context, budget)?
-        else {
-            require_durable_root_cycle(&self.coordinator, token, true)?;
-            context.request_repaint_once_of(ViewportId::ROOT);
-            context.request_repaint_once_of(token.viewport_id());
-            return Ok(false);
-        };
-        if host_frame.native_input_pending() {
-            host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-            let report = host_frame.commit()?;
-            self.settle_terminal_action_report(
-                context,
-                Some(token),
-                surface,
-                None,
-                report,
-                budget,
-                true,
-            )?;
-            require_durable_root_cycle(&self.coordinator, token, true)?;
-            context.request_repaint_once_of(token.viewport_id());
-            return Ok(false);
-        }
-        if !host_frame.frame.surfaces().contains(&surface) {
-            return Err(NativeHostProtocolError::MultipassOutputChanged.into());
-        }
-        let application_submission = if application_action_ready {
-            let action = self
-                .application_actions
-                .take()
-                .ok_or(NativeHostProtocolError::MultipassOutputChanged)?;
-            Some(action.submit(&mut host_frame.frame, published)?)
-        } else {
-            None
-        };
-        for action in presentation_actions {
-            host_frame.submit_surface_action(action)?;
-        }
-        if let Some(observation) = pane_focus_observation {
-            host_frame.submit_pane_focus_observation(observation)?;
-        }
-        if local_actions_ready {
-            let (local_actions, local_action_attempt) = self
-                .pass_actions
-                .begin_local_action_submission(surface)
-                .map_err(map_pass_action_error)?;
-            debug_assert_eq!(local_actions.surface(), surface);
-            let (_, actions) = local_actions.into_parts();
-            let core_result = (|| -> Result<_, NativeRuntimeError> {
-                for action in actions {
-                    host_frame.submit_surface_action(action)?;
-                }
-                let submitted = application_submission
-                    .map(|submission| submission.finish(&mut host_frame.frame))
-                    .transpose()?;
-                host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                Ok((
-                    host_frame.commit_publishing_root(&mut self.root_surface)?,
-                    submitted,
-                ))
-            })();
-            let (report, submitted_application_action) = match local_action_attempt
-                .settle(core_result)
-                .map_err(map_pass_action_error)?
-            {
-                Ok(report) => report,
-                Err(error) => return Err(error),
-            };
-            return self
-                .settle_terminal_action_report(
-                    context,
-                    Some(token),
-                    surface,
-                    submitted_application_action,
-                    report,
-                    budget,
-                    true,
-                )
-                .map(|()| true);
-        }
-        let submitted_application_action = application_submission
-            .map(|submission| submission.finish(&mut host_frame.frame))
-            .transpose()?;
-        host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-        let report = host_frame.commit_publishing_root(&mut self.root_surface)?;
-        self.settle_terminal_action_report(
-            context,
-            Some(token),
-            surface,
-            submitted_application_action,
-            report,
-            budget,
-            true,
-        )
-        .map(|()| true)
-    }
-
-    fn settle_terminal_action_report(
+    fn settle_published_report(
         &mut self,
         context: &egui::Context,
         token: Option<NativeOutputToken>,
@@ -1353,8 +1238,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
         submitted_application_action: Option<NativeSubmittedApplicationAction>,
         mut report: HostFrameReport,
         budget: &mut NativeInputBudget,
-        follow_up: bool,
+        from_ui_run: bool,
     ) -> Result<(), NativeRuntimeError> {
+        if !from_ui_run {
+            self.pass_actions
+                .retire_unavailable(self.coordinator.session());
+        }
+        self.pass_actions
+            .commit_presentations(report.surface_presentation_commits());
         let application_action_settled = self
             .application_actions
             .settle_submission(submitted_application_action, &report)
@@ -1388,12 +1279,23 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         self.coordinator
             .accept_native_effects(context, native_effects)?;
-        let native_close_progress = self.coordinator.drive_close_policy(
-            context,
-            self.close_policy,
-            self.root_surface,
-            budget,
-        );
+        // Policy decisions are input for a later update. A terminal UI pass
+        // must not open another candidate after publishing its owned update.
+        let native_close_progress = if from_ui_run {
+            let runnable = self
+                .coordinator
+                .dispatch_bridge()
+                .with_close_control(|control| control.has_runnable_policy_work());
+            self.pending_service |= runnable;
+            Ok(false)
+        } else {
+            self.coordinator.drive_close_policy(
+                context,
+                self.close_policy,
+                self.root_surface,
+                budget,
+            )
+        };
         let internal_transitions = self.coordinator.take_internal_presentation_transitions();
         let internal_action_settled = if !internal_transitions.is_empty() {
             self.application_actions
@@ -1403,6 +1305,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
             false
         };
         let native_close_progress = native_close_progress?;
+        if native_close_progress {
+            self.pass_actions
+                .retire_unavailable(self.coordinator.session());
+        }
         let commands_dispatched = self.dispatch_post_commit(context)?
             | self
                 .coordinator
@@ -1423,7 +1329,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             || native_close_settled
             || native_close_progress
             || commands_dispatched;
-        request_follow_up_root_cycle(context, false, follow_up || durable_progress);
+        request_follow_up_root_cycle(context, false, durable_progress);
         if let Some(token) = token {
             require_durable_root_cycle(&self.coordinator, token, durable_progress)?;
         } else if durable_progress {
@@ -1484,6 +1390,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if self.shutdown.is_some() {
             return;
         }
+        self.owned_update = None;
+        self.pending_service = false;
         let kind = error.kind();
         let internal_transition_error = self.settle_internal_application_transitions().err();
         let mut cleanup_errors = internal_transition_error.into_iter().collect::<Vec<_>>();
@@ -1687,6 +1595,8 @@ fn committed_boundary_is_quiescent(
 
 #[cfg(test)]
 mod tests {
+    mod output_backpressure;
+    mod owned_update;
     use std::error::Error as _;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1775,23 +1685,6 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(bridge.admission_dispatch(), NativeDispatch::Idle);
-    }
-
-    #[test]
-    fn actions_defer_and_incomplete_transient_paint_is_rejected() {
-        assert_eq!(
-            surface_frame_disposition(false, true),
-            SurfaceFrameDisposition::RejectIncompletePaint
-        );
-        assert_eq!(
-            surface_frame_disposition(true, true),
-            SurfaceFrameDisposition::Defer
-        );
-        assert_eq!(
-            surface_frame_disposition(true, false),
-            SurfaceFrameDisposition::ConfirmPainted,
-            "a complete transient/handoff paint defers measurement, not its exact presentation proof"
-        );
     }
 
     #[test]
@@ -1981,7 +1874,58 @@ mod tests {
     #[test]
     fn only_a_skipped_retain_omits_the_accessibility_update() {
         assert!(RetainedOutputKind::Skip.omits_accessibility_when_retained());
+        assert!(RetainedOutputKind::Rejected.omits_accessibility_when_retained());
         assert!(!RetainedOutputKind::Overlay.omits_accessibility_when_retained());
+    }
+
+    #[test]
+    fn rejected_output_discards_hook_payload_and_delivers_nonvisual_deltas_once() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let _ = ui.button("unconfirmed interactive payload");
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Title("accepted title".into()));
+        });
+        output.shapes.push(egui::epaint::ClippedShape {
+            clip_rect: egui::Rect::EVERYTHING,
+            transform_after_tessellation: Default::default(),
+            shape: egui::Shape::Callback(egui::epaint::PaintCallback {
+                rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1.0, 1.0)),
+                callback: Arc::new(()),
+            }),
+        });
+        let texture = egui::TextureId::Managed(u64::MAX);
+        let delta = egui::epaint::ImageDelta::full(
+            egui::ColorImage::filled([1, 1], egui::Color32::RED),
+            egui::TextureOptions::LINEAR,
+        );
+        output.textures_delta.push(texture, delta.clone());
+        output.textures_delta.free(texture);
+        let command = egui::OutputCommand::CopyText("accepted clipboard intent".into());
+        output.platform_output.commands.push(command.clone());
+        let viewport_commands = output.viewport_output[&ViewportId::ROOT].commands.clone();
+        assert!(output.platform_output.accesskit_update.is_some());
+
+        discard_unproven_output(&mut output);
+
+        assert!(
+            output.shapes.is_empty(),
+            "markers and hook replacements cannot reach the renderer"
+        );
+        assert!(output.platform_output.accesskit_update.is_none());
+        assert!(output.platform_output.events.is_empty());
+        assert!(output.textures_delta.set[&texture].as_slice() == [delta]);
+        assert!(output.textures_delta.free.contains(&texture));
+        assert_eq!(output.platform_output.commands, vec![command]);
+        assert_eq!(
+            output.viewport_output[&ViewportId::ROOT].commands,
+            viewport_commands
+        );
+        let delivered = output.platform_output.take();
+        assert_eq!(delivered.commands.len(), 1);
+        assert!(output.platform_output.take().commands.is_empty());
+        output.textures_delta.clear();
     }
 
     #[test]

@@ -10,7 +10,7 @@ use egui::{CursorIcon, EventFilter, Key, Sense};
 use crate::style::ResolvedContainedWindowVisuals;
 
 use super::RenderContext;
-use super::actions::button_activated;
+use super::actions::button_activation_origin;
 use super::geometry::{accesskit_bounds, egui_rect};
 
 pub(crate) fn paint_background(
@@ -203,10 +203,11 @@ pub(crate) fn paint_controls(
                 .line_segment([close.right_top(), close.left_bottom()], stroke);
         }
         if enabled
-            && button_activated(context.ui, &response, context.pointer_authority)
+            && let Some(origin) =
+                button_activation_origin(context.ui, &response, context.pointer_authority)
             && let Some(action) = context.plan.prepare_contained_close(contained.floating())
         {
-            context.push_local_action(action);
+            context.push_local_action(origin, action);
         }
     }
 
@@ -263,7 +264,7 @@ pub(crate) fn paint_controls(
                 });
             }
             if enabled
-                && let Some(adjustment) = contained_resize_adjustment(
+                && let Some((origin, adjustment)) = contained_resize_adjustment(
                     context.ui,
                     id,
                     resize.direction(),
@@ -275,7 +276,7 @@ pub(crate) fn paint_controls(
                     adjustment,
                 )
             {
-                context.push_local_action(action);
+                context.push_local_action(origin, action);
             }
         }
         if drag_enabled && response.hovered() {
@@ -310,7 +311,7 @@ fn contained_resize_adjustment(
     id: egui::Id,
     direction: ContainedResizeDirection,
     focused: bool,
-) -> Option<SurfaceContainedResizeAdjustment> {
+) -> Option<(egui::Id, SurfaceContainedResizeAdjustment)> {
     if focused {
         let keyboard = ui.input_mut(|input| {
             let (increment, decrement) = match direction {
@@ -324,9 +325,15 @@ fn contained_resize_adjustment(
                 | ContainedResizeDirection::NorthWest => return None,
             };
             if input.consume_key(egui::Modifiers::NONE, increment) {
-                Some(SurfaceContainedResizeAdjustment::Increment)
+                Some((
+                    id.with(("keyboard-resize", increment)),
+                    SurfaceContainedResizeAdjustment::Increment,
+                ))
             } else if input.consume_key(egui::Modifiers::NONE, decrement) {
-                Some(SurfaceContainedResizeAdjustment::Decrement)
+                Some((
+                    id.with(("keyboard-resize", decrement)),
+                    SurfaceContainedResizeAdjustment::Decrement,
+                ))
             } else {
                 None
             }
@@ -337,9 +344,15 @@ fn contained_resize_adjustment(
     }
     ui.input(|input| {
         if input.has_accesskit_action_request(id, Action::Increment) {
-            Some(SurfaceContainedResizeAdjustment::Increment)
+            Some((
+                id.with("accesskit-increment"),
+                SurfaceContainedResizeAdjustment::Increment,
+            ))
         } else if input.has_accesskit_action_request(id, Action::Decrement) {
-            Some(SurfaceContainedResizeAdjustment::Decrement)
+            Some((
+                id.with("accesskit-decrement"),
+                SurfaceContainedResizeAdjustment::Decrement,
+            ))
         } else {
             None
         }

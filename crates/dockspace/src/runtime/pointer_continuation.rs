@@ -6,7 +6,10 @@ use crate::geometry::LogicalPoint;
 use crate::ids::SurfaceId;
 use crate::interaction::PointerContinuationRequest;
 
-use super::{DockspaceSession, PointerContinuationToken, SurfacePointerEvent, SurfacePointerId};
+use super::{
+    DockspaceHostFrame, DockspaceSession, PointerContinuationToken, SurfacePointerEvent,
+    SurfacePointerId,
+};
 
 /// One finite stationary action which the host may recheck at its deadline.
 ///
@@ -83,6 +86,26 @@ impl DockspaceSession {
     #[must_use]
     pub fn pointer_continuation(&self) -> Option<DockspacePointerContinuation> {
         self.engine
+            .pointer_continuation()
+            .filter(|request| request.token.owner.lease().scope().is_local())
+            .map(|request| DockspacePointerContinuation { request })
+    }
+}
+
+impl DockspaceHostFrame<'_> {
+    /// Returns the private candidate's current finite stationary request.
+    ///
+    /// Re-query after the complete raw pointer prefix: a release, cancellation,
+    /// target change or revoked source may remove or replace the request.
+    /// Appending it in this same frame requires fresh framework facts prepared
+    /// for this exact token, point and presented output. This query grants no
+    /// receiver authority and never presents candidate geometry. When those
+    /// facts are unavailable, publish the raw prefix and schedule the retained
+    /// request for the next update without replaying raw input.
+    #[must_use]
+    pub fn pointer_continuation(&self) -> Option<DockspacePointerContinuation> {
+        self.frame
+            .candidate_engine()
             .pointer_continuation()
             .filter(|request| request.token.owner.lease().scope().is_local())
             .map(|request| DockspacePointerContinuation { request })

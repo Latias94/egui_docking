@@ -399,11 +399,11 @@ impl<P> CloseCoordinator<P> {
         }
     }
 
-    /// Returns the newest reusable plan for one exact target and authority.
+    /// Returns the newest reusable plan for one current target and lifetime.
     ///
-    /// UI retries may reuse only a non-terminal request derived from the same
-    /// workspace and policy revisions. An authority change requires a newly
-    /// prepared plan rather than reinterpreting frozen item capabilities.
+    /// The engine reconciles content scope before lookup. Content plans may
+    /// survive unrelated revision changes; native surface plans still require
+    /// their exact workspace and policy origin.
     pub(crate) fn active_plan_for_target(
         &self,
         target: ClosePlanTarget,
@@ -411,8 +411,10 @@ impl<P> CloseCoordinator<P> {
     ) -> Option<&ClosePlan> {
         self.requests.values().rev().find_map(|record| {
             let plan = record.plan();
-            (plan.target == target && plan.authority == authority && !plan.is_terminal())
-                .then_some(plan)
+            (plan.target == target
+                && Self::authority_matches(plan, authority)
+                && !plan.is_terminal())
+            .then_some(plan)
         })
     }
 
@@ -1486,8 +1488,20 @@ impl<P> CloseCoordinator<P> {
         }
     }
 
-    /// Invalidates every non-terminal plan whose authority no longer matches.
+    /// Invalidates plans after their lifetime or native authority changes.
     pub(crate) fn invalidate_stale(&mut self, authority: CloseAuthority) -> Vec<CloseRequestId> {
+        self.invalidate_stale_with(authority, |_| true)
+    }
+
+    /// Reconciles target scopes in the same candidate as their semantic changes.
+    ///
+    /// A scope failure is terminal for ordinary content. A native surface plan
+    /// retains its existing cancellation and effect-settlement obligations.
+    pub(crate) fn invalidate_stale_with(
+        &mut self,
+        authority: CloseAuthority,
+        scope_matches: impl Fn(&P) -> bool,
+    ) -> Vec<CloseRequestId> {
         if authority.domain() != self.domain {
             return Vec::new();
         }
@@ -1495,7 +1509,8 @@ impl<P> CloseCoordinator<P> {
         for (request, record) in &mut self.requests {
             let cancels_on_authority_drift = Self::cancels_on_authority_drift(&record.plan);
             if (record.plan.phase.may_become_stale() || cancels_on_authority_drift)
-                && record.plan.authority != authority
+                && (!Self::authority_matches(&record.plan, authority)
+                    || !scope_matches(&record.prepared))
             {
                 if cancels_on_authority_drift {
                     record.plan.cancellation = CloseCancellationState::Requested;
@@ -1599,7 +1614,7 @@ impl<P> CloseCoordinator<P> {
         }
         let cancels_on_authority_drift = Self::cancels_on_authority_drift(&record.plan);
         if (record.plan.phase.may_become_stale() || cancels_on_authority_drift)
-            && record.plan.authority != authority
+            && !Self::authority_matches(&record.plan, authority)
         {
             let expected = record.plan.authority;
             if cancels_on_authority_drift {
@@ -1615,6 +1630,15 @@ impl<P> CloseCoordinator<P> {
             });
         }
         Ok(())
+    }
+
+    fn authority_matches(plan: &ClosePlan, authority: CloseAuthority) -> bool {
+        if plan.target.kind() == ClosePlanTargetKind::Surface {
+            plan.authority == authority
+        } else {
+            plan.authority.domain() == authority.domain()
+                && plan.authority.workspace().epoch() == authority.workspace().epoch()
+        }
     }
 
     fn cancels_on_authority_drift(plan: &ClosePlan) -> bool {

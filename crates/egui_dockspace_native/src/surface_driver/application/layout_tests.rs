@@ -940,6 +940,8 @@ mod persistence {
             coordinator,
             root_surface: SURFACE,
             instance_id: egui::Id::unique("service-refill-close-create"),
+            owned_update: None,
+            pending_service: false,
             style: DockStyle::default(),
             panes: Panes(Vec::new()),
             application_actions: Default::default(),

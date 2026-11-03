@@ -176,13 +176,16 @@ impl NativeEffectCoordinator {
         self.effect_slots.is_none() && self.pending_shows.try_reserve(1).is_ok()
     }
 
-    pub(crate) fn retain_show(
+    /// Retains a started visibility request only after the actual enqueue
+    /// returns. Its existing slot remains owned by the guard during unwinding.
+    pub(crate) fn dispatch_show(
         &mut self,
         binding: NativeSurfaceBinding,
         viewport: ViewportId,
         window: WindowId,
         token: NativeViewportVisibilityCommandToken,
         request: NativeEffectRequest,
+        enqueue: impl FnOnce(),
     ) -> Result<(), NativeEffectRequest> {
         if !matches!(request.operation(), NativeEffectOperation::ShowWindow { binding: exact } if *exact == binding)
             || !self.preflight_can_retain_show(binding)
@@ -192,6 +195,8 @@ impl NativeEffectCoordinator {
         let index = self
             .pending_shows
             .partition_point(|pending| pending.binding < binding);
+        let dispatch = request.begin_dispatch();
+        enqueue();
         self.pending_shows.insert(
             index,
             PendingNativeShow {
@@ -199,10 +204,22 @@ impl NativeEffectCoordinator {
                 viewport,
                 window,
                 token,
-                request,
+                request: dispatch.await_observation(),
             },
         );
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retain_show(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        viewport: ViewportId,
+        window: WindowId,
+        token: NativeViewportVisibilityCommandToken,
+        request: NativeEffectRequest,
+    ) -> Result<(), NativeEffectRequest> {
+        self.dispatch_show(binding, viewport, window, token, request, || {})
     }
 
     pub(crate) fn take_show(
@@ -337,6 +354,37 @@ impl NativeEffectCoordinator {
         Some(self.pending_viewports.remove(index).request)
     }
 
+    /// Hands an admitted create to the deferred viewport owner. Until this
+    /// point the retained request is still safely undispatched. The backend
+    /// may act on the declaration after handoff, so its retained request can
+    /// never again be dropped as a known non-dispatch.
+    pub(crate) fn dispatch_viewport(
+        &mut self,
+        plan: NativeViewportEffectPlan,
+        declare: impl FnOnce(),
+    ) -> bool {
+        let Ok(index) = self
+            .pending_viewports
+            .binary_search_by_key(&plan.viewport, |pending| pending.plan.viewport)
+        else {
+            return false;
+        };
+        if self.pending_viewports[index].plan != plan {
+            return false;
+        }
+        let pending = self.pending_viewports.remove(index);
+        let dispatch = pending.request.begin_dispatch();
+        declare();
+        self.pending_viewports.insert(
+            index,
+            PendingViewportEffect {
+                plan,
+                request: dispatch.await_observation(),
+            },
+        );
+        true
+    }
+
     pub(crate) fn take_failure_result(
         &mut self,
         failure: NativeViewportCreateFailureRecord,
@@ -344,7 +392,7 @@ impl NativeEffectCoordinator {
         let request = self.take_for_output(failure.viewport(), failure.binding())?;
         Some(match failure.kind() {
             NativeViewportCreateFailureKind::WindowUnavailable => {
-                request.dispatch_failed(NativeDispatchFailure::WindowUnavailable)
+                request.not_applied(NativeDispatchFailure::WindowUnavailable)
             }
             NativeViewportCreateFailureKind::VisibilityUnsupported => {
                 request.unsupported(NativeUnsupportedReason::BackendUnsupported)

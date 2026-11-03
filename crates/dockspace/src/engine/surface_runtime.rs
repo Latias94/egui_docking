@@ -1597,6 +1597,18 @@ impl DockEngine {
     }
 
     pub(super) fn reconcile_viewport_focus_authority(&mut self) {
+        let presentation = &self.presentation_authority.presentation;
+        let workspace = &self.workspace;
+        let _ = self
+            .viewport_focus
+            .reconcile_host_focus_scopes(|surface, host, stream| {
+                workspace.surface(surface).is_some()
+                    && presentation.active_surface_scope(surface).is_some_and(
+                        |(active_stream, active_host, _)| {
+                            active_stream == stream && active_host == host
+                        },
+                    )
+            });
         let observed = self.focus_binding_snapshot(|record| record.can_observe_focus());
         let activatable = self.focus_binding_snapshot(|record| record.can_accept_activation());
         let items = self.focus_item_snapshot();
@@ -2370,17 +2382,17 @@ impl DockEngine {
             self.mark_active_surface_close_plans_externally_destroyed_unproved(binding, None);
             return Ok(false);
         };
-        let publication =
-            match self.stage_workspace_publication(commit.candidate.clone(), &self.policy) {
-                Ok(publication) => publication,
-                Err(source) if source.is_expected_rejection() => return Ok(false),
-                Err(source) => {
-                    return Err(EngineError::Command {
-                        input,
-                        source: TransactionError::Command { index: 0, source },
-                    });
-                }
-            };
+        let changed = commit.candidate != *self.workspace;
+        let publication = match self.stage_workspace_publication(commit.candidate, &self.policy) {
+            Ok(publication) => publication,
+            Err(source) if source.is_expected_rejection() => return Ok(false),
+            Err(source) => {
+                return Err(EngineError::Command {
+                    input,
+                    source: TransactionError::Command { index: 0, source },
+                });
+            }
+        };
 
         // Validate on a coordinator copy. If either proof or transaction is
         // invalid, neither close phase nor workspace publication changes.
@@ -2406,7 +2418,6 @@ impl DockEngine {
             let _ = close.mark_externally_destroyed_unproved(stale_request, binding);
         }
 
-        let changed = commit.candidate != *self.workspace;
         self.publish_workspace(publication);
         self.close = close;
         self.reconcile_viewport_focus_authority();
@@ -2488,12 +2499,15 @@ impl DockEngine {
                 if !roster.matches_workspace(&self.workspace) {
                     return Ok(None);
                 }
-                let mut candidate = self.clone_workspace_candidate();
-                let report = match transaction.apply(&mut candidate) {
-                    Ok(report) => report,
+                let prepared = match crate::operation::prepare_surface_recovery_transaction(
+                    &self.workspace,
+                    transaction,
+                ) {
+                    Ok(prepared) => prepared,
                     Err(source) if source.is_expected_rejection() => return Ok(None),
                     Err(source) => return Err(EngineError::Command { input, source }),
                 };
+                let (candidate, report) = prepared.into_parts(&self.workspace);
                 if candidate.surface(roster.surface()).is_some()
                     || self
                         .first_workspace_publication_mismatch(
@@ -2708,12 +2722,15 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         publication_authority: WorkspacePublicationAuthority,
     ) -> Result<bool, EngineError> {
-        let mut candidate = self.clone_workspace_candidate();
-        let report = match transaction.apply(&mut candidate) {
-            Ok(report) => report,
+        let prepared = match crate::operation::prepare_surface_recovery_transaction(
+            &self.workspace,
+            transaction,
+        ) {
+            Ok(prepared) => prepared,
             Err(source) if source.is_expected_rejection() => return Ok(false),
             Err(source) => return Err(EngineError::Command { input, source }),
         };
+        let (mut candidate, report) = prepared.into_parts(&self.workspace);
         let mut changed = report.changed();
         let mut outcomes = report.into_outcomes();
         if let Some(selection) = selection {
@@ -2722,20 +2739,19 @@ impl DockEngine {
             else {
                 return Ok(false);
             };
-            let selection_report =
-                match WorkspaceTransaction::from_commands([WorkspaceCommand::Select { source }])
-                    .apply(&mut candidate, &self.policy)
-                {
-                    Ok(report) => report,
-                    Err(TransactionError::Command { source, .. })
-                        if source.is_expected_rejection() =>
-                    {
-                        return Ok(false);
-                    }
-                    Err(source) => return Err(EngineError::Command { input, source }),
-                };
-            changed |= selection_report.changed();
-            outcomes.extend(selection_report.into_outcomes());
+            let selection_outcome = match crate::operation::apply_owned_draft_command(
+                &mut candidate,
+                &self.policy,
+                &WorkspaceCommand::Select { source },
+            ) {
+                Ok(outcome) => outcome,
+                Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
+                    return Ok(false);
+                }
+                Err(source) => return Err(EngineError::Command { input, source }),
+            };
+            changed |= candidate != *self.workspace;
+            outcomes.push(selection_outcome);
         }
         if candidate.surface(roster.surface()).is_some()
             || self

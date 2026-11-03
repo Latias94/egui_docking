@@ -1188,8 +1188,8 @@ fn repeated_activation_reuses_the_exact_unresolved_request() {
 }
 
 #[test]
-fn authority_change_stales_every_preapproval_token() {
-    let (workspace, _) = main_workspace();
+fn unrelated_policy_change_preserves_the_exact_preapproval_token() {
+    let (workspace, tabs) = main_workspace();
     let mut fixture = Harness::new(workspace, DockPolicy::default());
     let fact = tab_close_fact(&fixture.engine, SELECTED);
     let before = fixture.engine.workspace().clone();
@@ -1207,6 +1207,56 @@ fn authority_change_stales_every_preapproval_token() {
         only_outcome(&replaced),
         InputOutcome::PolicyReplaced { changed: true, .. }
     ));
+    assert_ne!(fixture.engine.version(), expected);
+    assert_eq!(fixture.engine.close_plan(plan.request()), Some(&plan));
+    assert_graph_unchanged(&fixture.engine, &before, &before_bytes);
+
+    let closed = fixture.resolve(&plan, 0, CloseDecision::Allow);
+    assert!(matches!(
+        only_outcome(&closed),
+        InputOutcome::CloseDecisionProcessed {
+            resolution: CloseResolutionOutcome::Approved { request },
+            application: Some(Ok(CloseCommitOutcome::ItemClosed {
+                item: SELECTED,
+                root: MAIN_ROOT,
+            })),
+            changed: true,
+            ..
+        } if *request == plan.request()
+    ));
+    assert_eq!(selected(fixture.engine.workspace(), tabs), Some(SECOND));
+    assert_eq!(
+        fixture
+            .engine
+            .close_plan(plan.request())
+            .map(ClosePlan::phase),
+        Some(ClosePlanPhase::Applied)
+    );
+}
+
+#[test]
+fn effective_close_policy_change_retires_preapproval_even_after_restoration() {
+    let (workspace, _) = main_workspace();
+    let mut fixture = Harness::new(workspace, DockPolicy::default());
+    let fact = tab_close_fact(&fixture.engine, SELECTED);
+    let before = fixture.engine.workspace().clone();
+    let before_bytes = graph_bytes(&before);
+    let (plan, _, _) = fixture.request_close(fact.scene, fact.target);
+
+    let expected = fixture.engine.version();
+    let mut replacement = fixture.engine.policy().clone();
+    let original_policy = replacement.clone();
+    let mut disabled = DockItemRule::default();
+    disabled.set_close_capability(Some(CloseCapability::Disabled));
+    replacement.set_item_rule(SELECTED, disabled);
+    let replaced = fixture.submit(EngineInput::ReplacePolicy {
+        expected,
+        policy: replacement,
+    });
+    assert!(matches!(
+        only_outcome(&replaced),
+        InputOutcome::PolicyReplaced { changed: true, .. }
+    ));
     assert_eq!(
         fixture
             .engine
@@ -1215,6 +1265,22 @@ fn authority_change_stales_every_preapproval_token() {
         Some(ClosePlanPhase::Stale)
     );
     assert_graph_unchanged(&fixture.engine, &before, &before_bytes);
+
+    let restored = fixture.submit(EngineInput::ReplacePolicy {
+        expected: fixture.engine.version(),
+        policy: original_policy,
+    });
+    assert!(matches!(
+        only_outcome(&restored),
+        InputOutcome::PolicyReplaced { changed: true, .. }
+    ));
+    assert_eq!(
+        fixture
+            .engine
+            .close_plan(plan.request())
+            .map(ClosePlan::phase),
+        None
+    );
 
     let stale = fixture.resolve(&plan, 0, CloseDecision::Allow);
     assert!(matches!(

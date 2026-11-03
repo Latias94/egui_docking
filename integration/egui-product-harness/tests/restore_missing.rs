@@ -6,7 +6,6 @@ use egui_dockspace::{
     DockStyle, Dockspace, DockspaceCapability, DockspaceDocumentBootstrap, DockspaceDocumentId,
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
     DockspaceUnavailableReason, ItemId, PaneView, RootId, SurfaceId, SurfacePresentationResult,
-    run_ui,
 };
 
 const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x45; 16]);
@@ -45,30 +44,27 @@ fn frame(
     dockspace: &mut Dockspace,
     registry: &mut Registry,
 ) -> (FullOutput, Vec<ItemId>, DockspaceCapability) {
-    let mut result = None;
     let surface = dockspace.view().surfaces().next().unwrap().id();
-    let (mut output, receipt) = run_ui(
-        context,
-        RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
-            focused: true,
-            ..Default::default()
-        },
-        |ui| {
-            let response = dockspace
-                .show_single_surface(surface, ui, registry)
-                .unwrap();
-            result = Some((
-                response.missing_panes().to_vec(),
-                response.pane_focus_capability(),
-            ));
-        },
-    )
-    .into_parts();
+    let (output, response) = dockspace
+        .run_single_surface(
+            context,
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                focused: true,
+                ..Default::default()
+            },
+            surface,
+            registry,
+        )
+        .unwrap();
+    let (mut output, receipt) = output.into_parts();
     receipt.report(SurfacePresentationResult::Presented);
     output.textures_delta.clear();
-    let (missing, focus) = result.unwrap();
-    (output, missing, focus)
+    (
+        output,
+        response.missing_panes().to_vec(),
+        response.pane_focus_capability(),
+    )
 }
 
 #[test]

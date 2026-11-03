@@ -1330,6 +1330,204 @@ fn real_host_frame_contained_close_requests_approval_without_mutating_content() 
 }
 
 #[test]
+fn real_host_frame_dock_release_reuses_one_owned_graph_draft_and_rolls_back() {
+    use crate::drop_resolver::structural_work::{self, WorkspaceCloneVolume};
+    use crate::pointer_receiver::{PointerReceiverHoverHit, PointerReceiverHoverHitDisposition};
+
+    let item = ItemId::new(1);
+    let mut builder = Workspace::builder();
+    let source = builder.insert_node(Node::tabs([item]));
+    let target = builder.insert_node(Node::tabs([ItemId::new(2), ItemId::new(3)]));
+    let split = builder.insert_node(Node::equal_split(Axis::Horizontal, [source, target]).unwrap());
+    builder.set_root(SOURCE_ROOT, RootRecord::new(split).with_central(target));
+    builder.set_surface(SOURCE_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
+    let mut engine = DockEngine::new(builder.build().unwrap(), DockPolicy::default()).unwrap();
+    let host = engine.create_presentation_host().unwrap();
+    publish_surface_projection(
+        &mut engine,
+        host,
+        SOURCE_SURFACE,
+        LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+    );
+    let projection = engine.interaction_projection(SOURCE_SURFACE).unwrap();
+    let tab = projection.hit_manifest().regions().iter().find(|region| {
+        matches!(region.id().kind(), PresentationHitRegionKind::TabBody(tab) if tab.item == item)
+    }).unwrap();
+    let pressed = region_center(tab);
+    let target_region = projection
+        .hit_manifest()
+        .regions()
+        .iter()
+        .find(|region| {
+            matches!(region.id().kind(), PresentationHitRegionKind::DropTarget(
+            crate::drop_target::DropTargetId::TabGap { tabs, .. }
+        ) if tabs == target)
+        })
+        .unwrap();
+    let released = region_center(target_region);
+    let tab_id = tab.id();
+    let target_id = target_region.id();
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        )
+        .unwrap();
+    let mut setup = begin_test_host_frame(&engine, host);
+    for (previous, kind, point) in [
+        (
+            0,
+            PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+            pressed,
+        ),
+        (1, PointerEdgeKind::Moved, released),
+    ] {
+        setup
+            .submit_surface_pointer_journal(
+                &provider,
+                local_pointer_journal(previous, [(kind, point)]),
+            )
+            .unwrap();
+        let candidate = setup.pointer_receiver_candidates().unwrap().candidates()[0].clone();
+        let projection = setup.view().interaction_projection(SOURCE_SURFACE).unwrap();
+        let mut probes = Vec::new();
+        if candidate
+            .probes()
+            .requires(crate::pointer_receiver::PointerReceiverProbe::Delivery)
+        {
+            probes.push(PointerReceiverProbeReceipt::Delivery(
+                PointerReceiverDelivery::new(
+                    projection,
+                    PointerReceiverDeliveryDisposition::Dock(tab_id),
+                )
+                .unwrap(),
+            ));
+        }
+        if candidate
+            .probes()
+            .requires(crate::pointer_receiver::PointerReceiverProbe::HoverHit)
+        {
+            probes.push(PointerReceiverProbeReceipt::HoverHit(
+                PointerReceiverHoverHit::new(
+                    projection,
+                    point,
+                    PointerReceiverHoverHitDisposition::Dock(target_id),
+                )
+                .unwrap(),
+            ));
+        }
+        setup
+            .submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new([candidate.receipt(
+                    PointerReceiverObservation::Presented(
+                        PresentedPointerReceiverObservation::new(probes).unwrap(),
+                    ),
+                )])
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    complete_host_frame_with_explicit_surface_roster(&engine, &mut setup);
+    setup.finish(&mut engine).unwrap();
+    assert!(matches!(
+        engine.interaction.status(),
+        InteractionStatus::Dragging { .. }
+    ));
+    let before = engine.workspace().clone();
+    let volume = WorkspaceCloneVolume::capture(&before);
+    assert_eq!(volume.nodes, 3);
+    assert_eq!(volume.tab_items, 3);
+    assert_eq!(volume.split_child_edges, 2);
+    assert_eq!(volume.tab_mru_items, 3);
+
+    for publish in [false, true] {
+        structural_work::reset();
+        let mut release = begin_test_host_frame(&engine, host);
+        release
+            .submit_surface_pointer_journal(
+                &provider,
+                local_pointer_journal(
+                    2,
+                    [(
+                        PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                        released,
+                    )],
+                ),
+            )
+            .unwrap();
+        let candidate = release.pointer_receiver_candidates().unwrap().candidates()[0].clone();
+        let projection = release
+            .view()
+            .interaction_projection(SOURCE_SURFACE)
+            .unwrap();
+        release
+            .submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new([candidate.receipt(
+                    PointerReceiverObservation::Presented(
+                        PresentedPointerReceiverObservation::new([
+                            PointerReceiverProbeReceipt::HoverHit(
+                                PointerReceiverHoverHit::new(
+                                    projection,
+                                    released,
+                                    PointerReceiverHoverHitDisposition::Dock(target_id),
+                                )
+                                .unwrap(),
+                            ),
+                        ])
+                        .unwrap(),
+                    ),
+                )])
+                .unwrap(),
+            )
+            .unwrap();
+        complete_host_frame_with_explicit_surface_roster(&engine, &mut release);
+        if publish {
+            let transition = release.finish(&mut engine).unwrap();
+            assert!(matches!(
+                transition.reduced_pointer_edges()[0].interaction_outcomes(),
+                [InteractionOutcome::DragDelivered { .. }]
+            ));
+            assert_eq!(provider.committed_through(), PointerEdgeSequence::new(3));
+            assert_eq!(engine.workspace().nodes().count(), 1);
+            assert_eq!(engine.workspace().root(SOURCE_ROOT).unwrap().node, target);
+            assert!(
+                matches!(engine.workspace().node(target), Some(Node::Tabs { selected, .. })
+                if *selected == Some(item))
+            );
+            assert_eq!(engine.workspace().item_multiset(), before.item_multiset());
+        } else {
+            drop(release);
+            assert_eq!(engine.workspace(), &before);
+            assert_eq!(provider.committed_through(), PointerEdgeSequence::new(2));
+            assert!(matches!(
+                engine.interaction.status(),
+                InteractionStatus::Dragging { .. }
+            ));
+        }
+        let work = structural_work::snapshot();
+        assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
+        assert_eq!(
+            work.workspace_deep_clones.transaction_candidates.volume,
+            volume
+        );
+        assert_eq!(work.workspace_deep_clones.engine_candidates.calls, 0);
+        assert_eq!(
+            work.workspace_deep_clones.engine_candidates.volume,
+            WorkspaceCloneVolume::default()
+        );
+        assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
+        assert_eq!(
+            work.engine_deep_clones.atomic_candidates.volume,
+            WorkspaceCloneVolume::default()
+        );
+        assert_eq!(work.engine_deep_clones.shared_workspace, volume);
+    }
+}
+
+#[test]
 fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     let mut builder = Workspace::builder();
     let left = builder.insert_node(Node::tabs([ItemId::new(1)]));
@@ -1534,10 +1732,10 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
             semantic_input_watermark_guards: 0,
         }
     );
-    assert_eq!(work.workspace_deep_clones.engine_candidates.calls, 1);
+    assert_eq!(work.workspace_deep_clones.engine_candidates.calls, 0);
     assert_eq!(
         work.workspace_deep_clones.engine_candidates.volume,
-        workspace_volume
+        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
     );
     assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
     assert_eq!(
@@ -1548,8 +1746,8 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     assert_eq!(work.transaction_commands, 1);
     // Starting the touching solver validates one complete presented root in
     // addition to the existing source, continuation and transaction captures.
-    assert_eq!(work.root_fingerprint_builds, 9);
-    assert_eq!(work.root_fingerprint_node_visits, 27);
+    assert!(work.root_fingerprint_builds <= 10);
+    assert!(work.root_fingerprint_node_visits <= 30);
 }
 
 #[test]

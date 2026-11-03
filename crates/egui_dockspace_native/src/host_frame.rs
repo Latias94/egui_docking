@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceSubmittedAction, HostFrameReport, HostInputOutcome,
-    PreparedPaneFocusObservation, PreparedSurfaceAction, SurfaceUnavailableReason,
+    DockspaceHostFrame, DockspaceSubmittedAction, DockspaceUpdate, HostFrameReport,
+    HostInputOutcome, PreparedPaneFocusObservation, SurfaceUnavailableReason,
 };
 use eframe::egui;
 use egui_dockspace::{DockStyle, PaneView};
@@ -58,6 +58,37 @@ struct OverloadCancellation<'session> {
     translator: &'session mut NativePointerTranslator,
 }
 
+/// Owned continuation of the same candidate, without native store borrows.
+pub(crate) struct NativeHostUpdate {
+    update: DockspaceUpdate,
+    bridge: Arc<NativeHostBridge>,
+    repaint_context: Option<egui::Context>,
+    overload: Option<(u64, DockspaceSubmittedAction)>,
+}
+
+impl NativeHostUpdate {
+    pub(crate) fn resume<'session>(
+        self,
+        session: &'session mut dockspace::runtime::DockspaceSession,
+        receivers: &'session mut NativeReceiverStore,
+        translator: &'session mut NativePointerTranslator,
+    ) -> Result<NativeHostFrame<'session>, NativeRuntimeError> {
+        Ok(NativeHostFrame {
+            frame: session.resume_update(self.update)?,
+            bridge: self.bridge,
+            receivers,
+            repaint_context: self.repaint_context,
+            overload: self
+                .overload
+                .map(|(boundary, submitted)| OverloadCancellation {
+                    boundary,
+                    submitted,
+                    translator,
+                }),
+        })
+    }
+}
+
 impl std::fmt::Debug for NativeHostFrame<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -67,6 +98,29 @@ impl std::fmt::Debug for NativeHostFrame<'_> {
 }
 
 impl<'session> NativeHostFrame<'session> {
+    pub(crate) fn presented_focus_bindings(
+        &self,
+        surface: SurfaceId,
+        viewport: egui::ViewportId,
+    ) -> &[(dockspace::model::ItemId, egui::Id)] {
+        self.receivers.presented_focus_bindings(
+            surface,
+            viewport,
+            self.frame.presented_surface(surface),
+        )
+    }
+
+    pub(crate) fn suspend(self) -> NativeHostUpdate {
+        NativeHostUpdate {
+            update: self.frame.suspend(),
+            bridge: self.bridge,
+            repaint_context: self.repaint_context,
+            overload: self
+                .overload
+                .map(|cancellation| (cancellation.boundary, cancellation.submitted)),
+        }
+    }
+
     pub(crate) fn native_input_pending(&self) -> bool {
         self.overload.is_some()
             || !self.bridge.permits_unscheduled_input()
@@ -184,13 +238,6 @@ impl<'session> NativeHostFrame<'session> {
         )
         .map(|_| ())
         .map_err(Into::into)
-    }
-
-    pub(crate) fn submit_surface_action(
-        &mut self,
-        action: PreparedSurfaceAction,
-    ) -> Result<(), NativeRuntimeError> {
-        self.frame.submit_surface_action(action).map_err(Into::into)
     }
 
     pub(crate) fn submit_pane_focus_observation(

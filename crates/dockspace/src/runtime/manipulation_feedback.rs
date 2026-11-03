@@ -140,12 +140,6 @@ impl DockspaceManipulationFeedback {
                     DockspaceManipulationPendingReason::AwaitingPresentation,
                 ),
             ),
-            InteractionEventKind::ContainedTransformReleasePending { session } => (
-                ManipulationIdentity::Contained(*session),
-                DockspaceManipulationStatus::Pending(
-                    DockspaceManipulationPendingReason::AwaitingPresentation,
-                ),
-            ),
             InteractionEventKind::Delivered { session, kind } => (
                 ManipulationIdentity::Drag(*session),
                 DockspaceManipulationStatus::Delivered(match kind {

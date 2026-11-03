@@ -226,16 +226,31 @@ fn touch_resize_extents_preserve_larger_mouse_configuration() {
         );
         let fragments = compile(&plan, &[handle, junction]);
         let extent = requested.max(mouse_splitter);
-        assert_eq!(
-            fragments,
-            vec![
-                (handle.id(), rect(300.0 - extent * 0.5, 40.0, extent, 520.0)),
-                (
-                    junction.id(),
-                    rect(300.0 - extent * 0.5, 300.0 - extent * 0.5, extent, extent)
-                ),
-            ]
-        );
+        let splitter_manifest = manifest(vec![handle, junction], fragments);
+        for (position, expected) in [
+            (point(300.0 - extent * 0.5, 100.0), handle.id()),
+            (point(300.0, 300.0 - extent * 0.5 - 1.0), handle.id()),
+            (point(300.0, 290.0), handle.id()),
+            (point(300.0, 300.0), junction.id()),
+            (
+                point(300.0 + extent * 0.5 - 1.0, 300.0 + extent * 0.5 - 1.0),
+                junction.id(),
+            ),
+        ] {
+            assert_eq!(
+                splitter_manifest
+                    .resolve_exclusive_for_device(
+                        PresentationPointerLane::Drag,
+                        position,
+                        PresentationHitSuppression::default(),
+                        PointerDeviceKind::Touch,
+                    )
+                    .expect("touch allocations must resolve uniquely")
+                    .map(|region| region.id()),
+                Some(expected),
+                "{position:?}: expansion preserves original handles and junction precedence"
+            );
+        }
 
         let floating = FloatingPresentationId::new(1);
         plan.push_drop_occlusion(DropOcclusionRecord::new(
@@ -255,17 +270,295 @@ fn touch_resize_extents_preserve_larger_mouse_configuration() {
         let fragments = compile(&plan, &[west]);
         let extent = requested.max(mouse_contained);
         let expansion = (extent - mouse_contained) * 0.5;
+        let expanded_band = rect(
+            100.0 - expansion,
+            100.0 - expansion + extent,
+            extent,
+            400.0 + 2.0 * expansion - 2.0 * extent,
+        );
+        assert!(fragments.iter().all(|(id, _)| *id == west.id()));
+        let manifest = manifest(vec![west], fragments);
+        for covered in [west.hit().rect(), expanded_band] {
+            for x_fraction in [0.0, 0.25, 0.5, 0.75] {
+                for y_fraction in [0.0, 0.25, 0.5, 0.75] {
+                    let position = point(
+                        covered.x() + covered.width() * x_fraction,
+                        covered.y() + covered.height() * y_fraction,
+                    );
+                    assert_eq!(
+                        manifest
+                            .resolve_exclusive_for_device(
+                                PresentationPointerLane::Drag,
+                                position,
+                                PresentationHitSuppression::default(),
+                                PointerDeviceKind::Touch,
+                            )
+                            .expect("the original and expanded bands have one touch owner")
+                            .map(|region| region.id()),
+                        Some(west.id()),
+                        "{position:?}: touch preserves the complete original mouse coverage"
+                    );
+                }
+            }
+        }
         assert_eq!(
-            fragments,
-            vec![(
-                west.id(),
-                rect(
-                    100.0 - expansion,
-                    100.0 - expansion + extent,
-                    extent,
-                    400.0 + 2.0 * expansion - 2.0 * extent,
+            manifest
+                .resolve_exclusive_for_device(
+                    PresentationPointerLane::Drag,
+                    point(expanded_band.x() - 1.0, 300.0),
+                    PresentationHitSuppression::default(),
+                    PointerDeviceKind::Touch,
                 )
-            )]
+                .expect("outside the allocated band remains unambiguous"),
+            None
+        );
+    }
+}
+
+#[test]
+fn parallel_touch_bands_partition_geometrically_even_with_extreme_extents() {
+    for extent in [256.0, f64::MAX] {
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            for second_at in [205.0, 398.0] {
+                let config = DockPresentationConfig::builder()
+                    .touch_resize_hit_extent(extent)
+                    .build()
+                    .unwrap();
+                let mut plan = plan(config);
+                let first = SplitterSceneId {
+                    root: RootId::new(1),
+                    split: node(),
+                    index: 0,
+                };
+                let second = SplitterSceneId { index: 1, ..first };
+                let draw = |at| match axis {
+                    Axis::Horizontal => rect(at, 40.0, 4.0, 520.0),
+                    Axis::Vertical => rect(40.0, at, 520.0, 4.0),
+                };
+                let regions = [(first, 198.0), (second, second_at)].map(|(id, at)| {
+                    let bounds = draw(at);
+                    plan.push_splitter_record(splitter(id, bounds, axis));
+                    region(
+                        PresentationHitRegionKind::SplitterHandle(id),
+                        bounds,
+                        0,
+                        PresentationHitPrecedence::SplitterHandle,
+                    )
+                });
+                let fragments = compile(&plan, &regions);
+                for (index, (first_id, first_rect)) in fragments.iter().enumerate() {
+                    for (second_id, second_rect) in fragments.iter().skip(index + 1) {
+                        if first_id != second_id {
+                            assert!(intersection(*first_rect, *second_rect).is_none());
+                        }
+                    }
+                }
+                let manifest = manifest(regions.to_vec(), fragments);
+                let boundary = midpoint(202.0, second_at);
+                for (at, expected) in [
+                    (198.0, first),
+                    (201.9, first),
+                    (boundary - 0.1, first),
+                    (boundary, second),
+                    (second_at, second),
+                    (second_at + 3.9, second),
+                ] {
+                    let position = match axis {
+                        Axis::Horizontal => point(at, 100.0),
+                        Axis::Vertical => point(100.0, at),
+                    };
+                    assert_eq!(
+                        manifest
+                            .resolve_exclusive_for_device(
+                                PresentationPointerLane::Drag,
+                                position,
+                                PresentationHitSuppression::default(),
+                                PointerDeviceKind::Touch,
+                            )
+                            .expect("geometric cells must never require an arbitrary tie break")
+                            .map(|region| region.id().kind()),
+                        Some(PresentationHitRegionKind::SplitterHandle(expected)),
+                        "{axis:?}, {extent}, {position:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn adjacent_junction_halos_preserve_visible_arms_and_each_junction() {
+    let config = DockPresentationConfig::builder()
+        .touch_resize_hit_extent(256.0)
+        .build()
+        .unwrap();
+    let mut plan = plan(config);
+    let vertical = SplitterSceneId {
+        root: RootId::new(1),
+        split: node(),
+        index: 0,
+    };
+    let upper = SplitterSceneId {
+        index: 1,
+        ..vertical
+    };
+    let lower = SplitterSceneId {
+        index: 2,
+        ..vertical
+    };
+    let mut regions = Vec::new();
+    for (id, bounds, axis) in [
+        (vertical, rect(298.0, 40.0, 4.0, 520.0), Axis::Horizontal),
+        (upper, rect(40.0, 238.0, 258.0, 4.0), Axis::Vertical),
+        (lower, rect(40.0, 358.0, 258.0, 4.0), Axis::Vertical),
+    ] {
+        plan.push_splitter_record(splitter(id, bounds, axis));
+        regions.push(region(
+            PresentationHitRegionKind::SplitterHandle(id),
+            bounds,
+            0,
+            PresentationHitPrecedence::SplitterHandle,
+        ));
+    }
+    let mut junctions = Vec::new();
+    for (horizontal, y) in [(upper, 238.0), (lower, 358.0)] {
+        let id = SplitterJunctionId::new(Some(vertical), Some(horizontal), Some(vertical), None);
+        let junction = region(
+            PresentationHitRegionKind::SplitterJunction(id),
+            rect(298.0, y, 4.0, 4.0),
+            0,
+            PresentationHitPrecedence::SplitterJunction,
+        );
+        regions.push(junction);
+        junctions.push(junction.id());
+    }
+    regions.sort_unstable_by_key(|region| region.id());
+    let fragments = compile(&plan, &regions);
+    let manifest = manifest(regions, fragments);
+    for position in [
+        point(300.0, 100.0),
+        point(300.0, 240.0),
+        point(300.0, 280.0),
+        point(300.0, 300.0),
+        point(300.0, 360.0),
+        point(300.0, 500.0),
+        point(200.0, 240.0),
+        point(200.0, 360.0),
+    ] {
+        let winner = |device| {
+            manifest
+                .resolve_exclusive_for_device(
+                    PresentationPointerLane::Drag,
+                    position,
+                    PresentationHitSuppression::default(),
+                    device,
+                )
+                .expect("visible arms and junctions must stay unambiguous")
+                .map(|region| region.id())
+        };
+        assert_eq!(
+            winner(PointerDeviceKind::Touch),
+            winner(PointerDeviceKind::Mouse)
+        );
+        assert!(winner(PointerDeviceKind::Mouse).is_some());
+    }
+    for (position, expected) in [
+        (point(320.0, 260.0), junctions[0]),
+        (point(320.0, 340.0), junctions[1]),
+    ] {
+        assert_eq!(
+            manifest
+                .resolve_exclusive_for_device(
+                    PresentationPointerLane::Drag,
+                    position,
+                    PresentationHitSuppression::default(),
+                    PointerDeviceKind::Touch,
+                )
+                .expect("adjacent junction expansions must have separate cells")
+                .map(|region| region.id()),
+            Some(expected),
+        );
+    }
+}
+
+#[test]
+fn extreme_touch_corners_do_not_erase_original_contained_edges() {
+    let config = DockPresentationConfig::builder()
+        .touch_resize_hit_extent(f64::MAX)
+        .build()
+        .unwrap();
+    let mut plan = plan(config);
+    let floating = FloatingPresentationId::new(1);
+    plan.push_drop_occlusion(DropOcclusionRecord::new(
+        floating,
+        HitRegion::new(rect(100.0, 100.0, 400.0, 400.0)),
+        SceneLayerKey::new(1),
+    ));
+    let mut regions = [
+        (
+            ContainedResizeDirection::NorthWest,
+            rect(100.0, 100.0, 7.0, 7.0),
+        ),
+        (
+            ContainedResizeDirection::North,
+            rect(107.0, 100.0, 386.0, 7.0),
+        ),
+        (
+            ContainedResizeDirection::NorthEast,
+            rect(493.0, 100.0, 7.0, 7.0),
+        ),
+        (
+            ContainedResizeDirection::East,
+            rect(493.0, 107.0, 7.0, 386.0),
+        ),
+        (
+            ContainedResizeDirection::SouthEast,
+            rect(493.0, 493.0, 7.0, 7.0),
+        ),
+        (
+            ContainedResizeDirection::South,
+            rect(107.0, 493.0, 386.0, 7.0),
+        ),
+        (
+            ContainedResizeDirection::SouthWest,
+            rect(100.0, 493.0, 7.0, 7.0),
+        ),
+        (
+            ContainedResizeDirection::West,
+            rect(100.0, 107.0, 7.0, 386.0),
+        ),
+    ]
+    .map(|(direction, bounds)| {
+        region(
+            PresentationHitRegionKind::ContainedResize {
+                floating,
+                direction,
+            },
+            bounds,
+            1,
+            PresentationHitPrecedence::ContainedResize,
+        )
+    });
+    regions.sort_unstable_by_key(|region| region.id());
+    let fragments = compile(&plan, &regions);
+    let manifest = manifest(regions.to_vec(), fragments);
+    for original in regions {
+        let bounds = original.hit().rect();
+        let center = point(
+            midpoint(bounds.x(), bounds.max().x()),
+            midpoint(bounds.y(), bounds.max().y()),
+        );
+        assert_eq!(
+            manifest
+                .resolve_exclusive_for_device(
+                    PresentationPointerLane::Drag,
+                    center,
+                    PresentationHitSuppression::default(),
+                    PointerDeviceKind::Touch,
+                )
+                .expect("a large corner must not erase another original handle")
+                .map(|region| region.id()),
+            Some(original.id()),
         );
     }
 }

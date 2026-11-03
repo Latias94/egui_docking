@@ -102,7 +102,9 @@ pub struct NativeSurfaceBinding {
 /// Exact external-Root binding continuation from one workspace replacement.
 ///
 /// This pair retains one physical window while its logical surface or epoch
-/// changes. It grants no successor coordinates, focus or presentation authority.
+/// changes. It grants no new coordinates, input, activation or presentation
+/// authority. An already proven physical-window focus fact may follow the exact
+/// continuation; pane focus still requires an independent host observation.
 /// Hosts prepare resources from a frame's proposed pair and install routes only
 /// after the committed report confirms that same pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1609,6 +1611,7 @@ impl RuntimeNativeState {
     pub(super) fn prepare_native_commit(
         &self,
         engine: &crate::engine::DockEngine,
+        root_continuations: &[(ViewportBinding, ViewportBinding)],
     ) -> Result<PreparedNativeHostCommit, NativePlatformError> {
         let next_producer = NativeProducerState::prepare(
             engine,
@@ -1648,6 +1651,17 @@ impl RuntimeNativeState {
         Ok(PreparedNativeHostCommit {
             next_producer,
             binding_roster_unsettled_through,
+            focus: match self.focus {
+                NativeGlobalFocus::Dock(focused) => root_continuations
+                    .iter()
+                    .find_map(|&(before, after)| {
+                        (focused.binding == before).then_some(NativeGlobalFocus::Dock(
+                            NativeSurfaceBinding::from_binding(self.provider(), after),
+                        ))
+                    })
+                    .unwrap_or(self.focus),
+                _ => self.focus,
+            },
             report: NativeHostCommit {
                 provider: self.provider(),
                 admissions,
@@ -1662,6 +1676,7 @@ impl RuntimeNativeState {
 pub(super) struct PreparedNativeHostCommit {
     next_producer: NativeProducerState,
     binding_roster_unsettled_through: Option<BackendIngressOrdinal>,
+    focus: NativeGlobalFocus,
     report: NativeHostCommit,
 }
 
@@ -1669,6 +1684,7 @@ impl PreparedNativeHostCommit {
     pub(super) fn commit(self, native: &mut RuntimeNativeState) -> NativeHostCommit {
         native.producer = self.next_producer;
         native.binding_roster_unsettled_through = self.binding_roster_unsettled_through;
+        native.focus = self.focus;
         self.report
     }
 }

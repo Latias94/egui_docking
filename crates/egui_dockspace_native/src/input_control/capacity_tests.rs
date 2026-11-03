@@ -404,7 +404,7 @@ fn full_observation_backing_preserves_the_current_callback_and_request_until_ret
     let backing = control.observations.as_ptr();
     let old_record = unowned_record(old, false);
     assert!(control.observe_unowned_applied(old_record).unwrap());
-    let identity = format!("{:?}", fixture.request);
+    let operation = fixture.request.operation().clone();
     retain(&mut control, fixture.request, 71);
     let applied = dispatch(&mut control);
     let stale_token =
@@ -450,7 +450,7 @@ fn full_observation_backing_preserves_the_current_callback_and_request_until_ret
     else {
         panic!("a refused observation must retain its dispatched request");
     };
-    assert_eq!(format!("{request:?}"), identity);
+    assert_eq!(request.operation(), &operation);
     assert_eq!(*token, applied.token());
     assert_eq!(control.pending.len(), 1);
     assert_eq!(control.snapshot_fact(fixture.binding), None);

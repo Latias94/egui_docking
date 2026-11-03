@@ -1,4 +1,4 @@
-//! Touch delivery activates its source only after the exact preview is presented.
+//! Touch delivery activates its source when the ordinary release update commits.
 
 use std::time::Duration;
 
@@ -10,8 +10,7 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     ContainedResizeDirection, DockspaceHostFrame, DockspaceManipulationDelivery as Delivery,
-    DockspaceManipulationPendingReason as PendingReason, DockspaceManipulationStatus as Status,
-    DockspacePaneFocusRequest, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceManipulationStatus as Status, DockspacePaneFocusRequest, DockspaceReceiverDescriptor,
     DockspaceReceiverRole, DockspaceSession, DockspaceTouchEvent, HostFrameReport,
     HostInputOutcome, HostPointerInput, HostPointerRoute, PaintedSurfaceOutput, PointerDeviceKind,
     PointerEventMetadata, SurfacePaintProgramOperation as Operation,
@@ -92,8 +91,20 @@ struct Recorded {
     focus: Option<DockspacePaneFocusRequest>,
 }
 
+fn metrics() -> UniformSurfaceMetrics {
+    UniformSurfaceMetrics::new(
+        rect(0.0, 0.0, 960.0, 720.0),
+        LogicalSize::new(64.0, 48.0).unwrap(),
+        96.0,
+    )
+    .unwrap()
+}
+
 fn paint(session: &mut DockspaceSession) -> (Recorded, PaintedSurfaceOutput) {
     let mut frame = session.begin_host_frame().unwrap();
+    if frame.paint_plan(SURFACE).unwrap().is_none() {
+        frame.measure_surface(SURFACE, metrics()).unwrap();
+    }
     let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
     let tab = plan.tab_receiver(INACTIVE);
     let focus = plan.pane_focus_request();
@@ -310,7 +321,7 @@ fn arm_touch(session: &mut DockspaceSession, point: LogicalPoint) {
 }
 
 #[test]
-fn inactive_tab_reorder_selects_and_requests_focus_only_after_exact_presented() {
+fn inactive_tab_reorder_selects_and_requests_focus_at_release_commit() {
     for (source_in_rear, disposition) in [
         (false, Disposition::Presented),
         (false, Disposition::Dropped),
@@ -363,66 +374,44 @@ fn inactive_tab_reorder_selects_and_requests_focus_only_after_exact_presented() 
             target,
             370,
         );
-        assert!(!released.workspace_changed());
-        assert_eq!(durable(&session), before);
+        assert!(released.workspace_changed());
+        assert_eq!(released.before(), before.version);
+        assert_eq!(released.after(), session.version());
         assert!(!session.has_active_gesture());
-        let [pending] = released.manipulation_feedback() else {
-            panic!("release must wait for its exact preview: {released:?}");
+        let [terminal] = released.manipulation_feedback() else {
+            panic!("release must deliver the reorder once: {released:?}");
         };
-        assert_eq!(
-            pending.status(),
-            Status::Pending(PendingReason::AwaitingPresentation)
-        );
-        let (recorded, output) = paint(&mut session);
-        assert!(
-            recorded.focus.is_none(),
-            "pending delivery cannot request pane focus"
-        );
-        assert!(recorded.renderer.records.iter().any(|record| matches!(
-            record,
-            OwnedRecord::Preview(DockspacePreviewVisual::Dock { surface, .. }) if *surface == SURFACE
-        )));
-        assert_eq!(durable(&session), before);
-        let delivered = present(&mut session, output, disposition);
-        let [terminal] = delivered.manipulation_feedback() else {
-            panic!("the exact output must terminate the pending reorder: {delivered:?}");
-        };
-        assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-        if disposition == Disposition::Presented {
-            assert!(delivered.workspace_changed());
-            assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-            let after = durable(&session);
-            assert_eq!(after.tabs, [INACTIVE, FIRST, THIRD]);
-            assert_eq!(after.selected, Some(INACTIVE));
-            if source_in_rear {
-                assert_eq!(
-                    after.contained,
-                    [
-                        (FRONT, before.contained[1].1),
-                        (REAR, before.contained[0].1)
-                    ]
-                );
-            } else {
-                assert_eq!(after.contained, before.contained);
-            }
-            assert_ne!(after.version, before.version);
-        } else {
-            assert!(!delivered.workspace_changed());
-            assert!(matches!(terminal.status(), Status::Cancelled(_)));
-            assert_eq!(durable(&session), before);
-        }
-        measure(&mut session);
+        assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
         let after = durable(&session);
-        let (recorded, output) = paint(&mut session);
-        if disposition == Disposition::Presented {
-            let focus = recorded
-                .focus
-                .expect("delivered inactive tab must request pane focus");
-            assert_eq!(focus.surface(), SURFACE);
-            assert_eq!(focus.item(), Some(INACTIVE));
+        assert_eq!(after.tabs, [INACTIVE, FIRST, THIRD]);
+        assert_eq!(after.selected, Some(INACTIVE));
+        if source_in_rear {
+            assert_eq!(
+                after.contained,
+                [
+                    (FRONT, before.contained[1].1),
+                    (REAR, before.contained[0].1)
+                ]
+            );
         } else {
-            assert!(recorded.focus.is_none());
+            assert_eq!(after.contained, before.contained);
         }
+        assert_ne!(after.version, before.version);
+        let (recorded, output) = paint(&mut session);
+        let focus = recorded
+            .focus
+            .expect("delivered inactive tab requests focus immediately in the successor output");
+        assert_eq!(focus.surface(), SURFACE);
+        assert_eq!(focus.item(), Some(INACTIVE));
+        assert!(recorded.renderer.records.iter().all(|record| !matches!(
+            record,
+            OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
+        )));
+        let settled = present(&mut session, output, disposition);
+        assert!(!settled.workspace_changed());
+        assert!(settled.manipulation_feedback().is_empty());
+        assert_eq!(durable(&session), after);
+        let (_, output) = paint(&mut session);
         let later = present(&mut session, output, Disposition::Presented);
         assert!(later.manipulation_feedback().is_empty());
         assert_eq!(durable(&session), after);
@@ -430,7 +419,7 @@ fn inactive_tab_reorder_selects_and_requests_focus_only_after_exact_presented() 
 }
 
 #[test]
-fn rear_contained_touch_resize_raises_only_after_exact_presented() {
+fn rear_contained_touch_resize_raises_at_release_commit() {
     for disposition in [Disposition::Presented, Disposition::Dropped] {
         let (mut session, initial) = fixture(false);
         let resize = initial
@@ -474,50 +463,34 @@ fn rear_contained_touch_resize_raises_only_after_exact_presented() {
             target,
             370,
         );
-        assert!(!released.workspace_changed());
-        assert_eq!(durable(&session), before);
+        assert!(released.workspace_changed());
+        assert_eq!(released.before(), before.version);
+        assert_eq!(released.after(), session.version());
         assert!(!session.has_active_gesture());
-        let [pending] = released.manipulation_feedback() else {
-            panic!("resize release must wait for its exact preview: {released:?}");
+        let [terminal] = released.manipulation_feedback() else {
+            panic!("resize release must deliver once: {released:?}");
         };
         assert_eq!(
-            pending.status(),
-            Status::Pending(PendingReason::AwaitingPresentation)
+            terminal.status(),
+            Status::Delivered(Delivery::ContainedTransform)
         );
-        let (recorded, output) = paint(&mut session);
-        assert!(
-            recorded
-                .renderer
-                .records
-                .contains(&OwnedRecord::TransformPreview(REAR, expected))
-        );
-        assert_eq!(durable(&session), before);
-        let delivered = present(&mut session, output, disposition);
-        let [terminal] = delivered.manipulation_feedback() else {
-            panic!("the exact output must terminate the pending resize: {delivered:?}");
-        };
-        assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-        if disposition == Disposition::Presented {
-            assert!(delivered.workspace_changed());
-            assert_eq!(
-                terminal.status(),
-                Status::Delivered(Delivery::ContainedTransform)
-            );
-            let after = durable(&session);
-            assert_eq!(
-                after.contained,
-                [(FRONT, before.contained[1].1), (REAR, expected)]
-            );
-            assert_eq!(after.tabs, before.tabs);
-            assert_eq!(after.selected, before.selected);
-            assert_ne!(after.version, before.version);
-        } else {
-            assert!(!delivered.workspace_changed());
-            assert!(matches!(terminal.status(), Status::Cancelled(_)));
-            assert_eq!(durable(&session), before);
-        }
-        measure(&mut session);
         let after = durable(&session);
+        assert_eq!(
+            after.contained,
+            [(FRONT, before.contained[1].1), (REAR, expected)]
+        );
+        assert_eq!(after.tabs, before.tabs);
+        assert_eq!(after.selected, before.selected);
+        assert_ne!(after.version, before.version);
+        let (recorded, output) = paint(&mut session);
+        assert!(recorded.renderer.records.iter().all(|record| !matches!(
+            record,
+            OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
+        )));
+        let settled = present(&mut session, output, disposition);
+        assert!(!settled.workspace_changed());
+        assert!(settled.manipulation_feedback().is_empty());
+        assert_eq!(durable(&session), after);
         let (_, output) = paint(&mut session);
         let later = present(&mut session, output, Disposition::Presented);
         assert!(later.manipulation_feedback().is_empty());
@@ -563,18 +536,16 @@ fn cross_root_touch_dock_does_not_require_unrelated_destination_raise_permission
         target,
         370,
     );
-    assert_eq!(durable(&session), before);
-    assert!(matches!(
-        release.manipulation_feedback(),
-        [pending] if pending.status() == Status::Pending(PendingReason::AwaitingPresentation)
-    ));
+    assert!(release.workspace_changed());
+    assert!(
+        matches!(release.manipulation_feedback(), [terminal] if terminal.status() == Status::Delivered(Delivery::Dock))
+    );
+    let delivered_version = session.version();
     let (_, output) = paint(&mut session);
-    let delivered = present(&mut session, output, Disposition::Presented);
-    assert!(delivered.workspace_changed());
-    assert!(matches!(
-        delivered.manipulation_feedback(),
-        [terminal] if terminal.status() == Status::Delivered(Delivery::Dock)
-    ));
+    let settled = present(&mut session, output, Disposition::Presented);
+    assert!(!settled.workspace_changed());
+    assert!(settled.manipulation_feedback().is_empty());
+    assert_eq!(session.version(), delivered_version);
     let after = durable(&session);
     assert_eq!(after.contained, before.contained);
     assert_eq!(session.view().item(INACTIVE).unwrap().root(), target_root);

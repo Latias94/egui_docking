@@ -55,6 +55,14 @@ impl NodeFingerprint {
     /// refresh command preconditions without authorizing a changed graph, tab
     /// order, split ratio, central node, or presentation owner.
     pub(crate) fn presentation_structure_eq(&self, other: &Self) -> bool {
+        self.presentation_eq(other, true)
+    }
+
+    pub(crate) fn presentation_topology_eq(&self, other: &Self) -> bool {
+        self.presentation_eq(other, false)
+    }
+
+    fn presentation_eq(&self, other: &Self, compare_weights: bool) -> bool {
         self.0.root == other.0.root
             && self.0.root_node == other.0.root_node
             && self.0.central == other.0.central
@@ -86,7 +94,7 @@ impl NodeFingerprint {
                             ) => {
                                 left_axis == right_axis
                                     && left_children == right_children
-                                    && left_weights == right_weights
+                                    && (!compare_weights || left_weights == right_weights)
                             }
                             (FingerprintNode::Tabs { .. }, FingerprintNode::Split { .. })
                             | (FingerprintNode::Split { .. }, FingerprintNode::Tabs { .. }) => {

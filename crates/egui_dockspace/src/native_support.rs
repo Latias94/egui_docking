@@ -11,8 +11,8 @@ use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole,
     DockspaceSemanticOutput, DockspaceVisualId, NativeReceiverQuery, PreparedPaneFocusObservation,
-    PreparedSurfaceAction, PresentedDockReceiver, PresentedDockspaceSurface,
-    SurfaceProgramExecutionReceipt, SurfaceUnavailableReason,
+    PresentedDockReceiver, PresentedDockspaceSurface, SurfaceProgramExecutionReceipt,
+    SurfaceUnavailableReason,
 };
 use egui::{Id, Ui};
 
@@ -20,6 +20,9 @@ use crate::error::DockspaceError;
 use crate::pane::PaneView;
 use crate::product_render;
 use crate::style::DockStyle;
+
+pub use crate::product_focus::{retain_presented_pane_focus, sample_host_focus};
+pub use crate::product_render::EguiSurfaceAction;
 
 /// Result of painting one surface against a core-owned host frame.
 #[derive(Debug)]
@@ -35,9 +38,11 @@ pub struct NativeSurfacePaint {
     scroll_receivers: Vec<NativeScrollPaintReceiver>,
     semantic_output: Option<DockspaceSemanticOutput>,
     execution_receipt: Option<SurfaceProgramExecutionReceipt>,
-    local_actions: Vec<PreparedSurfaceAction>,
-    presentation_actions: Vec<PreparedSurfaceAction>,
+    output_proof: Option<crate::output_proof::SurfaceOutputProof>,
+    local_actions: Vec<EguiSurfaceAction>,
+    presentation_actions: Vec<EguiSurfaceAction>,
     pane_focus_observation: Option<PreparedPaneFocusObservation>,
+    pane_focus_bindings: Vec<(ItemId, Id)>,
 }
 
 /// One egui widget identity bound to an exact core receiver in the same pass.
@@ -166,6 +171,26 @@ impl NativeScrollPaintReceiver {
 }
 
 impl NativeSurfacePaint {
+    /// Returns exact focusable pane targets registered in this output's UI pass.
+    pub fn pane_focus_bindings(&self) -> &[(ItemId, Id)] {
+        &self.pane_focus_bindings
+    }
+
+    /// Validates the exact encoded span after all renderer output hooks.
+    /// Private markers are removed only after a successful complete check.
+    pub fn validate_final_output(&self, output: &mut egui::FullOutput) -> bool {
+        if self.had_ready_plan
+            && self
+                .output_proof
+                .as_ref()
+                .and_then(|proof| proof.is_present_once(output))
+                .is_none()
+        {
+            return false;
+        }
+        crate::output_proof::scrub_private_markers(output);
+        true
+    }
     /// Returns the logical surface painted by this pass.
     #[must_use]
     pub const fn surface(&self) -> SurfaceId {
@@ -248,12 +273,12 @@ impl NativeSurfacePaint {
     }
 
     /// Takes user actions which survive an egui discarded pass.
-    pub fn take_local_actions(&mut self) -> Vec<PreparedSurfaceAction> {
+    pub fn take_local_actions(&mut self) -> Vec<EguiSurfaceAction> {
         std::mem::take(&mut self.local_actions)
     }
 
     /// Takes paint acknowledgements owned only by this exact pass.
-    pub fn take_presentation_actions(&mut self) -> Vec<PreparedSurfaceAction> {
+    pub fn take_presentation_actions(&mut self) -> Vec<EguiSurfaceAction> {
         std::mem::take(&mut self.presentation_actions)
     }
 
@@ -302,13 +327,16 @@ pub fn paint_surface(
             scroll_receivers: Vec::new(),
             semantic_output: None,
             execution_receipt: None,
+            output_proof: None,
             local_actions: Vec::new(),
             presentation_actions: Vec::new(),
             pane_focus_observation: None,
+            pane_focus_bindings: Vec::new(),
         });
     };
 
     let semantic_output = plan.semantic_output();
+    let capture = crate::output_proof::SurfaceOutputCapture::begin_multilayer(ui.painter());
     let painted = product_render::paint_surface(
         ui,
         instance_id,
@@ -352,9 +380,11 @@ pub fn paint_surface(
             .collect(),
         semantic_output: Some(semantic_output),
         execution_receipt: painted.execution_receipt,
+        output_proof: capture.finish(ui.painter()),
         local_actions: painted.local_actions,
         presentation_actions: painted.presentation_actions,
         pane_focus_observation: painted.pane_focus_observation,
+        pane_focus_bindings: painted.pane_focus_bindings,
     })
 }
 

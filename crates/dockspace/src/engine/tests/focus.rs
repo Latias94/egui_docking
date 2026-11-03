@@ -2,6 +2,267 @@
 
 use super::*;
 use crate::pointer_journal::{AnyButtonDownAuthority, PointerStateObservation};
+use crate::viewport_focus::{
+    CurrentUiFocus, HostFocusObservation, HostFocusState, PaneFocusObservationRejection,
+};
+
+fn capture_focus_fact(
+    engine: &DockEngine,
+    surface: SurfaceId,
+    generation: u64,
+    state: HostFocusState,
+) -> HostFocusObservation {
+    let (stream, host, _) = engine
+        .presentation_authority
+        .presentation
+        .active_surface_scope(surface)
+        .expect("focus facts require an actual current presentation owner");
+    HostFocusObservation::new(
+        PaneFocusObservationGeneration::new(generation),
+        host,
+        stream,
+        surface,
+        state,
+    )
+}
+
+fn submit_focus_fact(
+    engine: &mut DockEngine,
+    observation: HostFocusObservation,
+) -> EngineTransition {
+    let expected_epoch = engine.version().epoch();
+    submit_test_input(
+        engine,
+        observation.host(),
+        EngineInput::PublishHostFocusObservation {
+            expected_epoch,
+            observation,
+        },
+    )
+    .expect("an owned host focus observation must reduce atomically")
+}
+
+#[test]
+fn host_focus_facts_keep_current_focus_separate_from_each_surfaces_history() {
+    let mut fixture = counter_fixture();
+    publish_counter_scene(&mut fixture);
+    for (surface, item) in [
+        (SOURCE_SURFACE, ItemId::new(1)),
+        (TARGET_SURFACE, ItemId::new(2)),
+    ] {
+        let fact = capture_focus_fact(&fixture.engine, surface, 1, HostFocusState::Pane(item));
+        let transition = submit_focus_fact(&mut fixture.engine, fact);
+        assert!(matches!(
+            transition.reduced_inputs()[0].outcome(),
+            InputOutcome::PaneFocusObservationPublished {
+                transition: PaneFocusObservationTransition::Applied {
+                    cleared_intent: None
+                },
+            }
+        ));
+    }
+    assert_eq!(
+        fixture.engine.viewport_focus.current_focus(),
+        Some(CurrentUiFocus::Pane {
+            surface: TARGET_SURFACE,
+            item: ItemId::new(2)
+        })
+    );
+    assert_eq!(
+        fixture.engine.viewport_focus.panel_focus(SOURCE_SURFACE),
+        PanelFocusRecord::Item(ItemId::new(1))
+    );
+    assert_eq!(
+        fixture.engine.viewport_focus.panel_focus(TARGET_SURFACE),
+        PanelFocusRecord::Item(ItemId::new(2))
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport_focus
+            .pending_pane_intent()
+            .is_none()
+    );
+
+    let unknown = capture_focus_fact(&fixture.engine, SOURCE_SURFACE, 2, HostFocusState::Unknown);
+    submit_focus_fact(&mut fixture.engine, unknown);
+    assert_eq!(
+        fixture
+            .engine
+            .viewport_focus
+            .current_pane_focus(TARGET_SURFACE),
+        Some(ItemId::new(2))
+    );
+    let external = capture_focus_fact(&fixture.engine, TARGET_SURFACE, 2, HostFocusState::External);
+    submit_focus_fact(&mut fixture.engine, external);
+    assert_eq!(
+        fixture.engine.viewport_focus.current_focus(),
+        Some(CurrentUiFocus::External)
+    );
+    assert_eq!(
+        fixture.engine.viewport_focus.panel_focus(TARGET_SURFACE),
+        PanelFocusRecord::Item(ItemId::new(2))
+    );
+}
+
+#[test]
+fn host_focus_epoch_and_exact_stream_rejections_preserve_history_without_current_authority() {
+    let mut fixture = counter_fixture();
+    publish_counter_scene(&mut fixture);
+    let original = capture_focus_fact(
+        &fixture.engine,
+        SOURCE_SURFACE,
+        1,
+        HostFocusState::Pane(ItemId::new(1)),
+    );
+    submit_focus_fact(&mut fixture.engine, original);
+
+    let stale_epoch = WorkspaceEpoch::new(fixture.engine.version().epoch().get() + 1);
+    let transition = submit_test_input(
+        &mut fixture.engine,
+        original.host(),
+        EngineInput::PublishHostFocusObservation {
+            expected_epoch: stale_epoch,
+            observation: HostFocusObservation::new(
+                PaneFocusObservationGeneration::new(2),
+                original.host(),
+                original.stream(),
+                SOURCE_SURFACE,
+                HostFocusState::Unknown,
+            ),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::PaneFocusObservationStale { .. }
+    ));
+    assert_eq!(
+        fixture
+            .engine
+            .viewport_focus
+            .current_pane_focus(SOURCE_SURFACE),
+        Some(ItemId::new(1))
+    );
+
+    let replacement = fixture.engine.create_presentation_host().unwrap();
+    fixture
+        .engine
+        .presentation_authority
+        .presentation
+        .emit(
+            replacement,
+            SOURCE_SURFACE,
+            HostPresentationEndpoint::Headless,
+            HostPresentationOutputPayload::Bootstrap,
+        )
+        .unwrap();
+    fixture.engine.reconcile_viewport_focus_authority();
+    assert_eq!(
+        fixture.engine.viewport_focus.current_focus(),
+        Some(CurrentUiFocus::Unknown)
+    );
+    assert_eq!(
+        fixture.engine.viewport_focus.panel_focus(SOURCE_SURFACE),
+        PanelFocusRecord::Item(ItemId::new(1))
+    );
+
+    let rejected = submit_focus_fact(&mut fixture.engine, original);
+    assert!(matches!(
+        rejected.reduced_inputs()[0].outcome(),
+        InputOutcome::PaneFocusObservationPublished {
+            transition: PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::StaleHostScope
+            ),
+        }
+    ));
+    assert_eq!(
+        fixture.engine.viewport_focus.current_focus(),
+        Some(CurrentUiFocus::Unknown)
+    );
+}
+
+#[test]
+fn a_host_frame_cannot_submit_another_hosts_current_focus_fact() {
+    let mut fixture = counter_fixture();
+    publish_counter_scene(&mut fixture);
+    let fact = capture_focus_fact(
+        &fixture.engine,
+        SOURCE_SURFACE,
+        1,
+        HostFocusState::Pane(ItemId::new(1)),
+    );
+    let foreign = fixture.engine.create_presentation_host().unwrap();
+    let mut frame = begin_test_host_frame(&fixture.engine, foreign);
+    let mut stream = TestInputStream::resume(&fixture.engine, ENGINE_TEST_INPUT_SOURCE);
+    assert!(
+        matches!(stream.append(&mut frame, EngineInput::PublishHostFocusObservation {
+        expected_epoch: fixture.engine.version().epoch(), observation: fact,
+    }), Err(CoreHostFrameError::HostFocusOwnerMismatch { expected, submitted })
+        if expected == foreign && submitted == fact.host())
+    );
+    assert_eq!(fixture.engine.viewport_focus.current_focus(), None);
+}
+
+#[test]
+fn local_host_facts_cannot_replace_exact_native_global_focus_or_its_unknown_state() {
+    let mut fixture = focus_reveal_fixture();
+    fixture
+        .engine
+        .presentation_authority
+        .presentation
+        .emit(
+            fixture.presentation_host,
+            SOURCE_SURFACE,
+            HostPresentationEndpoint::Native(fixture.binding),
+            HostPresentationOutputPayload::Bootstrap,
+        )
+        .unwrap();
+    let initial = capture_focus_fact(
+        &fixture.engine,
+        SOURCE_SURFACE,
+        1,
+        HostFocusState::Pane(ItemId::new(1)),
+    );
+    submit_focus_fact(&mut fixture.engine, initial);
+    assert_eq!(
+        fixture
+            .engine
+            .viewport_focus
+            .current_pane_focus(SOURCE_SURFACE),
+        Some(ItemId::new(1))
+    );
+
+    for (generation, native, expected) in [
+        (
+            2,
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            CurrentUiFocus::External,
+        ),
+        (
+            3,
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            CurrentUiFocus::Unknown,
+        ),
+    ] {
+        publish_focus_snapshot(&mut fixture, native);
+        let local = capture_focus_fact(
+            &fixture.engine,
+            SOURCE_SURFACE,
+            generation,
+            HostFocusState::Pane(ItemId::new(1)),
+        );
+        submit_focus_fact(&mut fixture.engine, local);
+        assert_eq!(
+            fixture.engine.viewport_focus.current_focus(),
+            Some(expected)
+        );
+        assert_eq!(
+            fixture.engine.viewport_focus.panel_focus(SOURCE_SURFACE),
+            PanelFocusRecord::Item(ItemId::new(1))
+        );
+    }
+}
 
 struct FocusRevealFixture {
     engine: DockEngine,

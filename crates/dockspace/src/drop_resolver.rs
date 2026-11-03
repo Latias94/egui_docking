@@ -2,6 +2,8 @@
 
 mod preview;
 
+use std::sync::Arc;
+
 use crate::RootPresentationOwner;
 use crate::command::{
     DockTarget, EdgeTargetScope, MovePayload, NodeSource, RootContent, RootPresentationTarget,
@@ -28,6 +30,8 @@ use crate::runtime::direct_manipulation::{
 use crate::scene::{
     PresentationLayoutFacts, PresentationPlan, SurfaceScene, SurfaceSceneSet, SurfaceSceneStamp,
 };
+use crate::scene_manifest::PolicyRevision;
+use crate::transaction::TransactionReport;
 #[cfg(test)]
 use crate::transaction::WorkspaceTransaction;
 use crate::transition::WorkspaceVersion;
@@ -210,7 +214,7 @@ pub(crate) fn resolve_presented_drop_with_magnetic(
             target,
             candidate,
             visual,
-            command,
+            mutation,
         }) => (
             DropResolution::Resolved(ResolvedDrop {
                 scene: stamp,
@@ -218,7 +222,7 @@ pub(crate) fn resolve_presented_drop_with_magnetic(
                 source,
                 target,
                 visual,
-                command,
+                mutation,
             }),
             Some(TargetCandidate::Direct(candidate)),
         ),
@@ -323,14 +327,14 @@ fn resolve_magnetic_target(
         return Err(DropResolutionError::PresentedTargetIdentityMismatch { target: target_id });
     }
     match assessment.prepare_winner(target)? {
-        PreparedDropWinner::Eligible { command, visual } => Ok(Some((
+        PreparedDropWinner::Eligible { mutation, visual } => Ok(Some((
             DropResolution::Resolved(ResolvedDrop {
                 scene: location.scene,
                 session: location.session,
                 source,
                 target: target_id,
                 visual,
-                command,
+                mutation,
             }),
             candidate,
         ))),
@@ -454,14 +458,14 @@ fn resolve_presented_unguided_drop(
         )));
     };
     match assessment.prepare_winner(target)? {
-        PreparedDropWinner::Eligible { command, visual } => {
+        PreparedDropWinner::Eligible { mutation, visual } => {
             Ok(DropResolution::Resolved(ResolvedDrop {
                 scene: stamp,
                 session,
                 source,
                 target: target.id(),
                 visual,
-                command,
+                mutation,
             }))
         }
         PreparedDropWinner::Rejected(reason) => Ok(DropResolution::Rejected(RejectedDrop::new(
@@ -626,7 +630,7 @@ fn build_affordance(
             let is_exact_hit = active == Some(key);
             let eligibility = if is_exact_hit {
                 match assessment.prepare_winner(target)? {
-                    PreparedDropWinner::Eligible { command, visual } => {
+                    PreparedDropWinner::Eligible { mutation, visual } => {
                         let candidate = DirectTargetCandidate::new(
                             target.id(),
                             DirectTargetProvenance::Guide {
@@ -639,7 +643,7 @@ fn build_affordance(
                             target: target.id(),
                             candidate,
                             visual,
-                            command,
+                            mutation,
                         });
                         DropGuideEligibility::Eligible
                     }
@@ -758,14 +762,14 @@ fn resolve_exact_unguided_target(
         location.surface_background_offer,
     );
     match assessment.prepare_winner(target)? {
-        PreparedDropWinner::Eligible { command, visual } => Ok((
+        PreparedDropWinner::Eligible { mutation, visual } => Ok((
             DropResolution::Resolved(ResolvedDrop {
                 scene: location.scene,
                 session: location.session,
                 source,
                 target: target.id(),
                 visual,
-                command,
+                mutation,
             }),
             Some(candidate),
         )),
@@ -945,7 +949,17 @@ impl<'a> DropEligibilityContext<'a> {
                 .map_err(|source| DropResolutionError::PreviewProjection {
                     detail: source.to_string(),
                 })?;
-                Ok(PreparedDropWinner::Eligible { command, visual })
+                let (candidate, report) = prepared.into_parts(self.workspace);
+                Ok(PreparedDropWinner::Eligible {
+                    mutation: PreparedDropMutation::new(
+                        self.workspace_version,
+                        self.policy.revision(),
+                        command,
+                        candidate,
+                        report,
+                    ),
+                    visual,
+                })
             }
             Err(TransactionError::Command {
                 source: CommandError::Policy(reason),
@@ -1515,7 +1529,7 @@ enum PreparedDropTarget {
 
 enum PreparedDropWinner {
     Eligible {
-        command: WorkspaceCommand,
+        mutation: PreparedDropMutation,
         visual: DropVisual,
     },
     Rejected(DropRejectionReason),
@@ -1526,7 +1540,7 @@ enum ExactGuidePreparation {
         target: DropTargetId,
         candidate: DirectTargetCandidate,
         visual: DropVisual,
-        command: WorkspaceCommand,
+        mutation: PreparedDropMutation,
     },
     Rejected {
         target: DropTargetId,
@@ -1885,7 +1899,51 @@ pub struct ResolvedDrop {
     source: MovePayload,
     target: DropTargetId,
     visual: DropVisual,
+    mutation: PreparedDropMutation,
+}
+
+/// One immutable preflight result. Cloning a query shares its graph; only the
+/// current release may take the uniquely owned draft into publication.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedDropMutation {
+    base: WorkspaceVersion,
+    policy: PolicyRevision,
     command: WorkspaceCommand,
+    candidate: Arc<Workspace>,
+    report: TransactionReport,
+}
+
+impl PreparedDropMutation {
+    pub(crate) fn new(
+        base: WorkspaceVersion,
+        policy: PolicyRevision,
+        command: WorkspaceCommand,
+        candidate: Workspace,
+        report: TransactionReport,
+    ) -> Self {
+        Self {
+            base,
+            policy,
+            command,
+            candidate: Arc::new(candidate),
+            report,
+        }
+    }
+
+    pub(crate) fn matches(
+        &self,
+        base: WorkspaceVersion,
+        policy: &DockPolicySnapshot,
+        command: &WorkspaceCommand,
+    ) -> bool {
+        self.base == base && self.policy == policy.revision() && self.command == *command
+    }
+
+    pub(crate) fn into_owned_draft(self) -> Option<(Workspace, TransactionReport)> {
+        Arc::try_unwrap(self.candidate)
+            .ok()
+            .map(|candidate| (candidate, self.report))
+    }
 }
 
 impl ResolvedDrop {
@@ -1904,7 +1962,7 @@ impl ResolvedDrop {
     /// Returns the exact prevalidated command carried through preview and release.
     #[must_use]
     pub const fn command(&self) -> &WorkspaceCommand {
-        &self.command
+        &self.mutation.command
     }
 
     pub(crate) const fn scene_stamp(&self) -> SurfaceSceneStamp {
@@ -1919,8 +1977,8 @@ impl ResolvedDrop {
         &self.source
     }
 
-    pub(crate) fn into_command(self) -> WorkspaceCommand {
-        self.command
+    pub(crate) fn into_prepared_mutation(self) -> PreparedDropMutation {
+        self.mutation
     }
 }
 

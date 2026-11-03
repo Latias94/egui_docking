@@ -12,6 +12,71 @@ use crate::viewport_focus::{
     PaneFocusRequestObservationState,
 };
 
+pub use crate::viewport_focus::HostFocusState as DockspaceHostFocus;
+
+use super::{DockspaceHostFrame, DockspaceRuntimeError};
+
+impl DockspaceHostFrame<'_> {
+    /// Reports actual framework focus within this host's current surface scope.
+    ///
+    /// Unlike an exact request acknowledgement, this also represents unrelated
+    /// application UI, a positively observed absence of focus, and unavailable
+    /// focus information. These facts preserve per-surface restoration history.
+    /// They never grant native-window activation or replace platform focus proof.
+    /// Returns `false` when this host has no current presentation stream for the
+    /// surface. The observation and its semantic validation publish atomically
+    /// with the frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if semantic input is closed or observation identities
+    /// can no longer advance without wrapping.
+    pub fn report_host_focus(
+        &mut self,
+        surface: SurfaceId,
+        state: DockspaceHostFocus,
+    ) -> Result<bool, DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        let baseline = self
+            .frame
+            .view()
+            .viewport_focus()
+            .pane_observation_generation(surface)
+            .unwrap_or_default();
+        let Some(probe) = self
+            .frame
+            .capture_host_focus_observation(surface, baseline, state)
+        else {
+            return Ok(false);
+        };
+        if self
+            .frame
+            .view()
+            .viewport_focus()
+            .matches_current_host_focus(probe)
+        {
+            return Ok(true);
+        }
+        let generation = self
+            .session
+            .focus
+            .next_for_surface(surface, baseline)
+            .ok_or_else(DockspaceRuntimeError::pane_focus_observation_generation_exhausted)?;
+        let observation = crate::viewport_focus::HostFocusObservation::new(
+            generation,
+            probe.host(),
+            probe.stream(),
+            surface,
+            state,
+        );
+        self.append(EngineInput::PublishHostFocusObservation {
+            expected_epoch: self.frame.view().version().epoch(),
+            observation,
+        })?;
+        Ok(true)
+    }
+}
+
 /// Exact adapter observation of one published pane-focus request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DockspacePaneFocusObservation {
@@ -99,8 +164,13 @@ impl fmt::Debug for DockspacePaneFocusRequest {
     }
 }
 
-/// Affine observation prepared from one exact [`DockspacePaneFocusRequest`].
+/// Owned observation prepared from one exact [`DockspacePaneFocusRequest`].
+///
+/// Retain the original while a cloned attempt enters an unpublished update.
+/// Acknowledge it only after publication; a clone does not establish a new
+/// focus request or permit a stale intent to override its successor.
 #[must_use = "a prepared pane-focus observation must be submitted or deliberately discarded"]
+#[derive(Clone)]
 pub struct PreparedPaneFocusObservation {
     request: DockspacePaneFocusRequest,
     observation: DockspacePaneFocusObservation,
@@ -178,14 +248,22 @@ impl RuntimePaneFocusState {
             .intent
             .pane_observation_baseline()
             .unwrap_or_default();
+        self.next_for_surface(request.surface(), baseline)
+    }
+
+    fn next_for_surface(
+        &mut self,
+        surface: SurfaceId,
+        baseline: PaneFocusObservationGeneration,
+    ) -> Option<PaneFocusObservationGeneration> {
         let current = self
             .generations
-            .get(&request.surface())
+            .get(&surface)
             .copied()
             .unwrap_or_default()
             .max(baseline);
         let next = current.checked_next()?;
-        self.generations.insert(request.surface(), next);
+        self.generations.insert(surface, next);
         Some(next)
     }
 }

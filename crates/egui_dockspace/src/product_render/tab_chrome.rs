@@ -9,7 +9,7 @@ use egui::accesskit::{Action, HasPopup, Role};
 use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
 use super::RenderContext;
-use super::actions::{button_activated, effective_enabled};
+use super::actions::{button_activation_origin, effective_enabled};
 use super::geometry::{accesskit_bounds, egui_rect};
 
 pub(crate) fn paint_control_record(
@@ -58,10 +58,11 @@ fn paint_control_records(
         configure_control_accessibility(context, control, id, bounds, enabled);
 
         if enabled
-            && button_activated(context.ui, &response, context.pointer_authority)
+            && let Some(origin) =
+                button_activation_origin(context.ui, &response, context.pointer_authority)
             && let Some(action) = context.plan.prepare_tab_strip_control_activation(control)
         {
-            context.push_local_action(action);
+            context.push_local_action(origin, action);
         }
     }
 }
@@ -190,7 +191,7 @@ pub(crate) fn paint_backdrop(
         && response.clicked_by(PointerButton::Primary)
         && let Some(action) = context.plan.prepare_tab_list_menu_dismiss(backdrop)
     {
-        context.push_local_action(action);
+        context.push_local_action(id.with("pointer-click"), action);
     }
 }
 
@@ -254,7 +255,7 @@ pub(crate) fn paint_menu(
         paint_menu_row(context, menu, row, viewport, paint);
     }
     paint_scrollbar(context, menu, viewport, bounds, paint);
-    capture_menu_keyboard(context, menu, &rows);
+    capture_menu_keyboard(context, menu, frame_id, &rows);
 }
 
 fn paint_menu_row(
@@ -369,15 +370,20 @@ fn paint_menu_row(
             .is_some_and(|response| response.clicked_by(PointerButton::Primary));
     if pointer || click {
         if let Some(action) = context.plan.prepare_tab_list_menu_row_activation(row) {
-            context.push_local_action(action);
+            let origin = id.with(if click {
+                "accesskit-click"
+            } else {
+                "pointer-click"
+            });
+            context.push_local_action(origin, action);
         }
         return;
     }
     if focus && let Some(action) = context.plan.prepare_tab_list_menu_focus(menu, row.item()) {
-        context.push_local_action(action);
+        context.push_local_action(id.with("accesskit-focus"), action);
     }
     if reveal && let Some(action) = context.plan.prepare_tab_list_menu_reveal(row) {
-        context.push_local_action(action);
+        context.push_local_action(id.with("accesskit-scroll-into-view"), action);
     }
 }
 
@@ -455,16 +461,16 @@ fn paint_scrollbar(
         .then(|| {
             context.ui.input(|input| {
                 if input.has_accesskit_action_request(id, Action::Increment) {
-                    Some(1.0)
+                    Some((id.with("scrollbar-accesskit-increment"), 1.0))
                 } else if input.has_accesskit_action_request(id, Action::Decrement) {
-                    Some(-1.0)
+                    Some((id.with("scrollbar-accesskit-decrement"), -1.0))
                 } else {
                     None
                 }
             })
         })
         .flatten();
-    if let Some(direction) = adjustment {
+    if let Some((origin, direction)) = adjustment {
         let step = menu
             .rows()
             .next()
@@ -473,7 +479,7 @@ fn paint_scrollbar(
             .plan
             .prepare_tab_list_menu_scroll_by(menu, direction * step)
         {
-            context.push_local_action(action);
+            context.push_local_action(origin, action);
         }
     }
     capture_scrollbar_pointer(context, menu, track, thumb, &response);
@@ -534,7 +540,7 @@ fn capture_scrollbar_pointer(
     if delta != 0.0
         && let Some(action) = context.plan.prepare_tab_list_menu_scroll_by(menu, delta)
     {
-        context.push_local_action(action);
+        context.push_local_action(response.id.with("scrollbar-pointer-drag"), action);
     }
 }
 
@@ -563,6 +569,7 @@ fn scrollbar_target_offset(
 fn capture_menu_keyboard(
     context: &mut RenderContext<'_, '_, '_>,
     menu: TabListMenuPaintRecord<'_>,
+    id: Id,
     rows: &[TabListMenuRowPaintRecord],
 ) {
     if !effective_enabled(context.ui, true) {
@@ -570,35 +577,36 @@ fn capture_menu_keyboard(
     }
     let navigation = context.ui.input_mut(|input| {
         if input.consume_key(egui::Modifiers::NONE, Key::ArrowUp) {
-            Some(SurfaceTabListNavigation::Previous)
+            Some((Key::ArrowUp, SurfaceTabListNavigation::Previous))
         } else if input.consume_key(egui::Modifiers::NONE, Key::ArrowDown) {
-            Some(SurfaceTabListNavigation::Next)
+            Some((Key::ArrowDown, SurfaceTabListNavigation::Next))
         } else if input.consume_key(egui::Modifiers::NONE, Key::Home) {
-            Some(SurfaceTabListNavigation::First)
+            Some((Key::Home, SurfaceTabListNavigation::First))
         } else if input.consume_key(egui::Modifiers::NONE, Key::End) {
-            Some(SurfaceTabListNavigation::Last)
+            Some((Key::End, SurfaceTabListNavigation::Last))
         } else {
             None
         }
     });
-    if let Some(action) = navigation.and_then(|navigation| {
-        context
+    if let Some((key, navigation)) = navigation
+        && let Some(action) = context
             .plan
             .prepare_tab_list_menu_navigation(menu, navigation)
-    }) {
-        context.push_local_action(action);
+    {
+        context.push_local_action(id.with(("keyboard-navigation", key)), action);
         return;
     }
 
     let activate = context.ui.input_mut(|input| {
-        input.consume_key(egui::Modifiers::NONE, Key::Enter)
-            || input.consume_key(egui::Modifiers::NONE, Key::Space)
+        [Key::Enter, Key::Space]
+            .into_iter()
+            .find(|&key| input.consume_key(egui::Modifiers::NONE, key))
     });
-    if activate
+    if let Some(key) = activate
         && let Some(row) = rows.iter().copied().find(|row| row.focused())
         && let Some(action) = context.plan.prepare_tab_list_menu_row_activation(row)
     {
-        context.push_local_action(action);
+        context.push_local_action(id.with(("keyboard-activate", key)), action);
         return;
     }
 
@@ -607,7 +615,7 @@ fn capture_menu_keyboard(
         .input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape))
         && let Some(action) = context.plan.prepare_tab_list_menu_dismiss(menu.backdrop())
     {
-        context.push_local_action(action);
+        context.push_local_action(id.with(("keyboard-dismiss", Key::Escape)), action);
     }
 }
 

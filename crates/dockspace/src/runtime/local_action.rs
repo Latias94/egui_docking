@@ -1,10 +1,11 @@
 //! Opaque actions prepared from one exact paintable surface candidate.
 
 use std::fmt;
+use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::engine::{EngineInput, LocalTabChromeAction};
+use crate::engine::{EngineInput, LocalSurfaceAction as SurfaceAction, LocalTabChromeAction};
 use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, ItemId, SurfaceId};
 use crate::intent::CloseSceneTarget;
 use crate::interaction::EscapeDelivery;
@@ -27,7 +28,7 @@ pub enum SurfaceTabNavigation {
 }
 
 impl SurfaceTabNavigation {
-    pub(super) const fn into_core(self) -> crate::tab_strip::TabNavigation {
+    pub(super) fn into_core(self) -> crate::tab_strip::TabNavigation {
         match self {
             Self::Previous => crate::tab_strip::TabNavigation::Previous,
             Self::Next => crate::tab_strip::TabNavigation::Next,
@@ -60,7 +61,7 @@ pub enum SurfaceSplitterAdjustment {
 }
 
 impl SurfaceSplitterAdjustment {
-    pub(super) const fn direction(self) -> f64 {
+    pub(super) fn direction(self) -> f64 {
         match self {
             Self::Decrement => -1.0,
             Self::Increment => 1.0,
@@ -78,7 +79,7 @@ pub enum SurfaceContainedResizeAdjustment {
 }
 
 impl SurfaceContainedResizeAdjustment {
-    pub(super) const fn direction(self) -> f64 {
+    pub(super) fn direction(self) -> f64 {
         match self {
             Self::Decrement => -1.0,
             Self::Increment => 1.0,
@@ -98,69 +99,79 @@ pub struct PreparedSurfaceAction {
     expected: WorkspaceVersion,
     surface: SurfaceId,
     action: SurfaceAction,
+    witness: Arc<crate::scene::SurfacePlanScene>,
 }
 
 impl PreparedSurfaceAction {
-    pub(super) const fn select_tab(
+    pub(super) fn select_tab(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
+        witness: Arc<crate::scene::SurfacePlanScene>,
         tab: TabSceneId,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface: scene.surface(),
+            witness,
             action: SurfaceAction::SelectTab { scene, tab },
         }
     }
 
-    pub(super) const fn close(
+    pub(super) fn close(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
+        witness: Arc<crate::scene::SurfacePlanScene>,
         target: CloseSceneTarget,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface: scene.surface(),
+            witness,
             action: SurfaceAction::Close { scene, target },
         }
     }
 
-    pub(super) const fn presentation_command(
+    pub(super) fn presentation_command(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
+        witness: Arc<crate::scene::SurfacePlanScene>,
         action: crate::model::ProductAction,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface: scene.surface(),
+            witness,
             action: SurfaceAction::PresentationCommand { scene, action },
         }
     }
 
-    pub(super) const fn close_root(
+    pub(super) fn close_root(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
+        witness: Arc<crate::scene::SurfacePlanScene>,
         root: crate::ids::RootId,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface: scene.surface(),
+            witness,
             action: SurfaceAction::CloseRoot { scene, root },
         }
     }
 
-    pub(super) const fn adjust_splitter(
+    pub(super) fn adjust_splitter(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
+        witness: Arc<crate::scene::SurfacePlanScene>,
         splitter: SplitterSceneId,
         delta: f64,
     ) -> Self {
@@ -168,6 +179,7 @@ impl PreparedSurfaceAction {
             authority_domain,
             expected,
             surface: scene.surface(),
+            witness,
             action: SurfaceAction::AdjustSplitter {
                 scene,
                 splitter,
@@ -176,10 +188,11 @@ impl PreparedSurfaceAction {
         }
     }
 
-    pub(super) const fn adjust_splitter_junction(
+    pub(super) fn adjust_splitter_junction(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
+        witness: Arc<crate::scene::SurfacePlanScene>,
         junction: SplitterJunctionId,
         axis: crate::model::DockspaceAxis,
         delta: f64,
@@ -188,6 +201,7 @@ impl PreparedSurfaceAction {
             authority_domain,
             expected,
             surface: scene.surface(),
+            witness,
             action: SurfaceAction::AdjustSplitterJunction {
                 scene,
                 junction,
@@ -197,10 +211,11 @@ impl PreparedSurfaceAction {
         }
     }
 
-    pub(super) const fn adjust_contained_resize(
+    pub(super) fn adjust_contained_resize(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
+        witness: Arc<crate::scene::SurfacePlanScene>,
         floating: FloatingPresentationId,
         direction: ContainedResizeDirection,
         delta: f64,
@@ -209,6 +224,7 @@ impl PreparedSurfaceAction {
             authority_domain,
             expected,
             surface: scene.surface(),
+            witness,
             action: SurfaceAction::AdjustContainedResize {
                 scene,
                 floating,
@@ -218,31 +234,51 @@ impl PreparedSurfaceAction {
         }
     }
 
-    pub(super) const fn cancel_with_escape(
+    pub(super) fn cancel_with_escape(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         surface: SurfaceId,
+        witness: Arc<crate::scene::SurfacePlanScene>,
+        status: crate::interaction::InteractionStatus,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface,
-            action: SurfaceAction::CancelWithEscape,
+            witness,
+            action: SurfaceAction::CancelWithEscape { status },
         }
     }
 
-    pub(super) const fn tab_chrome(
+    pub(super) fn tab_chrome(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
+        witness: Arc<crate::scene::SurfacePlanScene>,
         action: LocalTabChromeAction,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface: scene.surface(),
+            witness,
             action: SurfaceAction::TabChrome { scene, action },
         }
+    }
+
+    /// Retains this action for a later update without preparing its target again.
+    #[must_use]
+    pub fn into_deferred(self) -> DeferredSurfaceAction {
+        DeferredSurfaceAction(self)
+    }
+
+    /// Compares event intent while ignoring the captured scene and workspace version.
+    ///
+    /// Adapters may compare repeated passes within one event slot. Equal intent
+    /// does not identify an event and must not deduplicate independent runs.
+    #[must_use]
+    pub fn same_deferred_intent(&self, other: &Self) -> bool {
+        self.surface == other.surface && self.action.same_intent(&other.action)
     }
 
     /// Returns the published workspace version from which the action was prepared.
@@ -269,7 +305,7 @@ impl PreparedSurfaceAction {
             | SurfaceAction::AdjustSplitter { .. }
             | SurfaceAction::AdjustSplitterJunction { .. }
             | SurfaceAction::AdjustContainedResize { .. }
-            | SurfaceAction::CancelWithEscape => None,
+            | SurfaceAction::CancelWithEscape { .. } => None,
         }
     }
 
@@ -342,11 +378,82 @@ impl PreparedSurfaceAction {
                 direction,
                 delta,
             },
-            SurfaceAction::CancelWithEscape => EngineInput::CancelActiveInteractionWithEscape {
-                expected: self.expected,
-                delivery: EscapeDelivery::Surface(self.surface),
-            },
+            SurfaceAction::CancelWithEscape { .. } => {
+                EngineInput::CancelActiveInteractionWithEscape {
+                    expected: self.expected,
+                    delivery: EscapeDelivery::Surface(self.surface),
+                }
+            }
         })
+    }
+}
+
+/// One owned semantic intent retaining the exact scene that exposed its target.
+///
+/// The core validates relevant current state when the action enters a later
+/// update. A discarded encoding pass does not invalidate the owned witness.
+/// Hosts may clone it for an attempt and retain the original until publication.
+/// Cloning grants no event identity or deduplication: submit each original event
+/// once after a successful publication, and retire it only then.
+#[must_use = "a deferred surface action must be submitted or deliberately discarded"]
+#[derive(PartialEq)]
+pub struct DeferredSurfaceAction(PreparedSurfaceAction);
+
+impl Clone for DeferredSurfaceAction {
+    fn clone(&self) -> Self {
+        Self(PreparedSurfaceAction {
+            authority_domain: self.0.authority_domain,
+            expected: self.0.expected,
+            surface: self.0.surface,
+            action: self.0.action.clone(),
+            witness: Arc::clone(&self.0.witness),
+        })
+    }
+}
+
+impl DeferredSurfaceAction {
+    /// Returns the logical surface that exposed the action.
+    #[must_use]
+    pub const fn surface(&self) -> SurfaceId {
+        self.0.surface()
+    }
+
+    /// Returns the workspace version observed when the action was prepared.
+    #[must_use]
+    pub const fn expected_version(&self) -> WorkspaceVersion {
+        self.0.expected_version()
+    }
+
+    /// Returns the stable item that should receive framework focus after selection.
+    #[must_use]
+    pub const fn tab_focus_target(&self) -> Option<ItemId> {
+        self.0.tab_focus_target()
+    }
+
+    /// Compares semantics within one adapter event slot, ignoring scene and version.
+    ///
+    /// This comparison supplies no event identity. Independent events with the
+    /// same intent must each be submitted to the core.
+    #[must_use]
+    pub fn same_intent(&self, other: &Self) -> bool {
+        self.0.same_deferred_intent(&other.0)
+    }
+
+    pub(super) fn into_engine_input(self) -> EngineInput {
+        EngineInput::ApplyDeferredSurfaceAction {
+            expected: self.0.expected,
+            witness: self.0.witness,
+            action: self.0.action,
+        }
+    }
+}
+
+impl fmt::Debug for DeferredSurfaceAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("DeferredSurfaceAction")
+            .field(&self.0)
+            .finish()
     }
 }
 
@@ -358,64 +465,6 @@ impl fmt::Debug for PreparedSurfaceAction {
             .field("surface", &self.surface)
             .field("kind", &self.action.kind())
             .finish_non_exhaustive()
-    }
-}
-
-#[derive(Debug, PartialEq)]
-enum SurfaceAction {
-    SelectTab {
-        scene: SurfaceSceneStamp,
-        tab: TabSceneId,
-    },
-    Close {
-        scene: SurfaceSceneStamp,
-        target: CloseSceneTarget,
-    },
-    CloseRoot {
-        scene: SurfaceSceneStamp,
-        root: crate::ids::RootId,
-    },
-    PresentationCommand {
-        scene: SurfaceSceneStamp,
-        action: crate::model::ProductAction,
-    },
-    TabChrome {
-        scene: SurfaceSceneStamp,
-        action: LocalTabChromeAction,
-    },
-    AdjustSplitter {
-        scene: SurfaceSceneStamp,
-        splitter: SplitterSceneId,
-        delta: f64,
-    },
-    AdjustSplitterJunction {
-        scene: SurfaceSceneStamp,
-        junction: SplitterJunctionId,
-        axis: crate::model::DockspaceAxis,
-        delta: f64,
-    },
-    AdjustContainedResize {
-        scene: SurfaceSceneStamp,
-        floating: FloatingPresentationId,
-        direction: ContainedResizeDirection,
-        delta: f64,
-    },
-    CancelWithEscape,
-}
-
-impl SurfaceAction {
-    const fn kind(&self) -> &'static str {
-        match self {
-            Self::SelectTab { .. } => "select-tab",
-            Self::Close { .. } => "close",
-            Self::CloseRoot { .. } => "close-root",
-            Self::PresentationCommand { .. } => "presentation-command",
-            Self::TabChrome { .. } => "tab-chrome",
-            Self::AdjustSplitter { .. } => "adjust-splitter",
-            Self::AdjustSplitterJunction { .. } => "adjust-splitter-junction",
-            Self::AdjustContainedResize { .. } => "adjust-contained-resize",
-            Self::CancelWithEscape => "cancel-with-escape",
-        }
     }
 }
 

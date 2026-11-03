@@ -406,7 +406,7 @@ fn surface_contributions_are_canonical_even_when_callbacks_arrive_reverse() {
 }
 
 #[test]
-fn incomplete_contribution_roster_rejects_before_tick_or_watermark_progress() {
+fn partial_contribution_roster_commits_without_producing_output_for_untouched_surfaces() {
     let mut engine = two_surface_engine();
     let mut host = TestPresentationHost::new(&mut engine);
     let before_workspace = engine.workspace().clone();
@@ -423,20 +423,56 @@ fn incomplete_contribution_roster_rejects_before_tick_or_watermark_progress() {
             HostPresentationUnavailableReason::OutputNotProduced,
         )
         .expect("the host explicitly reports no physical output");
-    let result = frame.finish(&mut engine);
-    assert!(
-        matches!(
-            &result,
-            Err(EngineError::HostFrameContributionRosterIncomplete {
-                expected,
-                submitted,
-            }) if expected == &vec![SurfaceId::new(1), SurfaceId::new(2)]
-                && submitted == &vec![SurfaceId::new(1)]
-        ),
-        "unexpected incomplete-roster result: {result:?}"
+    let transition = frame
+        .finish(&mut engine)
+        .expect("an update only measures the surfaces touched by its host");
+    assert_eq!(
+        transition
+            .surface_contributions()
+            .iter()
+            .map(|contribution| contribution.surface())
+            .collect::<Vec<_>>(),
+        [SurfaceId::new(1)]
     );
+    assert!(transition.presentation_emissions().is_empty());
     assert_eq!(engine.workspace(), &before_workspace);
     assert_eq!(engine.version(), before_version);
+    assert_eq!(engine.last_reducer_tick(), ReducerTickId::new(1));
+    assert_eq!(engine.last_input_sequence().get(), 1);
+    assert_eq!(
+        engine.semantic_input_watermark(),
+        Some(SourceSequence::new(1))
+    );
+}
+
+#[test]
+fn input_after_partial_contribution_does_not_advance_any_watermark() {
+    let mut engine = two_surface_engine();
+    let mut host = TestPresentationHost::new(&mut engine);
+    let before_workspace = engine.workspace().clone();
+    let before_version = engine.version();
+    let before_scene = engine.scene().clone();
+    let mut frame = host.begin(&engine);
+    append(&mut frame, SOURCE_A, 1, EngineInput::ValidateWorkspace);
+    append_surface_contribution(&engine, &mut frame, SurfaceId::new(1));
+    assert_eq!(
+        support::append_host_input(
+            &mut frame,
+            SOURCE_A,
+            SourceSequence::new(2),
+            EngineInput::ValidateWorkspace,
+        ),
+        Err(CoreHostFrameError::InputAfterPresentation)
+    );
+    assert!(matches!(
+        frame.finish(&mut engine),
+        Err(EngineError::HostFramePoisoned {
+            source: CoreHostFrameError::InputAfterPresentation,
+        })
+    ));
+    assert_eq!(engine.workspace(), &before_workspace);
+    assert_eq!(engine.version(), before_version);
+    assert_eq!(engine.scene(), &before_scene);
     assert_eq!(engine.last_reducer_tick(), ReducerTickId::default());
     assert_eq!(engine.last_input_sequence().get(), 0);
     assert_eq!(engine.semantic_input_watermark(), None);

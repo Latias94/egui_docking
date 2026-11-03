@@ -143,6 +143,15 @@ fn redock_full_surface_contained_tab(present_before_release: bool) {
     let passive = style.visuals.drop_guide_fill.unwrap();
     let active = style.visuals.drop_guide_active_fill.unwrap();
     let drop_fill = style.visuals.drop_fill.unwrap();
+    let source_has_central = dockspace
+        .view()
+        .contained(floating)
+        .unwrap()
+        .root()
+        .unwrap()
+        .central()
+        .is_some();
+    let mut held_diagnostics = Vec::new();
 
     let _ = run_pane_frame(
         &context,
@@ -179,10 +188,19 @@ fn redock_full_surface_contained_tab(present_before_release: bool) {
             if rect_fill_count(&frame.output, active) == 0 {
                 missing.push("active magnetic Dock guide, not a Contained preview");
             }
+            held_diagnostics.push(format!(
+                "pass={} preview={:?} guides={} source_bounds={:?} target_bounds={:?} interactive_at_target={:?}",
+                context.cumulative_pass_nr(),
+                magnetic_preview_rect(&frame.output, drop_fill, target_rect),
+                guide_button_count(&frame.output, passive, active),
+                panes.latest(SECOND).bounds,
+                panes.latest(FIRST).bounds,
+                context.interactive_rects_last_pass().into_iter().filter(|rect| rect.contains(target)).collect::<Vec<_>>(),
+            ));
             (frame, missing)
         })
         .unwrap_or_else(|timeout| {
-            panic!("the held sole tab must preview Dock inside its frozen window: {timeout}")
+            panic!("the held sole tab must preview Dock inside its frozen window: {timeout}; source={source:?}, target={target:?}, source_has_central={source_has_central}, held={held_diagnostics:?}")
         });
         assert!(
             rects_with_fill(&held.output, &[passive, active])
@@ -197,12 +215,24 @@ fn redock_full_surface_contained_tab(present_before_release: bool) {
         );
     }
 
-    let released = run_pane_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(target), pointer_button(target, false)],
-    );
+    let (output, release_response) = dockspace
+        .run_single_surface(
+            &context,
+            input(vec![
+                Event::PointerMoved(target),
+                pointer_button(target, false),
+            ]),
+            SURFACE,
+            &mut panes,
+        )
+        .expect("the direct release remains one real owned run");
+    let (mut output, receipt) = output.into_parts();
+    receipt.report(SurfacePresentationResult::Presented);
+    output.textures_delta.clear();
+    let released = FrameOutput {
+        output,
+        close_requests: release_response.close_request_events().to_vec(),
+    };
     assert!(
         rects_with_fill(&released.output, &[passive, active])
             .iter()
@@ -222,7 +252,11 @@ fn redock_full_surface_contained_tab(present_before_release: bool) {
     })
     .unwrap_or_else(|timeout| {
         panic!(
-            "sole-tab magnetic redock failed (present_before_release={present_before_release}): {timeout}"
+            "sole-tab magnetic redock failed (present_before_release={present_before_release}): {timeout}; source={source:?}, target={target:?}, source_has_central={source_has_central}, release={:?}, feedback={:?}, source_item={:?}, main_tabs={:?}",
+            release_response.mutation(),
+            release_response.manipulation_feedback(),
+            dockspace.view().item(SECOND),
+            root_tabs(&dockspace),
         )
     });
     let second = dockspace

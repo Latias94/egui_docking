@@ -12,10 +12,9 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceManipulationDelivery as Delivery, DockspaceManipulationFeedback,
-    DockspaceManipulationId, DockspaceManipulationPendingReason as PendingReason,
-    DockspaceManipulationStatus as Status, DockspacePreviewVisual, DockspaceReceiverDescriptor,
-    DockspaceReceiverRole, DockspaceSession, HostFrameReport, HostWindowToken,
-    NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
+    DockspaceManipulationId, DockspaceManipulationStatus as Status, DockspacePreviewVisual,
+    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, HostFrameReport,
+    HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
     NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativeLocalCoordinates,
     NativeLocalGeometry, NativeLocalPointerFact, NativeLocalPointerLocation,
     NativeLocalPointerSample, NativeLocalToDesktopHandoff, NativePointerButton as Button,
@@ -25,7 +24,7 @@ use dockspace::runtime::{
     NativeWindowPresentationState, NativeWorkAreaRoster, PaintedSurfaceOutput, PointerDeviceKind,
     PointerEventMetadata, SurfacePaintProgramOperation as Operation,
     SurfacePaintProgramStep as Step, SurfacePresentationResult as Disposition,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    SurfaceUnavailableReason, SurfaceWork, SurfaceWorkDeferred, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -199,6 +198,22 @@ impl Scene {
 }
 
 fn render(frame: &mut DockspaceHostFrame<'_>, surface: SurfaceId) -> Scene {
+    if matches!(
+        frame.surface_work(surface).unwrap(),
+        SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured)
+    ) {
+        frame
+            .measure_surface(
+                surface,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
     let plan = frame.paint_plan(surface).unwrap().unwrap();
     let mut tabs = Vec::new();
     let mut dragged_item = None;
@@ -515,14 +530,11 @@ fn feedback(report: &HostFrameReport) -> DockspaceManipulationFeedback {
     *feedback
 }
 
-fn assert_pending(report: &HostFrameReport) -> DockspaceManipulationFeedback {
-    assert!(!report.workspace_changed());
-    let pending = feedback(report);
-    assert_eq!(
-        pending.status(),
-        Status::Pending(PendingReason::AwaitingPresentation)
-    );
-    pending
+fn assert_delivered(report: &HostFrameReport) -> DockspaceManipulationFeedback {
+    assert!(report.workspace_changed());
+    let terminal = feedback(report);
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    terminal
 }
 
 fn assert_no_delivery(report: &HostFrameReport) {
@@ -564,6 +576,7 @@ fn deliver_reorder(
     binding: NativeSurfaceBinding,
     scene: &Scene,
 ) -> DockspaceManipulationId {
+    let version = session.version();
     assert_eq!(order(session), [FIRST, SECOND, THIRD]);
     session
         .record_native_pointer_batch(reorder_batch(session, binding, scene))
@@ -571,17 +584,20 @@ fn deliver_reorder(
     let mut frame = session
         .begin_native_host_frame(|query| scene.answer(query))
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A);
+    successor.assert_preview(false);
     let mut report = finish(frame);
-    let pending = assert_pending(&report);
-    assert_eq!(order(session), [FIRST, SECOND, THIRD]);
-    let exact = take_output(&mut report, &preview, binding);
-    let delivered = present(session, exact);
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert!(delivered.workspace_changed());
+    let terminal = assert_delivered(&report);
+    assert_eq!(report.before(), version);
+    assert_eq!(report.after(), session.version());
+    assert_ne!(session.version(), version);
+    assert_eq!(order(session), [SECOND, THIRD, FIRST]);
+    let committed = session.version();
+    let exact = take_output(&mut report, &successor, binding);
+    let settled = present(session, exact);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(session.version(), committed);
     assert_eq!(order(session), [SECOND, THIRD, FIRST]);
     assert_clean_idle(session);
     terminal.manipulation_id()
@@ -612,7 +628,7 @@ fn start_local_drag(
 }
 
 #[test]
-fn explicit_handoff_retries_both_frames_and_delivers_only_the_exact_desktop_preview() {
+fn explicit_handoff_retries_the_release_frame_and_settles_without_redelivery() {
     let (mut session, bindings, [scene, _]) = fixture(true);
     let binding = bindings[0];
     let version = session.version();
@@ -627,7 +643,11 @@ fn explicit_handoff_retries_both_frames_and_delivers_only_the_exact_desktop_prev
         let mut abandoned = session
             .begin_native_host_frame(|query| scene.answer(query))
             .unwrap();
-        render(&mut abandoned, A).assert_preview(true);
+        render(&mut abandoned, A).assert_preview(false);
+        assert_eq!(
+            abandoned.view().item(FIRST).unwrap().tabs().items(),
+            [SECOND, THIRD, FIRST]
+        );
     }
     assert_eq!(session.version(), version);
     assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
@@ -640,17 +660,21 @@ fn explicit_handoff_retries_both_frames_and_delivers_only_the_exact_desktop_prev
     let mut frame = session
         .begin_native_host_frame(|query| scene.answer(query))
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A);
+    successor.assert_preview(false);
     let mut report = finish(frame);
-    let pending = assert_pending(&report);
-    assert_eq!(session.version(), version);
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert_delivered(&report);
+    assert_eq!(report.before(), version);
+    assert_eq!(report.after(), session.version());
+    assert_ne!(session.version(), version);
+    let committed = session.version();
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+    assert_eq!(session.native_input_recorded_count(), recorded + 4);
     assert!(!session.has_pending_native_input());
     assert!(!session.has_active_gesture());
     assert!(idle(&mut session).manipulation_feedback().is_empty());
 
-    let exact = take_output(&mut report, &preview, binding);
+    let exact = take_output(&mut report, &successor, binding);
     let artifact = exact.presentation_artifact();
     session
         .report_surface_presentation(exact, Disposition::Presented)
@@ -662,24 +686,18 @@ fn explicit_handoff_retries_both_frames_and_delivers_only_the_exact_desktop_prev
     );
     let presentation_recorded = session.native_input_recorded_count();
     assert!(session.has_pending_native_input());
-    assert_eq!(session.version(), version);
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-    let delivered = idle(&mut session);
+    assert_eq!(session.version(), committed);
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+    let settled = idle(&mut session);
     assert!(
-        delivered
+        settled
             .surface_presentation_commits()
             .iter()
             .any(|ack| ack.settles(artifact))
     );
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_ne!(terminal.id(), pending.id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert!(delivered.workspace_changed());
-    assert_eq!(delivered.before(), version);
-    assert_eq!(delivered.after(), session.version());
-    assert_ne!(session.version(), version);
-    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(session.version(), committed);
     assert_eq!(session.native_input_recorded_count(), presentation_recorded);
     assert!(
         bindings
@@ -690,10 +708,11 @@ fn explicit_handoff_retries_both_frames_and_delivers_only_the_exact_desktop_prev
 }
 
 #[test]
-fn inactive_tab_same_batch_handoff_preserves_source_continuation_without_lending_hover() {
+fn inactive_tab_same_batch_handoff_preserves_the_actual_output_and_source_continuation() {
     let (mut session, bindings, [original, _]) = fixture(true);
     let binding = bindings[0];
     let cap = session.native_local_coordinates(binding).unwrap();
+    let presented = session.presented_surface(A).unwrap();
     let source = sample(cap, binding, original.tab(SECOND).receiver.center());
     let target = sample(cap, binding, original.insertion(FIRST, true));
     assert!(session.view().item(FIRST).unwrap().is_selected());
@@ -705,11 +724,11 @@ fn inactive_tab_same_batch_handoff_preserves_source_continuation_without_lending
             moved_handoff(binding, target),
         ])
         .unwrap();
-    let mut stale_hover_queries = 0;
+    let mut actual_hover_queries = 0;
     let mut frame = session
         .begin_native_host_frame(|query| {
             if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
-                stale_hover_queries += 1;
+                actual_hover_queries += 1;
             }
             original.answer(query)
         })
@@ -718,15 +737,15 @@ fn inactive_tab_same_batch_handoff_preserves_source_continuation_without_lending
     let report = finish(frame);
     assert!(report.workspace_changed());
     assert!(report.manipulation_feedback().is_empty());
-    assert_eq!(stale_hover_queries, 0);
+    assert!(actual_hover_queries > 0);
     assert!(session.has_active_gesture());
     assert!(session.view().item(SECOND).unwrap().is_selected());
     assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-    assert!(session.presented_surface(A).is_none());
+    assert_eq!(session.presented_surface(A), Some(presented));
     assert_eq!(session.native_local_coordinates(binding), Some(cap));
     let (current, fresh) = paint(&mut session, binding);
     assert_eq!(current.dragged_item, Some(SECOND));
-    current.assert_preview(false);
+    current.assert_preview(true);
     assert!(
         present(&mut session, fresh)
             .manipulation_feedback()
@@ -760,24 +779,25 @@ fn inactive_tab_same_batch_handoff_preserves_source_continuation_without_lending
             current.answer(query)
         })
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A);
+    successor.assert_preview(false);
     let mut report = finish(frame);
     assert!(fresh_hover_queries > 0);
-    let pending = assert_pending(&report);
-    assert_eq!(session.version(), version);
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-    let exact = take_output(&mut report, &preview, binding);
-    let terminal = feedback(&present(&mut session, exact));
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert_delivered(&report);
+    assert_ne!(session.version(), version);
     assert_eq!(order(&session), [SECOND, FIRST, THIRD]);
+    let committed = session.version();
+    let exact = take_output(&mut report, &successor, binding);
+    let settled = present(&mut session, exact);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(session.version(), committed);
     assert!(session.view().item(SECOND).unwrap().is_selected());
     assert_clean_idle(&mut session);
 }
 
 #[test]
-fn dropped_desktop_handoff_preview_cancels_once_without_reordering() {
+fn dropped_desktop_handoff_output_preserves_delivery_and_the_pointer_can_start_again() {
     let (mut session, bindings, [scene, _]) = fixture(true);
     let binding = bindings[0];
     let version = session.version();
@@ -787,32 +807,54 @@ fn dropped_desktop_handoff_preview_cancels_once_without_reordering() {
     let mut frame = session
         .begin_native_host_frame(|query| scene.answer(query))
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A);
+    successor.assert_preview(false);
     let mut report = finish(frame);
-    let pending = assert_pending(&report);
-    let exact = take_output(&mut report, &preview, binding);
+    let terminal = assert_delivered(&report);
+    assert_ne!(session.version(), version);
+    let committed = session.version();
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+    let exact = take_output(&mut report, &successor, binding);
     let artifact = exact.presentation_artifact();
     session
         .report_surface_presentation(exact, Disposition::Dropped)
         .unwrap();
-    let cancelled = idle(&mut session);
+    let dropped = idle(&mut session);
     assert!(
-        cancelled
+        dropped
             .surface_presentation_commits()
             .iter()
             .any(|commit| commit.retires(artifact))
     );
-    let terminal = feedback(&cancelled);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert!(matches!(terminal.status(), Status::Cancelled(_)));
-    assert_eq!(session.version(), version);
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert!(dropped.manipulation_feedback().is_empty());
+    assert!(!dropped.workspace_changed());
+    assert_eq!(session.version(), committed);
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
     assert_clean_idle(&mut session);
 
     let current = refresh(&mut session, bindings);
-    let next = deliver_reorder(&mut session, binding, &current);
-    assert_ne!(next, terminal.manipulation_id());
+    let cap = session.native_local_coordinates(binding).unwrap();
+    let source = sample(cap, binding, current.tab(FIRST).receiver.center());
+    let target = sample(cap, binding, current.insertion(SECOND, true));
+    session
+        .record_native_pointer_batch([
+            local(binding, Event::ButtonPressed(Button::Primary), source),
+            local(binding, Event::Moved, target),
+            moved_handoff(binding, target),
+            desktop(
+                binding,
+                Event::ButtonReleased(Button::Primary),
+                target.surface_position(),
+            ),
+        ])
+        .unwrap();
+    let frame = session
+        .begin_native_host_frame(|query| current.answer(query))
+        .unwrap();
+    let next = assert_delivered(&finish(frame));
+    assert_ne!(next.manipulation_id(), terminal.manipulation_id());
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert_clean_idle(&mut session);
 }
 
 #[test]
@@ -1035,7 +1077,7 @@ fn rebased_and_foreign_local_samples_cannot_upgrade_or_publish_a_valid_prefix() 
 }
 
 #[test]
-fn late_local_preview_cannot_satisfy_a_release_after_desktop_handoff() {
+fn late_local_preview_after_handoff_cannot_replace_or_redeliver_the_accepted_release() {
     for same_target in [false, true] {
         let (mut session, bindings, [scene, _]) = fixture(true);
         let binding = bindings[0];
@@ -1081,15 +1123,17 @@ fn late_local_preview_cannot_satisfy_a_release_after_desktop_handoff() {
         let mut frame = session
             .begin_native_host_frame(|query| scene.answer(query))
             .unwrap();
-        let preview = render(&mut frame, A);
-        preview.assert_preview(true);
+        let successor = render(&mut frame, A);
+        successor.assert_preview(false);
         let mut report = finish(frame);
-        let pending = assert_pending(&report);
-        let exact = take_output(&mut report, &preview, binding);
+        assert_delivered(&report);
+        assert_ne!(session.version(), version);
+        let committed = session.version();
+        let exact = take_output(&mut report, &successor, binding);
         let exact_artifact = exact.presentation_artifact();
         assert_ne!(old_artifact, exact_artifact);
-        assert_eq!(session.version(), version);
-        assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+        assert_eq!(session.version(), committed);
+        assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
 
         let late = present(&mut session, old_output);
         assert!(
@@ -1105,19 +1149,19 @@ fn late_local_preview_cannot_satisfy_a_release_after_desktop_handoff() {
         );
         assert!(late.manipulation_feedback().is_empty());
         assert!(!late.workspace_changed());
-        assert_eq!(session.version(), version);
-        assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+        assert_eq!(session.version(), committed);
+        assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
 
-        let delivered = present(&mut session, exact);
+        let settled = present(&mut session, exact);
         assert!(
-            delivered
+            settled
                 .surface_presentation_commits()
                 .iter()
                 .any(|ack| ack.settles(exact_artifact))
         );
-        let terminal = feedback(&delivered);
-        assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-        assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+        assert!(settled.manipulation_feedback().is_empty());
+        assert!(!settled.workspace_changed());
+        assert_eq!(session.version(), committed);
         assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
         assert_clean_idle(&mut session);
     }
@@ -1185,21 +1229,23 @@ fn wrong_winner_suffix_rolls_back_handoff_and_retries_the_original_batch_once() 
             scene.answer(query)
         })
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A);
+    successor.assert_preview(false);
     let mut report = finish(frame);
     assert_eq!(retry_hover_queries, 2);
-    let pending = assert_pending(&report);
-    assert_eq!(session.version(), version);
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert_delivered(&report);
+    assert_ne!(session.version(), version);
+    let committed = session.version();
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
     assert_eq!(session.native_input_recorded_count(), accepted);
     assert!(!session.has_pending_native_input());
     assert!(!session.has_active_gesture());
-    let exact = take_output(&mut report, &preview, binding);
-    let delivered = present(&mut session, exact);
-    let terminal = feedback(&delivered);
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    let exact = take_output(&mut report, &successor, binding);
+    let settled = present(&mut session, exact);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(session.version(), committed);
+    assert_eq!(session.native_input_recorded_count(), accepted + 1);
     assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
     assert_clean_idle(&mut session);
 }
@@ -1293,7 +1339,7 @@ fn handoff_queries_b_at_its_desktop_hover_point_but_missing_hit_observation_cann
 }
 
 #[test]
-fn cross_window_handoff_preserves_root_input_and_waits_for_exact_presented_target_output() {
+fn cross_window_handoff_preserves_root_input_and_delivers_before_the_target_output() {
     for with_hit_test_control in [false, true] {
         let (mut session, bindings, [source_scene, target_scene]) =
             fixture_with_routing(true, with_hit_test_control);
@@ -1341,8 +1387,8 @@ fn cross_window_handoff_preserves_root_input_and_waits_for_exact_presented_targe
         assert_eq!(session.version(), version);
         assert_eq!(session.native_local_coordinates(source), Some(cap));
 
-        // Keep one real pre-release preview unpresented so its late settlement
-        // must not satisfy the newly compiled release output.
+        // Keep a real pre-release output in flight. Its late settlement must
+        // remain separate from the successor and cannot undo the accepted edit.
         let (old_preview, old_output) = paint(&mut session, destination);
         old_preview.assert_preview(true);
         let old_artifact = old_output.presentation_artifact();
@@ -1371,19 +1417,23 @@ fn cross_window_handoff_preserves_root_input_and_waits_for_exact_presented_targe
                 target.answer(query)
             })
             .unwrap();
-        let preview = render(&mut frame, B);
-        preview.assert_preview(true);
+        let successor = render(&mut frame, B);
+        successor.assert_preview(false);
         let mut report = finish(frame);
-        let pending = assert_pending(&report);
+        assert_delivered(&report);
+        assert_eq!(report.before(), version);
+        assert_eq!(report.after(), session.version());
+        assert_ne!(session.version(), version);
+        let committed = session.version();
         assert!(report.take_native_effects().is_empty());
         assert!(!session.has_active_gesture());
         assert!(!session.has_pending_native_input());
-        let exact = take_output(&mut report, &preview, destination);
+        let exact = take_output(&mut report, &successor, destination);
         let exact_artifact = exact.presentation_artifact();
         assert_ne!(old_artifact, exact_artifact);
         assert_no_delivery(&idle(&mut session));
-        assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
-        assert_eq!(session.version(), version);
+        assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
+        assert_eq!(session.version(), committed);
 
         let mut late = present(&mut session, old_output);
         assert!(
@@ -1400,21 +1450,16 @@ fn cross_window_handoff_preserves_root_input_and_waits_for_exact_presented_targe
         assert_no_delivery(&late);
         assert!(late.manipulation_feedback().is_empty());
         assert!(late.take_native_effects().is_empty());
-        assert_eq!(session.version(), version);
-        assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-        assert_eq!(session.view().item(FIRST).unwrap().surface(), A);
+        assert_eq!(session.version(), committed);
+        assert_eq!(order(&session), [OTHER, FIRST]);
+        assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
         assert_eq!(session.view().item(OTHER).unwrap().surface(), B);
 
-        let mut delivered = present(&mut session, exact);
-        let terminal = feedback(&delivered);
-        assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-        assert_ne!(terminal.id(), pending.id());
-        assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-        assert!(delivered.workspace_changed());
-        assert_eq!(delivered.before(), version);
-        assert_eq!(delivered.after(), session.version());
-        assert_ne!(session.version(), version);
-        assert!(delivered.take_native_effects().is_empty());
+        let mut settled = present(&mut session, exact);
+        assert!(settled.manipulation_feedback().is_empty());
+        assert!(!settled.workspace_changed());
+        assert_eq!(session.version(), committed);
+        assert!(settled.take_native_effects().is_empty());
         assert_eq!(session.view().item(FIRST).unwrap().surface(), B);
         assert_eq!(
             session.view().item(OTHER).unwrap().tabs().items(),
@@ -1610,16 +1655,18 @@ fn rejected_mapping_preserves_the_real_local_move_and_release() {
             scene.answer(query)
         })
         .unwrap();
-    let preview = render(&mut frame, A);
-    preview.assert_preview(true);
+    let successor = render(&mut frame, A);
+    successor.assert_preview(false);
     let mut report = finish(frame);
-    let pending = assert_pending(&report);
-    assert_eq!(session.version(), version);
-    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
-    let exact = take_output(&mut report, &preview, binding);
-    let terminal = feedback(&present(&mut session, exact));
-    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert_delivered(&report);
+    assert_ne!(session.version(), version);
+    assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
+    let committed = session.version();
+    let exact = take_output(&mut report, &successor, binding);
+    let settled = present(&mut session, exact);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(session.version(), committed);
     assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
     assert_clean_idle(&mut session);
 }
@@ -1672,17 +1719,19 @@ fn armed_and_terminal_handoff_packets_preserve_the_original_local_event() {
                 scene.answer(query)
             })
             .unwrap();
-        let preview = render(&mut frame, A);
-        preview.assert_preview(true);
+        let successor = render(&mut frame, A);
+        successor.assert_preview(false);
         let mut report = finish(frame);
-        let pending = assert_pending(&report);
-        assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+        assert_delivered(&report);
+        assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
         assert!(!session.has_active_gesture());
         assert!(!session.has_pending_native_input());
-        let exact = take_output(&mut report, &preview, binding);
-        let terminal = feedback(&present(&mut session, exact));
-        assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
-        assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+        let committed = session.version();
+        let exact = take_output(&mut report, &successor, binding);
+        let settled = present(&mut session, exact);
+        assert!(settled.manipulation_feedback().is_empty());
+        assert!(!settled.workspace_changed());
+        assert_eq!(session.version(), committed);
         assert_eq!(order(&session), [SECOND, THIRD, FIRST]);
         assert_clean_idle(&mut session);
     }

@@ -8,7 +8,8 @@ use dockspace::policy::{DockPolicy, DockTargetRule, DockTargetRuleKey};
 use dockspace::runtime::{
     ContainedResizeDirection as Direction, DockspaceDragSourceKind as DragSourceKind,
     DockspaceDropDirection as DropDirection, DockspaceDropEligibility as Eligibility,
-    DockspaceGuideScope as GuideScope, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceGuideScope as GuideScope, DockspaceManipulationDelivery as Delivery,
+    DockspaceManipulationStatus as Status, DockspacePreviewVisual, DockspaceReceiverDescriptor,
     DockspaceReceiverRole as Role, DockspaceRuntimeError, DockspaceRuntimeErrorKind,
     DockspaceSession, DockspaceVisualId, DockspaceVisualKind as Kind, HostFrameReport,
     HostPointerInput, HostPointerRoute, PaintedSurfaceOutput, PointerEventMetadata,
@@ -84,8 +85,20 @@ struct Recorded {
     projected_source: Option<(DragSourceKind, LogicalRect)>,
 }
 
+fn metrics() -> UniformSurfaceMetrics {
+    UniformSurfaceMetrics::new(
+        rect(0.0, 0.0, 960.0, 720.0),
+        LogicalSize::new(64.0, 48.0).unwrap(),
+        96.0,
+    )
+    .unwrap()
+}
+
 fn paint(session: &mut DockspaceSession) -> (Recorded, PaintedSurfaceOutput) {
     let mut frame = session.begin_host_frame().unwrap();
+    if frame.paint_plan(SURFACE).unwrap().is_none() {
+        frame.measure_surface(SURFACE, metrics()).unwrap();
+    }
     let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
     let mut title = None;
     let mut close = None;
@@ -866,7 +879,7 @@ fn host_local_all_eight_resize_directions_recompile_both_panes_and_receivers() {
 }
 
 #[test]
-fn release_before_paint_keeps_full_projection_until_exact_presented_or_dropped_commit() {
+fn release_before_paint_commits_once_and_presented_or_dropped_outputs_preserve_it() {
     for resize in [false, true] {
         for disposition in [Disposition::Presented, Disposition::Dropped] {
             let (mut session, before) = fixture();
@@ -889,58 +902,97 @@ fn release_before_paint_keeps_full_projection_until_exact_presented_or_dropped_c
                 )
             };
             let moved = offset(press, dx, dy);
+            let held = session.bind_presented_receiver(&before.title).unwrap();
+            let old_surface = session.presented_surface(SURFACE).unwrap();
             for (event, point) in [
                 (Event::ButtonPressed(Button::Primary), press),
                 (Event::Moved, moved),
-                (Event::ButtonReleased(Button::Primary), moved),
             ] {
-                assert!(
-                    !edge(&mut session, event, point)
-                        .unwrap()
-                        .workspace_changed()
-                );
+                let report = edge(&mut session, event, point).unwrap();
+                assert!(!report.workspace_changed());
+                assert!(report.manipulation_feedback().is_empty());
                 assert_durable(&session, initial_rect());
             }
+            let released =
+                edge(&mut session, Event::ButtonReleased(Button::Primary), moved).unwrap();
+            assert!(released.workspace_changed());
+            assert_eq!(released.before(), version);
+            assert_eq!(released.after(), session.version());
+            let [terminal] = released.manipulation_feedback() else {
+                panic!("one ordinary release terminal: {released:?}")
+            };
+            assert_eq!(
+                terminal.status(),
+                Status::Delivered(if resize {
+                    Delivery::ContainedTransform
+                } else {
+                    Delivery::Contained
+                })
+            );
+            assert_durable(&session, projected);
+            assert_ne!(session.version(), version);
             assert!(!session.has_active_gesture());
-            assert!(!settle(&mut session).workspace_changed());
-            assert_eq!(session.version(), version);
-            // No active pointer remains: this must come from the frozen release.
-            let (pending, output) = paint(&mut session);
-            assert_preview(&pending, projected, resize);
-            assert_projected(&session, &before, &pending, projected);
-            assert_durable(&session, initial_rect());
-            let committed = present(&mut session, output, disposition);
-            let accepted = disposition == Disposition::Presented;
-            assert_eq!(committed.workspace_changed(), accepted);
-            let terminal = if accepted { projected } else { initial_rect() };
-            assert_durable(&session, terminal);
-            assert_eq!(session.version() != version, accepted);
+            assert!(!session.has_pending_presentation());
+            assert!(session.bind_presented_receiver(&before.title).is_none());
+            // Even an already held receiver retains its old geometry and must be rejected for a fresh press.
+            let route = HostPointerRoute::new(old_surface, held.center());
+            let mut stale = session.begin_host_frame().unwrap();
+            stale
+                .submit_host_pointer(HostPointerInput::new(
+                    SurfacePointerId::new(2),
+                    Event::ButtonPressed(Button::Primary),
+                    route,
+                    route,
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::unknown().with_drag_delivery(&held),
+                ))
+                .unwrap();
+            stale
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            let rejected = stale.commit().unwrap();
+            assert!(!rejected.workspace_changed());
+            assert!(
+                rejected
+                    .manipulation_feedback()
+                    .iter()
+                    .all(|feedback| !matches!(
+                        feedback.status(),
+                        Status::Delivered(_) | Status::Pending(_)
+                    ))
+            );
             assert!(!session.has_active_gesture());
-
-            // A new real output can repeat presentation, but cannot replay delivery.
-            if accepted {
-                measure(&mut session);
-            }
             let terminal_version = session.version();
+            let (recorded, output) = paint(&mut session);
+            assert_projected(&session, &before, &recorded, projected);
+            assert!(recorded.renderer.records.iter().all(|record| !matches!(
+                record,
+                OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
+            )));
+            let settled = present(&mut session, output, disposition);
+            assert!(!settled.workspace_changed());
+            assert!(settled.manipulation_feedback().is_empty());
+            assert_durable(&session, projected);
+            assert_eq!(session.version(), terminal_version);
             for _ in 0..2 {
                 let (recorded, output) = paint(&mut session);
-                assert_projected(&session, &before, &recorded, terminal);
-                assert!(recorded.renderer.records.iter().all(|record| !matches!(
-                    record,
-                    OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
-                )));
-                assert!(!present(&mut session, output, Disposition::Presented).workspace_changed());
+                assert_projected(&session, &before, &recorded, projected);
+                let report = present(&mut session, output, Disposition::Presented);
+                assert!(!report.workspace_changed());
+                assert!(report.manipulation_feedback().is_empty());
                 assert_current_receivers(&session, &recorded);
-                assert_durable(&session, terminal);
+                assert_durable(&session, projected);
             }
-            // The input ledger may reject a second button-up or accept it as idle.
             match edge(&mut session, Event::ButtonReleased(Button::Primary), moved) {
-                Ok(duplicate) => assert!(!duplicate.workspace_changed()),
+                Ok(duplicate) => {
+                    assert!(!duplicate.workspace_changed());
+                    assert!(duplicate.manipulation_feedback().is_empty());
+                }
                 Err(error) => assert_eq!(error.kind(), DockspaceRuntimeErrorKind::HostProtocol),
             }
             assert!(!settle(&mut session).workspace_changed());
             assert_eq!(session.version(), terminal_version);
-            assert_durable(&session, terminal);
+            assert_durable(&session, projected);
             assert!(!session.has_active_gesture());
         }
     }
@@ -1038,6 +1090,7 @@ fn changed_external_measurements_revoke_active_resize_and_its_old_output_proof()
         assert_current_receivers(&session, &live);
         assert!(session.has_active_gesture());
         let source = session.presented_surface(SURFACE).unwrap();
+        let held = session.bind_presented_receiver(&live.title).unwrap();
         let (_, old_output) = paint(&mut session);
         let old_artifact = old_output.presentation_artifact();
 
@@ -1058,6 +1111,48 @@ fn changed_external_measurements_revoke_active_resize_and_its_old_output_proof()
         // output. They revoke the gesture without inventing a presentation.
         assert_eq!(session.presented_surface(SURFACE), Some(source));
         assert_eq!(session.version(), version);
+        assert_durable(&session, initial_rect());
+        for descriptor in live
+            .panes
+            .iter()
+            .copied()
+            .chain([live.title, live.close])
+            .chain(live.resize.iter().map(|(_, receiver)| *receiver))
+            .chain(tab_receivers(&live))
+        {
+            assert!(
+                session.bind_presented_receiver(&descriptor).is_none(),
+                "cancelling the active resize must revoke its old projected receiver: {descriptor:?}"
+            );
+        }
+        // Holding the exact receiver before cancellation cannot reauthorize its old projection.
+        let press_route = HostPointerRoute::new(source, held.center());
+        let mut stale = session.begin_host_frame().unwrap();
+        stale
+            .submit_host_pointer(HostPointerInput::new(
+                SurfacePointerId::new(2),
+                Event::ButtonPressed(Button::Primary),
+                press_route,
+                press_route,
+                SurfacePointerCapture::ProviderEndpoint,
+                SurfacePointerReceiverFacts::unknown().with_drag_delivery(&held),
+            ))
+            .unwrap();
+        stale
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let rejected = stale.commit().unwrap();
+        assert!(!rejected.workspace_changed());
+        assert!(
+            rejected
+                .manipulation_feedback()
+                .iter()
+                .all(|feedback| !matches!(
+                    feedback.status(),
+                    Status::Delivered(_) | Status::Pending(_)
+                ))
+        );
+        assert!(!session.has_active_gesture());
         assert_durable(&session, initial_rect());
 
         let (restored, output) = paint(&mut session);
@@ -1121,7 +1216,7 @@ fn changed_external_measurements_revoke_active_resize_and_its_old_output_proof()
 }
 
 #[test]
-fn frozen_clear_hover_batch_docks_behind_complete_source_only_after_exact_presentation() {
+fn frozen_clear_hover_batch_docks_behind_complete_source_at_release_commit() {
     for (blocked_release, disposition) in [
         (false, Disposition::Presented),
         (false, Disposition::Dropped),
@@ -1132,9 +1227,9 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_only_after_exact_presen
         let surface = session.presented_surface(SURFACE).unwrap();
         let title = session.bind_presented_receiver(&before.title).unwrap();
         let press = title.center();
-        let (point, preview, target_visual) = {
-            let mut frame = session.begin_host_frame().unwrap();
-            let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+        let (point, target_visual, target_draw, target_hit) = {
+            let mut inspect = session.begin_host_frame().unwrap();
+            let plan = inspect.paint_plan(SURFACE).unwrap().unwrap();
             let mut target = None;
             plan.visit_surface_program(|step| {
                 if let Step::DropGuide { structural, .. } = step
@@ -1143,15 +1238,20 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_only_after_exact_presen
                 {
                     for button in structural.targets() {
                         if button.direction() == DropDirection::Left {
-                            let hit = button.hit_bounds();
+                            let draw = button.draw_bounds();
                             let center = LogicalPoint::new(
-                                hit.x() + hit.width() * 0.5,
-                                hit.y() + hit.height() * 0.5,
+                                draw.x() + draw.width() * 0.5,
+                                draw.y() + draw.height() * 0.5,
                             )
                             .unwrap();
                             assert!(
                                 target
-                                    .replace((center, button.preview_bounds(), button.visual_id()))
+                                    .replace((
+                                        center,
+                                        button.visual_id(),
+                                        draw,
+                                        button.hit_bounds()
+                                    ))
                                     .is_none()
                             );
                         }
@@ -1160,27 +1260,45 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_only_after_exact_presen
                 Ok::<(), ()>(())
             })
             .unwrap();
-            target.expect("the main pane must expose one inner-left docking target")
+            target.expect("joint placement must expose the main pane's explicit inner-left guide")
         };
-        assert!(initial_rect().contains(point));
-        assert!(point.y() - press.y() > 12.0);
-        let unsuppressed = session.host_pointer_hit(SURFACE, point).unwrap();
-        assert_ne!(
-            unsuppressed
-                .hover()
-                .map(|receiver| receiver.descriptor().visual_id()),
-            Some(target_visual),
-            "the source initially occludes the main docking target"
+        assert!(target_draw.width() > 0.0 && target_draw.height() > 0.0);
+        assert!(target_hit.contains(point));
+        assert!(
+            !initial_rect().contains(point),
+            "joint placement must expose this guide beside the initial source"
         );
-
-        // Freeze all facts before press; core must suppress the complete source
-        // at the very first threshold move, without another framework hit query.
+        assert!(
+            (point.x() - press.x())
+                .abs()
+                .max((point.y() - press.y()).abs())
+                > 12.0
+        );
+        assert!(
+            before.renderer.records.contains(&OwnedRecord::Geometry {
+                visual: target_visual,
+                bounds: target_draw,
+                paint: Paint::Visible,
+            }),
+            "the aim point must come from the actual visible guide drawing"
+        );
+        let target = session
+            .host_pointer_hit(SURFACE, point)
+            .unwrap()
+            .hover()
+            .expect("the visible inner guide must own the actual hover winner");
+        assert_eq!(target.descriptor().role(), Role::DropTarget);
+        assert_eq!(target.bounds(), target_hit);
+        assert_eq!(
+            session.bind_presented_receiver(&target.descriptor()),
+            Some(target)
+        );
         let clear = SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&surface);
         let click = session
             .host_pointer_hit(SURFACE, press)
             .unwrap()
             .delivery()
-            .expect("the contained frame owns the independent click lane");
+            .unwrap();
         let press_facts = SurfacePointerReceiverFacts::delivery(&click)
             .with_drag_delivery(&title)
             .with_clear_hover_lane(&surface);
@@ -1205,56 +1323,88 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_only_after_exact_presen
                 facts,
             )
         });
+        // Inspect this exact frozen prefix without publishing it. The complete
+        // source follows the pointer over the guide, while source suppression
+        // keeps the explicit background target selected through the projection.
+        {
+            let mut motion = session.begin_host_frame().unwrap();
+            motion
+                .submit_host_pointer_batch(inputs[..2].iter().copied())
+                .unwrap();
+            let plan = motion.paint_plan(SURFACE).unwrap().unwrap();
+            let mut projected_source = None;
+            let mut active_targets = Vec::new();
+            plan.visit_surface_program(|step| {
+                match step {
+                    Step::DragDecoration(source) if source.source_is_projected() => {
+                        assert_eq!(source.kind(), DragSourceKind::Root);
+                        assert!(
+                            projected_source
+                                .replace(source.projected_root_bounds().unwrap())
+                                .is_none()
+                        );
+                    }
+                    Step::DropGuide {
+                        affordance: Some(cluster),
+                        ..
+                    } => {
+                        active_targets.extend(
+                            cluster
+                                .targets()
+                                .filter(|target| target.is_active())
+                                .map(|target| target.visual_id()),
+                        );
+                    }
+                    _ => {}
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+            assert!(
+                projected_source
+                    .expect("the complete split-root must project its live content")
+                    .contains(point),
+                "the moved source must cover the explicit target point"
+            );
+            assert_eq!(
+                active_targets,
+                [target_visual],
+                "source suppression must preserve the explicit inner-left winner"
+            );
+            let (recording, _) = RecordingRenderer::execute(plan).unwrap();
+            for item in [LEFT, RIGHT] {
+                assert_eq!(recording.records.iter().filter(|record| matches!(record,
+                    OwnedRecord::PaneContent { item: Some(current), paint: Paint::Visible, .. } if *current == item
+                )).count(), 1, "the projected source must retain both split panes");
+            }
+            assert!(
+                recording.records.iter().any(|record| matches!(
+                    record,
+                    OwnedRecord::Preview(DockspacePreviewVisual::Dock {
+                        surface: SURFACE,
+                        ..
+                    })
+                )),
+                "the explicit guide must resolve a dock preview before release"
+            );
+        }
+        assert_eq!(session.version(), version);
+        assert!(!session.has_active_gesture());
+        assert_durable(&session, initial_rect());
         let mut frame = session.begin_host_frame().unwrap();
         frame.submit_host_pointer_batch(inputs).unwrap();
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .unwrap();
-        assert!(!frame.commit().unwrap().workspace_changed());
-        assert!(!session.has_active_gesture());
-        assert_durable(&session, initial_rect());
-        assert!(!settle(&mut session).workspace_changed());
-        assert_eq!(session.version(), version);
-
-        let (pending, output) = paint(&mut session);
-        if blocked_release {
-            assert!(pending.renderer.records.iter().all(|record| !matches!(
-                record,
-                OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
-            )));
-        } else {
-            assert!(
-                pending.renderer.records.iter().any(|record| matches!(
-                    record,
-                    OwnedRecord::Preview(DockspacePreviewVisual::Dock { surface, rect })
-                        if *surface == SURFACE && *rect == preview
-                )),
-                "the first threshold move must choose the main target behind the source"
-            );
-        }
-        assert_durable(&session, initial_rect());
-        let artifact = output.presentation_artifact();
-        let committed = present(&mut session, output, disposition);
-        let accepted = !blocked_release && disposition == Disposition::Presented;
-        assert_eq!(
-            committed.workspace_changed(),
-            accepted,
-            "{blocked_release:?} {disposition:?}: {committed:?}"
-        );
-        let [ack] = committed.surface_presentation_commits() else {
-            panic!("the exact behind-source preview output must settle once")
-        };
-        assert_eq!(
-            ack.presents(artifact),
-            !accepted && disposition == Disposition::Presented
-        );
+        let released = frame.commit().unwrap();
+        let accepted = !blocked_release;
+        assert_eq!(released.workspace_changed(), accepted, "{released:?}");
         if accepted {
             assert!(
-                ack.retires(artifact),
-                "delivery supersedes the preview layout"
+                matches!(released.manipulation_feedback(), [terminal] if terminal.status() == Status::Delivered(Delivery::Dock)),
+                "frozen clear-hover release must dock the complete source: blocked={blocked_release}, disposition={disposition:?}, press={press:?}, release={point:?}; feedback={:#?}; report={released:#?}",
+                released.manipulation_feedback(),
             );
-        }
-        if accepted {
             assert!(session.view().contained(FLOATING).is_none());
             assert_eq!(
                 session.view().surface(SURFACE).unwrap().contained_count(),
@@ -1267,12 +1417,51 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_only_after_exact_presen
                 assert_eq!(view.contained(), None);
                 assert_eq!(view.tabs().items(), &[item]);
             }
+            assert!(session.bind_presented_receiver(&before.title).is_none());
         } else {
+            assert!(
+                released
+                    .manipulation_feedback()
+                    .iter()
+                    .all(|feedback| !matches!(
+                        feedback.status(),
+                        Status::Delivered(_) | Status::Pending(_)
+                    ))
+            );
             assert_durable(&session, initial_rect());
         }
         assert_eq!(session.version() != version, accepted);
         assert!(!session.has_active_gesture());
         let terminal_version = session.version();
+        // Recompile and encode in one update after the semantic release invalidated the scene.
+        let mut frame = session.begin_host_frame().unwrap();
+        if frame.paint_plan(SURFACE).unwrap().is_none() {
+            frame.measure_surface(SURFACE, metrics()).unwrap();
+        }
+        let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+        let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
+        assert!(recording.records.iter().all(|record| !matches!(
+            record,
+            OwnedRecord::Preview(_) | OwnedRecord::TransformPreview(..)
+        )));
+        frame.confirm_surface_painted(receipt).unwrap();
+        let mut painted = frame.commit().unwrap();
+        assert!(!painted.workspace_changed());
+        assert!(painted.manipulation_feedback().is_empty());
+        let output = painted.take_painted_outputs().pop().unwrap();
+        let artifact = output.presentation_artifact();
+        assert!(
+            matches!(recording.records.last(), Some(OwnedRecord::SurfaceEnd(semantic)) if output.matches_semantic_output(*semantic))
+        );
+        session
+            .report_surface_presentation(output, disposition)
+            .unwrap();
+        let settled = settle(&mut session);
+        assert!(matches!(settled.surface_presentation_commits(), [ack] if ack.settles(artifact)));
+        assert!(!settled.workspace_changed());
+        assert!(settled.manipulation_feedback().is_empty());
+        assert_eq!(session.version(), terminal_version);
+        assert_eq!(session.view().contained(FLOATING).is_none(), accepted);
         assert!(!settle(&mut session).workspace_changed());
         assert_eq!(session.version(), terminal_version);
     }
@@ -1342,20 +1531,6 @@ fn rejected_non_source_contained_target_blocks_a_legal_background_target_and_fal
             _ => None,
         })
         .unwrap();
-    let point = LogicalPoint::new(
-        front_content.x() + front_content.width() * 0.72,
-        front_content.y() + front_content.height() * 0.72,
-    )
-    .unwrap();
-    assert!(
-        before
-            .guides
-            .iter()
-            .filter(|guide| guide.root == ROOT)
-            .all(|guide| !guide.hit.contains(point)),
-        "the front rejection must come from its pane basin, not an overlapping outer guide"
-    );
-    assert!(initial_rect().contains(point));
     let background = before
         .renderer
         .records
@@ -1371,22 +1546,56 @@ fn rejected_non_source_contained_target_blocks_a_legal_background_target_and_fal
         .unwrap();
     let fraction = session.presentation_config().magnetic_center_fraction();
     let inset = (1.0 - fraction) * 0.5;
-    assert!(
-        rect(
-            background.x() + background.width() * inset,
-            background.y() + background.height() * inset,
-            background.width() * fraction,
-            background.height() * fraction,
-        )
-        .contains(point),
-        "the rejected front center must cover the background's magnetic center field"
+    let background_center = rect(
+        background.x() + background.width() * inset,
+        background.y() + background.height() * inset,
+        background.width() * fraction,
+        background.height() * fraction,
     );
-    let clear_point = LogicalPoint::new(
-        background.x() + background.width() * 0.65,
-        background.y() + background.height() * 0.5,
-    )
-    .unwrap();
-    assert!(!initial_rect().contains(clear_point));
+    let samples = [0.35, 0.45, 0.55, 0.65, 0.75, 0.85];
+    let point = samples
+        .into_iter()
+        .flat_map(|x| {
+            samples.into_iter().map(move |y| {
+                LogicalPoint::new(
+                    front_content.x() + front_content.width() * x,
+                    front_content.y() + front_content.height() * y,
+                )
+                .unwrap()
+            })
+        })
+        .find(|point| {
+            initial_rect().contains(*point)
+                && background_center.contains(*point)
+                && before
+                    .guides
+                    .iter()
+                    .filter(|guide| guide.root == ROOT)
+                    .all(|guide| !guide.hit.contains(*point))
+        })
+        .expect(
+            "the rejected front pane must expose a bare point over the background magnetic field",
+        );
+    let clear_point = samples
+        .into_iter()
+        .flat_map(|x| {
+            samples.into_iter().map(move |y| {
+                LogicalPoint::new(
+                    background.x() + background.width() * x,
+                    background.y() + background.height() * y,
+                )
+                .unwrap()
+            })
+        })
+        .find(|point| {
+            !initial_rect().contains(*point)
+                && background_center.contains(*point)
+                && before
+                    .guides
+                    .iter()
+                    .all(|guide| !guide.hit.contains(*point))
+        })
+        .expect("the background center field must also expose an unobscured bare control point");
     let back = before
         .guides
         .iter()

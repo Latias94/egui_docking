@@ -43,14 +43,18 @@ assert!(session.view().item(item).is_some());
 
 ## Engine host integration
 
-1. Begin a host frame and supply surface measurements in logical coordinates.
+1. Begin a host frame, submit ordered input and application commands, then
+   begin encoding and supply surface measurements in logical coordinates.
    A surface is a logical layout and input domain; it need not be a platform
    window. Items and roots retain their stable application identities.
-2. Obtain a `SurfacePaintPlan` and call `execute_surface_program` to accept its
+2. Obtain `SurfaceWork::Ready(SurfacePaintPlan)` and call `execute_surface_program` to accept its
    complete ordered program into your sink. Copy the required geometry,
    identities, and pane-content references into owned host records if rendering
    will happen after the frame borrow ends. `SourceGap` records preserve semantic
-   identity while suppressing ordinary visible source paint.
+   identity while suppressing ordinary visible source paint. Measurement and
+   encoding use the same private candidate. `Deferred(Unmeasured)` requests
+   measurements; `Deferred(OutputCapacity)` is normal bounded backpressure
+   before content callbacks, not a failed input update.
 3. Pass the returned `SurfaceProgramExecutionReceipt` to
    `confirm_surface_painted`, account for unpainted surfaces, then commit the
    frame. A receipt proves complete sink acceptance; the committed
@@ -98,24 +102,28 @@ proves that the desktop pointer is outside all windows. `disable_host_pointer`
 drains and retires the producer; dropping or rejecting a host frame leaves its
 committed input watermark unchanged.
 
-A complete press/move/release batch can finish input processing before its
-preview is presented. The core freezes the release, then waits for the exact
-preview output's presentation result. Hosts continue rendering pending feedback
-without inventing more pointer events. `has_pending_presentation()` remains true
-after the active gesture ends and until a successful frame settles its release
-or presentation-gated root rehome. `surface_requires_presentation(surface)`
-identifies the target even while an exact emitted output awaits its renderer
-result. `HostFrameReport::repaint_surfaces()` includes a pending target only
-while its exact output has not been emitted; once emitted, preserve a commit
-continuation for its final disposition instead of repeatedly painting it.
-Neither query grants input or presentation authority. Complete contained sources
-and resize previews include real content, chrome, hit and semantic geometry in the surface
-program. Renderers should not add a second ghost shell when a preview reports
-`is_layout_projected()`. Only terminal delivery writes the durable rectangle.
-The independent public consumer verifies
-this contract without egui or native hosting. The common public-host and egui gesture matrices now pass, including complete
-single-batch input. Optional native consolidation and platform qualification
-remain separate; see `docs/VALIDATION.md` for evidence and limits.
+A complete press/move/release batch commits an ordinary logical edit in its
+successful update and emits delivery once. A later press or `Dropped` output
+does not undo that edit. Input remains bound to its actually presented source
+and hover snapshots, revalidated against their relevant current semantic scopes.
+Native resource creation or retirement retains its separate exact first-live
+and source-reservation rules. Pending-presentation queries describe those
+obligations and never grant input authority.
+
+Complete contained sources and resize previews include real content, chrome,
+hit and semantic geometry in the surface program. Renderers should not add a
+second ghost shell when a preview reports `is_layout_projected()`. Release
+writes the durable rectangle in the accepted update. All admitted outputs own
+their exact immutable scenes until terminal settlement; the default capacity is
+64 outputs and can be configured explicitly.
+
+An update can release its session borrow with `suspend`, retain one owned
+`DockspaceUpdate` across renderer hooks and resume that same candidate. A
+competing update is rejected while it is outstanding. Repeated actual encoding
+passes use `restart_encoding_pass` without replaying input; discarded receipts
+cannot confirm the replacement pass. `DeferredSurfaceAction` retains the
+original semantic witness for actions produced during encoding and validates
+its relevant scope in a subsequent update.
 
 ## Incremental logical surfaces
 

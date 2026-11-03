@@ -35,7 +35,6 @@ impl DockEngine {
         let pending_mutation = self.pending_mutation.as_ref().is_some_and(|pending| {
             let source = match pending {
                 PendingMutation::DragRelease(pending) => pending.drag.source_surface,
-                PendingMutation::ContainedRelease(pending) => pending.transform.surface,
                 PendingMutation::Rehome(pending) => pending.source_surface,
             };
             source == surface || pending.surface() == surface

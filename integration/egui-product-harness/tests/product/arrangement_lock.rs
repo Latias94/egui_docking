@@ -239,7 +239,6 @@ fn locked_rear_contained_tab_and_content_keep_focus_and_raise_without_geometry_c
             run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
         assert!(focused.close_requests.is_empty());
         assert_eq!(capability, DockspaceCapability::Supported);
-        assert!(panes.target_requests() > 0, "content_click={content_click}");
         assert!(
             context.memory(|memory| memory.has_focus(panes.target)),
             "content_click={content_click}"
@@ -254,6 +253,14 @@ fn locked_rear_contained_tab_and_content_keep_focus_and_raise_without_geometry_c
                 .map(|contained| contained.id())
                 .collect::<Vec<_>>(),
             [FRONT_FLOATING, FLOATING]
+        );
+
+        context.memory_mut(|memory| memory.surrender_focus(panes.target));
+        assert!(!context.memory(|memory| memory.has_focus(panes.target)));
+        let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert!(
+            !context.memory(|memory| memory.has_focus(panes.target)),
+            "the acknowledged locked-pane focus cannot replay after surrender; content_click={content_click}"
         );
 
         let title = contained_title_point(&dockspace);

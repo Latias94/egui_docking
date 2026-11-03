@@ -201,7 +201,7 @@ fn unpainted_projection_cannot_hit_or_survive_requirement_invalidation() {
 }
 
 #[test]
-fn stale_fallback_survives_an_unpainted_ready_candidate_without_regaining_hit_authority() {
+fn semantic_requirement_change_retains_only_the_actual_presented_output() {
     let surface = SurfaceId::new(12);
     let initial = manifest(surface, 0, 0);
     let initial_ticket = initial.surface(surface).expect("surface exists").ticket();
@@ -213,18 +213,28 @@ fn stale_fallback_survives_an_unpainted_ready_candidate_without_regaining_hit_au
     scenes
         .reconcile_manifest(&changed)
         .expect("requirements reconcile");
-    assert!(scenes.ready_surface(surface).is_none());
+    assert_eq!(
+        scenes
+            .ready_surface(surface)
+            .map(SurfacePlanScene::output_ticket),
+        Some(painted_output)
+    );
 
     let changed_ticket = changed.surface(surface).expect("surface exists").ticket();
-    let (pending, _) = install(&mut scenes, changed_ticket, 2);
+    let (pending, pending_output) = install(&mut scenes, changed_ticket, 2);
     assert_ne!(painted, pending);
-    assert!(scenes.ready_surface(surface).is_none());
+    assert_ne!(painted_output, pending_output);
     let projection = scenes
         .surface(surface)
         .and_then(SurfaceScene::paint_projection)
         .expect("next candidate projects");
     assert_eq!(projection.plan_stamp(), pending);
-    assert!(scenes.interaction_projection(surface).is_none());
+    let interaction = scenes
+        .interaction_projection(surface)
+        .expect("the actual output retains its authority");
+    assert_eq!(interaction.plan_stamp(), painted);
+    assert_eq!(interaction.output_ticket(), painted_output);
+    assert_eq!(interaction.authority().ticket(), painted_output);
 
     scenes
         .demote_to_stale(surface, StaleSurfaceSceneReason::CoordinateAuthorityChanged)
@@ -236,6 +246,84 @@ fn stale_fallback_survives_an_unpainted_ready_candidate_without_regaining_hit_au
         .expect("painted fallback remains visible");
     assert_eq!(stale.plan_stamp(), painted);
     assert!(scenes.interaction_projection(surface).is_none());
+    assert!(acknowledge(&mut scenes, painted_output, 2).is_err());
+    assert!(scenes.interaction_projection(surface).is_none());
+}
+
+#[test]
+fn policy_config_and_epoch_changes_reject_retained_output_promotion() {
+    let surface = SurfaceId::new(121);
+    for (epoch, config, policy) in [
+        (
+            WorkspaceEpoch::new(6),
+            PresentationConfigRevision::default(),
+            PolicyRevision::default(),
+        ),
+        (
+            WorkspaceEpoch::new(5),
+            PresentationConfigRevision::new(1),
+            PolicyRevision::default(),
+        ),
+        (
+            WorkspaceEpoch::new(5),
+            PresentationConfigRevision::default(),
+            PolicyRevision::new(1),
+        ),
+    ] {
+        let initial = manifest(surface, 0, 0);
+        let ticket = initial.surface(surface).expect("surface exists").ticket();
+        let mut scenes = SurfaceSceneSet::new(&initial).expect("scene set initializes");
+        let (_, output) = install(&mut scenes, ticket, 1);
+        assert_eq!(acknowledge(&mut scenes, output, 1), Ok(true));
+        let emitted = scenes
+            .emitted_scene(output)
+            .expect("the exact output is retained")
+            .clone();
+        let changed_ticket = SurfaceMeasurementTicket::new(
+            ticket.authority_domain(),
+            epoch,
+            config,
+            policy,
+            SurfaceRequirementRevision::new(1),
+            surface,
+        );
+        let requirements = SurfaceRequirements::new(
+            changed_ticket,
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeMap::new(),
+        )
+        .expect("rootless requirements are coherent");
+        let changed = SceneRequirementDraft::new_for_test(
+            ticket.authority_domain(),
+            WorkspaceVersion::new(epoch, WorkspaceRevision::new(1)),
+            config,
+            policy,
+            RequirementRevision::new(1),
+            BTreeMap::from([(surface, requirements)]),
+        )
+        .and_then(|draft| draft.finalize(PopupPlaneRequirement::default()))
+        .expect("changed manifest is coherent");
+
+        scenes
+            .reconcile_manifest(&changed)
+            .expect("requirements reconcile");
+        assert!(scenes.interaction_projection(surface).is_none());
+        assert!(scenes.retain_emitted_scene(&emitted).is_err());
+        assert!(scenes.interaction_projection(surface).is_none());
+
+        let (_, successor) = install(&mut scenes, changed_ticket, 2);
+        assert!(scenes.retain_emitted_scene(&emitted).is_err());
+        assert!(scenes.interaction_projection(surface).is_none());
+        assert_eq!(acknowledge(&mut scenes, successor, 2), Ok(true));
+        assert_eq!(
+            scenes
+                .interaction_authority(surface)
+                .map(PresentedSurfaceAuthority::ticket),
+            Some(successor)
+        );
+    }
 }
 
 #[test]
@@ -493,6 +581,10 @@ fn popup_owner_opens_and_closes_without_waiting_for_other_surfaces() {
         .expect("second active proof is accepted");
     assert!(scenes.ready_surface(first).is_some());
     assert!(scenes.ready_surface(second).is_some());
+    let active_owner_scene = scenes
+        .emitted_scene(active_outputs[&first])
+        .expect("the actual popup output is retained")
+        .clone();
 
     let inactive = PopupPlaneRequirement::Inactive {
         revision: PopupRoutingRevision::new_for_test(2),
@@ -503,7 +595,14 @@ fn popup_owner_opens_and_closes_without_waiting_for_other_surfaces() {
         .reconcile_manifest(&inactive_manifest)
         .expect("close revision reconciles");
     assert!(scenes.ready_surface(first).is_none());
-    assert!(scenes.ready_surface(second).is_none());
+    assert!(scenes.retain_emitted_scene(&active_owner_scene).is_err());
+    assert_eq!(
+        scenes
+            .interaction_authority(second)
+            .map(PresentedSurfaceAuthority::ticket),
+        Some(active_outputs[&second]),
+        "the non-owner's unchanged popup visual retains only its actual output"
+    );
     assert!(
         scenes
             .accept_observed_authority(observed(active_outputs[&first], 3))
@@ -524,16 +623,84 @@ fn popup_owner_opens_and_closes_without_waiting_for_other_surfaces() {
         );
         inactive_outputs.insert(surface, output);
     }
+    assert!(scenes.ready_surface(first).is_none());
+    assert_eq!(
+        scenes
+            .interaction_authority(second)
+            .map(PresentedSurfaceAuthority::ticket),
+        Some(active_outputs[&second]),
+        "installing an unpresented successor does not authorize its receivers"
+    );
     scenes
         .accept_observed_authority(observed(inactive_outputs[&first], 4))
         .expect("first close proof is accepted");
     assert!(scenes.ready_surface(first).is_some());
-    assert!(scenes.ready_surface(second).is_none());
+    assert_eq!(
+        scenes
+            .interaction_authority(second)
+            .map(PresentedSurfaceAuthority::ticket),
+        Some(active_outputs[&second])
+    );
     scenes
         .accept_observed_authority(observed(inactive_outputs[&second], 5))
         .expect("second close proof is accepted");
     assert!(scenes.ready_surface(first).is_some());
     assert!(scenes.ready_surface(second).is_some());
+
+    let inactive_owner_scene = scenes
+        .emitted_scene(inactive_outputs[&first])
+        .expect("the actual closed popup output is retained")
+        .clone();
+    let reopened = PopupPlaneRequirement::Active {
+        revision: PopupRoutingRevision::new_for_test(3),
+        session: TabListMenuSessionId::new_for_test(owner, 2),
+        owner,
+    };
+    let reopened_manifest =
+        manifest_for_roster([(first, 2), (second, 2)], 2, reopened, Some(owner));
+    scenes
+        .reconcile_manifest(&reopened_manifest)
+        .expect("open revision reconciles");
+    assert!(scenes.ready_surface(first).is_none());
+    assert!(scenes.retain_emitted_scene(&inactive_owner_scene).is_err());
+    assert!(
+        scenes
+            .accept_observed_authority(observed(inactive_outputs[&first], 6))
+            .is_err(),
+        "an old closed-plane proof cannot authorize the reopened popup"
+    );
+    assert_eq!(
+        scenes
+            .interaction_authority(second)
+            .map(PresentedSurfaceAuthority::ticket),
+        Some(inactive_outputs[&second])
+    );
+
+    let (_, reopened_output) = install_with_popup(
+        &mut scenes,
+        reopened_manifest
+            .surface(first)
+            .expect("owner exists")
+            .ticket(),
+        reopened,
+        7,
+    );
+    assert!(scenes.ready_surface(first).is_none());
+    scenes
+        .accept_observed_authority(observed(reopened_output, 7))
+        .expect("the exact open output is accepted");
+    assert_eq!(
+        scenes
+            .interaction_authority(first)
+            .map(PresentedSurfaceAuthority::ticket),
+        Some(reopened_output)
+    );
+    assert_eq!(
+        scenes
+            .interaction_authority(second)
+            .map(PresentedSurfaceAuthority::ticket),
+        Some(inactive_outputs[&second])
+    );
 }
 
 #[test]

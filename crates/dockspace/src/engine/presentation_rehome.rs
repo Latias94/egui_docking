@@ -963,6 +963,7 @@ impl DockEngine {
             &self.policy.clone(),
             publication_authority,
             JournalDeliveryActivation::None,
+            None,
             events,
         )? {
             Ok(result) => result,

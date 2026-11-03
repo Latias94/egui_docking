@@ -265,7 +265,6 @@ struct FocusPanes {
     target_rect: Cell<Option<Rect>>,
     pane_rect: Cell<Option<Rect>>,
     expose_target: bool,
-    target_requests: Cell<usize>,
     docking_content: bool,
     content_widgets: Vec<egui::Id>,
     overlapping_blocker: bool,
@@ -295,15 +294,10 @@ impl FocusPanes {
             target_rect: Cell::new(None),
             pane_rect: Cell::new(None),
             expose_target,
-            target_requests: Cell::new(0),
             docking_content: true,
             content_widgets: vec![target],
             overlapping_blocker: false,
         }
-    }
-
-    fn target_requests(&self) -> usize {
-        self.target_requests.get()
     }
 
     fn target_rect(&self) -> Rect {
@@ -601,8 +595,6 @@ impl PaneView for FocusPanes {
         if item != SECOND {
             return None;
         }
-        self.target_requests
-            .set(self.target_requests.get().saturating_add(1));
         self.expose_target.then_some(self.target)
     }
 
@@ -887,14 +879,12 @@ fn run_pane_frame(
     panes: &mut dyn PaneView,
     events: Vec<Event>,
 ) -> FrameOutput {
-    let mut close_requests = Vec::new();
-    let input = input(events);
-    let mut output = run_headless(context, input, |ui| {
-        let response = dockspace
-            .show_single_surface(SURFACE, ui, panes)
-            .expect("the product frame advances");
-        close_requests.extend(response.close_request_events().iter().cloned());
-    });
+    let (output, response) = dockspace
+        .run_single_surface(context, input(events), SURFACE, panes)
+        .expect("the owned product run advances");
+    let close_requests = response.close_request_events().to_vec();
+    let (mut output, receipt) = output.into_parts();
+    receipt.report(SurfacePresentationResult::Presented);
     output.textures_delta.clear();
     FrameOutput {
         output,
@@ -908,18 +898,14 @@ fn run_pane_frame_with_mutation(
     panes: &mut dyn PaneView,
     events: Vec<Event>,
 ) -> (FrameOutput, bool, bool) {
-    let mut close_requests = Vec::new();
-    let mut workspace_changed = false;
-    let mut published_state_changed = false;
-    let input = input(events);
-    let mut output = run_headless(context, input, |ui| {
-        let response = dockspace
-            .show_single_surface(SURFACE, ui, panes)
-            .expect("the product frame advances");
-        close_requests.extend(response.close_request_events().iter().cloned());
-        workspace_changed |= response.mutation().workspace_changed();
-        published_state_changed |= response.mutation().published_state_changed();
-    });
+    let (output, response) = dockspace
+        .run_single_surface(context, input(events), SURFACE, panes)
+        .expect("the owned product run publishes once");
+    let close_requests = response.close_request_events().to_vec();
+    let workspace_changed = response.mutation().workspace_changed();
+    let published_state_changed = response.mutation().published_state_changed();
+    let (mut output, receipt) = output.into_parts();
+    receipt.report(SurfacePresentationResult::Presented);
     output.textures_delta.clear();
     (
         FrameOutput {
@@ -1012,23 +998,20 @@ fn run_focus_frame(
     panes: &mut FocusPanes,
     events: Vec<Event>,
 ) -> (FrameOutput, DockspaceCapability) {
-    let mut close_requests = Vec::new();
-    let mut pane_focus_capability = None;
-    let input = input(events);
-    let mut output = run_headless(context, input, |ui| {
-        let response = dockspace
-            .show_single_surface(SURFACE, ui, panes)
-            .expect("the pane-focus product frame advances");
-        close_requests.extend(response.close_request_events().iter().cloned());
-        pane_focus_capability = Some(response.pane_focus_capability());
-    });
+    let (output, response) = dockspace
+        .run_single_surface(context, input(events), SURFACE, panes)
+        .expect("the pane-focus owned product run advances");
+    let close_requests = response.close_request_events().to_vec();
+    let pane_focus_capability = response.pane_focus_capability();
+    let (mut output, receipt) = output.into_parts();
+    receipt.report(SurfacePresentationResult::Presented);
     output.textures_delta.clear();
     (
         FrameOutput {
             output,
             close_requests,
         },
-        pane_focus_capability.expect("the pane-focus frame returns one capability"),
+        pane_focus_capability,
     )
 }
 
@@ -2228,11 +2211,16 @@ fn contained_move_resize_select_focus_and_dock_back_preserve_exact_ownership() {
         &mut panes,
         vec![accesskit_action(second, Action::Click)],
     );
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        !context.memory(|memory| memory.has_focus(panes.target)),
+        "the selection update publishes its intent before requesting pane focus"
+    );
     let (_focused, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(capability, DockspaceCapability::Supported);
-    assert_eq!(panes.target_requests(), 1);
     assert!(context.memory(|memory| memory.has_focus(panes.target)));
 
+    // Accept the exact presented focus acknowledgement before changing roots.
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
     dockspace
         .dock_root_back_current(FLOATING_ROOT)
@@ -2256,18 +2244,21 @@ fn contained_move_resize_select_focus_and_dock_back_preserve_exact_ownership() {
         "same-context dock-back must preserve the exact focused pane target"
     );
 
+    context.memory_mut(|memory| memory.surrender_focus(panes.target));
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(
-        panes.target_requests(),
-        2,
-        "dock-back must publish one fresh request for the exact recovered pane"
+    assert!(
+        context.memory(|memory| memory.has_focus(panes.target)),
+        "dock-back publishes a fresh request for the exact recovered pane"
     );
-    assert!(context.memory(|memory| memory.has_focus(panes.target)));
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(
-        panes.target_requests(),
-        2,
-        "the terminal Focused observation must settle the recovery request without replay"
+    assert!(context.memory(|memory| memory.has_focus(panes.target)));
+    context.memory_mut(|memory| memory.surrender_focus(panes.target));
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        !context.memory(|memory| memory.has_focus(panes.target)),
+        "the terminal Focused acknowledgement settles recovery without reclaiming focus"
     );
 }
 
@@ -2307,7 +2298,7 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
     assert_eq!(
         surface_ids(&dockspace),
         [SURFACE],
-        "the callback-only product starts with one same-context logical surface"
+        "the product starts with one same-context logical surface"
     );
 
     let floated = run_frame(
@@ -2316,6 +2307,9 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
         &mut panes,
         vec![accesskit_action(float, Action::Click)],
     );
+    assert!(floated.close_requests.is_empty());
+    assert!(dockspace.view().item(SECOND).unwrap().contained().is_none());
+    let floated = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(floated.close_requests.is_empty());
     let floating_id = dockspace
         .view()
@@ -2355,7 +2349,7 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
     assert!(float_node.is_disabled());
     assert!(
         native_node.is_disabled(),
-        "contained ownership does not promote the callback-only product into a native host"
+        "contained ownership does not promote the product into a native host"
     );
     assert!(!dock_back_node.is_disabled());
 
@@ -2369,6 +2363,9 @@ fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
         docked.close_requests.is_empty(),
         "Dock Back must move the root without requesting permission to destroy its content",
     );
+    assert!(dockspace.view().contained(floating_id).is_some());
+    let docked = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(docked.close_requests.is_empty());
     assert!(dockspace.view().contained(floating_id).is_none());
     let main = dockspace
         .view()
@@ -2495,6 +2492,8 @@ fn contained_presentation_menu_exposes_and_executes_directional_commands() {
             &mut panes,
             vec![accesskit_action(command, Action::Click)],
         );
+        assert!(dockspace.view().contained(FLOATING).is_some());
+        let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
         assert!(
             dockspace.view().contained(FLOATING).is_none(),
             "{label} must consume the contained presentation",
@@ -2711,6 +2710,17 @@ fn discarded_presentation_menu_activation_commits_exactly_once() {
         vec![accesskit_action(float, Action::Click)],
     );
     assert_eq!(passes, 3, "the terminal pass intentionally omits dockspace");
+    assert_eq!(
+        dockspace
+            .view()
+            .surface(SURFACE)
+            .unwrap()
+            .contained()
+            .count(),
+        0
+    );
+    let delivered = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(delivered.close_requests.is_empty());
     let surface = dockspace
         .view()
         .surface(SURFACE)
@@ -2721,6 +2731,20 @@ fn discarded_presentation_menu_activation_commits_exactly_once() {
         "discarded passes must retain the local command once without replaying it"
     );
     assert!(surface.main_root().is_none());
+    let committed_version = dockspace.version();
+    for _ in 0..2 {
+        run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert_eq!(dockspace.version(), committed_version);
+        assert_eq!(
+            dockspace
+                .view()
+                .surface(SURFACE)
+                .unwrap()
+                .contained()
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]
@@ -2865,6 +2889,13 @@ fn disabled_ui_ignores_delayed_contained_accesskit_actions() {
     assert!(!resize_node.supports_action(Action::Focus));
     assert!(!resize_node.supports_action(Action::Increment));
     assert!(!resize_node.supports_action(Action::Decrement));
+    let after = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(after.close_requests.is_empty());
+    assert_eq!(
+        contained_rect(&dockspace),
+        before,
+        "disabled input cannot enter the next-run action queue"
+    );
 }
 
 #[test]
@@ -3014,6 +3045,8 @@ fn default_features_contained_cardinal_resize_supports_accesskit_and_keyboard() 
         &mut panes,
         vec![accesskit_action(right, Action::Increment)],
     );
+    assert_eq!(contained_rect(&dockspace), initial);
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let widened = contained_rect(&dockspace);
     assert_eq!(widened.min(), initial.min());
     assert!(widened.width() > initial.width());
@@ -3031,6 +3064,8 @@ fn default_features_contained_cardinal_resize_supports_accesskit_and_keyboard() 
         &mut panes,
         key_press(Key::ArrowUp),
     );
+    assert_eq!(contained_rect(&dockspace), widened);
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let raised = contained_rect(&dockspace);
     assert!(raised.min().y() < widened.min().y());
     assert_eq!(raised.max().y(), widened.max().y());
@@ -3209,6 +3244,8 @@ fn default_features_overflow_menu_supports_accesskit_and_keyboard() {
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::End));
     let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::Enter));
+    assert_eq!(selected(&dockspace), Some(FIRST));
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
     assert!(
         dockspace
@@ -3551,14 +3588,20 @@ fn default_features_keyboard_navigation_keeps_tab_focus_with_selection() {
         &mut panes,
         key_press(Key::ArrowRight),
     );
+    assert_eq!(selected(&dockspace), Some(FIRST));
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(selected(&dockspace), Some(SECOND));
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::Home));
+    assert_eq!(selected(&dockspace), Some(SECOND));
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(selected(&dockspace), Some(FIRST));
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::End));
+    assert_eq!(selected(&dockspace), Some(FIRST));
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(selected(&dockspace), Some(SECOND));
 }
 
@@ -4531,10 +4574,23 @@ fn rear_contained_child_press_uses_event_time_position_even_when_released_in_the
             },
             "only explicitly registered application content can raise its containing presentation",
         );
+        assert!(
+            !context.memory(|memory| memory.has_focus(panes.target)),
+            "the input update publishes the focus obligation before encoding can observe it"
+        );
+        let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
         assert_eq!(
-            panes.target_requests() > 0,
+            context.memory(|memory| memory.has_focus(panes.target)),
             qualified,
-            "only a qualified event-time pane hit publishes the exact pane focus request"
+            "only a qualified event-time pane hit focuses the exact target"
+        );
+        let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        context.memory_mut(|memory| memory.surrender_focus(panes.target));
+        assert!(!context.memory(|memory| memory.has_focus(panes.target)));
+        let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert!(
+            !context.memory(|memory| memory.has_focus(panes.target)),
+            "acknowledged focus cannot replay after surrender; registered={registered}, blocked={blocked}"
         );
     }
 }
@@ -4842,21 +4898,14 @@ fn run_product_magnetic_drag(
     let threshold = source + vec2(12.0, 8.0);
     let observed_basin = match case.cadence() {
         CadenceProfile::Burst => {
-            let initial = advance(vec![
+            let _ = advance(vec![
                 Event::PointerMoved(source),
                 pointer_button(source, true),
                 Event::PointerMoved(threshold),
                 Event::PointerMoved(target),
                 pointer_button(target, false),
             ]);
-            settle_product_magnetic_preview(
-                || panic!("Burst preview must belong to the original raw packet: {case:?}"),
-                Some(initial),
-                target,
-                target_rect,
-                case,
-                &style,
-            )
+            None
         }
         CadenceProfile::Stepwise => {
             let _ = advance(vec![
@@ -4874,7 +4923,7 @@ fn run_product_magnetic_drag(
                 &style,
             );
             let _ = advance(vec![pointer_button(target, false)]);
-            observed
+            Some(observed)
         }
         CadenceProfile::Hesitant => {
             let _ = advance(vec![
@@ -4899,7 +4948,7 @@ fn run_product_magnetic_drag(
                 &style,
             );
             let _ = advance(vec![pointer_button(target, false)]);
-            observed
+            Some(observed)
         }
         CadenceProfile::ReleaseWithFinalMove => {
             let _ = advance(vec![
@@ -4921,21 +4970,49 @@ fn run_product_magnetic_drag(
                 Event::PointerMoved(target),
                 pointer_button(target, false),
             ]);
-            observed
+            Some(observed)
         }
         cadence => panic!("unsupported shared L03 cadence: {cadence:?}"),
     };
-    assert_eq!(observed_basin, case.basin());
-    mutations += settle_product_magnetic_outcome(context, dockspace, panes, case);
     assert_eq!(
         mutations, 1,
-        "one release must change exactly one frame: {case:?}"
+        "the original release update must publish exactly one mutation: {case:?}"
+    );
+    let snapshot = product_magnetic_snapshot(dockspace).expect("the release retains both items");
+    assert_eq!(
+        magnetic_outcome_missing(
+            Some(&snapshot),
+            case.basin(),
+            context.dragged_id().is_some(),
+            Some(&snapshot)
+        ),
+        Vec::<&str>::new(),
+        "the release update commits the exact basin with terminal ownership: {case:?} {snapshot:?}",
+    );
+    let committed_basin = match snapshot.split_relation {
+        None => MagneticDockBasin::Center,
+        Some((DockspaceAxis::Horizontal, true)) => MagneticDockBasin::West,
+        Some((DockspaceAxis::Horizontal, false)) => MagneticDockBasin::East,
+        Some((DockspaceAxis::Vertical, true)) => MagneticDockBasin::North,
+        Some((DockspaceAxis::Vertical, false)) => MagneticDockBasin::South,
+    };
+    assert_eq!(committed_basin, case.basin());
+    if let Some(observed_basin) = observed_basin {
+        assert_eq!(
+            observed_basin, committed_basin,
+            "the held preview and final mutation must agree: {case:?}"
+        );
+    }
+    assert_eq!(
+        settle_product_magnetic_outcome(context, dockspace, panes, case),
+        0,
+        "presentation and idle updates must not replay the release: {case:?}",
     );
 
     [
         SemanticObservation::ItemDocked {
             item: ItemAlias::Secondary,
-            basin: observed_basin,
+            basin: committed_basin,
         },
         SemanticObservation::Quiescent,
     ]
@@ -5098,7 +5175,7 @@ fn same_packet_shift_release_cannot_commit_an_earlier_magnetic_target() {
                 Modifiers::NONE
             },
         };
-        let frame = run_pane_frame(
+        let (_frame, changed, _) = run_pane_frame_with_mutation(
             &context,
             &mut dockspace,
             &mut panes,
@@ -5138,15 +5215,24 @@ fn same_packet_shift_release_cannot_commit_an_earlier_magnetic_target() {
                 })
                 .unwrap();
             assert!(
-                magnetic_preview_rect(
-                    &frame.output,
-                    dockspace.style().visuals.drop_fill.unwrap(),
-                    target_rect,
-                )
-                .is_some(),
-                "the unmodified control packet must expose its magnetic preview",
+                changed,
+                "the unmodified control packet must commit in its release update"
             );
-            settle_product_magnetic_outcome(&context, &mut dockspace, &mut panes, case);
+            let snapshot = product_magnetic_snapshot(&dockspace).unwrap();
+            assert!(
+                magnetic_outcome_missing(
+                    Some(&snapshot),
+                    MagneticDockBasin::Center,
+                    context.dragged_id().is_some(),
+                    Some(&snapshot)
+                )
+                .is_empty(),
+                "{snapshot:?}"
+            );
+            assert_eq!(
+                settle_product_magnetic_outcome(&context, &mut dockspace, &mut panes, case),
+                0
+            );
         }
     }
 }
@@ -5886,11 +5972,11 @@ fn interactive_text_pane_still_accepts_magnetic_tab_dock() {
     let source = node_center(&stable.output, Role::Tab, "Preview");
     let target_pane = panes.pane_rect(THIRD);
     let widget_rect = panes.widget_response(THIRD).interact_rect;
-    let target = Pos2::new(
+    let probe = Pos2::new(
         egui::lerp(widget_rect.x_range(), 0.72),
         egui::lerp(widget_rect.y_range(), 0.72),
     );
-    assert!(widget_rect.contains(target) && target_pane.contains(target));
+    assert!(widget_rect.contains(probe) && target_pane.contains(probe));
 
     let _ = run_pane_frame(
         &context,
@@ -5904,6 +5990,33 @@ fn interactive_text_pane_still_accepts_magnetic_tab_dock() {
         &mut panes,
         vec![Event::PointerMoved(source + vec2(24.0, 8.0))],
     );
+    let guide_frame = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(probe)],
+    );
+    let guide_fills = [
+        dockspace.style().visuals.drop_guide_fill.unwrap(),
+        dockspace.style().visuals.drop_guide_active_fill.unwrap(),
+    ];
+    let guides = rects_with_fill(&guide_frame.output, &guide_fills);
+    assert!(
+        !guides.is_empty(),
+        "the target's actual guide geometry must be available"
+    );
+    let target = MAGNETIC_DOCKING_BASINS
+        .cases()
+        .filter(|case| {
+            case.basin() == MagneticDockBasin::Center && case.cadence() == CadenceProfile::Stepwise
+        })
+        .map(|case| normalized_pane_point(target_pane, case))
+        .filter(|point| {
+            widget_rect.contains(*point) && guides.iter().all(|guide| !guide.contains(*point))
+        })
+        .min_by(|left, right| left.distance_sq(probe).total_cmp(&right.distance_sq(probe)))
+        .expect("a shared center-basin sample must hit the text widget outside the painted guides");
+    assert!(widget_rect.contains(target) && target_pane.contains(target));
     let mut preview = None;
     for _ in 0..8 {
         let frame = run_pane_frame(
@@ -5931,10 +6044,6 @@ fn interactive_text_pane_still_accepts_magnetic_tab_dock() {
         "dragging a tab over an interactive pane must publish a magnetic preview"
     );
     let preview = preview.unwrap();
-    let guide_fills = [
-        dockspace.style().visuals.drop_guide_fill.unwrap(),
-        dockspace.style().visuals.drop_guide_active_fill.unwrap(),
-    ];
     assert!(
         rects_with_fill(&preview.output, &guide_fills)
             .iter()
@@ -6389,6 +6498,11 @@ fn default_features_splitter_junction_exposes_independent_axis_semantics() {
         &mut panes,
         vec![accesskit_action(horizontal, Action::Increment)],
     );
+    assert_eq!(
+        splitter_junction_weights(&dockspace),
+        Some((before_root.clone(), before_columns.clone()))
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let (horizontal_root, horizontal_columns) = splitter_junction_weights(&dockspace)
         .expect("the horizontally adjusted junction remains split");
     assert!(horizontal_root[0] > before_root[0]);
@@ -6407,6 +6521,11 @@ fn default_features_splitter_junction_exposes_independent_axis_semantics() {
         &mut panes,
         key_press(Key::ArrowDown),
     );
+    assert_eq!(
+        splitter_junction_weights(&dockspace),
+        Some((horizontal_root.clone(), horizontal_columns.clone()))
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let (vertical_root, vertical_columns) = splitter_junction_weights(&dockspace)
         .expect("the vertically adjusted junction remains split");
     assert_eq!(vertical_root, horizontal_root);
@@ -6442,6 +6561,8 @@ fn default_features_splitter_supports_accesskit_and_keyboard_adjustment() {
         &mut panes,
         vec![accesskit_action(splitter, Action::Increment)],
     );
+    assert_eq!(root_weights(&dockspace), Some(initial.clone()));
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let increased = root_weights(&dockspace).expect("the fixture root remains split");
     assert!(increased[0] > initial[0]);
 
@@ -6458,6 +6579,8 @@ fn default_features_splitter_supports_accesskit_and_keyboard_adjustment() {
         &mut panes,
         key_press(Key::ArrowLeft),
     );
+    assert_eq!(root_weights(&dockspace), Some(increased.clone()));
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let decreased = root_weights(&dockspace).expect("the fixture root remains split");
     assert!(decreased[0] < increased[0]);
 }
@@ -6571,7 +6694,7 @@ fn default_features_escape_cancels_one_active_drag_and_clears_preview() {
 }
 
 #[test]
-fn default_features_release_waits_for_the_new_preview_to_be_painted() {
+fn default_features_ordinary_release_commits_before_its_output_is_presented() {
     let context = Context::default();
     context.enable_accesskit();
     let mut dockspace = Dockspace::builder("product-release-resample", split_layout())
@@ -6599,46 +6722,64 @@ fn default_features_release_waits_for_the_new_preview_to_be_painted() {
             vec![Event::PointerMoved(painted_top)],
         );
     }
-    let (release_output, release_receipt) = run_ui(
-        &context,
-        input(vec![
-            Event::PointerMoved(release_bottom),
-            pointer_button(release_bottom, false),
-        ]),
-        |ui| {
-            dockspace
-                .show_single_surface(SURFACE, ui, &mut panes)
-                .expect("the new release projection is emitted before presentation");
-        },
-    )
-    .into_parts();
+    let (release_output, response) = dockspace
+        .run_single_surface(
+            &context,
+            input(vec![
+                Event::PointerMoved(release_bottom),
+                pointer_button(release_bottom, false),
+            ]),
+            SURFACE,
+            &mut panes,
+        )
+        .expect("the ordinary release publishes before renderer submission");
+    assert!(response.mutation().workspace_changed());
+    let [terminal] = response.manipulation_feedback() else {
+        panic!(
+            "one terminal delivery: {:?}",
+            response.manipulation_feedback()
+        );
+    };
+    assert_eq!(
+        terminal.status(),
+        egui_dockspace::DockspaceManipulationStatus::Delivered(
+            egui_dockspace::DockspaceManipulationDelivery::Dock
+        )
+    );
+    let (release_output, release_receipt) = release_output.into_parts();
     release_output.drop_without_applying_deltas();
     assert_eq!(
-        root_split(&dockspace).map(|(axis, _)| axis),
-        Some(DockspaceAxis::Horizontal),
-        "an unpainted release target must remain pending instead of committing invisibly",
+        root_split(&dockspace),
+        Some((DockspaceAxis::Vertical, vec![vec![FIRST], vec![SECOND]])),
+        "the release uses presented target geometry without waiting for a terminal preview",
     );
     let version_before_visual_update = dockspace.version();
     let mut visual_only_style = dockspace.style().clone();
     visual_only_style.visuals.tab_active_fill = Some(egui::Color32::from_rgb(41, 83, 109));
     let visual_mutation = dockspace
         .set_style(visual_only_style)
-        .expect("visual-only styling does not disturb the pending release");
+        .expect("visual-only styling preserves the delivered layout");
     assert_eq!(dockspace.version(), version_before_visual_update);
     assert!(visual_mutation.published_state_changed());
     assert_eq!(visual_mutation.affected_surfaces(), &[SURFACE]);
     assert_eq!(
-        root_split(&dockspace).map(|(axis, _)| axis),
-        Some(DockspaceAxis::Horizontal),
-        "adapter-only styling must not cancel the pending release",
+        root_split(&dockspace),
+        Some((DockspaceAxis::Vertical, vec![vec![FIRST], vec![SECOND]])),
+        "adapter-only styling preserves the exact delivery",
     );
 
     release_receipt.report(SurfacePresentationResult::Presented);
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, changed, _) =
+        run_pane_frame_with_mutation(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        !changed,
+        "late output acknowledgement cannot repeat the release mutation"
+    );
+    assert_eq!(dockspace.version(), version_before_visual_update);
     assert_eq!(
         root_split(&dockspace),
         Some((DockspaceAxis::Vertical, vec![vec![FIRST], vec![SECOND]],)),
-        "the pending release commits after the terminal preview is settled",
+        "the late output acknowledgement preserves the delivered layout",
     );
 }
 
@@ -6898,20 +7039,27 @@ fn pane_focus_observation_settles_only_after_the_terminal_egui_pass() {
         &mut panes,
         vec![accesskit_action(second, Action::Click)],
     );
-    assert_eq!(selected(&dockspace), Some(SECOND));
-    assert_eq!(panes.target_requests(), 0);
+    assert_eq!(selected(&dockspace), Some(FIRST));
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
 
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(selected(&dockspace), Some(SECOND));
+    assert!(
+        !context.memory(|memory| memory.has_focus(panes.target)),
+        "the delivery update publishes its intent before requesting focus"
+    );
     let (_, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(panes.target_requests(), 1);
     assert_eq!(capability, DockspaceCapability::Supported);
     assert!(context.memory(|memory| memory.has_focus(panes.target)));
 
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(context.memory(|memory| memory.has_focus(panes.target)));
+    context.memory_mut(|memory| memory.surrender_focus(panes.target));
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(
-        panes.target_requests(),
-        1,
-        "the terminal Focused observation must complete the exact request",
+    assert!(
+        !context.memory(|memory| memory.has_focus(panes.target)),
+        "the exact terminal acknowledgement completes the request without reclaiming focus",
     );
 }
 
@@ -6934,8 +7082,13 @@ fn unavailable_pane_focus_binding_terminates_without_guessing_a_target() {
         vec![accesskit_action(second, Action::Click)],
     );
 
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(selected(&dockspace), Some(SECOND));
+    assert!(
+        !context.memory(|memory| memory.has_focus(panes.target)),
+        "the selection publication cannot guess an unavailable focus target"
+    );
     let (_, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(panes.target_requests(), 1);
     assert_eq!(
         capability,
         DockspaceCapability::Unavailable(DockspaceUnavailableReason::PaneFocusBindingUnavailable,),
@@ -6943,12 +7096,26 @@ fn unavailable_pane_focus_binding_terminates_without_guessing_a_target() {
     assert!(!context.memory(|memory| memory.has_focus(panes.target)));
 
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    panes.expose_target = true;
+    context.memory_mut(|memory| memory.surrender_focus(panes.target));
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(
-        panes.target_requests(),
-        1,
-        "an unavailable terminal observation must not replay or guess a focus target",
+    assert!(
+        !context.memory(|memory| memory.has_focus(panes.target)),
+        "an acknowledged unavailable request cannot replay when its binding appears",
     );
+    dockspace
+        .select_item_current(SECOND)
+        .expect("a fresh explicit selection publishes a new focus request");
+    let (_, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(capability, DockspaceCapability::Supported);
+    assert!(
+        context.memory(|memory| memory.has_focus(panes.target)),
+        "the newly available binding accepts a fresh request"
+    );
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    context.memory_mut(|memory| memory.surrender_focus(panes.target));
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
 }
 
 #[test]
@@ -6964,14 +7131,11 @@ fn discarded_pane_focus_observation_cannot_complete_the_request() {
     let mut panes = FocusPanes::new("product-discarded-pane-focus", true);
 
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let (stable, _) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let (second, _) = accesskit_node(&stable.output, Role::Tab, "Second");
-    let _ = run_focus_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![accesskit_action(second, Action::Click)],
-    );
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    dockspace
+        .select_item_current(SECOND)
+        .expect("the exact pane-focus request precedes the discarded UI passes");
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
 
     context
         .plugin_or_default::<LateDiscardPlugin>()
@@ -6980,16 +7144,23 @@ fn discarded_pane_focus_observation_cannot_complete_the_request() {
     let passes =
         run_two_discarded_dockspace_passes(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(passes, 3);
-    assert_eq!(panes.target_requests(), 2);
+    context.memory_mut(|memory| memory.surrender_focus(panes.target));
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
 
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(
-        panes.target_requests(),
-        3,
-        "discarded Focused observations must leave the exact request pending",
+    assert!(
+        context.memory(|memory| memory.has_focus(panes.target)),
+        "discarded Focused observations leave the request pending for the next legal encoding",
     );
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(panes.target_requests(), 3);
+    assert!(context.memory(|memory| memory.has_focus(panes.target)));
+    context.memory_mut(|memory| memory.surrender_focus(panes.target));
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        !context.memory(|memory| memory.has_focus(panes.target)),
+        "the later terminal acknowledgement completes the retried request without reclaiming focus"
+    );
 }
 
 #[test]
@@ -7369,17 +7540,15 @@ fn owned_to_unowned_downgrade_cancels_without_a_stale_ghost_frame() {
 }
 
 #[test]
-fn output_marker_mismatch_cancels_without_terminal_drag_residue() {
-    // Removing callback shapes also invalidates the complete surface-span markers used by owned
-    // output proofs. Keep the topology, source-gap, and drag-residue checks across that migration.
+fn output_marker_mismatch_rolls_back_the_update_and_preserves_the_previous_drag() {
+    // An owned output-hook failure rejects this unpublished update. The preceding
+    // gesture and its exact preview remain available for a later independent run.
     let context = Context::default();
     context.enable_accesskit();
     context.options_mut(|options| {
         options.max_passes = 4.try_into().expect("four is non-zero");
     });
-    let mut style = instrumented_style();
-    let active_fill = egui::Color32::from_rgb(43, 97, 151);
-    style.visuals.tab_active_fill = Some(active_fill);
+    let style = instrumented_style();
     let ghost_fill = style
         .visuals
         .ghost_fill
@@ -7402,9 +7571,9 @@ fn output_marker_mismatch_cancels_without_terminal_drag_residue() {
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let source_rect = node_rect(&stable.output, Role::Tab, "Second");
-    let source = source_rect.center();
-    let target = tab_center(&stable.output, "First");
+    let source = tab_center(&stable.output, "Second");
+    let first = node_rect(&stable.output, Role::Tab, "First");
+    let target = Pos2::new(first.min.x + first.width() * 0.25, first.center().y);
     let _ = run_frame(
         &context,
         &mut dockspace,
@@ -7422,57 +7591,85 @@ fn output_marker_mismatch_cancels_without_terminal_drag_residue() {
             || rect_fill_count(&dragging.output, drop_fill) > 0,
         "the owned path establishes presentation-qualified drag output",
     );
+    let version = dockspace.version();
+    let previous_preview = rect_with_fill(&dragging.output, drop_fill);
+    let previous_guides = guide_button_count(&dragging.output, passive_guide, active_guide);
 
     context
         .plugin_or_default::<LateDiscardPlugin>()
         .lock()
         .strip_callback_compounds_once = true;
-    let _ = run_frame(
+    let rejected = dockspace.run_single_surface(
         &context,
-        &mut dockspace,
+        input(vec![Event::PointerMoved(source + vec2(30.0, 120.0))]),
+        SURFACE,
         &mut panes,
-        vec![Event::PointerMoved(target)],
-    );
-
-    context.options_mut(|options| {
-        options.max_passes = 1.try_into().expect("one is non-zero");
-    });
-    let mut capability = None;
-    let mut recovered = run_headless(&context, input(Vec::new()), |ui| {
-        let response = dockspace
-            .show_single_surface(SURFACE, ui, &mut panes)
-            .expect("the output mismatch cancels the active gesture");
-        capability = Some(response.presentation_settlement_capability());
-    });
-    recovered.textures_delta.clear();
-
-    assert_eq!(
-        capability,
-        Some(DockspaceCapability::Unavailable(
-            DockspaceUnavailableReason::PresentationOutputMismatch,
-        )),
-    );
-    assert_eq!(
-        recovered.platform_output.num_completed_passes, 1,
-        "the mismatch cancellation remains clean when no discard pass is available",
-    );
-    assert_eq!(rect_fill_count(&recovered, ghost_fill), 0);
-    assert_eq!(rect_fill_count(&recovered, drop_fill), 0);
-    assert_eq!(
-        guide_button_count(&recovered, passive_guide, active_guide),
-        0,
-        "the mismatch terminal output contains no stale docking guide",
     );
     assert!(
-        rect_fill_count_in(&recovered, active_fill, source_rect) > 0,
-        "the mismatch terminal output restores the source tab",
+        rejected.is_err(),
+        "a stripped terminal output must never publish an owned update"
     );
-    assert!(context.dragged_id().is_none());
+    assert_eq!(dockspace.version(), version);
     assert_eq!(
         root_tabs(&dockspace).expect("the source tab group remains present"),
         before,
         "a forged or missing final-output proof cannot mutate topology",
     );
+    let recovered = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(dockspace.version(), version);
+    assert_eq!(root_tabs(&dockspace), Some(before));
+    assert_eq!(
+        rect_with_fill(&recovered.output, drop_fill),
+        previous_preview,
+        "the rejected move cannot replace or cancel the preceding preview"
+    );
+    assert_eq!(
+        guide_button_count(&recovered.output, passive_guide, active_guide),
+        previous_guides
+    );
+    assert!(
+        rect_fill_count(&recovered.output, ghost_fill) > 0 || previous_preview.is_some(),
+        "the previous gesture remains active after rollback"
+    );
+
+    let (released, response) = dockspace
+        .run_single_surface(
+            &context,
+            input(vec![
+                Event::PointerMoved(target),
+                pointer_button(target, false),
+            ]),
+            SURFACE,
+            &mut panes,
+        )
+        .expect("a fresh run releases the retained gesture");
+    assert!(response.mutation().workspace_changed());
+    let [terminal] = response.manipulation_feedback() else {
+        panic!(
+            "one delivery after rollback: {:?}",
+            response.manipulation_feedback()
+        );
+    };
+    assert!(matches!(
+        terminal.status(),
+        egui_dockspace::DockspaceManipulationStatus::Delivered(_)
+    ));
+    let (mut released, receipt) = released.into_parts();
+    receipt.report(SurfacePresentationResult::Presented);
+    released.textures_delta.clear();
+    assert_eq!(root_tabs(&dockspace), Some(vec![SECOND, FIRST]));
+    assert_eq!(rect_fill_count(&released, ghost_fill), 0);
+    assert_eq!(rect_fill_count(&released, drop_fill), 0);
+    assert_eq!(
+        guide_button_count(&released, passive_guide, active_guide),
+        0
+    );
+    assert!(context.dragged_id().is_none());
+    let committed = dockspace.version();
+    let (_, changed, _) =
+        run_pane_frame_with_mutation(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(!changed);
+    assert_eq!(dockspace.version(), committed);
 }
 
 #[test]

@@ -93,7 +93,7 @@ fn admission_diff_reports_only_the_same_pending_binding() {
     let native = session.native.as_mut().unwrap();
     assert!(
         native
-            .prepare_native_commit(&session.engine)
+            .prepare_native_commit(&session.engine, &[])
             .unwrap()
             .report
             .admissions
@@ -108,7 +108,7 @@ fn admission_diff_reports_only_the_same_pending_binding() {
         .admission = Some(ViewportAdmission::Pending);
     assert_eq!(
         native
-            .prepare_native_commit(&session.engine)
+            .prepare_native_commit(&session.engine, &[])
             .unwrap()
             .report
             .admissions,
@@ -129,7 +129,7 @@ fn admission_diff_reports_only_the_same_pending_binding() {
         .binding = replacement;
     assert!(
         native
-            .prepare_native_commit(&session.engine)
+            .prepare_native_commit(&session.engine, &[])
             .unwrap()
             .report
             .admissions
@@ -1474,6 +1474,9 @@ fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_gene
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .expect("the destroyed root candidate settles its surface");
         if fail_commit {
+            frame
+                .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
+                .unwrap();
             frame
                 .defer_surface(SURFACE, SurfaceUnavailableReason::Deferred)
                 .expect_err("answering the same surface twice poisons this candidate");

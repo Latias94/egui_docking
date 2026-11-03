@@ -494,11 +494,12 @@ impl DockEngine {
         {
             return Ok(Err(CommandError::SurfaceLifecycleFrozen { surface }));
         }
-        let mut future = self.clone_workspace_candidate();
-        let report = match WorkspaceTransaction::from_commands([command.clone()])
-            .apply(&mut future, policy)
-        {
-            Ok(report) => report,
+        let prepared = match crate::operation::prepare_transaction(
+            &self.workspace,
+            policy,
+            std::slice::from_ref(command),
+        ) {
+            Ok(prepared) => prepared,
             Err(TransactionError::Command { index: 0, source })
                 if source.is_expected_rejection() =>
             {
@@ -511,6 +512,7 @@ impl DockEngine {
                 });
             }
         };
+        let (future, report) = prepared.into_parts(&self.workspace);
         if report.outcomes().len() != 1 {
             return Err(EngineError::ReductionCauseInvariant {
                 detail: "native root create preflight produced a non-unit outcome roster",

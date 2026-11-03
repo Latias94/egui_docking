@@ -130,10 +130,11 @@ fn public_producer_limit_keeps_accepted_registration_and_quiescence_progress_wit
 }
 
 #[test]
-fn public_report_allowance_rejects_before_publication_and_reuses_a_prepaid_output_slot() {
+fn public_report_allowance_defers_encoding_and_reuses_a_prepaid_output_slot() {
     use dockspace::geometry::{LogicalRect, LogicalSize};
     use dockspace::runtime::{
-        NativeReportStorageLimit, SurfacePresentationResult, UniformSurfaceMetrics,
+        NativeReportStorageLimit, SurfacePresentationResult, SurfaceWork, SurfaceWorkDeferred,
+        UniformSurfaceMetrics,
     };
 
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
@@ -171,9 +172,6 @@ fn public_report_allowance_rejects_before_publication_and_reuses_a_prepaid_outpu
             .unwrap(),
         )
         .unwrap();
-    frame.commit().unwrap();
-
-    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
     let receipt = frame
         .paint_plan(SurfaceId::new(1))
         .unwrap()
@@ -191,32 +189,50 @@ fn public_report_allowance_rejects_before_publication_and_reuses_a_prepaid_outpu
     let version = session.version();
     let recorded = session.native_input_recorded_count();
     let bytes = session.native_input_pending_report_capacity_bytes();
+
+    session.report_native_input_device_removal().unwrap();
+    assert!(session.has_pending_native_input());
+    assert_eq!(session.native_input_recorded_count(), recorded + 1);
     let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
-    let receipt = frame
-        .paint_plan(SurfaceId::new(1))
-        .unwrap()
-        .unwrap()
-        .execute_surface_program(|_| Ok::<(), ()>(()))
-        .unwrap();
-    frame.confirm_surface_painted(receipt).unwrap();
+    assert!(matches!(
+        frame.surface_work(SurfaceId::new(1)).unwrap(),
+        SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity)
+    ));
+    assert!(frame.paint_plan(SurfaceId::new(1)).unwrap().is_none());
+    let mut terminal = frame.commit().unwrap();
     assert_eq!(
-        frame.commit().unwrap_err().native_kind(),
-        Some(NativeHostErrorKind::InputCapacity)
+        terminal.inputs(),
+        &[HostInputOutcome::NativeInputDeviceRemoval]
     );
+    assert!(terminal.take_painted_outputs().is_empty());
+    assert!(terminal.take_native_effects().is_empty());
+    assert!(terminal.surface_presentation_commits().is_empty());
     assert_eq!(session.version(), version);
-    assert_eq!(session.native_input_recorded_count(), recorded);
+    assert_eq!(session.native_input_recorded_count(), recorded + 1);
+    assert!(!session.has_pending_native_input());
     assert_eq!(session.native_input_pending_report_capacity_bytes(), bytes);
+
+    let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+    assert!(matches!(
+        frame.surface_work(SurfaceId::new(1)).unwrap(),
+        SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity)
+    ));
+    let mut idle = frame.commit().unwrap();
+    assert!(idle.inputs().is_empty());
+    assert!(idle.take_painted_outputs().is_empty());
+    assert_eq!(session.native_input_recorded_count(), recorded + 1);
 
     session
         .report_surface_presentation(first, SurfacePresentationResult::Presented)
         .unwrap();
     let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
-    let receipt = frame
-        .paint_plan(SurfaceId::new(1))
-        .unwrap()
-        .unwrap()
-        .execute_surface_program(|_| Ok::<(), ()>(()))
-        .unwrap();
+    let plan = match frame.surface_work(SurfaceId::new(1)).unwrap() {
+        SurfaceWork::Ready(plan) => plan,
+        SurfaceWork::Deferred(reason) => {
+            panic!("the reported output must release its slot in this update: {reason:?}")
+        }
+    };
+    let receipt = plan.execute_surface_program(|_| Ok::<(), ()>(())).unwrap();
     frame.confirm_surface_painted(receipt).unwrap();
     let mut report = frame.commit().unwrap();
     assert!(report.surface_presentation_commits()[0].presents(first_artifact));

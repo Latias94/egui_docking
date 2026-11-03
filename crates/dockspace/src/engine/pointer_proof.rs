@@ -1149,15 +1149,32 @@ impl DockEngine {
             return Some(route);
         }
         let route = owned_host_local_route(self, manipulation)?;
+        (self.host_local_manipulation_authority(edge.pointer()) == Some(route.authority()))
+            .then_some(route)
+    }
+
+    /// Returns only the active source's retained coordinate authority.
+    pub(crate) fn host_local_manipulation_authority(
+        &self,
+        pointer: crate::intent::PointerId,
+    ) -> Option<PresentedSurfaceAuthority> {
         let stream = self.interaction.active_stream()?;
-        if Some(stream.lease()) != self.pointer_provider() || stream.pointer() != edge.pointer() {
+        let host = self.pointer_provider()?.scope().host_local()?;
+        if Some(stream.lease()) != self.pointer_provider() || stream.pointer() != pointer {
             return None;
         }
         // Selection, raising and live resizing may invalidate their own source
         // scene. Only the exact active owner can retain that source coordinate
         // proof; hover and new delivery claims always require current output.
         let frozen = self.interaction.active_presentation_authority()?;
-        if frozen.presented != route.authority() {
+        let authority = frozen.presented;
+        if authority.endpoint() != HostPresentationEndpoint::Headless
+            || self
+                .presentation_authority
+                .presentation
+                .active_surface_scope(authority.surface())
+                != Some((authority.stream(), host, HostPresentationEndpoint::Headless))
+        {
             return None;
         }
         (self.resize_continuation_is_current(frozen)
@@ -1168,7 +1185,7 @@ impl DockEngine {
                     continuation.draft.origin == frozen
                         && self.scene_gesture_continuation_is_current(continuation)
                 }))
-        .then_some(route)
+        .then_some(authority)
     }
 
     pub(super) fn journal_logical_point(

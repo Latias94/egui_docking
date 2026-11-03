@@ -98,6 +98,16 @@ fn contained_group_close_waits_for_application_approval_for_every_activation() {
             }
         };
 
+        let activated = if matches!(activation, Activation::Pointer) {
+            activated
+        } else {
+            assert!(
+                activated.close_requests.is_empty(),
+                "{name}: encoding queues the response"
+            );
+            assert_group_unchanged(&dockspace);
+            run_frame(&context, &mut dockspace, &mut panes, Vec::new())
+        };
         assert_eq!(activated.close_requests.len(), 1, "{name}");
         assert_group_unchanged(&dockspace);
         let request = &activated.close_requests[0];
@@ -487,6 +497,11 @@ fn closing_the_focused_group_or_last_tab_focuses_the_persistent_workspace() {
             vec![accesskit_action(tab, Action::Click)],
         );
         run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert!(
+            !context.memory(|memory| memory.has_focus(panes.target)),
+            "the queued selection publishes its intent before requesting pane focus"
+        );
+        run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
         assert!(context.memory(|memory| memory.has_focus(panes.target)));
         let request = if contained {
             dockspace.request_close_root_current(FLOATING_ROOT)
@@ -517,6 +532,11 @@ fn closing_the_focused_group_or_last_tab_focuses_the_persistent_workspace() {
                 .focus,
             workspace
         );
+        let workspace_target = context
+            .memory(|memory| memory.focused())
+            .expect("the closed pane transfers actual focus to the workspace");
+        assert_eq!(workspace_target.accesskit_id(), workspace);
+        assert!(!context.memory(|memory| memory.has_focus(panes.target)));
         let version = dockspace.version();
         for _ in 0..3 {
             let (idle, _) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
@@ -531,11 +551,19 @@ fn closing_the_focused_group_or_last_tab_focuses_the_persistent_workspace() {
             );
             assert_eq!(dockspace.version(), version);
         }
-        assert_eq!(
-            panes.target_requests(),
-            1,
-            "workspace focus never requests a substitute pane"
+        assert!(
+            !context.memory(|memory| memory.has_focus(panes.target)),
+            "workspace focus never substitutes the closed pane"
         );
+        context.memory_mut(|memory| memory.surrender_focus(workspace_target));
+        assert!(!context.memory(|memory| memory.has_focus(workspace_target)));
+        run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert!(
+            !context.memory(|memory| memory.has_focus(workspace_target)),
+            "the acknowledged workspace request cannot reclaim focus after surrender"
+        );
+        assert!(!context.memory(|memory| memory.has_focus(panes.target)));
+        assert_eq!(dockspace.version(), version);
     }
 }
 
@@ -603,6 +631,9 @@ fn contained_presentation_menu_close_group_requests_a_root_close_plan() {
         &mut panes,
         vec![accesskit_action(close, Action::Click)],
     );
+    assert!(activated.close_requests.is_empty());
+    assert_eq!(dockspace.version(), before_version);
+    let activated = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(activated.close_requests.len(), 1);
     let request = &activated.close_requests[0];
     assert!(!request.reused());

@@ -985,6 +985,8 @@ impl fmt::Debug for PresentationCommandPaintRecord {
 /// ```
 #[derive(Clone, Copy)]
 pub struct SurfacePaintPlan<'frame> {
+    encoding_started: &'frame std::cell::Cell<bool>,
+    encoding_pass: u64,
     pub(super) surface: SurfaceId,
     pub(super) attempt: HostPresentationAttemptId,
     pub(super) authority_domain: crate::ids::EngineAuthorityDomainId,
@@ -1016,6 +1018,7 @@ pub struct SurfacePaintPlan<'frame> {
 /// the later output disposition through [`super::DockspaceSession::report_surface_presentation`].
 #[must_use = "a completed surface program must be confirmed or explicitly discarded"]
 pub struct SurfaceProgramExecutionReceipt {
+    encoding_pass: u64,
     surface: SurfaceId,
     attempt: HostPresentationAttemptId,
     output: SurfacePresentationOutputTicket,
@@ -1219,14 +1222,113 @@ impl fmt::Debug for SurfacePaintPlan<'_> {
     }
 }
 
+/// One update's normal result before any pane content is encoded.
+pub enum SurfaceWork<'frame> {
+    Ready(SurfacePaintPlan<'frame>),
+    Deferred(SurfaceWorkDeferred),
+}
+
+/// A surface can be deferred while semantic and terminal progress still publishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceWorkDeferred {
+    Unmeasured,
+    OutputCapacity,
+}
+
+impl<'frame> SurfaceWork<'frame> {
+    pub fn ready(self) -> Option<SurfacePaintPlan<'frame>> {
+        match self {
+            Self::Ready(plan) => Some(plan),
+            Self::Deferred(_) => None,
+        }
+    }
+}
+
 impl DockspaceHostFrame<'_> {
+    /// Seals semantic input and retains only the derived state needed for actual
+    /// renderer multipass retries. No pane callback is invoked by this method.
+    pub fn begin_encoding_pass(&mut self) -> Result<(), DockspaceRuntimeError> {
+        if self.encoding_checkpoint.is_none() {
+            self.complete_pointer_input()?;
+            self.encoding_checkpoint = Some(self.frame.capture_encoding_checkpoint()?);
+        }
+        self.encoding_started.set(true);
+        Ok(())
+    }
+
+    /// Discards the previous pass's private encoding and starts its replacement.
+    /// Accepted input remains in the same candidate and cannot be replayed.
+    pub fn restart_encoding_pass(&mut self) -> Result<(), DockspaceRuntimeError> {
+        let checkpoint = self
+            .encoding_checkpoint
+            .as_ref()
+            .ok_or(DockspaceInteractionError::EncodingPassUnavailable)?;
+        let next = self
+            .encoding_pass
+            .checked_add(1)
+            .ok_or(DockspaceInteractionError::EncodingPassExhausted)?;
+        self.frame.restart_encoding_from(checkpoint)?;
+        self.painted_surfaces.clear();
+        self.painted_native_staging.clear();
+        self.encoding_surfaces.clear();
+        self.encoding_pass = next;
+        self.encoding_started.set(true);
+        Ok(())
+    }
+
+    /// Admits an output before encoding its pane content. Backpressure is a
+    /// normal deferred result and never prevents a zero-output publication.
+    pub fn surface_work(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<SurfaceWork<'_>, DockspaceRuntimeError> {
+        self.complete_pointer_input()?;
+        if self
+            .frame
+            .view()
+            .scene()
+            .surface(surface)
+            .and_then(SurfaceScene::ready)
+            .is_none()
+        {
+            return Ok(SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured));
+        }
+        if !self.encoding_surfaces.contains(&surface) {
+            let (observations, stream) = self.frame.output_admission_facts(surface);
+            if !self.session.presentation.reserve_output(
+                &self.submitted_presentation,
+                observations,
+                self.encoding_surfaces.len(),
+                stream,
+                self.encoding_surfaces
+                    .iter()
+                    .map(|surface| self.frame.output_admission_facts(*surface).1),
+            )? {
+                return Ok(SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity));
+            }
+            self.encoding_surfaces.insert(surface);
+        }
+        Ok(match self.prepared_paint_plan(surface)? {
+            Some(plan) => SurfaceWork::Ready(plan),
+            None => SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured),
+        })
+    }
+
+    /// Returns the admitted paint plan, if its scene and output capacity are available.
+    pub fn paint_plan(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<Option<SurfacePaintPlan<'_>>, DockspaceRuntimeError> {
+        Ok(self.surface_work(surface)?.ready())
+    }
+
     /// Freezes pointer input and returns the current candidate plan which the
     /// renderer may paint.
     ///
     /// # Errors
     ///
     /// Returns an error when the pointer-input phase cannot be completed.
-    pub fn paint_plan(
+    fn prepared_paint_plan(
         &mut self,
         surface: SurfaceId,
     ) -> Result<Option<SurfacePaintPlan<'_>>, DockspaceRuntimeError> {
@@ -1253,6 +1355,8 @@ impl DockspaceHostFrame<'_> {
                 )
             });
         let plan = SurfacePaintPlan {
+            encoding_started: &self.encoding_started,
+            encoding_pass: self.encoding_pass,
             surface,
             attempt: self.frame.presentation_attempt(),
             authority_domain: self.session.engine.authority_domain(),
@@ -1299,7 +1403,12 @@ impl DockspaceHostFrame<'_> {
         receipt: SurfaceProgramExecutionReceipt,
     ) -> Result<(), DockspaceRuntimeError> {
         let surface = receipt.surface;
-        if self.surface_answered(surface) {
+        if self.painted_surfaces.contains_key(&surface)
+            || self
+                .frame
+                .surface_contributions()
+                .any(|entry| entry.surface() == surface)
+        {
             return Err(DockspaceInteractionError::SurfaceAlreadyAnswered { surface }.into());
         }
         let view = self.frame.view();
@@ -1315,7 +1424,8 @@ impl DockspaceHostFrame<'_> {
         let expected_interaction = view
             .presentation_interaction(surface)
             .ok_or_else(|| DockspaceRuntimeError::surface_program_invariant(surface))?;
-        if receipt.attempt != self.frame.presentation_attempt()
+        if receipt.encoding_pass != self.encoding_pass
+            || receipt.attempt != self.frame.presentation_attempt()
             || receipt.output != candidate.output_ticket()
             || receipt.contribution != expected_contribution
             || receipt.interaction != expected_interaction
@@ -1388,8 +1498,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self,
         visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
     ) -> Result<SurfaceProgramExecutionReceipt, SurfacePaintProgramVisitError<E>> {
+        self.encoding_started.set(true);
         self.visit_surface_program_inner(visitor)?;
         Ok(SurfaceProgramExecutionReceipt {
+            encoding_pass: self.encoding_pass,
             surface: self.surface,
             attempt: self.attempt,
             output: self.output,
@@ -1797,6 +1909,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             record.action?,
         ))
     }
@@ -1820,6 +1933,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             root,
         ))
     }
@@ -1833,6 +1947,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             *tab.id(),
         ))
     }
@@ -1849,6 +1964,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             crate::intent::CloseSceneTarget::Tab(*tab.id()),
         ))
     }
@@ -1875,6 +1991,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             crate::intent::CloseSceneTarget::Contained(floating),
         ))
     }

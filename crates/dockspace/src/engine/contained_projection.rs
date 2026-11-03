@@ -19,13 +19,7 @@ impl DockEngine {
                 self.interaction.active_contained_transform(session).ok()
             }
             _ => None,
-        }
-        .or_else(|| {
-            self.pending_mutation
-                .as_ref()
-                .and_then(PendingMutation::contained_release)
-                .map(|pending| &pending.transform)
-        });
+        };
         if let Some(transform) = transform.filter(|transform| transform.surface == surface)
             && let Some(preview) = transform.preview.as_ref()
         {
@@ -139,13 +133,6 @@ impl DockEngine {
                 .interaction
                 .active_contained_transform(session)
                 .ok()
-                .or_else(|| {
-                    self.pending_mutation
-                        .as_ref()
-                        .and_then(PendingMutation::contained_release)
-                        .filter(|pending| pending.session == session)
-                        .map(|pending| &pending.transform)
-                })
                 .is_some_and(|transform| self.contained_transform_layout_is_compatible(transform)),
         }
     }

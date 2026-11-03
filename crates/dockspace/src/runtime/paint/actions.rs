@@ -67,6 +67,16 @@ impl ContainedResizeDirection {
 }
 
 impl SurfacePaintPlan<'_> {
+    pub(super) fn frozen_action_witness(
+        self,
+    ) -> Option<std::sync::Arc<crate::scene::SurfacePlanScene>> {
+        self.candidate
+            .scene()
+            .ready_candidate(self.surface)
+            .filter(|candidate| candidate.stamp() == self.scene)
+            .map(crate::scene::SurfacePlanScene::frozen_witness)
+    }
+
     /// Prepares activation of one exact current-frame tab-strip control.
     #[must_use]
     pub fn prepare_tab_strip_control_activation(
@@ -84,6 +94,7 @@ impl SurfacePaintPlan<'_> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             crate::engine::LocalTabChromeAction::ActivateControl(FrozenTabStripControlClick {
                 key,
                 record,
@@ -126,6 +137,7 @@ impl SurfacePaintPlan<'_> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             crate::engine::LocalTabChromeAction::ScrollStrip {
                 key,
                 record,
@@ -154,6 +166,7 @@ impl SurfacePaintPlan<'_> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             crate::engine::LocalTabChromeAction::ActivateMenuRow(FrozenTabListMenuRowClick {
                 session: row.session,
                 record,
@@ -201,6 +214,7 @@ impl SurfacePaintPlan<'_> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             action,
         ))
     }
@@ -290,6 +304,7 @@ impl SurfacePaintPlan<'_> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             crate::engine::LocalTabChromeAction::NavigateMenu {
                 session: record.session(),
                 revision: self.plan.popup().revision(),
@@ -334,14 +349,16 @@ impl SurfacePaintPlan<'_> {
             .iter()
             .find(|record| *record.id() == destination)?;
         self.tab_is_operable(destination_record).then_some(())?;
-        (destination != *current.id()).then(|| {
-            PreparedSurfaceAction::select_tab(
-                self.authority_domain,
-                self.version,
-                self.scene,
-                destination,
-            )
-        })
+        if destination == *current.id() {
+            return None;
+        }
+        Some(PreparedSurfaceAction::select_tab(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            self.frozen_action_witness()?,
+            destination,
+        ))
     }
 
     /// Prepares one keyboard or accessibility adjustment for an exact splitter.
@@ -356,16 +373,15 @@ impl SurfacePaintPlan<'_> {
         };
         self.plan
             .splitter_record(id)
-            .is_some_and(crate::scene::SplitterRecord::operable)
-            .then(|| {
-                PreparedSurfaceAction::adjust_splitter(
-                    self.authority_domain,
-                    self.version,
-                    self.scene,
-                    id,
-                    self.splitter_keyboard_step * adjustment.direction(),
-                )
-            })
+            .filter(|record| record.operable())?;
+        Some(PreparedSurfaceAction::adjust_splitter(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            self.frozen_action_witness()?,
+            id,
+            self.splitter_keyboard_step * adjustment.direction(),
+        ))
     }
 
     /// Prepares one keyboard or accessibility adjustment for a single axis of
@@ -383,16 +399,17 @@ impl SurfacePaintPlan<'_> {
         let record = self
             .splitter_junctions()
             .find(|record| record.visual_id() == junction)?;
-        self.splitter_junction_axis_operable(record, axis).then(|| {
-            PreparedSurfaceAction::adjust_splitter_junction(
-                self.authority_domain,
-                self.version,
-                self.scene,
-                id,
-                axis,
-                self.splitter_keyboard_step * adjustment.direction(),
-            )
-        })
+        self.splitter_junction_axis_operable(record, axis)
+            .then_some(())?;
+        Some(PreparedSurfaceAction::adjust_splitter_junction(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            self.frozen_action_witness()?,
+            id,
+            axis,
+            self.splitter_keyboard_step * adjustment.direction(),
+        ))
     }
 
     /// Prepares one keyboard or accessibility adjustment for an exact cardinal
@@ -429,6 +446,7 @@ impl SurfacePaintPlan<'_> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             floating,
             direction,
             self.splitter_keyboard_step * adjustment.direction(),
@@ -438,13 +456,14 @@ impl SurfacePaintPlan<'_> {
     /// Prepares Escape cancellation only for this surface's active local gesture.
     #[must_use]
     pub fn prepare_escape_cancel(self) -> Option<PreparedSurfaceAction> {
-        self.escape_available.then(|| {
-            PreparedSurfaceAction::cancel_with_escape(
-                self.authority_domain,
-                self.version,
-                self.surface,
-            )
-        })
+        self.escape_available.then_some(())?;
+        Some(PreparedSurfaceAction::cancel_with_escape(
+            self.authority_domain,
+            self.version,
+            self.surface,
+            self.frozen_action_witness()?,
+            self.candidate.interaction().status(),
+        ))
     }
 
     fn prepare_tab_list_menu_scroll(
@@ -457,6 +476,7 @@ impl SurfacePaintPlan<'_> {
             self.authority_domain,
             self.version,
             self.scene,
+            self.frozen_action_witness()?,
             crate::engine::LocalTabChromeAction::ScrollMenu {
                 session: record.session(),
                 revision: self.plan.popup().revision(),

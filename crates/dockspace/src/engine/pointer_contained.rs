@@ -517,14 +517,6 @@ impl DockEngine {
             ));
             return Ok(outcomes);
         }
-        if !painted.painted() {
-            outcomes.push(
-                self.defer_contained_transform_release(
-                    cause, session, transform, placement, policy,
-                )?,
-            );
-            return Ok(outcomes);
-        }
         outcomes.push(self.deliver_contained_transform_release(
             cause,
             session,
@@ -535,41 +527,6 @@ impl DockEngine {
             interaction_events,
         )?);
         Ok(outcomes)
-    }
-
-    pub(super) fn defer_contained_transform_release(
-        &mut self,
-        cause: ReductionCause,
-        session: ContainedTransformSessionId,
-        transform: ActiveContainedTransform,
-        placement: ContainedTransformPlacement,
-        policy: &DockPolicySnapshot,
-    ) -> Result<InteractionOutcome, EngineError> {
-        if self.pending_mutation.is_some() {
-            return Err(EngineError::PointerInteractionInvariant {
-                cause,
-                detail: "a contained-transform release obligation is already pending".to_owned(),
-            });
-        }
-        let preview = transform
-            .preview
-            .as_ref()
-            .expect("deferred contained release has an exact preview")
-            .public()
-            .token();
-        self.pending_mutation = Some(PendingMutation::ContainedRelease(
-            PendingContainedTransformRelease {
-                source_version: self.version,
-                policy_revision: policy.revision(),
-                cause,
-                session,
-                transform,
-                placement,
-                preview,
-                presentation: PendingPresentationTracker::default(),
-            },
-        ));
-        Ok(InteractionOutcome::ContainedTransformReleasePending { session, preview })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -596,6 +553,7 @@ impl DockEngine {
             policy,
             WorkspacePublicationAuthority::Ordinary,
             JournalDeliveryActivation::RaiseContained(transform.floating),
+            None,
             events,
         )? {
             Ok(result) => result,
@@ -719,72 +677,6 @@ impl DockEngine {
             rect,
         ))
     }
-
-    pub(super) fn settle_presented_pending_contained_transform_release(
-        &mut self,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<bool, EngineError> {
-        let Some(pending) = self
-            .pending_mutation
-            .as_ref()
-            .and_then(PendingMutation::contained_release)
-        else {
-            return Ok(false);
-        };
-        if pending.presentation.presented.is_none() && !pending.presentation.failed {
-            return Ok(false);
-        }
-        let Some(PendingMutation::ContainedRelease(pending)) = self.pending_mutation.take() else {
-            unreachable!("checked contained release remains present");
-        };
-        let cancellation = if self.version != pending.source_version {
-            Some(InteractionCancelReason::WorkspaceChanged)
-        } else if self.policy.revision() != pending.policy_revision {
-            Some(InteractionCancelReason::PolicyChanged)
-        } else if pending.presentation.failed {
-            Some(InteractionCancelReason::SceneUnavailable)
-        } else {
-            None
-        };
-        if let Some(reason) = cancellation {
-            interaction_events.push(InteractionEvent::new_caused(
-                pending.cause,
-                self.version,
-                InteractionEventKind::Cancelled {
-                    status: InteractionStatus::ContainedTransforming {
-                        session: pending.session,
-                    },
-                    reason,
-                },
-            ));
-            return Ok(true);
-        }
-
-        let cause = pending.cause;
-        let policy = self.policy.clone();
-        let outcome = self.deliver_contained_transform_release(
-            cause,
-            pending.session,
-            pending.transform,
-            pending.placement,
-            &policy,
-            events,
-            interaction_events,
-        )?;
-        if !matches!(
-            outcome,
-            InteractionOutcome::ContainedTransformDelivered { .. }
-        ) {
-            return Err(EngineError::PointerInteractionInvariant {
-                cause,
-                detail: format!(
-                    "presented contained release did not deliver its frozen command: {outcome:?}"
-                ),
-            });
-        }
-        Ok(true)
-    }
 }
 
 #[cfg(test)]
@@ -900,7 +792,7 @@ mod tests {
             if index != 0 {
                 assert!(
                     frame.candidate.interaction_projection(surface).is_none(),
-                    "Raise invalidates the source's old general interaction authority"
+                    "changed stacking cannot authorize hover before its new output is presented"
                 );
                 assert_eq!(
                     frame.candidate.journal_host_local_manipulation(&edge),
@@ -913,9 +805,8 @@ mod tests {
                     .active_stream()
                     .expect("same stream");
                 let position = journal_position_key(&frame.candidate, stream, &edge);
-                assert_eq!(
-                    position.hover_probe(),
-                    None,
+                assert!(
+                    position.hover_probe().is_none(),
                     "source continuation must not refresh the stale hover authority"
                 );
                 let foreign_pointer = PointerEdge::new(
@@ -1040,22 +931,14 @@ mod tests {
             frame.candidate.interaction.status(),
             InteractionStatus::Idle
         );
-        assert!(
-            frame
-                .candidate
-                .pending_mutation
-                .as_ref()
-                .and_then(PendingMutation::contained_release)
-                .is_some(),
-            "release retains its resized rectangle for actual presentation"
-        );
+        assert!(frame.candidate.pending_mutation.is_none());
         complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
         let transition = host.finish(frame, &mut engine);
         assert!(matches!(
             transition.reduced_pointer_edges()[2]
                 .interaction_outcomes()
                 .last(),
-            Some(InteractionOutcome::ContainedTransformReleasePending { .. })
+            Some(InteractionOutcome::ContainedTransformDelivered { .. })
         ));
         assert_eq!(provider.committed_through(), PointerEdgeSequence::new(3));
         assert_eq!(
@@ -1064,8 +947,8 @@ mod tests {
                 .contained_floating(rear)
                 .expect("durable contained root")
                 .rect,
-            initial_rect,
-            "unpresented release must not commit the resized rectangle"
+            rect(40.0, 40.0, 250.0, 180.0),
+            "accepted release commits its exact resized rectangle"
         );
     }
 }

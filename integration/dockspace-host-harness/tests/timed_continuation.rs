@@ -9,12 +9,12 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspacePaneFocusRequest, DockspacePreviewVisual,
-    DockspaceReceiverDescriptor, DockspaceRuntimeErrorKind, DockspaceSession, HostFrameReport,
-    HostInputOutcome, HostPointerInput, HostPointerRoute, PointerDeviceKind, PointerEventMetadata,
-    SurfacePointerButton, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerReceiverFacts, SurfacePresentationResult, SurfaceUnavailableReason,
-    UniformSurfaceMetrics,
+    DockspaceHostFrame, DockspaceManipulationDelivery, DockspaceManipulationStatus,
+    DockspacePaneFocusRequest, DockspaceReceiverDescriptor, DockspaceRuntimeErrorKind,
+    DockspaceSession, HostFrameReport, HostInputOutcome, HostPointerInput, HostPointerRoute,
+    PointerDeviceKind, PointerEventMetadata, SurfacePointerButton, SurfacePointerCapture,
+    SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -46,15 +46,18 @@ fn session() -> DockspaceSession {
     session
 }
 
-fn measure(frame: &mut DockspaceHostFrame<'_>) {
-    let metrics = UniformSurfaceMetrics::new(
+fn metrics() -> UniformSurfaceMetrics {
+    UniformSurfaceMetrics::new(
         LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
         LogicalSize::new(64.0, 48.0).unwrap(),
         96.0,
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn measure(frame: &mut DockspaceHostFrame<'_>) {
     for surface in frame.surfaces() {
-        frame.measure_surface(surface, metrics).unwrap();
+        frame.measure_surface(surface, metrics()).unwrap();
     }
 }
 
@@ -78,6 +81,9 @@ fn paint(
 ) {
     let mut frame = session.begin_host_frame().unwrap();
     let observations = [(A, source_item), (B, FOURTH)].map(|(surface, item)| {
+        if frame.paint_plan(surface).unwrap().is_none() {
+            frame.measure_surface(surface, metrics()).unwrap();
+        }
         let plan = frame.paint_plan(surface).unwrap().unwrap();
         let receiver = plan.tab_receiver(item);
         let focus = plan.pane_focus_request();
@@ -463,7 +469,11 @@ fn stationary_hover_selects_once_at_deadline_and_dropped_frame_keeps_token_retry
                 // batch. The physical terminal can therefore deliver now;
                 // a due hover task must not mutate its target scene first.
                 assert_eq!(frame.view().item(source_item).unwrap().surface(), B);
-                assert!(commit(frame).workspace_changed());
+                let released = commit(frame);
+                assert!(released.workspace_changed());
+                assert!(
+                    matches!(released.manipulation_feedback(), [terminal] if terminal.status() == DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock))
+                );
                 assert_eq!(session.view().item(source_item).unwrap().surface(), B);
                 assert_eq!(session.view().item(remaining_item).unwrap().surface(), A);
                 assert!(!session.has_active_gesture());
@@ -471,18 +481,29 @@ fn stationary_hover_selects_once_at_deadline_and_dropped_frame_keeps_token_retry
                 continue;
             }
             let recordings = [A, B].map(|surface| {
+                if frame.paint_plan(surface).unwrap().is_none() {
+                    frame.measure_surface(surface, metrics()).unwrap();
+                }
                 let plan = frame.paint_plan(surface).unwrap().unwrap();
                 let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
                 frame.confirm_surface_painted(receipt).unwrap();
                 recording
             });
-            assert!(recordings[1].records.iter().any(|record| matches!(
-                record,
-                OwnedRecord::Preview(DockspacePreviewVisual::Dock { surface: B, .. })
-            )));
+            assert!(
+                recordings[1].records.iter().any(|record| matches!(
+                    record,
+                    OwnedRecord::PaneContent { item: Some(item), .. } if *item == source_item
+                )),
+                "the release update encodes the committed target pane"
+            );
             let mut released = frame.commit().unwrap();
-            assert!(!released.workspace_changed());
-            assert_eq!(session.view().item(source_item).unwrap().surface(), A);
+            assert!(released.workspace_changed());
+            assert!(
+                matches!(released.manipulation_feedback(), [terminal] if terminal.status() == DockspaceManipulationStatus::Delivered(DockspaceManipulationDelivery::Dock))
+            );
+            let delivered_version = session.version();
+            assert_eq!(released.after(), delivered_version);
+            assert_eq!(session.view().item(source_item).unwrap().surface(), B);
             assert!(!session.has_active_gesture());
 
             let outputs = released.take_painted_outputs();
@@ -503,7 +524,7 @@ fn stationary_hover_selects_once_at_deadline_and_dropped_frame_keeps_token_retry
                     .report_surface_presentation(output, SurfacePresentationResult::Presented)
                     .unwrap();
             }
-            assert_eq!(session.view().item(source_item).unwrap().surface(), A);
+            assert_eq!(session.view().item(source_item).unwrap().surface(), B);
             let settled = settle(&mut session);
             for artifact in artifacts {
                 assert_eq!(
@@ -516,7 +537,9 @@ fn stationary_hover_selects_once_at_deadline_and_dropped_frame_keeps_token_retry
                     "each exact release output must settle once"
                 );
             }
-            assert!(settled.workspace_changed());
+            assert!(!settled.workspace_changed());
+            assert!(settled.manipulation_feedback().is_empty());
+            assert_eq!(session.version(), delivered_version);
             assert_eq!(session.view().item(source_item).unwrap().surface(), B);
             assert_eq!(
                 session.view().item(source_item).unwrap().tabs().items(),

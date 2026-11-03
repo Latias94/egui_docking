@@ -1,8 +1,8 @@
-//! Revision-bound close plans and exactly-once application decisions.
+//! Target-scoped close plans and exactly-once application decisions.
 //!
 //! This module stages close intent without mutating the workspace or executing
 //! platform effects. The engine supplies an opaque prepared payload containing
-//! exact source fingerprints, surface rosters, and target proofs. Adapters see
+//! content membership, exact native surface rosters, and target proofs. Adapters see
 //! only the stable [`ClosePlan`] view and return typed decisions.
 
 use std::fmt;
@@ -65,7 +65,12 @@ close_protocol_id!(
     "Engine-domain-scoped continuation minted by an accepted deferred decision."
 );
 
-/// Engine, workspace, and policy authority against which a close plan was prepared.
+/// Engine lifetime and diagnostic workspace/policy origin of a close plan.
+///
+/// Ordinary content approvals depend on their target's membership, owner and
+/// effective close requirements. Their origin revision is not a blanket
+/// invalidation boundary. Native surface plans retain exact revision authority
+/// until their external effect establishes a separately settleable obligation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CloseAuthority {
     domain: EngineAuthorityDomainId,
@@ -493,7 +498,7 @@ impl ClosePlan {
         self.request
     }
 
-    /// Returns the exact workspace and policy authority frozen by the request.
+    /// Returns the workspace and policy origin captured by the request.
     #[must_use]
     pub const fn authority(&self) -> CloseAuthority {
         self.authority
@@ -956,8 +961,10 @@ pub enum CloseAdvanceOutcome {
     Inert(CloseInertReason),
 }
 
+mod content;
 mod coordinator;
 
+pub(crate) use content::{ContentCloseScope, prepare_scoped_content_close};
 pub(crate) use coordinator::CloseCoordinator;
 
 #[cfg(test)]

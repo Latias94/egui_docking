@@ -1095,8 +1095,18 @@ fn rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_l
         match attempt {
             0 => drop(frame),
             1 => {
+                frame
+                    .defer_surface(incoming_root, SurfaceUnavailableReason::Deferred)
+                    .unwrap();
+                assert_eq!(
+                    frame
+                        .defer_surface(incoming_root, SurfaceUnavailableReason::Deferred)
+                        .unwrap_err()
+                        .kind(),
+                    DockspaceRuntimeErrorKind::HostProtocol
+                );
                 frame.commit().expect_err(
-                    "an incomplete restore frame must publish neither continuation nor sidecars",
+                    "a duplicate contribution must publish neither continuation nor sidecars",
                 );
             }
             _ => {
@@ -1326,9 +1336,19 @@ fn multiple_children_restore_preserves_the_complete_forest_and_advances_once_eac
         match attempt {
             0 => drop(frame),
             1 => {
-                frame.commit().expect_err(
-                    "an incomplete terminal frame must publish neither graph nor intents",
+                frame
+                    .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+                    .unwrap();
+                assert_eq!(
+                    frame
+                        .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+                        .unwrap_err()
+                        .kind(),
+                    DockspaceRuntimeErrorKind::HostProtocol
                 );
+                frame
+                    .commit()
+                    .expect_err("a duplicate contribution must publish neither graph nor intents");
             }
             _ => {
                 let mut report = finish(frame);
@@ -1848,6 +1868,16 @@ fn finite_producer_slots_wait_without_appending_and_dropped_frames_retry_exact_c
                 drop(frame);
             }
             1 => {
+                frame
+                    .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+                    .unwrap();
+                assert_eq!(
+                    frame
+                        .defer_surface(HOST, SurfaceUnavailableReason::Deferred)
+                        .unwrap_err()
+                        .kind(),
+                    DockspaceRuntimeErrorKind::HostProtocol
+                );
                 frame.commit().expect_err(
                     "failed publication must release its tentative producer reservation",
                 );

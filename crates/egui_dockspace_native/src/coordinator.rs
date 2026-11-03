@@ -39,7 +39,7 @@ use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventClass, NativeWind
 use crate::focus_control::{
     NativeFocusControl, NativeFocusResultDisposition, NativeFocusTermination,
 };
-use crate::host_frame::NativeHostFrame;
+use crate::host_frame::{NativeHostFrame, NativeHostUpdate};
 use crate::input_control::{
     NativeInputControl, NativeInputResultDisposition, NativePointerPassthroughCommand,
 };
@@ -889,10 +889,12 @@ impl NativeCoordinator {
                     None,
                 );
             } else {
-                if !self.focus_control.mark_dispatched(viewport, token) {
+                if !self
+                    .focus_control
+                    .dispatch(viewport, token, || prepared.enqueue(context))
+                {
                     return Err(NativeHostProtocolError::NativeFocusCorrelationChanged.into());
                 }
-                prepared.enqueue(context);
             }
             return Ok(true);
         }
@@ -912,17 +914,25 @@ impl NativeCoordinator {
             command.viewport(),
             command.enabled(),
         );
-        if !self.mark_pointer_passthrough_dispatched(command, prepared.token()) {
-            return false;
-        }
-        prepared.enqueue(context);
-        true
+        self.dispatch_pointer_passthrough_with(command, prepared.token(), || {
+            prepared.enqueue(context);
+        })
     }
 
+    #[cfg(test)]
     pub(crate) fn mark_pointer_passthrough_dispatched(
         &mut self,
         command: NativePointerPassthroughCommand,
         token: NativeViewportPointerPassthroughCommandToken,
+    ) -> bool {
+        self.dispatch_pointer_passthrough_with(command, token, || {})
+    }
+
+    fn dispatch_pointer_passthrough_with(
+        &mut self,
+        command: NativePointerPassthroughCommand,
+        token: NativeViewportPointerPassthroughCommandToken,
+        enqueue: impl FnOnce(),
     ) -> bool {
         if self.input_control.command_to_dispatch() != Some(command) {
             return false;
@@ -942,7 +952,7 @@ impl NativeCoordinator {
         {
             return false;
         }
-        self.input_control.mark_dispatched(command, token)
+        self.input_control.dispatch(command, token, enqueue)
     }
 
     pub(crate) fn fail_pointer_passthrough_dispatch(
@@ -1863,7 +1873,7 @@ impl NativeCoordinator {
             | NativeInputResultDisposition::Stale { binding } => {
                 let result = self
                     .input_control
-                    .take_dispatch_failure_result(record, NativeDispatchFailure::AdapterRejected)
+                    .take_indeterminate_result(record)
                     .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
                 callback_error = self.report_callback_terminal_result(result);
                 debug_assert!(
@@ -1974,7 +1984,7 @@ impl NativeCoordinator {
                             .take_callback(record)
                             .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
                         callback_error = self.report_callback_terminal_result(
-                            request.dispatch_failed(NativeDispatchFailure::AdapterRejected),
+                            request.not_applied(NativeDispatchFailure::AdapterRejected),
                         );
                     }
                 }
@@ -1985,7 +1995,7 @@ impl NativeCoordinator {
                     .focus_control
                     .take_callback(record)
                     .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
-                let result = request.dispatch_failed(NativeDispatchFailure::AdapterRejected);
+                let result = request.indeterminate(NativeIndeterminateReason::AcknowledgementLost);
                 callback_error = self.report_callback_terminal_result(result);
                 debug_assert!(
                     !self.session.is_current_native_binding(binding)
@@ -2043,7 +2053,7 @@ impl NativeCoordinator {
         {
             let callback_error = self.effects.take_show(record).and_then(|request| {
                 self.report_callback_terminal_result(
-                    request.dispatch_failed(NativeDispatchFailure::AdapterRejected),
+                    request.indeterminate(NativeIndeterminateReason::AcknowledgementLost),
                 )
             });
             self.acknowledge_viewport_visibility(record)?;
@@ -2088,7 +2098,7 @@ impl NativeCoordinator {
                 self.report_callback_terminal_result(result)
             }
             NativeViewportVisibilityStatus::Retired => self.report_callback_terminal_result(
-                request.dispatch_failed(NativeDispatchFailure::AdapterRejected),
+                request.not_applied(NativeDispatchFailure::AdapterRejected),
             ),
         };
         self.acknowledge_viewport_visibility(record)?;
@@ -2347,7 +2357,11 @@ impl NativeCoordinator {
         let Some(roster) = self.bridge.front_viewport_roster() else {
             return Ok(false);
         };
-        self.record_viewport_roster(roster.roster(), roster.clone())?;
+        self.record_viewport_roster(
+            roster.roster(),
+            roster.clone(),
+            roster.roster().work_areas(),
+        )?;
         if !self.bridge.acknowledge_viewport_roster(&roster) {
             return Err(NativeHostProtocolError::ViewportRosterAcknowledgementMismatch.into());
         }
@@ -2358,6 +2372,7 @@ impl NativeCoordinator {
         &mut self,
         roster: &NativeViewportRosterRecord,
         envelope: NativeViewportRosterEnvelope,
+        work_areas: Result<&FrozenWorkAreaRoster, NativeHostProtocolError>,
     ) -> Result<(), NativeRuntimeError> {
         let compiled = self.bridge.with_retirement_destroyed_observations(
             |destroyed_count, destroyed, created_ack, presentation_ack| {
@@ -2381,9 +2396,11 @@ impl NativeCoordinator {
         };
         self.session
             .configure_managed_native_capabilities(capabilities_for_backend(roster.backend()))?;
-        if let (Ok((observations, has_destroyed)), Ok(frozen_work_areas)) =
-            (compiled, roster.work_areas())
-        {
+        if let Ok((observations, has_destroyed)) = compiled {
+            // Work-area validation is independent of exact window lifetime
+            // observations. Invalid display facts revoke geometry authority
+            // without discarding a joined Destroyed observation.
+            let frozen_work_areas = work_areas.unwrap_or(&FrozenWorkAreaRoster::Unknown);
             let (core_work_areas, prepared_work_areas) =
                 self.work_areas.prepare(frozen_work_areas)?;
             let mut acknowledgements = Vec::new();
@@ -2687,6 +2704,18 @@ impl NativeCoordinator {
         Ok(frame)
     }
 
+    /// Reborrows native stores without polling input or replacing the candidate.
+    pub(crate) fn resume_host_update(
+        &mut self,
+        update: NativeHostUpdate,
+    ) -> Result<NativeHostFrame<'_>, NativeRuntimeError> {
+        update.resume(
+            &mut self.session,
+            &mut self.receivers,
+            &mut self.pointer_translator,
+        )
+    }
+
     /// Begins one native frame using only final-pass egui receiver authority.
     pub(crate) fn poll_resolved_host_frame(
         &mut self,
@@ -2987,8 +3016,12 @@ impl NativeCoordinator {
             self.receivers.retire_binding(plan.binding());
             // The original negative result must precede exact quiescence in
             // the existing ordered ingress, including after a workspace reset.
+            // The bridge removed this exact route under the same lock which
+            // admits create owners, proving the deferred handoff was not applied.
             self.queue_pending_effect_result(
-                request.dispatch_failed(NativeDispatchFailure::ProviderStopped),
+                request
+                    .begin_dispatch()
+                    .not_applied(NativeDispatchFailure::ProviderStopped),
                 None,
             );
         }

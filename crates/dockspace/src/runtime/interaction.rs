@@ -743,6 +743,12 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
 /// Failure at the renderer-neutral interaction boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum DockspaceInteractionError {
+    /// Repeating encoding requires an explicitly opened encoding pass.
+    #[error("the update has no encoding pass to restart")]
+    EncodingPassUnavailable,
+    /// The private encoding pass counter cannot advance.
+    #[error("the encoding pass identity is exhausted")]
+    EncodingPassExhausted,
     /// One public measurement profile contained an invalid scalar.
     #[error("surface measurement profile contains an invalid scalar")]
     InvalidMeasurementProfile,
@@ -929,30 +935,7 @@ impl DockspaceSession {
         point: LogicalPoint,
         device: PointerDeviceKind,
     ) -> Option<HostPointerHit> {
-        use crate::presentation_hit::PresentationPointerLane;
-        let projection = self.engine.interaction_projection(surface)?;
-        let resolve = |lane| {
-            let suppression = if lane == PresentationPointerLane::HoverDrop {
-                self.engine.hover_drop_suppression()
-            } else {
-                Default::default()
-            };
-            projection
-                .hit_manifest()
-                .resolve_exclusive_for_device(lane, point, suppression, device)
-                .ok()
-                .map(|region| {
-                    region.and_then(|region| {
-                        PresentedDockReceiver::from_projection_region(projection, region.id())
-                    })
-                })
-        };
-        Some(HostPointerHit {
-            surface: PresentedDockspaceSurface::from_projection(projection),
-            delivery: resolve(PresentationPointerLane::Click)?,
-            drag_delivery: resolve(PresentationPointerLane::Drag)?,
-            hover: resolve(PresentationPointerLane::HoverDrop)?,
-        })
+        host_pointer_hit(&self.engine, surface, point, device)
     }
 
     /// Enables one affine input producer spanning this host's logical surfaces.
@@ -1137,13 +1120,52 @@ impl DockspaceSession {
         &self,
         descriptor: &DockspaceReceiverDescriptor,
     ) -> Option<PresentedDockReceiver> {
-        let projection = self
-            .engine
-            .interaction_projection(descriptor.region.surface())?;
-        let surface = PresentedDockspaceSurface::from_projection(projection);
-        projection.hit_manifest().region(descriptor.region)?;
-        surface.bind_receiver(descriptor)
+        bind_presented_receiver(&self.engine, descriptor)
     }
+}
+
+fn host_pointer_hit(
+    engine: &crate::engine::DockEngine,
+    surface: SurfaceId,
+    point: LogicalPoint,
+    device: PointerDeviceKind,
+) -> Option<HostPointerHit> {
+    use crate::presentation_hit::PresentationPointerLane;
+    let projection = engine.interaction_projection(surface)?;
+    let resolve = |lane| {
+        let suppression = if lane == PresentationPointerLane::HoverDrop {
+            engine.hover_drop_suppression()
+        } else {
+            Default::default()
+        };
+        projection
+            .hit_manifest()
+            .resolve_exclusive_for_device(lane, point, suppression, device)
+            .ok()
+            .map(|region| {
+                region.and_then(|region| {
+                    PresentedDockReceiver::from_projection_region(projection, region.id())
+                })
+            })
+    };
+    Some(HostPointerHit {
+        surface: PresentedDockspaceSurface::from_projection(projection),
+        delivery: resolve(PresentationPointerLane::Click)?,
+        drag_delivery: resolve(PresentationPointerLane::Drag)?,
+        hover: resolve(PresentationPointerLane::HoverDrop)?,
+    })
+}
+
+fn bind_presented_receiver(
+    engine: &crate::engine::DockEngine,
+    descriptor: &DockspaceReceiverDescriptor,
+) -> Option<PresentedDockReceiver> {
+    let projection = engine.interaction_projection(descriptor.region.surface())?;
+    projection.hit_manifest().region(descriptor.region)?;
+    if !engine.presented_receiver_is_current(projection.plan(), descriptor.region) {
+        return None;
+    }
+    PresentedDockspaceSurface::from_projection(projection).bind_receiver(descriptor)
 }
 
 struct RuntimePointerInput<'receiver> {
@@ -1158,6 +1180,61 @@ struct RuntimePointerInput<'receiver> {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Returns retained source coordinates for this exact active host pointer.
+    ///
+    /// This capability is valid only as a manipulation route for the active
+    /// gesture. It grants no hover, receiver or new-press authority. Coordinate,
+    /// owner, epoch and source continuation checks still apply to every edge.
+    #[must_use]
+    pub fn host_pointer_manipulation_surface(
+        &self,
+        pointer: SurfacePointerId,
+    ) -> Option<PresentedDockspaceSurface> {
+        let authority = self
+            .frame
+            .candidate_engine()
+            .host_local_manipulation_authority(crate::intent::PointerId::new(pointer.get()))?;
+        Some(PresentedDockspaceSurface {
+            surface: authority.surface(),
+            output: authority.ticket(),
+            authority,
+        })
+    }
+
+    /// Returns the exact presented capability after this update's accepted observations.
+    pub fn presented_surface(&self, surface: SurfaceId) -> Option<PresentedDockspaceSurface> {
+        self.frame
+            .candidate_engine()
+            .interaction_projection(surface)
+            .map(PresentedDockspaceSurface::from_projection)
+    }
+
+    /// Binds only receivers authorized by the accepted input prefix.
+    pub fn bind_presented_receiver(
+        &self,
+        descriptor: &DockspaceReceiverDescriptor,
+    ) -> Option<PresentedDockReceiver> {
+        bind_presented_receiver(self.frame.candidate_engine(), descriptor)
+    }
+
+    /// Resolves current semantic candidates; framework clearance is still required.
+    pub fn host_pointer_hit_for_device(
+        &self,
+        surface: SurfaceId,
+        point: LogicalPoint,
+        device: PointerDeviceKind,
+    ) -> Option<HostPointerHit> {
+        host_pointer_hit(self.frame.candidate_engine(), surface, point, device)
+    }
+
+    /// Returns whether the private input prefix still owns a gesture.
+    pub fn has_active_gesture(&self) -> bool {
+        !matches!(
+            self.frame.view().interaction().status(),
+            crate::interaction::InteractionStatus::Idle
+        )
+    }
+
     /// Submits one ordered surface-local edge.
     ///
     /// This is the one-element form of [`Self::submit_surface_pointer_batch`].
@@ -1240,7 +1317,8 @@ impl DockspaceHostFrame<'_> {
     /// # Errors
     ///
     /// Returns an error if no host input domain is active, the batch is empty,
-    /// another batch was submitted, or a protocol fact is inconsistent.
+    /// encoding has started, or a protocol fact is inconsistent. Consecutive
+    /// batches append to the same unpublished host-local input prefix.
     pub fn submit_host_pointer_batch<'receiver>(
         &mut self,
         inputs: impl IntoIterator<Item = HostPointerInput<'receiver>>,
@@ -1277,7 +1355,13 @@ impl DockspaceHostFrame<'_> {
         inputs: Vec<RuntimePointerInput<'_>>,
     ) -> Result<(), DockspaceRuntimeError> {
         self.ensure_semantic_input_allowed()?;
-        if self.pointer_input_submitted {
+        if self.pointer_input_submitted
+            && self
+                .session
+                .pointer
+                .as_ref()
+                .is_some_and(|pointer| pointer.surface().is_some())
+        {
             return Err(DockspaceInteractionError::PointerInputAlreadySubmitted.into());
         }
         if inputs.is_empty() {
@@ -1566,6 +1650,7 @@ impl DockspaceHostFrame<'_> {
 
     pub(super) fn surface_answered(&self, surface: SurfaceId) -> bool {
         self.painted_surfaces.contains_key(&surface)
+            || self.frame.surface_is_measured(surface)
             || self
                 .frame
                 .surface_contributions()

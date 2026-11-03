@@ -475,10 +475,18 @@ fn terminal_reset_preserves_declared_identities_and_retries_without_old_authorit
             DockspaceRuntimeErrorKind::OperationConflict
         );
         measure(&mut candidate);
+        let plan = candidate
+            .paint_plan(ids.0)
+            .unwrap()
+            .expect("measurement compiles the replacement scene inside this private update");
+        let replacement_receiver = plan.tab_receiver(SECOND).unwrap();
+        let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
         assert!(
-            candidate.paint_plan(ids.0).unwrap().is_none(),
-            "measurement contributions install the replacement scene only when their frame commits"
+            recording
+                .records
+                .contains(&OwnedRecord::Receiver(replacement_receiver))
         );
+        candidate.confirm_surface_painted(receipt).unwrap();
         (ids, prefix_version)
     };
     assert_eq!(session.version(), before);
