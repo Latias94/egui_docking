@@ -31,6 +31,8 @@ const ASSETS: ItemId = ItemId::new(8);
 #[cfg(feature = "serde")]
 const DOCUMENT_ID: DockspaceDocumentId = DockspaceDocumentId::from_bytes(*b"native-editor-v1");
 
+#[path = "basic/docking_smoke.rs"]
+mod docking_smoke;
 #[path = "basic/layout.rs"]
 mod layout;
 #[path = "basic/smoke.rs"]
@@ -79,6 +81,9 @@ fn main() -> eframe::Result {
         smoke: std::env::args()
             .any(|argument| argument == "--smoke")
             .then(smoke::EditorSmoke::new),
+        docking_smoke: std::env::args()
+            .any(|argument| argument == "--docking-smoke")
+            .then(docking_smoke::DockingSmoke::new),
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 820.0]),
@@ -88,7 +93,12 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Dockspace native editor",
         options,
-        Box::new(move |_| Ok(Box::new(app))),
+        Box::new(move |creation| {
+            if let Some(smoke) = &app.docking_smoke {
+                smoke.install(&creation.egui_ctx);
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -102,6 +112,7 @@ struct NativeExampleApp {
     action: ExampleActionState,
     status: Option<String>,
     smoke: Option<smoke::EditorSmoke>,
+    docking_smoke: Option<docking_smoke::DockingSmoke>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -135,12 +146,14 @@ impl eframe::App for NativeExampleApp {
         egui::Panel::top("native-example-controls").show(ui, |ui| {
             self.show_controls(ui);
         });
-        egui::CentralPanel::default().show(ui, |ui| {
-            <NativeDockspaceApp<ExamplePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
-        });
+        <NativeDockspaceApp<ExamplePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
         if let Some(mut smoke) = self.smoke.take() {
             smoke.advance(self, ui.ctx());
             self.smoke = Some(smoke);
+        }
+        if let Some(mut smoke) = self.docking_smoke.take() {
+            smoke.advance(self, ui.ctx());
+            self.docking_smoke = Some(smoke);
         }
     }
 }
@@ -533,6 +546,7 @@ struct ExamplePane {
     zoom: f32,
     pan: egui::Vec2,
     input: Option<(egui::ViewportId, egui::Rect, bool, f32)>,
+    content: Option<(egui::Rect, f32)>,
     window_id: Option<u64>,
 }
 
@@ -542,6 +556,7 @@ impl ExamplePane {
         self.missing_painted = false;
         self.widgets.clear();
         self.input = None;
+        self.content = None;
         self.window_id = None;
     }
 }
@@ -574,6 +589,7 @@ impl ExamplePanes {
                 zoom: 1.0,
                 pan: egui::Vec2::ZERO,
                 input: None,
+                content: None,
                 window_id: None,
             }))
             .collect(),
@@ -649,6 +665,7 @@ impl PaneView for ExamplePanes {
         // Only widgets actually registered in this content callback qualify.
         pane.widgets.clear();
         pane.input = None;
+        pane.content = Some((ui.max_rect(), ui.ctx().pixels_per_point()));
         pane.window_id = None;
         pane.missing_painted = false;
         let heading = ui.heading(pane.title);

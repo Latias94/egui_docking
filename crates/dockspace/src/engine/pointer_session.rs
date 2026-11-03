@@ -148,8 +148,9 @@ impl DockEngine {
         };
         if release_edge && observed == PointerCaptureOwner::None {
             // Release carries post-edge capture authority. Relinquishing an
-            // exact pre-edge owner is valid; an unknown or foreign predecessor
-            // cannot authorize the terminal action.
+            // exact pre-edge owner is valid. A joined native backend can also
+            // deliver the matching release to that same current source after an
+            // unobservable capture sample; delivery was checked independently.
             let current = self.interaction.active_journal_capture_authority().ok_or(
                 EngineError::ReductionCauseInvariant {
                     detail: "journal release has no pre-edge capture observation",
@@ -160,6 +161,15 @@ impl DockEngine {
                     if current == required
                         && !matches!(current, PointerCaptureOwner::Native(binding)
                             if !self.native_capture_binding_is_current(binding)) =>
+                {
+                    JournalCaptureActionGate::Authorized
+                }
+                Authority::Unknown(_)
+                    if matches!(
+                        stream.lease().scope(),
+                        PointerProviderScope::NativeJoined(_)
+                    ) && matches!(required, PointerCaptureOwner::Native(binding)
+                            if self.native_capture_binding_is_current(binding)) =>
                 {
                     JournalCaptureActionGate::Authorized
                 }

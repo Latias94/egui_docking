@@ -9,6 +9,50 @@ successful lifecycle smoke as evidence of usable intermediate frames.
 
 ## Findings
 
+### Follow-up P1: the actual editor's outer CentralPanel blocked docking
+
+Manual use after `2351ba6` still could not dock tabs in the eight-pane editor.
+The earlier real-input probe used a smaller host without the editor's outer
+`CentralPanel`. Running the actual `basic --docking-smoke` with real X11 input
+reproduces History remaining in its original stack after dragging into Outline.
+Exact hit tracing returns `Blocked` throughout the motion and ends with
+`Cancelled(OpaquePointerBlocker)`.
+
+The blocking widget is the hover response allocated by `Frame::end` when the
+outer `CentralPanel` finishes, after Dockspace has already drawn and declared its
+receivers. It covers the complete work area. This is a host composition error,
+not evidence that an arbitrary unknown hover widget should become transparent.
+The native editor now renders Dockspace directly into the root Ui remaining
+after its top toolbar; Dockspace already owns that area's background.
+
+The maintained `editor_docking_x11.py` driver runs the actual eight-pane app in
+five fresh processes. It physically selects inactive targets when necessary,
+drags an initially inactive source tab to the target pane's center, and waits
+for the application to verify exact tab-stack membership, selection and current
+presentation. Targets include Outline, Console, Inspector, Preview and Profiler.
+The application never performs programmatic docking for this probe.
+
+### Follow-up P1: native release after an unknown capture sample was cancelled
+
+The pinned macOS Winit `mouse_up()` emits motion before its release event.
+During that motion the local pressed-button mask can still be down while the
+OS mask is already released, so capture is `Unknown`. The following release has
+post-edge capture `None`. The core permitted the unknown motion but then rejected
+the exact same-source release because its most recent capture was unknown.
+
+Both real-producer coordinator regressions, desktop and event-time local, fail
+with `Cancelled(CaptureAuthorityUnavailable)` instead of awaiting presentation.
+The correction accepts this terminal only for `NativeJoined` after independently
+checking exact current source delivery. It does not restore a guessed known
+capture owner. Foreign capture, unknown/foreign delivery, stale bindings,
+coordinates, pointer ownership and exact release-output settlement retain their
+existing rejection rules. DesktopGlobal and headless local scopes are unchanged.
+
+The tests retain the actual macOS capability set without authoritative global
+button state and an unknown initial pointer roster. This is deterministic replay
+through the production adapter, not certification of real macOS mouse injection;
+the current environment cannot programmatically inject macOS mouse events.
+
 ### P1: measurement was presented as an empty workspace
 
 Changing selection or native coordinate authority invalidates the current scene.

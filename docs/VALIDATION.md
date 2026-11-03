@@ -15,6 +15,53 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-03 actual editor docking and native release follow-up
+
+The user's eight-pane `basic` example still rejected tab docking after `2351ba6`.
+A new real-input observer in that actual example reproduces History remaining in
+its original stack after a physical drag into Outline. Tracing identifies the
+outer `CentralPanel` frame's trailing whole-area hover response as the blocker;
+release ends with `OpaquePointerBlocker`. The editor now renders the dockspace
+directly in the root Ui remaining after its toolbar, using Dockspace's own
+background instead of a duplicate frame. Unknown hover widgets remain blockers.
+
+The new finite X11 driver operates five fresh instances of the actual editor:
+
+```text
+python3 integration/egui-native-smoke/editor_docking_x11.py /path/to/examples/basic
+```
+
+It physically selects an inactive target when needed and drags an inactive tab
+into the actual Outline, Console, Inspector, Preview and Profiler pane centers.
+The observer waits for exact source/target tab-stack membership, selected source,
+current presentation and quiescence. Read-only AccessKit rectangles locate input;
+no programmatic selection, float, docking or fabricated presentation is used.
+All five cases pass. Earlier exploratory off-center points sometimes selected
+valid edge splits; those outputs were actual docking, not center merges. The
+maintained center cases deliberately require the exact merge postcondition.
+The existing `editor_x11.py` workflow also passes against the changed actual
+editor: eight real focused edits, six destroyed child-window lifetimes, close
+decisions, arrangement locking, default reset and JSON restore all finish with
+preserved application content and native quiescence.
+
+Two deterministic producer regressions also reproduce the pinned macOS Winit
+`mouse_up()` ordering: a capture-Unknown move precedes a capture-None release.
+Both desktop and event-time client-coordinate lanes previously cancelled with
+`CaptureAuthorityUnavailable`. Joined native terminal delivery now accepts that
+sequence only after independently checking delivery to the exact current source.
+It does not preserve an invented known capture owner. Foreign capture motion and
+unknown/foreign delivery still cancel, and late presentation cannot revive them.
+Non-native provider scopes retain their existing capture rules.
+
+The final code passes 2,005 workspace tests, 598 native-workspace tests (one
+platform-specific skip), 241 independent public-host tests and the native Clippy
+correctness/suspicious checks. The real macOS default and single-pass continuity
+probes pass after this follow-up. The five new producer tests cover the two
+failing release paths, the actual Mac capability set with unknown initial roster,
+foreign capture, and unknown/foreign release delivery. This is production-adapter
+event replay; physical macOS mouse injection is unavailable in the current
+environment and is not claimed by these results.
+
 ## 2026-11-03 native interaction and visual continuity repair
 
 Manual use after `63112e0` exposed an intermediate blank-frame path and

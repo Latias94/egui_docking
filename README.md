@@ -445,6 +445,18 @@ host UI bounds; add `-- --single-pass` to test a host without egui multipass:
 cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example presentation_continuity --locked -j1
 ```
 
+The native app owns the docking area's background. The editor draws its toolbar
+first, then calls `NativeDockspaceApp::ui` directly in the remaining root Ui.
+Wrapping it in another default `CentralPanel` adds a trailing hover response
+over the whole work area and blocks exact native docking hit tests. The actual
+eight-pane editor has a separate real-input check, run under X11 after building
+`basic`:
+
+```text
+cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --example basic --target-dir target --locked -j1
+python3 integration/egui-native-smoke/editor_docking_x11.py target/debug/examples/basic
+```
+
 The example exposes all three presentation paths without conflating their
 evidence. Use the contained title bar to move or resize the same-surface window,
 or open its **⋮** menu for **Dock Back** and **Move to New Window**. The toolbar

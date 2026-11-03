@@ -1,13 +1,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use dockspace::geometry::{LogicalPoint, PhysicalSize};
+use dockspace::geometry::{LogicalPoint, PhysicalPoint, PhysicalSize};
 use dockspace::runtime::{
-    DockspaceManipulationDelivery as Delivery, DockspaceManipulationFeedback,
-    DockspaceManipulationPendingReason as PendingReason, DockspaceManipulationStatus as Status,
-    DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceSemanticOutput,
-    NativeHostCapability, NativeLocalGeometry, NativeLocalPointerLocation, NativeMonotonicClock,
-    NativeReceiverPurpose, PointerDeviceKind, PointerEventMetadata,
+    DockspaceManipulationCancelReason as CancelReason, DockspaceManipulationDelivery as Delivery,
+    DockspaceManipulationFeedback, DockspaceManipulationPendingReason as PendingReason,
+    DockspaceManipulationStatus as Status, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceSemanticOutput, NativeHostCapability, NativeLocalGeometry, NativeLocalPointerFact,
+    NativeLocalPointerLocation, NativeMonotonicClock, NativePointerButton, NativePointerEvent,
+    NativePointerId, NativePointerOwner, NativeReceiverPurpose, PointerDeviceKind,
+    PointerEventMetadata,
 };
 use winit::dpi::{PhysicalPosition, PhysicalSize as WinitPhysicalSize};
 use winit::event::{
@@ -181,6 +183,32 @@ fn fixture_with_desktop(
     Scene,
     Arc<AtomicU64>,
 ) {
+    let mut capabilities = NativeHostCapabilities::none_supported()
+        .with(NativeHostCapability::AuthoritativeInventory)
+        .with(NativeHostCapability::AuthoritativeButtonState)
+        .with(NativeHostCapability::PointerHitTestObservation);
+    if desktop {
+        capabilities = capabilities
+            .with(NativeHostCapability::DesktopPointerPosition)
+            .with(NativeHostCapability::HoveredWindow);
+    }
+    fixture_with_capabilities(
+        desktop,
+        capabilities,
+        NativePointerRoster::Exact(Vec::new()),
+    )
+}
+
+fn fixture_with_capabilities(
+    desktop: bool,
+    capabilities: NativeHostCapabilities,
+    initial_pointer_roster: NativePointerRoster,
+) -> (
+    NativeCoordinator,
+    NativeSurfaceBinding,
+    Scene,
+    Arc<AtomicU64>,
+) {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         FIRST_SURFACE,
         DockspaceRootLayout::new(
@@ -194,7 +222,7 @@ fn fixture_with_desktop(
     let clock = Arc::clone(&now);
     let mut native = NativeCoordinator::new_with_storage_allowance(
         session,
-        NativePointerRoster::Exact(Vec::new()),
+        initial_pointer_roster,
         None,
         None,
         None,
@@ -217,15 +245,8 @@ fn fixture_with_desktop(
         .with_presentation_scale_factor(geometry.presentation_scale_factor())
         .with_input(NativeWindowInputState::ReceivesInput, None)
         .with_presentation(NativeWindowPresentationState::Visible, None);
-    let mut capabilities = NativeHostCapabilities::none_supported()
-        .with(NativeHostCapability::AuthoritativeInventory)
-        .with(NativeHostCapability::AuthoritativeButtonState)
-        .with(NativeHostCapability::PointerHitTestObservation);
     if desktop {
         facts = facts.with_content_bounds(PhysicalRect::new(400.0, -300.0, 1200.0, 900.0).unwrap());
-        capabilities = capabilities
-            .with(NativeHostCapability::DesktopPointerPosition)
-            .with(NativeHostCapability::HoveredWindow);
     }
     native
         .report_snapshot(
@@ -729,6 +750,466 @@ fn an_ordinary_desktop_drag_keeps_its_lane_when_a_callback_adds_local_facts() {
     assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
     assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
     assert!(idle(&mut native).manipulation_feedback().is_empty());
+}
+
+fn assert_pending_reorder_delivers_after_exact_presentation(
+    native: &mut NativeCoordinator,
+    binding: NativeSurfaceBinding,
+    preview: &Scene,
+    report: &mut HostFrameReport,
+) {
+    let pending = feedback(report);
+    assert_eq!(
+        pending.status(),
+        Status::Pending(PendingReason::AwaitingPresentation),
+    );
+    assert!(preview.preview);
+    assert!(!report.workspace_changed());
+    assert_eq!(order(native), [FIRST, SECOND, THIRD]);
+    assert!(!native.session.has_active_gesture());
+    assert!(!native.session.has_pending_native_input());
+    assert!(native.next_window_event().unwrap().is_none());
+    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
+    assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
+    assert!(native.session.is_current_native_binding(binding));
+    let version = native.session.version();
+    let recorded = native.session.native_input_recorded_count();
+    let exact = take_output(report, preview, binding);
+    let artifact = exact.presentation_artifact();
+    let waiting = idle(native);
+    assert!(waiting.manipulation_feedback().is_empty());
+    assert!(!waiting.workspace_changed());
+    assert_eq!(native.session.version(), version);
+    assert_eq!(order(native), [FIRST, SECOND, THIRD]);
+    native
+        .session
+        .report_surface_presentation(exact, SurfacePresentationResult::Presented)
+        .unwrap();
+    let delivered = idle(native);
+    assert_eq!(
+        delivered
+            .surface_presentation_commits()
+            .iter()
+            .filter(|commit| commit.settles(artifact))
+            .count(),
+        1,
+    );
+    let terminal = feedback(&delivered);
+    assert_eq!(terminal.manipulation_id(), pending.manipulation_id());
+    assert_ne!(terminal.id(), pending.id());
+    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
+    assert!(delivered.workspace_changed());
+    assert_eq!(order(native), [SECOND, THIRD, FIRST]);
+    let delivered_version = native.session.version();
+    assert_ne!(delivered_version, version);
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    let settled = idle(native);
+    assert!(settled.manipulation_feedback().is_empty());
+    assert!(!settled.workspace_changed());
+    assert_eq!(native.session.version(), delivered_version);
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(native.session.is_current_native_binding(binding));
+    assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
+}
+
+fn assert_reorder_survives_unknown_capture_release_motion(desktop: bool) {
+    let (mut native, binding, scene, now) = fixture_with_desktop(desktop);
+    let source = scene.point(FIRST, 0.25);
+    let target = scene.point(THIRD, 0.625);
+    let version = native.session.version();
+    let recorded = native.session.native_input_recorded_count();
+    let coordinates = native.session.native_local_coordinates(binding).unwrap();
+    let mut local_basis = None;
+    now.store(40, Ordering::SeqCst);
+    for (ordinal, point, state) in [
+        (1, source, Some(ElementState::Pressed)),
+        (2, target, None),
+        (3, target, None),
+        (4, target, Some(ElementState::Released)),
+    ] {
+        let mut event = if desktop {
+            raw_desktop_event(point, state)
+        } else {
+            raw_event(point, state, 2.0)
+        };
+        if ordinal == 3 {
+            // AppKit mouseUp: emits motion before updating the local button mask.
+            let WindowEvent::CursorMoved { facts, .. } = &mut event else {
+                unreachable!("the additional release-position event is mouse motion");
+            };
+            facts.capture = PointerWindowRoute::Unknown;
+        }
+        assert_eq!(
+            native.session.native_local_coordinates(binding),
+            Some(coordinates),
+        );
+        let record = capture(&native, binding, ordinal, event);
+        assert_eq!(record.ordinal(), ordinal);
+        assert_eq!(record.window_id(), WindowId::from(WINDOW));
+        assert_eq!(record.viewport_id(), Some(ViewportId::ROOT));
+        let routes = record.pointer_routes().unwrap();
+        assert_eq!(
+            routes.capture(),
+            match ordinal {
+                3 => NativePointerRouteSnapshot::Unknown,
+                4 => NativePointerRouteSnapshot::None,
+                _ => NativePointerRouteSnapshot::Dock(binding),
+            },
+        );
+        assert_eq!(
+            routes.hover(),
+            if desktop {
+                NativePointerRouteSnapshot::Dock(binding)
+            } else {
+                NativePointerRouteSnapshot::Unknown
+            },
+        );
+        let sample = match (desktop, state, record.pointer_location()) {
+            (true, Some(_), Some(CapturedNativePointerLocation::Desktop)) => None,
+            (true, None, Some(CapturedNativePointerLocation::LocalToDesktop(sample)))
+            | (
+                false,
+                _,
+                Some(CapturedNativePointerLocation::NativeLocal(
+                    NativeLocalPointerLocation::Exact(sample),
+                )),
+            ) => Some(sample),
+            (_, _, location) => {
+                panic!("unexpected coordinate lane for edge {ordinal}: {location:?}")
+            }
+        };
+        if let Some(sample) = sample {
+            assert_eq!(sample.surface_position(), point);
+            if let Some(basis) = local_basis {
+                assert!(sample.same_coordinates(basis));
+            } else {
+                local_basis = Some(sample);
+            }
+        }
+        native.bridge.push_record(HostRecord::WindowEvent(record));
+        assert_eq!(
+            native.next_window_event().unwrap().unwrap().ordinal(),
+            ordinal
+        );
+        reduce_one(&mut native);
+        let mut frame = native
+            .begin_host_frame(|query| {
+                assert_eq!(query.point(), Some(point));
+                scene.answer(query, CAPTURED_AT)
+            })
+            .unwrap();
+        if ordinal == 4 {
+            let preview = render(&mut frame);
+            let mut report = finish(frame);
+            assert_eq!(native.session.version(), version);
+            assert_eq!(native.session.native_input_recorded_count(), recorded + 4);
+            assert_pending_reorder_delivers_after_exact_presentation(
+                &mut native,
+                binding,
+                &preview,
+                &mut report,
+            );
+        } else {
+            let report = finish(frame);
+            assert!(report.manipulation_feedback().is_empty());
+            assert!(!report.workspace_changed());
+            assert!(native.session.has_active_gesture());
+            assert_eq!(native.session.version(), version);
+            assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+            assert_eq!(
+                native.session.native_input_recorded_count(),
+                recorded + ordinal
+            );
+            assert_eq!(
+                native.session.native_local_coordinates(binding),
+                Some(coordinates),
+            );
+            assert!(native.next_window_event().unwrap().is_none());
+        }
+    }
+}
+
+#[test]
+fn raw_desktop_reorder_survives_unknown_capture_release_motion() {
+    assert_reorder_survives_unknown_capture_release_motion(true);
+}
+
+#[test]
+fn raw_local_reorder_survives_unknown_capture_release_motion() {
+    assert_reorder_survives_unknown_capture_release_motion(false);
+}
+
+#[test]
+fn macos_capabilities_and_unknown_initial_roster_allow_same_window_reorder() {
+    let capabilities = capabilities_for_backend(eframe::NativeWindowingBackend::MacOs);
+    assert!(!capabilities.supports(NativeHostCapability::AuthoritativeButtonState));
+    let (mut native, binding, scene, now) =
+        fixture_with_capabilities(true, capabilities, NativePointerRoster::Unknown);
+    let source = scene.point(FIRST, 0.25);
+    let target = scene.point(THIRD, 0.625);
+    let version = native.session.version();
+    let recorded = native.session.native_input_recorded_count();
+    let coordinates = native.session.native_local_coordinates(binding).unwrap();
+    now.store(40, Ordering::SeqCst);
+    for (ordinal, point, state) in [(1, source, Some(ElementState::Pressed)), (2, target, None)] {
+        let record = capture(&native, binding, ordinal, raw_desktop_event(point, state));
+        assert_eq!(record.ordinal(), ordinal);
+        assert_eq!(
+            record.pointer_routes().unwrap().capture(),
+            NativePointerRouteSnapshot::Dock(binding),
+        );
+        native.bridge.push_record(HostRecord::WindowEvent(record));
+        reduce_one(&mut native);
+        let report = input_boundary(&mut native, &scene, CAPTURED_AT);
+        assert!(report.manipulation_feedback().is_empty());
+        assert!(native.session.has_active_gesture());
+        assert_eq!(native.session.version(), version);
+        assert_eq!(
+            native.session.native_local_coordinates(binding),
+            Some(coordinates),
+        );
+    }
+    let release = capture(
+        &native,
+        binding,
+        3,
+        raw_desktop_event(target, Some(ElementState::Released)),
+    );
+    assert_eq!(release.ordinal(), 3);
+    assert_eq!(
+        release.pointer_routes().unwrap().capture(),
+        NativePointerRouteSnapshot::None,
+    );
+    native.bridge.push_record(HostRecord::WindowEvent(release));
+    reduce_one(&mut native);
+    let mut frame = native
+        .begin_host_frame(|query| {
+            assert_eq!(query.point(), Some(target));
+            scene.answer(query, CAPTURED_AT)
+        })
+        .unwrap();
+    let preview = render(&mut frame);
+    let mut report = finish(frame);
+    assert_eq!(native.session.version(), version);
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 3);
+    assert_pending_reorder_delivers_after_exact_presentation(
+        &mut native,
+        binding,
+        &preview,
+        &mut report,
+    );
+}
+
+#[test]
+fn raw_foreign_capture_motion_cancels_reorder_before_none_capture_release() {
+    for desktop in [false, true] {
+        let (mut native, binding, scene, now) = fixture_with_desktop(desktop);
+        let source = scene.point(FIRST, 0.25);
+        let target = scene.point(THIRD, 0.625);
+        let version = native.session.version();
+        let recorded = native.session.native_input_recorded_count();
+        let coordinates = native.session.native_local_coordinates(binding).unwrap();
+        now.store(40, Ordering::SeqCst);
+        for (ordinal, point, state) in [(1, source, Some(ElementState::Pressed)), (2, target, None)]
+        {
+            let event = if desktop {
+                raw_desktop_event(point, state)
+            } else {
+                raw_event(point, state, 2.0)
+            };
+            let record = capture(&native, binding, ordinal, event);
+            assert_eq!(record.ordinal(), ordinal);
+            native.bridge.push_record(HostRecord::WindowEvent(record));
+            reduce_one(&mut native);
+            let report = input_boundary(&mut native, &scene, CAPTURED_AT);
+            assert!(report.manipulation_feedback().is_empty());
+            assert!(native.session.has_active_gesture());
+            assert_eq!(native.session.version(), version);
+        }
+        let mut foreign_motion = if desktop {
+            raw_desktop_event(target, None)
+        } else {
+            raw_event(target, None, 2.0)
+        };
+        let WindowEvent::CursorMoved { facts, .. } = &mut foreign_motion else {
+            unreachable!("capture loss is reported on a real mouse motion");
+        };
+        facts.capture = PointerWindowRoute::Foreign;
+        let record = capture(&native, binding, 3, foreign_motion);
+        assert_eq!(record.ordinal(), 3);
+        assert_eq!(
+            record.pointer_routes().unwrap().capture(),
+            NativePointerRouteSnapshot::Foreign,
+        );
+        native.bridge.push_record(HostRecord::WindowEvent(record));
+        reduce_one(&mut native);
+        let mut frame = native
+            .begin_host_frame(|query| scene.answer(query, CAPTURED_AT))
+            .unwrap();
+        let cancelled_scene = render(&mut frame);
+        let mut cancelled = finish(frame);
+        assert_eq!(
+            feedback(&cancelled).status(),
+            Status::Cancelled(CancelReason::CaptureLost),
+        );
+        assert!(!cancelled_scene.preview);
+        assert!(!cancelled.workspace_changed());
+        assert!(!native.session.has_active_gesture());
+        assert_eq!(native.session.version(), version);
+        assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+        assert_eq!(native.session.native_input_recorded_count(), recorded + 3);
+        let output = take_output(&mut cancelled, &cancelled_scene, binding);
+        let artifact = output.presentation_artifact();
+
+        let release = if desktop {
+            raw_desktop_event(target, Some(ElementState::Released))
+        } else {
+            raw_event(target, Some(ElementState::Released), 2.0)
+        };
+        let record = capture(&native, binding, 4, release);
+        assert_eq!(record.ordinal(), 4);
+        assert_eq!(
+            record.pointer_routes().unwrap().capture(),
+            NativePointerRouteSnapshot::None,
+        );
+        native.bridge.push_record(HostRecord::WindowEvent(record));
+        reduce_one(&mut native);
+        let released = input_boundary(&mut native, &scene, CAPTURED_AT);
+        assert!(released.manipulation_feedback().is_empty());
+        assert!(!released.workspace_changed());
+        assert!(!native.session.has_active_gesture());
+        assert!(!native.session.has_pending_native_input());
+        assert_eq!(native.session.native_input_recorded_count(), recorded + 4);
+        assert_eq!(
+            native.session.native_local_coordinates(binding),
+            Some(coordinates),
+        );
+        assert!(native.next_window_event().unwrap().is_none());
+        assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
+        native
+            .session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        let settled = idle(&mut native);
+        assert_eq!(
+            settled
+                .surface_presentation_commits()
+                .iter()
+                .filter(|commit| commit.settles(artifact))
+                .count(),
+            1,
+        );
+        assert!(settled.manipulation_feedback().is_empty());
+        assert!(!settled.workspace_changed());
+        assert_eq!(native.session.version(), version);
+        assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+        assert_eq!(native.bridge.input_backlog_for_test(), (0, None));
+    }
+}
+
+#[test]
+fn none_capture_release_rejects_unknown_or_foreign_delivery_after_unknown_motion() {
+    for (delivery, reason) in [
+        (
+            NativePointerOwner::Unknown,
+            CancelReason::DeliveryAuthorityUnavailable,
+        ),
+        (NativePointerOwner::Foreign, CancelReason::DeliveryOwnerLost),
+    ] {
+        let (mut native, binding, scene, _) = fixture();
+        let source = scene.point(FIRST, 0.25);
+        let target = scene.point(THIRD, 0.625);
+        let version = native.session.version();
+        let recorded = native.session.native_input_recorded_count();
+        let coordinates = native.session.native_local_coordinates(binding).unwrap();
+        let pointer = NativePointerId::new(17);
+        for (offset, point, event, capture_owner) in [
+            (
+                1,
+                source,
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                NativePointerOwner::Native(binding),
+            ),
+            (
+                2,
+                target,
+                NativePointerEvent::Moved,
+                NativePointerOwner::Native(binding),
+            ),
+            (
+                3,
+                target,
+                NativePointerEvent::Moved,
+                NativePointerOwner::Unknown,
+            ),
+            (
+                4,
+                target,
+                NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+                NativePointerOwner::None,
+            ),
+        ] {
+            let geometry = coordinates.geometry();
+            let scale = geometry.presentation_scale_factor().get();
+            let sample = coordinates
+                .capture(
+                    binding,
+                    NativeLocalPointerFact::new(
+                        PhysicalPoint::new(point.x() * scale, point.y() * scale).unwrap(),
+                        geometry.content_size(),
+                        geometry.native_scale_factor(),
+                    ),
+                    geometry,
+                )
+                .unwrap();
+            assert_eq!(sample.surface_position(), point);
+            native
+                .record_pointer(
+                    NativePointerInput::new_local(
+                        pointer,
+                        event,
+                        NativeLocalPointerLocation::Exact(sample),
+                        if offset == 4 {
+                            delivery
+                        } else {
+                            NativePointerOwner::Native(binding)
+                        },
+                        capture_owner,
+                    )
+                    .with_metadata(PointerEventMetadata::new(
+                        PointerDeviceKind::Mouse,
+                        CAPTURED_AT,
+                    )),
+                )
+                .unwrap();
+            let report = input_boundary(&mut native, &scene, CAPTURED_AT);
+            if offset == 4 {
+                assert_eq!(feedback(&report).status(), Status::Cancelled(reason));
+                assert!(!native.session.has_active_gesture());
+            } else {
+                assert!(report.manipulation_feedback().is_empty());
+                assert!(native.session.has_active_gesture());
+            }
+            assert!(!report.workspace_changed());
+            assert_eq!(native.session.version(), version);
+            assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+            assert_eq!(
+                native.session.native_input_recorded_count(),
+                recorded + offset
+            );
+            assert_eq!(
+                native.session.native_local_coordinates(binding),
+                Some(coordinates),
+            );
+        }
+        assert!(!native.session.has_pending_native_input());
+        assert!(idle(&mut native).manipulation_feedback().is_empty());
+        let refreshed = paint_and_present(&mut native, binding);
+        assert!(!refreshed.preview);
+        assert_eq!(native.session.version(), version);
+        assert_eq!(order(&native), [FIRST, SECOND, THIRD]);
+        assert!(native.session.is_current_native_binding(binding));
+    }
 }
 
 #[test]
