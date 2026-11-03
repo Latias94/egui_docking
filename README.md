@@ -10,6 +10,16 @@ The repository has undergone a breaking refactor. There is no compatibility
 layer for the former `egui_docking`, `egui_tiles`, or pre-refactor persistence
 interfaces.
 
+The [engine-first redesign](docs/plans/2026-11-03-dockspace-engine-first-redesign.md)
+replaces the update and presentation coordination. Accepted ordinary releases
+commit in the successful update; exact visible input is revalidated against its
+relevant semantic scope. One input/measure/encode update publishes once, and
+bounded output owners retain their immutable scenes. Native resource transfers
+keep their separate exact first-live and retirement obligations. See the
+[migration guide](docs/ENGINE_FIRST_MIGRATION.md) for the breaking host and egui
+API changes and the [measurement methodology](docs/performance/2026-11-03-engine-first-methodology.md)
+for complete-update costs.
+
 The earlier engine-host and direct-manipulation plan lives in
 [`docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md`](docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md).
 It prioritizes a documented public host API and an independent consumer with
@@ -58,7 +68,7 @@ Shift temporarily disables magnetic target acquisition without cancelling the
 gesture or moving contained content back to its durable position. Ordered
 modifier-only input clears a magnetic preview; keyup permits fresh acquisition
 from the next real Move or Release. Explicit guides and tab gaps remain eligible,
-and releases already waiting for exact presentation retain their frozen decision.
+and native transfers already waiting for exact presentation retain their frozen decision.
 Custom hosts map their own modifier or tool mode through the public targeting
 intent; egui supplies the default Shift mapping.
 
@@ -331,21 +341,20 @@ presets, and recognized unavailable panes remain reloadable placeholders.
 These finite U10 workflows are qualified; see the dated evidence in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
-Hosts that own official crates.io egui's complete run use the Dockspace wrapper
-to bind local settlement to that run without application-managed frame counts:
+Hosts that own official crates.io egui's complete run use the owned update entry
+point. It publishes once after the terminal pass and all output hooks:
 
 ```rust,ignore
-let output = egui_dockspace::run_ui(&context, raw_input, |ui| {
-    dockspace
-        .show_single_surface(surface, ui, panes)
-        .expect("the Dockspace frame advances");
-});
+let (output, response) = dockspace
+    .run_single_surface(&context, raw_input, surface, panes)
+    .expect("the Dockspace update publishes");
 let (full_output, receipt) = output.into_parts();
 let result = renderer.present(full_output); // Presented or Dropped, from the output owner.
 receipt.report(result);
 ```
 
-`egui_dockspace::run_ui` returns `DockspaceOutput`. Split it with
+`Dockspace::run_single_surface` returns `DockspaceOutput` and its publication
+response. Split the output with
 `into_parts()` to obtain `FullOutput` and a one-use `DockspaceOutputReceipt`.
 The renderer owner reports `Presented` only after that complete output reaches
 presentation, or `Dropped` when it is discarded; dropping the receipt also
@@ -356,18 +365,33 @@ presentation authority by itself.
 The adapter checks the complete ordered surface shape span after every output
 hook, including ordinary pane/tab drawing, previews, clip and transform data.
 It removes only its private markers. This conservative path requires synchronous,
-append-only pane drawing on the supplied layer; cross-layer writes and nonempty unenumerated layers are unavailable
-for settlement. After `into_parts()`, the host is responsible for preserving the
+append-only pane drawing on the supplied layer. Adapter-owned popup chrome can
+append to registered foreground layers with the same exact suffix proof;
+arbitrary pane cross-layer writes and unenumerated layers remain unavailable.
+After `into_parts()`, the host is responsible for preserving the
 complete output it reports. Shape checks do not inspect application paint callback
 internals or observe GPU submission. Discard, unwind, duplicate enrollment,
 foreign contexts/viewports and output mismatch cannot promote partial evidence.
+Raw input runs once; actual egui repeat passes re-encode the same private input
+candidate. A failed owned run publishes neither docking state nor producer
+watermarks and never automatically replays application pane callbacks.
+UI-generated semantic actions enter a bounded queue for the next update.
+
+Ordinary logical release commits with accepted input. A later dropped renderer
+output requests replacement work and does not undo that edit. Native ownership
+transfers retain their exact first-live and resource-retirement obligations.
+See the [breaking migration guide](docs/ENGINE_FIRST_MIGRATION.md) for the engine
+host phases, output backpressure and deferred action scopes.
 
 An unmodified `eframe::App::ui` callback may still call
 `show_single_surface` directly for rendering, selection, close, menus, and
 discrete keyboard or AccessKit actions. Because eframe owns the surrounding
 `RawInput` and `FullOutput`, that response reports
 `PresentationSettlementRequired`; tab/group/contained pointer drags are not
-started instead of showing a preview that can never settle. The fork-backed
+started. The callback publishes each accepted call independently; it cannot
+roll back an earlier publication when an enclosing run or later hook fails.
+`egui_dockspace::run_ui` remains available for composed callback integration with
+the same limitation. The fork-backed
 native adapter owns the stronger post-plugin finalizer and exact unwind
 abandonment required for editor-grade native multiview.
 

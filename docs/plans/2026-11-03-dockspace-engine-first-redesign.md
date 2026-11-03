@@ -1,6 +1,8 @@
 # Dockspace engine-first breaking redesign
 
-Date: 2026-11-03. Status: proposed; no production implementation is implied.
+Date: 2026-11-03. Completed: 2026-11-04. Status: E0–E7 implemented and qualified.
+Implementation: `1d796d2`; actual-editor/CI gate: `2ba9e35`. The dated validation
+record and frozen source inventory identify the evidence.
 Source baseline: `536c453`; review receipt: `2770d5d`.
 
 This proposal follows the [architecture review](../audits/2026-11-03-dockspace-architecture-review.md).
@@ -11,9 +13,55 @@ coordination protocols may be replaced without compatibility wrappers.
 Two read-only design challenges checked ordinary-release semantics and
 host-update/encoding orchestration. Their source-group counterexample, explicit
 staging permits, normal output backpressure, actual egui-run scope and offscreen
-input-endpoint limits are incorporated below. This is a design review, not
-qualification of the proposed interface; the architecture review's executed
-counterexamples remain the baseline evidence.
+input-endpoint limits are incorporated below. Those initial design challenges did not qualify an
+implementation; the architecture review's executed counterexamples remain the
+baseline evidence for the completed rewrite.
+
+## Execution contract and progress
+
+The user authorized the complete breaking redesign after `d626a1b`. This document
+records the completed execution. Ordinary compatibility wrappers and obsolete
+behavior may be removed; source ownership, stale/foreign rejection and rollback
+guarantees must be replaced explicitly rather than weakened incidentally.
+
+- [x] E0: adopt all executed review counterexamples in maintained public tests;
+  make actual eight-pane editor docking and lifecycle journeys release/CI gates.
+- [x] E1: make admitted outputs retain exact immutable scenes in the existing
+  presentation ledger, with bounded admission and exact revocation/reclamation.
+- [x] E2: implement ordinary release commit semantics, scoped validation of old
+  visible source/target facts and batch-partition invariance; remove ordinary
+  pending preview waits and replacement cancellation.
+- [x] E3: implement one owned mutation draft and input/layout/encode publication;
+  migrate public host, immediate egui and native adapter; remove superseded
+  two-commit interfaces/choreography.
+- [x] E4: scope deferred close approvals; coordinate current focus, focus history,
+  host focus observations and durable preference references at publication.
+- [x] E5: jointly allocate visible inner/outer guides and touch hit partitions;
+  retain drag-source decoration when its own strip scrolls it out of view.
+- [x] E6: make native dispatch-start state explicit; preserve independent
+  Destroyed progress under invalid work-area facts; qualify compensation,
+  first-live, cancellation and bounded retirement.
+- [x] E7: final independent review, complete-update cost samples, public and
+  extracted consumers, egui/actual editor/native qualification and documentation.
+
+Dependency order: E0/E1 establish maintained output evidence. E2 freezes the new
+local interaction contract before E3 migrates both adapters. The owned-draft
+part of E3 can proceed independently. E4-E6 may use disjoint implementation
+lanes once ownership is fixed; final E7 uses a frozen source inventory.
+
+Each implementation slice records red/green evidence, checks the affected
+public seam and receives an independent read-only review before a precise local
+Conventional Commit. Only the main thread runs Cargo/GUI verification, serially
+with one build job and the repository target directory. No push or PR is part
+of this goal. Preserve the unrelated `.github/workflows/ci.yml` and
+`docs/reviews/` changes; if a CI gate is needed, integrate only a reviewed hunk
+without overwriting or claiming those changes.
+
+Completion requires every E0-E7 item and the acceptance table below. A completed
+slice, a passing broad suite, or an unavailable platform is not grounds to mark
+the whole goal complete. Unenabled physical platforms retain their documented
+limits. If an implementation contradicts a stated contract, resolve it from
+reproduction evidence before proceeding; routine choices need no new approval.
 
 ## Decision
 
@@ -247,6 +295,12 @@ One logical command batch gets at most one full mutable document draft. The
 published immutable snapshot is shared until mutation is needed. Normalize and
 validate that owned draft in place; reject by dropping it. Keep an atomic
 wrapper only for internal callers which do not already own a discardable draft.
+The batch is one explicit `WorkspaceTransaction` or prepared atomic semantic
+operation, including its raise/select or recovery follow-ups. A host update may
+contain several independent operations with their own rejection outcomes; it
+does not merge them into one document transaction or promise a single graph
+copy across the entire arbitrary update. Clone accounting must include every
+full graph copy rather than relabeling work outside the measured counter.
 
 Retain a global published version for observation and replacement epochs. Do
 not use it as a universal invalidation dependency for local asynchronous work.
@@ -411,3 +465,43 @@ The result should make the host responsible for facts, rendering and external
 resources while making docking responsible for the coordination of its own
 state. Success is a smaller set of rules a real host must implement correctly,
 with the established correctness obligations preserved where they are needed.
+
+## Implementation evidence (2026-11-04)
+
+The original design review remains historical evidence. Its executed probes now
+have maintained product or public-host replacements:
+
+| Slice | Implementation and maintained behavior oracles |
+| --- | --- |
+| E0/E1 | `presentation_prefix.rs` retains three changing in-flight scenes, settles reversed/grouped results and preserves the last actual presentation after Dropped successors. `update_publication.rs` covers capacity admission/reclamation and zero-output progress. The actual editor and three real renderer tests are CI gates. |
+| E2 | `public_contract.rs` covers immediate ordinary release, later presses/Dropped successors, exact P0 batch-partition invariance, source activation continuation, stale/foreign input and retry without double delivery. `presented_semantic_scope.rs` prevents unseen group members and changed-owner capture. Native resource obligations remain separate. |
+| E3 | `runtime/update.rs` owns suspend/resume and encoding restart with one publication. `update_publication.rs` covers checkpoint rejection and rollback. `transaction.rs` counts every full graph draft, including canonicalization; prepared release reuses its draft. Owned egui/native actual-pass tests replace measurement-commit/paint-commit choreography. |
+| E4 | `close_commands.rs` validates deferred target membership/lifetime/policy without selection/MRU coupling. `restore_focus.rs` separates actual focus, history and requests, including repeated replacement after unavailable focus. `surface_presentation_preferences.rs` covers saveability after attach/retire/reset/restore. Exact Root continuity updates core and native focus producers atomically. |
+| E5 | `drop_guides_accessibility.rs`, `touch_targets.rs`, `drag_decoration_retention.rs` cover joint visible guide identity, preserved visible handles/junctions and a scrolled-out source ghost. `drop_guide_resolution.rs` also covers a full-surface contained source without hiding an unrelated sibling. |
+| E6 | `runtime/native_effect/dispatch_tests.rs` distinguishes not-started, started/indeterminate and definitive results. Native `dispatch_terminal.rs` conserves Destroyed settlement under invalid work-area geometry; first-live/cancellation/compensation gates remain active. |
+
+Independent read-only lanes reviewed core publication, output retention, native
+integration, public consumers and actual egui behavior during implementation.
+The final focus review accepted the exact Root/provider continuation and
+output-owned retained focus metadata after the explicit unknown-current-focus
+fix; no remaining concrete P1/P2 blocker was reported in that reviewed scope.
+Final platform and performance evidence belongs to E7 and the dated validation
+record; passing one slice is not whole-goal completion.
+
+## Final qualification
+
+The [2026-11-04 validation record](../VALIDATION.md#2026-11-04-engine-first-breaking-redesign-qualification)
+records workspace 2,051; public default/serde 270/311; product 114/119;
+native 556 (one ignored); official 15; strict docs/Clippy/doctests; three actual
+renderer tests; five physical editor docking journeys; 12 real edits across six
+child lifetimes; four exact Root continuations; native tear-off/redock and
+resource quiescence; and matched archives with independent extracted consumers.
+The three unchanged 10,000-depth public tests passed in the preceding final slice.
+
+The [complete-update cost baseline](../performance/2026-11-04-engine-first-results.md)
+contains all 180 measurement rows and the environment/source inventory. It also
+records an unresolved scaling limit: 1,024-pane changed updates take roughly
+129–144 ms p50 in this recording host. This plan required honest complete-seam
+measurement, not a latency threshold or ImGui equivalence. Profiling and reducing
+that cost is a separate concrete next task; this completion does not certify
+large-editor real-time performance or additional physical backends.

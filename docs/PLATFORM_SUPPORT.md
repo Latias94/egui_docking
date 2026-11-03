@@ -1,8 +1,8 @@
 ---
 title: "Dockspace Platform Support"
 status: "Qualified finite profiles; clean-checkout delivery reproduced"
-reviewed: "2026-11-02"
-baseline_source_revision: "4f57bfb"
+reviewed: "2026-11-04"
+baseline_source_revision: "1d796d2"
 ---
 
 # Dockspace Platform Support
@@ -23,14 +23,20 @@ Earlier dated qualifications
 retain their historical scope; the 2026-10-31 entries supersede earlier
 physical-smoke coverage limits.
 
+The [2026-11-04 engine-first qualification](VALIDATION.md#2026-11-04-engine-first-breaking-redesign-qualification)
+refreshes the public/egui/native update contracts and actual eight-pane editor
+journeys against the frozen implementation inventory. It does not extend the
+set of certified physical backends.
+
 ## Core and public engine-host contract
 
 | Boundary | Current contract and evidence | Host responsibility |
 | --- | --- | --- |
 | Core model | One item/root/surface graph, validated atomic mutations, policy, selection, layout, target acquisition, close and persistence identity. | Application pane data, fonts, drawing resources and preset storage. |
-| Public runtime | `DockspaceSession` and rollbackable `DockspaceHostFrame` expose measurements, semantic commands, ordered input, surface programs, output disposition and focus/repaint requests. | Register logical surfaces, supply complete facts and execute the requested work. Local/contained use does not require desktop coordinates or native enrollment. |
+| Public runtime | `DockspaceSession`, rollbackable `DockspaceHostFrame` and owned `DockspaceUpdate` expose ordered input followed by measurement/encoding and one publication. `SurfaceWork::Deferred` expresses unavailable measurement or bounded output admission. | Register logical surfaces, supply complete facts and execute the requested work. Local/contained use does not require desktop coordinates or native enrollment. |
 | Immediate or deferred rendering | A host may execute the ordered program immediately or compile it into owned display-list/retained-node records that outlive the frame borrow. | Preserve composition, clipping, content slots and the snapshot's hit/semantic identities. |
 | Current-output authority | Complete sink acceptance yields an execution receipt; confirming it in a committed frame emits an exact affine output. A later committed acceptance of that output's terminal `Presented` result can promote current receiver authority. | Report the exact output as `Presented` or `Dropped` at the renderer boundary the host owns. Submission and traversal alone do not prove presentation or GPU scanout. |
+| Ordinary logical release | Accepted drag/move/resize release commits in the successful update and emits delivery once. Its exact visible source and target are revalidated against the current relevant semantic scope. | Preserve event-time presented routes and receiver facts. A dropped output requests later rendering rather than undoing accepted ordinary input. |
 | Optional native lifecycle | The same runtime accepts incarnation-bound window facts, effects, readiness, recovery and retirement. `DirectPrepared` and `Staged` share exact first-live publication. | Own OS windows/renderers, report real preparation and lifecycle facts, and retain terminal obligations. Fixed egui staging passes are a reference-host strategy. |
 
 The implementation boundary is documented in
@@ -62,7 +68,8 @@ depends on who owns the run:
 
 | Integration | Supported boundary | Limitation |
 | --- | --- | --- |
-| Caller-owned `egui_dockspace::run_ui` | Returns complete `FullOutput` plus an affine `DockspaceOutputReceipt`. The renderer reports the terminal result; core accepts it at a later committed boundary. Local/contained preview-qualified gestures and pane-focus settlement use that path. | Drawing must be synchronous and append-only on the supplied Ui layer. Exact shape/clip/transform spans are checked after output hooks. Cross-layer writes or modified output make the corresponding authority unavailable; a filtered/replaced complete output must be reported `Dropped`. |
+| Owned `Dockspace::run_single_surface` | Holds the sole input candidate across actual repeat passes; validates terminal output after hooks before one publication. Returns complete `FullOutput` plus an affine `DockspaceOutputReceipt` and publication response. | Drawing must be synchronous and append-only on the supplied Ui layer. Exact shape/clip/transform spans are checked after output hooks. The renderer reports the complete output's actual result. Application callback side effects cannot be rolled back or automatically replayed. |
+| Composed `egui_dockspace::run_ui` | Returns complete `FullOutput` plus an affine settlement receipt for callback outputs. | Each accepted callback publishes independently; a later run/hook failure cannot roll back that publication. Single-layer append-only proof and exact receiver clearance still apply. |
 | Unmodified `eframe::App::ui` callback | Rendering and applicable semantic commands remain available, with typed capability/status results. | The callback does not own final output or renderer terminal disposition. Presentation settlement, preview-qualified dragging and pane-focus settlement remain unavailable there. Callback return and an end-pass hook cannot supply that missing fact. |
 
 [`pass_settlement.rs`](../crates/egui_dockspace/src/pass_settlement.rs) owns the

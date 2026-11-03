@@ -15,6 +15,121 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-04 engine-first breaking redesign qualification
+
+Status: all E0–E7 implementation, independent review, cost-sampling, package and
+interactive gates passed. Implementation: `1d796d2`; actual-editor/CI gate:
+`2ba9e35`. No remote publication is part of this qualification.
+
+The [engine-first plan](plans/2026-11-03-dockspace-engine-first-redesign.md)
+replaces ordinary presentation-gated release and two-publication orchestration.
+The [migration guide](ENGINE_FIRST_MIGRATION.md) describes the breaking public
+contract. Ordinary accepted release is durable at successful publication;
+visible input still validates exact source/target scope. Native resource
+creation and retirement retain their explicit first-live/source obligations.
+
+The frozen 540-input [source inventory](performance/2026-11-04-engine-first-source.sha256)
+includes tracked and newly added Rust sources, manifests, lockfiles, reference
+consumers and relevant scripts. It excludes unrelated `docs/reviews/` work.
+The [environment](performance/2026-11-04-engine-first-environment.json) records
+the compiler, host, flags, source-manifest digest and measurement command.
+Cargo runs use one build job, disabled incremental/debug information for dev
+and test, the shared root target directory and one nextest test thread.
+
+| Gate | Current result |
+| --- | --- |
+| Workspace, all features/all targets | 2,051 passed |
+| Independent public host, default / serde | 270 / 311 passed, excluding the three previously passing 10,000-depth cases |
+| Official-egui product consumer, default / serde | 114 / 119 passed |
+| Fork-backed native adapter, all features/all targets | 556 passed; one explicitly ignored test |
+| Official caller-owned consumer, all features/all targets | 15 passed |
+| Focus/provider namespace and repeated replacement | 43 focused core tests passed; public repeated-restore cases included above |
+| Correctness/suspicious Clippy | Workspace and native all-feature/all-target gates passed |
+| Strict documentation | Core, official egui and native passed with `RUSTDOCFLAGS=-D warnings` |
+| Doctests | Nine core and one adapter passed |
+| Core normal/build dependency boundary | Passed for all features and targets |
+| Actual X11 output-pressure / owned-pass / UI-ingress tests | Three separate real eframe processes passed |
+| Actual eight-pane editor qualification | Five physical docking journeys, full lifecycle and Root continuity passed |
+| Physical X11/XTest native guide-control | Physical tear-off/redock, exact child DestroyNotify and final quiescence passed |
+| Complete-update cost samples | 180 rows: 16/128/1,024 panes × five workloads × separate time/heap phases |
+| Verified archives and extracted consumers | Both archives verified; public 270/311, egui product 114/119, official 15 and engine-host example passed |
+
+The [complete-update results](performance/2026-11-04-engine-first-results.md)
+include the full CSV, p50/p95/max, allocation traffic, live retained/settled bytes,
+cumulative peak scope and environment. At 16 panes the sampled update maximum
+is below 0.42 ms. At 1,024 panes, changed-update p50 is 129.32–143.70 ms and
+four in-flight outputs retain 117.63 MiB of tracked heap, dropping to 18.27 MiB
+after settlement. This is a recorded scaling limitation and the next profiling
+target, not a real-time qualification or an ImGui comparison. No performance
+threshold was an E7 acceptance criterion.
+
+The actual editor gate builds `egui_dockspace_native --example basic
+--all-features` from the pinned fork workspace and runs
+`integration/egui-native-smoke/qualify_editor.py`. It physically docks inactive
+tabs into Outline, Console, Inspector, Preview and Profiler. The lifecycle driver
+performs 12 real focused text edits across six child lifetimes; covers first-live,
+Dock Back, OS-close recovery, application close/Allow/reopen, lock/unlock, Default,
+JSON missing-content restore/reload and two live-child replacements; and verifies
+four cross-surface Root rebindings. Each fresh Root editor accepts text without a
+repair click. The same complete runner also passes the exact CI launch recipe
+with an isolated 1280×1024 Xvfb display and runner-owned Openbox; the reference
+display run uses 1920×1080. The original X11 Root receives no DestroyNotify,
+all retired child resources disappear, and final ownership is quiescent. Lifecycle commands are
+programmatic where the driver declares them; the docking journeys use physical
+pointer input.
+
+The three real eframe tests are run separately because Winit event-loop recreation
+is unsupported in one process. They qualify retained framebuffers and resumed
+callbacks under capacity pressure, one owned publication after actual repeat
+passes/output hooks, and bounded/deduplicated UI ingress which survives a failed
+candidate. The intentionally caught output-hook panic is part of the last test's
+oracle, not a failed gate.
+
+Read-only review accepted the output/scene lifetime, scoped semantic admission,
+owned update, adapter migration and native resource boundaries. A late focus
+review found two additional gaps: layout replacement incorrectly reset the same
+provider's replay namespace, and clearing an unknown current focus could turn a
+second replacement into the initial no-history fallback. Both were corrected;
+monotonic watermarks/tombstones survive replacement, exact Root continuation
+updates core and native producers atomically, old effect acknowledgements do not
+transfer, and repeated replacement preserves explicit unavailable focus. The
+final focused independent review reported no remaining concrete P1/P2 blocker
+in that scope. Retained egui focus metadata belongs to the exact presented
+artifact/viewport; state-ID liveness makes no focus request or hit registration.
+
+Both publishable crates pass this one Cargo package transaction, including
+compilation against its matched temporary registry:
+
+```text
+cargo package -p dockspace -p egui_dockspace --all-features --locked --allow-dirty --offline
+```
+
+The core archive contains 285 Rust files and the adapter 40; every archived Rust
+file, README and original manifest byte-matches the frozen source. SHA-256:
+
+- `dockspace-0.1.0.crate`: `9e56e28c3414daa414368307cd9dacb87bce51c879d3df2544dfcd35fe3e6b0a`
+- `egui_dockspace-0.1.0.crate`: `27471a5f2074f30f512fdaf0d46f55e34fac08695d2f5b6289c7d1a42e652df1`
+
+Copied independent consumers reference only these extracted crates. Their
+`[patch.crates-io]` points the adapter's declared core dependency to the matched
+extracted core, rather than validating new APIs against registry `dockspace
+0.1.0`. Cargo metadata proves one exact extracted core/adapter instance, with
+registry-sourced official egui and no native fork in those consumers. Default,
+serde/all-feature tests and `engine_host` then pass with locked/offline
+resolution. `/tmp/dockspace-engine-first-package-qualification.json` records
+commands, results, archive hashes and extracted paths. The source inventory
+still byte-matches after all gates; documentation and local commit metadata do
+not change that compiled source.
+
+Logs are `/tmp/dockspace-engine-first-final-*.log`. Core guide-resolution and
+three 10,000-depth public cases also passed in the immediately preceding slice
+(`/tmp/dockspace-latent-guides-green.log`, `/tmp/dockspace-public-final8.log`);
+those unchanged geometry/deep-layout workloads were not repeatedly rerun after
+the focus-only finish. These are local macOS logic/consumer and Linux X11
+reference qualifications. They do not certify Wayland, Windows, macOS physical
+multiview input, multiple monitors or the user's engine renderer. No push or PR
+is part of this goal.
+
 ## 2026-11-03 actual editor docking and native release follow-up
 
 The user's eight-pane `basic` example still rejected tab docking after `2351ba6`.
