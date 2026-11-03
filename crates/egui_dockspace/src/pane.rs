@@ -55,10 +55,13 @@ pub trait PaneView {
     /// Accepted widgets allow docking hover to pass through and permit
     /// containing-window activation; they retain their ordinary egui input.
     ///
-    /// The adapter accepts only enabled, interactive responses on the child UI's
-    /// layer whose already-clipped interaction rectangles are finite, positive,
-    /// and fully contained within the pane's valid content bounds. Never declare
-    /// popup, modal, or foreign-overlay widgets, even if their geometry fits.
+    /// The adapter accepts enabled responses on the child UI's layer, including
+    /// explicitly declared hover-only labels and ordinary content containers.
+    /// Their already-clipped interaction rectangles must be finite, positive,
+    /// and fully contained within the pane's valid content bounds. A hover-only
+    /// declaration preserves its non-interactive sense; it cannot clear an
+    /// overlapping unknown interactive widget. Never declare popup, modal, or
+    /// foreign-overlay widgets, even if their geometry fits.
     ///
     /// These are explicit host-application ownership facts, not an automatic
     /// widget-tree resolver or a general inference of platform hit eligibility.

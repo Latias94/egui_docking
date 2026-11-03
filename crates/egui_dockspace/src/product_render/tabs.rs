@@ -109,7 +109,6 @@ pub(crate) fn paint_pane(
                     continue;
                 };
                 if widget.enabled
-                    && widget.sense.interactive()
                     && widget.layer_id == child.layer_id()
                     && widget.interact_rect.is_finite()
                     && widget.interact_rect.is_positive()
@@ -117,7 +116,7 @@ pub(crate) fn paint_pane(
                 {
                     context.receivers.push(ProductReceiverBinding {
                         interact_rect: widget.interact_rect,
-                        interactive: true,
+                        interactive: widget.sense.interactive(),
                         widget_id: widget.id,
                         layer_id: widget.layer_id,
                         receiver,

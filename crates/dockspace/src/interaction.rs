@@ -1917,36 +1917,6 @@ impl ManipulationPositionKey {
             None => None,
         }
     }
-
-    fn exits_contained_source(self, surface: SurfaceId, source_rect: LogicalRect) -> bool {
-        match self {
-            Self::JournalHost { hover, .. } => hover.is_some_and(|route| {
-                route.surface() != surface || !source_rect.contains(route.position())
-            }),
-            Self::JournalNativeLocal { hover, .. } => hover.is_some_and(|route| {
-                route.binding().surface() != surface
-                    || !source_rect.contains(route.surface_position())
-            }),
-            Self::JournalSurface {
-                scope: PointerProviderScope::SurfaceLocal(scope),
-                position: Authority::Known(point),
-            } => scope.surface() != surface || !source_rect.contains(point),
-            Self::JournalDesktop(DesktopRouteValidation::Known(
-                crate::pointer_journal::ValidatedDesktopRoute::Dock(route),
-            )) => {
-                route.binding().surface() != surface
-                    || !source_rect.contains(route.surface_position())
-            }
-            Self::JournalDesktop(DesktopRouteValidation::Known(
-                crate::pointer_journal::ValidatedDesktopRoute::NoWindow { .. },
-            )) => true,
-            Self::JournalSurface { .. }
-            | Self::JournalDesktop(DesktopRouteValidation::Known(
-                crate::pointer_journal::ValidatedDesktopRoute::Foreign { .. },
-            ))
-            | Self::JournalDesktop(DesktopRouteValidation::Unavailable(_)) => false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1990,10 +1960,6 @@ enum DragPreviewState {
 enum MagneticSourceGate {
     Open,
     ExplicitTargetsOnly,
-    AwaitContainedExit {
-        surface: SurfaceId,
-        source_rect: LogicalRect,
-    },
 }
 
 impl MagneticSourceGate {
@@ -2002,28 +1968,8 @@ impl MagneticSourceGate {
             FrozenDragOrigin::Workspace => Self::Open,
             FrozenDragOrigin::Contained(origin) => match origin.intent {
                 ContainedDragIntent::MoveWindow => Self::ExplicitTargetsOnly,
-                ContainedDragIntent::DockContent => Self::AwaitContainedExit {
-                    surface: origin.surface,
-                    source_rect: origin.source_rect,
-                },
+                ContainedDragIntent::DockContent => Self::Open,
             },
-        }
-    }
-
-    fn allows_at(&self, position: ManipulationPositionKey) -> bool {
-        match self {
-            Self::Open => true,
-            Self::ExplicitTargetsOnly => false,
-            Self::AwaitContainedExit {
-                surface,
-                source_rect,
-            } => position.exits_contained_source(*surface, *source_rect),
-        }
-    }
-
-    fn observe(&mut self, position: ManipulationPositionKey) {
-        if matches!(self, Self::AwaitContainedExit { .. }) && self.allows_at(position) {
-            *self = Self::Open;
         }
     }
 }
@@ -2081,10 +2027,6 @@ impl DragTargetState {
         }
     }
 
-    fn magnetic_targeting_allowed_at(&self, position: ManipulationPositionKey) -> bool {
-        self.magnetic_source_gate.allows_at(position)
-    }
-
     pub(crate) const fn preview(&self) -> Option<&PublishedPreview> {
         match &self.preview {
             DragPreviewState::Published { preview, .. } => Some(preview),
@@ -2137,7 +2079,7 @@ impl DragTargetState {
     }
 
     fn reset_coordinate_lane(&mut self) {
-        // Preserve the source gate, including a contained gate already opened by exit.
+        // Preserve source intent while discarding coordinate-dependent feedback.
         self.clear_feedback(PreviewResolutionStatus::Unavailable);
         self.last_logical_point = None;
     }
@@ -2156,7 +2098,6 @@ impl DragTargetState {
     }
 
     fn set_last_advanced(&mut self, position: ManipulationPositionKey) {
-        self.magnetic_source_gate.observe(position);
         if let Some(point) = position.logical_point() {
             self.last_logical_point = Some(point);
         }
@@ -2354,8 +2295,8 @@ impl ActiveDrag {
         self.target.acquisition()
     }
 
-    pub(crate) fn magnetic_targeting_allowed_at(&self, position: ManipulationPositionKey) -> bool {
-        self.target.magnetic_targeting_allowed_at(position)
+    pub(crate) fn magnetic_targeting_allowed(&self) -> bool {
+        matches!(self.target.magnetic_source_gate, MagneticSourceGate::Open)
     }
 
     pub(crate) const fn current_pointer(&self) -> Option<LogicalPoint> {
@@ -4508,90 +4449,69 @@ mod tests {
     }
 
     #[test]
-    fn desktop_handoff_preserves_contained_source_gate_progress() {
-        for (intent, exit_source) in [
-            (ContainedDragIntent::DockContent, false),
-            (ContainedDragIntent::DockContent, true),
-            (ContainedDragIntent::MoveWindow, false),
+    fn desktop_handoff_preserves_contained_drag_intent_inside_and_outside_source() {
+        for intent in [
+            ContainedDragIntent::DockContent,
+            ContainedDragIntent::MoveWindow,
         ] {
-            let (mut state, session, _) = active_native_local_drag_fixture(Some(intent));
-            let owner = state.active_owner().expect("test drag has an owner");
-            let GestureLane::NativeLocal {
-                binding,
-                coordinate_generation,
-            } = owner.lane()
-            else {
-                panic!("test owner must be native-local");
-            };
-            let point = if exit_source {
-                LogicalPoint::new(500.0, 400.0).expect("test exit point is finite")
-            } else {
-                LogicalPoint::new(42.0, 18.0).expect("test source point is finite")
-            };
-            let route = NativeLocalPointerRoute::new(
-                binding,
-                coordinate_generation,
-                PhysicalPoint::new(point.x() * 2.5, point.y() * 2.5)
-                    .expect("test client point is finite"),
-                point,
-            );
-            state
-                .set_drag_position(
-                    session,
-                    ManipulationPositionKey::JournalNativeLocal {
-                        manipulation: Some(route),
-                        hover: Some(route),
-                    },
-                )
-                .expect("test source gate must observe the local point");
-            let before_gate = state
-                .active_drag(session)
-                .expect("test drag is active")
-                .target
-                .magnetic_source_gate
-                .clone();
-            match (intent, exit_source, &before_gate) {
-                (
-                    ContainedDragIntent::DockContent,
-                    false,
-                    MagneticSourceGate::AwaitContainedExit { .. },
-                )
-                | (ContainedDragIntent::DockContent, true, MagneticSourceGate::Open)
-                | (
-                    ContainedDragIntent::MoveWindow,
-                    false,
-                    MagneticSourceGate::ExplicitTargetsOnly,
-                ) => {}
-                _ => panic!("test source gate must reflect the actual contained gesture"),
-            }
-            let before_source = state
-                .active_scene_gesture_continuation()
-                .expect("test source has a continuation")
-                .draft
-                .source
-                .clone();
-            assert_eq!(state.upgrade_drag_to_desktop(session, owner), Ok(()));
-            let drag = state
-                .active_drag(session)
-                .expect("same contained drag remains active");
-            assert_eq!(drag.target.magnetic_source_gate, before_gate);
-            assert_eq!(drag.target.last_advanced, None);
-            assert_eq!(drag.target.last_logical_point, None);
-            assert_eq!(
-                drag.continuation
-                    .as_ref()
-                    .expect("source continuation survives")
+            for point in [
+                LogicalPoint::new(42.0, 18.0).expect("test source point is finite"),
+                LogicalPoint::new(500.0, 400.0).expect("test outside point is finite"),
+            ] {
+                let (mut state, session, _) = active_native_local_drag_fixture(Some(intent));
+                let owner = state.active_owner().expect("test drag has an owner");
+                let GestureLane::NativeLocal {
+                    binding,
+                    coordinate_generation,
+                } = owner.lane()
+                else {
+                    panic!("test owner must be native-local");
+                };
+                let route = NativeLocalPointerRoute::new(
+                    binding,
+                    coordinate_generation,
+                    PhysicalPoint::new(point.x() * 2.5, point.y() * 2.5)
+                        .expect("test client point is finite"),
+                    point,
+                );
+                let position = ManipulationPositionKey::JournalNativeLocal {
+                    manipulation: Some(route),
+                    hover: Some(route),
+                };
+                let allows_magnetic = intent == ContainedDragIntent::DockContent;
+                assert_eq!(
+                    state
+                        .active_drag(session)
+                        .expect("test drag is active")
+                        .magnetic_targeting_allowed(),
+                    allows_magnetic,
+                    "source intent determines magnetism before any source-rectangle exit",
+                );
+                state
+                    .set_drag_position(session, position)
+                    .expect("test drag must observe the local point");
+                let before_source = state
+                    .active_scene_gesture_continuation()
+                    .expect("test source has a continuation")
                     .draft
-                    .source,
-                before_source
-            );
-            assert_eq!(
-                drag.magnetic_targeting_allowed_at(ManipulationPositionKey::JournalNativeLocal {
-                    manipulation: None,
-                    hover: None,
-                }),
-                exit_source
-            );
+                    .source
+                    .clone();
+                assert_eq!(state.upgrade_drag_to_desktop(session, owner), Ok(()));
+                let drag = state
+                    .active_drag(session)
+                    .expect("same contained drag remains active");
+                assert_eq!(drag.target.last_advanced, None);
+                assert_eq!(drag.target.last_logical_point, None);
+                assert_eq!(
+                    drag.continuation
+                        .as_ref()
+                        .expect("source continuation survives")
+                        .draft
+                        .source,
+                    before_source
+                );
+                assert_eq!(drag.magnetic_targeting_allowed(), allows_magnetic);
+            }
         }
     }
 
@@ -4615,8 +4535,6 @@ mod tests {
         };
         let manipulation = route(100.0, 20.0);
         let hover = route(20.0, 10.0);
-        let source_rect =
-            LogicalRect::new(0.0, 0.0, 40.0, 20.0).expect("test source rectangle is valid");
         let position = ManipulationPositionKey::JournalNativeLocal {
             manipulation: Some(manipulation),
             hover: Some(hover),
@@ -4628,7 +4546,6 @@ mod tests {
             Some(SurfacePointer::new(surface, hover.surface_position()))
         );
         assert_eq!(position.logical_point(), Some(hover.surface_position()));
-        assert!(!position.exits_contained_source(surface, source_rect));
 
         let unavailable_hover = ManipulationPositionKey::JournalNativeLocal {
             manipulation: Some(manipulation),
@@ -4639,13 +4556,24 @@ mod tests {
         assert_eq!(unavailable_hover.hover_probe(), None);
         assert_eq!(unavailable_hover.logical_point(), None);
         assert!(unavailable_hover.hover_probe_requested());
-        assert!(!unavailable_hover.exits_contained_source(surface, source_rect));
 
-        let outside_contained_source = ManipulationPositionKey::JournalNativeLocal {
+        let swapped_lanes = ManipulationPositionKey::JournalNativeLocal {
             manipulation: Some(hover),
             hover: Some(manipulation),
         };
-        assert!(outside_contained_source.exits_contained_source(surface, source_rect));
+        assert_eq!(swapped_lanes.surface(), Some(surface));
+        assert_eq!(swapped_lanes.hover_surface(), Some(surface));
+        assert_eq!(
+            swapped_lanes.hover_probe(),
+            Some(SurfacePointer::new(
+                surface,
+                manipulation.surface_position()
+            ))
+        );
+        assert_eq!(
+            swapped_lanes.logical_point(),
+            Some(manipulation.surface_position())
+        );
     }
 
     #[test]

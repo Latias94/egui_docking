@@ -33,7 +33,6 @@ const ROOT_WINDOW_TOKEN: HostWindowToken = HostWindowToken::new(1);
 enum SurfaceFrameDisposition {
     ConfirmPainted,
     Defer,
-    Measure,
     RejectIncompletePaint,
 }
 
@@ -41,6 +40,11 @@ enum SurfaceFrameDisposition {
 pub(crate) enum NativeSurfaceUpdate {
     Semantic,
     RetainPrevious,
+}
+
+enum NativeSurfaceProgress {
+    Updated(NativeSurfaceUpdate),
+    MeasurementCommitted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,21 +147,17 @@ fn paint_native_error_status(
 }
 
 const fn surface_frame_disposition(
-    had_ready_plan: bool,
     transient_visuals_complete: bool,
-    deferred_measurement: bool,
     has_actions: bool,
 ) -> SurfaceFrameDisposition {
-    if had_ready_plan && !transient_visuals_complete {
+    if !transient_visuals_complete {
         SurfaceFrameDisposition::RejectIncompletePaint
-    } else if had_ready_plan && !has_actions {
+    } else if !has_actions {
         // A preview defers feeding geometry back into measurement, not the
         // completed renderer receipt required to settle its pending release.
         SurfaceFrameDisposition::ConfirmPainted
-    } else if has_actions || deferred_measurement {
-        SurfaceFrameDisposition::Defer
     } else {
-        SurfaceFrameDisposition::Measure
+        SurfaceFrameDisposition::Defer
     }
 }
 
@@ -620,9 +620,24 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let mut budget = bridge
             .dispatch_budget(token)
             .ok_or(NativeHostProtocolError::OutputBudgetUnavailable)?;
+        let mut measured = false;
         loop {
             let before = budget.remaining_records();
-            let update = self.update_surface_budgeted(ui, surface, &mut budget)?;
+            let progress = self.update_surface_budgeted(ui, surface, &mut budget, measured)?;
+            let update = match progress {
+                NativeSurfaceProgress::Updated(update) => update,
+                NativeSurfaceProgress::MeasurementCommitted => {
+                    // Measurement does not invoke application UI or consume its layout.
+                    // Paint the committed scene in this same egui pass, including hosts
+                    // configured for a single pass or unable to retain after a resize.
+                    debug_assert!(!measured);
+                    measured = true;
+                    self.pass_actions
+                        .discard_pass(token)
+                        .map_err(map_pass_action_error)?;
+                    continue;
+                }
+            };
             if update != NativeSurfaceUpdate::RetainPrevious
                 || budget.is_exhausted()
                 || budget.remaining_records() == before
@@ -650,7 +665,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         ui: &mut egui::Ui,
         surface: SurfaceId,
         budget: &mut NativeInputBudget,
-    ) -> Result<NativeSurfaceUpdate, NativeRuntimeError> {
+        measured: bool,
+    ) -> Result<NativeSurfaceProgress, NativeRuntimeError> {
         let context = ui.ctx().clone();
         if surface == self.root_surface {
             self.root_context = Some(context.clone());
@@ -708,6 +724,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let bridge = coordinator.dispatch_bridge();
         let control_output = bridge.is_control_output(token);
         let surface_is_presented = coordinator.session().presented_surface(surface).is_some();
+        let active_gesture = coordinator.session().has_active_gesture();
         let Some(mut host_frame) = coordinator.poll_resolved_host_frame(&context, budget)? else {
             if surface != root_surface {
                 bridge.block_semantic_viewport(token.viewport_id());
@@ -718,7 +735,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             require_durable_root_cycle(coordinator, token, true)?;
             context.request_repaint_once_of(ViewportId::ROOT);
             context.request_repaint_once_of(token.viewport_id());
-            return Ok(NativeSurfaceUpdate::RetainPrevious);
+            return Ok(NativeSurfaceProgress::Updated(
+                NativeSurfaceUpdate::RetainPrevious,
+            ));
         };
         let native_input_pending = host_frame.native_input_pending();
         let prepared_retirements = if native_input_pending {
@@ -746,7 +765,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         // Held OS closes have already been removed from raw input by the fork.
         let root_is_closing =
             surface == root_surface && context.input(|input| input.viewport().close_requested());
-        let retain_previous_output = control_output
+        let mut retain_previous_output = control_output
             || root_is_closing
             || bridge
                 .output_reservation(token)
@@ -771,6 +790,23 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         let mut pass_draft = None;
         let mut painted_output_expected = false;
+        let mut measurement_committed = false;
+        let (has_ready_plan, should_measure) = if retain_previous_output {
+            (false, false)
+        } else {
+            let plan = host_frame.frame.paint_plan(surface)?;
+            (
+                plan.is_some(),
+                !measured
+                    && plan.is_none_or(|plan| {
+                        // A discarded pass can retain scene-bound keyboard/accessibility
+                        // actions. Settle them before refreshing otherwise-ready geometry.
+                        !(active_gesture
+                            || plan.has_manipulation_preview()
+                            || pass_actions.has_pending_local_actions(surface))
+                    }),
+            )
+        };
 
         let render_result = if retain_previous_output {
             for invalidation in no_frame_invalidations
@@ -783,10 +819,18 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 )?;
             }
             host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        } else if should_measure {
+            let dock_rect = ui.available_rect_before_wrap();
+            let popup_rect = context.input(egui::InputState::content_rect).round_ui();
+            host_frame.measure_surface(surface, ui, dock_rect, popup_rect, panes, style)?;
+            retain_previous_output = true;
+            measurement_committed = true;
+            host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        } else if !has_ready_plan {
+            retain_previous_output = true;
+            host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         } else {
             (|| -> Result<(), NativeRuntimeError> {
-                let dock_rect = ui.available_rect_before_wrap();
-                let popup_rect = context.input(egui::InputState::content_rect).round_ui();
                 let paint = host_frame.paint_surface(instance_id, surface, ui, panes, style)?;
                 let application_action_ready =
                     surface == root_surface && self.application_actions.has_queued();
@@ -797,12 +841,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 // A frame that can mutate workspace or interaction authority
                 // cannot also publish paint captured against the pre-action
                 // workspace. Its terminal action frame schedules a fresh paint.
-                let disposition = surface_frame_disposition(
-                    draft.had_ready_plan(),
-                    draft.transient_visuals_complete(),
-                    draft.deferred_measurement(),
-                    has_actions,
-                );
+                let disposition =
+                    surface_frame_disposition(draft.transient_visuals_complete(), has_actions);
                 if disposition == SurfaceFrameDisposition::RejectIncompletePaint {
                     return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
                 }
@@ -819,12 +859,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
                         painted_output_expected = true;
                     }
                     SurfaceFrameDisposition::Defer => {
-                        host_frame
-                            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                    }
-                    SurfaceFrameDisposition::Measure => {
-                        host_frame
-                            .measure_surface(surface, ui, dock_rect, popup_rect, panes, style)?;
                         host_frame
                             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
                     }
@@ -981,10 +1015,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
             || semantic_retry_pending;
         require_durable_root_cycle(coordinator, token, durable_armed)?;
         coordinator.stage_stationary_observation(&context, token, budget);
-        Ok(if retain_previous_output {
-            NativeSurfaceUpdate::RetainPrevious
+        Ok(if measurement_committed {
+            NativeSurfaceProgress::MeasurementCommitted
         } else {
-            NativeSurfaceUpdate::Semantic
+            NativeSurfaceProgress::Updated(if retain_previous_output {
+                NativeSurfaceUpdate::RetainPrevious
+            } else {
+                NativeSurfaceUpdate::Semantic
+            })
         })
     }
 
@@ -1742,23 +1780,15 @@ mod tests {
     #[test]
     fn actions_defer_and_incomplete_transient_paint_is_rejected() {
         assert_eq!(
-            surface_frame_disposition(true, false, false, true),
+            surface_frame_disposition(false, true),
             SurfaceFrameDisposition::RejectIncompletePaint
         );
         assert_eq!(
-            surface_frame_disposition(true, true, false, true),
+            surface_frame_disposition(true, true),
             SurfaceFrameDisposition::Defer
         );
         assert_eq!(
-            surface_frame_disposition(true, true, true, true),
-            SurfaceFrameDisposition::Defer
-        );
-        assert_eq!(
-            surface_frame_disposition(true, true, false, false),
-            SurfaceFrameDisposition::ConfirmPainted
-        );
-        assert_eq!(
-            surface_frame_disposition(true, true, true, false),
+            surface_frame_disposition(true, false),
             SurfaceFrameDisposition::ConfirmPainted,
             "a complete transient/handoff paint defers measurement, not its exact presentation proof"
         );

@@ -238,16 +238,8 @@ pub(crate) struct NativePassDraft {
 }
 
 impl NativePassDraft {
-    pub(crate) fn had_ready_plan(&self) -> bool {
-        self.paint.had_ready_plan()
-    }
-
     pub(crate) fn transient_visuals_complete(&self) -> bool {
         self.paint.transient_visuals_complete()
-    }
-
-    pub(crate) fn deferred_measurement(&self) -> bool {
-        self.paint.deferred_measurement()
     }
 
     pub(crate) fn paint_mut(&mut self) -> &mut NativeSurfacePaint {
@@ -283,6 +275,10 @@ impl NativePassActions {
     /// obligations which must reach a later terminal pass.
     pub(crate) fn has_retained_action_work(&self) -> bool {
         self.local_actions.has_work()
+    }
+
+    pub(crate) fn has_pending_local_actions(&self, surface: SurfaceId) -> bool {
+        self.local_actions.has_pending(surface)
     }
 
     pub(crate) fn prepare_pass(

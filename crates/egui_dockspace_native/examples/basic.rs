@@ -586,7 +586,7 @@ fn pane_focus_id(item: ItemId) -> egui::Id {
 }
 
 fn paint_canvas(pane: &mut ExamplePane, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
+    let controls = ui.horizontal(|ui| {
         let reset = ui.button("Reset view");
         pane.widgets.push(reset.id);
         if reset.clicked() {
@@ -596,7 +596,9 @@ fn paint_canvas(pane: &mut ExamplePane, ui: &mut egui::Ui) {
         let zoom = ui.add(egui::Slider::new(&mut pane.zoom, 0.5..=2.0).text("Zoom"));
         pane.widgets.push(zoom.id);
     });
-    let (rect, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    pane.widgets.push(controls.response.id);
+    let (rect, background) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    pane.widgets.push(background.id);
     let response = ui.interact(rect, pane_focus_id(PREVIEW), egui::Sense::click_and_drag());
     pane.widgets.push(response.id);
     if response.dragged() {
@@ -649,14 +651,17 @@ impl PaneView for ExamplePanes {
         pane.input = None;
         pane.window_id = None;
         pane.missing_painted = false;
-        ui.heading(pane.title);
+        let heading = ui.heading(pane.title);
+        pane.widgets.push(heading.id);
         if !pane.loaded {
             let placeholder = ui.label("Recoverable missing content — temporarily unloaded.");
+            pane.widgets.push(placeholder.id);
             pane.missing_painted = ui.is_rect_visible(placeholder.rect);
-            ui.small(format!(
+            let retained = ui.small(format!(
                 "{} · title and application data retained",
                 pane.key
             ));
+            pane.widgets.push(retained.id);
             let reload = ui.button("Reload content");
             pane.widgets.push(reload.id);
             if reload.clicked() {
@@ -668,19 +673,35 @@ impl PaneView for ExamplePanes {
         if item == PREVIEW {
             paint_canvas(pane, ui);
         } else if item == CONSOLE {
-            ui.label(&pane.text);
-            egui::ScrollArea::vertical()
+            let description = ui.label(&pane.text);
+            pane.widgets.push(description.id);
+            let log = egui::ScrollArea::vertical()
                 .id_salt(("native-editor-log", item.get()))
                 .show(ui, |ui| {
+                    pane.widgets.push(ui.unique_id());
                     for line in 0..128 {
-                        ui.monospace(format!("[{line:03}] Scene update completed"));
+                        let entry = ui.monospace(format!("[{line:03}] Scene update completed"));
+                        pane.widgets.push(entry.id);
                     }
                 });
+            // Only declare scroll controls actually registered in this pass.
+            for id in [log.id.with("area"), log.id.with(1_usize)] {
+                if ui
+                    .ctx()
+                    .viewport(|viewport| viewport.this_pass.widgets.get(id).is_some())
+                {
+                    pane.widgets.push(id);
+                }
+            }
         } else if item == PROFILER {
-            ui.label(&pane.text);
+            let description = ui.label(&pane.text);
+            pane.widgets.push(description.id);
             for (stage, milliseconds) in [("Simulation", 2.6), ("Rendering", 5.4), ("UI", 0.8)] {
-                ui.label(format!("{stage}: {milliseconds:.1} ms"));
-                ui.add(egui::ProgressBar::new(milliseconds / 16.67).desired_width(f32::INFINITY));
+                let label = ui.label(format!("{stage}: {milliseconds:.1} ms"));
+                pane.widgets.push(label.id);
+                let progress = ui
+                    .add(egui::ProgressBar::new(milliseconds / 16.67).desired_width(f32::INFINITY));
+                pane.widgets.push(progress.id);
             }
         } else {
             let response = ui.add_sized(

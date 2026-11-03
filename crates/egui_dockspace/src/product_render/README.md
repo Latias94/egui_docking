@@ -121,13 +121,17 @@ or rejected widget remains an unknown blocker; the adapter never walks the widge
 tree to discover content ownership.
 
 For each declared ID, `tabs::paint_pane` reads `this_pass.widgets` and accepts only
-an enabled, interactive registration on the child UI's exact layer. Its already-clipped
+an enabled registration on the child UI's exact layer. This includes explicitly
+declared hover-only labels and ordinary content containers. Its already-clipped
 `interact_rect` must be finite, positive, and fully contained within the pane's
 finite, positive content bounds. The adapter preserves that exact interaction
 rectangle rather than intersecting an out-of-bounds response into eligibility.
 Each accepted fact becomes a `ProductReceiverBinding` carrying the exact
 `receiver_for_pane(pane)` descriptor from the current paint plan, not a fabricated
-or surface-wide receiver.
+or surface-wide receiver. Its `interactive` field retains the widget's actual
+interactive sense. A hover-only declaration therefore lets the native adapter
+qualify that exact frontmost identity for hover clearance, but cannot subtract an
+unknown interactive rectangle in the official adapter or change click/drag sensing.
 
 Declaring ordinary content permits docking hover to pass through it and allows
 activation of its containing window, without replacing the widget's ordinary
@@ -140,15 +144,19 @@ general inference of platform hit eligibility. Existing presentation acceptance,
 focus confirmation, output-preservation checks, and source-gap handling remain
 separate requirements.
 
-Composite content needs declarations for its actual interactive registrations,
-not just a visual container ID. In particular, an ordinary scroll region can
-contain an independent scrolling/drag response and interactive child widgets;
-each unknown registration still blocks. The official adapter separately checks
-the top composed layer (including modal exclusion) before subtracting known
-widgets, so declaring content does not authorize a popup or foreground layer.
+Composite content needs declarations for its actual registrations, including
+hover-only content, not just a visual container ID. In particular, an ordinary
+scroll region can contain an independent scrolling/drag response, a scrollbar,
+and child widgets; each unknown registration still blocks. The official adapter
+separately checks the top composed layer (including modal exclusion) before
+subtracting known widgets, so declaring content does not authorize a popup or
+foreground layer.
 `integration/egui-official-harness/tests/hover_blockers.rs` exercises these real
 composed blockers and stale-pass rejection through the public adapter, including
 the case where an earlier clear preview must not survive a blocked release.
+The native receiver tests in `crates/egui_dockspace_native/src/receiver.rs` also require
+declared hover-only pane content to clear the exact presented hover lane while
+undeclared content and foreign foreground overlays remain blockers.
 
 ## Preserved semantic input
 

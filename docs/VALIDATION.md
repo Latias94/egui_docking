@@ -15,6 +15,71 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-03 native interaction and visual continuity repair
+
+Manual use after `63112e0` exposed an intermediate blank-frame path and
+unreliable contained-tab redocking. The earlier lifecycle and final-layout
+qualifications did not establish continuous visible content for those actions.
+The [interaction review](audits/2026-11-03-egui-interaction-review.md) records the
+source evidence, counterexamples and remaining platform boundaries.
+
+The native driver now commits measurement before painting the current scene
+within one application UI call. A measurement-only core frame does not draw a
+replacement background or invoke pane callbacks. Ordinary ready scenes refresh
+host bounds, titles and pane minima; active/pending manipulation and retained
+scene-bound local actions keep their existing ordering constraints.
+
+Contained content drags can resolve ordinary magnetic targets inside the
+original floating rectangle. Window-title moves still require explicit targets,
+and source-tree/occlusion exclusion remains core-owned. Exact declared pane
+hover widgets can clear native docking hover. Every active click/drag identity
+at that point must also belong to the exact presented receiver set, so a declared
+label cannot hide an undeclared interactive blocker. The native basic example
+declares its ordinary headings, log/profiler content and actual scrolling controls.
+
+Fresh qualification of the repair:
+
+| Check | Result |
+| --- | --- |
+| Workspace, all targets/features | 2,005 passed |
+| Product consumer, all targets/features | 119 passed |
+| Native workspace, all targets/features | 593 passed; one platform-specific test skipped |
+| Official-egui consumer | 15 passed |
+| Doctests | 10 passed |
+| Core/native Clippy correctness and suspicious | Passed |
+| Strict native rustdoc; three workspace format checks | Passed |
+| Real macOS Glow, default and single-pass egui | Each passed ten selections, ten OS-window position changes and four host-layout changes |
+| Real macOS child-window lifecycle | Default/bounded tear-off and redock, plus all six output-pressure profiles passed |
+| Real X11 contained-tab tear-off and ordinary-pane redock | Passed; exact final `[First, Second]`, selected Second, contained presentation retired; 65 UI passes without a blank content pass or native error |
+
+The continuity example fails before the native measurement repair at its first
+selection. Both complete full-surface product redocking journeys fail before
+removing the contained-exit gate. The declared-hover test and the independent
+same-layer unknown-interactive counterexample each fail before their respective
+repairs. Positive and negative hover cases pass with the final implementation.
+
+The maintained real-renderer probes are:
+
+```text
+cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --example presentation_continuity --locked -j1
+cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --example presentation_continuity --locked -j1 -- --single-pass
+```
+
+In an isolated X11 display with a window manager and `xdotool`, the real-input
+journey runs with:
+
+```text
+cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --example contained_redock_x11 --locked -j1
+```
+
+Its AccessKit coordinates only locate actual mouse input. The application checks
+committed semantic ownership, current presentation and quiescence; it never issues
+programmatic float/dock commands or creates synthetic native input/presentation
+authority. The supplied xdotool process has finite deadlines and the driver thread
+is joined. These probes check application content emission or explicit retention;
+they do not claim pixel equality or GPU scanout timing. macOS physical cross-OS-window
+promotion remains outside this checkpoint.
+
 ## 2026-11-03 semantic-state final qualification
 
 The final tranche follows `ddd77a5` and completes the functional work in the

@@ -2665,8 +2665,7 @@ impl DockEngine {
                 drag.payload.clone(),
                 drag.surface_background_offer,
                 point,
-                self.interaction.magnetic_targeting_enabled()
-                    && drag.magnetic_targeting_allowed_at(position),
+                self.interaction.magnetic_targeting_enabled() && drag.magnetic_targeting_allowed(),
             )
             .map_err(|source| EngineError::PointerInteractionInvariant {
                 cause,

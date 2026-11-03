@@ -430,9 +430,20 @@ cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package e
 ```
 
 Add `--features serde` to enable application-owned named JSON presets. The
-example's preset profile requires all eight panes in the root host and waits
-for current presentation and native cleanup before saving. Default layout works
-without serde. Both operations keep application pane data outside the layout.
+example saves the complete layout, including contained and native child windows,
+after current presentation and native work settle. Presets live only in the
+running application. Default layout works without serde. Both operations keep
+application pane data outside the layout.
+
+The [native interaction review](docs/audits/2026-11-03-egui-interaction-review.md)
+records the visual-continuity and contained-redocking repair after manual use
+exposed gaps in the earlier lifecycle and final-layout qualification. A finite
+real-renderer regression exercises tab selection, OS-window movement and changing
+host UI bounds; add `-- --single-pass` to test a host without egui multipass:
+
+```text
+cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example presentation_continuity --locked -j1
+```
 
 The example exposes all three presentation paths without conflating their
 evidence. Use the contained title bar to move or resize the same-surface window,

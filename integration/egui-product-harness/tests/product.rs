@@ -2,6 +2,8 @@
 mod arrangement_lock;
 #[path = "product/close_commands.rs"]
 mod close_commands;
+#[path = "product/contained_redock.rs"]
+mod contained_redock;
 #[path = "product/overflow_ownership.rs"]
 mod overflow_ownership;
 

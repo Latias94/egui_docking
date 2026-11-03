@@ -272,17 +272,34 @@ impl NativeReceiverStore {
         let Some(identity) = identity else {
             return NativeReceiverAnswer::NoReceiver(query.presented_surface());
         };
-        let mut matches = presented.receivers.iter().copied().filter(|receiver| {
-            receiver.viewport_id() == presented.viewport
-                && receiver.cumulative_pass_nr() == presented.hit_authority.cumulative_pass_nr()
-                && receiver.widget_id() == identity.id()
-                && receiver.layer_id() == identity.layer_id()
-        });
-        let Some(receiver) = matches.next() else {
-            return NativeReceiverAnswer::Blocked(query.presented_surface());
+        let receiver_for = |identity: egui::WidgetHitIdentity| {
+            let mut matches = presented.receivers.iter().copied().filter(|receiver| {
+                receiver.viewport_id() == presented.viewport
+                    && receiver.cumulative_pass_nr() == presented.hit_authority.cumulative_pass_nr()
+                    && receiver.widget_id() == identity.id()
+                    && receiver.layer_id() == identity.layer_id()
+            });
+            let receiver = matches
+                .next()
+                .ok_or_else(|| NativeReceiverAnswer::Blocked(query.presented_surface()))?;
+            if matches.next().is_some() {
+                return Err(NativeReceiverAnswer::Unknown);
+            }
+            Ok(receiver)
         };
-        if matches.next().is_some() {
-            return NativeReceiverAnswer::Unknown;
+        let receiver = match receiver_for(identity) {
+            Ok(receiver) => receiver,
+            Err(answer) => return answer,
+        };
+        if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
+            // A hover-only label can be in front while a different widget still
+            // owns click or drag. Clear the pane only when every active hit lane
+            // belongs to this exact output's declared docking/content widgets.
+            for identity in [hit.click(), hit.drag()].into_iter().flatten() {
+                if let Err(answer) = receiver_for(identity) {
+                    return answer;
+                }
+            }
         }
         resolve_matching_receiver(query, receiver)
     }
@@ -1554,6 +1571,117 @@ mod tests {
 
     #[test]
     fn exact_registered_hit_clears_hover_lane_while_uncertain_hits_fail_closed() {
+        assert_native_hover_receiver_contract(&mut UnclaimedPanes, false, true);
+    }
+
+    #[derive(Default)]
+    struct HoverContentPanes {
+        declared: bool,
+        interactive_declared: Option<bool>,
+        widgets: Vec<Id>,
+    }
+
+    impl PaneView for HoverContentPanes {
+        fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+            Some(format!("Pane {}", item.get()).into())
+        }
+
+        fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
+            self.widgets.clear();
+            let bounds = ui.max_rect();
+            let interactive = self.interactive_declared.map(|declared| {
+                let response = ui.interact(
+                    bounds,
+                    ui.make_persistent_id("hover-content-interactive"),
+                    Sense::click_and_drag(),
+                );
+                assert!(response.enabled());
+                assert!(response.sense.senses_click() && response.sense.senses_drag());
+                if declared {
+                    self.widgets.push(response.id);
+                }
+                response
+            });
+            let response = ui.allocate_rect(bounds, Sense::hover());
+            assert!(response.enabled());
+            assert!(!response.sense.interactive());
+            if let Some(interactive) = interactive {
+                assert_ne!(interactive.id, response.id);
+                assert_eq!(interactive.layer_id, response.layer_id);
+                assert_eq!(interactive.interact_rect, response.interact_rect);
+            }
+            ui.painter()
+                .rect_filled(response.rect, 0.0, egui::Color32::DARK_GRAY);
+            if self.declared {
+                self.widgets.push(response.id);
+            }
+        }
+
+        fn docking_content_widgets(&self, _item: ItemId) -> &[Id] {
+            &self.widgets
+        }
+    }
+
+    fn paint_foreign_hover_overlay(ui: &Ui) {
+        egui::Area::new(Id::unique("native-foreign-hover-overlay"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(64.0, 64.0))
+            .movable(false)
+            .fade_in(false)
+            .show(ui.ctx(), |ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(160.0), Sense::hover());
+                ui.painter().rect_filled(rect, 0.0, egui::Color32::DARK_RED);
+            });
+    }
+
+    #[test]
+    fn declared_hover_only_pane_content_clears_native_hover_lane() {
+        let mut panes = HoverContentPanes {
+            declared: true,
+            ..Default::default()
+        };
+        assert_native_hover_receiver_contract(&mut panes, false, true);
+    }
+
+    #[test]
+    fn undeclared_hover_only_pane_content_blocks_native_hover_lane() {
+        assert_native_hover_receiver_contract(&mut HoverContentPanes::default(), false, false);
+    }
+
+    #[test]
+    fn undeclared_interactive_widget_under_declared_hover_content_blocks_native_hover_lane() {
+        let mut panes = HoverContentPanes {
+            declared: true,
+            interactive_declared: Some(false),
+            ..Default::default()
+        };
+        assert_native_hover_receiver_contract(&mut panes, false, false);
+    }
+
+    #[test]
+    fn declared_interactive_widget_under_declared_hover_content_clears_native_hover_lane() {
+        let mut panes = HoverContentPanes {
+            declared: true,
+            interactive_declared: Some(true),
+            ..Default::default()
+        };
+        assert_native_hover_receiver_contract(&mut panes, false, true);
+    }
+
+    #[test]
+    fn foreign_hover_overlay_blocks_declared_pane_content_in_native_hover_lane() {
+        let mut panes = HoverContentPanes {
+            declared: true,
+            ..Default::default()
+        };
+        assert_native_hover_receiver_contract(&mut panes, true, false);
+    }
+
+    fn assert_native_hover_receiver_contract(
+        panes: &mut dyn PaneView,
+        foreign_overlay: bool,
+        expects_clear_hover: bool,
+    ) {
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             SURFACE,
             DockspaceRootLayout::new(
@@ -1633,7 +1761,20 @@ mod tests {
         measured.commit().expect("native measurement commits");
 
         let context = egui::Context::default();
-        let mut panes = UnclaimedPanes;
+        if foreign_overlay {
+            // Complete the Area sizing pass before capturing the presented hit authority.
+            let mut warmup = context.run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(640.0, 480.0),
+                    )),
+                    ..RawInput::default()
+                },
+                |ui| paint_foreign_hover_overlay(ui),
+            );
+            warmup.textures_delta.clear();
+        }
         let mut painted_semantic_output = None;
         let mut tab_point = None;
         let mut pane_point = None;
@@ -1687,7 +1828,7 @@ mod tests {
                     Id::unique("native-unclaimed-hover-receiver"),
                     SURFACE,
                     ui,
-                    &mut panes,
+                    panes,
                     &DockStyle::default(),
                     &mut register_scroll_candidate,
                 )
@@ -1705,6 +1846,9 @@ mod tests {
                     .expect("native paint frame settles");
                 let mut report = frame.commit().expect("native paint frame commits");
                 painted_output = report.take_painted_outputs().pop();
+                if foreign_overlay {
+                    paint_foreign_hover_overlay(ui);
+                }
             },
         );
         full_output.textures_delta.clear();
@@ -1768,7 +1912,10 @@ mod tests {
         let pane_identity = hit_authority
             .hit_test(logical_pos(pane_point).expect("pane point projects into egui space"))
             .and_then(|hit| hit.contains_pointer())
-            .expect("the pane body owns the exact pointer identity");
+            .expect("the completed pass has a frontmost widget at the pane point");
+        if foreign_overlay {
+            assert_eq!(pane_identity.layer_id().order, egui::Order::Foreground);
+        }
         let matching = receivers
             .iter()
             .copied()
@@ -1779,9 +1926,20 @@ mod tests {
                     && receiver.layer_id() == pane_identity.layer_id()
             })
             .collect::<Vec<_>>();
-        let [pane_receiver] = matching.as_slice() else {
-            panic!("the pane hit must map to one exact receiver, got {matching:?}")
-        };
+        assert!(
+            matching.len() <= 1,
+            "the exact pane hit must not be ambiguous"
+        );
+        let pane_receiver = matching
+            .first()
+            .copied()
+            .or_else(|| {
+                receivers
+                    .iter()
+                    .copied()
+                    .find(|receiver| receiver.role() == DockspaceReceiverRole::PaneBody)
+            })
+            .expect("the production renderer registers the containing pane receiver");
         assert_eq!(pane_receiver.role(), DockspaceReceiverRole::PaneBody);
         let tab_receiver = receivers
             .iter()
@@ -1817,12 +1975,12 @@ mod tests {
             presented_artifact,
         );
         let mut duplicate_receivers = receivers;
-        duplicate_receivers.push(*pane_receiver);
+        duplicate_receivers.push(pane_receiver);
         let duplicate_store = presented_set(duplicate_receivers, presented_artifact);
         let mismatched_artifact = presentation_artifact();
         assert_ne!(mismatched_artifact, presented_artifact);
-        let mismatched_store = presented_set(vec![*pane_receiver], mismatched_artifact);
-        let obsolete_store = presented_set(vec![*pane_receiver], previous_artifact);
+        let mismatched_store = presented_set(vec![pane_receiver], mismatched_artifact);
+        let obsolete_store = presented_set(vec![pane_receiver], previous_artifact);
 
         let tab_point = tab_point.expect("the ready surface paints one tab receiver");
         session
@@ -1879,7 +2037,20 @@ mod tests {
                     assert!(query.matches_semantic_output(presented_semantic_output));
                     assert!(query.matches_presentation_artifact(presented_artifact));
                     assert!(!query.matches_presentation_artifact(previous_artifact));
-                    assert_eq!(answer, NativeReceiverAnswer::ClearHoverLane(presented));
+                    if !expects_clear_hover {
+                        assert_eq!(
+                            answer,
+                            NativeReceiverAnswer::Blocked(presented),
+                            "undeclared widget lanes and foreign overlays must not borrow pane hover clearance"
+                        );
+                        hover_resolved = true;
+                        return answer;
+                    }
+                    assert_eq!(
+                        answer,
+                        NativeReceiverAnswer::ClearHoverLane(presented),
+                        "explicitly declared ordinary hover-only pane content must clear the native hover lane"
+                    );
                     assert_eq!(
                         resolve_matching_receiver(query, tab_receiver),
                         NativeReceiverAnswer::Unknown,
