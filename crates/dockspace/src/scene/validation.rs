@@ -10,6 +10,10 @@ use crate::workspace::WorkspaceIndexView;
 mod cost_tests;
 
 #[cfg(test)]
+#[path = "validation/guide_tests.rs"]
+mod guide_tests;
+
+#[cfg(test)]
 std::thread_local! {
     static SPLITTER_RESIZE_ARRAY_VALIDATIONS: std::cell::Cell<usize> = const {
         std::cell::Cell::new(0)
@@ -1811,17 +1815,13 @@ fn canonicalize_ready(
             Arc::make_mut(target).set_availability(availability);
         }
     }
-    let canonical_targets = ready
-        .drop_targets
-        .iter()
-        .map(|target| (target.id(), Arc::clone(target)))
-        .collect::<BTreeMap<_, _>>();
+    let canonical_targets = &ready.drop_targets;
     for cluster in &mut ready.drop_guide_clusters {
         cluster.for_each_target_mut(|guide| {
-            let target = canonical_targets
-                .get(&guide.id())
+            let index = canonical_targets
+                .binary_search_by_key(&guide.id(), |target| target.id())
                 .expect("validated guide target remains in the canonical catalog");
-            guide.rebind_target(Arc::clone(target));
+            guide.rebind_target(Arc::clone(&canonical_targets[index]));
         });
     }
 }
@@ -1889,7 +1889,7 @@ fn validate_drop_guide_cluster(
             workspace_index,
         )?;
     }
-    validate_drop_guide_hit_separation(ready.surface, target_index, cluster)
+    validate_drop_guide_hit_separation(ready.surface, cluster)
 }
 
 fn validate_drop_guide_cluster_identity(
@@ -2034,25 +2034,15 @@ fn validate_drop_guide_target(
 
 fn validate_drop_guide_hit_separation(
     surface: SurfaceId,
-    target_index: &BTreeMap<DropTargetId, &Arc<DropTargetRecord>>,
     cluster: &DropGuideClusterRecord,
 ) -> Result<(), SceneBuildError> {
+    // Every slot has already proved that its owner is the exact catalog Arc.
     for (index, (first_slot, first)) in cluster.targets().enumerate() {
         for (second_slot, second) in cluster.targets().skip(index + 1) {
-            let Some(first_target) = target_index.get(&first.id()).copied() else {
-                return Err(SceneBuildError::TargetSemanticMismatch {
-                    surface,
-                    target: first.id(),
-                });
-            };
-            let Some(second_target) = target_index.get(&second.id()).copied() else {
-                return Err(SceneBuildError::TargetSemanticMismatch {
-                    surface,
-                    target: second.id(),
-                });
-            };
-            if rects_overlap_with_area(first_target.region().rect(), second_target.region().rect())
-            {
+            if rects_overlap_with_area(
+                first.target().region().rect(),
+                second.target().region().rect(),
+            ) {
                 return Err(SceneBuildError::OverlappingDropGuideHitRegions {
                     surface,
                     cluster: cluster.id(),

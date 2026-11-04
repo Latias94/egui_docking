@@ -5,7 +5,7 @@ use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::graph::Axis;
 use crate::scene::{ContainedResizeDirection, PresentationPlan, SplitterJunctionId};
 
-use super::{PresentationHitRegion, PresentationHitRegionId, PresentationHitRegionKind};
+use super::{PresentationHitRegion, PresentationHitRegionKind};
 
 #[cfg(test)]
 #[path = "touch_tests.rs"]
@@ -29,7 +29,7 @@ pub(super) const fn replaces(kind: PresentationHitRegionKind) -> bool {
 pub(super) fn compile(
     plan: &PresentationPlan,
     regions: &[PresentationHitRegion],
-) -> Vec<(PresentationHitRegionId, LogicalRect)> {
+) -> Vec<(usize, LogicalRect)> {
     let Some(facts) = plan.layout_facts() else {
         // Synthetic plans have no exact configuration authority. Fail closed.
         return Vec::new();
@@ -43,7 +43,7 @@ pub(super) fn compile(
         .max(config.floating_resize_extent());
     let protected = protected_regions(plan, regions);
     let mut allocations = Vec::new();
-    for region in regions {
+    for (region_index, region) in regions.iter().enumerate() {
         let rect = match region.id().kind() {
             PresentationHitRegionKind::SplitterHandle(id) => {
                 let Some(splitter) = plan.splitter_record(id) else {
@@ -101,6 +101,7 @@ pub(super) fn compile(
             _ => region.hit().rect(),
         };
         allocations.push(TouchAllocation {
+            region_index,
             region: *region,
             anchor,
             expanded: rect,
@@ -128,10 +129,10 @@ pub(super) fn compile(
                 .iter()
                 .filter_map(|rect| intersection(*rect, region.hit().rect())),
         );
-        for &neighbor in neighbors.for_region(index) {
-            let Some(protected_index) = neighbor.checked_sub(allocation_count) else {
-                continue;
-            };
+        let adjacent = neighbors.for_region(index);
+        let protected_start = adjacent.partition_point(|&neighbor| neighbor < allocation_count);
+        for &neighbor in &adjacent[protected_start..] {
+            let protected_index = neighbor - allocation_count;
             let (layer, protected_rect) = protected[protected_index];
             if layer <= region.stack().layer() {
                 subtract_from(&mut fragments, protected_rect);
@@ -141,7 +142,11 @@ pub(super) fn compile(
             subtract_from(&mut base, *fragment);
         }
         fragments.extend(base.iter().copied());
-        compiled.extend(fragments.into_iter().map(|rect| (region.id(), rect)));
+        compiled.extend(
+            fragments
+                .into_iter()
+                .map(|rect| (allocation.region_index, rect)),
+        );
     }
     debug_assert!(compiled.windows(2).all(|pair| pair[0].0 <= pair[1].0));
     compiled
@@ -149,6 +154,7 @@ pub(super) fn compile(
 
 #[cfg_attr(test, derive(Clone))]
 struct TouchAllocation {
+    region_index: usize,
     region: PresentationHitRegion,
     anchor: LogicalRect,
     expanded: LogicalRect,
@@ -264,11 +270,15 @@ impl TouchNeighbors {
 }
 
 fn partition_allocations(allocations: &mut [TouchAllocation], neighbors: &TouchNeighbors) {
+    let allocation_count = allocations.len();
     let mut original = Vec::new();
-    for index in 0..allocations.len() {
+    for index in 0..allocation_count {
         let (before, after) = allocations.split_at_mut(index + 1);
         let first = &mut before[index];
         for &neighbor in neighbors.for_region(index) {
+            if neighbor >= allocation_count {
+                break;
+            }
             let Some(second_index) = neighbor.checked_sub(index + 1) else {
                 continue;
             };
@@ -318,7 +328,7 @@ fn partition_allocations(allocations: &mut [TouchAllocation], neighbors: &TouchN
     }
 
     // Restore base coverage without undoing a same-priority splitter partition.
-    for index in 0..allocations.len() {
+    for index in 0..allocation_count {
         let (before, current_and_after) = allocations.split_at_mut(index);
         let Some((current, after)) = current_and_after.split_first_mut() else {
             continue;
@@ -327,6 +337,9 @@ fn partition_allocations(allocations: &mut [TouchAllocation], neighbors: &TouchN
         original.clear();
         original.push(base);
         for &neighbor in neighbors.for_region(index) {
+            if neighbor >= allocation_count {
+                break;
+            }
             let other = if neighbor < index {
                 &before[neighbor]
             } else if neighbor > index {

@@ -100,11 +100,14 @@ fn compile(
         actual.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
         expected.iter().map(|(id, _)| *id).collect::<Vec<_>>()
     );
-    let rects = |fragments: &[(PresentationHitRegionId, LogicalRect)]| {
+    let rects = |fragments: &[(usize, LogicalRect)]| {
         fragment_bits(&fragments.iter().map(|(_, rect)| *rect).collect::<Vec<_>>())
     };
     assert_eq!(rects(&actual), rects(&expected));
     actual
+        .into_iter()
+        .map(|(row, bounds)| (regions[row].id(), bounds))
+        .collect()
 }
 
 #[test]
@@ -217,6 +220,7 @@ fn sparse_touch_partition_matches_exhaustive_partition_with_overlapping_bases() 
                 base.height() + 38.0,
             );
             allocations.push(TouchAllocation {
+                region_index: usize::try_from(index).unwrap(),
                 region,
                 anchor: base,
                 expanded,
@@ -258,6 +262,7 @@ fn dense_touch_overlap_uses_the_bounded_exhaustive_fallback() {
     let bounds = rect(0.0, 0.0, 600.0, 600.0);
     let allocations = (0..100)
         .map(|index| TouchAllocation {
+            region_index: index,
             region: region(
                 PresentationHitRegionKind::SplitterHandle(SplitterSceneId {
                     root: RootId::new(1),

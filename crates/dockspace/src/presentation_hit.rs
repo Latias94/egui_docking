@@ -24,7 +24,12 @@ use crate::scene::{
 use crate::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use crate::{drop_guide::DropGuideClusterId, drop_target::DropTargetId};
 
+mod region_order;
 mod touch;
+
+#[cfg(test)]
+#[path = "presentation_hit/row_tests.rs"]
+mod row_tests;
 
 /// Stable semantic identity of one core-compiled hit region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -452,30 +457,15 @@ impl PresentationHitManifest {
         })
         .map_err(|_| SceneBuildError::InvalidSurfaceProgram { surface })?;
 
-        regions.sort_unstable_by_key(|region| region.id());
+        region_order::canonicalize_regions(&mut regions);
         debug_assert!(regions.windows(2).all(|pair| pair[0].id() != pair[1].id()));
-        let touch_regions = touch::compile(plan, &regions);
-        regions.retain(|region| {
-            let rect = region.hit().rect();
-            (rect.width() > 0.0 && rect.height() > 0.0)
-                || touch_regions
-                    .binary_search_by_key(&region.id(), |(id, _)| *id)
-                    .is_ok()
-        });
-        let touch_regions = touch_regions
-            .into_iter()
-            .map(|(id, bounds)| {
-                let index = regions
-                    .binary_search_by_key(&id, |region| region.id())
-                    .map_err(|_| SceneBuildError::InvalidSurfaceProgram { surface })?;
-                Ok((index, bounds))
-            })
-            .collect::<Result<Vec<_>, SceneBuildError>>()?
-            .into_boxed_slice();
+        let mut touch_regions = touch::compile(plan, &regions);
+        compact_region_rows(&mut regions, &mut touch_regions)
+            .map_err(|()| SceneBuildError::InvalidSurfaceProgram { surface })?;
         Ok(Self {
             output,
             regions: regions.into_boxed_slice(),
-            touch_regions,
+            touch_regions: touch_regions.into_boxed_slice(),
         })
     }
 
@@ -580,6 +570,42 @@ impl PresentationHitManifest {
             self.region_contains(index, region, point, device)
         })
     }
+}
+
+// Touch rows arrive in input-region order. Compact both inventories together so
+// empty mouse geometry can keep its touch fragments without an identity join.
+fn compact_region_rows(
+    regions: &mut Vec<PresentationHitRegion>,
+    touch_regions: &mut [(usize, LogicalRect)],
+) -> Result<(), ()> {
+    let mut next_fragment = 0;
+    let mut retained = 0;
+    for original in 0..regions.len() {
+        if touch_regions
+            .get(next_fragment)
+            .is_some_and(|(row, _)| *row < original)
+        {
+            return Err(());
+        }
+        let start = next_fragment;
+        while let Some((row, _)) = touch_regions.get_mut(next_fragment) {
+            if *row != original {
+                break;
+            }
+            *row = retained;
+            next_fragment += 1;
+        }
+        let bounds = regions[original].hit().rect();
+        if (bounds.width() > 0.0 && bounds.height() > 0.0) || next_fragment > start {
+            regions[retained] = regions[original];
+            retained += 1;
+        }
+    }
+    if next_fragment != touch_regions.len() {
+        return Err(());
+    }
+    regions.truncate(retained);
+    Ok(())
 }
 
 fn push_operation_regions(
