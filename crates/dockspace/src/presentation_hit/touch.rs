@@ -106,9 +106,11 @@ pub(super) fn compile(
             fragments: vec![rect],
         });
     }
-    partition_allocations(&mut allocations);
+    let neighbors = TouchNeighbors::build(&allocations, &protected);
+    partition_allocations(&mut allocations, &neighbors);
     let mut compiled = Vec::new();
-    for allocation in allocations {
+    let allocation_count = allocations.len();
+    for (index, allocation) in allocations.into_iter().enumerate() {
         let region = allocation.region;
         let mut fragments = allocation.fragments;
         for occlusion in plan.drop_occlusions() {
@@ -116,17 +118,32 @@ pub(super) fn compile(
                 subtract_from(&mut fragments, occlusion.region().rect());
             }
         }
-        for &(layer, protected_rect) in &protected {
+        // Chrome protects expanded halos. The already partitioned, visible base
+        // keeps the same receiver precedence as the mouse footprint.
+        let mut base = fragments
+            .iter()
+            .filter_map(|rect| intersection(*rect, region.hit().rect()))
+            .collect::<Vec<_>>();
+        for &neighbor in neighbors.for_region(index) {
+            let Some(protected_index) = neighbor.checked_sub(allocation_count) else {
+                continue;
+            };
+            let (layer, protected_rect) = protected[protected_index];
             if layer <= region.stack().layer() {
                 subtract_from(&mut fragments, protected_rect);
             }
         }
+        for fragment in &fragments {
+            subtract_from(&mut base, *fragment);
+        }
+        fragments.extend(base);
         compiled.extend(fragments.into_iter().map(|rect| (region.id(), rect)));
     }
     debug_assert!(compiled.windows(2).all(|pair| pair[0].0 <= pair[1].0));
     compiled
 }
 
+#[cfg_attr(test, derive(Clone))]
 struct TouchAllocation {
     region: PresentationHitRegion,
     anchor: LogicalRect,
@@ -134,17 +151,142 @@ struct TouchAllocation {
     fragments: Vec<LogicalRect>,
 }
 
-fn partition_allocations(allocations: &mut [TouchAllocation]) {
+// This broad phase only removes disjoint pairs; exact geometry and stable pair
+// order remain in the partitioner. Dense layouts retain bounded scratch space.
+enum TouchNeighbors {
+    Sparse(Vec<Vec<usize>>),
+    Dense(Vec<usize>),
+}
+
+struct TouchBounds {
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+}
+
+impl TouchBounds {
+    fn union(first: LogicalRect, second: LogicalRect) -> Self {
+        // Keep endpoints directly: rebuilding a rectangle via max - min can
+        // round its far edge inward at extreme finite coordinate magnitudes.
+        Self {
+            min_x: first.x().min(second.x()),
+            min_y: first.y().min(second.y()),
+            max_x: first.max().x().max(second.max().x()),
+            max_y: first.max().y().max(second.max().y()),
+        }
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        self.min_x < other.max_x
+            && other.min_x < self.max_x
+            && self.min_y < other.max_y
+            && other.min_y < self.max_y
+    }
+}
+
+impl TouchNeighbors {
+    fn build(allocations: &[TouchAllocation], protected: &[(SceneLayerKey, LogicalRect)]) -> Self {
+        let allocation_count = allocations.len();
+        let dense = || Self::Dense((0..allocation_count + protected.len()).collect());
+        let mut entries = Vec::with_capacity(allocation_count + protected.len());
+        for (index, allocation) in allocations.iter().enumerate() {
+            let bounds = TouchBounds::union(allocation.expanded, allocation.region.hit().rect());
+            entries.push((bounds, allocation.region.stack().layer(), index));
+        }
+        entries.extend(
+            protected
+                .iter()
+                .enumerate()
+                .map(|(index, &(layer, bounds))| {
+                    (
+                        TouchBounds::union(bounds, bounds),
+                        layer,
+                        allocation_count + index,
+                    )
+                }),
+        );
+        entries.sort_unstable_by(|first, second| {
+            first
+                .0
+                .min_x
+                .total_cmp(&second.0.min_x)
+                .then(first.2.cmp(&second.2))
+        });
+        let mut neighbors = vec![Vec::new(); allocation_count];
+        let mut links = 0_usize;
+        let limit = allocation_count.saturating_mul(64);
+        for (index, (first, first_layer, first_id)) in entries.iter().enumerate() {
+            let (first_layer, first_id) = (*first_layer, *first_id);
+            for (second, second_layer, second_id) in &entries[index + 1..] {
+                let (second_layer, second_id) = (*second_layer, *second_id);
+                if second.min_x >= first.max_x {
+                    break;
+                }
+                let relevant = match (first_id < allocation_count, second_id < allocation_count) {
+                    (true, true) => first_layer == second_layer,
+                    (true, false) => second_layer <= first_layer,
+                    (false, true) => first_layer <= second_layer,
+                    (false, false) => false,
+                };
+                if !relevant || !first.overlaps(second) {
+                    continue;
+                }
+                if first_id < allocation_count {
+                    neighbors[first_id].push(second_id);
+                    links += 1;
+                }
+                if second_id < allocation_count {
+                    neighbors[second_id].push(first_id);
+                    links += 1;
+                }
+                if links > limit {
+                    return dense();
+                }
+            }
+        }
+        for adjacent in &mut neighbors {
+            adjacent.sort_unstable();
+        }
+        Self::Sparse(neighbors)
+    }
+
+    fn for_region(&self, index: usize) -> &[usize] {
+        match self {
+            Self::Sparse(neighbors) => &neighbors[index],
+            Self::Dense(all) => all,
+        }
+    }
+}
+
+fn partition_allocations(allocations: &mut [TouchAllocation], neighbors: &TouchNeighbors) {
     for index in 0..allocations.len() {
         let (before, after) = allocations.split_at_mut(index + 1);
         let first = &mut before[index];
-        for second in after {
+        for &neighbor in neighbors.for_region(index) {
+            let Some(second_index) = neighbor.checked_sub(index + 1) else {
+                continue;
+            };
+            let Some(second) = after.get_mut(second_index) else {
+                continue;
+            };
             if first.region.stack().layer() != second.region.stack().layer() {
                 continue;
             }
             let Some(overlap) = intersection(first.expanded, second.expanded) else {
                 continue;
             };
+            if first.region.stack() == second.region.stack()
+                && is_splitter_handle(first.region)
+                && is_splitter_handle(second.region)
+            {
+                // Layout projection separates painted bases with each split's reserved band.
+                // Descendant bands meet ancestors only at frontiers, where perpendicular
+                // internal contacts become junctions. This overlap is between expanded
+                // touch targets, not overlapping painted splitter bases.
+                subtract_from(&mut first.fragments, second.anchor);
+                subtract_from(&mut second.fragments, first.anchor);
+            }
             if let Some((axis, boundary, first_low)) =
                 separating_boundary(first.anchor, second.anchor)
             {
@@ -153,19 +295,24 @@ fn partition_allocations(allocations: &mut [TouchAllocation]) {
                 match first.region.stack().cmp(&second.region.stack()) {
                     std::cmp::Ordering::Less => subtract_from(&mut first.fragments, overlap),
                     std::cmp::Ordering::Greater => subtract_from(&mut second.fragments, overlap),
-                    std::cmp::Ordering::Equal => {
-                        // Coincident bases have no geometric winner. Leave the
-                        // contested expansion unavailable instead of using iteration order.
-                        subtract_from(&mut first.fragments, overlap);
-                        subtract_from(&mut second.fragments, overlap);
-                    }
+                    std::cmp::Ordering::Equal => match splitter_tie_break(first, second) {
+                        std::cmp::Ordering::Greater => {
+                            subtract_from(&mut second.fragments, overlap);
+                        }
+                        std::cmp::Ordering::Less => {
+                            subtract_from(&mut first.fragments, overlap);
+                        }
+                        std::cmp::Ordering::Equal => {
+                            subtract_from(&mut first.fragments, overlap);
+                            subtract_from(&mut second.fragments, overlap);
+                        }
+                    },
                 }
             }
         }
     }
 
-    // Expansions never take an original mouse receiver's effective area.
-    // Junctions retain their existing precedence only where original bases meet.
+    // Restore base coverage without undoing a same-priority splitter partition.
     for index in 0..allocations.len() {
         let (before, current_and_after) = allocations.split_at_mut(index);
         let Some((current, after)) = current_and_after.split_first_mut() else {
@@ -173,8 +320,35 @@ fn partition_allocations(allocations: &mut [TouchAllocation]) {
         };
         let base = current.region.hit().rect();
         let mut original = vec![base];
-        for other in before.iter().chain(after.iter()) {
+        for &neighbor in neighbors.for_region(index) {
+            let other = if neighbor < index {
+                &before[neighbor]
+            } else if neighbor > index {
+                let Some(other) = after.get(neighbor - index - 1) else {
+                    continue;
+                };
+                other
+            } else {
+                continue;
+            };
             if other.region.stack().layer() != current.region.stack().layer() {
+                continue;
+            }
+            if is_splitter_region(current.region)
+                && is_splitter_region(other.region)
+                && current.region.stack() == other.region.stack()
+            {
+                if let Some(overlap) = intersection(base, other.region.hit().rect()) {
+                    if let Some((axis, boundary, current_low)) =
+                        separating_boundary(current.anchor, other.anchor)
+                    {
+                        if let Some(cut) = overlap_half(overlap, axis, boundary, !current_low) {
+                            subtract_from(&mut original, cut);
+                        }
+                    } else if current.region.id() > other.region.id() {
+                        subtract_from(&mut original, overlap);
+                    }
+                }
                 continue;
             }
             subtract_from(&mut current.fragments, other.region.hit().rect());
@@ -192,6 +366,28 @@ fn partition_allocations(allocations: &mut [TouchAllocation]) {
                 .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0),
         );
     }
+}
+
+fn is_splitter_region(region: PresentationHitRegion) -> bool {
+    matches!(
+        region.id().kind(),
+        PresentationHitRegionKind::SplitterHandle(_)
+            | PresentationHitRegionKind::SplitterJunction(_)
+    )
+}
+
+fn is_splitter_handle(region: PresentationHitRegion) -> bool {
+    matches!(
+        region.id().kind(),
+        PresentationHitRegionKind::SplitterHandle(_)
+    )
+}
+
+fn splitter_tie_break(first: &TouchAllocation, second: &TouchAllocation) -> std::cmp::Ordering {
+    if !is_splitter_region(first.region) || !is_splitter_region(second.region) {
+        return std::cmp::Ordering::Equal;
+    }
+    second.region.id().cmp(&first.region.id())
 }
 
 fn separating_boundary(first: LogicalRect, second: LogicalRect) -> Option<(Axis, f64, bool)> {
@@ -218,7 +414,29 @@ fn separating_boundary(first: LogicalRect, second: LogicalRect) -> Option<(Axis,
         (Some(x), Some(y)) if y.0 > x.0 => Some((Axis::Vertical, y.1, y.2)),
         (Some(x), _) => Some((Axis::Horizontal, x.1, x.2)),
         (None, Some(y)) => Some((Axis::Vertical, y.1, y.2)),
-        (None, None) => None,
+        (None, None) => {
+            let first_x = midpoint(first.x(), first.max().x());
+            let second_x = midpoint(second.x(), second.max().x());
+            let first_y = midpoint(first.y(), first.max().y());
+            let second_y = midpoint(second.y(), second.max().y());
+            let delta_x = (first_x - second_x).abs();
+            let delta_y = (first_y - second_y).abs();
+            if delta_x > delta_y {
+                Some((
+                    Axis::Horizontal,
+                    midpoint(first_x, second_x),
+                    first_x < second_x,
+                ))
+            } else if delta_y > 0.0 {
+                Some((
+                    Axis::Vertical,
+                    midpoint(first_y, second_y),
+                    first_y < second_y,
+                ))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -230,7 +448,16 @@ fn partition_overlap(
     boundary: f64,
     first_low: bool,
 ) {
-    let clip_half = |low| match (axis, low) {
+    if let Some(cut) = overlap_half(overlap, axis, boundary, !first_low) {
+        subtract_from(&mut first.fragments, cut);
+    }
+    if let Some(cut) = overlap_half(overlap, axis, boundary, first_low) {
+        subtract_from(&mut second.fragments, cut);
+    }
+}
+
+fn overlap_half(overlap: LogicalRect, axis: Axis, boundary: f64, low: bool) -> Option<LogicalRect> {
+    match (axis, low) {
         (Axis::Horizontal, true) => clipped_edges(
             overlap.x(),
             overlap.y(),
@@ -259,12 +486,6 @@ fn partition_overlap(
             overlap.max().y(),
             overlap,
         ),
-    };
-    if let Some(cut) = clip_half(!first_low) {
-        subtract_from(&mut first.fragments, cut);
-    }
-    if let Some(cut) = clip_half(first_low) {
-        subtract_from(&mut second.fragments, cut);
     }
 }
 

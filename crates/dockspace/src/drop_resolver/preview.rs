@@ -71,7 +71,37 @@ pub(super) fn resolved_visual(
             &projection,
         )?,
     };
+    let rect = match target {
+        DockTarget::InnerEdge(_) | DockTarget::OuterEdge(_) => {
+            clip_to_visible_root(target_plan, root, rect)?
+        }
+        DockTarget::Center(_) | DockTarget::TabGap { .. } => rect,
+    };
     Ok(DropVisual::new(rect))
+}
+
+fn clip_to_visible_root(
+    target_plan: &PresentationPlan,
+    root: RootId,
+    rect: LogicalRect,
+) -> Result<LogicalRect, DropPreviewProjectionError> {
+    let facts = target_plan
+        .layout_facts()
+        .ok_or(FutureLayoutProjectionError::TargetLayoutFactsMissing)?;
+    let root_bounds = facts
+        .root(root)
+        .ok_or(FutureLayoutProjectionError::TargetRootNotPresented { root })?
+        .bounds();
+    let rect = clip_rect(rect, root_bounds)?;
+    Ok(clip_rect(rect, target_plan.bounds())?)
+}
+
+fn clip_rect(rect: LogicalRect, clip: LogicalRect) -> Result<LogicalRect, GeometryError> {
+    let min_x = rect.x().max(clip.x()).min(clip.max().x());
+    let min_y = rect.y().max(clip.y()).min(clip.max().y());
+    let max_x = rect.max().x().min(clip.max().x()).max(min_x);
+    let max_y = rect.max().y().min(clip.max().y()).max(min_y);
+    LogicalRect::new(min_x, min_y, max_x - min_x, max_y - min_y)
 }
 
 fn projected_center_rect(

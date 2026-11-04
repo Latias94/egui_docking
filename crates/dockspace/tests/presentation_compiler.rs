@@ -704,7 +704,7 @@ fn frozen_policy_is_the_only_close_affordance_authority() {
 }
 
 #[test]
-fn workspace_hidden_tab_bar_is_omitted_from_requirements_and_scene_geometry() {
+fn hidden_draggable_tabs_keep_intrinsics_without_strip_or_paint_geometry() {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ItemId::new(10), ItemId::new(11)]));
     builder.set_root(ROOT, RootRecord::new(tabs));
@@ -723,7 +723,7 @@ fn workspace_hidden_tab_bar_is_omitted_from_requirements_and_scene_geometry() {
         .surface(SURFACE)
         .expect("surface requirements exist");
     assert_eq!(requirements.tab_strips().count(), 0);
-    assert_eq!(requirements.tab_intrinsics().count(), 0);
+    assert_eq!(requirements.tab_intrinsics().count(), 2);
 
     install_surface_projection(&mut engine, &mut host, SURFACE, bounds());
     let ready = next_plan(&engine, SURFACE);
@@ -770,7 +770,7 @@ fn surface_hidden_tab_bar_does_not_affect_another_surface() {
         .surface(SURFACE)
         .expect("hidden surface requirements exist");
     assert_eq!(hidden.tab_strips().count(), 0);
-    assert_eq!(hidden.tab_intrinsics().count(), 0);
+    assert_eq!(hidden.tab_intrinsics().count(), 1);
     let visible = engine
         .presentation_requirements()
         .surface(OTHER_SURFACE)

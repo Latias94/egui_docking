@@ -10,6 +10,7 @@ use std::convert::Infallible;
 
 use crate::drop_guide::{DropGuideClusterRecord, DropGuideScope};
 use crate::drop_target::{DropTargetKind, SceneLayerKey};
+use crate::geometry::LogicalRect;
 use crate::hit_region::HitRegion;
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
 use crate::pointer_journal::PointerDeviceKind;
@@ -341,13 +342,14 @@ impl PresentationHitSuppression {
 pub struct PresentationHitRegion {
     id: PresentationHitRegionId,
     hit: HitRegion,
+    anchor: LogicalRect,
     lanes: PresentationPointerLanes,
     stack: PresentationHitStackKey,
     behavior: PresentationHitBehavior,
 }
 
 impl PresentationHitRegion {
-    const fn new(
+    fn new(
         id: PresentationHitRegionId,
         hit: HitRegion,
         lanes: PresentationPointerLanes,
@@ -357,10 +359,16 @@ impl PresentationHitRegion {
         Self {
             id,
             hit,
+            anchor: hit.rect(),
             lanes,
             stack,
             behavior,
         }
+    }
+
+    const fn with_anchor(mut self, anchor: LogicalRect) -> Self {
+        self.anchor = anchor;
+        self
     }
 
     /// Returns the stable semantic identity of this region.
@@ -555,7 +563,7 @@ impl PresentationHitManifest {
         suppression: PresentationHitSuppression,
         device: PointerDeviceKind,
     ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
-        resolve_exclusive_matching(&self.regions, lane, suppression, |region| {
+        resolve_exclusive_matching(&self.regions, lane, point, suppression, |region| {
             self.region_contains(region, point, device)
         })
     }
@@ -708,7 +716,8 @@ fn push_operation_regions(
                         PresentationHitPrecedence::SplitterHandle,
                     ),
                     PresentationHitBehavior::ExclusiveReceiver,
-                ),
+                )
+                .with_anchor(splitter.draw_bounds()),
             );
         }
         ResolvedSurfaceProgramOperation::SplitterJunction(junction) if junction.operable() => {
@@ -727,7 +736,8 @@ fn push_operation_regions(
                         PresentationHitPrecedence::SplitterJunction,
                     ),
                     PresentationHitBehavior::ExclusiveReceiver,
-                ),
+                )
+                .with_anchor(junction.hit().rect()),
             );
         }
         ResolvedSurfaceProgramOperation::ContainedControls(contained) => {
@@ -962,7 +972,7 @@ fn resolve_exclusive_regions(
     point: crate::geometry::LogicalPoint,
     suppression: PresentationHitSuppression,
 ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
-    resolve_exclusive_matching(regions, lane, suppression, |region| {
+    resolve_exclusive_matching(regions, lane, point, suppression, |region| {
         region.hit().contains(point)
     })
 }
@@ -970,6 +980,7 @@ fn resolve_exclusive_regions(
 fn resolve_exclusive_matching(
     regions: &[PresentationHitRegion],
     lane: PresentationPointerLane,
+    point: crate::geometry::LogicalPoint,
     suppression: PresentationHitSuppression,
     contains: impl Fn(&PresentationHitRegion) -> bool,
 ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
@@ -990,11 +1001,20 @@ fn resolve_exclusive_matching(
                 }
                 Ordering::Less => {}
                 Ordering::Equal if candidate.id() != current.id() => {
-                    ambiguity = Some(PresentationHitResolutionError::Ambiguous {
-                        lane,
-                        first: current.id(),
-                        second: candidate.id(),
-                    });
+                    match splitter_tie_break(candidate, current, point) {
+                        Ordering::Greater => {
+                            winner = Some(candidate);
+                            ambiguity = None;
+                        }
+                        Ordering::Less => {}
+                        Ordering::Equal => {
+                            ambiguity = Some(PresentationHitResolutionError::Ambiguous {
+                                lane,
+                                first: current.id(),
+                                second: candidate.id(),
+                            });
+                        }
+                    }
                 }
                 Ordering::Equal => {}
             },
@@ -1004,6 +1024,70 @@ fn resolve_exclusive_matching(
         Some(error) => Err(error),
         None => Ok(winner),
     }
+}
+
+fn splitter_tie_break(
+    candidate: &PresentationHitRegion,
+    current: &PresentationHitRegion,
+    point: crate::geometry::LogicalPoint,
+) -> Ordering {
+    let candidate_kind = candidate.id().kind();
+    let current_kind = current.id().kind();
+    let splitter_pair = matches!(
+        (candidate_kind, current_kind),
+        (
+            PresentationHitRegionKind::SplitterHandle(_),
+            PresentationHitRegionKind::SplitterHandle(_)
+        ) | (
+            PresentationHitRegionKind::SplitterJunction(_),
+            PresentationHitRegionKind::SplitterJunction(_)
+        )
+    );
+    if !splitter_pair {
+        return Ordering::Equal;
+    }
+
+    let candidate_distance = splitter_anchor_distance(candidate, point);
+    let current_distance = splitter_anchor_distance(current, point);
+    current_distance
+        .total_cmp(&candidate_distance)
+        .then_with(|| current.id().cmp(&candidate.id()))
+}
+
+fn splitter_anchor_distance(
+    region: &PresentationHitRegion,
+    point: crate::geometry::LogicalPoint,
+) -> f64 {
+    let anchor = region.anchor;
+    match region.id().kind() {
+        PresentationHitRegionKind::SplitterJunction(_) => {
+            let dx = midpoint(anchor.x(), anchor.max().x()) - point.x();
+            let dy = midpoint(anchor.y(), anchor.max().y()) - point.y();
+            dx * dx + dy * dy
+        }
+        PresentationHitRegionKind::SplitterHandle(_) => {
+            let dx = if point.x() < anchor.x() {
+                anchor.x() - point.x()
+            } else if point.x() > anchor.max().x() {
+                point.x() - anchor.max().x()
+            } else {
+                0.0
+            };
+            let dy = if point.y() < anchor.y() {
+                anchor.y() - point.y()
+            } else if point.y() > anchor.max().y() {
+                point.y() - anchor.max().y()
+            } else {
+                0.0
+            };
+            dx * dx + dy * dy
+        }
+        _ => 0.0,
+    }
+}
+
+fn midpoint(minimum: f64, maximum: f64) -> f64 {
+    minimum * 0.5 + maximum * 0.5
 }
 
 const fn drop_target_root(target: DropTargetId) -> Option<RootId> {

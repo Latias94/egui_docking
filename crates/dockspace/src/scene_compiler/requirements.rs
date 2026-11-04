@@ -197,6 +197,10 @@ fn derive_root_requirements(
                 );
                 if tab_bar_policy.visibility() == TabBarVisibility::Visible {
                     tab_strips.insert(TabStripKey::new(surface, id));
+                }
+                if tab_bar_policy.visibility() == TabBarVisibility::Visible
+                    || tab_bar_policy.interaction() == TabBarInteraction::Enabled
+                {
                     tab_intrinsics.extend(items.iter().copied().map(|item| {
                         TabIntrinsicKey::new(
                             surface,

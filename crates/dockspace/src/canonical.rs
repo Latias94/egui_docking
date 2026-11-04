@@ -319,6 +319,7 @@ fn rewrite_split(
     weights: Vec<SplitWeight>,
     results: &HashMap<NodeId, Option<NodeId>>,
 ) -> Result<Option<NodeId>, CanonicalizationError> {
+    let mut topology_changed = false;
     let mut rewritten = Vec::with_capacity(children.len());
     for (child, weight) in children.into_iter().zip(weights) {
         let child_result =
@@ -329,6 +330,7 @@ fn rewrite_split(
                     owner: Some(node_id),
                     child,
                 })?;
+        topology_changed |= child_result != Some(child);
         if let Some(child) = child_result {
             rewritten.push((child, weight.get()));
         }
@@ -352,6 +354,7 @@ fn rewrite_split(
         };
 
         if let Some((grandchildren, child_weights)) = same_axis {
+            topology_changed = true;
             flattened.extend(grandchildren.into_iter().zip(child_weights).map(
                 |(grandchild, child_weight)| (grandchild, parent_weight * child_weight.get()),
             ));
@@ -364,6 +367,12 @@ fn rewrite_split(
         0 => return Ok(None),
         1 => return Ok(Some(flattened[0].0)),
         _ => {}
+    }
+
+    // Input validation already established normalized weights. Rewriting an
+    // unchanged split would accumulate rounding and turn no-op edits into changes.
+    if !topology_changed {
+        return Ok(Some(node_id));
     }
 
     let children: Vec<NodeId> = flattened.iter().map(|(child, _)| *child).collect();

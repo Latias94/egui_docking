@@ -1,4 +1,5 @@
 use super::super::*;
+use super::midpoint;
 use super::*;
 use crate::geometry::{Constraints, LogicalSize};
 use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
@@ -44,6 +45,99 @@ fn disjoint_and_empty_cuts_keep_the_fragment_buffer_without_rebuilding() {
     assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 2);
     subtract_from(&mut fragments, original);
     assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 2);
+}
+
+#[test]
+fn sparse_touch_partition_matches_exhaustive_partition_with_overlapping_bases() {
+    let split = node();
+    for variant in 0..3 {
+        let mut allocations = Vec::new();
+        let mut protected = Vec::new();
+        for index in 0..144 {
+            let x = 40.0 + f64::from(index % 12) * 40.0;
+            let y = 40.0 + f64::from(index / 12) * 40.0;
+            let base = match (index + variant) % 3 {
+                0 => rect(x, y, 70.0, 6.0),
+                1 => rect(x, y, 6.0, 70.0),
+                _ => rect(x, y + 0.5, 6.0, 6.0),
+            };
+            let id = SplitterSceneId {
+                root: RootId::new(1),
+                split,
+                index: usize::try_from(index).unwrap(),
+            };
+            let layer = u64::try_from(index % 2).unwrap();
+            let region = region(
+                PresentationHitRegionKind::SplitterHandle(id),
+                base,
+                layer,
+                PresentationHitPrecedence::SplitterHandle,
+            );
+            let expanded = rect(
+                base.x() - 19.0,
+                base.y() - 19.0,
+                base.width() + 38.0,
+                base.height() + 38.0,
+            );
+            allocations.push(TouchAllocation {
+                region,
+                anchor: base,
+                expanded,
+                fragments: vec![expanded],
+            });
+            protected.push((SceneLayerKey::new(layer), rect(x, y + 8.0, 30.0, 20.0)));
+        }
+        let neighbors = TouchNeighbors::build(&allocations, &protected);
+        assert!(matches!(&neighbors, TouchNeighbors::Sparse(_)));
+        // A full scan is the reference oracle for both the partition and every
+        // chrome cut that the broad phase must retain.
+        for (index, allocation) in allocations.iter().enumerate() {
+            for (protected_index, &(layer, bounds)) in protected.iter().enumerate() {
+                if layer <= allocation.region.stack().layer()
+                    && intersection(allocation.expanded, bounds).is_some()
+                {
+                    assert!(
+                        neighbors
+                            .for_region(index)
+                            .binary_search(&(allocations.len() + protected_index))
+                            .is_ok()
+                    );
+                }
+            }
+        }
+        let mut exhaustive = allocations.clone();
+        let dense = TouchNeighbors::Dense((0..allocations.len() + protected.len()).collect());
+        partition_allocations(&mut allocations, &neighbors);
+        partition_allocations(&mut exhaustive, &dense);
+        for (sparse, dense) in allocations.iter().zip(&exhaustive) {
+            assert_eq!(sparse.fragments, dense.fragments);
+        }
+    }
+}
+
+#[test]
+fn dense_touch_overlap_uses_the_bounded_exhaustive_fallback() {
+    let split = node();
+    let bounds = rect(0.0, 0.0, 600.0, 600.0);
+    let allocations = (0..100)
+        .map(|index| TouchAllocation {
+            region: region(
+                PresentationHitRegionKind::SplitterHandle(SplitterSceneId {
+                    root: RootId::new(1),
+                    split,
+                    index,
+                }),
+                bounds,
+                0,
+                PresentationHitPrecedence::SplitterHandle,
+            ),
+            anchor: bounds,
+            expanded: bounds,
+            fragments: vec![bounds],
+        })
+        .collect::<Vec<_>>();
+    let neighbors = TouchNeighbors::build(&allocations, &[]);
+    assert!(matches!(&neighbors, TouchNeighbors::Dense(all) if all.len() == allocations.len()));
 }
 
 fn rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
@@ -652,17 +746,25 @@ fn only_final_maximum_stack_can_be_ambiguous() {
     };
     let other = SplitterSceneId { index: 1, ..id };
     let bounds = rect(0.0, 0.0, 100.0, 100.0);
+    let tab = TabSceneId {
+        root: id.root,
+        tabs: id.split,
+        item: ItemId::new(1),
+    };
     let first = region(
-        PresentationHitRegionKind::SplitterHandle(id),
+        PresentationHitRegionKind::TabBody(tab),
         bounds,
         0,
-        PresentationHitPrecedence::SplitterHandle,
+        PresentationHitPrecedence::TabBody,
     );
     let second = region(
-        PresentationHitRegionKind::SplitterHandle(other),
+        PresentationHitRegionKind::TabBody(TabSceneId {
+            item: ItemId::new(2),
+            ..tab
+        }),
         bounds,
         0,
-        PresentationHitPrecedence::SplitterHandle,
+        PresentationHitPrecedence::TabBody,
     );
     let junction = region(
         PresentationHitRegionKind::SplitterJunction(SplitterJunctionId::new(
@@ -723,7 +825,7 @@ fn only_final_maximum_stack_can_be_ambiguous() {
         0,
         PresentationHitPrecedence::SplitterJunction,
     );
-    for regions in [[first, second], [junction, other_junction]] {
+    for regions in [[first, second], [second, first]] {
         assert!(matches!(
             resolve_exclusive_regions(
                 &regions,
@@ -733,6 +835,19 @@ fn only_final_maximum_stack_can_be_ambiguous() {
             ),
             Err(PresentationHitResolutionError::Ambiguous { .. })
         ));
+    }
+    for regions in [[junction, other_junction], [other_junction, junction]] {
+        assert_eq!(
+            resolve_exclusive_regions(
+                &regions,
+                PresentationPointerLane::Drag,
+                point(50.0, 50.0),
+                PresentationHitSuppression::default(),
+            )
+            .unwrap()
+            .map(|region| region.id()),
+            Some(junction.id().min(other_junction.id())),
+        );
     }
 }
 
