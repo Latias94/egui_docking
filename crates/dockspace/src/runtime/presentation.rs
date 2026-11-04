@@ -15,7 +15,7 @@ use crate::presentation_observation::{
     HostPresentationObservationOutcome, HostPresentationOutput, HostPresentationOutputPayload,
     HostPresentationProgress, HostPresentationStreamId, HostPresentationStreamObservation,
     NativeStagingPresentation, NativeStagingPresentationPhase as CoreNativeStagingPhase,
-    PresentationStreamQuiescence,
+    PresentationStreamQuiescence, PresentedSurfaceAuthority,
 };
 use crate::transition::EngineTransition;
 
@@ -440,6 +440,26 @@ impl PresentationOutputs {
         streams
     }
 
+    pub(super) fn blocks_pointer_authority(
+        &self,
+        surface: SurfaceId,
+        authority: PresentedSurfaceAuthority,
+    ) -> bool {
+        self.lock().iter().any(|entry| {
+            let stream = entry.output.stream();
+            entry.output.surface() == surface
+                && matches!(
+                    entry.output.payload(),
+                    HostPresentationOutputPayload::Paint { .. }
+                )
+                && entry.result == Some(SurfacePresentationResult::Presented)
+                // Stream serials order endpoint successors within this host domain.
+                && (stream > authority.stream()
+                    || (stream == authority.stream()
+                        && entry.output.key() > authority.emission()))
+        })
+    }
+
     fn record(&self, output: HostPresentationOutput, result: SurfacePresentationResult) -> bool {
         let mut pending = self.lock();
         let Some(entry) = pending.iter_mut().find(|entry| entry.output == output) else {
@@ -569,6 +589,14 @@ impl SubmittedPresentationObservation {
 }
 
 impl RuntimePresentationState {
+    pub(super) fn blocks_pointer_authority(
+        &self,
+        surface: SurfaceId,
+        authority: PresentedSurfaceAuthority,
+    ) -> bool {
+        self.pending.blocks_pointer_authority(surface, authority)
+    }
+
     pub(super) fn configure_output_capacity(
         &mut self,
         slots: usize,

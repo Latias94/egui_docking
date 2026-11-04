@@ -66,7 +66,6 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         expected: WorkspaceVersion,
-        application_base: WorkspaceVersion,
         scene: SurfaceSceneStamp,
         floating: FloatingPresentationId,
         direction: crate::scene::ContainedResizeDirection,
@@ -75,10 +74,10 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        if expected != application_base {
+        if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
                 expected,
-                accepted_base: application_base,
+                accepted_base: self.version,
             });
         }
         let placement = {

@@ -1,5 +1,6 @@
 //! Ordered transport for the official host-local pointer lane.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use dockspace::geometry::LogicalPoint;
@@ -11,7 +12,7 @@ use dockspace::runtime::{
     SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
     SurfacePointerReceiverFacts, SurfacePresentationArtifact, SurfacePresentationCommit,
 };
-use egui::{Event, Id, Key, LayerId, PointerButton, Pos2, Ui};
+use egui::{Context, Event, Id, Key, LayerId, PointerButton, Pos2, Rect, Ui, WidgetRects};
 
 use crate::pass_settlement::{ProductPointerPacket, pointer_packet};
 use crate::product_render::ProductReceiverBinding;
@@ -22,6 +23,57 @@ mod touch;
 mod tests;
 
 use touch::TouchContacts;
+
+/// Framework receiver authority frozen before any application callback runs.
+pub(crate) struct ProductPointerInputSnapshot {
+    completed_pass: u64,
+    widgets: WidgetRects,
+    interactive: Vec<Rect>,
+    transformed_layers: HashSet<LayerId>,
+    layer_at: Box<dyn Fn(Pos2) -> Option<LayerId> + Send + Sync>,
+}
+
+impl ProductPointerInputSnapshot {
+    pub(crate) fn capture(context: &Context) -> Self {
+        let (transformed_layers, layer_at) = context.memory(|memory| {
+            let areas = memory.areas().clone();
+            let transforms = memory.to_global.clone();
+            let transformed_layers = transforms
+                .iter()
+                .filter(|(_, transform)| **transform != egui::emath::TSTransform::IDENTITY)
+                .map(|(layer, _)| *layer)
+                .collect();
+            let blocked = memory
+                .layer_ids()
+                .filter(|layer| !memory.is_above_modal_layer(*layer))
+                .collect::<HashSet<_>>();
+            let modal = memory.top_modal_layer();
+            // Erase the private Areas type while using egui's own hit test.
+            // Capturing Memory itself would retain unrelated user data and the run portal.
+            let layer_at: Box<dyn Fn(Pos2) -> Option<LayerId> + Send + Sync> =
+                Box::new(move |position| {
+                    let layer = areas.layer_id_at(position, &transforms)?;
+                    if blocked.contains(&layer) {
+                        modal
+                    } else {
+                        Some(layer)
+                    }
+                });
+            (transformed_layers, layer_at)
+        });
+        Self {
+            completed_pass: context.cumulative_pass_nr(),
+            widgets: context.viewport(|viewport| viewport.prev_pass.widgets.clone()),
+            interactive: context.interactive_rects_last_pass(),
+            transformed_layers,
+            layer_at,
+        }
+    }
+
+    fn identity_layer(&self, layer: LayerId) -> bool {
+        !self.transformed_layers.contains(&layer)
+    }
+}
 
 #[derive(Clone)]
 struct PointerScene {
@@ -114,7 +166,6 @@ impl PreparedProductPointerInput {
         self.observed_at
     }
 
-    #[cfg(test)]
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.input
@@ -304,13 +355,19 @@ impl ProductPointer {
         let scene = self.presented.as_ref().filter(|scene| {
             current.is_some_and(|surface| surface.matches_presentation_artifact(scene.artifact))
         });
-        let identity_layer = |layer| {
+        let snapshot = packet.receivers();
+        let current_identity_layer = |layer| {
             ui.ctx()
                 .layer_transform_to_global(layer)
                 .is_none_or(|transform| transform == egui::emath::TSTransform::IDENTITY)
         };
-        let coordinates_supported = identity_layer(ui.layer_id())
-            && scene.is_none_or(|scene| scene.coordinates_supported && identity_layer(scene.layer));
+        let coordinates_supported = snapshot.identity_layer(ui.layer_id())
+            && current_identity_layer(ui.layer_id())
+            && scene.is_none_or(|scene| {
+                scene.coordinates_supported
+                    && snapshot.identity_layer(scene.layer)
+                    && current_identity_layer(scene.layer)
+            });
         let rejected_previous = self.rejected_run.is_some();
         // Normalization may also fail. Neither boundary may replay this run
         // with a new contact identity or different receiver facts.
@@ -446,7 +503,6 @@ impl ProductPointer {
                 records.push(PointerSample::generic(event, position, magnetic_targeting));
             }
         }
-        let interactive = ui.ctx().interactive_rects_last_pass();
         let edge_at = |sample: PointerSample| {
             if matches!(
                 sample.event,
@@ -476,15 +532,16 @@ impl ProductPointer {
                 .and_then(|point| frame.host_pointer_hit_for_device(surface, point, sample.device));
             let qualified = scene.zip(position).is_some_and(|(scene, position)| {
                 if !ui.is_enabled()
-                    || ui.ctx().cumulative_pass_nr() != scene.completed_pass
-                    || ui.ctx().layer_id_at(position) != Some(scene.layer)
+                    || snapshot.completed_pass != scene.completed_pass
+                    || (snapshot.layer_at)(position) != Some(scene.layer)
                     || !coordinates_supported
                 {
                     return false;
                 }
                 // Unknown interactive widgets are blockers. Remove only exact
                 // registrations owned by this output's interactive dock chrome.
-                let mut unknown = interactive
+                let mut unknown = snapshot
+                    .interactive
                     .iter()
                     .copied()
                     .filter(|rect| rect.contains(position))
@@ -493,18 +550,15 @@ impl ProductPointer {
                 for binding in scene.receivers.iter().filter(|binding| {
                     binding.interactive
                         && binding.layer_id == scene.layer
-                        && ui.ctx().viewport(|viewport| {
-                            viewport
-                                .prev_pass
-                                .widgets
-                                .get(binding.widget_id)
-                                .is_some_and(|widget| {
-                                    widget.enabled
-                                        && widget.sense.interactive()
-                                        && widget.layer_id == binding.layer_id
-                                        && widget.interact_rect == binding.interact_rect
-                                })
-                        })
+                        && snapshot
+                            .widgets
+                            .get(binding.widget_id)
+                            .is_some_and(|widget| {
+                                widget.enabled
+                                    && widget.sense.interactive()
+                                    && widget.layer_id == binding.layer_id
+                                    && widget.interact_rect == binding.interact_rect
+                            })
                         && credited_widgets.insert(binding.widget_id)
                 }) {
                     if let Some(index) = unknown

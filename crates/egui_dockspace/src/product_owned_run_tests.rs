@@ -512,7 +512,11 @@ fn output_hook_panic_rolls_back_a_real_selection_and_never_replays_its_raw_press
     assert!(dockspace.view().item(FIRST).unwrap().is_selected());
     assert!(!dockspace.view().item(SECOND).unwrap().is_selected());
     assert!(!dockspace.session.has_active_gesture());
-    assert_eq!(dockspace.session.presented_surface(SURFACE), presented);
+    assert!(presented.is_some());
+    assert!(
+        dockspace.session.presented_surface(SURFACE).is_none(),
+        "the prior renderer report still withholds old authority after candidate rollback"
+    );
     assert_eq!(dockspace.session.pointer_continuation(), continuation);
 
     // Probe core's producer clock directly: egui's clock itself cannot rewind.
@@ -586,7 +590,11 @@ fn removing_real_pane_geometry_rejects_the_run_before_core_publication() {
     assert!(dockspace.view().item(FIRST).unwrap().is_selected());
     assert!(!dockspace.view().item(SECOND).unwrap().is_selected());
     assert!(!dockspace.session.has_active_gesture());
-    assert_eq!(dockspace.session.presented_surface(SURFACE), presented);
+    assert!(presented.is_some());
+    assert!(
+        dockspace.session.presented_surface(SURFACE).is_none(),
+        "the prior renderer report still withholds old authority after candidate rollback"
+    );
     assert!(dockspace.ui_actions.is_empty());
     let mut probe = dockspace.session.begin_host_frame().unwrap();
     assert!(matches!(

@@ -6,9 +6,12 @@ use super::{
     RuntimeNativeState,
 };
 use crate::engine::{BackendIngressProgress, CoreHostFrame, DockEngine};
-use crate::pointer_receiver::{PointerReceiverObservation, PointerReceiverReceiptBatch};
+use crate::pointer_receiver::{
+    PointerReceiverObservation, PointerReceiverProbeRequest, PointerReceiverReceiptBatch,
+    PointerReceiverUnknownReason,
+};
 use crate::runtime::DockspaceRuntimeError;
-use crate::runtime::presentation::SubmittedPresentationObservation;
+use crate::runtime::presentation::{RuntimePresentationState, SubmittedPresentationObservation};
 use std::num::NonZeroUsize;
 
 /// One unpublished candidate retained while its atomic group cannot seal.
@@ -85,6 +88,7 @@ impl RuntimeNativeState {
         frame: &mut CoreHostFrame,
         budget: Option<&mut NativeInputBudget>,
         mut resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
+        presentation: &RuntimePresentationState,
     ) -> Result<bool, DockspaceRuntimeError> {
         let mut budget = budget;
         if budget.as_ref().is_some_and(|budget| budget.is_exhausted()) {
@@ -121,10 +125,34 @@ impl RuntimeNativeState {
                         .iter()
                         .map(|candidate| {
                             let observation = if candidate.receiver_is_applicable() {
-                                let resolver = resolver
-                                    .as_deref_mut()
-                                    .ok_or(NativePlatformError::ReceiverResolverRequired)?;
-                                resolve_receiver_observation(frame, candidate, resolver)?
+                                let surface = match candidate.probes() {
+                                    PointerReceiverProbeRequest::Delivery => {
+                                        candidate.delivery_surface()
+                                    }
+                                    PointerReceiverProbeRequest::HoverHit => {
+                                        candidate.hover_surface()
+                                    }
+                                    PointerReceiverProbeRequest::NotApplicable => None,
+                                };
+                                if surface.is_some_and(|surface| {
+                                    frame.view().interaction_projection(surface).is_some_and(
+                                        |projection| {
+                                            presentation.blocks_pointer_authority(
+                                                surface,
+                                                projection.authority(),
+                                            )
+                                        },
+                                    )
+                                }) {
+                                    PointerReceiverObservation::Unknown(
+                                        PointerReceiverUnknownReason::NotReported,
+                                    )
+                                } else {
+                                    let resolver = resolver
+                                        .as_deref_mut()
+                                        .ok_or(NativePlatformError::ReceiverResolverRequired)?;
+                                    resolve_receiver_observation(frame, candidate, resolver)?
+                                }
                             } else {
                                 PointerReceiverObservation::NotApplicable
                             };

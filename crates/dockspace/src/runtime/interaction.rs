@@ -935,7 +935,7 @@ impl DockspaceSession {
         point: LogicalPoint,
         device: PointerDeviceKind,
     ) -> Option<HostPointerHit> {
-        host_pointer_hit(&self.engine, surface, point, device)
+        host_pointer_hit(&self.engine, &self.presentation, surface, point, device)
     }
 
     /// Enables one affine input producer spanning this host's logical surfaces.
@@ -1108,30 +1108,46 @@ impl DockspaceSession {
     }
 
     /// Returns the current exact presented surface capability.
+    ///
+    /// Returns `None` while the host has reported a newer paint as presented
+    /// but core has not yet accepted its ordered presentation prefix.
     #[must_use]
     pub fn presented_surface(&self, surface: SurfaceId) -> Option<PresentedDockspaceSurface> {
         let projection = self.engine.interaction_projection(surface)?;
+        if self
+            .presentation
+            .blocks_pointer_authority(surface, projection.authority())
+        {
+            return None;
+        }
         Some(PresentedDockspaceSurface::from_projection(projection))
     }
 
     /// Binds a paint-time descriptor to the exact currently presented output.
+    ///
+    /// Returns `None` while a newer host-reported paint awaits ordered core
+    /// settlement, preventing receivers from the previous pixels being reused.
     #[must_use]
     pub fn bind_presented_receiver(
         &self,
         descriptor: &DockspaceReceiverDescriptor,
     ) -> Option<PresentedDockReceiver> {
-        bind_presented_receiver(&self.engine, descriptor)
+        bind_presented_receiver(&self.engine, &self.presentation, descriptor)
     }
 }
 
 fn host_pointer_hit(
     engine: &crate::engine::DockEngine,
+    presentation: &super::presentation::RuntimePresentationState,
     surface: SurfaceId,
     point: LogicalPoint,
     device: PointerDeviceKind,
 ) -> Option<HostPointerHit> {
     use crate::presentation_hit::PresentationPointerLane;
     let projection = engine.interaction_projection(surface)?;
+    if presentation.blocks_pointer_authority(surface, projection.authority()) {
+        return None;
+    }
     let resolve = |lane| {
         let suppression = if lane == PresentationPointerLane::HoverDrop {
             engine.hover_drop_suppression()
@@ -1156,11 +1172,27 @@ fn host_pointer_hit(
     })
 }
 
+fn pointer_authority_blocked(
+    engine: &crate::engine::DockEngine,
+    presentation: &super::presentation::RuntimePresentationState,
+    surface: SurfaceId,
+) -> bool {
+    engine
+        .interaction_projection(surface)
+        .is_some_and(|projection| {
+            presentation.blocks_pointer_authority(surface, projection.authority())
+        })
+}
+
 fn bind_presented_receiver(
     engine: &crate::engine::DockEngine,
+    presentation: &super::presentation::RuntimePresentationState,
     descriptor: &DockspaceReceiverDescriptor,
 ) -> Option<PresentedDockReceiver> {
     let projection = engine.interaction_projection(descriptor.region.surface())?;
+    if presentation.blocks_pointer_authority(descriptor.region.surface(), projection.authority()) {
+        return None;
+    }
     projection.hit_manifest().region(descriptor.region)?;
     if !engine.presented_receiver_is_current(projection.plan(), descriptor.region) {
         return None;
@@ -1173,7 +1205,6 @@ struct RuntimePointerInput<'receiver> {
     event: SurfacePointerEvent,
     location: PointerEdgeLocation,
     manipulation_surface: Option<SurfaceId>,
-    hover_surface: Option<SurfaceId>,
     capture: SurfacePointerCapture,
     receivers: SurfacePointerReceiverFacts<'receiver>,
     metadata: super::PointerEventMetadata,
@@ -1202,19 +1233,37 @@ impl DockspaceHostFrame<'_> {
     }
 
     /// Returns the exact presented capability after this update's accepted observations.
+    ///
+    /// A host-reported paint remains withheld until its presentation prefix is
+    /// atomically committed to the session.
     pub fn presented_surface(&self, surface: SurfaceId) -> Option<PresentedDockspaceSurface> {
-        self.frame
+        let projection = self
+            .frame
             .candidate_engine()
-            .interaction_projection(surface)
-            .map(PresentedDockspaceSurface::from_projection)
+            .interaction_projection(surface)?;
+        if self
+            .session
+            .presentation
+            .blocks_pointer_authority(surface, projection.authority())
+        {
+            return None;
+        }
+        Some(PresentedDockspaceSurface::from_projection(projection))
     }
 
     /// Binds only receivers authorized by the accepted input prefix.
+    ///
+    /// A reported paint that is still pending core publication temporarily
+    /// withholds receiver authority for its surface.
     pub fn bind_presented_receiver(
         &self,
         descriptor: &DockspaceReceiverDescriptor,
     ) -> Option<PresentedDockReceiver> {
-        bind_presented_receiver(self.frame.candidate_engine(), descriptor)
+        bind_presented_receiver(
+            self.frame.candidate_engine(),
+            &self.session.presentation,
+            descriptor,
+        )
     }
 
     /// Resolves current semantic candidates; framework clearance is still required.
@@ -1224,7 +1273,13 @@ impl DockspaceHostFrame<'_> {
         point: LogicalPoint,
         device: PointerDeviceKind,
     ) -> Option<HostPointerHit> {
-        host_pointer_hit(self.frame.candidate_engine(), surface, point, device)
+        host_pointer_hit(
+            self.frame.candidate_engine(),
+            &self.session.presentation,
+            surface,
+            point,
+            device,
+        )
     }
 
     /// Returns whether the private input prefix still owns a gesture.
@@ -1287,7 +1342,6 @@ impl DockspaceHostFrame<'_> {
                     },
                 },
                 manipulation_surface: Some(surface),
-                hover_surface: Some(surface),
                 capture: input.capture,
                 receivers: input.receivers,
                 metadata: input.metadata,
@@ -1341,7 +1395,6 @@ impl DockspaceHostFrame<'_> {
                     hover: input.hover.authority(),
                 },
                 manipulation_surface: input.manipulation.surface(),
-                hover_surface: input.hover.surface(),
                 capture: input.capture,
                 receivers: input.receivers,
                 metadata: input.metadata,
@@ -1435,12 +1488,7 @@ impl DockspaceHostFrame<'_> {
             if candidate.id().sequence() != edge_sequence {
                 return Err(DockspaceInteractionError::PointerProtocolInvariant.into());
             }
-            let observation = self.pointer_observation(
-                input.manipulation_surface,
-                input.hover_surface,
-                candidate,
-                input.receivers,
-            )?;
+            let observation = self.pointer_observation(candidate, input.receivers)?;
             let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
                 .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
             if let Err(error) = self.frame.submit_pointer_receiver_receipts(receipts) {
@@ -1492,6 +1540,13 @@ impl DockspaceHostFrame<'_> {
         event: SurfaceScrollEvent,
     ) -> Result<ScrollEdge, DockspaceRuntimeError> {
         let authority = surface
+            .filter(|surface| {
+                !pointer_authority_blocked(
+                    self.frame.candidate_engine(),
+                    &self.session.presentation,
+                    *surface,
+                )
+            })
             .and_then(|surface| self.frame.view().interaction_projection(surface))
             .map(|projection| projection.authority());
         let delivery = match authority {
@@ -1600,15 +1655,21 @@ impl DockspaceHostFrame<'_> {
 
     fn pointer_observation(
         &self,
-        manipulation_surface: Option<SurfaceId>,
-        hover_surface: Option<SurfaceId>,
         candidate: &PointerReceiverCandidate,
         facts: SurfacePointerReceiverFacts<'_>,
     ) -> Result<PointerReceiverObservation, DockspaceRuntimeError> {
         if !candidate.receiver_is_applicable() {
             return Ok(PointerReceiverObservation::NotApplicable);
         }
-        let delivery_projection = manipulation_surface
+        let delivery_projection = candidate
+            .delivery_surface()
+            .filter(|surface| {
+                !pointer_authority_blocked(
+                    self.frame.candidate_engine(),
+                    &self.session.presentation,
+                    *surface,
+                )
+            })
             .and_then(|surface| self.frame.view().interaction_projection(surface));
         let mut probes = Vec::with_capacity(candidate.probes().probes().len());
         if candidate
@@ -1638,7 +1699,13 @@ impl DockspaceHostFrame<'_> {
         {
             probes.push(PointerReceiverProbeReceipt::HoverHit(hover_fact(
                 self.frame.view(),
-                hover_surface,
+                candidate.hover_surface().filter(|surface| {
+                    !pointer_authority_blocked(
+                        self.frame.candidate_engine(),
+                        &self.session.presentation,
+                        *surface,
+                    )
+                }),
                 candidate.hover_point(),
                 facts.hover,
             )?));

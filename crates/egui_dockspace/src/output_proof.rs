@@ -154,23 +154,7 @@ impl SurfaceOutputCapture {
             }
         }
         let mut spans = Vec::new();
-        let mut primary_span_index = 0;
         if self.multilayer {
-            let mut paint_layers = painter
-                .ctx()
-                .memory(|memory| memory.layer_ids().collect::<Vec<_>>());
-            if !paint_layers.contains(&painter.layer_id()) {
-                // GraphicLayers::drain paints unregistered layers last within
-                // their Order. The snapshot excludes every unknown nonempty
-                // layer except this explicitly captured primary painter.
-                paint_layers.push(painter.layer_id());
-            }
-            // Match egui's Order-first drain with the memory order preserved
-            // within each group; capture traversal itself is not paint order.
-            paint_layers.sort_by_key(|layer| layer.order);
-            let primary_order = paint_layers
-                .iter()
-                .position(|layer| *layer == painter.layer_id())?;
             for layer in after.others {
                 let prefix_len = before
                     .others
@@ -180,9 +164,6 @@ impl SurfaceOutputCapture {
                 if layer.shapes.len() == prefix_len {
                     continue;
                 }
-                let order = paint_layers
-                    .iter()
-                    .position(|candidate| *candidate == layer.layer)?;
                 let end = Arc::new(SurfaceMarker);
                 let layer_painter = painter.ctx().layer_painter(layer.layer);
                 paint_marker(&layer_painter, &end);
@@ -195,15 +176,19 @@ impl SurfaceOutputCapture {
                         shape.transform(transform);
                     }
                 }
-                spans.push((order, SurfaceOutputSpan { expected, end }));
+                spans.push(SurfaceOutputSpan {
+                    layer: layer.layer,
+                    expected,
+                    end,
+                });
             }
-            spans.sort_by_key(|(order, _)| *order);
-            primary_span_index = spans.partition_point(|(order, _)| *order < primary_order);
         }
         Some(SurfaceOutputProof {
+            #[cfg(any(test, feature = "native-render-support"))]
+            context: painter.ctx().clone(),
             expected,
-            spans: spans.into_iter().map(|(_, span)| span).collect(),
-            primary_span_index,
+            primary_layer: painter.layer_id(),
+            spans,
             pixels_per_point: painter.ctx().pixels_per_point(),
             begin: self.begin,
             end,
@@ -213,11 +198,12 @@ impl SurfaceOutputCapture {
 
 /// Exact shape/clip/transform evidence for the primary surface and popup suffixes.
 pub(super) struct SurfaceOutputProof {
+    #[cfg(any(test, feature = "native-render-support"))]
+    context: Context,
     expected: Vec<ClippedShape>,
-    /// Popup suffixes in egui paint order, excluding the primary span.
+    primary_layer: LayerId,
+    /// Popup suffixes frozen by their layer identity, without an order claim.
     spans: Vec<SurfaceOutputSpan>,
-    /// Insertion point of the primary span among the ordered popup suffixes.
-    primary_span_index: usize,
     pixels_per_point: f32,
     begin: Arc<SurfaceMarker>,
     end: Arc<SurfaceMarker>,
@@ -225,6 +211,7 @@ pub(super) struct SurfaceOutputProof {
 
 /// An appended popup suffix, located by its unique private terminal marker.
 struct SurfaceOutputSpan {
+    layer: LayerId,
     expected: Vec<ClippedShape>,
     end: Arc<SurfaceMarker>,
 }
@@ -240,15 +227,37 @@ impl std::fmt::Debug for SurfaceOutputProof {
 }
 
 impl SurfaceOutputProof {
-    /// Returns the enclosing half-open output range, including every owned span.
+    /// Returns the enclosing half-open range for callers that own one surface.
+    #[cfg(any(test, feature = "native-render-support"))]
+    pub(super) fn is_present_once(&self, output: &FullOutput) -> Option<(usize, usize)> {
+        let order = final_paint_layer_order(&self.context);
+        self.is_present_once_in_paint_order(output, &order)
+    }
+
+    pub(super) fn is_present_once_in_paint_order(
+        &self,
+        output: &FullOutput,
+        layer_order: &[LayerId],
+    ) -> Option<(usize, usize)> {
+        let evidence = self.present_spans(output)?;
+        let mut spans = evidence
+            .spans
+            .into_iter()
+            .enumerate()
+            .map(|(index, span)| (0, index, span))
+            .collect::<Vec<_>>();
+        if !spans_follow_paint_order(&mut spans, layer_order) {
+            return None;
+        }
+        Some((spans.first()?.2.range.0, spans.last()?.2.range.1))
+    }
+
+    /// Returns each exact owned interval with its egui layer identity.
     ///
     /// Every marker must occur exactly once in the entire output, including
-    /// nested compounds. The primary begin/end slice and every popup suffix
-    /// ending at its own marker must match their complete frozen contents.
-    /// The spans must retain their captured egui layer order without overlap.
-    /// The final pixel scale must exactly match the context scale at finish.
-    /// Callers combining surfaces must also validate their relative order.
-    pub(super) fn is_present_once(&self, output: &FullOutput) -> Option<(usize, usize)> {
+    /// nested compounds. The primary slice and every popup suffix must match
+    /// their complete frozen contents, and the final pixel scale must match.
+    pub(super) fn present_spans(&self, output: &FullOutput) -> Option<SurfaceOutputSpans> {
         if output.pixels_per_point != self.pixels_per_point {
             return None;
         }
@@ -258,33 +267,104 @@ impl SurfaceOutputProof {
             return None;
         }
         let primary = (begin, end);
-        let mut range: Option<(usize, usize)> = None;
-        for index in 0..=self.spans.len() {
-            let current = if index == self.primary_span_index {
-                primary
-            } else {
-                let span = self.spans.get(if index < self.primary_span_index {
-                    index
-                } else {
-                    index - 1
-                })?;
-                let end = unique_marker_index(&output.shapes, &span.end)?.checked_add(1)?;
-                let begin = end.checked_sub(span.expected.len())?;
-                if output.shapes.get(begin..end)? != span.expected.as_slice() {
-                    return None;
-                }
-                (begin, end)
-            };
-            range = Some(if let Some((begin, end)) = range {
-                if end > current.0 {
-                    return None;
-                }
-                (begin, current.1)
-            } else {
-                current
+        let mut spans = Vec::with_capacity(self.spans.len() + 1);
+        spans.push(SurfaceOutputSpanEvidence {
+            layer: self.primary_layer,
+            range: primary,
+        });
+        for span in &self.spans {
+            let end = unique_marker_index(&output.shapes, &span.end)?.checked_add(1)?;
+            let begin = end.checked_sub(span.expected.len())?;
+            if output.shapes.get(begin..end)? != span.expected.as_slice() {
+                return None;
+            }
+            spans.push(SurfaceOutputSpanEvidence {
+                layer: span.layer,
+                range: (begin, end),
             });
         }
-        range
+        Some(SurfaceOutputSpans { spans })
+    }
+}
+
+pub(super) struct SurfaceOutputSpans {
+    pub(super) spans: Vec<SurfaceOutputSpanEvidence>,
+}
+
+pub(super) struct SurfaceOutputSpanEvidence {
+    pub(super) layer: LayerId,
+    pub(super) range: (usize, usize),
+}
+
+pub(super) fn final_paint_layer_order(context: &Context) -> Vec<LayerId> {
+    context.memory(|memory| {
+        let mut layers = memory.layer_ids().collect::<Vec<_>>();
+        layers.sort_by_key(|layer| layer.order);
+        layers
+    })
+}
+
+pub(super) fn spans_follow_paint_order(
+    spans: &mut [(usize, usize, SurfaceOutputSpanEvidence)],
+    layer_order: &[LayerId],
+) -> bool {
+    for (_, _, span) in spans.iter() {
+        if layer_order.contains(&span.layer) {
+            continue;
+        }
+        // egui drains registered areas first, then unregistered graphics by
+        // hash iteration within the same Order; that fallback is not provable.
+        if spans.iter().any(|(_, _, other)| {
+            other.layer != span.layer
+                && other.layer.order == span.layer.order
+                && !layer_order.contains(&other.layer)
+        }) {
+            return false;
+        }
+    }
+
+    for (_, _, left) in spans.iter() {
+        for (_, _, right) in spans.iter() {
+            if left.layer.order != right.layer.order || left.layer == right.layer {
+                continue;
+            }
+            if layer_order_rank(left.layer, right.layer, layer_order).is_none() {
+                return false;
+            }
+        }
+    }
+
+    // Within one layer, synchronous participants append in enrollment order.
+    spans.sort_by(|left, right| {
+        let (left_participant, left_span, left) = left;
+        let (right_participant, right_span, right) = right;
+        left.layer.order.cmp(&right.layer.order).then_with(|| {
+            if left.layer == right.layer {
+                (left_participant, left_span).cmp(&(right_participant, right_span))
+            } else {
+                layer_order_rank(left.layer, right.layer, layer_order)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }
+        })
+    });
+    spans
+        .windows(2)
+        .all(|pair| pair[0].2.range.1 <= pair[1].2.range.0)
+}
+
+fn layer_order_rank(
+    left: LayerId,
+    right: LayerId,
+    layer_order: &[LayerId],
+) -> Option<std::cmp::Ordering> {
+    match (
+        layer_order.iter().position(|layer| *layer == left),
+        layer_order.iter().position(|layer| *layer == right),
+    ) {
+        (Some(left), Some(right)) => Some(left.cmp(&right)),
+        (Some(_), None) => Some(std::cmp::Ordering::Less),
+        (None, Some(_)) => Some(std::cmp::Ordering::Greater),
+        (None, None) => None,
     }
 }
 
@@ -676,11 +756,13 @@ mod tests {
     }
 
     #[test]
-    fn multilayer_capture_uses_egui_layer_order_instead_of_capture_traversal() {
+    fn multilayer_capture_records_span_layer_identities_without_ordering_them() {
         let context = Context::default();
         let mut proof = None;
+        let mut primary_layer = None;
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             let primary = known_layer(ui.ctx(), "multilayer-ordered-primary");
+            primary_layer = Some(primary);
             let painter = ui.ctx().layer_painter(primary);
             let capture = SurfaceOutputCapture::begin_multilayer(&painter);
             painter.circle_filled(egui::pos2(20.0, 20.0), 5.0, egui::Color32::BLUE);
@@ -703,8 +785,20 @@ mod tests {
             proof = capture.finish(&painter);
         });
         let proof = proof.expect("registered layers have explicit egui paint order");
-        assert_eq!(proof.primary_span_index, 1);
+        assert_eq!(proof.primary_layer, primary_layer.unwrap());
         assert_eq!(proof.spans.len(), 2);
+        assert!(
+            proof
+                .spans
+                .iter()
+                .any(|span| span.layer.order == egui::Order::Background)
+        );
+        assert!(
+            proof
+                .spans
+                .iter()
+                .any(|span| span.layer.order == egui::Order::Foreground)
+        );
         assert!(proof.is_present_once(&output).is_some());
         output.textures_delta.clear();
     }
@@ -799,9 +893,10 @@ mod tests {
         };
         (
             SurfaceOutputProof {
+                context: Context::default(),
                 expected,
+                primary_layer: LayerId::background(),
                 spans: Vec::new(),
-                primary_span_index: 0,
                 pixels_per_point: 2.0,
                 begin,
                 end,

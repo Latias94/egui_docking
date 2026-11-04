@@ -262,11 +262,13 @@ fn paint(
 
 fn present(session: &mut DockspaceSession, output: PaintedSurfaceOutput) {
     let artifact = output.presentation_artifact();
-    let previous = session.presented_surface(SURFACE);
     session
         .report_surface_presentation(output, SurfacePresentationResult::Presented)
         .unwrap();
-    assert_eq!(session.presented_surface(SURFACE), previous);
+    assert!(
+        session.presented_surface(SURFACE).is_none(),
+        "reporting newer pixels immediately withholds previous receiver authority"
+    );
     let report = idle(session);
     assert!(
         report

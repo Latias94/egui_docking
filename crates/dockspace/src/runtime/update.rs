@@ -66,6 +66,12 @@ impl DockspaceUpdate {
         {
             return Err(DockspaceRuntimeError::foreign_update());
         }
+        #[cfg(feature = "serde")]
+        if self.document_restore.as_ref().is_some_and(|restore| {
+            !restore.is_current_for(&session.engine, session.document.as_ref())
+        }) {
+            return Err(DockspaceRuntimeError::prepared_document_restore_mismatch());
+        }
         let Self {
             update_lease,
             presentation_host: _,

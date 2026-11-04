@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::pass_settlement::{
-    DockspaceOutput, PendingPaneFocusObservation, ProductPassClaim, ProductPassSettlementRun,
-    ProductPointerPacket, RUN_SCOPE_TAG, pointer_packet,
+    DockspaceOutput, OutputTexturesGuard, PendingPaneFocusObservation, ProductPassClaim,
+    ProductPassSettlementRun, ProductPointerPacket, RUN_SCOPE_TAG, pointer_packet,
 };
 use dockspace::runtime::{
     DeferredSurfaceAction, DockspaceContextMenuRequest, DockspaceUpdate,
@@ -267,6 +267,7 @@ impl Dockspace {
                 error.get_or_insert_with(|| DockspaceErrorSource::PassSettlementConflict.into());
                 return;
             };
+            let _callback = scope.enter(ui);
             terminal = None;
             if error.is_some() {
                 return;
@@ -495,17 +496,21 @@ impl Dockspace {
                 Err(failure) => error = Some(failure),
             }
         });
+        let texture_guard = OutputTexturesGuard::take(context, &mut output);
         if let Some(error) = error {
             return Err(error);
         }
-        let pass = terminal.ok_or(DockspaceErrorSource::PassSettlementConflict)?;
+        let layer_order = run.layer_order_witness();
+        let Some(pass) = terminal else {
+            return Err(DockspaceErrorSource::PassSettlementConflict.into());
+        };
         if !run.owns_only(&self.pass_settlement)
             || (pass.had_plan && pass.receipt.is_none())
             || (pass.had_plan
                 && pass
                     .proof
                     .as_ref()
-                    .and_then(|proof| proof.is_present_once(&output))
+                    .and_then(|proof| proof.is_present_once_in_paint_order(&output, &layer_order))
                     .is_none())
         {
             return Err(DockspaceErrorSource::PassSettlementConflict.into());
@@ -582,6 +587,7 @@ impl Dockspace {
             pass.focus_capability,
         )?;
         response.include_preceding_feedback(preceding_feedback);
+        texture_guard.restore_into_output(&mut output);
         let receipt = run.complete(&mut output);
         Ok((DockspaceOutput::new(output, receipt), response))
     }

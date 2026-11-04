@@ -467,7 +467,10 @@ impl DockspaceSession {
     ///
     /// Returns an error without changing published state when the prepared value
     /// is stale or belongs to another session, arrangement editing is locked,
-    /// or the rollbackable frame cannot begin. The caller retains `restore` for an exact retry.
+    /// or the rollbackable frame cannot begin. If the frame is suspended and its
+    /// document sidecars change before resume, resuming the submitted restore
+    /// returns `OperationConflict`; prepare it again against the current session.
+    /// The caller retains `restore` for an exact retry when no intervening state changed.
     pub fn begin_document_restore_frame(
         &mut self,
         restore: &PreparedDockspaceDocumentRestore,

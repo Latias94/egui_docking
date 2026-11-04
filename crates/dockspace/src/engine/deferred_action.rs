@@ -270,11 +270,17 @@ impl DockEngine {
             LocalSurfaceAction::TabChrome { action, .. } => {
                 self.deferred_tab_chrome_is_current(plan, action)
             }
-            LocalSurfaceAction::AdjustSplitter { splitter, .. } => root_is_current(splitter.root),
-            LocalSurfaceAction::AdjustSplitterJunction { junction, .. } => junction
-                .splitters()
-                .iter()
-                .all(|splitter| root_is_current(splitter.root)),
+            LocalSurfaceAction::AdjustSplitter { splitter, .. } => {
+                root_is_current(splitter.root)
+                    && self.deferred_splitter_geometry_is_current(witness)
+            }
+            LocalSurfaceAction::AdjustSplitterJunction { junction, .. } => {
+                junction
+                    .splitters()
+                    .iter()
+                    .all(|splitter| root_is_current(splitter.root))
+                    && self.deferred_splitter_geometry_is_current(witness)
+            }
             LocalSurfaceAction::CancelWithEscape { status } => {
                 *status == self.interaction.status() && *status != InteractionStatus::Idle
             }
@@ -282,6 +288,37 @@ impl DockEngine {
         current
             .then_some(())
             .ok_or(InteractionRejection::TargetAuthorityInvalid)
+    }
+
+    fn deferred_splitter_geometry_is_current(
+        &self,
+        witness: &crate::scene::SurfacePlanScene,
+    ) -> bool {
+        let Some(current) = self.scene().surface(witness.stamp().surface()) else {
+            return false;
+        };
+        if current.stamp().requirement() != witness.stamp().requirement() {
+            return false;
+        }
+        match current {
+            SurfaceScene::Ready(ready) => ready
+                .plan()
+                .layout_facts()
+                .zip(witness.plan().layout_facts())
+                .is_some_and(|(current, frozen)| current.measurements() == frozen.measurements()),
+            // A discarded UI pass can supply the first exact geometry for the
+            // current requirements. An explicit failed observation cannot.
+            SurfaceScene::Bootstrap(scene) => matches!(
+                scene.reason(),
+                crate::scene::BootstrapSurfaceSceneReason::AwaitingContribution
+                    | crate::scene::BootstrapSurfaceSceneReason::RequirementsChanged
+                    | crate::scene::BootstrapSurfaceSceneReason::WorkspaceReplaced
+            ),
+            SurfaceScene::Stale(scene) => matches!(
+                scene.reason(),
+                crate::scene::StaleSurfaceSceneReason::RequirementsChanged
+            ),
+        }
     }
 
     fn deferred_presentation_destination_is_current(

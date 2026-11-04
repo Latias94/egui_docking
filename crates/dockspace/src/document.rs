@@ -609,6 +609,7 @@ pub(crate) struct PreparedRuntimeDocumentRestore {
 #[derive(Debug)]
 pub(crate) struct PendingRuntimeDocumentRestore {
     binding: BoundDocumentState,
+    source_document: BoundDocumentState,
     expected_workspace: WorkspaceSnapshot,
     expected_frontier: PresentationIdentityFrontier,
     frame_start_version: WorkspaceVersion,
@@ -688,6 +689,7 @@ impl PreparedRuntimeDocumentRestore {
                 item_identity_scope: self.item_identity_scope,
                 viewport_placements,
             },
+            source_document: self.source_document,
             expected_workspace,
             expected_frontier,
             frame_start_version: self.frame_start_version,
@@ -703,6 +705,16 @@ impl PreparedRuntimeDocumentRestore {
 }
 
 impl PendingRuntimeDocumentRestore {
+    pub(crate) fn is_current_for(
+        &self,
+        engine: &DockEngine,
+        document: Option<&BoundDocumentState>,
+    ) -> bool {
+        self.frame_start_version == engine.version()
+            && self.source_authority_domain == engine.authority_domain()
+            && document.is_some_and(|document| self.source_document == *document)
+    }
+
     pub(crate) fn viewport_placements(&self) -> &ViewportPlacementPreferences {
         self.binding.viewport_placements()
     }

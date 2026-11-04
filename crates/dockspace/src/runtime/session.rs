@@ -368,7 +368,11 @@ impl DockspaceSession {
     ///
     /// Returns [`super::DockspaceRuntimeErrorKind::ForeignUpdate`] when this
     /// session does not own the update's active lease, or its exact host or input
-    /// producer authority changed while the update was suspended.
+    /// producer authority changed while the update was suspended. A suspended
+    /// document restore also returns
+    /// [`super::DockspaceRuntimeErrorKind::OperationConflict`] if its source
+    /// document sidecars changed; that update is consumed and the restore must be
+    /// prepared again from the current session.
     pub fn resume_update(
         &mut self,
         update: DockspaceUpdate,
@@ -560,7 +564,7 @@ impl DockspaceSession {
                 .native
                 .as_mut()
                 .ok_or(NativePlatformError::ProtocolInvariant)?;
-            if !native.reduce_pending_input(&mut frame, budget, resolver)? {
+            if !native.reduce_pending_input(&mut frame, budget, resolver, &self.presentation)? {
                 native.retain_pending_replay(native::PendingNativeReplay {
                     frame,
                     submitted_presentation,

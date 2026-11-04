@@ -1167,7 +1167,10 @@ fn changed_external_measurements_revoke_active_resize_and_its_old_output_proof()
             blocked.surface_presentation_commits().is_empty(),
             "the older unresolved output still blocks this stream prefix"
         );
-        assert_eq!(session.presented_surface(SURFACE), Some(source));
+        assert!(
+            session.presented_surface(SURFACE).is_none(),
+            "newer presented pixels revoke old input while their prefix is blocked"
+        );
 
         session
             .report_surface_presentation(old_output, Disposition::Presented)

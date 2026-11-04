@@ -103,17 +103,16 @@ impl DockEngine {
         input: InputSequence,
         focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
-        application_base: WorkspaceVersion,
         scene: SurfaceSceneStamp,
         tab: crate::scene::TabSceneId,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        if expected != application_base {
+        if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
                 expected,
-                accepted_base: application_base,
+                accepted_base: self.version,
             });
         }
 
@@ -384,16 +383,15 @@ impl DockEngine {
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
-        application_base: WorkspaceVersion,
         scene: SurfaceSceneStamp,
         action: &LocalTabChromeAction,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        if expected != application_base {
+        if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
                 expected,
-                accepted_base: application_base,
+                accepted_base: self.version,
             });
         }
         let candidate = match self.semantic_candidate(scene) {
@@ -545,7 +543,6 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         expected: WorkspaceVersion,
-        application_base: WorkspaceVersion,
         scene: SurfaceSceneStamp,
         splitter: SplitterSceneId,
         delta: f64,
@@ -553,10 +550,10 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        if expected != application_base {
+        if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
                 expected,
-                accepted_base: application_base,
+                accepted_base: self.version,
             });
         }
         let outcome = self.adjust_splitter_resize(
@@ -580,7 +577,6 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         expected: WorkspaceVersion,
-        application_base: WorkspaceVersion,
         scene: SurfaceSceneStamp,
         junction: crate::scene::SplitterJunctionId,
         axis: crate::model::DockspaceAxis,
@@ -589,10 +585,10 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        if expected != application_base {
+        if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
                 expected,
-                accepted_base: application_base,
+                accepted_base: self.version,
             });
         }
         let outcome = self.adjust_splitter_junction_resize(

@@ -2870,12 +2870,20 @@ impl CoreHostFrame {
         &[HostPresentationObservationOutcome],
         Option<HostPresentationStreamId>,
     ) {
+        let endpoint = self
+            .candidate
+            .scene()
+            .ready_candidate(surface)
+            .map(|candidate| presentation_endpoint_from_capture(candidate.coordinate_capture()));
         (
             &self.presentation_observation_outcomes,
             self.candidate
                 .presentation_authority
                 .presentation
                 .active_surface_scope(surface)
+                .filter(|(_, active_host, active_endpoint)| {
+                    *active_host == self.presentation_host && Some(*active_endpoint) == endpoint
+                })
                 .map(|(stream, _, _)| stream),
         )
     }

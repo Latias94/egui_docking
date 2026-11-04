@@ -2241,15 +2241,30 @@ impl DockEngine {
             events,
             interaction_events,
         )?;
-        if !matches!(outcome, InteractionOutcome::DragDelivered { .. }) {
-            return Err(EngineError::PointerInteractionInvariant {
+        match outcome {
+            InteractionOutcome::DragDelivered { .. } => Ok(true),
+            InteractionOutcome::Rejected(rejection) => {
+                interaction_events.push(InteractionEvent::new_caused(
+                    cause,
+                    self.version,
+                    InteractionEventKind::Rejected {
+                        status: InteractionStatus::Dragging {
+                            session: pending.session,
+                        },
+                        reason: crate::interaction::ManipulationRejection::from_interaction(
+                            &rejection,
+                        ),
+                    },
+                ));
+                Ok(true)
+            }
+            outcome => Err(EngineError::PointerInteractionInvariant {
                 cause,
                 detail: format!(
-                    "presented release obligation did not deliver its frozen command: {outcome:?}"
+                    "presented release obligation ended without delivery or rejection: {outcome:?}"
                 ),
-            });
+            }),
         }
-        Ok(true)
     }
 
     #[cfg(test)]

@@ -464,9 +464,13 @@ impl DockEngine {
         let PresentationHitRegionKind::TabBody(tab) = region.id().kind() else {
             return None;
         };
+        if !self.presented_receiver_is_current(presentation.plan(), region.id()) {
+            return None;
+        }
         matches!(
             self.workspace.nodes.get(tab.tabs),
-            Some(Node::Tabs { selected, .. }) if *selected != Some(tab.item)
+            Some(Node::Tabs { items, selected })
+                if items.contains(&tab.item) && *selected != Some(tab.item)
         )
         .then_some((tab, authority, point))
     }

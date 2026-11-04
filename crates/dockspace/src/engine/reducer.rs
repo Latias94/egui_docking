@@ -1654,7 +1654,6 @@ impl DockEngine {
                 input.sequence,
                 focus_causal,
                 *expected,
-                *application_base,
                 *scene,
                 *tab,
                 tick_start.policy,
@@ -1669,7 +1668,6 @@ impl DockEngine {
                 cause,
                 focus_causal,
                 *expected,
-                *application_base,
                 *scene,
                 action,
                 tick_start.policy,
@@ -1726,7 +1724,6 @@ impl DockEngine {
             } => self.reduce_local_splitter_adjustment_input(
                 input.sequence,
                 *expected,
-                *application_base,
                 *scene,
                 *splitter,
                 *delta,
@@ -1743,7 +1740,6 @@ impl DockEngine {
             } => self.reduce_local_splitter_junction_adjustment_input(
                 input.sequence,
                 *expected,
-                *application_base,
                 *scene,
                 *junction,
                 *axis,
@@ -1761,7 +1757,6 @@ impl DockEngine {
             } => self.reduce_local_contained_resize_adjustment(
                 input.sequence,
                 *expected,
-                *application_base,
                 *scene,
                 *floating,
                 *direction,
