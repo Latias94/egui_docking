@@ -2052,7 +2052,7 @@ fn compile_tab_strip_reducer_plan_for(
     surface: SurfaceId,
     measurements: &SurfaceMeasurements,
 ) -> PresentationPlan {
-    compile_surface_measurements(
+    let plan = compile_surface_measurements(
         engine.workspace(),
         engine.version(),
         &engine.policy,
@@ -2063,7 +2063,17 @@ fn compile_tab_strip_reducer_plan_for(
         &[],
         None,
     )
-    .unwrap_or_else(|source| panic!("tab-strip measurements for {surface} must compile: {source}"))
+    .unwrap_or_else(|source| panic!("tab-strip measurements for {surface} must compile: {source}"));
+    PresentationPlanValidator::for_manifest_surface(
+        engine.workspace(),
+        engine.version(),
+        engine.presentation_requirements(),
+        &engine.policy,
+        surface,
+    )
+    .expect("the tab-strip fixture validator must match its exact manifest surface")
+    .validate_and_canonicalize(plan)
+    .expect("the tab-strip fixture must validate and link its canonical surface program")
 }
 
 fn tab_strip_test_cause() -> ReductionCause {

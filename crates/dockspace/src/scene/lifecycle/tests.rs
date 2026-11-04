@@ -108,6 +108,8 @@ fn candidate_with_popup(
     );
     plan.finish_surface_program()
         .expect("empty lifecycle fixture program should finish");
+    plan.link_surface_program()
+        .expect("empty lifecycle fixture program should link");
     plan
 }
 

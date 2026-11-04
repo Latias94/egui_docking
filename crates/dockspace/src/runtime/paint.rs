@@ -24,8 +24,8 @@ use crate::scene::{
     ContainedLayoutOwner, ContainedRecord, ContainedResizeRecord, PresentationMenuAnchorHost,
     PresentationMenuAnchorRecord, PresentationPlan, ResolvedSurfaceProgramOperation,
     ResolvedSurfaceProgramRoot, ResolvedSurfaceProgramStep, SplitterJunctionDirection,
-    SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterSceneId,
-    SurfaceProgramBlock, SurfaceScene, TabBarSceneId, TabSceneId,
+    SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterSceneId, SurfaceScene,
+    TabBarSceneId, TabSceneId,
 };
 #[cfg(test)]
 use crate::scene::{SurfaceProgramRootOperation, SurfaceProgramRootPresentation};
@@ -1564,7 +1564,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     ) -> Result<Option<SurfacePaintProgramStep<'frame>>, ()> {
         Ok(match step {
             ResolvedSurfaceProgramStep::RootBegin(root) => {
-                let root = self.resolve_surface_program_root(root).ok_or(())?;
+                let root = self.resolve_surface_program_root(root);
                 let paint = root
                     .contained()
                     .map_or(SurfacePaintDisposition::Visible, |record| {
@@ -1573,7 +1573,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
                 Some(SurfacePaintProgramStep::RootBegin { root, paint })
             }
             ResolvedSurfaceProgramStep::Operation { root, operation } => {
-                let root = self.resolve_surface_program_root(root).ok_or(())?;
+                let root = self.resolve_surface_program_root(root);
                 let operation = self
                     .resolve_surface_program_operation_record(operation, menu_open_bars)
                     .ok_or(())?;
@@ -1585,7 +1585,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
                 })
             }
             ResolvedSurfaceProgramStep::RootEnd(root) => Some(SurfacePaintProgramStep::RootEnd(
-                self.resolve_surface_program_root(root).ok_or(())?,
+                self.resolve_surface_program_root(root),
             )),
             ResolvedSurfaceProgramStep::PopupBackdrop(record) => Some(
                 SurfacePaintProgramStep::PopupBackdrop(TabListMenuBackdropPaintRecord {
@@ -1646,26 +1646,20 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     fn resolve_surface_program_root(
         self,
-        root: ResolvedSurfaceProgramRoot,
-    ) -> Option<SurfacePaintProgramRoot<'frame>> {
-        let kind = match root.contained() {
+        root: ResolvedSurfaceProgramRoot<'frame>,
+    ) -> SurfacePaintProgramRoot<'frame> {
+        let kind = match root.contained_record() {
             None => SurfacePaintProgramRootKind::Main,
-            Some(floating) => {
-                let record =
-                    self.plan.contained_records().iter().find(|record| {
-                        record.floating() == floating && record.root() == root.root()
-                    })?;
-                SurfacePaintProgramRootKind::Contained(ContainedPaintRecord {
-                    record,
-                    plan: self.plan,
-                })
-            }
+            Some(record) => SurfacePaintProgramRootKind::Contained(ContainedPaintRecord {
+                record,
+                plan: self.plan,
+            }),
         };
-        Some(SurfacePaintProgramRoot {
+        SurfacePaintProgramRoot {
             root: root.root(),
             kind,
             title_item: root.title_item(),
-        })
+        }
     }
 
     fn resolve_surface_program_operation_record(
@@ -2488,8 +2482,15 @@ impl<'frame> SurfacePaintPlan<'frame> {
             && self
                 .plan
                 .tab_bar_records()
-                .iter()
-                .find(|bar| bar.id().root == tab.id().root && bar.id().tabs == tab.id().tabs)
+                .binary_search_by_key(
+                    &TabBarSceneId {
+                        root: tab.id().root,
+                        tabs: tab.id().tabs,
+                    },
+                    |bar| *bar.id(),
+                )
+                .ok()
+                .map(|index| &self.plan.tab_bar_records()[index])
                 .is_some_and(|bar| bar.interaction() == crate::policy::TabBarInteraction::Enabled)
             && self.plan.region_is_operable(bounds, tab.layer())
     }
@@ -2509,22 +2510,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     /// Returns tab bars whose popup menu is present in the ordered program.
     fn program_menu_open_bars(self) -> HashSet<TabBarSceneId> {
-        let popup_sessions = self
-            .plan
-            .surface_program()
-            .blocks()
-            .iter()
-            .filter_map(|block| match block {
-                SurfaceProgramBlock::PopupMenu(session) => Some(*session),
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
-        self.plan
-            .tab_list_menu_records()
-            .iter()
-            .filter(|menu| popup_sessions.contains(&menu.session()))
-            .map(|menu| menu.bar())
-            .collect()
+        if self.plan.tab_list_menu_records().is_empty() {
+            return HashSet::new();
+        }
+        self.plan.surface_program_menu_open_bars().collect()
     }
 }
 
@@ -2699,6 +2688,10 @@ mod tests {
         malformed
             .finish_surface_program()
             .expect("the malformed program seals structurally");
+        assert!(matches!(
+            malformed.link_surface_program(),
+            Err(crate::scene::SceneBuildError::InvalidSurfaceProgram { .. })
+        ));
         let malformed = SurfacePaintPlan {
             plan: &malformed,
             program_valid: false,
@@ -2779,6 +2772,9 @@ mod tests {
         malformed
             .finish_surface_program()
             .expect("the target program seals structurally");
+        malformed
+            .link_surface_program()
+            .expect("the target row links before testing dynamic receiver validation");
         let malformed = SurfacePaintPlan {
             plan: &malformed,
             program_valid: false,

@@ -3742,6 +3742,8 @@ mod tests {
             .expect("test control root closes");
         plan.finish_surface_program()
             .expect("test control program finishes");
+        plan.link_surface_program()
+            .expect("test control program links its actual record row");
         let authority = EngineAuthorityDomainId::new_for_test(13);
         let ticket = SurfaceMeasurementTicket::new(
             authority,

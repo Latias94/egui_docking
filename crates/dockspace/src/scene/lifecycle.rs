@@ -342,6 +342,10 @@ impl SurfacePlanScene {
         &self.plan
     }
 
+    pub(crate) const fn shared_plan(&self) -> &Arc<PresentationPlan> {
+        &self.plan
+    }
+
     /// Returns the canonical hit inventory bound to this exact output.
     #[must_use]
     pub fn hit_manifest(&self) -> &PresentationHitManifest {
@@ -1206,11 +1210,12 @@ impl SurfaceSceneSet {
 
     pub(crate) fn install_ready(
         &mut self,
-        plan: PresentationPlan,
+        plan: impl Into<Arc<PresentationPlan>>,
         coordinate_capture: SurfaceCoordinateCapture,
         authority_domain: EngineAuthorityDomainId,
         output_serial: PresentationOutputSerial,
     ) -> Result<(SurfaceSceneStamp, SurfacePresentationOutputTicket), SceneBuildError> {
+        let plan = plan.into();
         let surface = plan.surface();
         if plan.popup() != self.popup_requirement {
             return Err(SceneBuildError::PopupPlaneRecordSetMismatch { surface });
@@ -1222,8 +1227,9 @@ impl SurfaceSceneSet {
         // candidate. Concrete paints still receive distinct emission keys.
         if let Some(SurfaceScene::Ready(ready)) =
             self.surfaces.get(&surface).map(SurfaceSceneRecord::scene)
-            && ready.candidate().plan() == &plan
             && ready.candidate().coordinate_capture() == coordinate_capture
+            && (Arc::ptr_eq(ready.candidate().shared_plan(), &plan)
+                || ready.candidate().plan() == plan.as_ref())
         {
             return Ok((ready.stamp(), ready.output_ticket()));
         }
@@ -1266,7 +1272,7 @@ impl SurfaceSceneSet {
                 candidate: Box::new(SurfacePlanScene {
                     stamp,
                     output_ticket,
-                    plan: Arc::new(plan),
+                    plan,
                     hit_manifest: Arc::new(hit_manifest),
                     semantic_manifest: Arc::new(semantic_manifest),
                     coordinate_capture,

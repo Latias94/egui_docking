@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod reuse_tests;
+
 /// Core-minted capture of one surface measurement callback's exact base facts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceContributionToken {
@@ -68,7 +71,7 @@ impl PreparedReadySurfacePaintCandidate<'_> {
 #[derive(Debug, PartialEq)]
 pub(super) enum PreparedSurfaceContributionState {
     Ready {
-        plan: PresentationPlan,
+        plan: Arc<PresentationPlan>,
     },
     Retained {
         ticket: SurfacePresentationOutputTicket,
@@ -280,30 +283,66 @@ impl DockEngine {
         }
 
         let resize_overrides = self.surface_resize_overrides(surface);
+        let matching_candidate = self
+            .scene()
+            .ready_candidate(surface)
+            .filter(|candidate| candidate.coordinate_capture() == token.coordinates)
+            .filter(|candidate| {
+                candidate.plan().layout_facts().is_some_and(|layout| {
+                    layout.config() == &self.presentation_authority.presentation_config
+                        && layout.measurements().as_ref() == &measurements
+                })
+            });
         let contained_projection =
             self.contained_layout_projection(surface)
                 .map(|mut projection| {
-                    projection.target_basis = self
-                        .scene()
-                        .ready_candidate(surface)
-                        .filter(|candidate| candidate.coordinate_capture() == token.coordinates)
-                        .filter(|candidate| {
-                            candidate.plan().layout_facts().is_some_and(|layout| {
-                                layout.config() == &self.presentation_authority.presentation_config
-                                    && layout.measurements().as_ref() == &measurements
-                            })
-                        })
-                        .map(|candidate| {
-                            candidate
-                                .plan()
-                                .contained_projection()
-                                .filter(|previous| previous.owner == projection.owner)
-                                .and_then(|previous| previous.target_basis)
-                                .unwrap_or(candidate.stamp())
-                        });
+                    projection.target_basis = matching_candidate.map(|candidate| {
+                        candidate
+                            .plan()
+                            .contained_projection()
+                            .filter(|previous| previous.owner == projection.owner)
+                            .and_then(|previous| previous.target_basis)
+                            .unwrap_or(candidate.stamp())
+                    });
                     projection
                 });
         let native_projection = self.scene().native_first_live_projection(surface);
+        if native_projection.is_none()
+            && let Some(candidate) = matching_candidate
+            && candidate.plan().measurement_ticket() == Some(token.ticket())
+            && candidate.plan().popup()
+                == self
+                    .presentation_authority
+                    .presentation_requirements
+                    .popup()
+            && candidate.plan().popup()
+                == self
+                    .presentation_authority
+                    .tab_strip_states
+                    .popup_requirement()
+            && candidate.plan().contained_projection() == contained_projection
+            && candidate.plan().resize_projection().len() == resize_overrides.len()
+            && candidate
+                .plan()
+                .resize_projection()
+                .iter()
+                .zip(&resize_overrides)
+                .all(|(previous, current)| {
+                    previous.split() == current.source() && previous.weights() == current.weights()
+                })
+        {
+            // Local tab-state edits invalidate Ready before preparation. Resize and
+            // contained gestures can keep it Ready, so compare their exact inputs.
+            // Reuse remains a Ready answer: the reducer must recheck authority and
+            // adopt its solved offsets before the complete frame can publish it.
+            return Ok(PreparedSurfaceContribution {
+                token,
+                policy_revision,
+                state: PreparedSurfaceContributionState::Ready {
+                    plan: Arc::clone(candidate.shared_plan()),
+                },
+            });
+        }
         let compiled = if let Some(stamp) = native_projection {
             let projection = self
                 .native_first_live_projection(stamp.saga)
@@ -362,7 +401,9 @@ impl DockEngine {
                         SurfaceContributionUnavailableReason::CoordinateAuthorityUnavailable,
                     )
                 } else {
-                    PreparedSurfaceContributionState::Ready { plan }
+                    PreparedSurfaceContributionState::Ready {
+                        plan: Arc::new(plan),
+                    }
                 }
             }
             Err(SurfaceContributionPrepareError::Compilation(

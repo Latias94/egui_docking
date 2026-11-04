@@ -199,6 +199,8 @@ fn measured_candidate(ticket: SurfaceMeasurementTicket) -> PresentationPlan {
     );
     plan.finish_surface_program()
         .expect("empty scene fixture program should finish");
+    plan.link_surface_program()
+        .expect("empty scene fixture program should link");
     plan
 }
 

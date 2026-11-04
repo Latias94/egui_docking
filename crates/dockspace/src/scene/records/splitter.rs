@@ -1,5 +1,7 @@
 //! Splitter, structural gap, and junction presentation records.
 
+use std::sync::Arc;
+
 use crate::drop_target::SceneLayerKey;
 use crate::geometry::LogicalRect;
 use crate::graph::{Axis, SplitWeight};
@@ -30,9 +32,9 @@ pub struct SplitterRecord {
     after_minimum_extent: f64,
     before_maximum_extent: f64,
     after_maximum_extent: f64,
-    child_extents: Vec<f64>,
+    child_extents: Arc<[f64]>,
     central_index: Option<usize>,
-    weights: Vec<SplitWeight>,
+    weights: Arc<[SplitWeight]>,
     layer: SceneLayerKey,
     operable: bool,
 }
@@ -235,9 +237,9 @@ impl SplitterRecord {
         after_minimum_extent: f64,
         before_maximum_extent: f64,
         after_maximum_extent: f64,
-        child_extents: Vec<f64>,
+        child_extents: impl Into<Arc<[f64]>>,
         central_index: Option<usize>,
-        weights: Vec<SplitWeight>,
+        weights: impl Into<Arc<[SplitWeight]>>,
         layer: SceneLayerKey,
         operable: bool,
     ) -> Self {
@@ -252,9 +254,9 @@ impl SplitterRecord {
             after_minimum_extent,
             before_maximum_extent,
             after_maximum_extent,
-            child_extents,
+            child_extents: child_extents.into(),
             central_index,
-            weights,
+            weights: weights.into(),
             layer,
             operable,
         }

@@ -1104,9 +1104,9 @@ pub struct SurfaceMeasurements {
     ticket: SurfaceMeasurementTicket,
     bounds: Option<(SurfaceBoundsKey, Measurement<LogicalRect>)>,
     popup_plane_bounds: Option<(PopupPlaneBoundsKey, Measurement<LogicalRect>)>,
-    pane_minimums: BTreeMap<PaneMinimumKey, Measurement<LogicalSize>>,
-    tab_intrinsics: BTreeMap<TabIntrinsicKey, Measurement<TabIntrinsic>>,
-    tab_strips: BTreeMap<TabStripKey, Measurement<TabStripMetrics>>,
+    pane_minimums: Arc<BTreeMap<PaneMinimumKey, Measurement<LogicalSize>>>,
+    tab_intrinsics: Arc<BTreeMap<TabIntrinsicKey, Measurement<TabIntrinsic>>>,
+    tab_strips: Arc<BTreeMap<TabStripKey, Measurement<TabStripMetrics>>>,
 }
 
 impl SurfaceMeasurements {
@@ -1131,9 +1131,9 @@ impl SurfaceMeasurements {
             ticket,
             bounds: None,
             popup_plane_bounds: None,
-            pane_minimums: BTreeMap::new(),
-            tab_intrinsics: BTreeMap::new(),
-            tab_strips: BTreeMap::new(),
+            pane_minimums: Arc::default(),
+            tab_intrinsics: Arc::default(),
+            tab_strips: Arc::default(),
         }
     }
 
@@ -1154,18 +1154,24 @@ impl SurfaceMeasurements {
             popup_plane_bounds: requirements
                 .popup_plane_bounds()
                 .map(|key| (key, Measurement::Unavailable(reason))),
-            pane_minimums: requirements
-                .pane_minimums()
-                .map(|key| (key, Measurement::Unavailable(reason)))
-                .collect(),
-            tab_intrinsics: requirements
-                .tab_intrinsics()
-                .map(|key| (key, Measurement::Unavailable(reason)))
-                .collect(),
-            tab_strips: requirements
-                .tab_strips()
-                .map(|key| (key, Measurement::Unavailable(reason)))
-                .collect(),
+            pane_minimums: Arc::new(
+                requirements
+                    .pane_minimums()
+                    .map(|key| (key, Measurement::Unavailable(reason)))
+                    .collect(),
+            ),
+            tab_intrinsics: Arc::new(
+                requirements
+                    .tab_intrinsics()
+                    .map(|key| (key, Measurement::Unavailable(reason)))
+                    .collect(),
+            ),
+            tab_strips: Arc::new(
+                requirements
+                    .tab_strips()
+                    .map(|key| (key, Measurement::Unavailable(reason)))
+                    .collect(),
+            ),
         }
     }
 
@@ -1220,7 +1226,7 @@ impl SurfaceMeasurements {
         key: PaneMinimumKey,
         value: Measurement<LogicalSize>,
     ) -> Result<(), MeasurementSubmissionError> {
-        match self.pane_minimums.entry(key) {
+        match Arc::make_mut(&mut self.pane_minimums).entry(key) {
             Entry::Vacant(entry) => {
                 entry.insert(value);
                 Ok(())
@@ -1239,7 +1245,7 @@ impl SurfaceMeasurements {
         key: TabIntrinsicKey,
         value: Measurement<TabIntrinsic>,
     ) -> Result<(), MeasurementSubmissionError> {
-        match self.tab_intrinsics.entry(key) {
+        match Arc::make_mut(&mut self.tab_intrinsics).entry(key) {
             Entry::Vacant(entry) => {
                 entry.insert(value);
                 Ok(())
@@ -1258,7 +1264,7 @@ impl SurfaceMeasurements {
         key: TabStripKey,
         value: Measurement<TabStripMetrics>,
     ) -> Result<(), MeasurementSubmissionError> {
-        match self.tab_strips.entry(key) {
+        match Arc::make_mut(&mut self.tab_strips).entry(key) {
             Entry::Vacant(entry) => {
                 entry.insert(value);
                 Ok(())
@@ -1297,7 +1303,7 @@ impl<'a> ValidatedSurfaceMeasurements<'a> {
             }
             None => None,
         };
-        for (key, value) in &self.measurements.pane_minimums {
+        for (key, value) in self.measurements.pane_minimums.iter() {
             if let Measurement::Unavailable(reason) = value {
                 return Err(MeasurementAuthorityError::PaneMinimum {
                     key: *key,
@@ -1305,7 +1311,7 @@ impl<'a> ValidatedSurfaceMeasurements<'a> {
                 });
             }
         }
-        for (key, value) in &self.measurements.tab_intrinsics {
+        for (key, value) in self.measurements.tab_intrinsics.iter() {
             if let Measurement::Unavailable(reason) = value {
                 return Err(MeasurementAuthorityError::TabIntrinsic {
                     key: *key,
@@ -1313,7 +1319,7 @@ impl<'a> ValidatedSurfaceMeasurements<'a> {
                 });
             }
         }
-        for (key, value) in &self.measurements.tab_strips {
+        for (key, value) in self.measurements.tab_strips.iter() {
             if let Measurement::Unavailable(reason) = value {
                 return Err(MeasurementAuthorityError::TabStrip {
                     key: *key,
@@ -2169,17 +2175,48 @@ mod tests {
     }
 
     #[test]
+    fn a_retained_measurement_snapshot_is_independent_of_later_answers() {
+        let requirements = requirements();
+        let mut contribution = measured_contribution(&requirements);
+        let retained = requirements
+            .validate(&contribution)
+            .unwrap()
+            .require_authoritative()
+            .unwrap()
+            .snapshot();
+        let (_, pane, _, _) = keys();
+        let unexpected = PaneMinimumKey::new(RootId::new(99), pane.tabs(), None);
+        contribution
+            .insert_pane_minimum(
+                unexpected,
+                Measurement::Unavailable(MeasurementUnavailableReason::Deferred),
+            )
+            .unwrap();
+        assert!(matches!(
+            requirements.validate(&contribution),
+            Err(MeasurementValidationError::UnexpectedPaneMinimum { key }) if key == unexpected
+        ));
+        let accepted = requirements
+            .validate(&retained)
+            .unwrap()
+            .require_authoritative()
+            .unwrap();
+        assert!(accepted.pane_minimum(pane).is_some());
+        assert!(accepted.pane_minimum(unexpected).is_none());
+    }
+
+    #[test]
     fn missing_and_unavailable_are_distinct() {
         let requirements = requirements();
         let mut missing = measured_contribution(&requirements);
-        missing.tab_intrinsics.clear();
+        Arc::make_mut(&mut missing.tab_intrinsics).clear();
         assert!(matches!(
             requirements.validate(&missing),
             Err(MeasurementValidationError::MissingTabIntrinsic { key }) if key == keys().2
         ));
 
         let mut unavailable = measured_contribution(&requirements);
-        unavailable.tab_intrinsics.insert(
+        Arc::make_mut(&mut unavailable.tab_intrinsics).insert(
             keys().2,
             Measurement::Unavailable(MeasurementUnavailableReason::TextMetricsUnavailable),
         );
@@ -2216,10 +2253,10 @@ mod tests {
     fn missing_precedes_unexpected_in_stable_exact_set_order() {
         let requirements = requirements();
         let mut contribution = measured_contribution(&requirements);
-        contribution.pane_minimums.clear();
+        Arc::make_mut(&mut contribution.pane_minimums).clear();
         let (_, pane, _, _) = keys();
         let unexpected = PaneMinimumKey::new(RootId::new(99), pane.tabs(), None);
-        contribution.pane_minimums.insert(
+        Arc::make_mut(&mut contribution.pane_minimums).insert(
             unexpected,
             Measurement::Unavailable(MeasurementUnavailableReason::Deferred),
         );
@@ -2236,7 +2273,7 @@ mod tests {
         let mut contribution = measured_contribution(&requirements);
         let (_, pane, _, _) = keys();
         let unexpected = PaneMinimumKey::new(RootId::new(99), pane.tabs(), None);
-        contribution.pane_minimums.insert(
+        Arc::make_mut(&mut contribution.pane_minimums).insert(
             unexpected,
             Measurement::Unavailable(MeasurementUnavailableReason::Deferred),
         );

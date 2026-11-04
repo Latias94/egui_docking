@@ -119,16 +119,25 @@ fn measuring_another_surface_still_refreshes_the_active_contained_source() {
             SurfacePointerReceiverFacts::unknown(),
         )])
         .unwrap();
+    assert_eq!(
+        surface_compilation_count(),
+        0,
+        "pointer motion must defer A's layout refresh until measurement closes input"
+    );
     frame.measure_surface(other_surface, metrics).unwrap();
     assert_eq!(
         surface_compilation_count(),
-        2,
-        "fresh measurement of B must not suppress the required cached projection of A"
+        1,
+        "unchanged B must reuse its plan while A's active contained projection compiles once"
     );
     let (projected, output) = paint_frame(frame, 16);
     projected.assert_projection(&before, rect(200.0, 140.0, 440.0, 324.0));
     present(&mut session, output);
-    assert_eq!(surface_compilation_count(), 2);
+    assert_eq!(
+        surface_compilation_count(),
+        1,
+        "painting and presenting A must keep the freshly solved contained geometry"
+    );
     assert!(session.has_active_gesture());
     assert_eq!(
         session.view().contained(FLOATING).unwrap().rect(),

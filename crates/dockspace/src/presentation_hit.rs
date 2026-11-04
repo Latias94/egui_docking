@@ -409,8 +409,9 @@ impl PresentationHitRegion {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresentationHitManifest {
     output: SurfacePresentationOutputTicket,
-    regions: Vec<PresentationHitRegion>,
-    touch_regions: Vec<(PresentationHitRegionId, crate::geometry::LogicalRect)>,
+    regions: Box<[PresentationHitRegion]>,
+    // Fragment rows refer only to this immutable manifest's region arena.
+    touch_regions: Box<[(usize, crate::geometry::LogicalRect)]>,
 }
 
 impl PresentationHitManifest {
@@ -461,9 +462,19 @@ impl PresentationHitManifest {
                     .binary_search_by_key(&region.id(), |(id, _)| *id)
                     .is_ok()
         });
+        let touch_regions = touch_regions
+            .into_iter()
+            .map(|(id, bounds)| {
+                let index = regions
+                    .binary_search_by_key(&id, |region| region.id())
+                    .map_err(|_| SceneBuildError::InvalidSurfaceProgram { surface })?;
+                Ok((index, bounds))
+            })
+            .collect::<Result<Vec<_>, SceneBuildError>>()?
+            .into_boxed_slice();
         Ok(Self {
             output,
-            regions,
+            regions: regions.into_boxed_slice(),
             touch_regions,
         })
     }
@@ -486,6 +497,10 @@ impl PresentationHitManifest {
     /// Returns one exact region by stable semantic identity.
     #[must_use]
     pub fn region(&self, id: PresentationHitRegionId) -> Option<&PresentationHitRegion> {
+        self.region_index(id).map(|index| &self.regions[index])
+    }
+
+    fn region_index(&self, id: PresentationHitRegionId) -> Option<usize> {
         self.regions
             .binary_search_by_key(&id, |region| {
                 #[cfg(test)]
@@ -493,7 +508,6 @@ impl PresentationHitManifest {
                 region.id()
             })
             .ok()
-            .map(|index| &self.regions[index])
     }
 
     pub(crate) fn region_for_kind(
@@ -530,27 +544,26 @@ impl PresentationHitManifest {
         point: crate::geometry::LogicalPoint,
         device: PointerDeviceKind,
     ) -> bool {
-        let Some(region) = self.region(id) else {
+        let Some(index) = self.region_index(id) else {
             return false;
         };
-        self.region_contains(region, point, device)
+        self.region_contains(index, &self.regions[index], point, device)
     }
 
     fn region_contains(
         &self,
+        index: usize,
         region: &PresentationHitRegion,
         point: crate::geometry::LogicalPoint,
         device: PointerDeviceKind,
     ) -> bool {
         if device == PointerDeviceKind::Touch && touch::replaces(region.id().kind()) {
             // An empty replacement stays empty; it never falls back to mouse geometry.
-            let first = self
-                .touch_regions
-                .partition_point(|(id, _)| *id < region.id());
+            let first = self.touch_regions.partition_point(|(row, _)| *row < index);
             self.touch_regions[first..]
                 .iter()
-                .take_while(|(id, _)| *id == region.id())
-                .any(|(id, rect)| *id == region.id() && rect.contains(point))
+                .take_while(|(row, _)| *row == index)
+                .any(|(_, rect)| rect.contains(point))
         } else {
             region.hit().contains(point)
         }
@@ -563,8 +576,8 @@ impl PresentationHitManifest {
         suppression: PresentationHitSuppression,
         device: PointerDeviceKind,
     ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
-        resolve_exclusive_matching(&self.regions, lane, point, suppression, |region| {
-            self.region_contains(region, point, device)
+        resolve_exclusive_matching(&self.regions, lane, point, suppression, |index, region| {
+            self.region_contains(index, region, point, device)
         })
     }
 }
@@ -972,7 +985,7 @@ fn resolve_exclusive_regions(
     point: crate::geometry::LogicalPoint,
     suppression: PresentationHitSuppression,
 ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
-    resolve_exclusive_matching(regions, lane, point, suppression, |region| {
+    resolve_exclusive_matching(regions, lane, point, suppression, |_, region| {
         region.hit().contains(point)
     })
 }
@@ -982,16 +995,18 @@ fn resolve_exclusive_matching(
     lane: PresentationPointerLane,
     point: crate::geometry::LogicalPoint,
     suppression: PresentationHitSuppression,
-    contains: impl Fn(&PresentationHitRegion) -> bool,
+    contains: impl Fn(usize, &PresentationHitRegion) -> bool,
 ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
     let mut winner: Option<&PresentationHitRegion> = None;
     let mut ambiguity = None;
-    for candidate in regions.iter().filter(|candidate| {
-        !candidate.is_passive()
-            && !suppression.excludes(candidate.id())
-            && candidate.lanes().contains(lane)
-            && contains(candidate)
-    }) {
+    for (index, candidate) in regions.iter().enumerate() {
+        if candidate.is_passive()
+            || suppression.excludes(candidate.id())
+            || !candidate.lanes().contains(lane)
+            || !contains(index, candidate)
+        {
+            continue;
+        }
         match winner {
             None => winner = Some(candidate),
             Some(current) => match candidate.stack().cmp(&current.stack()) {

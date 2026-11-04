@@ -238,13 +238,25 @@ fn manifest(
 ) -> PresentationHitManifest {
     regions.sort_unstable_by_key(|region| region.id());
     touch_regions.sort_by_key(|(id, _)| *id);
+    let touch_regions = touch_regions
+        .into_iter()
+        .map(|(id, bounds)| {
+            (
+                regions
+                    .binary_search_by_key(&id, |region| region.id())
+                    .unwrap(),
+                bounds,
+            )
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
     PresentationHitManifest {
         output: SurfacePresentationOutputTicket::mint(
             ticket().authority_domain(),
             PresentationOutputSerial::new_for_test(1),
             SurfaceSceneStamp::new(ticket(), SurfaceSceneRevision::new(1)),
         ),
-        regions,
+        regions: regions.into_boxed_slice(),
         touch_regions,
     }
 }

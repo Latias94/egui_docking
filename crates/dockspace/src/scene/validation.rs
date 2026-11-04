@@ -200,6 +200,9 @@ impl<'a> PresentationPlanValidator<'a> {
             &self.workspace_index,
             self.policy,
         );
+        if ready.measurement_ticket().is_some() {
+            ready.link_surface_program()?;
+        }
         Ok(ready)
     }
 }
@@ -1777,13 +1780,11 @@ fn canonicalize_ready(
 
     let surface = ready.surface;
     for target in &mut ready.drop_targets {
-        canonicalize_drop_target(
-            Arc::make_mut(target),
-            workspace,
-            workspace_index,
-            surface,
-            policy,
-        );
+        let availability =
+            canonical_drop_target_availability(target, workspace, workspace_index, surface, policy);
+        if target.availability() != availability {
+            Arc::make_mut(target).set_availability(availability);
+        }
     }
     let canonical_targets = ready
         .drop_targets
@@ -1800,33 +1801,30 @@ fn canonicalize_ready(
     }
 }
 
-fn canonicalize_drop_target(
-    target: &mut DropTargetRecord,
+fn canonical_drop_target_availability(
+    target: &DropTargetRecord,
     workspace: &Workspace,
     workspace_index: &SceneWorkspaceIndex,
     surface: SurfaceId,
     policy: &DockPolicySnapshot,
-) {
+) -> DropTargetAvailability {
     if !target.availability().is_available() {
-        return;
+        return target.availability();
     }
     if !target_reference_is_current(workspace, workspace_index, target)
         || !target_structure_is_valid(workspace, workspace_index, surface, target)
     {
-        target.set_availability(DropTargetAvailability::Unavailable(
-            DropTargetUnavailable::Stale,
-        ));
-        return;
+        return DropTargetAvailability::Unavailable(DropTargetUnavailable::Stale);
     }
     let allowed = match target.id().kind() {
         DropTargetKind::TabGap | DropTargetKind::Center => policy.allows_tab_merge(),
         DropTargetKind::InnerEdge | DropTargetKind::OuterEdge => policy.allows_edge_split(),
         DropTargetKind::SurfaceBackground => true,
     };
-    if !allowed {
-        target.set_availability(DropTargetAvailability::Unavailable(
-            DropTargetUnavailable::PolicyDisabled,
-        ));
+    if allowed {
+        DropTargetAvailability::Available
+    } else {
+        DropTargetAvailability::Unavailable(DropTargetUnavailable::PolicyDisabled)
     }
 }
 

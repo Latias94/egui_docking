@@ -1,5 +1,10 @@
 use super::*;
+use crate::graph::SplitWeight;
 use crate::layout::{RootMeasurement, measure_root_minimums};
+
+#[cfg(test)]
+#[path = "surface/shared_splitter_tests.rs"]
+mod shared_splitter_tests;
 
 #[cfg(test)]
 thread_local! {
@@ -791,6 +796,8 @@ fn compile_root(
                     config.splitter_hit_extent(),
                     bounds,
                 )?;
+                let mut resize_facts = None;
+                let operable = policy.splitter_resize_is_allowed(*axis, surface);
                 for (index, (splitter, hit)) in split
                     .splitter_rects
                     .iter()
@@ -859,11 +866,17 @@ fn compile_root(
                                 child: children[index + 1],
                             },
                         )?;
-                    let effective_weights = root_overrides
-                        .iter()
-                        .find(|override_| override_.source().node() == *node)
-                        .map_or_else(|| weights.clone(), |override_| override_.weights().to_vec());
-                    let operable = policy.splitter_resize_is_allowed(*axis, surface);
+                    let (child_extents, effective_weights) =
+                        resize_facts.get_or_insert_with(|| {
+                            let effective_weights = root_overrides
+                                .iter()
+                                .find(|override_| override_.source().node() == *node)
+                                .map_or(weights.as_slice(), |override_| override_.weights());
+                            (
+                                Arc::<[f64]>::from(split.child_extents.as_slice()),
+                                Arc::<[SplitWeight]>::from(effective_weights),
+                            )
+                        });
                     ready.push_splitter_record(SplitterRecord::new(
                         id,
                         splitter,
@@ -875,9 +888,9 @@ fn compile_root(
                         after_minimum_extent,
                         before_maximum_extent,
                         after_maximum_extent,
-                        split.child_extents.clone(),
+                        Arc::clone(child_extents),
                         split.central_index,
-                        effective_weights,
+                        Arc::clone(effective_weights),
                         layer,
                         operable,
                     ));
@@ -985,7 +998,7 @@ fn compile_tabs_leaf(
     )?;
     let pane_id = PaneSceneId { root, tabs };
     ready.push_pane_record(PaneRecord::new(pane_id, bounds, content, selected, layer));
-    ready.push_surface_program_root_operation(SurfaceProgramRootOperation::Pane(pane_id))?;
+    ready.push_surface_program_pane_operation(pane_id, selected)?;
     if rect_has_area(tab_bar) {
         compile_tab_strip(
             workspace,

@@ -1197,6 +1197,8 @@ fn selected_tab_reveal_preserves_visible_offsets_and_moves_only_as_needed() {
 }
 
 fn hit_manifest(
+    workspace: &Workspace,
+    policy: &DockPolicySnapshot,
     plan: &PresentationPlan,
     measurements: &SurfaceMeasurements,
 ) -> PresentationHitManifest {
@@ -1206,7 +1208,11 @@ fn hit_manifest(
         PresentationOutputSerial::new_for_test(1),
         scene,
     );
-    PresentationHitManifest::compile(output, plan)
+    let plan = PresentationPlanValidator::new(workspace, policy)
+        .expect("test validator should initialize")
+        .validate_and_canonicalize(plan.clone())
+        .expect("test hit inventory requires canonical linked records");
+    PresentationHitManifest::compile(output, &plan)
         .expect("compiled plans should resolve through their surface program")
 }
 
@@ -1357,6 +1363,45 @@ fn scene_target_fingerprints_are_built_once_per_root_at_scale() {
 }
 
 #[test]
+fn surface_program_requires_canonical_link_before_any_sink_step() {
+    let (workspace, manifest, measurements, _) = balanced_hot_root_fixture(16);
+    let policy = policy_snapshot();
+    let plan = compile_surface_measurements(
+        &workspace,
+        version(),
+        &policy,
+        &DockPresentationConfig::default(),
+        &manifest,
+        &measurements,
+        &TabStripStateStore::default(),
+        &[],
+        None,
+    )
+    .expect("complete measurements should finish the construction program");
+    let mut emitted = 0;
+    assert!(
+        plan.visit_surface_program(|_| {
+            emitted += 1;
+            Ok::<(), ()>(())
+        })
+        .is_err(),
+        "construction identities must never provide a fallback execution path"
+    );
+    assert_eq!(emitted, 0);
+
+    let plan = PresentationPlanValidator::new(&workspace, &policy)
+        .expect("validator should initialize")
+        .validate_and_canonicalize(plan)
+        .expect("canonical validation should link every construction identity");
+    plan.visit_surface_program(|_| {
+        emitted += 1;
+        Ok::<(), ()>(())
+    })
+    .expect("the linked program should traverse through the same sink interface");
+    assert!(emitted > 0);
+}
+
+#[test]
 fn exact_presentation_hit_lookup_scales_with_manifest_height() {
     for leaf_count in [16, 128, 1_024] {
         let (workspace, manifest, measurements, _) = balanced_hot_root_fixture(leaf_count);
@@ -1372,7 +1417,7 @@ fn exact_presentation_hit_lookup_scales_with_manifest_height() {
             None,
         )
         .expect("complete measurements should compile");
-        let hit_manifest = hit_manifest(&plan, &measurements);
+        let hit_manifest = hit_manifest(&workspace, &policy_snapshot(), &plan, &measurements);
         let kinds = hit_manifest
             .regions()
             .iter()
@@ -2092,7 +2137,7 @@ fn overflow_compiles_stable_controls_membership_and_menu_roster() {
     );
     assert!(menu.scroll_offset() <= menu.maximum_scroll_offset());
 
-    let hit_manifest = hit_manifest(&plan, &measurements);
+    let hit_manifest = hit_manifest(&workspace, &policy_snapshot(), &plan, &measurements);
     let ids = hit_manifest
         .regions()
         .iter()
@@ -2424,7 +2469,7 @@ fn disabled_tab_bar_cannot_publish_an_open_menu_or_row_hits() {
     );
     assert!(plan.tab_list_menu_records().is_empty());
     assert!(plan.tab_list_menu_backdrop_records().is_empty());
-    let hit_manifest = hit_manifest(&plan, &measurements);
+    let hit_manifest = hit_manifest(&workspace, &policy, &plan, &measurements);
     assert_eq!(
         hit_manifest
             .regions()
@@ -2486,7 +2531,7 @@ fn idle_overflow_without_menu_metrics_is_ready_with_a_disabled_menu_receiver() {
     assert!(plan.tab_list_menu_records().is_empty());
     assert!(plan.tab_list_menu_backdrop_records().is_empty());
 
-    let hit_manifest = hit_manifest(&plan, &measurements);
+    let hit_manifest = hit_manifest(&workspace, &policy, &plan, &measurements);
     assert_eq!(
         hit_manifest
             .regions()

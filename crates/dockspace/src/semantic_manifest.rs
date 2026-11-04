@@ -18,7 +18,7 @@ use crate::semantic_input::{SemanticAccessibilityAction, SemanticKey, SemanticRe
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationSemanticManifest {
     output: SurfacePresentationOutputTicket,
-    receivers: Vec<PresentationHitRegionKind>,
+    receivers: Box<[PresentationHitRegionKind]>,
 }
 
 impl PresentationSemanticManifest {
@@ -101,7 +101,10 @@ impl PresentationSemanticManifest {
 
         receivers.sort_unstable();
         receivers.dedup();
-        Ok(Self { output, receivers })
+        Ok(Self {
+            output,
+            receivers: receivers.into_boxed_slice(),
+        })
     }
 
     /// Returns the exact output which minted this roster.

@@ -135,22 +135,32 @@ fn publish_background_scene(fixture: &mut BackgroundFixture) {
 #[test]
 fn prepared_surface_plan_is_compiled_once_and_installed_without_recompilation() {
     let mut fixture = background_fixture(DockPolicy::default());
+    let changed_bounds =
+        LogicalRect::new(0.0, 0.0, 440.0, 320.0).expect("changed source bounds must be valid");
+    let previous = fixture
+        .engine
+        .scene()
+        .ready_candidate(SOURCE_SURFACE)
+        .expect("fixture has an installed source candidate")
+        .frozen_witness();
+    assert_eq!(previous.plan().bounds(), background_bounds());
     crate::scene_compiler::reset_surface_compilation_count();
     let token = fixture
         .engine
         .begin_surface_contribution(SOURCE_SURFACE)
         .expect("source surface contribution begins");
-    let measurements = surface_measurements(&fixture.engine, SOURCE_SURFACE, background_bounds());
+    let measurements = surface_measurements(&fixture.engine, SOURCE_SURFACE, changed_bounds);
+    assert_eq!(measurements.ticket(), token.ticket());
 
     let prepared = fixture
         .engine
         .prepare_surface_contribution(token, measurements)
         .expect("complete measurements prepare successfully");
 
-    assert!(matches!(
-        prepared.paint_candidate(),
-        PreparedSurfacePaintCandidate::Ready(_)
-    ));
+    let PreparedSurfacePaintCandidate::Ready(candidate) = prepared.paint_candidate() else {
+        panic!("changed authoritative bounds must prepare a Ready candidate");
+    };
+    assert_eq!(candidate.plan().bounds(), changed_bounds);
     assert_eq!(crate::scene_compiler::surface_compilation_count(), 1);
     let transition =
         submit_surface_measurement(&mut fixture.engine, fixture.presentation_host, prepared);
@@ -169,6 +179,17 @@ fn prepared_surface_plan_is_compiled_once_and_installed_without_recompilation() 
         1,
         "reduction must install the prepared plan rather than compiling it again"
     );
+    assert_eq!(
+        fixture
+            .engine
+            .scene()
+            .ready_candidate(SOURCE_SURFACE)
+            .expect("the changed source candidate is installed")
+            .plan()
+            .bounds(),
+        changed_bounds
+    );
+    assert_eq!(previous.plan().bounds(), background_bounds());
 }
 
 fn background_payload(fixture: &BackgroundFixture, item: ItemId) -> MovePayload {
