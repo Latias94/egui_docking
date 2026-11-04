@@ -1,0 +1,258 @@
+{
+  "source_base_commit": "32a1428bc98ee0d21cbb2d84f4e2962f04e003c6",
+  "baseline": {
+    "source_commit": "32a1428bc98ee0d21cbb2d84f4e2962f04e003c6",
+    "binary_sha256": "c6a6af35e1be4451d59b723c11e4d72ab0a983db58ebe8c46445c34db85aa10f",
+    "start_utc": "2026-11-04T12:50:27.756286+00:00",
+    "full_start_utc": "2026-11-04T12:55:22.343349+00:00",
+    "command": [
+      "/tmp/dockspace-scale2-01a1a5fb/baseline-frame-cost",
+      "--samples",
+      "12",
+      "--warmup",
+      "3",
+      "--panes",
+      "16,128,1024",
+      "--in-flight",
+      "3"
+    ],
+    "full_end_utc": "2026-11-04T12:58:29.604198+00:00"
+  },
+  "refactored": {
+    "source_base_commit": "32a1428bc98ee0d21cbb2d84f4e2962f04e003c6",
+    "binary_sha256": "52cc99d95bfd7450f5177037d07c8db5741496b321d55bac8c345408213f3584",
+    "start_utc": "2026-11-04T13:20:32.275425+00:00",
+    "execution": "release binary directly; no concurrent Cargo started by this session; no CPU sampling; no CPU isolation",
+    "command": [
+      "integration/dockspace-host-harness/target/release/examples/frame_cost",
+      "--samples",
+      "12",
+      "--warmup",
+      "3",
+      "--panes",
+      "16,128,1024",
+      "--in-flight",
+      "3"
+    ],
+    "end_utc": "2026-11-04T13:22:33.894621+00:00"
+  },
+  "compiler": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2\n",
+  "os": "macOS-27.0-arm64-arm-64bit",
+  "cpu": "Apple M4",
+  "memory_bytes": 17179869184,
+  "build": "release; default profile; CARGO_BUILD_JOBS=1; existing target reused",
+  "source_manifest": "2026-11-04-projection-work-source.sha256",
+  "source_inputs": 547,
+  "source_manifest_sha256": "6e27ca5256acdb122cd7094d909d521d18f72a7592557ca977ad2b428c8b2eb4",
+  "baseline_source_manifest": "2026-11-04-compiled-projection-source.sha256",
+  "timing_scope": "Shared desktop, no CPU isolation, no concurrent Cargo started by this session during complete measurements. CPU sampling ran separately before modifications.",
+  "cfg_test_edits_after_release_build": "Only test fixture split axes and a cfg(test) cut-counter label changed after release compilation. No production source behavior changed.",
+  "recording": "Complete OwnedRecord payloads, ordering, samples, warmups, retained-output count and settlement are unchanged.",
+  "implementation_commit": "af22b8f6aa2367f71c4ff1ff698255fce35db29b",
+  "serial_validation": [
+    {
+      "gate": "workspace-all-features-all-targets",
+      "passed": 2071
+    },
+    {
+      "gate": "focused-proof-geometry-ownership",
+      "passed": 26
+    },
+    {
+      "gate": "host-default",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--manifest-path",
+        "integration/dockspace-host-harness/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "--no-fail-fast"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "host-serde",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--manifest-path",
+        "integration/dockspace-host-harness/Cargo.toml",
+        "--features",
+        "serde",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "--no-fail-fast",
+        "-E",
+        "not binary(deep_layout)"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "official-egui",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--manifest-path",
+        "integration/egui-official-harness/Cargo.toml",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "--no-fail-fast"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "product-default",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--manifest-path",
+        "integration/egui-product-harness/Cargo.toml",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "--no-fail-fast"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "product-serde",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--manifest-path",
+        "integration/egui-product-harness/Cargo.toml",
+        "--features",
+        "serde",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "--no-fail-fast"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "native-all",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--manifest-path",
+        "integration/egui-fork-workspace/Cargo.toml",
+        "--package",
+        "egui_dockspace_native",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "--no-fail-fast"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "clippy-workspace",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "--",
+        "-A",
+        "warnings",
+        "-D",
+        "clippy::correctness",
+        "-D",
+        "clippy::suspicious"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "clippy-native",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "integration/egui-fork-workspace/Cargo.toml",
+        "--package",
+        "egui_dockspace_native",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "--",
+        "-A",
+        "warnings",
+        "-D",
+        "clippy::correctness",
+        "-D",
+        "clippy::suspicious"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "docs-workspace",
+      "command": [
+        "cargo",
+        "doc",
+        "--package",
+        "dockspace",
+        "--package",
+        "egui_dockspace",
+        "--all-features",
+        "--no-deps",
+        "--locked",
+        "--offline"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "docs-native",
+      "command": [
+        "cargo",
+        "doc",
+        "--manifest-path",
+        "integration/egui-fork-workspace/Cargo.toml",
+        "--package",
+        "egui_dockspace_native",
+        "--all-features",
+        "--no-deps",
+        "--locked",
+        "--offline"
+      ],
+      "returncode": 0
+    },
+    {
+      "gate": "doctests",
+      "command": [
+        "cargo",
+        "test",
+        "--doc",
+        "--workspace",
+        "--all-features",
+        "--locked",
+        "--offline"
+      ],
+      "returncode": 0
+    }
+  ]
+}

@@ -8934,3 +8934,51 @@ idle p50 changed from 29.468 to 3.142 ms, changed-update p50 from
 127.551 to 93.889 MiB (20.259 to 13.527 MiB after settlement). These local shared
 desktop measurements do not establish a 16.7 ms changed-frame budget or physical
 GPU frame-rate qualification. No remote publication is included.
+
+
+## 2026-11-04 projection work reduction qualification
+
+Implementation: `af22b8f`, based on `32a1428`.
+The [completed plan](plans/2026-11-04-projection-work-reduction.md) and
+[complete measurements](performance/2026-11-04-projection-work-results.md) retain
+the attribution, unchanged workload, two complete CSVs, source inventory and
+environment.
+
+Compiler split-override batches reuse the existing version-bound index and only
+already-verified immutable fingerprint proofs. Each source still passes root,
+existence, membership, stale, duplicate, shape and weight checks in the same order.
+The public non-indexed path builds its actual root fingerprint once but retains
+its per-source subtree membership scan. Touch rectangle subtraction preserves
+every ordered endpoint bit while reusing buffers inside one compile. Semantic
+duplicate checks retain minimum-ID and record-class rejection ordering. Wide
+split array proofs require identical immutable backing and matching lengths;
+per-gap checks remain. Private hashed membership never supplies canonical order.
+
+| Gate | Fresh result |
+| --- | --- |
+| Workspace, all features and targets | 2,071 passed |
+| Focused proof, geometry and ownership checks | 26 passed |
+| Independent host, default | 292 passed, including all three 10,000-depth cases |
+| Independent host, persistence | 332 passed; already-covered depth binary filtered |
+| Official egui | 24 passed |
+| Product egui, default / persistence | 114 / 119 passed |
+| Fork-backed native, all features and targets | 556 passed; one pre-existing ignored case |
+| Workspace/native correctness and suspicious Clippy | Passed |
+| Strict core, egui and native documentation | Passed |
+| Workspace documentation examples | Ten passed |
+| Format, diff and renderer-neutral dependency checks | Passed |
+
+Three independent read-only reviews found no evidenced P1/P2. The first focused
+run exposed a test fixture whose same-axis splits were canonicalized away; its
+alternating-axis replacement preserves actual node IDs without changing any
+production check. Every touched full touch-compilation fixture compares ordered
+IDs and exact endpoint bits against the frozen old subtraction algorithm.
+
+Both complete runs used 12 samples and three warmups at 16/128/1,024 panes, with
+full ordered records and the original output history. At 1,024 panes, drag p50
+changed from 39.566 to 22.755 ms and allocation events from 454,420 to 80,980.
+Other changed updates improved 15–16%; idle and retained-output heap are essentially
+unchanged. Final changed-update p50 remains 22.319–26.305 ms, above a 16.7 ms
+budget before application rendering and GPU work. Physical GUI qualification was
+not rerun for this internal computation/allocation change. No remote publication
+is included.
