@@ -8982,3 +8982,57 @@ unchanged. Final changed-update p50 remains 22.319–26.305 ms, above a 16.7 ms
 budget before application rendering and GPU work. Physical GUI qualification was
 not rerun for this internal computation/allocation change. No remote publication
 is included.
+
+
+## 2026-11-05 hit inventory compilation qualification
+
+Implementation: `d7d8b65`, based on `c62d757`.
+The [completed plan](plans/2026-11-05-hit-inventory-compilation.md) and
+[complete measurements](performance/2026-11-05-hit-inventory-results.md) retain
+the attribution, unchanged workload, both 180-row CSVs, source inventory and
+environment.
+
+Touch compilation emits private input rows and compacts hit records together
+with their fragments, preserving touch-only zero-mouse-area records and rejecting
+malformed row order or range. Small sort indices permute the sole hit-record
+arena in place without changing its complete identity comparator or endpoint
+bits. Existing sorted adjacency supplies allocation prefixes and protected
+suffixes without changing any effective pair or cut order. Guide overlap checks
+reuse exact catalog ownership already proved for every slot; rebind uses the
+existing canonical target arena after availability COW. Public identities,
+output permissions, old owners, atomic publication and native first-live
+ownership retain their existing authority.
+
+All builds use one job and all nextest runs one worker, reusing existing targets:
+
+| Gate | Fresh result |
+| --- | --- |
+| Workspace, all features and targets | 2,081 passed |
+| Focused hit ordering, row mapping and guide ownership | 25 passed |
+| Independent host, default | 292 passed, including all three 10,000-depth cases |
+| Independent host, persistence | 332 passed; already-covered depth binary filtered |
+| Official egui | 24 passed |
+| Product egui, default / persistence | 114 / 119 passed |
+| Fork-backed native, all features and targets | 556 passed; one pre-existing ignored case |
+| Workspace/native correctness and suspicious Clippy | Passed |
+| Strict core, egui and native documentation | Passed |
+| Workspace documentation examples | Ten passed |
+| Format, diff and renderer-neutral dependency checks | Passed |
+
+Three independent read-only reviews found no evidenced P1/P2. New regressions
+cover permutation direction and complete record geometry, empty-row filtering
+with ordered touch fragments, malformed indices, slot rejection before overlap,
+canonical first collision and old/new Arc independence after COW. The final
+adjacency-category change also received independent review.
+
+Both complete runs use 12 samples and three warmups at 16/128/1,024 panes with
+full ordered records and unchanged output history. No Cargo build/test or CPU
+sampling from this session overlaps these complete runs. At 1,024 panes drag p50
+falls from 22.478 to 19.598 ms; other changed workloads improve 12.3–14.8%.
+Cumulative requested allocation bytes fall 9.4–10.1%, while retained checkpoints
+are unchanged. Final changed-update p50 remains 18.733–22.898 ms, above a 16.7 ms
+budget before application rendering and GPU work. Some short 16-pane tail samples
+regress; the record does not claim a general tail-latency improvement. Physical
+GUI qualification was not rerun for this internal compilation change. No remote
+publication is included, and the pre-existing CI and review changes remain
+outside these commits.
