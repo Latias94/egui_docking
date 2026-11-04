@@ -21,6 +21,10 @@ own session and the same warmup/sample counts. `--help` writes help to stderr an
 does not start a profiler. Stdout contains CSV only; the example writes no profile
 files. There are no wall-clock pass/fail thresholds.
 
+Use `--timing-only` to omit the active-dhat phase when collecting CPU samples.
+This preserves every workload and ordered recording operation, and emits only
+the timing rows. The default still runs both timing and tracked-heap phases.
+
 Use a release build. Record the exact commit and uncommitted diff or source hashes,
 Rust version, build flags, target, OS, CPU, power settings, other workloads, command,
 and complete CSV when collecting actual results. A maximum is the largest observed

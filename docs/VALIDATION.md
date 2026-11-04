@@ -8889,3 +8889,48 @@ internal scene/graph identity for a missing fact.
   projection until U4.
 - The lightweight native example is a discoverability checkpoint. The complete
   game-editor showcase and layout/preset shell remain assigned to U10.
+
+
+## 2026-11-04 compiled-projection scaling qualification
+
+Implementation: `131043e`, based on `d4bdafe`.
+The [completed plan](plans/2026-11-04-compiled-projection-scaling.md) and
+[comparable performance record](performance/2026-11-04-compiled-projection-results.md)
+retain the design, complete CSVs, source inventory and exact environment.
+
+The immutable program now links private record rows after canonicalization;
+ordinary exact Ready inputs share their existing plan before recompilation.
+Measurement maps and per-split resize snapshots have shared immutable ownership;
+hit/touch/semantic inventories retain complete facts without repeated identities
+or growable-buffer spare capacity. Authority, native first-live, rollback and
+affine paint receipts retain their existing owners.
+
+All Cargo work used one build job, one test thread and existing targets:
+
+| Gate | Fresh result |
+| --- | --- |
+| Workspace, all features and all targets | 2,062 passed |
+| Independent host, default | 292 passed, including all three 10,000-depth cases |
+| Independent host, persistence | 332 passed; already-covered depth binary filtered |
+| Official egui | 24 passed |
+| Product egui, default / persistence | 114 / 119 passed |
+| Fork-backed native adapter, all features and targets | 556 passed; one pre-existing ignored case |
+| Workspace/native correctness and suspicious Clippy | Passed |
+| Strict core, egui and native documentation | Passed |
+| Workspace documentation examples | Ten passed |
+| Format, diff and renderer-neutral dependency checks | Passed |
+
+Three independent read-only reviews found no evidenced P1/P2 in the final
+production changes. The first full test run exposed two obsolete compiler-count
+assertions and one unlinked raw-plan fixture; their replacements preserve exact
+geometry, complete membership checks and old-output independence. Focused reruns
+and the complete workspace rerun passed. Physical GUI qualification was not
+rerun for this internal ownership/traversal change.
+
+Both complete benchmark runs used 12 samples and three warmups at 16, 128 and
+1,024 panes. The full ordered host recording remains unchanged. At 1,024 panes,
+idle p50 changed from 29.468 to 3.142 ms, changed-update p50 from
+48.461–60.974 to 26.864–40.474 ms, and four-output tracked heap from
+127.551 to 93.889 MiB (20.259 to 13.527 MiB after settlement). These local shared
+desktop measurements do not establish a 16.7 ms changed-frame budget or physical
+GPU frame-rate qualification. No remote publication is included.

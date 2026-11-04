@@ -68,6 +68,7 @@ struct Options {
     warmup: usize,
     in_flight: usize,
     panes: Vec<usize>,
+    timing_only: bool,
 }
 
 impl Options {
@@ -77,17 +78,23 @@ impl Options {
             warmup: 4,
             in_flight: 3,
             panes: vec![16, 128, 1_024],
+            timing_only: false,
         };
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
             if flag == "--help" || flag == "-h" {
                 eprintln!(
                     "Usage: frame_cost [--samples 24] [--warmup 4] [--in-flight 3] \
-                     [--panes 16,128,1024]\n\
+                     [--panes 16,128,1024] [--timing-only]\n\
                      CSV goes to stdout; times are nanoseconds per update/settlement.\n\
-                     --in-flight is the number of older outputs retained before the timed update."
+                     --in-flight is the number of older outputs retained before the timed update.\n\
+                     --timing-only skips active heap profiling for CPU sampling."
                 );
                 return Ok(None);
+            }
+            if flag == "--timing-only" {
+                options.timing_only = true;
+                continue;
             }
             let value = args.next().ok_or_else(|| {
                 io::Error::new(
@@ -682,7 +689,11 @@ fn main() -> io::Result<()> {
     )?;
     for &panes in &options.panes {
         for scenario in Scenario::ALL {
-            for heap in [false, true] {
+            for &heap in if options.timing_only {
+                &[false][..]
+            } else {
+                &[false, true][..]
+            } {
                 // Sample storage and output formatting are outside profiling.
                 let mut samples = Vec::with_capacity(options.samples);
                 // One profiler per pane-count/scenario case, not per frame.
