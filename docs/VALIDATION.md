@@ -15,6 +15,22 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-04 post-qualification boundary repairs
+
+The [boundary-repair record](audits/2026-11-04-output-input-boundary-repairs.md)
+qualifies fixes after `54bd389`: implementation `48b00d8`, `b50d0e6`.
+Fresh gates pass workspace 2,056; public host 289 default / 332 persistence;
+official egui 24; product egui 114 / 119; native 556 with one pre-existing ignore.
+Clippy, strict docs, doctests, dependency and formatting checks pass. Three
+10,000-depth host stress cases and actual physical GUI qualification were not
+rerun; their earlier dated evidence remains separate.
+
+The [new frozen-source samples](performance/2026-11-04-boundary-repair-results.md)
+record 1,024-pane changed-update p50 of 48.337–61.181 ms. Four outstanding
+outputs retain 127.551 MiB tracked heap, settling to 20.259 MiB. This is an
+update-time improvement with an explicit memory/scaling cost, not a 60 Hz or
+physical-renderer qualification. The record includes complete CSV and provenance.
+
 ## 2026-11-04 engine-first breaking redesign qualification
 
 Status: all E0–E7 implementation, independent review, cost-sampling, package and
