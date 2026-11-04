@@ -1,6 +1,6 @@
 //! Checked workspace queries used to capture mutation preconditions.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use crate::command::{
@@ -57,7 +57,7 @@ struct WorkspaceRootIndex {
     root_node: NodeId,
     central: Option<NodeId>,
     owner: RootPresentationOwner,
-    members: BTreeSet<NodeId>,
+    members: HashSet<NodeId>,
     item_count: usize,
     fingerprint: NodeFingerprint,
 }
@@ -696,7 +696,7 @@ impl Workspace {
 
         let mut nodes = Vec::new();
         let mut stack = vec![record.node];
-        let mut visited = BTreeSet::new();
+        let mut visited = HashSet::new();
         let mut item_count = 0_usize;
         while let Some(id) = stack.pop() {
             if !visited.insert(id) {
@@ -1008,6 +1008,41 @@ mod tests {
 
         assert_eq!(work.root_fingerprint_builds, root_count);
         assert_eq!(work.root_fingerprint_node_visits, node_count);
+    }
+
+    #[test]
+    fn indexed_membership_keeps_foreign_root_nodes_out_of_target_capture() {
+        let mut builder = Workspace::builder();
+        let first = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        let second = builder.insert_node(Node::tabs([ItemId::new(2)]));
+        let first_root = RootId::new(1);
+        let second_root = RootId::new(2);
+        builder.set_root(first_root, RootRecord::new(first));
+        builder.set_root(second_root, RootRecord::new(second));
+        builder.set_surface(
+            SurfaceId::new(1),
+            SurfacePresentation::with_main(first_root),
+        );
+        builder.set_surface(
+            SurfaceId::new(2),
+            SurfacePresentation::with_main(second_root),
+        );
+        let workspace = builder.build().unwrap();
+        let version = index_version(1);
+        let index = WorkspaceIndex::build(&workspace, version).unwrap();
+        let view = index.at_version(version).unwrap();
+
+        assert!(view.root_contains_node(first_root, first));
+        assert!(view.root_contains_node(second_root, second));
+        assert!(!view.root_contains_node(first_root, second));
+        assert!(matches!(
+            index.capture_tab_target(&workspace, version, first_root, second),
+            Err(CommandError::NodeOutsideRoot {
+                role: ReferenceRole::Target,
+                root,
+                node,
+            }) if root == first_root && node == second
+        ));
     }
 
     #[test]

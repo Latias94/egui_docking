@@ -1,14 +1,17 @@
 //! Deterministic, renderer-neutral layout projection.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::command::NodeSource;
+use crate::command::{NodeFingerprint, NodeSource};
 use crate::error::{CommandError, ReferenceRole};
 use crate::geometry::{Constraints, GeometryError, LogicalRect, LogicalSize};
 use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight, Workspace};
 use crate::ids::{NodeId, RootId};
+use crate::transition::WorkspaceVersion;
+use crate::workspace::WorkspaceIndex;
 
 /// Minimum and maximum extent accepted by one child on a split axis.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -464,7 +467,8 @@ pub fn project_root_with_overrides(
     workspace
         .root(root)
         .ok_or(LayoutError::MissingRoot { root })?;
-    let weight_overrides = validate_split_weight_overrides(workspace, root, weight_overrides)?;
+    let weight_overrides =
+        validate_split_weight_overrides(workspace, root, weight_overrides, None)?;
     measure_root(
         workspace,
         root,
@@ -511,7 +515,24 @@ impl RootMeasurement<'_> {
         bounds: LogicalRect,
         weight_overrides: &[SplitWeightOverride<'_>],
     ) -> Result<LayoutProjection, LayoutError> {
-        let weights = validate_split_weight_overrides(self.workspace, self.root, weight_overrides)?;
+        let weights =
+            validate_split_weight_overrides(self.workspace, self.root, weight_overrides, None)?;
+        self.project_with_weights(bounds, &weights)
+    }
+
+    pub(crate) fn project_with_index(
+        self,
+        bounds: LogicalRect,
+        weight_overrides: &[SplitWeightOverride<'_>],
+        index: &WorkspaceIndex,
+        version: WorkspaceVersion,
+    ) -> Result<LayoutProjection, LayoutError> {
+        let weights = validate_split_weight_overrides(
+            self.workspace,
+            self.root,
+            weight_overrides,
+            Some((index, version)),
+        )?;
         self.project_with_weights(bounds, &weights)
     }
 
@@ -578,8 +599,13 @@ fn validate_split_weight_overrides(
     workspace: &Workspace,
     root: RootId,
     overrides: &[SplitWeightOverride<'_>],
+    index: Option<(&WorkspaceIndex, WorkspaceVersion)>,
 ) -> Result<BTreeMap<NodeId, Vec<f64>>, LayoutError> {
     let mut validated = BTreeMap::new();
+    // These identities skip only a repeated exact comparison of one immutable
+    // fingerprint. Every source still proves node existence and root membership.
+    let mut verified_fingerprints = HashSet::new();
+    let mut root_fingerprint: Option<NodeFingerprint> = None;
 
     for weight_override in overrides {
         let source = weight_override.source;
@@ -589,14 +615,11 @@ fn validate_split_weight_overrides(
                 override_root: source.root(),
             });
         }
-        workspace
-            .verify_reference(
-                source.root(),
-                source.node(),
-                source.fingerprint(),
-                ReferenceRole::Source,
-            )
+        let fingerprint_identity = Arc::as_ptr(&source.fingerprint().0);
+        let verified = verified_fingerprints.contains(&fingerprint_identity);
+        verify_split_override_source(workspace, source, index, verified, &mut root_fingerprint)
             .map_err(|source| LayoutError::InvalidSplitWeightOverrideSource { source })?;
+        verified_fingerprints.insert(fingerprint_identity);
 
         if validated.contains_key(&source.node()) {
             return Err(LayoutError::DuplicateSplitWeightOverride {
@@ -632,6 +655,61 @@ fn validate_split_weight_overrides(
     }
 
     Ok(validated)
+}
+
+fn verify_split_override_source(
+    workspace: &Workspace,
+    source: &NodeSource,
+    index: Option<(&WorkspaceIndex, WorkspaceVersion)>,
+    fingerprint_verified: bool,
+    root_fingerprint: &mut Option<NodeFingerprint>,
+) -> Result<(), CommandError> {
+    let role = ReferenceRole::Source;
+    let root = source.root();
+    let node = source.node();
+    if let Some((index, version)) = index {
+        let view = index.at_version(version).ok_or(CommandError::Invariant {
+            stage: "use workspace index for a different revision",
+        })?;
+        if view.root_node(root).is_none() {
+            return Err(CommandError::MissingRoot { root });
+        }
+        if workspace.node(node).is_none() {
+            return Err(CommandError::MissingNode { role, node });
+        }
+        if !view.root_contains_node(root, node) {
+            return Err(CommandError::NodeOutsideRoot { role, root, node });
+        }
+        if !fingerprint_verified {
+            index.verify_reference(workspace, version, root, node, source.fingerprint(), role)?;
+        }
+        return Ok(());
+    }
+
+    if workspace.root(root).is_none() {
+        return Err(CommandError::MissingRoot { root });
+    }
+    if workspace.node(node).is_none() {
+        return Err(CommandError::MissingNode { role, node });
+    }
+    if !workspace.root_contains_node(root, node) {
+        return Err(CommandError::NodeOutsideRoot { role, root, node });
+    }
+    if !fingerprint_verified {
+        let actual = match root_fingerprint {
+            Some(fingerprint) => fingerprint,
+            None => root_fingerprint.insert(workspace.root_fingerprint(root)?),
+        };
+        if &*actual != source.fingerprint() {
+            return Err(CommandError::StaleNode {
+                role,
+                node,
+                expected: source.fingerprint().clone(),
+                actual: actual.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1349,6 +1427,9 @@ fn checked_sum(
 fn allocation_tolerance(a: f64, b: f64, c: f64) -> f64 {
     a.abs().max(b.abs()).max(c.abs()).max(1.0) * f64::EPSILON * 64.0
 }
+
+#[cfg(test)]
+mod override_tests;
 
 #[cfg(test)]
 mod tests {

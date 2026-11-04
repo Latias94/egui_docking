@@ -681,7 +681,12 @@ fn compile_root(
         .copied()
         .filter(|override_| override_.source().root() == root)
         .collect::<Vec<_>>();
-    let projection = Arc::new(layout.project(bounds, &root_overrides)?);
+    let projection = Arc::new(layout.project_with_index(
+        bounds,
+        &root_overrides,
+        workspace_index,
+        workspace_version,
+    )?);
     ready.push_root_layout_facts(RootLayoutFacts::new(
         root,
         bounds,

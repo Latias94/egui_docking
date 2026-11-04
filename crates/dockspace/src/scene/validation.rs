@@ -5,6 +5,17 @@ use crate::command::Edge;
 use crate::target_field::{pane_center_basin, root_edge_band};
 use crate::workspace::WorkspaceIndexView;
 
+#[cfg(test)]
+#[path = "validation/cost_tests.rs"]
+mod cost_tests;
+
+#[cfg(test)]
+std::thread_local! {
+    static SPLITTER_RESIZE_ARRAY_VALIDATIONS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
 /// Reusable validator for one complete surface presentation plan.
 ///
 /// The validator reuses one workspace-derived index when the caller already has
@@ -488,14 +499,11 @@ fn validate_popup_plane(ready: &PresentationPlan) -> Result<(), SceneBuildError>
 
 fn validate_semantic_uniqueness(ready: &PresentationPlan) -> Result<(), SceneBuildError> {
     fn stable_duplicate<T: Copy + Ord>(values: impl IntoIterator<Item = T>) -> Option<T> {
-        let mut seen = BTreeSet::new();
-        let mut duplicates = BTreeSet::new();
-        for value in values {
-            if !seen.insert(value) {
-                duplicates.insert(value);
-            }
-        }
-        duplicates.into_iter().next()
+        let mut values = values.into_iter().collect::<Vec<_>>();
+        values.sort_unstable();
+        values
+            .windows(2)
+            .find_map(|pair| (pair[0] == pair[1]).then_some(pair[0]))
     }
 
     if let Some(id) = stable_duplicate(ready.pane_records.iter().map(PaneRecord::id)) {
@@ -1592,6 +1600,7 @@ fn validate_splitter_records(
             surface: ready.surface,
         });
     }
+    let mut validated_resize_arrays: Option<&SplitterRecord> = None;
     for (id, record) in &splitters {
         let Some(Node::Split { axis, children, .. }) = workspace.node(id.split) else {
             return Err(SceneBuildError::InvalidSplitterRecord {
@@ -1599,19 +1608,19 @@ fn validate_splitter_records(
                 id: *id,
             });
         };
-        let weight_sum = record
-            .weights()
-            .iter()
-            .map(|weight| f64::from(weight.get()))
-            .sum::<f64>();
+        // Sibling gaps share immutable arrays; only that exact backing reuses this proof.
+        let arrays_valid = validated_resize_arrays.is_some_and(|previous| {
+            record.weights().len() == children.len()
+                && record.child_extents().len() == children.len()
+                && std::ptr::eq(previous.weights(), record.weights())
+                && std::ptr::eq(previous.child_extents(), record.child_extents())
+        }) || splitter_resize_arrays_are_valid(record, children.len());
         let before_extent = record.child_extents().get(id.index).copied();
         let after_extent = record.child_extents().get(id.index + 1).copied();
         if !workspace_index.semantic_node_exists(ready.surface, id.root, id.split)
             || id.index >= children.len().saturating_sub(1)
             || record.axis() != *axis
-            || record.weights().len() != children.len()
-            || !weight_sum.is_finite()
-            || (weight_sum - 1.0).abs() > 1.0e-5
+            || !arrays_valid
             || !rect_has_area(record.draw_bounds())
             || !rect_has_area(record.hit().rect())
             || !rect_contains(ready.bounds, record.hit().rect())
@@ -1632,11 +1641,6 @@ fn validate_splitter_records(
                 record.after_minimum_extent(),
                 record.after_maximum_extent(),
             )
-            || record.child_extents().len() != children.len()
-            || record
-                .child_extents()
-                .iter()
-                .any(|extent| !extent.is_finite() || *extent < 0.0)
             || record
                 .central_index()
                 .is_some_and(|index| index >= children.len())
@@ -1660,6 +1664,7 @@ fn validate_splitter_records(
                 id: *id,
             });
         }
+        validated_resize_arrays = Some(record);
     }
 
     let expected_junctions = derive_splitter_junction_candidates(splitters.values().copied())
@@ -1702,6 +1707,26 @@ fn validate_splitter_records(
         }
     }
     Ok(())
+}
+
+fn splitter_resize_arrays_are_valid(record: &SplitterRecord, children: usize) -> bool {
+    #[cfg(test)]
+    SPLITTER_RESIZE_ARRAY_VALIDATIONS.with(|count| count.set(count.get() + 1));
+
+    if record.weights().len() != children || record.child_extents().len() != children {
+        return false;
+    }
+    let weight_sum = record
+        .weights()
+        .iter()
+        .map(|weight| f64::from(weight.get()))
+        .sum::<f64>();
+    weight_sum.is_finite()
+        && (weight_sum - 1.0).abs() <= 1.0e-5
+        && record
+            .child_extents()
+            .iter()
+            .all(|extent| extent.is_finite() && *extent >= 0.0)
 }
 
 fn validate_semantic_layer(

@@ -1,6 +1,7 @@
 use super::super::*;
 use super::midpoint;
 use super::*;
+use crate::drop_target::DropOcclusionRecord;
 use crate::geometry::{Constraints, LogicalSize};
 use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use crate::ids::{EngineAuthorityDomainId, ItemId, NodeId, WorkspaceEpoch};
@@ -21,7 +22,7 @@ use crate::scene_manifest::{
 fn disjoint_and_empty_cuts_keep_the_fragment_buffer_without_rebuilding() {
     let original = rect(0.0, 0.0, 44.0, 44.0);
     let mut fragments = vec![original];
-    FRAGMENT_BUFFER_REBUILDS.set(0);
+    FRAGMENT_BUFFER_CUTS.set(0);
     for index in 0..1_024 {
         subtract_from(
             &mut fragments,
@@ -32,19 +33,155 @@ fn disjoint_and_empty_cuts_keep_the_fragment_buffer_without_rebuilding() {
         subtract_from(&mut fragments, empty);
     }
     assert_eq!(fragments, [original]);
-    assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 0);
+    assert_eq!(FRAGMENT_BUFFER_CUTS.get(), 0);
 
     subtract_from(&mut fragments, rect(20.0, 0.0, 4.0, 44.0));
-    assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 1);
+    assert_eq!(FRAGMENT_BUFFER_CUTS.get(), 1);
     assert_eq!(
         fragments,
         [rect(0.0, 0.0, 20.0, 44.0), rect(24.0, 0.0, 20.0, 44.0)]
     );
     subtract_from(&mut fragments, original);
     assert!(fragments.is_empty());
-    assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 2);
+    assert_eq!(FRAGMENT_BUFFER_CUTS.get(), 2);
     subtract_from(&mut fragments, original);
-    assert_eq!(FRAGMENT_BUFFER_REBUILDS.get(), 2);
+    assert_eq!(FRAGMENT_BUFFER_CUTS.get(), 2);
+}
+
+pub(super) fn subtract_reference(fragments: &mut Vec<LogicalRect>, cut: LogicalRect) {
+    let mut remaining = Vec::new();
+    for rect in fragments.drain(..) {
+        let Some(overlap) = intersection(rect, cut) else {
+            remaining.push(rect);
+            continue;
+        };
+        for (left, top, right, bottom) in [
+            (rect.x(), rect.y(), rect.max().x(), overlap.y()),
+            (rect.x(), overlap.max().y(), rect.max().x(), rect.max().y()),
+            (rect.x(), overlap.y(), overlap.x(), overlap.max().y()),
+            (
+                overlap.max().x(),
+                overlap.y(),
+                rect.max().x(),
+                overlap.max().y(),
+            ),
+        ] {
+            if let Some(fragment) = clipped_edges(left, top, right, bottom, rect) {
+                remaining.push(fragment);
+            }
+        }
+    }
+    *fragments = remaining;
+}
+
+fn fragment_bits(fragments: &[LogicalRect]) -> Vec<[u64; 4]> {
+    fragments
+        .iter()
+        .map(|rect| [rect.x(), rect.y(), rect.max().x(), rect.max().y()].map(f64::to_bits))
+        .collect()
+}
+
+fn compile(
+    plan: &PresentationPlan,
+    regions: &[PresentationHitRegion],
+) -> Vec<(PresentationHitRegionId, LogicalRect)> {
+    let actual = super::compile(plan, regions);
+    struct ResetReference;
+    impl Drop for ResetReference {
+        fn drop(&mut self) {
+            REFERENCE_SUBTRACTION.set(false);
+        }
+    }
+    REFERENCE_SUBTRACTION.set(true);
+    let reset = ResetReference;
+    let expected = super::compile(plan, regions);
+    drop(reset);
+    assert_eq!(
+        actual.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        expected.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+    );
+    let rects = |fragments: &[(PresentationHitRegionId, LogicalRect)]| {
+        fragment_bits(&fragments.iter().map(|(_, rect)| *rect).collect::<Vec<_>>())
+    };
+    assert_eq!(rects(&actual), rects(&expected));
+    actual
+}
+
+#[test]
+fn retained_fragment_buffer_matches_ordered_subtraction_bitwise() {
+    for (origin, extent) in [
+        (0.0, 128.0),
+        (-0.0, 128.0),
+        (-256.5, 512.25),
+        (1e100, 1e90),
+        (-1e100, 1e90),
+    ] {
+        let original = rect(origin, origin, extent, extent);
+        let cuts = [
+            rect(origin + extent, origin, extent, extent),
+            rect(origin, origin, 0.0, extent),
+            rect(origin, origin, extent, 0.0),
+            rect(
+                origin + extent * 0.3,
+                origin + extent * 0.3,
+                extent * 0.4,
+                extent * 0.4,
+            ),
+            rect(
+                origin + extent * 0.2,
+                origin - extent,
+                extent * 0.1,
+                extent * 3.0,
+            ),
+            rect(
+                origin - extent,
+                origin + extent * 0.5,
+                extent * 3.0,
+                extent * 0.1,
+            ),
+            rect(
+                origin + extent * 0.3,
+                origin + extent * 0.3,
+                extent * 0.4,
+                extent * 0.4,
+            ),
+            original,
+        ];
+        let mut actual = vec![original];
+        let mut expected = actual.clone();
+        for cut in cuts {
+            subtract_from(&mut actual, cut);
+            subtract_reference(&mut expected, cut);
+            assert_eq!(fragment_bits(&actual), fragment_bits(&expected));
+        }
+    }
+
+    let initial = (0..32)
+        .map(|index| {
+            rect(
+                f64::from(index) * 9.0,
+                f64::from(index % 7) * 11.0,
+                24.0,
+                19.0,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut actual = initial.clone();
+    let mut expected = initial;
+    let mut random = 0x6b43_84b7_3251_cfe9_u64;
+    for _ in 0..384 {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        let x = f64::from((random & 0xff) as u8) - 8.0;
+        let y = f64::from(((random >> 8) & 0x7f) as u8) - 8.0;
+        let width = f64::from(((random >> 16) & 0x1f) as u8);
+        let height = f64::from(((random >> 24) & 0x1f) as u8);
+        let cut = rect(x, y, width, height);
+        subtract_from(&mut actual, cut);
+        subtract_reference(&mut expected, cut);
+        assert_eq!(fragment_bits(&actual), fragment_bits(&expected));
+    }
 }
 
 #[test]

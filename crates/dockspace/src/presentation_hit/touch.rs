@@ -1,6 +1,6 @@
 //! Private device-specific hit fragments retained with one exact output.
 
-use crate::drop_target::{DropOcclusionRecord, SceneLayerKey};
+use crate::drop_target::SceneLayerKey;
 use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::graph::Axis;
 use crate::scene::{ContainedResizeDirection, PresentationPlan, SplitterJunctionId};
@@ -13,7 +13,8 @@ mod tests;
 
 #[cfg(test)]
 thread_local! {
-    static FRAGMENT_BUFFER_REBUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FRAGMENT_BUFFER_CUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REFERENCE_SUBTRACTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub(super) const fn replaces(kind: PresentationHitRegionKind) -> bool {
@@ -109,6 +110,7 @@ pub(super) fn compile(
     let neighbors = TouchNeighbors::build(&allocations, &protected);
     partition_allocations(&mut allocations, &neighbors);
     let mut compiled = Vec::new();
+    let mut base = Vec::new();
     let allocation_count = allocations.len();
     for (index, allocation) in allocations.into_iter().enumerate() {
         let region = allocation.region;
@@ -120,10 +122,12 @@ pub(super) fn compile(
         }
         // Chrome protects expanded halos. The already partitioned, visible base
         // keeps the same receiver precedence as the mouse footprint.
-        let mut base = fragments
-            .iter()
-            .filter_map(|rect| intersection(*rect, region.hit().rect()))
-            .collect::<Vec<_>>();
+        base.clear();
+        base.extend(
+            fragments
+                .iter()
+                .filter_map(|rect| intersection(*rect, region.hit().rect())),
+        );
         for &neighbor in neighbors.for_region(index) {
             let Some(protected_index) = neighbor.checked_sub(allocation_count) else {
                 continue;
@@ -136,7 +140,7 @@ pub(super) fn compile(
         for fragment in &fragments {
             subtract_from(&mut base, *fragment);
         }
-        fragments.extend(base);
+        fragments.extend(base.iter().copied());
         compiled.extend(fragments.into_iter().map(|rect| (region.id(), rect)));
     }
     debug_assert!(compiled.windows(2).all(|pair| pair[0].0 <= pair[1].0));
@@ -260,6 +264,7 @@ impl TouchNeighbors {
 }
 
 fn partition_allocations(allocations: &mut [TouchAllocation], neighbors: &TouchNeighbors) {
+    let mut original = Vec::new();
     for index in 0..allocations.len() {
         let (before, after) = allocations.split_at_mut(index + 1);
         let first = &mut before[index];
@@ -319,7 +324,8 @@ fn partition_allocations(allocations: &mut [TouchAllocation], neighbors: &TouchN
             continue;
         };
         let base = current.region.hit().rect();
-        let mut original = vec![base];
+        original.clear();
+        original.push(base);
         for &neighbor in neighbors.for_region(index) {
             let other = if neighbor < index {
                 &before[neighbor]
@@ -362,7 +368,8 @@ fn partition_allocations(allocations: &mut [TouchAllocation], neighbors: &TouchN
         }
         current.fragments.extend(
             original
-                .into_iter()
+                .iter()
+                .copied()
                 .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0),
         );
     }
@@ -494,14 +501,18 @@ fn protected_regions(
     regions: &[PresentationHitRegion],
 ) -> Vec<(SceneLayerKey, LogicalRect)> {
     let mut protected = Vec::new();
+    let mut visible = Vec::new();
     let mut protect = |rect, layer| {
         if let Some(rect) = intersection(rect, plan.bounds()) {
             // Hidden background chrome must not punch holes in a front window's band.
-            protected.extend(
-                visible_fragments(rect, layer, plan.drop_occlusions())
-                    .into_iter()
-                    .map(|rect| (layer, rect)),
-            );
+            visible.clear();
+            visible.push(rect);
+            for occlusion in plan.drop_occlusions() {
+                if occlusion.layer() > layer {
+                    subtract_from(&mut visible, occlusion.region().rect());
+                }
+            }
+            protected.extend(visible.iter().copied().map(|rect| (layer, rect)));
         }
     };
     for region in regions {
@@ -636,33 +647,27 @@ fn intersection(rect: LogicalRect, clip: LogicalRect) -> Option<LogicalRect> {
     clipped_edges(rect.x(), rect.y(), rect.max().x(), rect.max().y(), clip)
 }
 
-fn visible_fragments(
-    rect: LogicalRect,
-    layer: SceneLayerKey,
-    occlusions: &[DropOcclusionRecord],
-) -> Vec<LogicalRect> {
-    let mut fragments = vec![rect];
-    for occlusion in occlusions {
-        if occlusion.layer() > layer {
-            subtract_from(&mut fragments, occlusion.region().rect());
-        }
-    }
-    fragments
-}
-
 fn subtract_from(fragments: &mut Vec<LogicalRect>, cut: LogicalRect) {
-    if !fragments
-        .iter()
-        .any(|rect| intersection(*rect, cut).is_some())
-    {
+    #[cfg(test)]
+    if REFERENCE_SUBTRACTION.get() {
+        tests::subtract_reference(fragments, cut);
         return;
     }
+    let Some(first) = fragments
+        .iter()
+        .position(|rect| intersection(*rect, cut).is_some())
+    else {
+        return;
+    };
     #[cfg(test)]
-    FRAGMENT_BUFFER_REBUILDS.set(FRAGMENT_BUFFER_REBUILDS.get() + 1);
-    let mut remaining = Vec::new();
-    for rect in fragments.drain(..) {
+    FRAGMENT_BUFFER_CUTS.set(FRAGMENT_BUFFER_CUTS.get() + 1);
+    // Append the transformed suffix beyond the original inputs before moving
+    // it into place. Cuts keep the allocation and the exact fragment order.
+    let original_len = fragments.len();
+    for index in first..original_len {
+        let rect = fragments[index];
         let Some(overlap) = intersection(rect, cut) else {
-            remaining.push(rect);
+            fragments.push(rect);
             continue;
         };
         for (left, top, right, bottom) in [
@@ -677,9 +682,11 @@ fn subtract_from(fragments: &mut Vec<LogicalRect>, cut: LogicalRect) {
             ),
         ] {
             if let Some(fragment) = clipped_edges(left, top, right, bottom, rect) {
-                remaining.push(fragment);
+                fragments.push(fragment);
             }
         }
     }
-    *fragments = remaining;
+    let remaining = fragments.len() - original_len;
+    fragments.copy_within(original_len.., first);
+    fragments.truncate(first + remaining);
 }
