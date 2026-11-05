@@ -90,9 +90,11 @@ fn compile(
     impl Drop for ResetReference {
         fn drop(&mut self) {
             REFERENCE_SUBTRACTION.set(false);
+            REFERENCE_LINEAR_SPLITTER_LOOKUP.set(false);
         }
     }
     REFERENCE_SUBTRACTION.set(true);
+    REFERENCE_LINEAR_SPLITTER_LOOKUP.set(true);
     let reset = ResetReference;
     let expected = super::compile(plan, regions);
     drop(reset);
@@ -191,7 +193,7 @@ fn retained_fragment_buffer_matches_ordered_subtraction_bitwise() {
 fn sparse_touch_partition_matches_exhaustive_partition_with_overlapping_bases() {
     let split = node();
     for variant in 0..3 {
-        let mut allocations = Vec::new();
+        let mut regions = Vec::new();
         let mut protected = Vec::new();
         for index in 0..144 {
             let x = 40.0 + f64::from(index % 12) * 40.0;
@@ -213,21 +215,29 @@ fn sparse_touch_partition_matches_exhaustive_partition_with_overlapping_bases() 
                 layer,
                 PresentationHitPrecedence::SplitterHandle,
             );
-            let expanded = rect(
-                base.x() - 19.0,
-                base.y() - 19.0,
-                base.width() + 38.0,
-                base.height() + 38.0,
-            );
-            allocations.push(TouchAllocation {
-                region_index: usize::try_from(index).unwrap(),
-                region,
-                anchor: base,
-                expanded,
-                fragments: vec![expanded],
-            });
+            regions.push(region);
             protected.push((SceneLayerKey::new(layer), rect(x, y + 8.0, 30.0, 20.0)));
         }
+        let mut allocations = regions
+            .iter()
+            .enumerate()
+            .map(|(region_index, region)| {
+                let base = region.hit().rect();
+                let expanded = rect(
+                    base.x() - 19.0,
+                    base.y() - 19.0,
+                    base.width() + 38.0,
+                    base.height() + 38.0,
+                );
+                TouchAllocation {
+                    region_index,
+                    region,
+                    anchor: base,
+                    expanded,
+                    fragments: vec![expanded],
+                }
+            })
+            .collect::<Vec<_>>();
         let neighbors = TouchNeighbors::build(&allocations, &protected);
         assert!(matches!(&neighbors, TouchNeighbors::Sparse(_)));
         // A full scan is the reference oracle for both the partition and every
@@ -260,10 +270,9 @@ fn sparse_touch_partition_matches_exhaustive_partition_with_overlapping_bases() 
 fn dense_touch_overlap_uses_the_bounded_exhaustive_fallback() {
     let split = node();
     let bounds = rect(0.0, 0.0, 600.0, 600.0);
-    let allocations = (0..100)
-        .map(|index| TouchAllocation {
-            region_index: index,
-            region: region(
+    let regions = (0..100)
+        .map(|index| {
+            region(
                 PresentationHitRegionKind::SplitterHandle(SplitterSceneId {
                     root: RootId::new(1),
                     split,
@@ -272,7 +281,15 @@ fn dense_touch_overlap_uses_the_bounded_exhaustive_fallback() {
                 bounds,
                 0,
                 PresentationHitPrecedence::SplitterHandle,
-            ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let allocations = regions
+        .iter()
+        .enumerate()
+        .map(|(region_index, region)| TouchAllocation {
+            region_index,
+            region,
             anchor: bounds,
             expanded: bounds,
             fragments: vec![bounds],
@@ -421,6 +438,190 @@ fn splitter(id: SplitterSceneId, draw: LogicalRect, axis: Axis) -> SplitterRecor
         SceneLayerKey::surface_base(),
         true,
     )
+}
+
+#[test]
+fn splitter_lookup_matches_linear_first_for_complete_ids_and_noncanonical_records() {
+    let mut builder = Workspace::builder();
+    let first_split = builder.insert_node(Node::tabs([]));
+    let second_split = builder.insert_node(Node::tabs([]));
+    let first = SplitterSceneId {
+        root: RootId::new(1),
+        split: first_split,
+        index: 0,
+    };
+    let ids = [
+        first,
+        SplitterSceneId { index: 1, ..first },
+        SplitterSceneId {
+            split: second_split,
+            ..first
+        },
+        SplitterSceneId {
+            root: RootId::new(2),
+            ..first
+        },
+    ];
+    let mut ordered = ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| {
+            splitter(
+                id,
+                match index {
+                    0 => rect(-0.0, -0.0, 4.0, 80.0),
+                    1 => rect(20.25, 30.5, 40.0, 4.0),
+                    2 => rect(1e100, -1e100, 1e90, 1e90),
+                    _ => rect(-1e-200, 0.0, 2e-200, 1e-200),
+                },
+                Axis::Horizontal,
+            )
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_unstable_by_key(|record| *record.id());
+    let mut reversed = ordered.clone();
+    reversed.reverse();
+    let mut permuted = ordered.clone();
+    permuted.rotate_left(1);
+    let duplicate = splitter(first, rect(300.0, 400.0, 100.0, 4.0), Axis::Vertical);
+    let mut duplicate_last = ordered.clone();
+    duplicate_last.push(duplicate.clone());
+    let mut duplicate_first = ordered.clone();
+    duplicate_first.insert(0, duplicate);
+    let queries = ids
+        .into_iter()
+        .chain([
+            SplitterSceneId { index: 2, ..first },
+            SplitterSceneId {
+                root: RootId::new(3),
+                ..first
+            },
+        ])
+        .collect::<Vec<_>>();
+
+    for records in [
+        Vec::new(),
+        vec![ordered[0].clone()],
+        ordered,
+        reversed,
+        permuted,
+        duplicate_last,
+        duplicate_first,
+    ] {
+        let lookup = SplitterLookup::new(&records);
+        for &id in &queries {
+            let expected = records.iter().find(|record| *record.id() == id);
+            match (lookup.find(id), expected) {
+                (Some(actual), Some(expected)) => assert!(std::ptr::eq(actual, expected)),
+                (None, None) => {}
+                (actual, expected) => {
+                    panic!("lookup mismatch for {id:?}: {actual:?} != {expected:?}")
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn splitter_lookup_preserves_ordered_touch_bits_for_permutations_duplicates_and_missing_records() {
+    let split = node();
+    let id = |index| SplitterSceneId {
+        root: RootId::new(1),
+        split,
+        index,
+    };
+    let records = vec![
+        splitter(id(0), rect(198.0, 40.0, 4.0, 520.0), Axis::Horizontal),
+        splitter(id(1), rect(40.0, 298.0, 520.0, 4.0), Axis::Vertical),
+        splitter(id(2), rect(398.0, 40.0, 4.0, 520.0), Axis::Horizontal),
+        splitter(id(3), rect(700.0, 40.0, 4.0, 520.0), Axis::Horizontal),
+    ];
+    let mut regions = records
+        .iter()
+        .map(|record| {
+            region(
+                PresentationHitRegionKind::SplitterHandle(*record.id()),
+                if *record.id() == id(3) {
+                    rect(100.0, 200.0, 4.0, 80.0)
+                } else {
+                    record.draw_bounds()
+                },
+                0,
+                PresentationHitPrecedence::SplitterHandle,
+            )
+        })
+        .collect::<Vec<_>>();
+    let missing_handle = region(
+        PresentationHitRegionKind::SplitterHandle(id(4)),
+        rect(80.0, 80.0, 4.0, 80.0),
+        0,
+        PresentationHitPrecedence::SplitterHandle,
+    );
+    let junction = region(
+        PresentationHitRegionKind::SplitterJunction(SplitterJunctionId::new(
+            Some(id(0)),
+            Some(id(1)),
+            Some(id(0)),
+            Some(id(1)),
+        )),
+        rect(196.0, 296.0, 8.0, 8.0),
+        0,
+        PresentationHitPrecedence::SplitterJunction,
+    );
+    let missing_junction = region(
+        PresentationHitRegionKind::SplitterJunction(SplitterJunctionId::new(
+            Some(id(0)),
+            Some(id(4)),
+            Some(id(0)),
+            Some(id(4)),
+        )),
+        rect(60.0, 60.0, 6.0, 6.0),
+        0,
+        PresentationHitPrecedence::SplitterJunction,
+    );
+    regions.extend([missing_handle, junction, missing_junction]);
+    regions.sort_unstable_by_key(|region| region.id());
+    let compile_records = |records: &[SplitterRecord]| {
+        let mut plan = plan(DockPresentationConfig::default());
+        for record in records {
+            plan.push_splitter_record(record.clone());
+        }
+        compile(&plan, &regions)
+            .into_iter()
+            .map(|(id, rect)| {
+                (
+                    id,
+                    [rect.x(), rect.y(), rect.max().x(), rect.max().y()].map(f64::to_bits),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected = compile_records(&records);
+    assert!(!expected.is_empty());
+    assert!(!expected.iter().any(|(id, _)| *id == missing_handle.id()));
+    assert!(expected.iter().any(|(id, _)| *id == junction.id()));
+    assert!(expected.contains(&(
+        missing_junction.id(),
+        fragment_bits(&[missing_junction.hit().rect()])[0],
+    )));
+    let mut reversed = records.clone();
+    reversed.reverse();
+    assert_eq!(compile_records(&reversed), expected);
+    let mut permuted = records.clone();
+    permuted.rotate_left(1);
+    assert_eq!(compile_records(&permuted), expected);
+
+    let alternate = splitter(id(0), rect(238.0, 40.0, 4.0, 520.0), Axis::Horizontal);
+    let mut duplicate_last = records.clone();
+    duplicate_last.push(alternate.clone());
+    assert_eq!(compile_records(&duplicate_last), expected);
+    let mut alternate_records = records.clone();
+    alternate_records[0] = alternate.clone();
+    let alternate_expected = compile_records(&alternate_records);
+    assert_ne!(alternate_expected, expected);
+    let mut duplicate_first = records;
+    duplicate_first.insert(0, alternate);
+    assert_eq!(compile_records(&duplicate_first), alternate_expected);
 }
 
 #[test]
@@ -1129,7 +1330,7 @@ fn touch_geometry_clips_after_centering_and_keeps_small_window_partitions_disjoi
     ));
     assert_eq!(
         junction_square(
-            &plan,
+            &SplitterLookup::new(plan.splitter_records()),
             SplitterJunctionId::new(
                 Some(north_south),
                 Some(east_west),

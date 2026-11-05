@@ -244,7 +244,7 @@ fn validate_magnetic_target_field(
         reason = "validated presentation fractions use the command layer's f32 representation"
     )]
     let expected_fraction = config.dock_fraction() as f32;
-    let mut expected_magnetic_targets = BTreeSet::new();
+    let mut expected_target_catalog = Vec::new();
 
     let mut depths = BTreeMap::new();
     for facts in layout.roots() {
@@ -308,7 +308,7 @@ fn validate_magnetic_target_field(
                 edge: Edge::Bottom,
             },
         );
-        expected_magnetic_targets.extend(expected_edges.targets());
+        expected_target_catalog.extend(expected_edges.targets());
         if field.layer() != layer
             || field.bounds() != facts.bounds()
             || field.edge_band().to_bits() != root_edge_band(facts.bounds(), config).to_bits()
@@ -380,8 +380,8 @@ fn validate_magnetic_target_field(
             edge_target(Edge::Top),
             edge_target(Edge::Bottom),
         );
-        expected_magnetic_targets.insert(center_target);
-        expected_magnetic_targets.extend(expected_edges.targets());
+        expected_target_catalog.push(center_target);
+        expected_target_catalog.extend(expected_edges.targets());
         if field.layer() != layer
             || field.depth() != depth
             || field.content() != pane.content_bounds()
@@ -400,23 +400,21 @@ fn validate_magnetic_target_field(
             return Err(invalid());
         }
     }
-    let expected_target_catalog = ready
-        .drop_guide_clusters()
-        .iter()
-        .flat_map(|cluster| cluster.targets().map(|(_, target)| target.id()))
-        .chain(expected_magnetic_targets)
-        .collect::<BTreeSet<_>>();
-    let actual_target_catalog = target_index
-        .keys()
-        .copied()
-        .filter(|target| {
-            matches!(
-                target.kind(),
-                DropTargetKind::Center | DropTargetKind::InnerEdge | DropTargetKind::OuterEdge
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    if actual_target_catalog != expected_target_catalog {
+    expected_target_catalog.extend(
+        ready
+            .drop_guide_clusters()
+            .iter()
+            .flat_map(|cluster| cluster.targets().map(|(_, target)| target.id())),
+    );
+    expected_target_catalog.sort_unstable();
+    expected_target_catalog.dedup();
+    let actual_target_catalog = target_index.keys().copied().filter(|target| {
+        matches!(
+            target.kind(),
+            DropTargetKind::Center | DropTargetKind::InnerEdge | DropTargetKind::OuterEdge
+        )
+    });
+    if !actual_target_catalog.eq(expected_target_catalog) {
         return Err(invalid());
     }
     Ok(())

@@ -3,7 +3,9 @@
 use crate::drop_target::SceneLayerKey;
 use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::graph::Axis;
-use crate::scene::{ContainedResizeDirection, PresentationPlan, SplitterJunctionId};
+use crate::scene::{
+    ContainedResizeDirection, PresentationPlan, SplitterJunctionId, SplitterRecord, SplitterSceneId,
+};
 
 use super::{PresentationHitRegion, PresentationHitRegionKind};
 
@@ -15,6 +17,7 @@ mod tests;
 thread_local! {
     static FRAGMENT_BUFFER_CUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static REFERENCE_SUBTRACTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static REFERENCE_LINEAR_SPLITTER_LOOKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub(super) const fn replaces(kind: PresentationHitRegionKind) -> bool {
@@ -41,12 +44,13 @@ pub(super) fn compile(
     let contained_extent = config
         .touch_resize_hit_extent()
         .max(config.floating_resize_extent());
+    let splitters = SplitterLookup::new(plan.splitter_records());
     let protected = protected_regions(plan, regions);
     let mut allocations = Vec::new();
     for (region_index, region) in regions.iter().enumerate() {
-        let rect = match region.id().kind() {
+        let (rect, anchor) = match region.id().kind() {
             PresentationHitRegionKind::SplitterHandle(id) => {
-                let Some(splitter) = plan.splitter_record(id) else {
+                let Some(splitter) = splitters.find(id) else {
                     continue;
                 };
                 let Some(root) = facts.root(id.root) else {
@@ -55,11 +59,14 @@ pub(super) fn compile(
                 let Some(clip) = intersection(root.bounds(), plan.bounds()) else {
                     continue;
                 };
-                splitter_band(
+                (
+                    splitter_band(
+                        splitter.draw_bounds(),
+                        splitter.axis(),
+                        splitter_extent,
+                        clip,
+                    ),
                     splitter.draw_bounds(),
-                    splitter.axis(),
-                    splitter_extent,
-                    clip,
                 )
             }
             PresentationHitRegionKind::SplitterJunction(id) => {
@@ -72,7 +79,10 @@ pub(super) fn compile(
                 let extent = splitter_extent
                     .max(region.hit().rect().width())
                     .max(region.hit().rect().height());
-                junction_square(plan, id, extent, clip)
+                (
+                    junction_square(&splitters, id, extent, clip),
+                    region.hit().rect(),
+                )
             }
             PresentationHitRegionKind::ContainedResize {
                 floating,
@@ -81,12 +91,15 @@ pub(super) fn compile(
                 let Some(outer) = plan.unclipped_contained_bounds(floating) else {
                     continue;
                 };
-                contained_partition(
-                    outer,
-                    config.floating_resize_extent(),
-                    contained_extent,
-                    direction,
-                    plan.bounds(),
+                (
+                    contained_partition(
+                        outer,
+                        config.floating_resize_extent(),
+                        contained_extent,
+                        direction,
+                        plan.bounds(),
+                    ),
+                    region.hit().rect(),
                 )
             }
             _ => continue,
@@ -94,15 +107,9 @@ pub(super) fn compile(
         let Some(rect) = rect.or_else(|| intersection(region.hit().rect(), plan.bounds())) else {
             continue;
         };
-        let anchor = match region.id().kind() {
-            PresentationHitRegionKind::SplitterHandle(id) => plan
-                .splitter_record(id)
-                .map_or(region.hit().rect(), |splitter| splitter.draw_bounds()),
-            _ => region.hit().rect(),
-        };
         allocations.push(TouchAllocation {
             region_index,
-            region: *region,
+            region,
             anchor,
             expanded: rect,
             fragments: vec![rect],
@@ -141,10 +148,10 @@ pub(super) fn compile(
         for fragment in &fragments {
             subtract_from(&mut base, *fragment);
         }
-        fragments.extend(base.iter().copied());
         compiled.extend(
             fragments
                 .into_iter()
+                .chain(base.iter().copied())
                 .map(|rect| (allocation.region_index, rect)),
         );
     }
@@ -153,12 +160,41 @@ pub(super) fn compile(
 }
 
 #[cfg_attr(test, derive(Clone))]
-struct TouchAllocation {
+struct TouchAllocation<'a> {
     region_index: usize,
-    region: PresentationHitRegion,
+    region: &'a PresentationHitRegion,
     anchor: LogicalRect,
     expanded: LogicalRect,
     fragments: Vec<LogicalRect>,
+}
+
+struct SplitterLookup<'a> {
+    records: &'a [SplitterRecord],
+    strictly_sorted: bool,
+}
+
+impl<'a> SplitterLookup<'a> {
+    fn new(records: &'a [SplitterRecord]) -> Self {
+        Self {
+            records,
+            strictly_sorted: records.windows(2).all(|pair| pair[0].id() < pair[1].id()),
+        }
+    }
+
+    fn find(&self, id: SplitterSceneId) -> Option<&'a SplitterRecord> {
+        let use_binary_search = self.strictly_sorted;
+        #[cfg(test)]
+        let use_binary_search = use_binary_search && !REFERENCE_LINEAR_SPLITTER_LOOKUP.get();
+        if use_binary_search {
+            self.records
+                .binary_search_by_key(&id, |record| *record.id())
+                .ok()
+                .map(|index| &self.records[index])
+        } else {
+            // Synthetic and duplicate inventories retain the original first match.
+            self.records.iter().find(|record| *record.id() == id)
+        }
+    }
 }
 
 // This broad phase only removes disjoint pairs; exact geometry and stable pair
@@ -196,7 +232,10 @@ impl TouchBounds {
 }
 
 impl TouchNeighbors {
-    fn build(allocations: &[TouchAllocation], protected: &[(SceneLayerKey, LogicalRect)]) -> Self {
+    fn build(
+        allocations: &[TouchAllocation<'_>],
+        protected: &[(SceneLayerKey, LogicalRect)],
+    ) -> Self {
         let allocation_count = allocations.len();
         let dense = || Self::Dense((0..allocation_count + protected.len()).collect());
         let mut entries = Vec::with_capacity(allocation_count + protected.len());
@@ -269,7 +308,7 @@ impl TouchNeighbors {
     }
 }
 
-fn partition_allocations(allocations: &mut [TouchAllocation], neighbors: &TouchNeighbors) {
+fn partition_allocations(allocations: &mut [TouchAllocation<'_>], neighbors: &TouchNeighbors) {
     let allocation_count = allocations.len();
     let mut original = Vec::new();
     for index in 0..allocation_count {
@@ -388,7 +427,7 @@ fn partition_allocations(allocations: &mut [TouchAllocation], neighbors: &TouchN
     }
 }
 
-fn is_splitter_region(region: PresentationHitRegion) -> bool {
+fn is_splitter_region(region: &PresentationHitRegion) -> bool {
     matches!(
         region.id().kind(),
         PresentationHitRegionKind::SplitterHandle(_)
@@ -396,14 +435,17 @@ fn is_splitter_region(region: PresentationHitRegion) -> bool {
     )
 }
 
-fn is_splitter_handle(region: PresentationHitRegion) -> bool {
+fn is_splitter_handle(region: &PresentationHitRegion) -> bool {
     matches!(
         region.id().kind(),
         PresentationHitRegionKind::SplitterHandle(_)
     )
 }
 
-fn splitter_tie_break(first: &TouchAllocation, second: &TouchAllocation) -> std::cmp::Ordering {
+fn splitter_tie_break(
+    first: &TouchAllocation<'_>,
+    second: &TouchAllocation<'_>,
+) -> std::cmp::Ordering {
     if !is_splitter_region(first.region) || !is_splitter_region(second.region) {
         return std::cmp::Ordering::Equal;
     }
@@ -461,8 +503,8 @@ fn separating_boundary(first: LogicalRect, second: LogicalRect) -> Option<(Axis,
 }
 
 fn partition_overlap(
-    first: &mut TouchAllocation,
-    second: &mut TouchAllocation,
+    first: &mut TouchAllocation<'_>,
+    second: &mut TouchAllocation<'_>,
     overlap: LogicalRect,
     axis: Axis,
     boundary: f64,
@@ -576,7 +618,7 @@ fn splitter_band(
 }
 
 fn junction_square(
-    plan: &PresentationPlan,
+    splitters: &SplitterLookup<'_>,
     id: SplitterJunctionId,
     extent: f64,
     clip: LogicalRect,
@@ -584,7 +626,7 @@ fn junction_square(
     let mut x = None;
     let mut y = None;
     for splitter in id.splitters() {
-        let record = plan.splitter_record(splitter)?;
+        let record = splitters.find(splitter)?;
         let draw = record.draw_bounds();
         match record.axis() {
             Axis::Horizontal => x = Some(midpoint(draw.x(), draw.max().x())),

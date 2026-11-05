@@ -351,6 +351,48 @@ fn scene_validation_requires_the_complete_compiled_magnetic_target_field() {
 }
 
 #[test]
+fn scene_validation_rejects_an_extra_valid_target_outside_the_magnetic_catalog() {
+    let surface = SurfaceId::new(831);
+    let root = RootId::new(832);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(833)]));
+    builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder.build().unwrap();
+    let policy = policy_snapshot();
+    let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap();
+
+    for emit_guides in [false, true] {
+        let mut plan = compile_ready_plan(&workspace, surface, bounds, emit_guides);
+        let target = workspace
+            .capture_inner_edge_target(root, tabs, Edge::Left, DockFraction::new(0.3).unwrap())
+            .unwrap();
+        // This central root exposes outer edges, so this structurally valid
+        // inner edge is absent from both the magnetic field and guide roster.
+        plan.push_drop_target(Arc::new(DropTargetRecord::new(
+            DropTargetId::InnerEdge {
+                surface,
+                root,
+                node: tabs,
+                edge: Edge::Left,
+            },
+            DockTarget::InnerEdge(target),
+            DropTargetAvailability::Available,
+            HitRegion::new(bounds),
+            SceneLayerKey::surface_base(),
+            DropVisual::new(bounds),
+        )));
+        assert!(matches!(
+            PresentationPlanValidator::new(&workspace, &policy)
+                .unwrap()
+                .validate_and_canonicalize(plan),
+            Err(SceneBuildError::InvalidMagneticTargetField { surface: actual })
+                if actual == surface
+        ));
+    }
+}
+
+#[test]
 fn scene_validation_rejects_a_magnetic_edge_with_a_foreign_fraction() {
     let surface = SurfaceId::new(835);
     let root = RootId::new(836);

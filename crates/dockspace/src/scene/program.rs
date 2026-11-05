@@ -2,6 +2,10 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "program/scratch_tests.rs"]
+mod scratch_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SurfaceProgramRootPresentation {
     Main,
@@ -531,43 +535,60 @@ impl SurfaceProgram {
         if self.active_root.is_some() {
             return Err(SurfaceProgramBuildError::RootAlreadyOpen);
         }
-        let mut seen_guides = std::collections::HashSet::new();
-        for id in &self.deferred_guides {
-            if !seen_guides.insert(*id) {
-                return Err(SurfaceProgramBuildError::DuplicateGuide { id: *id });
+        {
+            let mut seen_guides =
+                std::collections::HashSet::with_capacity(self.deferred_guides.len());
+            for id in &self.deferred_guides {
+                if !seen_guides.insert(id) {
+                    return Err(SurfaceProgramBuildError::DuplicateGuide { id: *id });
+                }
             }
         }
-        let mut seen_popup_backdrops = std::collections::HashSet::new();
-        for session in &self.deferred_popup_backdrops {
-            if !seen_popup_backdrops.insert(*session) {
-                return Err(SurfaceProgramBuildError::DuplicatePopupBackdrop { session: *session });
+        {
+            let mut seen_popup_backdrops =
+                std::collections::HashSet::with_capacity(self.deferred_popup_backdrops.len());
+            for session in &self.deferred_popup_backdrops {
+                if !seen_popup_backdrops.insert(session) {
+                    return Err(SurfaceProgramBuildError::DuplicatePopupBackdrop {
+                        session: *session,
+                    });
+                }
             }
-        }
-        let mut seen_popup_menus = std::collections::HashSet::new();
-        for session in &self.deferred_popup_menus {
-            if !seen_popup_menus.insert(*session) {
-                return Err(SurfaceProgramBuildError::DuplicatePopupMenu { session: *session });
+            {
+                let mut seen_popup_menus =
+                    std::collections::HashSet::with_capacity(self.deferred_popup_menus.len());
+                for session in &self.deferred_popup_menus {
+                    if !seen_popup_menus.insert(session) {
+                        return Err(SurfaceProgramBuildError::DuplicatePopupMenu {
+                            session: *session,
+                        });
+                    }
+                }
             }
-        }
-        for session in &self.deferred_popup_menus {
-            if !seen_popup_backdrops.contains(session) {
-                return Err(SurfaceProgramBuildError::PopupMenuWithoutBackdrop {
-                    session: *session,
-                });
+            for session in &self.deferred_popup_menus {
+                if !seen_popup_backdrops.contains(session) {
+                    return Err(SurfaceProgramBuildError::PopupMenuWithoutBackdrop {
+                        session: *session,
+                    });
+                }
             }
         }
         // A non-owner surface may legitimately retain only the workspace
         // backdrop while another surface owns the popup menu.
-        let mut seen_drop_targets = std::collections::HashSet::new();
-        for id in &self.deferred_drop_targets {
-            if !seen_drop_targets.insert(*id) {
-                return Err(SurfaceProgramBuildError::DuplicateDropTarget { id: *id });
+        {
+            let mut seen_drop_targets =
+                std::collections::HashSet::with_capacity(self.deferred_drop_targets.len());
+            for id in &self.deferred_drop_targets {
+                if !seen_drop_targets.insert(id) {
+                    return Err(SurfaceProgramBuildError::DuplicateDropTarget { id: *id });
+                }
             }
         }
         for root in &self.root_drafts {
-            let mut seen_operations = std::collections::HashSet::new();
+            let mut seen_operations =
+                std::collections::HashSet::with_capacity(root.operations.len());
             for operation in &root.operations {
-                if !seen_operations.insert(*operation) {
+                if !seen_operations.insert(operation) {
                     return Err(SurfaceProgramBuildError::DuplicateOperation {
                         root: root.root,
                         operation: *operation,
@@ -598,9 +619,10 @@ impl SurfaceProgram {
         if let Some(id) = self.deferred_surface_background.take() {
             blocks.push(SurfaceProgramBlock::DropTarget(id));
         }
-        let guide_targets = std::mem::take(&mut self.deferred_guide_targets)
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
+        let deferred_guide_targets = std::mem::take(&mut self.deferred_guide_targets);
+        let mut guide_targets =
+            std::collections::HashSet::<&DropTargetId>::with_capacity(deferred_guide_targets.len());
+        guide_targets.extend(deferred_guide_targets.iter());
         blocks.extend(
             std::mem::take(&mut self.deferred_drop_targets)
                 .into_iter()
