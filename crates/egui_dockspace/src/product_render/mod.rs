@@ -156,6 +156,8 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     _scroll_lifetime: PhantomData<&'scroll mut ()>,
     defer_measurement: &'ui mut bool,
     pane_output_valid: &'ui mut bool,
+    paint_comparison: &'ui mut crate::output_proof::PaintComparison,
+    paint_snapshots: &'ui mut crate::output_proof::PaintSnapshotCache,
     pointer_authority: PointerActionAuthority,
 }
 
@@ -415,6 +417,8 @@ pub(crate) fn paint_surface(
     }
 
     {
+        let mut paint_comparison = crate::output_proof::PaintComparison::default();
+        let mut paint_snapshots = crate::output_proof::PaintSnapshotCache::default();
         let mut context = RenderContext {
             ui,
             instance_id,
@@ -439,6 +443,8 @@ pub(crate) fn paint_surface(
             _scroll_lifetime: PhantomData,
             defer_measurement: &mut defer_measurement,
             pane_output_valid: &mut pane_output_valid,
+            paint_comparison: &mut paint_comparison,
+            paint_snapshots: &mut paint_snapshots,
             pointer_authority,
         };
         let completed_program = context

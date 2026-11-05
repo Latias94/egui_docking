@@ -78,7 +78,12 @@ pub(crate) fn paint_pane(
         super::PointerActionAuthority::LocalResponses { .. }
             | super::PointerActionAuthority::HostJournal
     )
-    .then(|| crate::output_proof::PaintAppendCheck::begin(child.painter()));
+    .then(|| {
+        crate::output_proof::PaintAppendCheck::begin_reusing(
+            child.painter(),
+            context.paint_snapshots,
+        )
+    });
     if context
         .resources
         .item(item)
@@ -149,7 +154,12 @@ pub(crate) fn paint_pane(
     }
     drop(child);
     if let Some(check) = append_check {
-        *context.pane_output_valid &= check.is_preserved(context.ui.painter());
+        check.finish_reusing(
+            context.ui.painter(),
+            context.paint_snapshots,
+            context.paint_comparison,
+            context.pane_output_valid,
+        );
     }
 }
 
