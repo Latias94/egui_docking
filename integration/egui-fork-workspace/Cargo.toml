@@ -3,15 +3,21 @@ resolver = "3"
 members = [
     "../../crates/egui_dockspace_native",
     "../egui-native-smoke",
+    "../egui-fork-product-harness",
 ]
 
+[profile.production]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+
 [patch.crates-io]
-ecolor = { git = "https://github.com/Latias94/egui", rev = "56e3db49b66096b58a23b8eb762bdc0a73ae043c" }
-eframe = { git = "https://github.com/Latias94/egui", rev = "56e3db49b66096b58a23b8eb762bdc0a73ae043c" }
-egui = { git = "https://github.com/Latias94/egui", rev = "56e3db49b66096b58a23b8eb762bdc0a73ae043c" }
-egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "56e3db49b66096b58a23b8eb762bdc0a73ae043c" }
-egui-winit = { git = "https://github.com/Latias94/egui", rev = "56e3db49b66096b58a23b8eb762bdc0a73ae043c" }
-egui_glow = { git = "https://github.com/Latias94/egui", rev = "56e3db49b66096b58a23b8eb762bdc0a73ae043c" }
-emath = { git = "https://github.com/Latias94/egui", rev = "56e3db49b66096b58a23b8eb762bdc0a73ae043c" }
-epaint = { git = "https://github.com/Latias94/egui", rev = "56e3db49b66096b58a23b8eb762bdc0a73ae043c" }
+ecolor = { git = "https://github.com/Latias94/egui", rev = "60c40304dab75305d2ac0f54a1cabfc354669006" }
+eframe = { git = "https://github.com/Latias94/egui", rev = "60c40304dab75305d2ac0f54a1cabfc354669006" }
+egui = { git = "https://github.com/Latias94/egui", rev = "60c40304dab75305d2ac0f54a1cabfc354669006" }
+egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "60c40304dab75305d2ac0f54a1cabfc354669006" }
+egui-winit = { git = "https://github.com/Latias94/egui", rev = "60c40304dab75305d2ac0f54a1cabfc354669006" }
+egui_glow = { git = "https://github.com/Latias94/egui", rev = "60c40304dab75305d2ac0f54a1cabfc354669006" }
+emath = { git = "https://github.com/Latias94/egui", rev = "60c40304dab75305d2ac0f54a1cabfc354669006" }
+epaint = { git = "https://github.com/Latias94/egui", rev = "60c40304dab75305d2ac0f54a1cabfc354669006" }
 winit = { git = "https://github.com/Latias94/winit.git", rev = "2664589f0bd6fd03b2a5490f23bcd692853e63dd" }

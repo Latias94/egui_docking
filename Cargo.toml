@@ -12,6 +12,7 @@ exclude = [
     "integration/egui-native-smoke",
     "integration/egui-official-harness",
     "integration/egui-product-harness",
+    "integration/egui-fork-product-harness",
     "repo-ref/egui",
     "repo-ref/egui-release",
 ]
@@ -23,6 +24,11 @@ rust-version = "1.95"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Latias94/egui_docking"
+
+[profile.production]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
 
 [workspace.dependencies]
 blake3 = "1.8.3"

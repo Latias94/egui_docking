@@ -73,94 +73,89 @@ pub(crate) fn paint_pane(
         child.set_opacity(0.0);
     }
     child.set_clip_rect(pane_rect);
-    let append_check = matches!(
-        context.pointer_authority,
-        super::PointerActionAuthority::LocalResponses { .. }
-            | super::PointerActionAuthority::HostJournal
-    )
-    .then(|| {
-        crate::output_proof::PaintAppendCheck::begin_reusing(
-            child.painter(),
-            context.paint_snapshots,
-        )
-    });
-    if context
-        .resources
-        .item(item)
-        .is_some_and(|resource| resource.missing)
-    {
-        child.centered_and_justified(|ui| {
-            ui.label(format!("Missing pane {}", item.get()));
-        });
-    } else {
+    let mut paint_audit = context.paint_audit.take();
+    let painter = child.painter().clone();
+    // Keep ownership outside the callback so an unwind releases the append
+    // checkpoint before Ui::drop, while normal finalization remains audited.
+    let mut child = Some(child);
+    let mut paint_contents = || {
+        let child_ui = child.as_mut().expect("the pane child is still open");
         if context
-            .pane_focus_request
-            .is_some_and(|request| request.item() == Some(item))
-            && context.pointer_authority.supports_preview_gestures()
-            && !*context.pane_focus_target_requested
-            && let Some(target) = context.panes.focus_target(item)
+            .resources
+            .item(item)
+            .is_some_and(|resource| resource.missing)
         {
-            context.ui.memory_mut(|memory| memory.request_focus(target));
-            *context.pane_focus_target_requested = true;
-            *context.pane_focus_target = Some(target);
-        }
-        context.panes.ui(item, &mut child);
-        if let Some(target) = context.panes.focus_target(item)
-            && child.ctx().viewport(|viewport| {
-                viewport
-                    .this_pass
-                    .widgets
-                    .get(target)
-                    .is_some_and(|widget| {
-                        widget.enabled
-                            && widget.visible
-                            && widget.sense.is_focusable()
-                            && widget.layer_id == child.layer_id()
-                            && widget.rect.is_finite()
-                            && widget.rect.is_positive()
-                            && pane_rect.contains_rect(widget.rect)
-                    })
-            })
-        {
-            context.pane_focus_bindings.push((item, target));
-        }
-        if let Some(receiver) = pane_receiver
-            && pane_rect.is_finite()
-            && pane_rect.is_positive()
-        {
-            for &widget_id in context.panes.docking_content_widgets(item) {
-                let Some(widget) = child
-                    .ctx()
-                    .viewport(|viewport| viewport.this_pass.widgets.get(widget_id).copied())
-                else {
-                    continue;
-                };
-                if widget.enabled
-                    && widget.layer_id == child.layer_id()
-                    && widget.interact_rect.is_finite()
-                    && widget.interact_rect.is_positive()
-                    && pane_rect.contains_rect(widget.interact_rect)
-                {
-                    context.receivers.push(ProductReceiverBinding {
-                        interact_rect: widget.interact_rect,
-                        interactive: widget.sense.interactive(),
-                        widget_id: widget.id,
-                        layer_id: widget.layer_id,
-                        receiver,
-                    });
+            child_ui.centered_and_justified(|ui| {
+                ui.label(format!("Missing pane {}", item.get()));
+            });
+        } else {
+            if context
+                .pane_focus_request
+                .is_some_and(|request| request.item() == Some(item))
+                && context.pointer_authority.supports_preview_gestures()
+                && !*context.pane_focus_target_requested
+                && let Some(target) = context.panes.focus_target(item)
+            {
+                context.ui.memory_mut(|memory| memory.request_focus(target));
+                *context.pane_focus_target_requested = true;
+                *context.pane_focus_target = Some(target);
+            }
+            context.panes.ui(item, child_ui);
+            if let Some(target) = context.panes.focus_target(item)
+                && child_ui.ctx().viewport(|viewport| {
+                    viewport
+                        .this_pass
+                        .widgets
+                        .get(target)
+                        .is_some_and(|widget| {
+                            widget.enabled
+                                && widget.visible
+                                && widget.sense.is_focusable()
+                                && widget.layer_id == child_ui.layer_id()
+                                && widget.rect.is_finite()
+                                && widget.rect.is_positive()
+                                && pane_rect.contains_rect(widget.rect)
+                        })
+                })
+            {
+                context.pane_focus_bindings.push((item, target));
+            }
+            if let Some(receiver) = pane_receiver
+                && pane_rect.is_finite()
+                && pane_rect.is_positive()
+            {
+                for &widget_id in context.panes.docking_content_widgets(item) {
+                    let Some(widget) = child_ui
+                        .ctx()
+                        .viewport(|viewport| viewport.this_pass.widgets.get(widget_id).copied())
+                    else {
+                        continue;
+                    };
+                    if widget.enabled
+                        && widget.layer_id == child_ui.layer_id()
+                        && widget.interact_rect.is_finite()
+                        && widget.interact_rect.is_positive()
+                        && pane_rect.contains_rect(widget.interact_rect)
+                    {
+                        context.receivers.push(ProductReceiverBinding {
+                            interact_rect: widget.interact_rect,
+                            interactive: widget.sense.interactive(),
+                            widget_id: widget.id,
+                            layer_id: widget.layer_id,
+                            receiver,
+                        });
+                    }
                 }
             }
         }
+        drop(child.take());
+    };
+    if let Some(audit) = paint_audit.as_mut() {
+        audit.check_append(&painter, paint_contents);
+    } else {
+        paint_contents();
     }
-    drop(child);
-    if let Some(check) = append_check {
-        check.finish_reusing(
-            context.ui.painter(),
-            context.paint_snapshots,
-            context.paint_comparison,
-            context.pane_output_valid,
-        );
-    }
+    context.paint_audit = paint_audit;
 }
 
 pub(crate) fn paint_tab_bar(
@@ -207,7 +202,10 @@ fn publish_native_tab_strip_diagnostics(
             TabStripMemberVisibility::PartiallyVisible => "partially-visible",
             TabStripMemberVisibility::Hidden => continue,
         };
-        let Some(resource) = context.resources.tab(member.visual_id()) else {
+        if context.resources.tab_visual(member.item()) != Some(member.visual_id()) {
+            continue;
+        }
+        let Some(resource) = context.resources.item(member.item()) else {
             continue;
         };
         let Some(full) = egui_rect(member.full_bounds()) else {
@@ -314,10 +312,11 @@ pub(crate) fn paint_tab_record(
     tab: TabPaintRecord<'_>,
     paint: SurfacePaintDisposition,
 ) {
-    let Some(resource) = context.resources.tab(tab.visual_id()).cloned() else {
+    let resources = context.resources;
+    let Some(resource) = resources.item(tab.item()) else {
         return;
     };
-    paint_tab(context, tab, &resource, paint);
+    paint_tab(context, tab, resource, paint);
 }
 
 pub(crate) fn paint_tab(

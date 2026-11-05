@@ -11,7 +11,8 @@ use egui::{
 };
 
 use crate::output_proof::{
-    SurfaceOutputProof, final_paint_layer_order, scrub_private_markers, spans_follow_paint_order,
+    OwnedOutputCheck, SurfaceOutputProof, final_paint_layer_order, scrub_private_markers,
+    spans_follow_paint_order,
 };
 use crate::pane::PaneFocusState;
 use crate::product_pointer::ProductPointerInputSnapshot;
@@ -360,6 +361,42 @@ pub(super) struct ProductPassSettlementRun {
     discarded: RefCell<Vec<PaintedSurfaceOutput>>,
 }
 
+/// Exclusively owns shape data from Context return through final settlement.
+/// No mutable FullOutput or shape access escapes this private module.
+pub(super) struct OwnedRunOutput {
+    output: FullOutput,
+    check: Option<OwnedOutputCheck>,
+}
+
+impl OwnedRunOutput {
+    pub(super) fn new(output: FullOutput) -> Self {
+        Self {
+            output,
+            check: None,
+        }
+    }
+
+    pub(super) fn take_textures<'context>(
+        &mut self,
+        context: &'context Context,
+    ) -> OutputTexturesGuard<'context> {
+        OutputTexturesGuard::take(context, &mut self.output)
+    }
+
+    pub(super) fn restore_textures(&mut self, textures: OutputTexturesGuard<'_>) {
+        textures.restore_into_output(&mut self.output);
+    }
+
+    pub(super) fn check(
+        &mut self,
+        proof: Option<&SurfaceOutputProof>,
+        layer_order: &[egui::LayerId],
+    ) -> bool {
+        self.check = proof.and_then(|proof| proof.check_owned_output(&self.output, layer_order));
+        self.check.is_some()
+    }
+}
+
 impl ProductPassSettlementRun {
     pub(super) fn begin(context: &Context, input: &RawInput) -> Self {
         if let Some(active) = active_run_portal(context) {
@@ -417,7 +454,24 @@ impl ProductPassSettlementRun {
         final_paint_layer_order(&self.context)
     }
 
-    pub(super) fn complete(mut self, output: &mut FullOutput) -> DockspaceOutputReceipt {
+    pub(super) fn complete(self, output: &mut FullOutput) -> DockspaceOutputReceipt {
+        self.complete_inner(output, None)
+    }
+
+    pub(super) fn complete_owned(
+        self,
+        output: OwnedRunOutput,
+    ) -> (FullOutput, DockspaceOutputReceipt) {
+        let OwnedRunOutput { mut output, check } = output;
+        let receipt = self.complete_inner(&mut output, check);
+        (output, receipt)
+    }
+
+    fn complete_inner(
+        mut self,
+        output: &mut FullOutput,
+        mut checked: Option<OwnedOutputCheck>,
+    ) -> DockspaceOutputReceipt {
         let terminal = self.take_terminal();
         let mut deliveries = Vec::new();
         if let Some((run, pass, poisoned, participants)) = terminal {
@@ -440,11 +494,14 @@ impl ProductPassSettlementRun {
                 };
                 invalid |= batch.emission_incomplete;
                 if batch.output.is_some() {
-                    match batch
-                        .proof
-                        .as_ref()
-                        .and_then(|proof| proof.present_spans(output))
-                    {
+                    let evidence = batch.proof.as_ref().and_then(|proof| {
+                        if checked.as_ref().is_some_and(|check| check.is_for(proof)) {
+                            checked.take().map(OwnedOutputCheck::into_spans)
+                        } else {
+                            proof.present_spans(output)
+                        }
+                    });
+                    match evidence {
                         Some(evidence) => {
                             output_spans.extend(
                                 evidence
@@ -905,6 +962,54 @@ mod tests;
 #[cfg(test)]
 mod output_textures_guard_tests {
     use super::*;
+
+    #[test]
+    fn owned_output_keeps_texture_retirement_before_ordered_user_payload_release() {
+        struct Released {
+            label: u8,
+            context: Context,
+            events: Arc<Mutex<Vec<(u8, bool)>>>,
+        }
+        impl Drop for Released {
+            fn drop(&mut self) {
+                let retained = self.context.data(|data| {
+                    data.get_temp::<RetainedTexturesDelta>(retained_textures_id())
+                        .is_some_and(|delta| !delta.0.is_empty())
+                });
+                self.events.lock().unwrap().push((self.label, retained));
+            }
+        }
+        let context = Context::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let result: Result<(), ()> = (|| {
+            let mut raw = FullOutput::default();
+            for label in [1, 2] {
+                raw.shapes.push(egui::epaint::ClippedShape::new(
+                    egui::Rect::EVERYTHING,
+                    egui::Shape::Callback(egui::epaint::PaintCallback {
+                        rect: egui::Rect::EVERYTHING,
+                        callback: Arc::new(Released {
+                            label,
+                            context: context.clone(),
+                            events: Arc::clone(&events),
+                        }),
+                    }),
+                ));
+            }
+            raw.textures_delta.free(egui::TextureId::User(99));
+            let mut output = OwnedRunOutput::new(raw);
+            let _guard = output.take_textures(&context);
+            // A later local capture holds the first payload, as the terminal
+            // pass proof does. It must release before the owned output itself.
+            let _frozen = output.output.shapes[0].clone();
+            Err(())
+        })();
+        assert!(result.is_err());
+        assert_eq!(*events.lock().unwrap(), [(1, true), (2, true)]);
+        let mut retired = FullOutput::default();
+        restore_retained_textures(&context, &mut retired);
+        retired.drop_without_applying_deltas();
+    }
 
     #[test]
     fn output_delta_is_retained_when_a_later_result_path_returns_early() {

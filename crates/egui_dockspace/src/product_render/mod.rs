@@ -155,9 +155,7 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     #[cfg(not(feature = "native-render-support"))]
     _scroll_lifetime: PhantomData<&'scroll mut ()>,
     defer_measurement: &'ui mut bool,
-    pane_output_valid: &'ui mut bool,
-    paint_comparison: &'ui mut crate::output_proof::PaintComparison,
-    paint_snapshots: &'ui mut crate::output_proof::PaintSnapshotCache,
+    paint_audit: Option<&'ui mut crate::output_proof::PaintAudit>,
     pointer_authority: PointerActionAuthority,
 }
 
@@ -386,7 +384,6 @@ pub(crate) fn paint_surface(
     let mut scroll_receivers = Vec::new();
     let mut defer_measurement = false;
     let mut transient_visuals_complete = true;
-    let mut pane_output_valid = true;
     let mut terminal_semantic_output = None;
     let execution_receipt;
     if let Some(bounds) = geometry::egui_rect(plan.bounds()) {
@@ -417,8 +414,11 @@ pub(crate) fn paint_surface(
     }
 
     {
-        let mut paint_comparison = crate::output_proof::PaintComparison::default();
-        let mut paint_snapshots = crate::output_proof::PaintSnapshotCache::default();
+        let mut paint_audit = matches!(
+            pointer_authority,
+            PointerActionAuthority::LocalResponses { .. } | PointerActionAuthority::HostJournal
+        )
+        .then(|| crate::output_proof::PaintAudit::new(ui.ctx()));
         let mut context = RenderContext {
             ui,
             instance_id,
@@ -442,9 +442,7 @@ pub(crate) fn paint_surface(
             #[cfg(not(feature = "native-render-support"))]
             _scroll_lifetime: PhantomData,
             defer_measurement: &mut defer_measurement,
-            pane_output_valid: &mut pane_output_valid,
-            paint_comparison: &mut paint_comparison,
-            paint_snapshots: &mut paint_snapshots,
+            paint_audit: paint_audit.as_mut(),
             pointer_authority,
         };
         let completed_program = context
@@ -600,6 +598,9 @@ pub(crate) fn paint_surface(
                 Ok(())
             })
             .map_err(SurfacePaintProgramVisitError::into_runtime_error)?;
+        let pane_output_valid = paint_audit
+            .as_ref()
+            .is_none_or(crate::output_proof::PaintAudit::is_valid);
         // Suppressed gesture visuals cannot authorize the complete paint program.
         let suppresses_active_gesture =
             pointer_authority.cancels_active_gesture() && plan.prepare_escape_cancel().is_some();

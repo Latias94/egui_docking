@@ -20,8 +20,14 @@ from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 IMGUI_COMMIT = "d88f238d1d363ef387382b2e29ad12cf96f826ac"
-MANIFEST = ROOT / "integration/egui-product-harness/Cargo.toml"
-TARGET = MANIFEST.parent / "target/release"
+MANIFESTS = {
+    "official": ROOT / "integration/egui-product-harness/Cargo.toml",
+    "fork": ROOT / "integration/egui-fork-product-harness/Cargo.toml",
+}
+TARGETS = {
+    "official": MANIFESTS["official"].parent / "target",
+    "fork": ROOT / "integration/egui-fork-workspace/target",
+}
 HEADER = [
     "product", "panes", "tabs_per_pane", "scenario", "sample", "frames",
     "elapsed_ns", "passes", "content_calls", "visible_contents", "vertices",
@@ -108,6 +114,9 @@ def write_csv(path: Path, header: list[str], rows: list[dict]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backend", choices=MANIFESTS, default="official")
+    parser.add_argument("--profile", choices=("release", "production"), default="release",
+                        help="production enables link-time optimization on both products")
     parser.add_argument("--samples", type=int, default=24)
     parser.add_argument("--warmup", type=int, default=6)
     parser.add_argument("--panes", default="16,128,1024")
@@ -116,6 +125,8 @@ def main() -> int:
     parser.add_argument("--cxx", help="C++ compiler executable (clang++, g++, or cl)")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
+    manifest = MANIFESTS[args.backend]
+    target = TARGETS[args.backend] / args.profile
     panes = [int(value) for value in args.panes.split(",")]
     if (args.samples <= 0 or args.warmup < 0 or not panes
             or len(set(panes)) != len(panes) or not set(panes) <= {16, 128, 1024}):
@@ -128,12 +139,12 @@ def main() -> int:
     if dirty:
         parser.error(f"Measured Dear ImGui sources have local changes: {dirty}")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output = (args.out or MANIFEST.parent / "target/product-comparison" / stamp).resolve()
+    output = (args.out or target.parent / "product-comparison" / stamp).resolve()
     output.mkdir(parents=True, exist_ok=False)
     executable_suffix = ".exe" if os.name == "nt" else ""
     binaries = {
-        "egui_dockspace": TARGET / "examples" / f"product_cost{executable_suffix}",
-        "dear_imgui": TARGET / f"imgui_product_cost{executable_suffix}",
+        "egui_dockspace": target / "examples" / f"product_cost{executable_suffix}",
+        "dear_imgui": target / f"imgui_product_cost{executable_suffix}",
     }
     compiler = args.cxx or shutil.which("clang++") or shutil.which("g++") or shutil.which("cl")
     if not compiler:
@@ -149,15 +160,22 @@ def main() -> int:
                        f"/Fo:{objects}{os.sep}"]
         version = subprocess.run([compiler], text=True, capture_output=True)
         compiler_version = (version.stdout + version.stderr).strip()
+        if args.profile == "production":
+            cpp_command.insert(4, "/GL")
+            cpp_command.extend(["/link", "/LTCG"])
     else:
         cpp_command = [compiler, "-std=c++17", "-O3", "-DNDEBUG", "-I", str(reference),
                        *sources, "-o", str(binaries["dear_imgui"])]
         compiler_version = capture([compiler, "--version"])
-    rust_command = ["cargo", "build", "--manifest-path", str(MANIFEST), "--release",
+        if args.profile == "production":
+            cpp_command.insert(4, "-flto=thin" if "clang" in compiler_version.lower() else "-flto")
+    rust_command = ["cargo", "build", "--manifest-path", str(manifest), "--profile", args.profile,
                     "--locked", "--offline", "--example", "product_cost",
                     "--message-format=json-render-diagnostics"]
     metadata = {
         "started_utc": utc_now(), "source_commit": capture(["git", "rev-parse", "HEAD"]),
+        "egui_backend": args.backend, "egui_manifest": str(manifest.relative_to(ROOT)),
+        "build_profile": args.profile,
         "imgui_commit": actual_commit, "imgui_root": str(reference),
         "rustc": capture(["rustc", "-Vv"]), "cxx": compiler_version,
         "platform": platform.platform(), "machine": platform.machine(),
@@ -172,7 +190,7 @@ def main() -> int:
                  "integration/egui-product-harness/examples/product_cost.rs"]:
         metadata["benchmark_sources"][name] = digest(ROOT / name)
     source_paths = capture([
-        "git", "ls-files", "-z", "--", "Cargo.toml", "Cargo.lock",
+        "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "Cargo.toml", "Cargo.lock",
         "rust-toolchain.toml", "crates", "integration",
     ]).split("\0")
     metadata["dockspace_sources"] = {
@@ -181,9 +199,11 @@ def main() -> int:
     }
     metadata_path = output / "environment.json"
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
-    TARGET.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
     print("Building egui product (one Cargo job)...", flush=True)
+    metadata["rust_build_started_utc"] = utc_now()
     build(rust_command, output / "build-egui.log")
+    metadata["rust_build_finished_utc"] = utc_now()
     rust_artifacts = set()
     for line in (output / "build-egui.log").read_text().splitlines():
         try:
@@ -200,7 +220,9 @@ def main() -> int:
     binaries["egui_dockspace"] = rust_artifacts.pop()
     metadata["binary_paths"] = {name: str(path) for name, path in binaries.items()}
     print("Building pinned Dear ImGui product...", flush=True)
+    metadata["cpp_build_started_utc"] = utc_now()
     build(cpp_command, output / "build-imgui.log")
+    metadata["cpp_build_finished_utc"] = utc_now()
     for product, binary in binaries.items():
         if not binary.is_file():
             raise RuntimeError(f"Missing {product} executable: {binary}")

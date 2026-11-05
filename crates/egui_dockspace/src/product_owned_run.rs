@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::pass_settlement::{
-    DockspaceOutput, OutputTexturesGuard, PendingPaneFocusObservation, ProductPassClaim,
+    DockspaceOutput, OwnedRunOutput, PendingPaneFocusObservation, ProductPassClaim,
     ProductPassSettlementRun, ProductPointerPacket, RUN_SCOPE_TAG, pointer_packet,
 };
 use dockspace::runtime::{
@@ -262,7 +262,7 @@ impl Dockspace {
         let mut preceding_feedback = Vec::new();
         let mut retirement_repaint = false;
         let mut pass_count = 0_usize;
-        let mut output = context.run_ui(input, |ui| {
+        let mut output = OwnedRunOutput::new(context.run_ui(input, |ui| {
             let Some(scope) = run.begin_pass(ui) else {
                 error.get_or_insert_with(|| DockspaceErrorSource::PassSettlementConflict.into());
                 return;
@@ -495,8 +495,8 @@ impl Dockspace {
                 Ok(pass) => terminal = Some(pass),
                 Err(failure) => error = Some(failure),
             }
-        });
-        let texture_guard = OutputTexturesGuard::take(context, &mut output);
+        }));
+        let texture_guard = output.take_textures(context);
         if let Some(error) = error {
             return Err(error);
         }
@@ -506,12 +506,7 @@ impl Dockspace {
         };
         if !run.owns_only(&self.pass_settlement)
             || (pass.had_plan && pass.receipt.is_none())
-            || (pass.had_plan
-                && pass
-                    .proof
-                    .as_ref()
-                    .and_then(|proof| proof.is_present_once_in_paint_order(&output, &layer_order))
-                    .is_none())
+            || (pass.had_plan && !output.check(pass.proof.as_ref(), &layer_order))
         {
             return Err(DockspaceErrorSource::PassSettlementConflict.into());
         }
@@ -587,8 +582,8 @@ impl Dockspace {
             pass.focus_capability,
         )?;
         response.include_preceding_feedback(preceding_feedback);
-        texture_guard.restore_into_output(&mut output);
-        let receipt = run.complete(&mut output);
+        output.restore_textures(texture_guard);
+        let (output, receipt) = run.complete_owned(output);
         Ok((DockspaceOutput::new(output, receipt), response))
     }
 }

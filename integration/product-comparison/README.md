@@ -14,12 +14,29 @@ if it is not already at `repo-ref/imgui`.
 python3 scripts/compare_products.py --imgui-root repo-ref/imgui --samples 24 --warmup 6 --panes 16,128,1024 --runs 4
 ```
 
+The default `--backend official` uses the published egui 0.37 dependency.
+`--backend fork` selects the separately locked fork workspace and its fixed
+paint-checkpoint backend, while compiling the exact same Rust workload example.
+The recorded `egui_backend`, manifest, build artifacts and source revisions
+identify the condition; report fork and official results separately. Compare a
+new fork revision against the previous fork revision as well as Dear ImGui.
+
+Use `--profile production` for the documented production configuration: Rust
+ThinLTO with one codegen unit, and C++ link-time optimization (ThinLTO with
+Clang, LTO with GCC, or `/GL` and `/LTCG` with MSVC). The default `--profile
+release` retains ordinary release settings for historical comparisons. Report
+the profile for every condition and compare old/new Rust with the same settings.
+The runner records exact compiler commands and build/timing boundaries. Library
+consumers select optimization in their own workspace; Cargo does not inherit a
+dependency's profile. This repository's root and fork workspaces also expose
+`cargo build --profile production` for applications.
+
 Rust 1.95, Python 3 and a C++17 compiler are required. Rust dependencies must be
 available locally because builds use `--locked --offline`. The runner supports
 clang++, g++ and MSVC cl (from a configured developer prompt); `--cxx` selects a
-compiler. It builds serially with one Cargo job and reuses the existing product
-harness target. The C++ executable uses normal release flags and default system
-allocation. No extra Rust dependency, window system, graphics context or GPU is
+compiler. It builds serially with one Cargo job and reuses the selected
+workspace's existing target. Both products use default system allocation.
+No extra Rust dependency, window system, graphics context or GPU is
 required.
 
 For a functional smoke, use `--samples 2 --warmup 2 --runs 2`. `--out` selects a

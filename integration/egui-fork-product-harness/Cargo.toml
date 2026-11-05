@@ -1,0 +1,24 @@
+[package]
+name = "egui-dockspace-fork-product-harness"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+workspace = "../egui-fork-workspace"
+
+[features]
+default = []
+serde = ["dockspace/serde", "egui_dockspace/serde"]
+
+[dependencies]
+dockspace = { path = "../../crates/dockspace", default-features = false }
+egui = { version = "=0.37.0", default-features = false, features = ["default_fonts"] }
+egui_dockspace = { path = "../../crates/egui_dockspace", default-features = false }
+
+[[example]]
+name = "product_cost"
+path = "../egui-product-harness/examples/product_cost.rs"
+test = true
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
 
+[profile.production]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+
 [package]
 name = "egui-dockspace-product-harness"
 version = "0.0.0"

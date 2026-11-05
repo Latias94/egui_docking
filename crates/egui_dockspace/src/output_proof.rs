@@ -50,6 +50,69 @@ pub(super) struct PaintSnapshotCache {
     reusable: Option<PaintSnapshot>,
 }
 
+type PaintAppendAuditor = Box<dyn FnMut(&Painter, &mut dyn FnMut(), &mut bool)>;
+
+// A fork may provide an inherent getter with the same signature. Inherent
+// method lookup then selects its fixed implementation without a public registry.
+#[allow(dead_code)]
+trait ContextPaintAuditFallback {
+    fn paint_append_auditor(&self) -> Option<PaintAppendAuditor> {
+        None
+    }
+}
+
+impl ContextPaintAuditFallback for Context {}
+
+/// Audits application callbacks during one synchronous surface paint.
+pub(super) struct PaintAudit {
+    // Preserve the former local-variable drop order: cached descriptors must
+    // release their owners before the comparison releases its retained galleys.
+    snapshots: PaintSnapshotCache,
+    comparison: PaintComparison,
+    backend: Option<PaintAppendAuditor>,
+    valid: bool,
+}
+
+impl PaintAudit {
+    pub(super) fn new(context: &Context) -> Self {
+        Self {
+            snapshots: PaintSnapshotCache::default(),
+            comparison: PaintComparison::default(),
+            backend: context.paint_append_auditor(),
+            valid: true,
+        }
+    }
+
+    /// Runs the callback once, retaining every preceding callback's failure.
+    pub(super) fn check_append(&mut self, painter: &Painter, paint: impl FnOnce()) {
+        let mut paint = Some(paint);
+        let mut paint_once = || {
+            paint
+                .take()
+                .expect("the paint append auditor must not repeat the callback")();
+        };
+        if let Some(backend) = self.backend.as_mut() {
+            // The backend must update the aggregate before releasing its
+            // checkpoint's opaque payloads, matching finish_reusing below.
+            backend(painter, &mut paint_once, &mut self.valid);
+            self.valid &= paint.is_none();
+        } else {
+            let check = PaintAppendCheck::begin_reusing(painter, &mut self.snapshots);
+            paint_once();
+            check.finish_reusing(
+                painter,
+                &mut self.snapshots,
+                &mut self.comparison,
+                &mut self.valid,
+            );
+        }
+    }
+
+    pub(super) const fn is_valid(&self) -> bool {
+        self.valid
+    }
+}
+
 impl PaintComparison {
     fn owns_galley(&self, galley: &Arc<Galley>) -> bool {
         self.galleys
@@ -415,22 +478,29 @@ impl SurfaceOutputProof {
         self.is_present_once_in_paint_order(output, &order)
     }
 
+    #[cfg(any(test, feature = "native-render-support"))]
     pub(super) fn is_present_once_in_paint_order(
         &self,
         output: &FullOutput,
         layer_order: &[LayerId],
     ) -> Option<(usize, usize)> {
-        let evidence = self.present_spans(output)?;
-        let mut spans = evidence
-            .spans
-            .into_iter()
-            .enumerate()
-            .map(|(index, span)| (0, index, span))
-            .collect::<Vec<_>>();
-        if !spans_follow_paint_order(&mut spans, layer_order) {
-            return None;
-        }
-        Some((spans.first()?.2.range.0, spans.last()?.2.range.1))
+        self.present_spans(output)?.enclosing_range(layer_order)
+    }
+
+    /// Binds a complete descriptor check to this immutable capture identity.
+    /// The caller must keep the checked FullOutput exclusively owned until use.
+    pub(super) fn check_owned_output(
+        &self,
+        output: &FullOutput,
+        layer_order: &[LayerId],
+    ) -> Option<OwnedOutputCheck> {
+        let spans = self.present_spans(output)?;
+        spans.enclosing_range(layer_order)?;
+        Some(OwnedOutputCheck {
+            begin: Arc::clone(&self.begin),
+            end: Arc::clone(&self.end),
+            spans,
+        })
     }
 
     /// Returns each exact owned interval with its egui layer identity.
@@ -472,6 +542,40 @@ pub(super) struct SurfaceOutputSpans {
     pub(super) spans: Vec<SurfaceOutputSpanEvidence>,
 }
 
+impl SurfaceOutputSpans {
+    fn enclosing_range(&self, layer_order: &[LayerId]) -> Option<(usize, usize)> {
+        let mut spans = self
+            .spans
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, span)| (0, index, span))
+            .collect::<Vec<_>>();
+        if !spans_follow_paint_order(&mut spans, layer_order) {
+            return None;
+        }
+        Some((spans.first()?.2.range.0, spans.last()?.2.range.1))
+    }
+}
+
+/// Evidence consumed only with the exclusively held output which was checked.
+pub(super) struct OwnedOutputCheck {
+    begin: Arc<SurfaceMarker>,
+    end: Arc<SurfaceMarker>,
+    spans: SurfaceOutputSpans,
+}
+
+impl OwnedOutputCheck {
+    pub(super) fn is_for(&self, proof: &SurfaceOutputProof) -> bool {
+        Arc::ptr_eq(&self.begin, &proof.begin) && Arc::ptr_eq(&self.end, &proof.end)
+    }
+
+    pub(super) fn into_spans(self) -> SurfaceOutputSpans {
+        self.spans
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(super) struct SurfaceOutputSpanEvidence {
     pub(super) layer: LayerId,
     pub(super) range: (usize, usize),
@@ -925,6 +1029,212 @@ mod tests {
                     ..egui::RawInput::default()
                 },
                 |ui| check(ui.painter()),
+            )
+            .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn inherent_paint_auditor_takes_precedence_over_the_private_fallback() {
+        struct OfficialContext;
+        impl ContextPaintAuditFallback for OfficialContext {}
+
+        struct ForkContext;
+        impl ContextPaintAuditFallback for ForkContext {}
+        impl ForkContext {
+            #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
+            fn paint_append_auditor(&self) -> Option<PaintAppendAuditor> {
+                Some(Box::new(|_, paint, valid| {
+                    paint();
+                    *valid = false;
+                }))
+            }
+        }
+
+        assert!(OfficialContext.paint_append_auditor().is_none());
+        assert!(ContextPaintAuditFallback::paint_append_auditor(&ForkContext).is_none());
+        with_painter(|painter| {
+            let mut backend = ForkContext.paint_append_auditor().unwrap();
+            let mut calls = 0;
+            let mut valid = true;
+            backend(painter, &mut || calls += 1, &mut valid);
+            assert_eq!(calls, 1);
+            assert!(!valid);
+        });
+    }
+
+    #[test]
+    fn paint_audit_keeps_one_backend_session_and_consumes_each_callback_once() {
+        with_painter(|painter| {
+            let history = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let observed = std::rc::Rc::clone(&history);
+            let mut checks = 0;
+            let mut audit = PaintAudit::new(painter.ctx());
+            audit.backend = Some(Box::new(move |_, paint, valid| {
+                observed.borrow_mut().push((checks, *valid));
+                checks += 1;
+                paint();
+                *valid &= checks != 2;
+            }));
+            let mut calls = 0;
+            for _ in 0..3 {
+                let owned = String::new();
+                audit.check_append(painter, || {
+                    calls += 1;
+                    drop(owned);
+                });
+            }
+            assert_eq!(calls, 3);
+            assert_eq!(*history.borrow(), vec![(0, true), (1, true), (2, false)]);
+            assert!(!audit.is_valid());
+            assert!(audit.snapshots.reusable.is_none());
+            assert!(audit.comparison.galleys.is_empty());
+        });
+    }
+
+    #[test]
+    fn snapshot_paint_audit_keeps_failures_after_a_later_callback_restores_the_prefix() {
+        with_painter(|painter| {
+            let original = Shape::circle_filled(egui::pos2(20.0, 20.0), 5.0, egui::Color32::RED);
+            let prefix = painter.add(original.clone());
+            let mut audit = PaintAudit::new(painter.ctx());
+            audit.backend = None;
+            let mut calls = 0;
+            audit.check_append(painter, || {
+                calls += 1;
+                painter.set(prefix, Shape::Noop);
+            });
+            assert!(!audit.is_valid());
+            audit.check_append(painter, || {
+                calls += 1;
+                painter.set(prefix, original);
+            });
+            audit.check_append(painter, || {
+                calls += 1;
+                let suffix = painter.add(Shape::Noop);
+                painter.set(
+                    suffix,
+                    Shape::circle_filled(egui::pos2(30.0, 30.0), 5.0, egui::Color32::GREEN),
+                );
+            });
+            assert_eq!(calls, 3);
+            assert!(!audit.is_valid());
+            assert!(audit.snapshots.reusable.is_some());
+        });
+    }
+
+    #[test]
+    fn snapshot_paint_audit_records_failure_before_an_opaque_drop_panics() {
+        with_painter(|painter| {
+            let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+            painter.add(Shape::Callback(PaintCallback {
+                rect: painter.clip_rect(),
+                callback: Arc::new(ReenterOnDrop {
+                    context: painter.ctx().clone(),
+                    layer: painter.layer_id(),
+                    clip: painter.clip_rect(),
+                    observed: None,
+                    events: Arc::clone(&events),
+                    name: "panics",
+                    panic: true,
+                }),
+            }));
+            let mut audit = PaintAudit::new(painter.ctx());
+            audit.backend = None;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                audit.check_append(painter, || {
+                    let removed = painter.ctx().graphics_mut(|graphics| {
+                        std::mem::take(graphics.get_mut(painter.layer_id()).unwrap())
+                    });
+                    drop(removed);
+                });
+            }));
+            assert!(outcome.is_err());
+            assert!(!audit.is_valid());
+            assert!(audit.snapshots.reusable.is_none());
+            assert_eq!(*events.lock().unwrap(), vec![("panics", false)]);
+        });
+    }
+
+    #[test]
+    fn pane_panic_releases_the_snapshot_before_child_ui_finalization() {
+        #[derive(Default)]
+        struct Observation {
+            child: Option<egui::Id>,
+            rect_at_snapshot_drop: Option<egui::Rect>,
+        }
+
+        struct ObserveChildOnDrop {
+            context: Context,
+            observation: Arc<std::sync::Mutex<Observation>>,
+        }
+
+        impl Drop for ObserveChildOnDrop {
+            fn drop(&mut self) {
+                let child = self.observation.lock().unwrap().child.unwrap();
+                let rect = self.context.read_response(child).unwrap().rect;
+                self.observation.lock().unwrap().rect_at_snapshot_drop = Some(rect);
+            }
+        }
+
+        struct PanickingPane(Arc<std::sync::Mutex<Observation>>);
+
+        impl crate::PaneView for PanickingPane {
+            fn title(&self, _item: crate::ItemId) -> Option<egui::WidgetText> {
+                Some("Pane".into())
+            }
+
+            fn ui(&mut self, _item: crate::ItemId, ui: &mut egui::Ui) {
+                self.0.lock().unwrap().child = Some(ui.unique_id());
+                ui.allocate_space(egui::vec2(20.0, 20.0));
+                let removed = ui.ctx().graphics_mut(|graphics| {
+                    std::mem::take(graphics.get_mut(ui.layer_id()).unwrap())
+                });
+                drop(removed);
+                panic!("the pane deliberately panics after removing its prefix");
+            }
+        }
+
+        let context = Context::default();
+        let surface = crate::SurfaceId::new(1);
+        let layout = crate::DockspaceLayout::new([crate::DockspaceSurfaceLayout::new(
+            surface,
+            crate::DockspaceRootLayout::new(
+                crate::RootId::new(1),
+                crate::DockspaceNode::tabs([crate::ItemId::new(1)]),
+            ),
+        )])
+        .unwrap();
+        let mut docking = crate::Dockspace::builder("pane-panic-drop-order", layout)
+            .build()
+            .unwrap();
+        let observation = Arc::new(std::sync::Mutex::new(Observation::default()));
+        let mut panes = PanickingPane(Arc::clone(&observation));
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(640.0, 480.0),
+                    )),
+                    ..egui::RawInput::default()
+                },
+                |ui| {
+                    ui.painter().add(Shape::Callback(PaintCallback {
+                        rect: ui.clip_rect(),
+                        callback: Arc::new(ObserveChildOnDrop {
+                            context: context.clone(),
+                            observation: Arc::clone(&observation),
+                        }),
+                    }));
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        docking.show_single_surface(surface, ui, &mut panes)
+                    }));
+                    assert!(outcome.is_err());
+                    let observation = observation.lock().unwrap();
+                    assert_eq!(observation.rect_at_snapshot_drop, Some(egui::Rect::NOTHING));
+                    let completed = context.read_response(observation.child.unwrap()).unwrap();
+                    assert!(completed.rect.is_finite() && completed.rect.is_positive());
+                },
             )
             .drop_without_applying_deltas();
     }
@@ -2838,6 +3148,21 @@ mod tests {
         output.shapes.insert(0, clipped(Shape::Noop));
         output.shapes.push(clipped(Shape::Noop));
         assert_eq!(proof.is_present_once(&output), Some((1, 5)));
+    }
+
+    #[test]
+    fn owned_output_check_is_bound_to_its_exact_capture_and_all_final_descriptors() {
+        let (proof, output) = fixture();
+        let (foreign, _) = fixture();
+        let check = proof.check_owned_output(&output, &[]).unwrap();
+        assert!(check.is_for(&proof));
+        assert!(!check.is_for(&foreign));
+        assert!(foreign.check_owned_output(&output, &[]).is_none());
+        let mut changed = output.clone();
+        changed.shapes.remove(1);
+        assert!(proof.check_owned_output(&changed, &[]).is_none());
+        let spans = check.into_spans();
+        assert_eq!(spans.enclosing_range(&[]), Some((0, 4)));
     }
 
     #[test]
