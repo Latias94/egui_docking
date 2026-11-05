@@ -390,14 +390,18 @@ fn snapshot(painter: &Painter) -> Option<PaintSnapshot> {
         .collect::<Vec<_>>();
     painter.ctx().graphics(|graphics| {
         let mut remaining = graphics.clone();
+        let mut extractor = egui::layers::GraphicLayers::default();
         let mut current = None;
         let mut others = Vec::new();
         for (layer, transform) in layers {
-            let shapes = graphics
-                .get(layer)
-                .map(|list| list.all_entries().cloned().collect())
-                .unwrap_or_default();
-            *remaining.entry(layer) = egui::layers::PaintList::default();
+            let list = std::mem::take(remaining.entry(layer));
+            let shapes = if list.is_empty() {
+                Vec::new()
+            } else {
+                // PaintList has no owned iterator; drain this cloned layer without transforms.
+                *extractor.entry(layer) = list;
+                extractor.drain(&[], &Default::default())
+            };
             let captured = LayerSnapshot {
                 layer,
                 transform,
@@ -495,6 +499,206 @@ mod tests {
         layer
     }
 
+    // Frozen before ownership extraction, including the separate shape clone
+    // and residual-layer rejection, so the oracle stays independent.
+    fn frozen_snapshot(painter: &Painter) -> Option<PaintSnapshot> {
+        let mut layers = painter
+            .ctx()
+            .memory(|memory| memory.layer_ids().collect::<Vec<_>>());
+        if !layers.contains(&painter.layer_id()) {
+            layers.push(painter.layer_id());
+        }
+        let layers = layers
+            .into_iter()
+            .map(|layer| (layer, painter.ctx().layer_transform_to_global(layer)))
+            .collect::<Vec<_>>();
+        painter.ctx().graphics(|graphics| {
+            let mut remaining = graphics.clone();
+            let mut current = None;
+            let mut others = Vec::new();
+            for (layer, transform) in layers {
+                let shapes = graphics
+                    .get(layer)
+                    .map(|list| list.all_entries().cloned().collect())
+                    .unwrap_or_default();
+                *remaining.entry(layer) = egui::layers::PaintList::default();
+                let captured = LayerSnapshot {
+                    layer,
+                    transform,
+                    shapes,
+                };
+                if layer == painter.layer_id() {
+                    current = Some(captured);
+                } else {
+                    others.push(captured);
+                }
+            }
+            if !remaining.drain(&[], &Default::default()).is_empty() {
+                return None;
+            }
+            Some(PaintSnapshot {
+                current: current?,
+                others,
+            })
+        })
+    }
+
+    fn transform_bits(transform: egui::emath::TSTransform) -> [u32; 3] {
+        [
+            transform.scaling.to_bits(),
+            transform.translation.x.to_bits(),
+            transform.translation.y.to_bits(),
+        ]
+    }
+
+    fn assert_snapshot_matches_frozen(painter: &Painter) -> Option<PaintSnapshot> {
+        let expected = frozen_snapshot(painter);
+        let actual = snapshot(painter);
+        assert_eq!(actual.is_some(), expected.is_some());
+        if let (Some(actual), Some(expected)) = (&actual, &expected) {
+            assert_eq!(actual.others.len(), expected.others.len());
+            for (actual, expected) in std::iter::once(&actual.current)
+                .chain(&actual.others)
+                .zip(std::iter::once(&expected.current).chain(&expected.others))
+            {
+                assert_eq!(actual.layer, expected.layer);
+                assert_eq!(
+                    actual.transform.map(transform_bits),
+                    expected.transform.map(transform_bits)
+                );
+                assert_eq!(actual.shapes, expected.shapes);
+                for (actual, expected) in actual.shapes.iter().zip(&expected.shapes) {
+                    let clip_bits = |rect: egui::Rect| {
+                        [
+                            rect.min.x.to_bits(),
+                            rect.min.y.to_bits(),
+                            rect.max.x.to_bits(),
+                            rect.max.y.to_bits(),
+                        ]
+                    };
+                    assert_eq!(clip_bits(actual.clip_rect), clip_bits(expected.clip_rect));
+                    assert_eq!(
+                        transform_bits(actual.transform_after_tessellation),
+                        transform_bits(expected.transform_after_tessellation)
+                    );
+                }
+            }
+        }
+        actual
+    }
+
+    #[test]
+    fn snapshot_matches_frozen_empty_and_multiple_registered_layers() {
+        with_painter(|painter| {
+            let empty = assert_snapshot_matches_frozen(painter).unwrap();
+            assert!(empty.current.shapes.is_empty());
+            let empty_layer = known_layer(painter.ctx(), "snapshot-empty-layer");
+            let foreground = LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::unique("snapshot-foreground"),
+            );
+            painter.ctx().memory_mut(|memory| {
+                memory
+                    .areas_mut()
+                    .set_state(foreground, egui::AreaState::default());
+            });
+            let middle = known_layer(painter.ctx(), "snapshot-middle");
+            painter.add(Shape::Noop);
+            painter.circle_filled(egui::pos2(10.0, 10.0), 2.0, egui::Color32::RED);
+            painter.ctx().layer_painter(foreground).extend([
+                Shape::Vec(Vec::new()),
+                Shape::circle_filled(egui::pos2(20.0, 20.0), 3.0, egui::Color32::GREEN),
+            ]);
+            painter.ctx().layer_painter(middle).circle_filled(
+                egui::pos2(30.0, 30.0),
+                4.0,
+                egui::Color32::BLUE,
+            );
+
+            let captured = assert_snapshot_matches_frozen(painter).unwrap();
+            assert_eq!(captured.current.shapes.len(), 2);
+            for (layer, count) in [(empty_layer, 0), (foreground, 2), (middle, 1)] {
+                assert_eq!(
+                    captured
+                        .others
+                        .iter()
+                        .find(|captured| captured.layer == layer)
+                        .unwrap()
+                        .shapes
+                        .len(),
+                    count
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn snapshot_preserves_nested_markers_and_raw_transform_bits() {
+        with_painter(|painter| {
+            let other = known_layer(painter.ctx(), "snapshot-transformed-other");
+            let global = egui::emath::TSTransform::new(egui::vec2(7.25, -3.5), 1.5);
+            let deferred =
+                egui::emath::TSTransform::new(egui::vec2(-0.0, f32::from_bits(1)), 1.125);
+            painter
+                .ctx()
+                .set_transform_layer(painter.layer_id(), global);
+            painter.ctx().set_transform_layer(
+                other,
+                egui::emath::TSTransform::from_translation(egui::vec2(-2.5, 4.75)),
+            );
+            let points = [egui::pos2(-0.0, f32::from_bits(1)), egui::pos2(12.5, -0.0)];
+            let clip = egui::Rect::from_min_max(egui::pos2(-0.0, -0.0), egui::pos2(99.5, 99.75));
+            let marker = Arc::new(SurfaceMarker);
+            let compound = Shape::Vec(vec![
+                Shape::Noop,
+                Shape::Vec(vec![
+                    Shape::line_segment(points, egui::Stroke::new(0.75, egui::Color32::RED)),
+                    marker_shape(&marker),
+                    Shape::Vec(Vec::new()),
+                ]),
+            ]);
+            painter.ctx().graphics_mut(|graphics| {
+                let list = graphics.entry(painter.layer_id());
+                let index = list.add(clip, compound);
+                list.mutate_shape(index, |shape| {
+                    shape.transform_after_tessellation = deferred;
+                });
+                graphics.entry(other).add(
+                    painter.clip_rect(),
+                    Shape::circle_filled(egui::pos2(20.0, 20.0), 2.0, egui::Color32::BLUE),
+                );
+            });
+
+            let captured = assert_snapshot_matches_frozen(painter).unwrap();
+            assert_eq!(captured.current.transform, Some(global));
+            let shape = &captured.current.shapes[0];
+            assert_eq!(
+                transform_bits(shape.transform_after_tessellation),
+                transform_bits(deferred)
+            );
+            assert_eq!(shape.clip_rect.min.x.to_bits(), (-0.0_f32).to_bits());
+            assert_eq!(shape.clip_rect.min.y.to_bits(), (-0.0_f32).to_bits());
+            let Shape::Vec(outer) = &shape.shape else {
+                panic!("the outer compound must not be flattened");
+            };
+            let Shape::Vec(inner) = &outer[1] else {
+                panic!("the nested compound must not be flattened");
+            };
+            let Shape::LineSegment { points: actual, .. } = &inner[0] else {
+                panic!("the nested line must remain in local coordinates");
+            };
+            let point_bits = |point: egui::Pos2| [point.x.to_bits(), point.y.to_bits()];
+            assert_eq!(actual.map(point_bits), points.map(point_bits));
+            assert_eq!(
+                unique_marker_index(&captured.current.shapes, &marker),
+                Some(0)
+            );
+            let repeated = assert_snapshot_matches_frozen(painter).unwrap();
+            assert_eq!(captured.current.shapes, repeated.current.shapes);
+            assert!(captured.others == repeated.others);
+        });
+    }
+
     #[test]
     fn append_check_accepts_new_shapes_on_the_supplied_layer() {
         with_painter(|painter| {
@@ -589,6 +793,10 @@ mod tests {
                 if present_before_capture {
                     paint_unknown();
                 }
+                assert_eq!(
+                    assert_snapshot_matches_frozen(painter).is_none(),
+                    present_before_capture
+                );
                 let check = PaintAppendCheck::begin(painter);
                 let capture = SurfaceOutputCapture::begin(painter);
                 let multilayer = SurfaceOutputCapture::begin_multilayer(painter);
@@ -597,6 +805,7 @@ mod tests {
                     paint_unknown();
                 }
 
+                assert!(assert_snapshot_matches_frozen(painter).is_none());
                 assert!(!check.is_preserved(painter));
                 assert!(capture.finish(painter).is_none());
                 assert!(multilayer.finish(painter).is_none());
