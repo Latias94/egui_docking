@@ -15,6 +15,34 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-05 product cost attribution and ownership qualification
+
+The [cost-attribution record](performance/2026-11-05-product-cost-attribution-results.md)
+qualifies further runtime junction and adapter ownership changes against the
+same complete Dear ImGui product workload. Final 1,024-pane idle p50 is 31.025
+ms, two-frame click 83.109 ms and resize 43.177 ms, down 51.55–59.04% from fresh
+frozen-binary samples. ImGui remains 1.098/2.202/1.105 ms. Repeated paint auditing
+and immutable text value comparisons explain most of the sampled gap; isolated
+resize layout-solving frames account for about 2% of final main-thread samples.
+Those samples include warmup and untimed diagnostics, and nested categories
+cannot be added as exact frame-time percentages.
+
+The implementation keeps every live descriptor observation and exact completion
+check, shares paint-local text equality and recycles only verified pure snapshot
+storage. Opaque Drop/Weak lifetimes, NaN/panic short-circuit behavior, missing
+layers, current-plan membership and terminal proof remain qualified. Duplicate
+LayerIds now make capture unavailable, closing the previous move-extraction
+prefix-truncation gap. Complete prefix work is still quadratic.
+
+Fresh serial gates pass workspace 2,121; independent host 292 default / 332
+persistence; official egui 24; product egui 114 / 119; native 556 with one
+pre-existing ignore. Default host includes three 10,000-depth cases. Fifty-one
+focused proof/junction tests, crossed reviews, correctness/suspicious Clippy,
+strict docs, ten doctests, format and dependency checks pass. Source hashes match
+the measured build after all gates. All raw conditions, source/binary hashes,
+profile outputs and gate logs are linked from the result. Small-layout tails do
+not uniformly improve; physical GUI, GPU and package qualification were not rerun.
+
 ## 2026-11-05 product CPU comparison and snapshot extraction
 
 The [product comparison](performance/2026-11-05-product-comparison-results.md)

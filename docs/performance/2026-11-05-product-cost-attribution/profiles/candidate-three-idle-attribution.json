@@ -1,0 +1,438 @@
+{
+  "source": "/private/tmp/dockspace-product-attribution-20261105-868e635/candidate-three-idle-cpu.txt",
+  "source_sha256": "c95d65dbdb186587ce049350f8fff5f2dcf4a6d43f20a7bc8a8d784e491b3c57",
+  "total_thread_samples": 5963,
+  "scope": "Each category sums disjoint roots; categories can overlap each other. Inlined work may be charged to callers. Sample counts are not per-frame wall times.",
+  "categories": {
+    "paint_audit": {
+      "inclusive_union_samples": 3890,
+      "percent": 65.236,
+      "nonoverlapping_roots": [
+        {
+          "samples": 1515,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::is_preserved_with_comparison::h0baf32f7e0e7b513"
+        },
+        {
+          "samples": 10,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::is_preserved_with_comparison::h0baf32f7e0e7b513"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::is_preserved_with_comparison::h0baf32f7e0e7b513"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::is_preserved_with_comparison::h0baf32f7e0e7b513"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::is_preserved_with_comparison::h0baf32f7e0e7b513"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::is_preserved_with_comparison::h0baf32f7e0e7b513"
+        },
+        {
+          "samples": 1131,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::begin_reusing::h55052a68ea6c9dd7"
+        },
+        {
+          "samples": 14,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::begin_reusing::h55052a68ea6c9dd7"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::begin_reusing::h55052a68ea6c9dd7"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::begin_reusing::h55052a68ea6c9dd7"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::begin_reusing::h55052a68ea6c9dd7"
+        },
+        {
+          "samples": 430,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 382,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 90,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::begin_reusing::h55052a68ea6c9dd7"
+        },
+        {
+          "samples": 16,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h8578d90531066bd7"
+        },
+        {
+          "samples": 13,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h8578d90531066bd7"
+        },
+        {
+          "samples": 6,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h8578d90531066bd7"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h8578d90531066bd7"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h8578d90531066bd7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h8578d90531066bd7"
+        },
+        {
+          "samples": 73,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::h438086772b9a7f1b"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::h438086772b9a7f1b"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::h438086772b9a7f1b"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::h438086772b9a7f1b"
+        },
+        {
+          "samples": 2,
+          "node": "core::ptr::drop_in_place$LT$core..option..Option$LT$egui_dockspace..output_proof..SurfaceOutputProof$GT$$GT$::hf89512d61caac4a7"
+        },
+        {
+          "samples": 79,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::hfc6842c9f7b2665b"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::hfc6842c9f7b2665b"
+        },
+        {
+          "samples": 26,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::is_preserved_with_comparison::h0baf32f7e0e7b513"
+        },
+        {
+          "samples": 18,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::begin_reusing::h55052a68ea6c9dd7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::begin_reusing::h55052a68ea6c9dd7"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 4,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::hfc6842c9f7b2665b"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::h438086772b9a7f1b"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 6,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::begin_reusing::h55052a68ea6c9dd7"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::is_preserved_with_comparison::h0baf32f7e0e7b513"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::PaintAppendCheck::recycle::hd88613ff5a92e837"
+        }
+      ]
+    },
+    "layout_solver": {
+      "inclusive_union_samples": 0,
+      "percent": 0.0,
+      "nonoverlapping_roots": []
+    },
+    "scene_compiler": {
+      "inclusive_union_samples": 0,
+      "percent": 0.0,
+      "nonoverlapping_roots": []
+    },
+    "scene_validation": {
+      "inclusive_union_samples": 1,
+      "percent": 0.017,
+      "nonoverlapping_roots": [
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::region_has_authoritative_area::h7efc97ad3eaed52c"
+        }
+      ]
+    },
+    "measurement_and_resources": {
+      "inclusive_union_samples": 315,
+      "percent": 5.283,
+      "nonoverlapping_roots": [
+        {
+          "samples": 11,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::item::h631034de09f1df09"
+        },
+        {
+          "samples": 41,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::insert_tab::hbefd37466dabc34c"
+        },
+        {
+          "samples": 38,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::insert_tab::hbefd37466dabc34c"
+        },
+        {
+          "samples": 29,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::insert_tab::hbefd37466dabc34c"
+        },
+        {
+          "samples": 10,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::insert_tab::hbefd37466dabc34c"
+        },
+        {
+          "samples": 4,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::insert_tab::hbefd37466dabc34c"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::insert_tab::hbefd37466dabc34c"
+        },
+        {
+          "samples": 169,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::hae994ae09e0c144a"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::hae994ae09e0c144a"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::hae994ae09e0c144a"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::item::h631034de09f1df09"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::insert_tab::hbefd37466dabc34c"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::insert_tab::hbefd37466dabc34c"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::hae994ae09e0c144a"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::insert_tab::hbefd37466dabc34c"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::hae994ae09e0c144a"
+        }
+      ]
+    },
+    "junction_queries": {
+      "inclusive_union_samples": 38,
+      "percent": 0.637,
+      "nonoverlapping_roots": [
+        {
+          "samples": 13,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 8,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 10,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        }
+      ]
+    },
+    "cpu_tessellation": {
+      "inclusive_union_samples": 178,
+      "percent": 2.985,
+      "nonoverlapping_roots": [
+        {
+          "samples": 167,
+          "node": "egui::context::Context::tessellate::h18fa7c57a443a0b4"
+        },
+        {
+          "samples": 7,
+          "node": "egui::context::Context::tessellate::h18fa7c57a443a0b4"
+        },
+        {
+          "samples": 3,
+          "node": "egui::context::Context::tessellate::h18fa7c57a443a0b4"
+        },
+        {
+          "samples": 1,
+          "node": "egui::context::Context::tessellate::h18fa7c57a443a0b4"
+        }
+      ]
+    },
+    "product_paint": {
+      "inclusive_union_samples": 4971,
+      "percent": 83.364,
+      "nonoverlapping_roots": [
+        {
+          "samples": 4618,
+          "node": "egui_dockspace::product_render::paint_surface::h8ff0c3d7b7156821"
+        },
+        {
+          "samples": 232,
+          "node": "egui_dockspace::product_render::paint_surface::h8ff0c3d7b7156821"
+        },
+        {
+          "samples": 13,
+          "node": "egui_dockspace::product_render::paint_surface::h8ff0c3d7b7156821"
+        },
+        {
+          "samples": 81,
+          "node": "egui_dockspace::product_render::paint_surface::h8ff0c3d7b7156821"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::product_render::paint_surface::h8ff0c3d7b7156821"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::paint_surface::h8ff0c3d7b7156821"
+        },
+        {
+          "samples": 22,
+          "node": "egui_dockspace::product_render::paint_surface::h8ff0c3d7b7156821"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::paint_surface::h8ff0c3d7b7156821"
+        }
+      ]
+    }
+  }
+}

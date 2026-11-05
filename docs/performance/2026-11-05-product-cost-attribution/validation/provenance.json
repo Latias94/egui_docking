@@ -1,0 +1,37 @@
+{
+  "final_source": "Every measured input and all nine explicitly frozen changed/test inputs remain unchanged after the 18 passing gates.",
+  "inventory_inputs": 554,
+  "logs_sha256": {
+    "workspace-all.log": "4d18acde7cd6e808b3d6a57c0e97d992d0a93dc1ca1212c0efc33e8d422c6b2a",
+    "host-default.log": "ad2ed421e590208dddd136876972293299a0fe62e11a6e438e70028b4c5c836b",
+    "host-serde.log": "98d3d32607a828e26366e9493bf51b525b4a047ddd1b351bccfe5317301eb73d",
+    "official-egui.log": "f82bbeddccfe476a46d2abb98987e184b43beb5bf5d871e22cee3f6ccbca84e3",
+    "product-default.log": "07c45d2568ea5e768f6e0bb4ad1641f758d92c078239f8bc6dcd2222b851a12e",
+    "product-serde.log": "681dfe7b938642873b61f612aa296fc9021448917484d402e76bdba637dcda53",
+    "native-all.log": "2edb7498668bd6b4cd1dbe2649c663b363385fd4a66a4be52ef39738c2dc6a74",
+    "clippy-workspace.log": "8f67526a769e82f0e9940a8c4b0843d6052bb40730ba958433def4de0a94b0ed",
+    "clippy-native.log": "2aca6bbfad20f87009e6132a14cf36007cdbfa2c388320727b9f845a5a582045",
+    "docs-workspace.log": "48e692217bd84400fef613476f0efbfacaa7005bb59eeed904da075287a128b4",
+    "docs-native.log": "cab2e74327e5897c2658b92c708392018dc1f59b45ce927e34166a5c94d8c0c5",
+    "doctests.log.gz": "49d2680f3eac8fadd7343af425a253944b997449c3a823b01aa870a6242aae96",
+    "clippy-product.log": "b3be216184f0cc012ab98348fa9dfcc678e4c2884a319206751d634c9ad40726",
+    "fmt-product.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt-workspace.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt-host.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "dependency-boundary.log": "957ca9e5ba17315c4020b0502edb9be938d2956182a0de67ebd39b4ad4f5eb4c",
+    "diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused-candidate-four.log": "3e4c158fb2d7875e17d9fd09338098f5eb7b9a1b76cc47cc6f3b78f8757b907e",
+    "focused-candidate-one-2.log": "5d0d0d20cb1bf0850b6cb4d708b093c8c8bdf64b4161bae944ed87decb1e3610",
+    "focused-candidate-one-3.log": "d1a95fcda41db35d8caf311567149d416e670a03ca01bd25951c38dc42a6676d",
+    "focused-candidate-one.log": "69a92c909b3c80815419831147ab70713c7fafe2e2c66fc914bef1fdca742f4c",
+    "focused-candidate-three.log": "20d71e30f8d38ded713c7670106e641ace1d1bf1fc178a6ff7cd81ade6477bd5",
+    "focused-candidate-two-2.log": "994fe7fddb6d30dea7a1abed76b8327ae63afba9b0568664df69b9367dddd6d8",
+    "focused-candidate-two.log": "d84cef5999c87e702a6fbdb79e94ecbfe522c0d6471ab71346463d6f83c70bfb",
+    "focused-junction.log": "c03f436436e4a99f43a6778868992cbc87d8687bcf1cb37b4a13687b589c32d9"
+  },
+  "compressed_log_unpacked_sha256": {
+    "doctests.log.gz": "d4e016fad86980608570a8ce0433bf51550814c7503b36b3618be1be3c5cf272"
+  },
+  "source_inventory_sha256": "847bee6cf91253088e255eb344b4d70bd399f94e50f7a498506049f2af470d46",
+  "preexisting_work": "CI and all 48 review files remain byte-identical and outside this work."
+}

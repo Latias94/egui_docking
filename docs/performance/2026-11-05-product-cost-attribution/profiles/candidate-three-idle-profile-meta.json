@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/private/tmp/dockspace-product-attribution-20261105-868e635/candidate-three-egui_dockspace",
+    "--samples",
+    "353",
+    "--warmup",
+    "6",
+    "--panes",
+    "1024",
+    "--scenario",
+    "idle"
+  ],
+  "binary_sha256": "f4e2c8ebfd54f2c979755a1b3dedb9840462995027ef3c163cce23e60eb6ba15",
+  "start_utc": "2026-11-05T07:43:20.640029+00:00",
+  "scope": "First eight seconds of one isolated scenario, including readiness/warmup; separate from all formal timings. Sample counts are not wall-clock phase times.",
+  "sample_command": [
+    "sample",
+    "10813",
+    "8",
+    "-file",
+    "/private/tmp/dockspace-product-attribution-20261105-868e635/candidate-three-idle-cpu.txt"
+  ],
+  "sampler_returncode": 0,
+  "returncode": 0,
+  "end_utc": "2026-11-05T07:43:33.406963+00:00"
+}

@@ -1,0 +1,9 @@
+{
+  "crates/egui_dockspace/src/output_proof.rs": "d1ab97b133c98dda675efcdc62e25805b864d206ec8bcaa15d511a11e9d8c032",
+  "crates/dockspace/src/runtime/paint.rs": "448dcfc5b99e510edec4f8b27e7a44e695a68c72bd82b8782ad361ee3bb8e014",
+  "crates/dockspace/src/runtime/paint/junction_query_tests.rs": "ee20c47d75b37020d76010c9eb5b51125d7245256bfeb804a68ac25e3c104509",
+  "crates/dockspace/src/scene_compiler/surface.rs": "72828e582470c6b41a1a9be7646b586531a6bd954d47fc62dbb37552a8861862",
+  "crates/dockspace/src/scene_compiler/surface/junction_compile_tests.rs": "98de98788d4bd20b9e6858694ce0e656ae6be31b5216f873137711edd0eac067",
+  "integration/egui-product-harness/examples/product_cost.rs": "272545879cc8b573b2a2aefec32498f1dc59130f1f770e9e9e5e510c6172ab93",
+  "integration/product-comparison/README.md": "3eaff88e7f0b1669ac3063815e448cbc94e6dfd1dd8d405b517b6edb1a0c4665"
+}

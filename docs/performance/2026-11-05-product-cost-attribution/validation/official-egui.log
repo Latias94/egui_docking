@@ -1,0 +1,33 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+   Compiling egui-dockspace-official-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-official-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.49s
+────────────
+ Nextest run ID 82dc7a65-51e9-4364-9188-c922b0877a9e with nextest profile: default
+    Starting 24 tests across 3 binaries
+        PASS [   0.105s] ( 1/24) egui-dockspace-official-harness::hover_blockers official_blocked_release_cannot_deliver_an_earlier_clear_preview
+        PASS [   0.102s] ( 2/24) egui-dockspace-official-harness::hover_blockers official_hover_stops_at_composed_ui_blockers_and_never_falls_back
+        PASS [   0.029s] ( 3/24) egui-dockspace-official-harness::hover_blockers official_unrelated_completed_pass_cannot_lend_widgets_to_an_older_output
+        PASS [   0.014s] ( 4/24) egui-dockspace-official-harness::owned_run_audit a_caught_raw_context_recursion_revokes_the_entire_wrapper_run
+        PASS [   0.016s] ( 5/24) egui-dockspace-official-harness::owned_run_audit a_foreign_root_cannot_enroll_a_fresh_instance_in_an_active_callback
+        PASS [   0.014s] ( 6/24) egui-dockspace-official-harness::owned_run_audit dropping_context_abandons_pending_texture_deltas_without_panicking
+        PASS [   0.016s] ( 7/24) egui-dockspace-official-harness::owned_run_audit owned_run_pointer_input_uses_the_post_hook_event_set
+        PASS [   0.016s] ( 8/24) egui-dockspace-official-harness::owned_run_audit owned_run_snapshots_pointer_events_before_dockspace_appears_on_second_pass
+        PASS [   0.016s] ( 9/24) egui-dockspace-official-harness::owned_run_audit rejected_owned_output_retains_texture_updates_for_the_next_renderer_output
+        PASS [   0.020s] (10/24) egui-dockspace-official-harness::owned_run_audit shared_run_accepts_callback_order_different_from_layer_paint_order
+        PASS [   0.034s] (11/24) egui-dockspace-official-harness::owned_run_audit shared_run_with_a_popup_keeps_both_dockspace_proofs_valid
+        PASS [   0.018s] (12/24) egui-dockspace-official-harness::owned_run_audit swapping_two_instances_complete_layer_spans_rejects_both_participants
+        PASS [   0.041s] (13/24) egui-dockspace-official-harness::public_api caller_owned_run_fans_out_terminal_settlement_to_multiple_dockspaces
+        PASS [   0.057s] (14/24) egui-dockspace-official-harness::public_api delayed_host_receipt_cannot_replace_a_newer_output
+        PASS [   0.025s] (15/24) egui-dockspace-official-harness::public_api denied_max_pass_discard_still_terminally_settles_output
+        PASS [   0.021s] (16/24) egui-dockspace-official-harness::public_api foreign_root_ui_cannot_claim_an_active_wrapper_pass
+        PASS [   0.023s] (17/24) egui-dockspace-official-harness::public_api manual_pass_keeps_local_actions_but_cannot_mint_terminal_evidence
+        PASS [   0.069s] (18/24) egui-dockspace-official-harness::public_api missing_or_dropped_host_receipt_cannot_complete_pane_focus
+        PASS [   0.024s] (19/24) egui-dockspace-official-harness::public_api non_root_caller_owned_run_settles_focus_from_its_final_accesskit_output
+        PASS [   0.024s] (20/24) egui-dockspace-official-harness::public_api official_eframe_app_reports_missing_terminal_settlement
+        PASS [   0.025s] (21/24) egui-dockspace-official-harness::public_api official_raw_egui_host_owns_terminal_settlement
+        PASS [   0.024s] (22/24) egui-dockspace-official-harness::public_api out_of_order_host_report_keeps_focus_until_its_exact_core_commit
+        PASS [   0.022s] (23/24) egui-dockspace-official-harness::public_api recoverable_error_after_claim_abandons_the_exact_terminal_pass
+        PASS [   0.032s] (24/24) egui-dockspace-official-harness::public_api repeated_show_in_one_pass_survives_context_rebinding_and_then_recovers
+────────────
+     Summary [   0.790s] 24 tests run: 24 passed, 0 skipped
