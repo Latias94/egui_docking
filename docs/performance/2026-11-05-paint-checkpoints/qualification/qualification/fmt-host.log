@@ -1,0 +1,22 @@
+Diff in /Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness/src/lib.rs:97:
+                 Step::DragPreview(preview) => {
+                     sink.records.push(OwnedRecord::Preview(preview.visual()))
+                 }
+[31m-                Step::DropTarget(target) => sink.records.push(OwnedRecord::Receiver(target.receiver())),
+(B[m[32m+                Step::DropTarget(target) => {
+(B[m[32m+                    sink.records.push(OwnedRecord::Receiver(target.receiver()))
+(B[m[32m+                }
+(B[m                 Step::DropGuide {
+                     structural,
+                     affordance,
+Diff in /Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness/tests/interaction_geometry_regressions.rs:170:
+                         }
+                         _ => {}
+                     },
+[31m-                    SurfacePaintProgramStep::DropTarget(target) => snapshot.gaps.push(target.receiver()),
+(B[m[32m+                    SurfacePaintProgramStep::DropTarget(target) => {
+(B[m[32m+                        snapshot.gaps.push(target.receiver())
+(B[m[32m+                    }
+(B[m                     SurfacePaintProgramStep::DropGuide { structural, .. } => {
+                         snapshot.guides.extend(structural.targets().map(|target| {
+                             (

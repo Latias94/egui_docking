@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--package",
+    "dockspace",
+    "--all-features",
+    "--lib",
+    "--locked",
+    "--offline",
+    "-j",
+    "1",
+    "-E",
+    "test(drag_source_index_tests) or test(target_catalog) or test(payload) or test(reference) or test(scene::validation) or test(runtime::paint) or test(scene::lifecycle)"
+  ],
+  "start_utc": "2026-11-05T12:00:13.574660+00:00",
+  "end_utc": "2026-11-05T12:00:59.628002+00:00",
+  "returncode": 0
+}

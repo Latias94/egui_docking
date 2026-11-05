@@ -1,0 +1,100 @@
+{
+  "condition": "candidate-eighteen",
+  "build_profile": {
+    "rust_lto": "thin",
+    "rust_codegen_units": 1,
+    "cpp_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-flto=thin"
+    ],
+    "commands": "../candidate-eighteen-commands.json",
+    "cpp_build": "../qualified-one/environment.json",
+    "delivery_profile": "production (release + thin LTO + one codegen unit)",
+    "source_inventory": "../candidate-eighteen-source-inventory.json"
+  },
+  "scope": "Frozen executables; timing only; no builds/tests/sampling overlap. Complete unchanged product workload.",
+  "samples": 24,
+  "warmup": 6,
+  "panes": [
+    16,
+    128,
+    1024
+  ],
+  "started_utc": "2026-11-05T15:30:05.184921+00:00",
+  "binary_sha256": {
+    "egui_dockspace": "c7405c6ef489d5c4dd694ce0f20a385aa1c80683ec6d24d2bc3ab4aee0a5c1f7",
+    "dear_imgui": "15b40045bbd19bf24f1d9f029923f43cf5ae14e5d4d34a8645864491f88b1909"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "product": "egui_dockspace",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/candidate-eighteen-egui_dockspace",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T15:30:05.193349+00:00",
+      "finished_utc": "2026-11-05T15:30:07.982819+00:00",
+      "returncode": 0
+    },
+    {
+      "run": 2,
+      "product": "dear_imgui",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/qualified-dear_imgui",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T15:30:07.983984+00:00",
+      "finished_utc": "2026-11-05T15:30:08.343953+00:00",
+      "returncode": 0
+    },
+    {
+      "run": 3,
+      "product": "dear_imgui",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/qualified-dear_imgui",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T15:30:08.345083+00:00",
+      "finished_utc": "2026-11-05T15:30:08.708936+00:00",
+      "returncode": 0
+    },
+    {
+      "run": 4,
+      "product": "egui_dockspace",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/candidate-eighteen-egui_dockspace",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T15:30:08.713623+00:00",
+      "finished_utc": "2026-11-05T15:30:11.470790+00:00",
+      "returncode": 0
+    }
+  ],
+  "finished_utc": "2026-11-05T15:30:11.474625+00:00",
+  "results_sha256": {
+    "raw.csv": "4af49a2dd167264d26198a8e7730e15bdd1183acacef31dd9e594bb0ab04cb2c",
+    "summary.csv": "6b940c111e042c75ca609b5ceacf7a908b81368d9e24c250eede42c350481f28"
+  }
+}

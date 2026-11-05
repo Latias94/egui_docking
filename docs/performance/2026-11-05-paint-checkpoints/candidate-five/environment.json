@@ -1,0 +1,87 @@
+{
+  "condition": "candidate-five",
+  "scope": "Frozen executables; timing only; no builds/tests/sampling overlap. Complete unchanged product workload.",
+  "samples": 24,
+  "warmup": 6,
+  "panes": [
+    16,
+    128,
+    1024
+  ],
+  "started_utc": "2026-11-05T12:45:20.776329+00:00",
+  "binary_sha256": {
+    "egui_dockspace": "a87425dc3f2ec9dc82d0ac65b6a88062dc212bad903a217ea968c95554a0035a",
+    "dear_imgui": "e125936ac1309e5df3e550390c61f2e0cf1666546320f2be34d732db63fab3c8"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "product": "egui_dockspace",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/candidate-five-egui_dockspace",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T12:45:20.786097+00:00",
+      "finished_utc": "2026-11-05T12:45:23.940238+00:00",
+      "returncode": 0
+    },
+    {
+      "run": 2,
+      "product": "dear_imgui",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/baseline-dear_imgui",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T12:45:23.941574+00:00",
+      "finished_utc": "2026-11-05T12:45:24.293153+00:00",
+      "returncode": 0
+    },
+    {
+      "run": 3,
+      "product": "dear_imgui",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/baseline-dear_imgui",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T12:45:24.294490+00:00",
+      "finished_utc": "2026-11-05T12:45:24.645772+00:00",
+      "returncode": 0
+    },
+    {
+      "run": 4,
+      "product": "egui_dockspace",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/candidate-five-egui_dockspace",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T12:45:24.651226+00:00",
+      "finished_utc": "2026-11-05T12:45:27.796223+00:00",
+      "returncode": 0
+    }
+  ],
+  "finished_utc": "2026-11-05T12:45:27.799902+00:00",
+  "results_sha256": {
+    "raw.csv": "a95abf699582de26953366f8ffdf98185e380332af00a1d2dd48c03862be67ea",
+    "summary.csv": "b92a293ec3ec9310a9644db54428dadcaeee695c98a7e42ed1f5f2ffb144571d"
+  }
+}

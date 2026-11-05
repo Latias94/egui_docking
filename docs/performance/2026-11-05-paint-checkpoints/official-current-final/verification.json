@@ -1,0 +1,35 @@
+{
+  "checked_utc": "2026-11-05T16:21:13.394455+00:00",
+  "source_commit": "31b1759caedc589f569ab48a59185fd8cc1b0fd5",
+  "condition": "official backend with production profile; separate compatibility control",
+  "raw_rows": 864,
+  "summary_rows": 18,
+  "samples_per_case": 48,
+  "nearest_rank_statistics_recomputed": true,
+  "raw_matches_process_stdout": true,
+  "per_sample_work_counter_comparisons": 27648,
+  "work_counter_differences": 0,
+  "counter_references": [
+    "baseline-fork",
+    "baseline-fork-lto",
+    "qualified-twenty-one",
+    "qualified-twenty-two"
+  ],
+  "source_inventory_inputs": 556,
+  "source_inventory_matches_final_fork": true,
+  "binary_sha256": {
+    "egui_dockspace": "3df4137b34a6cb71c867d8b7c59404387d85c81df4404fd260680f3b4f9a3de8",
+    "dear_imgui": "15b40045bbd19bf24f1d9f029923f43cf5ae14e5d4d34a8645864491f88b1909"
+  },
+  "results_sha256": {
+    "raw.csv": "a8302baf8152c4273b67fd170d71c7d7e72256859b59d8efba15ca5866f64662",
+    "summary.csv": "0f40a6cad5d88d11de7a9b1e66b1a4bf6bcca108dae28a5c36bad3f37b5eee4e"
+  },
+  "serial_build_and_measurement": true,
+  "p50_1024_ms": {
+    "idle": 28.086417,
+    "tab_click": 70.552041,
+    "surface_resize": 39.145625
+  },
+  "qualification_note": "The p50 target applies to the two final fork groups. Official egui retains complete snapshot validation and is reported independently."
+}

@@ -1,0 +1,20 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling dockspace_host_conformance v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace_host_conformance)
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+error[E0308]: mismatched types
+    --> crates/egui_dockspace/src/output_proof.rs:3158:70
+     |
+3158 |                       changed.shapes[1].transform_after_tessellation = Some(
+     |  _____________________----------------------------------------------___^
+     | |                     |
+     | |                     expected due to the type of this binding
+3159 | |                         egui::emath::TSTransform::from_translation(egui::vec2(1.0, 0.0)),
+3160 | |                     );
+     | |_____________________^ expected `TSTransform`, found `Option<TSTransform>`
+     |
+     = note: expected struct `TSTransform`
+                  found enum `Option<TSTransform>`
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `egui_dockspace` (lib test) due to 1 previous error
+error: command `/Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin/cargo test --no-run --message-format json-render-diagnostics --package egui_dockspace --all-features --locked --offline` exited with code 101

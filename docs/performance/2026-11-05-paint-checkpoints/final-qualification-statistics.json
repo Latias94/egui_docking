@@ -1,0 +1,35 @@
+{
+  "limits_ns": {
+    "idle": 12000000,
+    "tab_click": 35000000,
+    "surface_resize": 20000000
+  },
+  "groups": [
+    {
+      "condition": "qualified-twenty-one",
+      "rows": 864,
+      "summary_rows": 18,
+      "samples_per_case": 48,
+      "exact_work": true,
+      "statistics_recomputed": true,
+      "thresholds_passed": true,
+      "binary_sha256": {
+        "egui_dockspace": "47db8ca79dab9b4ae0b53fe19fd69cc40dc94d01efc710ee5bfdd3d7ffc5a12a",
+        "dear_imgui": "15b40045bbd19bf24f1d9f029923f43cf5ae14e5d4d34a8645864491f88b1909"
+      }
+    },
+    {
+      "condition": "qualified-twenty-two",
+      "rows": 864,
+      "summary_rows": 18,
+      "samples_per_case": 48,
+      "exact_work": true,
+      "statistics_recomputed": true,
+      "thresholds_passed": true,
+      "binary_sha256": {
+        "egui_dockspace": "47db8ca79dab9b4ae0b53fe19fd69cc40dc94d01efc710ee5bfdd3d7ffc5a12a",
+        "dear_imgui": "15b40045bbd19bf24f1d9f029923f43cf5ae14e5d4d34a8645864491f88b1909"
+      }
+    }
+  ]
+}

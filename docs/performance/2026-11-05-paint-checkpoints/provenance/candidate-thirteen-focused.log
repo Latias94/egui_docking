@@ -1,0 +1,58 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.56s
+────────────
+ Nextest run ID 79feda10-cdbd-4130-bd94-33d5e37aa837 with nextest profile: default
+    Starting 51 tests across 4 binaries (1924 tests skipped)
+        PASS [   0.017s] ( 1/51) dockspace behavior_tests::drop_guide_interaction::activation_without_button_hit_acquires_magnetic_target_and_keeps_complete_affordance
+        PASS [   0.010s] ( 2/51) dockspace behavior_tests::drop_guide_interaction::adjacent_pane_jitter_keeps_preview_guide_and_release_on_one_latched_target
+        PASS [   0.008s] ( 3/51) dockspace behavior_tests::drop_guide_interaction::leaving_the_activation_and_stream_cancellation_clear_the_affordance
+        PASS [   0.010s] ( 4/51) dockspace behavior_tests::drop_guide_interaction::magnetic_edge_latch_releases_after_the_configured_hysteresis_envelope
+        PASS [   0.009s] ( 5/51) dockspace behavior_tests::drop_guide_interaction::magnetic_edge_latch_survives_small_center_overshoot_and_release
+        PASS [   0.008s] ( 6/51) dockspace behavior_tests::drop_guide_interaction::rejected_active_guide_remains_visible_without_a_preview
+        PASS [   0.008s] ( 7/51) dockspace behavior_tests::drop_guide_interaction::top_and_bottom_buttons_publish_source_aware_future_layout_previews
+        PASS [   0.010s] ( 8/51) dockspace behavior_tests::drop_guide_interaction::top_and_bottom_presented_releases_commit_the_exact_target_and_conserve_items
+        PASS [   0.009s] ( 9/51) dockspace behavior_tests::drop_guide_resolution::activation_without_button_hit_resolves_exact_tab_gap_and_keeps_affordance
+        PASS [   0.009s] (10/51) dockspace behavior_tests::drop_guide_resolution::activation_without_button_or_tab_gap_hit_resolves_a_magnetic_target
+        PASS [   0.009s] (11/51) dockspace behavior_tests::drop_guide_resolution::adjacent_guide_hit_regions_are_half_open_at_the_shared_edge
+        PASS [   0.009s] (12/51) dockspace behavior_tests::drop_guide_resolution::central_single_item_root_is_not_suppressed_because_cleanup_preserves_it
+        PASS [   0.008s] (13/51) dockspace behavior_tests::drop_guide_resolution::central_tabs_root_exposes_center_only_inner_and_distinct_outer_cluster
+        PASS [   0.009s] (14/51) dockspace behavior_tests::drop_guide_resolution::contained_occlusion_selects_only_the_frontmost_floating_cluster
+        PASS [   0.008s] (15/51) dockspace behavior_tests::drop_guide_resolution::core_compiled_targets_expose_only_core_owned_availability_states
+        PASS [   0.008s] (16/51) dockspace behavior_tests::drop_guide_resolution::exact_center_hit_is_active_and_resolved
+        PASS [   0.012s] (17/51) dockspace behavior_tests::drop_guide_resolution::full_surface_source_reveals_latent_guides_without_suppressing_a_sibling
+        PASS [   0.008s] (18/51) dockspace behavior_tests::drop_guide_resolution::outer_cluster_resolves_without_an_active_inner_cluster
+        PASS [   0.013s] (19/51) dockspace behavior_tests::drop_guide_resolution::partial_contained_item_tabs_and_subtree_keep_source_occlusion_and_guides
+        PASS [   0.009s] (20/51) dockspace behavior_tests::drop_guide_resolution::payload_specific_prevalidation_marks_center_without_hiding_other_guides
+        PASS [   0.009s] (21/51) dockspace behavior_tests::drop_guide_resolution::rejected_core_guide_does_not_fall_through_after_policy_rejection
+        PASS [   0.008s] (22/51) dockspace behavior_tests::drop_guide_resolution::scene_unavailable_button_remains_active_disabled
+        PASS [   0.010s] (23/51) dockspace behavior_tests::drop_guide_resolution::selected_inner_and_matching_outer_clusters_are_complete_and_owned
+        PASS [   0.009s] (24/51) dockspace behavior_tests::drop_guide_resolution::suppressing_source_occlusion_keeps_the_frontmost_sibling_floating_authoritative
+        PASS [   0.009s] (25/51) dockspace behavior_tests::drop_guide_resolution::top_and_bottom_buttons_resolve_their_physical_edges
+        PASS [   0.009s] (26/51) dockspace behavior_tests::drop_guide_resolution::whole_contained_item_suppresses_its_presentation_and_exposes_main_guide
+        PASS [   0.011s] (27/51) dockspace behavior_tests::drop_guide_resolution::whole_contained_tabs_and_subtree_suppress_their_presentations
+        PASS [   0.007s] (28/51) dockspace behavior_tests::drop_guides::compiled_guide_geometry_separates_activation_draw_hit_and_preview
+        PASS [   0.007s] (29/51) dockspace behavior_tests::drop_guides::core_compiler_emits_only_complete_inner_and_outer_shapes
+        PASS [   0.008s] (30/51) dockspace behavior_tests::drop_guides::policy_availability_is_compiled_into_every_guide_owned_target
+        PASS [   0.008s] (31/51) dockspace behavior_tests::drop_guides::published_plans_keep_clusters_and_slots_in_canonical_order
+        PASS [   0.007s] (32/51) dockspace behavior_tests::drop_guides::root_central_leaf_uses_center_only_inner_plus_outer_edges
+        PASS [   0.007s] (33/51) dockspace drop_resolver::tests::magnetic_center_resolution_does_not_require_guide_records
+        PASS [   0.010s] (34/51) dockspace engine::tests::magnetic_targeting::contained_modifier_only_pause_and_reenable_preserve_complete_moved_geometry
+        PASS [   0.013s] (35/51) dockspace engine::tests::magnetic_targeting::focused_root_controls_child_magnetism_but_unfocused_binding_is_inert
+        PASS [   0.019s] (36/51) dockspace scene::validation::cost_tests::a_wide_split_validates_shared_resize_arrays_once
+        PASS [   0.008s] (37/51) dockspace scene::validation::cost_tests::duplicate_validation_keeps_the_smallest_identity_and_record_class_priority
+        PASS [   0.007s] (38/51) dockspace scene::validation::cost_tests::shared_resize_proof_does_not_hide_a_later_gap_or_foreign_array_defect
+        PASS [   0.006s] (39/51) dockspace scene::validation::guide_tests::canonical_rebinding_preserves_old_owners_and_stale_before_policy
+        PASS [   0.006s] (40/51) dockspace scene::validation::guide_tests::canonicalization_retains_unchanged_owners_and_guide_snapshots
+        PASS [   0.006s] (41/51) dockspace scene::validation::guide_tests::overlapping_pairs_keep_canonical_slot_order_across_catalog_orders
+        PASS [   0.006s] (42/51) dockspace scene::validation::guide_tests::slot_rejections_precede_earlier_pairs_with_overlapping_hits
+        PASS [   0.007s] (43/51) dockspace scene::validation::target_catalog::tests::first_invalid_record_stays_in_input_order_until_canonicalization
+        PASS [   0.006s] (44/51) dockspace scene::validation::target_catalog::tests::magnetic_row_coverage_matches_sorted_deduplicated_identity_sets
+        PASS [   0.006s] (45/51) dockspace scene::validation::target_catalog::tests::record_class_priority_and_independent_guide_duplicates_are_preserved
+        PASS [   0.006s] (46/51) dockspace scene::validation::target_catalog::tests::row_index_and_final_order_match_the_old_btree_catalog_without_replacing_owners
+        PASS [   0.006s] (47/51) dockspace scene::validation::target_catalog::tests::smallest_combined_background_duplicate_matches_the_frozen_sorted_id_oracle
+        PASS [   0.006s] (48/51) dockspace scene_compiler::tests::compiler_emits_the_same_magnetic_catalog_when_guides_are_disabled
+        PASS [   0.008s] (49/51) dockspace scene_compiler::tests::scene_validation_rejects_a_magnetic_edge_with_a_foreign_fraction
+        PASS [   0.007s] (50/51) dockspace scene_compiler::tests::scene_validation_rejects_an_extra_valid_target_outside_the_magnetic_catalog
+        PASS [   0.006s] (51/51) dockspace scene_compiler::tests::scene_validation_requires_the_complete_compiled_magnetic_target_field
+────────────
+     Summary [   0.442s] 51 tests run: 51 passed, 1924 skipped

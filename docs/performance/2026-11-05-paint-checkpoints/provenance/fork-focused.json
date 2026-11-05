@@ -1,0 +1,24 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--manifest-path",
+    "repo-ref/egui-release/crates/egui/Cargo.toml",
+    "--no-default-features",
+    "--features",
+    "default_fonts",
+    "--lib",
+    "--locked",
+    "--offline",
+    "-j",
+    "1",
+    "-E",
+    "test(paint_audit)",
+    "--target-dir",
+    "/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-workspace/target"
+  ],
+  "start_utc": "2026-11-05T09:15:40.801897+00:00",
+  "end_utc": "2026-11-05T09:17:06.714853+00:00",
+  "returncode": 0
+}

@@ -1,0 +1,61 @@
+{
+  "reason": "Resolve final review P2 by retaining byte-exact copies of three runtime provenance files at their original relative locations. Original environment metadata unchanged.",
+  "checks": [
+    {
+      "condition": "qualified-twenty-one",
+      "field": "commands",
+      "reference": "../candidate-twenty-commands.json",
+      "exists": true,
+      "sha256": "267bc1ffa9f375cba207089d226542557da804e43cd2adc321d4b46d60218a81"
+    },
+    {
+      "condition": "qualified-twenty-one",
+      "field": "rust_build",
+      "reference": "../candidate-twenty-build.log",
+      "exists": true,
+      "sha256": "681f6005e3e84a5d52fd4c67c3e8465ad7ef4001714817cb9208264e953326a7"
+    },
+    {
+      "condition": "qualified-twenty-one",
+      "field": "source_inventory",
+      "reference": "../candidate-twenty-source-inventory.json",
+      "exists": true,
+      "sha256": "d0e25045bc886797b9037a36f392f31a989b637ec9ba05421461fb28281b6fe1"
+    },
+    {
+      "condition": "qualified-twenty-one",
+      "field": "cpp_build",
+      "reference": "../qualified-one/environment.json",
+      "exists": true,
+      "sha256": "256ef5622af5cb3a4e86b72045aa5ff6759cc2c0d89ccd476a605de20f76eb8b"
+    },
+    {
+      "condition": "qualified-twenty-two",
+      "field": "commands",
+      "reference": "../candidate-twenty-commands.json",
+      "exists": true,
+      "sha256": "267bc1ffa9f375cba207089d226542557da804e43cd2adc321d4b46d60218a81"
+    },
+    {
+      "condition": "qualified-twenty-two",
+      "field": "rust_build",
+      "reference": "../candidate-twenty-build.log",
+      "exists": true,
+      "sha256": "681f6005e3e84a5d52fd4c67c3e8465ad7ef4001714817cb9208264e953326a7"
+    },
+    {
+      "condition": "qualified-twenty-two",
+      "field": "source_inventory",
+      "reference": "../candidate-twenty-source-inventory.json",
+      "exists": true,
+      "sha256": "d0e25045bc886797b9037a36f392f31a989b637ec9ba05421461fb28281b6fe1"
+    },
+    {
+      "condition": "qualified-twenty-two",
+      "field": "cpp_build",
+      "reference": "../qualified-one/environment.json",
+      "exists": true,
+      "sha256": "256ef5622af5cb3a4e86b72045aa5ff6759cc2c0d89ccd476a605de20f76eb8b"
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+[
+  {
+    "gate": "fmt-host",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--all",
+      "--check"
+    ],
+    "start_utc": "2026-11-05T15:04:37.617877+00:00",
+    "end_utc": "2026-11-05T15:04:39.261937+00:00",
+    "returncode": 0
+  },
+  {
+    "gate": "dependency-boundary",
+    "command": [
+      "python3",
+      "scripts/check_core_dependencies.py"
+    ],
+    "start_utc": "2026-11-05T15:04:39.262225+00:00",
+    "end_utc": "2026-11-05T15:04:39.347213+00:00",
+    "returncode": 0
+  },
+  {
+    "gate": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "start_utc": "2026-11-05T15:04:39.347527+00:00",
+    "end_utc": "2026-11-05T15:04:39.390639+00:00",
+    "returncode": 0
+  },
+  {
+    "gate": "fmt-fork",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--all",
+      "--check"
+    ],
+    "start_utc": "2026-11-05T15:04:39.390869+00:00",
+    "end_utc": "2026-11-05T15:04:41.361437+00:00",
+    "returncode": 0
+  },
+  {
+    "gate": "fork-adapter-resolve",
+    "command": [
+      "cargo",
+      "metadata",
+      "--manifest-path",
+      "/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/qualification/fork-adapter-source/Cargo.toml",
+      "--offline",
+      "--format-version",
+      "1",
+      "--no-deps"
+    ],
+    "start_utc": "2026-11-05T15:04:41.361745+00:00",
+    "end_utc": "2026-11-05T15:04:41.385743+00:00",
+    "returncode": 0
+  },
+  {
+    "gate": "fork-adapter-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/qualification/fork-adapter-source/Cargo.toml",
+      "--package",
+      "egui_dockspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--target-dir",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-workspace/target",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "start_utc": "2026-11-05T15:04:41.385973+00:00",
+    "end_utc": "2026-11-05T15:04:41.554667+00:00",
+    "returncode": 102
+  }
+]

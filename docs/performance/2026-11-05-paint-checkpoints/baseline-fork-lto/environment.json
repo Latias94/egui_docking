@@ -1,0 +1,97 @@
+{
+  "condition": "baseline-fork-lto",
+  "build_profile": {
+    "rust_lto": "thin",
+    "rust_codegen_units": 1,
+    "cpp_flags": [
+      "-O3",
+      "-DNDEBUG",
+      "-flto=thin"
+    ],
+    "commands": "../lto-build-commands.json"
+  },
+  "scope": "Frozen executables; timing only; no builds/tests/sampling overlap. Complete unchanged product workload.",
+  "samples": 24,
+  "warmup": 6,
+  "panes": [
+    16,
+    128,
+    1024
+  ],
+  "started_utc": "2026-11-05T13:20:13.313347+00:00",
+  "binary_sha256": {
+    "egui_dockspace": "a3511ee95be4111cfa970ecf812b97b3e6cb921f628ac06c8f9f2cac57a8995c",
+    "dear_imgui": "5a3b9c254fd792edecba6563487ac84137ef9c875479dbc5c6ffdb84c6016c32"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "product": "egui_dockspace",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/baseline-fork-lto-egui_dockspace",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T13:20:13.323338+00:00",
+      "finished_utc": "2026-11-05T13:20:20.540634+00:00",
+      "returncode": 0
+    },
+    {
+      "run": 2,
+      "product": "dear_imgui",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/lto-dear_imgui",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T13:20:20.541902+00:00",
+      "finished_utc": "2026-11-05T13:20:20.892465+00:00",
+      "returncode": 0
+    },
+    {
+      "run": 3,
+      "product": "dear_imgui",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/lto-dear_imgui",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T13:20:20.894001+00:00",
+      "finished_utc": "2026-11-05T13:20:21.253011+00:00",
+      "returncode": 0
+    },
+    {
+      "run": 4,
+      "product": "egui_dockspace",
+      "command": [
+        "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/baseline-fork-lto-egui_dockspace",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-05T13:20:21.257763+00:00",
+      "finished_utc": "2026-11-05T13:20:28.471433+00:00",
+      "returncode": 0
+    }
+  ],
+  "finished_utc": "2026-11-05T13:20:28.475226+00:00",
+  "results_sha256": {
+    "raw.csv": "828468cf2fc0cc805412c68add83f1cdc532d4a0c4c698d96838cdbd350a1e7d",
+    "summary.csv": "2a6d0998c825532b1fff161b73f56a14280f3ec1a5218acc4161e79dee0cf23d"
+  }
+}

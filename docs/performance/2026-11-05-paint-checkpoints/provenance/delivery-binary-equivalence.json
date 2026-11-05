@@ -1,0 +1,7 @@
+{
+  "final_binary_sha256": "8a34c0a4c25889964c36e3647ee1b24418bace4fec499a110b632569e2e241b6",
+  "measured_binary_sha256": "fde32b76ff88d111dc5ec9f3df8a63e10304acbaae28fe5ac26c74b1df1fa377",
+  "byte_identical": false,
+  "source_inventory": "qualification/final-source-inventory.json",
+  "scope": "The post-measurement changes are test-only exact work counts, host match-arm formatting, and cfg-gating an unused private helper. All runtime paths retain reviewed behavior."
+}

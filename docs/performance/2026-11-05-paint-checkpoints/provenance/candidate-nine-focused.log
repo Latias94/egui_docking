@@ -1,0 +1,11 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.36s
+────────────
+ Nextest run ID 6922e0fd-82d8-4ee3-8508-c0b0c463d471 with nextest profile: default
+    Starting 4 tests across 4 binaries (1969 tests skipped)
+        PASS [   0.007s] (1/4) dockspace presentation_hit::region_order::order_tests::empty_singleton_and_sorted_records_keep_all_fields
+        PASS [   0.006s] (2/4) dockspace presentation_hit::region_order::order_tests::mixed_full_identities_and_junction_arms_match_record_sort_bitwise
+        PASS [   0.006s] (3/4) dockspace presentation_hit::region_order::order_tests::new_to_old_three_cycle_uses_the_correct_permutation_direction
+        PASS [   0.010s] (4/4) dockspace presentation_hit::region_order::order_tests::reversed_rotated_and_disjoint_cycles_match_record_sort
+────────────
+     Summary [   0.031s] 4 tests run: 4 passed, 1969 skipped

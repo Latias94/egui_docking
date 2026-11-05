@@ -1,0 +1,6 @@
+# Preserve archived bytes so the checksum manifest survives a fresh checkout.
+* -text
+# CSV output may use CRLF; keep normal whitespace checks with CR as a terminator.
+*.csv whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+# Terminal logs retain their original final blank lines.
+*.log -whitespace

@@ -1,0 +1,49 @@
+[
+  {
+    "gate": "fork-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "repo-ref/egui-release/crates/egui/Cargo.toml",
+      "--no-default-features",
+      "--features",
+      "default_fonts",
+      "--locked",
+      "--offline",
+      "--target-dir",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-workspace/target",
+      "--lib",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "start_utc": "2026-11-05T09:32:16.116843+00:00",
+    "end_utc": "2026-11-05T09:32:43.009529+00:00",
+    "returncode": 0
+  },
+  {
+    "gate": "fork-docs",
+    "command": [
+      "cargo",
+      "doc",
+      "--manifest-path",
+      "repo-ref/egui-release/crates/egui/Cargo.toml",
+      "--no-default-features",
+      "--features",
+      "default_fonts",
+      "--locked",
+      "--offline",
+      "--target-dir",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-workspace/target",
+      "--no-deps"
+    ],
+    "start_utc": "2026-11-05T09:32:43.010375+00:00",
+    "end_utc": "2026-11-05T09:32:47.271321+00:00",
+    "returncode": 0
+  }
+]

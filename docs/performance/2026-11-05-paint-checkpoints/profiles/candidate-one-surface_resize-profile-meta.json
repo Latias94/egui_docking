@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/candidate-one-egui_dockspace",
+    "--samples",
+    "494",
+    "--warmup",
+    "6",
+    "--panes",
+    "1024",
+    "--scenario",
+    "surface_resize"
+  ],
+  "binary_sha256": "0336aab50426ad63bc4803b83fd5d89daf18eae83aba8914b00efc99fea162e8",
+  "start_utc": "2026-11-05T09:24:11.126825+00:00",
+  "scope": "First eight seconds of one isolated scenario, including readiness/warmup; separate from all formal timings. Sample counts are not wall-clock phase times.",
+  "sample_command": [
+    "sample",
+    "42955",
+    "8",
+    "-file",
+    "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/candidate-one-surface_resize-cpu.txt"
+  ],
+  "sampler_returncode": 0,
+  "returncode": 0,
+  "end_utc": "2026-11-05T09:24:24.390110+00:00"
+}

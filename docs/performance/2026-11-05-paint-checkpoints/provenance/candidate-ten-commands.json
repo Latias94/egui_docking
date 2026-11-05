@@ -1,0 +1,62 @@
+[
+  {
+    "gate": "candidate-ten-fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all"
+    ],
+    "environment_overrides": {
+      "CARGO_BUILD_JOBS": "1"
+    },
+    "start_utc": "2026-11-05T13:38:58.713647+00:00",
+    "end_utc": "2026-11-05T13:39:00.227006+00:00",
+    "returncode": 0
+  },
+  {
+    "gate": "candidate-ten-focused",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--all-features",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast",
+      "-E",
+      "test(runtime::paint) or test(product_render) or test(output_proof)"
+    ],
+    "environment_overrides": {
+      "CARGO_BUILD_JOBS": "1"
+    },
+    "start_utc": "2026-11-05T13:39:00.227293+00:00",
+    "end_utc": "2026-11-05T13:40:24.534057+00:00",
+    "returncode": 0
+  },
+  {
+    "gate": "candidate-ten-build",
+    "command": [
+      "cargo",
+      "build",
+      "--manifest-path",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-product-harness/Cargo.toml",
+      "--release",
+      "--locked",
+      "--offline",
+      "--example",
+      "product_cost",
+      "--message-format=json-render-diagnostics"
+    ],
+    "environment_overrides": {
+      "CARGO_BUILD_JOBS": "1",
+      "CARGO_PROFILE_RELEASE_LTO": "thin",
+      "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1"
+    },
+    "start_utc": "2026-11-05T13:40:24.534614+00:00",
+    "end_utc": "2026-11-05T13:41:59.218733+00:00",
+    "returncode": 0
+  }
+]

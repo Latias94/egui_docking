@@ -1,0 +1,1084 @@
+{
+  "source": "/private/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/candidate-two-tab_click-cpu.txt",
+  "source_sha256": "364c911303a3f20a4de6911c155d6f33e7401f77139d684e69e98de2cc68088d",
+  "total_thread_samples": 5841,
+  "scope": "Each category sums disjoint roots; categories can overlap each other. Inlined work may be charged to callers. Sample counts are not per-frame wall times.",
+  "categories": {
+    "paint_audit_helpers": {
+      "inclusive_union_samples": 448,
+      "percent": 7.67,
+      "nonoverlapping_roots": [
+        {
+          "samples": 9,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 3,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 3,
+          "node": "egui::paint_audit::Before::capture::h07a1d5282d9c5186"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::capture::h07a1d5282d9c5186"
+        },
+        {
+          "samples": 1,
+          "node": "core::ptr::drop_in_place$LT$core..option..Option$LT$egui..paint_audit..Frozen$GT$$GT$::h88744fd5fa7f05a8"
+        },
+        {
+          "samples": 8,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 37,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::h0f64f1aea773e45a"
+        },
+        {
+          "samples": 28,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 6,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 5,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 2,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 3,
+          "node": "egui::paint_audit::checkpoint::h4b38cafb73ed52ab"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::checkpoint::h4b38cafb73ed52ab"
+        },
+        {
+          "samples": 2,
+          "node": "egui::paint_audit::Before::capture::h07a1d5282d9c5186"
+        },
+        {
+          "samples": 13,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 37,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::h0f64f1aea773e45a"
+        },
+        {
+          "samples": 27,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 8,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 6,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::checked_layers::h32f30131fae01869"
+        },
+        {
+          "samples": 6,
+          "node": "egui::paint_audit::Before::capture::h07a1d5282d9c5186"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::capture::h07a1d5282d9c5186"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::capture::h07a1d5282d9c5186"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::checkpoint::h4b38cafb73ed52ab"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Registry::register::h1cb4c4cd196e941a"
+        },
+        {
+          "samples": 6,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 4,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 27,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 32,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::h0f64f1aea773e45a"
+        },
+        {
+          "samples": 5,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 2,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        },
+        {
+          "samples": 6,
+          "node": "egui::paint_audit::Before::capture::h07a1d5282d9c5186"
+        },
+        {
+          "samples": 2,
+          "node": "egui::paint_audit::checkpoint::h4b38cafb73ed52ab"
+        },
+        {
+          "samples": 1,
+          "node": "core::ptr::drop_in_place$LT$core..option..Option$LT$egui..paint_audit..Frozen$GT$$GT$::h88744fd5fa7f05a8"
+        },
+        {
+          "samples": 10,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 8,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 26,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 34,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::h0f64f1aea773e45a"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::checkpoint::h4b38cafb73ed52ab"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::h0f64f1aea773e45a"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::h0f64f1aea773e45a"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::h0f64f1aea773e45a"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::output_proof::SurfaceOutputCapture::finish::h5796ddbb1b1a803a"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::h0f64f1aea773e45a"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::present_spans::hb02d920bd856eaa7"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::output_proof::SurfaceOutputProof::is_present_once_in_paint_order::h0f64f1aea773e45a"
+        },
+        {
+          "samples": 1,
+          "node": "egui::paint_audit::Before::is_preserved::he466b36ec95f19eb"
+        }
+      ]
+    },
+    "layout_solver": {
+      "inclusive_union_samples": 77,
+      "percent": 1.318,
+      "nonoverlapping_roots": [
+        {
+          "samples": 13,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 6,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 6,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 6,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 5,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 5,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 15,
+          "node": "dockspace::layout::measure_root_minimums::h87bc91b721d85cbe"
+        },
+        {
+          "samples": 4,
+          "node": "dockspace::layout::measure_root_minimums::h87bc91b721d85cbe"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::layout::measure_root_minimums::h87bc91b721d85cbe"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::layout::measure_root_minimums::h87bc91b721d85cbe"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::layout::measure_root_minimums::h87bc91b721d85cbe"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::layout::measure_root_minimums::h87bc91b721d85cbe"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::layout::RootMeasurement::project_with_weights::heb1dd943a58f0a39"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::layout::measure_root_minimums::h87bc91b721d85cbe"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::layout::measure_root_minimums::h87bc91b721d85cbe"
+        }
+      ]
+    },
+    "scene_compiler": {
+      "inclusive_union_samples": 434,
+      "percent": 7.43,
+      "nonoverlapping_roots": [
+        {
+          "samples": 211,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 47,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 44,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 40,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 26,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 36,
+          "node": "dockspace::scene_compiler::requirements::derive_scene_requirement_draft::h2cfb24eac7cd0d64"
+        },
+        {
+          "samples": 6,
+          "node": "dockspace::scene_compiler::requirements::derive_scene_requirement_draft::h2cfb24eac7cd0d64"
+        },
+        {
+          "samples": 10,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::scene_compiler::requirements::derive_scene_requirement_draft::h2cfb24eac7cd0d64"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene_compiler::requirements::derive_scene_requirement_draft::h2cfb24eac7cd0d64"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene_compiler::surface::compile_surface_measurements::hc40bc13775ab8c1b"
+        }
+      ]
+    },
+    "scene_validation": {
+      "inclusive_union_samples": 401,
+      "percent": 6.865,
+      "nonoverlapping_roots": [
+        {
+          "samples": 104,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 70,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 44,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 41,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 28,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 26,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 22,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 16,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 7,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::region_has_authoritative_area::h7efc97ad3eaed52c"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::region_has_authoritative_area::h7efc97ad3eaed52c"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::scene::validation::region_has_authoritative_area::h7efc97ad3eaed52c"
+        },
+        {
+          "samples": 6,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 5,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::scene::validation::PresentationPlanValidator::validate_and_canonicalize::he4c6c25a5358483a"
+        }
+      ]
+    },
+    "measurement_and_resources": {
+      "inclusive_union_samples": 1845,
+      "percent": 31.587,
+      "nonoverlapping_roots": [
+        {
+          "samples": 1121,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 93,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 90,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 84,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 89,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 80,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 94,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 80,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 60,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 4,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 11,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::PaintResources::from_plan::h65f988008415053d"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::measurement::measure_surface::h52dfba94a3b8adb1"
+        }
+      ]
+    },
+    "junction_queries": {
+      "inclusive_union_samples": 93,
+      "percent": 1.592,
+      "nonoverlapping_roots": [
+        {
+          "samples": 8,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 6,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 8,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 6,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 5,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 4,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 9,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 5,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 5,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 4,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 3,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 2,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        },
+        {
+          "samples": 1,
+          "node": "dockspace::runtime::paint::SurfacePaintPlan::splitter_junction_axis_operable::hcad446965f91cd51"
+        }
+      ]
+    },
+    "cpu_tessellation": {
+      "inclusive_union_samples": 359,
+      "percent": 6.146,
+      "nonoverlapping_roots": [
+        {
+          "samples": 77,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 6,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 2,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 83,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 3,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 1,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 84,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 4,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 1,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 76,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 2,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 5,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 4,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 4,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 4,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 1,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 1,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        },
+        {
+          "samples": 1,
+          "node": "egui::context::Context::tessellate::ha8e7afd5ef1da76a"
+        }
+      ]
+    },
+    "product_paint": {
+      "inclusive_union_samples": 2210,
+      "percent": 37.836,
+      "nonoverlapping_roots": [
+        {
+          "samples": 425,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 93,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 426,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 90,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 2,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 431,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 89,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 416,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 94,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 4,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 3,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 27,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 24,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 19,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 19,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 4,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 4,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 4,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 1,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        },
+        {
+          "samples": 5,
+          "node": "egui_dockspace::product_render::paint_surface::h749df735ab8fc065"
+        }
+      ]
+    }
+  }
+}

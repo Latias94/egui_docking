@@ -1,0 +1,12 @@
+{
+  "command": [
+    "cargo",
+    "update",
+    "--manifest-path",
+    "integration/egui-fork-workspace/Cargo.toml",
+    "--workspace"
+  ],
+  "start_utc": "2026-11-05T09:35:51.496132+00:00",
+  "end_utc": "2026-11-05T09:36:02.180156+00:00",
+  "returncode": 0
+}

@@ -1,0 +1,8 @@
+error: failed to select a version for the requirement `clipboard-win = "^5.3.1"`
+  version 5.4.1 is yanked
+location searched: crates.io index
+required by package `arboard v3.6.1`
+    ... which satisfies dependency `arboard = "^3.6"` of package `egui-winit v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)`
+    ... which satisfies git dependency `egui-winit` of package `eframe v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)`
+    ... which satisfies dependency `eframe = "=0.37.0"` of package `egui_dockspace v0.1.0 (/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/qualification/fork-adapter-source/crates/egui_dockspace)`
+As a reminder, you're using offline mode (--offline) which can sometimes cause surprising resolution failures, if this error is too confusing you may wish to retry without `--offline`.

@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--package",
+    "egui_dockspace",
+    "--all-features",
+    "--lib",
+    "--locked",
+    "--offline",
+    "-j",
+    "1",
+    "-E",
+    "test(output_proof)"
+  ],
+  "start_utc": "2026-11-05T09:12:20.530443+00:00",
+  "end_utc": "2026-11-05T09:12:41.661465+00:00",
+  "returncode": 0
+}

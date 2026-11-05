@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--package",
+    "dockspace",
+    "--all-features",
+    "--lib",
+    "--locked",
+    "--offline",
+    "-j",
+    "1",
+    "-E",
+    "test(presentation_hit) or test(runtime::paint)"
+  ],
+  "start_utc": "2026-11-05T09:27:49.715749+00:00",
+  "end_utc": "2026-11-05T09:28:19.853887+00:00",
+  "returncode": 0
+}

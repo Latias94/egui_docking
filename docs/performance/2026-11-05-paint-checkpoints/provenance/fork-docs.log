@@ -1,0 +1,7 @@
+    Checking emath v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/emath)
+    Checking ecolor v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/ecolor)
+    Checking epaint_default_fonts v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/epaint_default_fonts)
+    Checking epaint v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/epaint)
+ Documenting egui v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/egui)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.21s
+   Generated /Users/frankorz/codes/rust/egui_docking/integration/egui-fork-workspace/target/doc/egui/index.html

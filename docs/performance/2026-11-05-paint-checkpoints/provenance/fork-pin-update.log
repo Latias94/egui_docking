@@ -1,0 +1,25 @@
+    Updating git repository `https://github.com/Latias94/egui`
+    Updating crates.io index
+     Locking 11 packages to latest Rust 1.95 compatible versions
+    Removing ecolor v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding ecolor v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+    Removing eframe v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding eframe v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+    Removing egui v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding egui v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+      Adding egui-dockspace-fork-product-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-product-harness)
+    Removing egui-wgpu v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding egui-wgpu v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+    Removing egui-winit v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding egui-winit v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+    Removing egui_glow v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding egui_glow v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+    Removing egui_inspection v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding egui_inspection v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+    Removing emath v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding emath v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+    Removing epaint v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding epaint v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+    Removing epaint_default_fonts v0.37.0 (https://github.com/Latias94/egui?rev=56e3db49b66096b58a23b8eb762bdc0a73ae043c#56e3db49)
+      Adding epaint_default_fonts v0.37.0 (https://github.com/Latias94/egui?rev=60c40304dab75305d2ac0f54a1cabfc354669006#60c40304)
+note: pass `--verbose` to see 54 unchanged dependencies behind latest

@@ -1,0 +1,142 @@
+   Compiling dockspace v0.1.0 (/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/qualification/fork-adapter-source/crates/dockspace)
+   Compiling dockspace_host_conformance v0.1.0 (/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/qualification/fork-adapter-source/crates/dockspace_host_conformance)
+   Compiling egui_dockspace v0.1.0 (/tmp/dockspace-paint-checkpoints-20261105-36f3fb0/qualification/fork-adapter-source/crates/egui_dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.26s
+────────────
+ Nextest run ID 7fc0e728-d972-44f6-b050-4578a9c0caf1 with nextest profile: default
+    Starting 133 tests across 5 binaries
+        PASS [   0.023s] (  1/133) egui_dockspace facade::owned_run::tests::late_discards_paint_once_per_actual_pass_and_publish_one_selection_and_output
+        PASS [   0.016s] (  2/133) egui_dockspace facade::owned_run::tests::output_hook_panic_rolls_back_a_real_selection_and_never_replays_its_raw_press
+        PASS [   0.015s] (  3/133) egui_dockspace facade::owned_run::tests::queued_accessibility_event_survives_a_later_update_hook_panic_until_publication
+        PASS [   0.092s] (  4/133) egui_dockspace facade::owned_run::tests::real_ui_action_ingress_accepts_64_events_and_rejects_65_without_partial_publication
+        PASS [   0.014s] (  5/133) egui_dockspace facade::owned_run::tests::removing_real_pane_geometry_rejects_the_run_before_core_publication
+        PASS [   0.026s] (  6/133) egui_dockspace facade::tests::edge_scroll::edge_scroll_does_not_cross_a_visible_close_control
+        PASS [   0.035s] (  7/133) egui_dockspace facade::tests::edge_scroll::edge_scroll_yields_to_explicit_scroll_then_menu_selection_and_reveal
+        PASS [   0.029s] (  8/133) egui_dockspace facade::tests::edge_scroll::renderer_result_wakes_the_idle_host_to_accept_the_next_edge_scroll_output
+        PASS [   0.031s] (  9/133) egui_dockspace facade::tests::edge_scroll::stationary_drag_edge_scroll_repeats_after_presented_output_without_selecting_or_focusing
+        PASS [   0.107s] ( 10/133) egui_dockspace facade::tests::fractional_split_and_contained_layouts_do_not_emit_unaligned_debug_overlays
+        PASS [   0.021s] ( 11/133) egui_dockspace facade::tests::ordered_pointer_transport_preserves_explicit_batch_clock_and_unknown_samples
+        PASS [   0.027s] ( 12/133) egui_dockspace facade::tests::pane_callback_cannot_authorize_deleted_chrome_or_cross_layer_pixels
+        PASS [   0.717s] ( 13/133) egui_dockspace facade::tests::shared_l03_supported_points_use_renderer_registered_magnetic_receivers
+        PASS [   0.050s] ( 14/133) egui_dockspace facade::tests::stationary_hover_selects_at_its_deadline_across_repainted_outputs_and_keeps_dragging
+        PASS [   0.029s] ( 15/133) egui_dockspace facade::tests::touch::explicit_touch_close_control_checks_release_slop_and_keeps_ordinary_taps
+        PASS [   0.032s] ( 16/133) egui_dockspace facade::tests::touch::explicit_touch_long_press_opens_the_existing_semantic_menu_once
+        PASS [   0.054s] ( 17/133) egui_dockspace facade::tests::touch::explicit_touch_long_press_then_motion_uses_the_normal_preview_and_dock_release
+        PASS [   0.017s] ( 18/133) egui_dockspace facade::tests::touch::explicit_touch_prearm_motion_yields_without_selecting_or_dragging
+        PASS [   0.018s] ( 19/133) egui_dockspace facade::tests::touch::explicit_touch_tap_deduplicates_synthesized_pointer_and_selects_on_release
+        PASS [   0.062s] ( 20/133) egui_dockspace facade::tests::touch::touch_content_scrolling_keeps_the_pane_scroll_owner_without_arming_docking
+        PASS [   0.062s] ( 21/133) egui_dockspace facade::tests::touch_targets::expanded_touch_resize_targets_keep_external_widget_and_disabled_ui_blockers
+        PASS [   0.029s] ( 22/133) egui_dockspace facade::tests::touch_targets::explicit_touch_resizes_contained_window_from_outside_its_painted_bounds
+        PASS [   0.023s] ( 23/133) egui_dockspace facade::tests::touch_targets::explicit_touch_resizes_splitter_outside_the_unchanged_mouse_hit
+        PASS [   0.022s] ( 24/133) egui_dockspace facade::tests::touch_targets::touch_resize_expansion_preserves_the_actual_contained_close_control
+        PASS [   0.006s] ( 25/133) egui_dockspace output_proof::tests::a_different_or_unknown_final_pixel_scale_is_rejected
+        PASS [   0.007s] ( 26/133) egui_dockspace output_proof::tests::append_check_accepts_new_shapes_on_the_supplied_layer
+        PASS [   0.006s] ( 27/133) egui_dockspace output_proof::tests::borrowed_append_check_accepts_its_unregistered_layer_and_rejects_foreign_painters
+        PASS [   0.007s] ( 28/133) egui_dockspace output_proof::tests::borrowed_append_check_compares_current_then_other_roster_then_other_contents
+        PASS [   0.006s] ( 29/133) egui_dockspace output_proof::tests::borrowed_append_check_compares_list_lengths_before_nan_descriptors
+        PASS [   0.007s] ( 30/133) egui_dockspace output_proof::tests::borrowed_append_check_matches_frozen_nan_prefix_and_suffix_outcomes
+        PASS [   0.009s] ( 31/133) egui_dockspace output_proof::tests::borrowed_append_check_rejects_frozen_prefix_layer_and_transform_changes
+        PASS [   0.007s] ( 32/133) egui_dockspace output_proof::tests::borrowed_append_check_rejects_unknown_shapes_before_nan_descriptors
+        PASS [   0.006s] ( 33/133) egui_dockspace output_proof::tests::borrowed_append_check_restores_existing_empty_and_populated_slots
+        PASS [   0.006s] ( 34/133) egui_dockspace output_proof::tests::changing_another_known_layers_global_transform_is_rejected
+        PASS [   0.005s] ( 35/133) egui_dockspace output_proof::tests::clip_transform_and_order_changes_are_rejected
+        PASS [   0.006s] ( 36/133) egui_dockspace output_proof::tests::deleting_ordinary_geometry_while_preserving_preview_is_rejected
+        PASS [   0.006s] ( 37/133) egui_dockspace output_proof::tests::duplicate_layer_ids_reject_all_capture_paths_before_shape_comparison
+        PASS [   0.006s] ( 38/133) egui_dockspace output_proof::tests::duplicate_outer_roster_remains_unavailable_when_the_final_roster_is_unique
+        PASS [   0.009s] ( 39/133) egui_dockspace output_proof::tests::duplicate_pane_roster_cannot_authorize_changes_inside_a_unique_outer_span
+        PASS [   0.005s] ( 40/133) egui_dockspace output_proof::tests::exact_span_reports_its_half_open_range
+        PASS [   0.013s] ( 41/133) egui_dockspace output_proof::tests::failed_snapshot_cache_preserves_text_and_callback_drop_order
+        PASS [   0.011s] ( 42/133) egui_dockspace output_proof::tests::finish_reusing_matches_frozen_and_resets_its_probe_for_each_check
+        PASS [   0.006s] ( 43/133) egui_dockspace output_proof::tests::inherent_paint_auditor_takes_precedence_over_the_private_fallback
+        PASS [   0.005s] ( 44/133) egui_dockspace output_proof::tests::missing_reversed_and_nested_duplicate_markers_are_rejected
+        PASS [   0.006s] ( 45/133) egui_dockspace output_proof::tests::moving_an_identical_shape_between_known_layers_is_rejected
+        PASS [   0.017s] ( 46/133) egui_dockspace output_proof::tests::multilayer_capture_accepts_a_real_popup_and_scrubs_all_private_markers
+        PASS [   0.006s] ( 47/133) egui_dockspace output_proof::tests::multilayer_capture_accepts_new_registered_layers_and_freezes_their_transforms
+        PASS [   0.006s] ( 48/133) egui_dockspace output_proof::tests::multilayer_capture_records_span_layer_identities_without_ordering_them
+        PASS [   0.006s] ( 49/133) egui_dockspace output_proof::tests::multilayer_capture_rejects_changes_to_an_existing_other_layer_prefix_or_transform
+        PASS [   0.016s] ( 50/133) egui_dockspace output_proof::tests::multilayer_output_hooks_cannot_delete_or_change_popup_geometry
+        PASS [   0.016s] ( 51/133) egui_dockspace output_proof::tests::multilayer_output_hooks_cannot_duplicate_popup_markers
+        PASS [   0.016s] ( 52/133) egui_dockspace output_proof::tests::multilayer_output_hooks_cannot_swap_complete_primary_and_popup_spans
+        PASS [   0.006s] ( 53/133) egui_dockspace output_proof::tests::owned_output_check_is_bound_to_its_exact_capture_and_all_final_descriptors
+        PASS [   0.006s] ( 54/133) egui_dockspace output_proof::tests::paint_audit_keeps_one_backend_session_and_consumes_each_callback_once
+        PASS [   0.009s] ( 55/133) egui_dockspace output_proof::tests::paint_comparison_keeps_owners_alive_and_cow_changes_distinct
+        PASS [   0.010s] ( 56/133) egui_dockspace output_proof::tests::paint_comparison_matches_every_text_and_clipped_shape_field
+        PASS [   0.010s] ( 57/133) egui_dockspace output_proof::tests::paint_comparison_preserves_derived_short_circuit_order
+        PASS [   0.010s] ( 58/133) egui_dockspace output_proof::tests::paint_comparison_preserves_nan_results_and_upstream_debug_panics
+        PASS [   0.010s] ( 59/133) egui_dockspace output_proof::tests::paint_comparison_preserves_nested_shapes_mesh_equality_and_callback_identity
+        PASS [   0.010s] ( 60/133) egui_dockspace output_proof::tests::paint_comparison_preserves_text_prefixes_across_successive_append_checks
+        PASS [   0.006s] ( 61/133) egui_dockspace output_proof::tests::pane_append_check_rejects_changes_to_the_existing_surface_prefix
+        PASS [   0.009s] ( 62/133) egui_dockspace output_proof::tests::pane_panic_releases_the_snapshot_before_child_ui_finalization
+        PASS [   0.006s] ( 63/133) egui_dockspace output_proof::tests::scrubbing_preserves_user_compounds_callbacks_and_noops
+        PASS [   0.014s] ( 64/133) egui_dockspace output_proof::tests::snapshot_cache_captures_float_bits_without_running_begin_equality
+        PASS [   0.010s] ( 65/133) egui_dockspace output_proof::tests::snapshot_cache_keeps_unknown_before_unavailable_after_its_removal
+        PASS [   0.065s] ( 66/133) egui_dockspace output_proof::tests::snapshot_cache_observes_every_text_field_and_gap_mutation_before_reuse
+        PASS [   0.022s] ( 67/133) egui_dockspace output_proof::tests::snapshot_cache_refreshes_global_transforms_and_layer_rosters
+        PASS [   0.018s] ( 68/133) egui_dockspace output_proof::tests::snapshot_cache_releases_equal_text_owners_not_retained_by_the_memo
+        PASS [   0.007s] ( 69/133) egui_dockspace output_proof::tests::snapshot_cache_releases_unsupported_callbacks_before_the_next_begin
+        PASS [   0.008s] ( 70/133) egui_dockspace output_proof::tests::snapshot_cache_stays_empty_when_an_opaque_drop_reenters_and_panics
+        PASS [   0.006s] ( 71/133) egui_dockspace output_proof::tests::snapshot_matches_frozen_empty_and_multiple_registered_layers
+        PASS [   0.006s] ( 72/133) egui_dockspace output_proof::tests::snapshot_paint_audit_keeps_failures_after_a_later_callback_restores_the_prefix
+        PASS [   0.006s] ( 73/133) egui_dockspace output_proof::tests::snapshot_paint_audit_records_failure_before_an_opaque_drop_panics
+        PASS [   0.005s] ( 74/133) egui_dockspace output_proof::tests::snapshot_preserves_nested_markers_and_raw_transform_bits
+        PASS [   0.006s] ( 75/133) egui_dockspace output_proof::tests::unknown_nonempty_layers_make_both_initial_and_final_snapshots_unavailable
+        PASS [   0.006s] ( 76/133) egui_dockspace pane::tests::default_minimum_size_defers_to_adapter_style
+        PASS [   0.005s] ( 77/133) egui_dockspace pane::tests::missing_focus_provider_stays_unknown
+        PASS [   0.005s] ( 78/133) egui_dockspace pane::tests::pane_view_is_object_safe_and_reports_missing_items
+        PASS [   0.005s] ( 79/133) egui_dockspace pass_settlement::output_textures_guard_tests::consecutive_failed_outputs_preserve_set_and_free_append_semantics
+        PASS [   0.005s] ( 80/133) egui_dockspace pass_settlement::output_textures_guard_tests::output_delta_is_retained_when_a_later_result_path_returns_early
+        PASS [   0.005s] ( 81/133) egui_dockspace pass_settlement::output_textures_guard_tests::owned_output_keeps_texture_retirement_before_ordered_user_payload_release
+        PASS [   0.014s] ( 82/133) egui_dockspace pass_settlement::tests::a_caught_nested_run_poisons_the_outer_run_including_its_next_pass
+        PASS [   0.013s] ( 83/133) egui_dockspace pass_settlement::tests::an_explicit_dropped_report_retires_the_exact_output
+        PASS [   0.013s] ( 84/133) egui_dockspace pass_settlement::tests::an_output_hook_discard_delivers_only_the_terminal_pass
+        PASS [   0.015s] ( 85/133) egui_dockspace pass_settlement::tests::an_output_hook_unwind_abandons_the_open_pass_and_allows_a_fresh_run
+        PASS [   0.025s] ( 86/133) egui_dockspace pass_settlement::tests::child_receipt_wakes_its_ended_viewport_when_reported_outside_the_run
+        PASS [   0.014s] ( 87/133) egui_dockspace pass_settlement::tests::delayed_receipts_preserve_emission_order_when_reported_in_reverse
+        PASS [   0.013s] ( 88/133) egui_dockspace pass_settlement::tests::dropping_the_host_receipt_enqueues_one_dropped_result
+        PASS [   0.015s] ( 89/133) egui_dockspace pass_settlement::tests::duplicate_enrollment_poisons_every_staged_participant_in_that_pass
+        PASS [   0.014s] ( 90/133) egui_dockspace pass_settlement::tests::foreign_context_and_viewport_readers_cannot_drain_an_owner_delivery
+        PASS [   0.007s] ( 91/133) egui_dockspace pass_settlement::tests::ordered_input_keeps_raw_batch_time_across_reruns_without_using_predicted_time
+        PASS [   0.025s] ( 92/133) egui_dockspace pass_settlement::tests::rebinding_context_or_viewport_rejects_a_retained_foreign_lane_receipt
+        PASS [   0.013s] ( 93/133) egui_dockspace pass_settlement::tests::removing_ordinary_pane_geometry_in_an_output_hook_denies_delivery
+        PASS [   0.014s] ( 94/133) egui_dockspace pass_settlement::tests::returning_output_without_a_host_report_does_not_make_it_ready
+        PASS [   0.009s] ( 95/133) egui_dockspace product_focus::tests::a_retained_record_cannot_override_window_blur_or_resurrect_surrendered_focus
+        PASS [   0.008s] ( 96/133) egui_dockspace product_focus::tests::an_unregistered_child_target_cannot_borrow_the_roots_identical_widget_id
+        PASS [   0.010s] ( 97/133) egui_dockspace product_focus::tests::registered_editor_is_sampled_without_declaring_pointer_content
+        PASS [   0.009s] ( 98/133) egui_dockspace product_focus::tests::retained_editor_survives_two_skipped_passes_only_with_its_exact_witness
+        PASS [   0.007s] ( 99/133) egui_dockspace product_pointer::tests::modifier_only_input_remembers_shift_without_enrolling_a_pointer
+        PASS [   0.005s] (100/133) egui_dockspace product_pointer::tests::ordered_modifier_sources_preserve_intent_across_events_without_a_directive
+        PASS [   0.005s] (101/133) egui_dockspace product_pointer::tests::touch_samples_and_continuations_keep_keyboard_targeting_unknown
+        PASS [   0.033s] (102/133) egui_dockspace product_pointer::tests::touch_suppression_cancels_held_generic_once_and_allows_fresh_generic_press
+        PASS [   0.007s] (103/133) egui_dockspace product_render::discard_tests::manual_passes_each_receive_one_discard_request
+        PASS [   0.007s] (104/133) egui_dockspace product_render::discard_tests::multipass_run_receives_only_one_discard_request
+        PASS [   0.006s] (105/133) egui_dockspace product_render::geometry::tests::child_layout_stays_inside_its_semantic_region_or_is_omitted
+        PASS [   0.006s] (106/133) egui_dockspace product_render::pointer_authority_contract_tests::external_journal_contract
+        PASS [   0.005s] (107/133) egui_dockspace product_render::pointer_authority_contract_tests::host_journal_contract
+        PASS [   0.005s] (108/133) egui_dockspace product_render::pointer_authority_contract_tests::local_responses_legacy_flags_contract
+        PASS [   0.006s] (109/133) egui_dockspace product_render::tab_chrome::tests::scrollbar_target_preserves_the_pointer_grab_offset_and_clamps_to_track
+        PASS [   0.006s] (110/133) egui_dockspace product_render::tab_chrome::tests::scrollbar_target_rejects_non_operable_geometry
+        PASS [   0.006s] (111/133) egui_dockspace product_render::tabs::tests::native_tab_diagnostic_is_opt_in_and_passive_without_changing_drag_semantics
+        PASS [   0.006s] (112/133) egui_dockspace product_render::tests::dock_preview_diagnostic_keeps_exact_bounds_and_passive_painted_emission
+        PASS [   0.005s] (113/133) egui_dockspace product_render::tests::native_preview_diagnostic_requires_explicit_smoke_opt_in
+        PASS [   0.005s] (114/133) egui_dockspace product_render::tests::native_preview_paints_a_source_hosted_cue
+        PASS [   0.007s] (115/133) egui_dockspace product_render::tests::preview_diagnostics_keep_opt_in_and_exact_dock_and_native_surface_guards
+        PASS [   0.006s] (116/133) egui_dockspace style::tests::contained_window_inherits_egui_window_recipe
+        PASS [   0.005s] (117/133) egui_dockspace style::tests::default_style_is_valid
+        PASS [   0.005s] (118/133) egui_dockspace style::tests::default_visuals_follow_egui_theme_tokens
+        PASS [   0.005s] (119/133) egui_dockspace style::tests::ghost_offset_is_fixed_and_must_be_finite
+        PASS [   0.005s] (120/133) egui_dockspace style::tests::tab_strip_edge_scroll_style_bridges_custom_and_disabled_values
+        PASS [   0.007s] (121/133) egui_dockspace style::tests::tab_strip_edge_scroll_style_rejects_zero_interval_and_invalid_band
+        PASS [   0.005s] (122/133) egui_dockspace style::tests::touch_resize_hit_extent_style_bridges_minimum_and_custom_values
+        PASS [   0.005s] (123/133) egui_dockspace style::tests::touch_resize_hit_extent_style_rejects_non_finite_and_below_minimum_values
+        PASS [   0.005s] (124/133) egui_dockspace style::tests::translucent_theme_tokens_keep_their_unmultiplied_color_channels
+        PASS [   0.005s] (125/133) egui_dockspace style::tests::validation_rejects_invalid_relations
+        PASS [   0.005s] (126/133) egui_dockspace style::tests::validation_rejects_non_finite_and_signed_metrics
+        PASS [   0.006s] (127/133) egui_dockspace style::tests::visual_override_changes_only_its_named_token
+        PASS [   0.023s] (128/133) egui_dockspace::contained_occlusion front_floating_blank_content_blocks_rear_pane_widgets
+        PASS [   0.019s] (129/133) egui_dockspace::tear_off_mode callback_only_product_frames_reach_current_local_action_authority
+        PASS [   0.074s] (130/133) egui_dockspace::example/basic tests::close_button_allows_and_removes_the_pane
+        PASS [   0.090s] (131/133) egui_dockspace::example/workspace_persistence tests::closed_inventory_reopens_stable_items_and_presets_preserve_application_data
+        PASS [   0.011s] (132/133) egui_dockspace::example/workspace_persistence tests::named_layout_storage_is_bounded_and_default_is_immutable
+        PASS [   0.071s] (133/133) egui_dockspace::example/workspace_persistence tests::root_retirement_and_default_restore_use_current_presentation_identities
+────────────
+     Summary [   2.798s] 133 tests run: 133 passed, 0 skipped

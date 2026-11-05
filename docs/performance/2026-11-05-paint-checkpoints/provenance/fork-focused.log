@@ -1,0 +1,48 @@
+   Compiling syn v3.0.5
+   Compiling bytemuck_derive v1.12.0
+   Compiling bytemuck v1.25.2
+   Compiling smallvec v1.16.0
+   Compiling thiserror v2.0.20
+   Compiling kurbo v0.13.1
+   Compiling font-types v0.12.4
+   Compiling color v0.3.3
+   Compiling thiserror-impl v2.0.20
+   Compiling zerocopy v0.8.56
+   Compiling peniko v0.6.1
+   Compiling read-fonts v0.41.0
+   Compiling log v0.4.34
+   Compiling vello_common v0.2.0
+   Compiling parking_lot_core v0.9.12
+   Compiling emath v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/emath)
+   Compiling ecolor v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/ecolor)
+   Compiling harfrust v0.12.0
+   Compiling ahash v0.8.12
+   Compiling parking_lot v0.12.5
+   Compiling vello_cpu v0.2.0
+   Compiling skrifa v0.44.0
+   Compiling either v1.18.0
+   Compiling unicode-properties v0.1.4
+   Compiling uuid v1.26.0
+   Compiling epaint_default_fonts v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/epaint_default_fonts)
+   Compiling epaint v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/epaint)
+   Compiling accesskit v0.25.1
+   Compiling itertools v0.15.0
+   Compiling egui v0.37.0 (/Users/frankorz/codes/rust/egui_docking/repo-ref/egui-release/crates/egui)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 25s
+────────────
+ Nextest run ID d9951c28-0873-4862-a3a8-2fcd993ef7c9 with nextest profile: default
+    Starting 12 tests across 1 binary (113 tests skipped)
+        PASS [   0.007s] ( 1/12) egui paint_audit::tests::append_and_suffix_set_preserve_the_existing_prefix
+        PASS [   0.005s] ( 2/12) egui paint_audit::tests::end_pass_drain_retains_old_payloads_until_the_check_finishes
+        PASS [   0.007s] ( 3/12) egui paint_audit::tests::galley_memo_lifetime_matches_same_owner_and_distinct_owner_comparisons
+        PASS [   0.006s] ( 4/12) egui paint_audit::tests::graphics_replacement_between_checks_invalidates_the_session_frontier
+        PASS [   0.007s] ( 5/12) egui paint_audit::tests::lazy_checks_preserve_nan_results_and_debug_panics
+        PASS [   0.007s] ( 6/12) egui paint_audit::tests::lengths_and_current_contents_keep_the_original_short_circuit_order
+        PASS [   0.008s] ( 7/12) egui paint_audit::tests::mutable_escapes_freeze_before_replace_swap_clone_transform_and_nested_mutation
+        PASS [   0.005s] ( 8/12) egui paint_audit::tests::paint_unwind_releases_before_without_leaving_a_live_registration
+        PASS [   0.006s] ( 9/12) egui paint_audit::tests::removed_payloads_drop_outside_the_lock_after_the_aggregate_is_updated
+        PASS [   0.021s] (10/12) egui paint_audit::tests::repeated_append_checks_compare_a_linear_number_of_shapes_after_fallback
+        PASS [   0.008s] (11/12) egui paint_audit::tests::text_galley_nan_is_compared_at_its_original_short_circuit_point
+        PASS [   0.006s] (12/12) egui paint_audit::tests::unavailable_begin_and_unknown_finish_precede_nan_equality
+────────────
+     Summary [   0.095s] 12 tests run: 12 passed, 113 skipped

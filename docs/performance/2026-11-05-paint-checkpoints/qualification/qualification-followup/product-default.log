@@ -1,0 +1,124 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+   Compiling dockspace_host_conformance v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace_host_conformance)
+   Compiling egui-dockspace-product-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-product-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.35s
+────────────
+ Nextest run ID 18a4e044-c3c8-4b33-9435-877a4ea1d147 with nextest profile: default
+    Starting 114 tests across 6 binaries
+        PASS [   0.029s] (  1/114) egui-dockspace-product-harness::layout_reset application_default_reset_preserves_semantic_identities_pane_data_and_rules
+        PASS [   0.042s] (  2/114) egui-dockspace-product-harness::manipulation_feedback escape_and_context_retirement_publish_one_terminal_without_focus_theft
+        PASS [   0.031s] (  3/114) egui-dockspace-product-harness::manipulation_feedback ordinary_release_delivers_once_independently_of_its_output_disposition
+        PASS [   0.033s] (  4/114) egui-dockspace-product-harness::manipulation_feedback programmatic_dock_back_and_close_cancel_an_active_transform_in_their_mutation
+        PASS [   0.024s] (  5/114) egui-dockspace-product-harness::product active_tab_drag_leaves_an_accessible_gap_and_paints_one_pointer_ghost
+        PASS [   0.047s] (  6/114) egui-dockspace-product-harness::product arrangement_lock::locked_overflow_menu_selects_hidden_tabs_without_reordering_or_closing
+        PASS [   0.060s] (  7/114) egui-dockspace-product-harness::product arrangement_lock::locked_rear_contained_tab_and_content_keep_focus_and_raise_without_geometry_changes
+        PASS [   0.007s] (  8/114) egui-dockspace-product-harness::product causal_settlement_timeout_names_the_missing_observations
+        PASS [   0.019s] (  9/114) egui-dockspace-product-harness::product changing_layer_coordinates_cancels_resize_before_interpreting_a_release
+        PASS [   0.017s] ( 10/114) egui-dockspace-product-harness::product close_commands::a_protected_group_disables_close_but_keeps_dock_back_available
+        PASS [   0.029s] ( 11/114) egui-dockspace-product-harness::product close_commands::closing_the_focused_group_or_last_tab_focuses_the_persistent_workspace
+        PASS [   0.008s] ( 12/114) egui-dockspace-product-harness::product close_commands::contained_group_close_deferred_allow_commits_once_through_the_public_facade
+        PASS [   0.007s] ( 13/114) egui-dockspace-product-harness::product close_commands::contained_group_close_veto_preserves_every_item_through_the_public_facade
+        PASS [   0.056s] ( 14/114) egui-dockspace-product-harness::product close_commands::contained_group_close_waits_for_application_approval_for_every_activation
+        PASS [   0.032s] ( 15/114) egui-dockspace-product-harness::product close_commands::contained_presentation_menu_close_group_requests_a_root_close_plan
+        PASS [   0.028s] ( 16/114) egui-dockspace-product-harness::product contained_move_resize_select_focus_and_dock_back_preserve_exact_ownership
+        PASS [   0.017s] ( 17/114) egui-dockspace-product-harness::product contained_panes_use_the_egui_window_fill
+        PASS [   0.119s] ( 18/114) egui-dockspace-product-harness::product contained_presentation_menu_exposes_and_executes_directional_commands
+        PASS [   0.028s] ( 19/114) egui-dockspace-product-harness::product contained_redock::full_surface_contained_tab_redocks_after_held_preview_is_presented
+        PASS [   0.027s] ( 20/114) egui-dockspace-product-harness::product contained_redock::full_surface_contained_tab_redocks_on_direct_release
+        PASS [   0.017s] ( 21/114) egui-dockspace-product-harness::product contained_resize_policy_denial_advertises_no_adjustment_actions
+        PASS [   0.020s] ( 22/114) egui-dockspace-product-harness::product contained_tab_redocks_through_an_ordinary_pane_basin_without_guide_aiming
+        PASS [   0.019s] ( 23/114) egui-dockspace-product-harness::product contained_title_drag_paints_a_full_window_preview_in_the_same_run
+        PASS [   0.082s] ( 24/114) egui-dockspace-product-harness::product declared_content_widgets_keep_their_click_edit_scroll_and_drag_input
+        PASS [   0.015s] ( 25/114) egui-dockspace-product-harness::product default_close_visuals_use_egui_interaction_strokes
+        PASS [   0.014s] ( 26/114) egui-dockspace-product-harness::product default_features_bring_contained_content_into_current_ready_bounds
+        PASS [   0.032s] ( 27/114) egui-dockspace-product-harness::product default_features_center_guide_merges_tabs
+        PASS [   0.016s] ( 28/114) egui-dockspace-product-harness::product default_features_click_selects_a_tab
+        PASS [   0.015s] ( 29/114) egui-dockspace-product-harness::product default_features_close_request_can_be_resolved
+        PASS [   0.021s] ( 30/114) egui-dockspace-product-harness::product default_features_contained_cardinal_resize_supports_accesskit_and_keyboard
+        PASS [   0.017s] ( 31/114) egui-dockspace-product-harness::product default_features_contained_chrome_exposes_focusable_accessibility_controls
+        PASS [   0.130s] ( 32/114) egui-dockspace-product-harness::product default_features_contained_resize_commits_a_painted_preview
+        PASS [   0.024s] ( 33/114) egui-dockspace-product-harness::product default_features_contained_title_moves_without_a_dock_target
+        PASS [   0.022s] ( 34/114) egui-dockspace-product-harness::product default_features_contained_title_redocks_through_the_canonical_guide
+        PASS [   0.029s] ( 35/114) egui-dockspace-product-harness::product default_features_discarded_preview_cannot_release_a_drag
+        PASS [   0.019s] ( 36/114) egui-dockspace-product-harness::product default_features_escape_cancels_one_active_drag_and_clears_preview
+        PASS [   0.018s] ( 37/114) egui-dockspace-product-harness::product default_features_expose_item_centric_contained_actions
+        PASS [   0.019s] ( 38/114) egui-dockspace-product-harness::product default_features_keyboard_navigation_keeps_tab_focus_with_selection
+        PASS [   0.019s] ( 39/114) egui-dockspace-product-harness::product default_features_ordinary_release_commits_before_its_output_is_presented
+        PASS [   0.018s] ( 40/114) egui-dockspace-product-harness::product default_features_overflow_menu_opens_and_selects_hidden_tab
+        PASS [   0.018s] ( 41/114) egui-dockspace-product-harness::product default_features_overflow_menu_supports_accesskit_and_keyboard
+        PASS [   0.050s] ( 42/114) egui-dockspace-product-harness::product default_features_paint_outer_guides_and_dock_each_edge
+        PASS [   0.008s] ( 43/114) egui-dockspace-product-harness::product default_features_programmatic_close_reports_stale_and_root_rejection
+        PASS [   0.006s] ( 44/114) egui-dockspace-product-harness::product default_features_programmatic_root_close_uses_the_product_facade
+        PASS [   0.012s] ( 45/114) egui-dockspace-product-harness::product default_features_render_a_ready_product_surface
+        PASS [   0.007s] ( 46/114) egui-dockspace-product-harness::product default_features_replace_policy_and_style_atomically
+        PASS [   0.023s] ( 47/114) egui-dockspace-product-harness::product default_features_splitter_junction_exposes_independent_axis_semantics
+        PASS [   0.024s] ( 48/114) egui-dockspace-product-harness::product default_features_splitter_junction_tracks_both_axes_and_commits_once
+        PASS [   0.018s] ( 49/114) egui-dockspace-product-harness::product default_features_splitter_supports_accesskit_and_keyboard_adjustment
+        PASS [   0.017s] ( 50/114) egui-dockspace-product-harness::product default_features_splitter_tracks_pointer_before_release
+        PASS [   0.016s] ( 51/114) egui-dockspace-product-harness::product default_features_tab_drag_reorders_across_multipass_discard
+        PASS [   0.019s] ( 52/114) egui-dockspace-product-harness::product default_features_unfinished_egui_run_cannot_settle_preview
+        PASS [   0.013s] ( 53/114) egui-dockspace-product-harness::product default_features_unowned_run_ui_is_capability_negative
+        PASS [   0.016s] ( 54/114) egui-dockspace-product-harness::product default_splitter_visuals_follow_egui_response_state
+        PASS [   0.017s] ( 55/114) egui-dockspace-product-harness::product default_visuals_follow_the_current_egui_theme
+        PASS [   0.016s] ( 56/114) egui-dockspace-product-harness::product disabled_ancestor_blocks_tab_strip_wheel_input
+        PASS [   0.015s] ( 57/114) egui-dockspace-product-harness::product disabled_ancestor_suppresses_splitter_keyboard_and_accesskit_adjustment
+        PASS [   0.017s] ( 58/114) egui-dockspace-product-harness::product disabled_ancestor_suppresses_tab_list_menu_semantics_and_keyboard
+        PASS [   0.015s] ( 59/114) egui-dockspace-product-harness::product disabled_tab_bar_is_paint_only_for_pointer_keyboard_and_accessibility
+        PASS [   0.014s] ( 60/114) egui-dockspace-product-harness::product disabled_ui_does_not_open_or_activate_presentation_commands
+        PASS [   0.018s] ( 61/114) egui-dockspace-product-harness::product disabled_ui_ignores_delayed_contained_accesskit_actions
+        PASS [   0.032s] ( 62/114) egui-dockspace-product-harness::product discarded_contained_move_preview_cannot_commit_release
+        PASS [   0.022s] ( 63/114) egui-dockspace-product-harness::product discarded_pane_focus_observation_cannot_complete_the_request
+        PASS [   0.032s] ( 64/114) egui-dockspace-product-harness::product discarded_presentation_menu_activation_commits_exactly_once
+        PASS [   0.020s] ( 65/114) egui-dockspace-product-harness::product docked_group_drag_to_a_non_target_region_rehomes_the_complete_root
+        PASS [   0.016s] ( 66/114) egui-dockspace-product-harness::product docked_tab_drag_released_outside_the_surface_cancels_without_floating
+        PASS [   0.020s] ( 67/114) egui-dockspace-product-harness::product docked_tab_drag_to_a_non_target_region_creates_contained_floating
+        PASS [   0.017s] ( 68/114) egui-dockspace-product-harness::product explicit_touch_cancel_terminates_the_host_gesture_and_allows_a_fresh_press
+        PASS [   0.021s] ( 69/114) egui-dockspace-product-harness::product frontmost_contained_title_uses_the_egui_open_window_visual
+        PASS [   0.018s] ( 70/114) egui-dockspace-product-harness::product fully_occluded_main_presentation_menu_is_accessibility_disabled
+        PASS [   0.021s] ( 71/114) egui-dockspace-product-harness::product fully_occluded_rear_contained_chrome_is_accessibility_disabled
+        PASS [   0.014s] ( 72/114) egui-dockspace-product-harness::product inactive_tab_close_hides_only_its_paint_until_emphasized
+        PASS [   0.022s] ( 73/114) egui-dockspace-product-harness::product interactive_text_pane_still_accepts_magnetic_tab_dock
+        PASS [   0.028s] ( 74/114) egui-dockspace-product-harness::product kittest_adjusts_splitter_junction_axes_independently
+        PASS [   0.025s] ( 75/114) egui-dockspace-product-harness::product kittest_reports_unowned_contained_drag_but_keeps_semantic_resize
+        PASS [   0.016s] ( 76/114) egui-dockspace-product-harness::product late_presentation_cannot_borrow_receivers_from_a_newer_unpresented_egui_pass
+        PASS [   0.016s] ( 77/114) egui-dockspace-product-harness::product official_wheel_does_not_promote_final_hover_to_delivery_authority
+        PASS [   0.081s] ( 78/114) egui-dockspace-product-harness::product open_main_presentation_menu_closes_immediately_when_anchor_becomes_occluded
+        PASS [   0.025s] ( 79/114) egui-dockspace-product-harness::product open_presentation_menu_closes_immediately_when_ui_becomes_disabled
+        PASS [   5.023s] ( 80/114) egui-dockspace-product-harness::product ordinary_content_widgets_accept_the_complete_magnetic_docking_matrix
+        PASS [   0.018s] ( 81/114) egui-dockspace-product-harness::product ordinary_pane_center_release_uses_magnetic_merge_without_guide_aiming
+        PASS [   0.019s] ( 82/114) egui-dockspace-product-harness::product output_marker_mismatch_rolls_back_the_update_and_preserves_the_previous_drag
+        PASS [   0.022s] ( 83/114) egui-dockspace-product-harness::product overflow_ownership::overflow_accesskit_scroll_releases_to_menu_selection_and_clipped_close_stays_inert
+        PASS [   0.023s] ( 84/114) egui-dockspace-product-harness::product overflow_ownership::overflow_pointer_scroll_releases_to_menu_selection_and_clipped_close_stays_inert
+        PASS [   0.017s] ( 85/114) egui-dockspace-product-harness::product owned_to_unowned_downgrade_cancels_without_a_stale_ghost_frame
+        PASS [   0.016s] ( 86/114) egui-dockspace-product-harness::product pane_focus_observation_settles_only_after_the_terminal_egui_pass
+        PASS [   0.033s] ( 87/114) egui-dockspace-product-harness::product partially_clipped_menu_row_scroll_into_view_reaches_core_before_interact_consumes_it
+        PASS [   0.034s] ( 88/114) egui-dockspace-product-harness::product presentation_menu_floats_and_docks_back_with_truthful_native_availability
+        PASS [   0.015s] ( 89/114) egui-dockspace-product-harness::product raw_pointer_close_request_is_not_replayed_after_an_output_hook_discard
+        PASS [   0.057s] ( 90/114) egui-dockspace-product-harness::product rear_contained_child_press_uses_event_time_position_even_when_released_in_the_same_frame
+        PASS [   0.023s] ( 91/114) egui-dockspace-product-harness::product rear_contained_selected_tab_press_raises_before_any_drag_motion
+        PASS [   0.024s] ( 92/114) egui-dockspace-product-harness::product rear_contained_title_drag_raises_without_a_bootstrap_mask
+        PASS [   0.024s] ( 93/114) egui-dockspace-product-harness::product rebinding_context_retires_the_old_pointer_owner_without_a_pending_output_report
+        PASS [   0.015s] ( 94/114) egui-dockspace-product-harness::product rejected_drag_keeps_the_source_visible_without_a_ghost
+        PASS [   0.049s] ( 95/114) egui-dockspace-product-harness::product same_packet_shift_release_cannot_commit_an_earlier_magnetic_target
+        PASS [   0.014s] ( 96/114) egui-dockspace-product-harness::product selected_tab_text_override_does_not_leak_into_close_interaction
+        PASS [   1.147s] ( 97/114) egui-dockspace-product-harness::product shared_l03_complete_magnetic_docking_matrix_maps_to_egui_product_semantics
+        PASS [   0.905s] ( 98/114) egui-dockspace-product-harness::product shared_l03_supported_magnetic_docking_maps_to_egui_product_semantics
+        PASS [   0.031s] ( 99/114) egui-dockspace-product-harness::product shared_local_interaction_scenario_maps_to_egui_product_headless_semantics
+        PASS [   0.042s] (100/114) egui-dockspace-product-harness::product shift_held_from_press_stays_suppressed_through_moves_without_modifiers
+        PASS [   0.057s] (101/114) egui-dockspace-product-harness::product shift_only_frames_clear_magnetic_preview_and_reenable_waits_for_real_motion
+        PASS [   0.008s] (102/114) egui-dockspace-product-harness::product stale_prepared_dock_action_is_inert_in_the_product_executor
+        PASS [   0.014s] (103/114) egui-dockspace-product-harness::product tab_accessibility_bounds_match_the_exact_drag_receiver
+        PASS [   0.029s] (104/114) egui-dockspace-product-harness::product tab_close_semantics_follow_the_exact_close_region_occlusion
+        PASS [   0.026s] (105/114) egui-dockspace-product-harness::product tab_drag_uses_egui_grab_cursors
+        PASS [   0.037s] (106/114) egui-dockspace-product-harness::product tab_list_menu_scrollbar_pointer_drag_updates_core_owned_scroll
+        PASS [   0.016s] (107/114) egui-dockspace-product-harness::product transformed_output_cannot_gain_pointer_authority_when_the_transform_is_removed
+        PASS [   0.019s] (108/114) egui-dockspace-product-harness::product unavailable_pane_focus_binding_terminates_without_guessing_a_target
+        PASS [   0.748s] (109/114) egui-dockspace-product-harness::product unknown_content_and_overlapping_undeclared_widgets_block_docking_hover
+        PASS [   0.016s] (110/114) egui-dockspace-product-harness::product unowned_run_ui_does_not_start_a_preview_qualified_tab_drag
+        PASS [   0.018s] (111/114) egui-dockspace-product-harness::product unowned_splitter_junction_advertises_only_available_semantic_controls
+        PASS [   0.018s] (112/114) egui-dockspace-product-harness::product unowned_splitter_junction_describes_one_enabled_axis_exactly
+        PASS [   0.021s] (113/114) egui-dockspace-product-harness::product unused_tab_bar_space_starts_the_exact_group_drag
+        PASS [   0.014s] (114/114) egui-dockspace-product-harness::product visual_override_wins_without_detaching_unspecified_theme_tokens
+────────────
+     Summary [  10.628s] 114 tests run: 114 passed, 0 skipped

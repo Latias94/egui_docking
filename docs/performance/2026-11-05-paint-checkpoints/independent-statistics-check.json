@@ -1,0 +1,90 @@
+{
+  "checked_fields": [
+    "product",
+    "panes",
+    "tabs_per_pane",
+    "scenario",
+    "sample",
+    "frames",
+    "passes",
+    "content_calls",
+    "visible_contents",
+    "vertices",
+    "indices",
+    "draw_commands"
+  ],
+  "conditions": [
+    {
+      "condition": "baseline-fork",
+      "raw_rows": 864,
+      "case_summaries": 18,
+      "samples_per_case": 48,
+      "nearest_rank_statistics_match": true,
+      "all_workload_counters_exact": true
+    },
+    {
+      "condition": "candidate-one",
+      "raw_rows": 864,
+      "case_summaries": 18,
+      "samples_per_case": 48,
+      "nearest_rank_statistics_match": true,
+      "all_workload_counters_exact": true
+    },
+    {
+      "condition": "candidate-two",
+      "raw_rows": 864,
+      "case_summaries": 18,
+      "samples_per_case": 48,
+      "nearest_rank_statistics_match": true,
+      "all_workload_counters_exact": true
+    },
+    {
+      "condition": "candidate-three",
+      "raw_rows": 864,
+      "case_summaries": 18,
+      "samples_per_case": 48,
+      "nearest_rank_statistics_match": true,
+      "all_workload_counters_exact": true
+    },
+    {
+      "condition": "candidate-four",
+      "raw_rows": 864,
+      "case_summaries": 18,
+      "samples_per_case": 48,
+      "nearest_rank_statistics_match": true,
+      "all_workload_counters_exact": true
+    },
+    {
+      "condition": "candidate-five",
+      "raw_rows": 864,
+      "case_summaries": 18,
+      "samples_per_case": 48,
+      "nearest_rank_statistics_match": true,
+      "all_workload_counters_exact": true
+    },
+    {
+      "condition": "candidate-six",
+      "raw_rows": 864,
+      "case_summaries": 18,
+      "samples_per_case": 48,
+      "nearest_rank_statistics_match": true,
+      "all_workload_counters_exact": true
+    },
+    {
+      "condition": "baseline-fork-lto",
+      "raw_rows": 864,
+      "case_summaries": 18,
+      "samples_per_case": 48,
+      "nearest_rank_statistics_match": true,
+      "all_workload_counters_exact": true
+    },
+    {
+      "condition": "candidate-seven",
+      "raw_rows": 864,
+      "case_summaries": 18,
+      "samples_per_case": 48,
+      "nearest_rank_statistics_match": true,
+      "all_workload_counters_exact": true
+    }
+  ]
+}

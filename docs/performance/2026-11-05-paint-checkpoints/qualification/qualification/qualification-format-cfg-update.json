@@ -1,0 +1,20 @@
+{
+  "changes": [
+    {
+      "path": "crates/egui_dockspace/src/output_proof.rs",
+      "before_sha256": "76c41db01d9963a68a3f7161fa5a7defeedb680f90acd9bdefa052c37d09d6bb",
+      "after_sha256": "c949df05de58e895b685c9784479513dce662c0b3029e2739f3676e17a7aff40"
+    },
+    {
+      "path": "integration/dockspace-host-harness/src/lib.rs",
+      "before_sha256": "533fff78873e4ede46028d8f3cc96fb38ef75c987ea58e19c9e2451c9b0460d6",
+      "after_sha256": "f68e054d4af3f5cbebad6f4d31d15e1799dfdff1c3e0d3cba9dd31c1b94d0bb9"
+    },
+    {
+      "path": "integration/dockspace-host-harness/tests/interaction_geometry_regressions.rs",
+      "before_sha256": "0e68dc9f7182867740117a2d2f0bf04abf5721e9b8916afd877762c2b4389513",
+      "after_sha256": "9dc7a68c12159fa58fc502f00ee95c49e9460e3c8723e828d7bee4d345861653"
+    }
+  ],
+  "reason": "Format two migrated host match arms with cargo fmt. Gate private unused paint-order helper behind same test/native cfg as its only caller, removing a new default-build dead_code warning. No executed production path changes. Final production binary will be rebuilt and checked against frozen qualified binary."
+}

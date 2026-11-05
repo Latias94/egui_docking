@@ -1,0 +1,29 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+   Doc-tests dockspace
+
+running 9 tests
+test crates/dockspace/src/runtime/paint.rs - runtime::paint::SurfacePaintPlan (line 1012) - compile fail ... ok
+test crates/dockspace/src/runtime/paint.rs - runtime::paint::SurfacePaintPlan (line 1006) - compile fail ... ok
+test crates/dockspace/src/lib.rs - (line 14) - compile fail ... ok
+test crates/dockspace/src/lib.rs - (line 34) - compile fail ... ok
+test crates/dockspace/src/lib.rs - (line 18) - compile fail ... ok
+test crates/dockspace/src/lib.rs - (line 10) - compile fail ... ok
+test crates/dockspace/src/lib.rs - (line 22) - compile fail ... ok
+test crates/dockspace/src/lib.rs - (line 30) - compile fail ... ok
+test crates/dockspace/src/lib.rs - (line 26) - compile fail ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+   Doc-tests dockspace_host_conformance
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests egui_dockspace
+
+running 1 test
+test crates/egui_dockspace/src/lib.rs - (line 5) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
