@@ -9097,3 +9097,61 @@ changed-update p50 remains 16.990–21.147 ms, above a 16.7 ms budget before
 application rendering and GPU work. Physical GUI qualification is not rerun.
 No remote publication is included; pre-existing CI and review changes remain
 outside these commits.
+
+## 2026-11-05 target comparison and guide rebinding qualification
+
+Implementation: `a3451df`, based on `133bf9c`.
+The [completed plan](plans/2026-11-05-target-comparison.md) and
+[complete measurements](performance/2026-11-05-target-comparison-results.md)
+preserve both full CSVs, all interleaved timing confirmation rows, exact commands,
+source and executable digests, and scope limits.
+
+Target ordering compares borrowed same-variant fields lexicographically and stops
+after the first difference. It preserves the explicit variant order, complete
+surface/root/node/gap field order and four-edge order, using the existing complete
+generational NodeId comparison. Equality, hashing, serialization and public types
+are unchanged. Guide validation still proves exact catalog Arc ownership before
+canonicalization. When availability changes no target, sorting retains the same
+owners and id/hit/preview snapshots, so guide rebinding is unnecessary. Any actual
+availability change retains the original complete rebind loop after COW, preserving
+old-output isolation and all preceding errors. No persistent cache or alternative
+graph, registry or authority is introduced.
+
+| Gate | Fresh result |
+| --- | --- |
+| Workspace, all features and targets | 2,088 passed |
+| Focused target ordering and guide-owner checks | Six passed |
+| Independent host, default | 292 passed, including all three 10,000-depth cases |
+| Independent host, persistence | 332 passed; already-covered depth binary filtered |
+| Official egui | 24 passed |
+| Product egui, default / persistence | 114 / 119 passed |
+| Fork-backed native, all features and targets | 556 passed; one pre-existing ignored case |
+| Workspace/native correctness and suspicious Clippy | Passed |
+| Strict core, egui and native documentation | Passed |
+| Workspace documentation examples | Ten passed |
+| Format, diff and renderer-neutral dependency checks | Passed |
+
+All Cargo work uses one build job and nextest one worker, reusing existing
+targets. Two independent crossed read-only reviews find no evidenced P1/P2.
+The frozen comparator verifies 84,681 pairs of 291 mixed identities, including
+node generations, all edges and stable-ID/gap boundaries. Mixed sorting and
+duplicate collapse retain the old order. Guide tests retain original owners and
+snapshots through reversed catalogs and repeated canonicalization; existing tests
+continue to cover stale-before-policy, exact COW rebinding and old outputs.
+
+Both complete runs use 12 samples and three warmups at 16/128/1,024 panes with
+full ordered recording, authority checks and unchanged output history. No Cargo
+build/test or CPU sampler started by this session overlaps the measured runs.
+At 1,024 panes changed-update p50 falls 1.8–2.5%; all active-heap metrics match
+exactly. Four extra timing-only processes in baseline/final/final/baseline order,
+with 48 samples and four warmups, show both final p50 values below both baselines
+for each changed workload. All 40 timing rows remain available, including visible
+baseline drift. This is a small local improvement, not a stable percentage bound.
+
+The complete sample retains selection/in-flight p95 regressions to
+27.123/53.645 ms and smaller-workload regressions. Measurement-change p50 reaches
+16.366 ms, but its maximum is 16.823 ms and other changed p50 values remain
+17.076–20.864 ms at 1,024 panes, before application rendering and GPU work. No
+general 16.7 ms frame budget or physical GUI qualification is established. No
+remote publication is included; pre-existing CI and review changes remain outside
+these commits.
