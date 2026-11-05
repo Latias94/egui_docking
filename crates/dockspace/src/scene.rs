@@ -1,6 +1,7 @@
 //! Type-state construction of immutable semantic docking scenes.
 
 mod lifecycle;
+mod paint_program;
 mod program;
 mod records;
 mod validation;
@@ -11,6 +12,7 @@ pub use self::lifecycle::{
     SurfaceInteractionProjection, SurfacePaintProjection, SurfacePlanScene, SurfaceScene,
     SurfaceSceneSet, SurfaceSceneStamp,
 };
+pub(crate) use self::paint_program::{paint_receiver_center, validate_surface_paint_program};
 use self::program::SurfaceProgram;
 #[cfg(test)]
 pub(crate) use self::program::SurfaceProgramBlock;

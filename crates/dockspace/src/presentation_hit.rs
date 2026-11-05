@@ -7,6 +7,7 @@
 
 use std::cmp::Ordering;
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use crate::drop_guide::{DropGuideClusterRecord, DropGuideScope};
 use crate::drop_target::{DropTargetKind, SceneLayerKey};
@@ -24,6 +25,7 @@ use crate::scene::{
 use crate::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use crate::{drop_guide::DropGuideClusterId, drop_target::DropTargetId};
 
+mod geometry_reuse;
 mod region_order;
 mod touch;
 
@@ -414,9 +416,7 @@ impl PresentationHitRegion {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresentationHitManifest {
     output: SurfacePresentationOutputTicket,
-    regions: Box<[PresentationHitRegion]>,
-    // Fragment rows refer only to this immutable manifest's region arena.
-    touch_regions: Box<[(usize, crate::geometry::LogicalRect)]>,
+    geometry: Arc<geometry_reuse::HitGeometry>,
 }
 
 impl PresentationHitManifest {
@@ -424,48 +424,30 @@ impl PresentationHitManifest {
         output: SurfacePresentationOutputTicket,
         plan: &PresentationPlan,
     ) -> Result<Self, SceneBuildError> {
+        Self::compile_with_order(output, plan, None)
+    }
+
+    fn compile_with_order(
+        output: SurfacePresentationOutputTicket,
+        plan: &PresentationPlan,
+        previous: Option<&geometry_reuse::HitGeometry>,
+    ) -> Result<Self, SceneBuildError> {
         debug_assert_eq!(output.surface(), plan.surface());
         let surface = plan.surface();
         let mut regions = Vec::new();
-
-        plan.visit_surface_program(|step| {
-            match step {
-                ResolvedSurfaceProgramStep::Operation { operation, .. } => {
-                    push_operation_regions(&mut regions, surface, operation);
-                }
-                ResolvedSurfaceProgramStep::PopupBackdrop(backdrop) => {
-                    push_popup_backdrop_region(&mut regions, surface, backdrop);
-                }
-                ResolvedSurfaceProgramStep::PopupMenu(menu) => {
-                    push_popup_menu_regions(&mut regions, surface, menu);
-                }
-                ResolvedSurfaceProgramStep::DropTarget(target) => {
-                    push_drop_target_region(&mut regions, surface, target);
-                }
-                ResolvedSurfaceProgramStep::DropGuide(cluster) => {
-                    push_guide_regions(&mut regions, surface, cluster);
-                }
-                ResolvedSurfaceProgramStep::RootBegin(_)
-                | ResolvedSurfaceProgramStep::RootEnd(_)
-                | ResolvedSurfaceProgramStep::DragPreview
-                | ResolvedSurfaceProgramStep::ContainedTransformPreview
-                | ResolvedSurfaceProgramStep::DragDecoration
-                | ResolvedSurfaceProgramStep::InteractionFeedback
-                | ResolvedSurfaceProgramStep::SurfaceEnd => {}
-            }
-            Ok::<(), Infallible>(())
-        })
-        .map_err(|_| SceneBuildError::InvalidSurfaceProgram { surface })?;
-
-        region_order::canonicalize_regions(&mut regions);
+        emit_regions(plan, &mut |region| regions.push(region))?;
+        let emission_rows = region_order::canonicalize_reusing_order(&mut regions, previous);
         debug_assert!(regions.windows(2).all(|pair| pair[0].id() != pair[1].id()));
         let mut touch_regions = touch::compile(plan, &regions);
         compact_region_rows(&mut regions, &mut touch_regions)
             .map_err(|()| SceneBuildError::InvalidSurfaceProgram { surface })?;
         Ok(Self {
             output,
-            regions: regions.into_boxed_slice(),
-            touch_regions: touch_regions.into_boxed_slice(),
+            geometry: Arc::new(geometry_reuse::HitGeometry {
+                emission_rows: (emission_rows.len() == regions.len()).then_some(emission_rows),
+                regions: regions.into_boxed_slice(),
+                touch_regions: touch_regions.into_boxed_slice(),
+            }),
         })
     }
 
@@ -481,21 +463,23 @@ impl PresentationHitManifest {
     /// carried by [`PresentationHitRegion::stack`].
     #[must_use]
     pub fn regions(&self) -> &[PresentationHitRegion] {
-        &self.regions
+        &self.geometry.regions
     }
 
     /// Returns one exact region by stable semantic identity.
     #[must_use]
     pub fn region(&self, id: PresentationHitRegionId) -> Option<&PresentationHitRegion> {
-        self.region_index(id).map(|index| &self.regions[index])
+        self.region_index(id)
+            .map(|index| &self.geometry.regions[index])
     }
 
     fn region_index(&self, id: PresentationHitRegionId) -> Option<usize> {
-        self.regions
-            .binary_search_by_key(&id, |region| {
+        self.geometry
+            .regions
+            .binary_search_by(|region| {
                 #[cfg(test)]
                 crate::drop_resolver::structural_work::record_presentation_hit_lookup_comparison();
-                region.id()
+                region.id.cmp(&id)
             })
             .ok()
     }
@@ -537,7 +521,7 @@ impl PresentationHitManifest {
         let Some(index) = self.region_index(id) else {
             return false;
         };
-        self.region_contains(index, &self.regions[index], point, device)
+        self.region_contains(index, &self.geometry.regions[index], point, device)
     }
 
     fn region_contains(
@@ -549,8 +533,11 @@ impl PresentationHitManifest {
     ) -> bool {
         if device == PointerDeviceKind::Touch && touch::replaces(region.id().kind()) {
             // An empty replacement stays empty; it never falls back to mouse geometry.
-            let first = self.touch_regions.partition_point(|(row, _)| *row < index);
-            self.touch_regions[first..]
+            let first = self
+                .geometry
+                .touch_regions
+                .partition_point(|(row, _)| *row < index);
+            self.geometry.touch_regions[first..]
                 .iter()
                 .take_while(|(row, _)| *row == index)
                 .any(|(_, rect)| rect.contains(point))
@@ -566,10 +553,49 @@ impl PresentationHitManifest {
         suppression: PresentationHitSuppression,
         device: PointerDeviceKind,
     ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
-        resolve_exclusive_matching(&self.regions, lane, point, suppression, |index, region| {
-            self.region_contains(index, region, point, device)
-        })
+        resolve_exclusive_matching(
+            &self.geometry.regions,
+            lane,
+            point,
+            suppression,
+            |index, region| self.region_contains(index, region, point, device),
+        )
     }
+}
+
+fn emit_regions(
+    plan: &PresentationPlan,
+    regions: &mut impl FnMut(PresentationHitRegion),
+) -> Result<(), SceneBuildError> {
+    let surface = plan.surface();
+    plan.visit_surface_program(|step| {
+        match step {
+            ResolvedSurfaceProgramStep::Operation { operation, .. } => {
+                push_operation_regions(regions, surface, operation);
+            }
+            ResolvedSurfaceProgramStep::PopupBackdrop(backdrop) => {
+                push_popup_backdrop_region(regions, surface, backdrop);
+            }
+            ResolvedSurfaceProgramStep::PopupMenu(menu) => {
+                push_popup_menu_regions(regions, surface, menu);
+            }
+            ResolvedSurfaceProgramStep::DropTarget(target) => {
+                push_drop_target_region(regions, surface, target);
+            }
+            ResolvedSurfaceProgramStep::DropGuide(cluster) => {
+                push_guide_regions(regions, surface, cluster);
+            }
+            ResolvedSurfaceProgramStep::RootBegin(_)
+            | ResolvedSurfaceProgramStep::RootEnd(_)
+            | ResolvedSurfaceProgramStep::DragPreview
+            | ResolvedSurfaceProgramStep::ContainedTransformPreview
+            | ResolvedSurfaceProgramStep::DragDecoration
+            | ResolvedSurfaceProgramStep::InteractionFeedback
+            | ResolvedSurfaceProgramStep::SurfaceEnd => {}
+        }
+        Ok::<(), Infallible>(())
+    })
+    .map_err(|_| SceneBuildError::InvalidSurfaceProgram { surface })
 }
 
 // Touch rows arrive in input-region order. Compact both inventories together so
@@ -609,7 +635,7 @@ fn compact_region_rows(
 }
 
 fn push_operation_regions(
-    regions: &mut Vec<PresentationHitRegion>,
+    regions: &mut impl FnMut(PresentationHitRegion),
     surface: SurfaceId,
     operation: ResolvedSurfaceProgramOperation<'_>,
 ) {
@@ -866,7 +892,7 @@ fn push_operation_regions(
 }
 
 fn push_popup_backdrop_region(
-    regions: &mut Vec<PresentationHitRegion>,
+    regions: &mut impl FnMut(PresentationHitRegion),
     surface: SurfaceId,
     backdrop: &TabListMenuBackdropRecord,
 ) {
@@ -891,7 +917,7 @@ fn push_popup_backdrop_region(
 }
 
 fn push_popup_menu_regions(
-    regions: &mut Vec<PresentationHitRegion>,
+    regions: &mut impl FnMut(PresentationHitRegion),
     surface: SurfaceId,
     menu: &TabListMenuRecord,
 ) {
@@ -958,7 +984,7 @@ fn push_popup_menu_regions(
 }
 
 fn push_guide_regions(
-    regions: &mut Vec<PresentationHitRegion>,
+    regions: &mut impl FnMut(PresentationHitRegion),
     surface: SurfaceId,
     cluster: &DropGuideClusterRecord,
 ) {
@@ -1347,19 +1373,19 @@ pub(crate) enum PresentationHitResolutionError {
 }
 
 fn push_region_if_hittable(
-    regions: &mut Vec<PresentationHitRegion>,
+    regions: &mut impl FnMut(PresentationHitRegion),
     region: PresentationHitRegion,
 ) {
     let rect = region.hit().rect();
     // A clipped base band may be empty while its touch footprint is visible.
     // Compilation removes the identity if neither profile can hit it.
     if (rect.width() > 0.0 && rect.height() > 0.0) || touch::replaces(region.id().kind()) {
-        regions.push(region);
+        regions(region);
     }
 }
 
 fn push_drop_target_region(
-    regions: &mut Vec<PresentationHitRegion>,
+    regions: &mut impl FnMut(PresentationHitRegion),
     surface: SurfaceId,
     target: &crate::drop_target::DropTargetRecord,
 ) {

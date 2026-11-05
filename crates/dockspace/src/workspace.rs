@@ -188,6 +188,32 @@ impl WorkspaceIndex {
         }
     }
 
+    pub(crate) fn capture_item_source(
+        &self,
+        workspace: &Workspace,
+        version: WorkspaceVersion,
+        root: RootId,
+        tabs: NodeId,
+        item: ItemId,
+    ) -> Result<ItemSource, CommandError> {
+        let indexed =
+            self.capture_reference(workspace, version, root, tabs, ReferenceRole::Source)?;
+        match workspace.node(tabs) {
+            Some(Node::Tabs { items, .. }) if items.contains(&item) => Ok(ItemSource {
+                root,
+                tabs,
+                item,
+                fingerprint: indexed.fingerprint.clone(),
+            }),
+            Some(Node::Tabs { .. }) => Err(CommandError::ItemNotInTabs { tabs, item }),
+            Some(Node::Split { .. }) => Err(CommandError::NodeIsNotTabs { node: tabs }),
+            None => Err(CommandError::MissingNode {
+                role: ReferenceRole::Source,
+                node: tabs,
+            }),
+        }
+    }
+
     pub(crate) fn capture_complete_root_source(
         &self,
         workspace: &Workspace,

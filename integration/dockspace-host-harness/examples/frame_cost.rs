@@ -243,8 +243,8 @@ impl RecordingSink {
                     Step::DragPreview(preview) => {
                         sink.records.push(OwnedRecord::Preview(preview.visual()));
                     }
-                    Step::DropTarget(receiver) => {
-                        sink.records.push(OwnedRecord::Receiver(receiver))
+                    Step::DropTarget(target) => {
+                        sink.records.push(OwnedRecord::Receiver(target.receiver()))
                     }
                     Step::DropGuide {
                         structural,

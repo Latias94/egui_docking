@@ -1,4 +1,4 @@
-use super::canonicalize_regions;
+use super::{HitGeometry, canonicalize_regions, canonicalize_reusing_order};
 use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::hit_region::HitRegion;
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
@@ -69,9 +69,21 @@ fn endpoint_bits(rect: LogicalRect) -> [u64; 4] {
 }
 
 fn assert_matches_record_sort(mut actual: Vec<PresentationHitRegion>) {
+    let emitted = actual.clone();
     let mut expected = actual.clone();
     expected.sort_unstable_by_key(|region| region.id());
-    canonicalize_regions(&mut actual);
+    let emission_rows = canonicalize_regions(&mut actual);
+    for (emitted, &row) in emitted.iter().zip(&emission_rows) {
+        assert_eq!(*emitted, actual[row]);
+        assert_eq!(
+            endpoint_bits(emitted.hit.rect()),
+            endpoint_bits(actual[row].hit.rect())
+        );
+        assert_eq!(
+            endpoint_bits(emitted.anchor),
+            endpoint_bits(actual[row].anchor)
+        );
+    }
     assert_eq!(actual, expected);
     for (actual, expected) in actual.iter().zip(&expected) {
         assert_eq!(
@@ -178,4 +190,45 @@ fn mixed_full_identities_and_junction_arms_match_record_sort_bitwise() {
         20,
     ));
     assert_matches_record_sort(regions);
+}
+
+#[test]
+fn exact_identity_replay_reuses_order_while_preserving_changed_geometry_bits() {
+    let mut previous_regions = (0..129).map(pane).collect::<Vec<_>>();
+    previous_regions.rotate_left(7);
+    let emitted = previous_regions.clone();
+    let emission_rows = canonicalize_regions(&mut previous_regions);
+    let mut previous = HitGeometry {
+        regions: previous_regions.into_boxed_slice(),
+        touch_regions: Box::new([]),
+        emission_rows: Some(emission_rows),
+    };
+    for variant in 0..5 {
+        let mut actual = emitted.clone();
+        for (index, region) in actual.iter_mut().enumerate() {
+            region.hit = HitRegion::new(geometry(index + 1));
+            region.anchor = geometry(index + 2);
+        }
+        match variant {
+            0 => {}
+            1 => actual[7].id = pane(500).id,
+            2 => {
+                actual.pop();
+            }
+            3 => actual.reverse(),
+            _ => previous.emission_rows = None,
+        }
+        let mut expected = actual.clone();
+        let expected_rows = canonicalize_regions(&mut expected);
+        let rows = canonicalize_reusing_order(&mut actual, Some(&previous));
+        assert_eq!(rows, expected_rows);
+        assert_eq!(actual, expected);
+        for (actual, expected) in actual.iter().zip(&expected) {
+            assert_eq!(
+                endpoint_bits(actual.hit.rect()),
+                endpoint_bits(expected.hit.rect())
+            );
+            assert_eq!(endpoint_bits(actual.anchor), endpoint_bits(expected.anchor));
+        }
+    }
 }

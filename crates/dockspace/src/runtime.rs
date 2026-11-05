@@ -124,7 +124,7 @@ pub use paint::{
     DockspacePresentationMenuAnchorKind, DockspacePreviewVisual, DockspaceReceiverDescriptor,
     DockspaceReceiverRole, DockspaceSemanticOutput, DockspaceVisualId, DockspaceVisualKind,
     DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
-    DropGuidePaintRecord, DropGuideTargetPaintRecord, PanePaintRecord,
+    DropGuidePaintRecord, DropGuideTargetPaintRecord, DropTargetPaintRecord, PanePaintRecord,
     PresentationCommandPaintRecord, PresentationMenuAnchorPaintRecord, SplitterJunctionPaintRecord,
     SplitterPaintRecord, SurfacePaintDisposition, SurfacePaintPlan, SurfacePaintProgramOperation,
     SurfacePaintProgramRoot, SurfacePaintProgramRootKind, SurfacePaintProgramStep,

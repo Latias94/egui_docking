@@ -9,13 +9,15 @@ use super::*;
 /// Keeping the manifest, transient tab-strip state, compiled scene, and
 /// presentation ledger together prevents callers from publishing one of these
 /// authorities without advancing the others through the engine reducer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(super) struct PresentationAuthorityState {
     /// Non-rollbackable attempt and output allocation shared by all candidates.
     allocation_issuer: Arc<PresentationAllocationIssuer>,
     pub(super) presentation_config: DockPresentationConfig,
     pub(super) presentation_config_revision: PresentationConfigRevision,
     pub(super) presentation_requirements: SceneRequirementManifest,
+    /// Weak provenance of the current index; never retains an old complete workspace.
+    workspace_index_source: std::sync::Weak<Workspace>,
     pub(super) tab_strip_states: TabStripStateStore,
     pub(super) surface_semantic_snapshots: BTreeMap<crate::ids::SurfaceId, SurfaceSemanticSnapshot>,
     /// Current per-surface revisions. Changed/new surfaces use the existing
@@ -27,10 +29,53 @@ pub(super) struct PresentationAuthorityState {
     pub(super) last_presentation_output_serial: PresentationOutputSerial,
 }
 
+impl PartialEq for PresentationAuthorityState {
+    fn eq(&self, other: &Self) -> bool {
+        // Cache provenance affects only index reuse, not semantic authority.
+        let Self {
+            allocation_issuer,
+            presentation_config,
+            presentation_config_revision,
+            presentation_requirements,
+            workspace_index_source: _,
+            tab_strip_states,
+            surface_semantic_snapshots,
+            surface_requirement_revisions,
+            scene,
+            presentation,
+            last_presentation_output_serial,
+        } = self;
+        let Self {
+            allocation_issuer: other_allocation_issuer,
+            presentation_config: other_presentation_config,
+            presentation_config_revision: other_presentation_config_revision,
+            presentation_requirements: other_presentation_requirements,
+            workspace_index_source: _,
+            tab_strip_states: other_tab_strip_states,
+            surface_semantic_snapshots: other_surface_semantic_snapshots,
+            surface_requirement_revisions: other_surface_requirement_revisions,
+            scene: other_scene,
+            presentation: other_presentation,
+            last_presentation_output_serial: other_last_presentation_output_serial,
+        } = other;
+        allocation_issuer == other_allocation_issuer
+            && presentation_config == other_presentation_config
+            && presentation_config_revision == other_presentation_config_revision
+            && presentation_requirements == other_presentation_requirements
+            && tab_strip_states == other_tab_strip_states
+            && surface_semantic_snapshots == other_surface_semantic_snapshots
+            && surface_requirement_revisions == other_surface_requirement_revisions
+            && scene == other_scene
+            && presentation == other_presentation
+            && last_presentation_output_serial == other_last_presentation_output_serial
+    }
+}
+
 impl PresentationAuthorityState {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         authority_domain: EngineAuthorityDomainId,
+        workspace_index_source: &Arc<Workspace>,
         presentation_config: DockPresentationConfig,
         presentation_config_revision: PresentationConfigRevision,
         presentation_requirements: SceneRequirementManifest,
@@ -45,6 +90,7 @@ impl PresentationAuthorityState {
             presentation_config,
             presentation_config_revision,
             presentation_requirements,
+            workspace_index_source: Arc::downgrade(workspace_index_source),
             tab_strip_states,
             surface_semantic_snapshots,
             surface_requirement_revisions,
@@ -52,6 +98,21 @@ impl PresentationAuthorityState {
             presentation,
             last_presentation_output_serial: PresentationOutputSerial::default(),
         }
+    }
+
+    pub(super) fn workspace_index_for(
+        &self,
+        workspace: &Arc<Workspace>,
+        version: WorkspaceVersion,
+    ) -> Option<&crate::workspace::WorkspaceIndex> {
+        let index = self.presentation_requirements.workspace_index();
+        // A new publication or Arc::make_mut dissociates this allocation even
+        // before its revision advances. A miss must retain live validation.
+        (self
+            .workspace_index_source
+            .ptr_eq(&Arc::downgrade(workspace))
+            && index.version() == version)
+            .then_some(index)
     }
 
     pub(super) fn issue_host_presentation_attempt(
@@ -416,6 +477,7 @@ impl DockEngine {
             .finalize(tab_strip_states.popup_requirement())
             .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
         self.presentation_authority.presentation_requirements = requirements;
+        self.presentation_authority.workspace_index_source = Arc::downgrade(&self.workspace);
         self.presentation_authority.tab_strip_states = tab_strip_states;
         let changed_stacking = surface_semantic_snapshots
             .iter()

@@ -299,6 +299,62 @@ fn dense_touch_overlap_uses_the_bounded_exhaustive_fallback() {
     assert!(matches!(&neighbors, TouchNeighbors::Dense(all) if all.len() == allocations.len()));
 }
 
+#[test]
+fn disjoint_long_rows_prune_both_axes_without_quadratic_chrome_pairs() {
+    for count in [256, 1_024] {
+        let regions = (0..count)
+            .map(|index| {
+                region(
+                    PresentationHitRegionKind::SplitterHandle(SplitterSceneId {
+                        root: RootId::new(1),
+                        split: node(),
+                        index,
+                    }),
+                    rect(
+                        0.0,
+                        f64::from(u32::try_from(index).unwrap()) * 4.0,
+                        5_000.0,
+                        1.0,
+                    ),
+                    0,
+                    PresentationHitPrecedence::SplitterHandle,
+                )
+            })
+            .collect::<Vec<_>>();
+        let allocations = regions
+            .iter()
+            .enumerate()
+            .map(|(region_index, region)| TouchAllocation {
+                region_index,
+                region,
+                anchor: region.hit().rect(),
+                expanded: region.hit().rect(),
+                fragments: vec![region.hit().rect()],
+            })
+            .collect::<Vec<_>>();
+        let protected = regions
+            .iter()
+            .map(|region| {
+                let bounds = region.hit().rect();
+                (
+                    SceneLayerKey::new(0),
+                    rect(0.0, bounds.y() + 2.0, 5_000.0, 1.0),
+                )
+            })
+            .collect::<Vec<_>>();
+        NEIGHBOR_BOUNDS_VISITS.set(0);
+        let neighbors = TouchNeighbors::build(&allocations, &protected);
+        assert!(matches!(neighbors, TouchNeighbors::Sparse(_)));
+        for index in 0..count {
+            assert!(neighbors.for_region(index).is_empty());
+        }
+        assert!(NEIGHBOR_BOUNDS_VISITS.get() < count * 80);
+    }
+    assert!(
+        matches!(TouchNeighbors::build(&[], &[]), TouchNeighbors::Sparse(rows) if rows.is_empty())
+    );
+}
+
 fn rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
     LogicalRect::new(x, y, width, height).expect("test rectangle is valid")
 }
@@ -415,8 +471,11 @@ fn manifest(
             PresentationOutputSerial::new_for_test(1),
             SurfaceSceneStamp::new(ticket(), SurfaceSceneRevision::new(1)),
         ),
-        regions: regions.into_boxed_slice(),
-        touch_regions,
+        geometry: std::sync::Arc::new(super::super::geometry_reuse::HitGeometry {
+            regions: regions.into_boxed_slice(),
+            touch_regions,
+            emission_rows: None,
+        }),
     }
 }
 

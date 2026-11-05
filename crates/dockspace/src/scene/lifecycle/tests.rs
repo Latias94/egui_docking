@@ -178,6 +178,158 @@ fn raw_interaction_authority(
 }
 
 #[test]
+fn shared_hit_geometry_keeps_new_output_and_rejects_an_old_receiver_receipt() {
+    use crate::pointer_journal::{PointerEdgeSequence, PointerInputLease, PointerProviderScope};
+    use crate::pointer_receiver::{
+        PointerReceiverAttemptIssuer, PointerReceiverCandidateRoster, PointerReceiverCandidateSpec,
+        PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
+        PointerReceiverDeliveryRequest, PointerReceiverObservation, PointerReceiverPresentedOutput,
+        PointerReceiverProbeReceipt, PointerReceiverReceiptBatch,
+        PointerReceiverReceiptValidationError, PresentedPointerReceiverObservation,
+    };
+    use crate::scene::{SurfaceProgramRootOperation, SurfaceProgramRootPresentation};
+
+    fn plan(ticket: SurfaceMeasurementTicket, selected: u64) -> PresentationPlan {
+        let bounds = LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap();
+        let mut plan = PresentationPlan::from_measurements(
+            ticket,
+            PopupPlaneRequirement::default(),
+            bounds,
+            None,
+        );
+        let pane = PaneSceneId {
+            root: RootId::new(1),
+            tabs: NodeId::default(),
+        };
+        plan.push_pane_record(PaneRecord::new(
+            pane,
+            bounds,
+            bounds,
+            Some(ItemId::new(selected)),
+            SceneLayerKey::surface_base(),
+        ));
+        plan.begin_surface_program_root(pane.root, SurfaceProgramRootPresentation::Main)
+            .unwrap();
+        plan.push_surface_program_root_operation(SurfaceProgramRootOperation::Pane(pane))
+            .unwrap();
+        plan.end_surface_program_root(pane.root).unwrap();
+        plan.finish_surface_program().unwrap();
+        plan.link_surface_program().unwrap();
+        plan
+    }
+
+    let surface = SurfaceId::new(10);
+    let initial = manifest(surface, 0, 0);
+    let ticket = initial.surface(surface).unwrap().ticket();
+    let mut scenes = SurfaceSceneSet::new(&initial).unwrap();
+    let (_, old_output) = scenes
+        .install_ready(
+            plan(ticket, 1),
+            headless_capture(),
+            ticket.authority_domain(),
+            PresentationOutputSerial::new_for_test(1),
+        )
+        .unwrap();
+    acknowledge(&mut scenes, old_output, 1).unwrap();
+    let old = scenes.ready_surface(surface).unwrap().clone();
+    let projection = scenes.interaction_projection(surface).unwrap();
+    let region = old.hit_manifest().regions()[0].id();
+    let old_delivery =
+        PointerReceiverDelivery::new(projection, PointerReceiverDeliveryDisposition::Dock(region))
+            .unwrap();
+    let issuer = PointerReceiverAttemptIssuer::new(ticket.authority_domain());
+    let roster = PointerReceiverCandidateRoster::freeze(
+        issuer
+            .issue(PointerInputLease::new(
+                ticket.authority_domain(),
+                1,
+                PointerProviderScope::DesktopGlobal,
+            ))
+            .unwrap(),
+        vec![PointerReceiverCandidateSpec::delivery(
+            PointerEdgeSequence::new(1),
+            Some(surface),
+            Some(old.plan().bounds().min()),
+            PointerReceiverDeliveryRequest::Click,
+        )],
+        vec![PointerReceiverPresentedOutput::from_interaction(projection)],
+    )
+    .unwrap();
+    let batch = PointerReceiverReceiptBatch::new([roster.candidates()[0].receipt(
+        PointerReceiverObservation::Presented(
+            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
+                old_delivery,
+            )])
+            .unwrap(),
+        ),
+    )])
+    .unwrap();
+    roster.validate(batch.clone()).unwrap();
+
+    let (_, new_output) = scenes
+        .install_ready(
+            plan(ticket, 2),
+            headless_capture(),
+            ticket.authority_domain(),
+            PresentationOutputSerial::new_for_test(2),
+        )
+        .unwrap();
+    let candidate = scenes
+        .surface(surface)
+        .unwrap()
+        .ready()
+        .unwrap()
+        .candidate();
+    assert_ne!(new_output, old_output);
+    assert_eq!(candidate.hit_manifest().output(), new_output);
+    assert_eq!(candidate.semantic_manifest().output(), new_output);
+    assert_eq!(
+        candidate.hit_manifest().regions().as_ptr(),
+        old.hit_manifest().regions().as_ptr()
+    );
+    acknowledge(&mut scenes, new_output, 2).unwrap();
+    let current = scenes.interaction_projection(surface).unwrap();
+    let outputs = BTreeMap::from([(
+        surface,
+        PointerReceiverPresentedOutput::from_interaction(current),
+    )]);
+    assert!(matches!(
+        roster.validate_against_presented_outputs(batch, &outputs),
+        Err(PointerReceiverReceiptValidationError::PresentationAuthorityNotCurrent {
+            submitted_output, current_output: Some(current), ..
+        }) if submitted_output == old_output && current == new_output
+    ));
+
+    let changed = manifest(surface, 1, 1);
+    scenes.reconcile_manifest(&changed).unwrap();
+    assert!(matches!(
+        scenes.surface(surface),
+        Some(SurfaceScene::Stale(_))
+    ));
+    let ticket = changed.surface(surface).unwrap().ticket();
+    let (_, rebound_output) = scenes
+        .install_ready(
+            plan(ticket, 2),
+            headless_capture(),
+            ticket.authority_domain(),
+            PresentationOutputSerial::new_for_test(3),
+        )
+        .unwrap();
+    let candidate = scenes
+        .surface(surface)
+        .unwrap()
+        .ready()
+        .unwrap()
+        .candidate();
+    assert_ne!(rebound_output, new_output);
+    assert_eq!(candidate.hit_manifest().output(), rebound_output);
+    assert_eq!(
+        candidate.hit_manifest().regions().as_ptr(),
+        old.hit_manifest().regions().as_ptr()
+    );
+}
+
+#[test]
 fn unpainted_projection_cannot_hit_or_survive_requirement_invalidation() {
     let surface = SurfaceId::new(11);
     let initial = manifest(surface, 0, 0);

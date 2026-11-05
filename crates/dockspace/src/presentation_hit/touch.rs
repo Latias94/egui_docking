@@ -1,12 +1,15 @@
 //! Private device-specific hit fragments retained with one exact output.
 
-use crate::drop_target::SceneLayerKey;
+use crate::drop_target::{DropOcclusionRecord, SceneLayerKey};
 use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::graph::Axis;
 use crate::scene::{
-    ContainedResizeDirection, PresentationPlan, SplitterJunctionId, SplitterRecord, SplitterSceneId,
+    ContainedRecord, ContainedResizeDirection, PresentationLayoutFacts,
+    PresentationMenuAnchorRecord, PresentationPlan, SplitterJunctionId, SplitterRecord,
+    SplitterSceneId, TabBarRecord,
 };
 
+use super::geometry_reuse::rect_bits;
 use super::{PresentationHitRegion, PresentationHitRegionKind};
 
 #[cfg(test)]
@@ -18,6 +21,7 @@ thread_local! {
     static FRAGMENT_BUFFER_CUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static REFERENCE_SUBTRACTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static REFERENCE_LINEAR_SPLITTER_LOOKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static NEIGHBOR_BOUNDS_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 pub(super) const fn replaces(kind: PresentationHitRegionKind) -> bool {
@@ -29,11 +33,110 @@ pub(super) const fn replaces(kind: PresentationHitRegionKind) -> bool {
     )
 }
 
+// Both compilation and reuse consume this exact input view. New touch geometry
+// dependencies belong here and in same_inputs; output tickets never belong here.
+#[derive(Clone, Copy)]
+struct TouchContext<'a> {
+    bounds: LogicalRect,
+    facts: Option<&'a PresentationLayoutFacts>,
+    splitters: &'a [SplitterRecord],
+    occlusions: &'a [DropOcclusionRecord],
+    bars: &'a [TabBarRecord],
+    contained: &'a [ContainedRecord],
+    anchors: &'a [PresentationMenuAnchorRecord],
+}
+
+impl<'a> TouchContext<'a> {
+    fn new(plan: &'a PresentationPlan) -> Self {
+        Self {
+            bounds: plan.bounds(),
+            facts: plan.layout_facts(),
+            splitters: plan.splitter_records(),
+            occlusions: plan.drop_occlusions(),
+            bars: plan.tab_bar_records(),
+            contained: plan.contained_records(),
+            anchors: plan.presentation_menu_anchor_records(),
+        }
+    }
+
+    fn protected_chrome(self) -> impl Iterator<Item = (SceneLayerKey, LogicalRect)> + 'a {
+        self.bars
+            .iter()
+            .map(|bar| (bar.layer(), bar.bounds()))
+            .chain(
+                self.contained
+                    .iter()
+                    .map(|contained| (contained.layer(), contained.title_bounds())),
+            )
+            .chain(
+                self.anchors.iter().filter_map(|anchor| {
+                    anchor.ready_bounds().map(|bounds| (anchor.layer(), bounds))
+                }),
+            )
+    }
+
+    fn same_inputs(self, other: Self) -> bool {
+        let same_facts = match (self.facts, other.facts) {
+            (Some(left), Some(right)) => {
+                let extents = |facts: &PresentationLayoutFacts| {
+                    let config = facts.config();
+                    [
+                        config.touch_resize_hit_extent(),
+                        config.splitter_hit_extent(),
+                        config.floating_resize_extent(),
+                    ]
+                    .map(f64::to_bits)
+                };
+                extents(left) == extents(right)
+                    && left
+                        .roots()
+                        .map(|root| (root.root(), rect_bits(root.bounds())))
+                        .eq(right
+                            .roots()
+                            .map(|root| (root.root(), rect_bits(root.bounds()))))
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        same_facts
+            && rect_bits(self.bounds) == rect_bits(other.bounds)
+            && self
+                .splitters
+                .iter()
+                .map(|splitter| {
+                    (*splitter.id(), splitter.axis(), rect_bits(splitter.draw_bounds()))
+                })
+                .eq(other.splitters.iter().map(|splitter| {
+                    (*splitter.id(), splitter.axis(), rect_bits(splitter.draw_bounds()))
+                }))
+            // Order and complete identities preserve first-match unclipped bounds
+            // and the exact sequence of occlusion subtraction.
+            && self
+                .occlusions
+                .iter()
+                .map(|record| (record.floating(), record.layer(), rect_bits(record.region().rect())))
+                .eq(other.occlusions.iter().map(|record| {
+                    (record.floating(), record.layer(), rect_bits(record.region().rect()))
+                }))
+            && self
+                .protected_chrome()
+                .map(|(layer, bounds)| (layer, rect_bits(bounds)))
+                .eq(other
+                    .protected_chrome()
+                    .map(|(layer, bounds)| (layer, rect_bits(bounds))))
+    }
+}
+
+pub(super) fn same_context(left: &PresentationPlan, right: &PresentationPlan) -> bool {
+    TouchContext::new(left).same_inputs(TouchContext::new(right))
+}
+
 pub(super) fn compile(
     plan: &PresentationPlan,
     regions: &[PresentationHitRegion],
 ) -> Vec<(usize, LogicalRect)> {
-    let Some(facts) = plan.layout_facts() else {
+    let context = TouchContext::new(plan);
+    let Some(facts) = context.facts else {
         // Synthetic plans have no exact configuration authority. Fail closed.
         return Vec::new();
     };
@@ -44,8 +147,8 @@ pub(super) fn compile(
     let contained_extent = config
         .touch_resize_hit_extent()
         .max(config.floating_resize_extent());
-    let splitters = SplitterLookup::new(plan.splitter_records());
-    let protected = protected_regions(plan, regions);
+    let splitters = SplitterLookup::new(context.splitters);
+    let protected = protected_regions(context, regions);
     let mut allocations = Vec::new();
     for (region_index, region) in regions.iter().enumerate() {
         let (rect, anchor) = match region.id().kind() {
@@ -56,7 +159,7 @@ pub(super) fn compile(
                 let Some(root) = facts.root(id.root) else {
                     continue;
                 };
-                let Some(clip) = intersection(root.bounds(), plan.bounds()) else {
+                let Some(clip) = intersection(root.bounds(), context.bounds) else {
                     continue;
                 };
                 (
@@ -73,7 +176,7 @@ pub(super) fn compile(
                 let Some(root) = facts.root(id.root()) else {
                     continue;
                 };
-                let Some(clip) = intersection(root.bounds(), plan.bounds()) else {
+                let Some(clip) = intersection(root.bounds(), context.bounds) else {
                     continue;
                 };
                 let extent = splitter_extent
@@ -88,7 +191,12 @@ pub(super) fn compile(
                 floating,
                 direction,
             } => {
-                let Some(outer) = plan.unclipped_contained_bounds(floating) else {
+                let Some(outer) = context
+                    .occlusions
+                    .iter()
+                    .find(|record| record.floating() == floating)
+                    .map(|record| record.region().rect())
+                else {
                     continue;
                 };
                 (
@@ -97,14 +205,14 @@ pub(super) fn compile(
                         config.floating_resize_extent(),
                         contained_extent,
                         direction,
-                        plan.bounds(),
+                        context.bounds,
                     ),
                     region.hit().rect(),
                 )
             }
             _ => continue,
         };
-        let Some(rect) = rect.or_else(|| intersection(region.hit().rect(), plan.bounds())) else {
+        let Some(rect) = rect.or_else(|| intersection(region.hit().rect(), context.bounds)) else {
             continue;
         };
         allocations.push(TouchAllocation {
@@ -123,7 +231,7 @@ pub(super) fn compile(
     for (index, allocation) in allocations.into_iter().enumerate() {
         let region = allocation.region;
         let mut fragments = allocation.fragments;
-        for occlusion in plan.drop_occlusions() {
+        for occlusion in context.occlusions {
             if occlusion.layer() > region.stack().layer() {
                 subtract_from(&mut fragments, occlusion.region().rect());
             }
@@ -204,6 +312,7 @@ enum TouchNeighbors {
     Dense(Vec<usize>),
 }
 
+#[derive(Clone, Copy)]
 struct TouchBounds {
     min_x: f64,
     min_y: f64,
@@ -212,6 +321,22 @@ struct TouchBounds {
 }
 
 impl TouchBounds {
+    const EMPTY: Self = Self {
+        min_x: f64::INFINITY,
+        min_y: f64::INFINITY,
+        max_x: f64::NEG_INFINITY,
+        max_y: f64::NEG_INFINITY,
+    };
+
+    fn covering(self, other: Self) -> Self {
+        Self {
+            min_x: self.min_x.min(other.min_x),
+            min_y: self.min_y.min(other.min_y),
+            max_x: self.max_x.max(other.max_x),
+            max_y: self.max_y.max(other.max_y),
+        }
+    }
+
     fn union(first: LogicalRect, second: LogicalRect) -> Self {
         // Keep endpoints directly: rebuilding a rectangle via max - min can
         // round its far edge inward at extreme finite coordinate magnitudes.
@@ -255,36 +380,44 @@ impl TouchNeighbors {
                     )
                 }),
         );
-        entries.sort_unstable_by(|first, second| {
-            first
-                .0
-                .min_x
-                .total_cmp(&second.0.min_x)
-                .then(first.2.cmp(&second.2))
-        });
+        // A static bounds hierarchy prunes both axes and never compares two
+        // protected-chrome records. Leaves retain original row identities;
+        // the final per-row sort preserves all ordered subtraction semantics.
+        let leaves = entries.len().next_power_of_two();
+        let mut bounds = vec![TouchBounds::EMPTY; leaves * 2];
+        partition_neighbor_bounds(&mut entries, &mut bounds, 1, leaves);
         let mut neighbors = vec![Vec::new(); allocation_count];
         let mut links = 0_usize;
         let limit = allocation_count.saturating_mul(64);
-        for (index, (first, first_layer, first_id)) in entries.iter().enumerate() {
-            let (first_layer, first_id) = (*first_layer, *first_id);
-            for (second, second_layer, second_id) in &entries[index + 1..] {
-                let (second_layer, second_id) = (*second_layer, *second_id);
-                if second.min_x >= first.max_x {
-                    break;
-                }
-                let relevant = match (first_id < allocation_count, second_id < allocation_count) {
-                    (true, true) => first_layer == second_layer,
-                    (true, false) => second_layer <= first_layer,
-                    (false, true) => first_layer <= second_layer,
-                    (false, false) => false,
-                };
-                if !relevant || !first.overlaps(second) {
+        let mut pending = Vec::new();
+        for (first_id, allocation) in allocations.iter().enumerate() {
+            let first = TouchBounds::union(allocation.expanded, allocation.region.hit().rect());
+            let first_layer = allocation.region.stack().layer();
+            pending.push(1);
+            while let Some(node) = pending.pop() {
+                #[cfg(test)]
+                NEIGHBOR_BOUNDS_VISITS.set(NEIGHBOR_BOUNDS_VISITS.get() + 1);
+                if !first.overlaps(&bounds[node]) {
                     continue;
                 }
-                if first_id < allocation_count {
-                    neighbors[first_id].push(second_id);
-                    links += 1;
+                if node < leaves {
+                    pending.extend([node * 2, node * 2 + 1]);
+                    continue;
                 }
+                let Some((_, second_layer, second_id)) = entries.get(node - leaves) else {
+                    continue;
+                };
+                let (second_layer, second_id) = (*second_layer, *second_id);
+                let relevant = if second_id < allocation_count {
+                    first_id < second_id && first_layer == second_layer
+                } else {
+                    second_layer <= first_layer
+                };
+                if !relevant {
+                    continue;
+                }
+                neighbors[first_id].push(second_id);
+                links += 1;
                 if second_id < allocation_count {
                     neighbors[second_id].push(first_id);
                     links += 1;
@@ -306,6 +439,45 @@ impl TouchNeighbors {
             Self::Dense(all) => all,
         }
     }
+}
+
+fn partition_neighbor_bounds(
+    entries: &mut [(TouchBounds, SceneLayerKey, usize)],
+    bounds: &mut [TouchBounds],
+    node: usize,
+    leaves: usize,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    let covering = entries
+        .iter()
+        .fold(TouchBounds::EMPTY, |all, entry| all.covering(entry.0));
+    bounds[node] = covering;
+    if leaves == 1 {
+        return;
+    }
+    let half = leaves / 2;
+    let split = half.min(entries.len());
+    if split < entries.len() {
+        // Partition on the longer current axis, retaining original identities
+        // as deterministic tie breakers. Unlike a single-axis leaf order, this
+        // groups disjoint long rows even when their input identities alternate.
+        let horizontal = covering.max_x - covering.min_x >= covering.max_y - covering.min_y;
+        entries.select_nth_unstable_by(split, |first, second| {
+            let (first_axis, second_axis) = if horizontal {
+                (first.0.min_x, second.0.min_x)
+            } else {
+                (first.0.min_y, second.0.min_y)
+            };
+            first_axis
+                .total_cmp(&second_axis)
+                .then(first.2.cmp(&second.2))
+        });
+    }
+    let (left, right) = entries.split_at_mut(split);
+    partition_neighbor_bounds(left, bounds, node * 2, half);
+    partition_neighbor_bounds(right, bounds, node * 2 + 1, half);
 }
 
 fn partition_allocations(allocations: &mut [TouchAllocation<'_>], neighbors: &TouchNeighbors) {
@@ -552,17 +724,17 @@ fn overlap_half(overlap: LogicalRect, axis: Axis, boundary: f64, low: bool) -> O
 }
 
 fn protected_regions(
-    plan: &PresentationPlan,
+    context: TouchContext<'_>,
     regions: &[PresentationHitRegion],
 ) -> Vec<(SceneLayerKey, LogicalRect)> {
     let mut protected = Vec::new();
     let mut visible = Vec::new();
     let mut protect = |rect, layer| {
-        if let Some(rect) = intersection(rect, plan.bounds()) {
+        if let Some(rect) = intersection(rect, context.bounds) {
             // Hidden background chrome must not punch holes in a front window's band.
             visible.clear();
             visible.push(rect);
-            for occlusion in plan.drop_occlusions() {
+            for occlusion in context.occlusions {
                 if occlusion.layer() > layer {
                     subtract_from(&mut visible, occlusion.region().rect());
                 }
@@ -584,16 +756,8 @@ fn protected_regions(
         }
     }
     // Complete strip/title bounds also protect disabled and non-receiver chrome.
-    for bar in plan.tab_bar_records() {
-        protect(bar.bounds(), bar.layer());
-    }
-    for contained in plan.contained_records() {
-        protect(contained.title_bounds(), contained.layer());
-    }
-    for anchor in plan.presentation_menu_anchor_records() {
-        if let Some(bounds) = anchor.ready_bounds() {
-            protect(bounds, anchor.layer());
-        }
+    for (layer, bounds) in context.protected_chrome() {
+        protect(bounds, layer);
     }
     protected
 }

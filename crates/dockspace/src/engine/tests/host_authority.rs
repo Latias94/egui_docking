@@ -1084,8 +1084,9 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
     );
     assert_eq!(press_work.transaction_prepares, 0);
     assert_eq!(press_work.transaction_commands, 0);
-    assert_eq!(press_work.root_fingerprint_builds, 4);
-    assert_eq!(press_work.root_fingerprint_node_visits, 4);
+    // The exact workspace-index binding supplies the two source captures.
+    assert_eq!(press_work.root_fingerprint_builds, 2);
+    assert_eq!(press_work.root_fingerprint_node_visits, 2);
 
     crate::drop_resolver::structural_work::reset();
     let mut release = begin_test_host_frame(&engine, host);

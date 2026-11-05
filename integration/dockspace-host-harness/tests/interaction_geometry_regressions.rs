@@ -170,7 +170,9 @@ fn render_present(session: &mut DockspaceSession) -> BTreeMap<SurfaceId, Snapsho
                         }
                         _ => {}
                     },
-                    SurfacePaintProgramStep::DropTarget(receiver) => snapshot.gaps.push(receiver),
+                    SurfacePaintProgramStep::DropTarget(target) => {
+                        snapshot.gaps.push(target.receiver())
+                    }
                     SurfacePaintProgramStep::DropGuide { structural, .. } => {
                         snapshot.guides.extend(structural.targets().map(|target| {
                             (

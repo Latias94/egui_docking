@@ -13,8 +13,8 @@ use crate::ids::{FloatingPresentationId, HostPresentationAttemptId, ItemId, Root
 use crate::interaction::{ContainedTransformPreview, InteractionPreview, PreviewVisual};
 use crate::model::{DockspaceActionRejection, DockspaceAxis, ProductAction};
 use crate::presentation_hit::{
-    PresentationHitRegionId, PresentationHitRegionKind, PresentationPointerLane,
-    PresentationPointerLanes,
+    PresentationHitRegion, PresentationHitRegionId, PresentationHitRegionKind,
+    PresentationPointerLane, PresentationPointerLanes,
 };
 use crate::presentation_observation::{
     HostInteractionPresentation, SurfacePresentationOutputTicket,
@@ -319,11 +319,7 @@ impl DockspaceReceiverDescriptor {
             lanes,
             role: receiver_role(region.kind())?,
             bounds,
-            center: LogicalPoint::new(
-                bounds.x() + bounds.width() * 0.5,
-                bounds.y() + bounds.height() * 0.5,
-            )
-            .ok()?,
+            center: crate::scene::paint_receiver_center(bounds)?,
         })
     }
 
@@ -357,6 +353,39 @@ impl DockspaceReceiverDescriptor {
 
     pub(super) const fn supports_lane(self, lane: PresentationPointerLane) -> bool {
         self.lanes.contains(lane)
+    }
+}
+
+/// Borrowed non-visual drop target in one exact surface paint program.
+///
+/// Validation resolves its complete receiver identity and finite center before
+/// a visitor receives it. Materialize an owned descriptor only when the host
+/// needs to retain or register this receiver.
+#[derive(Clone, Copy)]
+pub struct DropTargetPaintRecord<'frame> {
+    output: SurfacePresentationOutputTicket,
+    region: &'frame PresentationHitRegion,
+    center: LogicalPoint,
+}
+
+impl fmt::Debug for DropTargetPaintRecord<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.receiver().fmt(formatter)
+    }
+}
+
+impl DropTargetPaintRecord<'_> {
+    /// Returns the complete owned descriptor for this exact output.
+    #[must_use]
+    pub fn receiver(self) -> DockspaceReceiverDescriptor {
+        DockspaceReceiverDescriptor {
+            output: self.output,
+            region: self.region.id(),
+            lanes: self.region.lanes(),
+            role: DockspaceReceiverRole::DropTarget,
+            bounds: self.region.hit().rect(),
+            center: self.center,
+        }
     }
 }
 
@@ -1168,7 +1197,7 @@ pub enum SurfacePaintProgramStep<'frame> {
     /// Paints the current docking or rehome preview.
     DragPreview(DockspaceDragPreview<'frame>),
     /// Publishes one non-visual drop target through the ordered program.
-    DropTarget(DockspaceReceiverDescriptor),
+    DropTarget(DropTargetPaintRecord<'frame>),
     /// Paints one guide cluster in core order.
     DropGuide {
         /// Structural guide identity and geometry compiled into the scene.
@@ -1379,13 +1408,9 @@ impl DockspaceHostFrame<'_> {
             contained_transform_preview: view.presentation_contained_transform_preview(surface),
             pane_focus_request,
             candidate: view,
-            program_valid: false,
+            program_valid: candidate.paint_program_valid(),
         };
-        let program_valid = plan.validate_surface_program();
-        Ok(Some(SurfacePaintPlan {
-            program_valid,
-            ..plan
-        }))
+        Ok(Some(plan))
     }
 
     /// Records complete emission of the current plan to the host's accepting sink,
@@ -1442,19 +1467,79 @@ impl DockspaceHostFrame<'_> {
 }
 
 impl<'frame> SurfacePaintPlan<'frame> {
+    /// Visits tab resource requests in their original surface-program order.
+    ///
+    /// Requests include visible tabs, popup rows and the active drag ghost,
+    /// including repeated items. This reads the sealed program without building
+    /// interaction descriptors or granting a surface execution receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal runtime error when the sealed program is invalid.
+    /// Invalid programs are rejected before the visitor receives any request.
+    pub fn visit_tab_resources(
+        &self,
+        mut visitor: impl FnMut(DockspaceVisualId, ItemId),
+    ) -> Result<(), DockspaceRuntimeError> {
+        if !self.program_valid {
+            return Err(DockspaceRuntimeError::surface_program_invariant(
+                self.surface,
+            ));
+        }
+        self.plan
+            .visit_surface_program(|step| {
+                match step {
+                    ResolvedSurfaceProgramStep::Operation {
+                        operation: ResolvedSurfaceProgramOperation::Tab(record),
+                        ..
+                    } => visitor(
+                        DockspaceVisualId(VisualIdentity::Tab(*record.id())),
+                        record.id().item,
+                    ),
+                    ResolvedSurfaceProgramStep::PopupMenu(menu) => {
+                        for row in menu.rows() {
+                            visitor(
+                                DockspaceVisualId(VisualIdentity::Tab(row.tab())),
+                                row.tab().item,
+                            );
+                        }
+                    }
+                    ResolvedSurfaceProgramStep::DragDecoration => {
+                        if let Some(decoration) = self.drag_decoration()
+                            && let Some(item) = decoration.ghost_item()
+                        {
+                            visitor(decoration.source_visual(), item);
+                        }
+                    }
+                    ResolvedSurfaceProgramStep::RootBegin(_)
+                    | ResolvedSurfaceProgramStep::Operation { .. }
+                    | ResolvedSurfaceProgramStep::RootEnd(_)
+                    | ResolvedSurfaceProgramStep::PopupBackdrop(_)
+                    | ResolvedSurfaceProgramStep::DragPreview
+                    | ResolvedSurfaceProgramStep::DropTarget(_)
+                    | ResolvedSurfaceProgramStep::DropGuide(_)
+                    | ResolvedSurfaceProgramStep::ContainedTransformPreview
+                    | ResolvedSurfaceProgramStep::InteractionFeedback
+                    | ResolvedSurfaceProgramStep::SurfaceEnd => {}
+                }
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .map_err(|_| DockspaceRuntimeError::surface_program_invariant(self.surface))
+    }
+
     /// Returns whether this exact program includes a manipulation preview.
     ///
     /// Hosts preserve the current candidate until its release presentation
     /// obligation settles, including after the physical pointer was released.
     #[must_use]
-    pub const fn has_manipulation_preview(self) -> bool {
+    pub const fn has_manipulation_preview(&self) -> bool {
         self.drag_preview.is_some()
             || self.contained_transform_preview.is_some()
             || self.plan.contained_projection().is_some()
     }
 
     #[must_use]
-    pub const fn surface(self) -> SurfaceId {
+    pub const fn surface(&self) -> SurfaceId {
         self.surface
     }
 
@@ -1513,7 +1598,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     fn visit_surface_program_inner<E>(
-        self,
+        &self,
         mut visitor: impl FnMut(SurfacePaintProgramStep<'frame>) -> Result<(), E>,
     ) -> Result<(), SurfacePaintProgramVisitError<E>> {
         if !self.program_valid {
@@ -1549,18 +1634,13 @@ impl<'frame> SurfacePaintPlan<'frame> {
         Ok(())
     }
 
-    fn validate_surface_program(self) -> bool {
-        let menu_open_bars = self.program_menu_open_bars();
-        self.plan
-            .visit_surface_program(|step| {
-                self.resolve_surface_program_step(step, &menu_open_bars)
-                    .map(|_| ())
-            })
-            .is_ok()
+    #[cfg(test)]
+    fn validate_surface_program(&self) -> bool {
+        crate::scene::validate_surface_paint_program(self.plan, self.hit_manifest)
     }
 
     fn resolve_surface_program_step(
-        self,
+        &self,
         step: ResolvedSurfaceProgramStep<'frame>,
         menu_open_bars: &HashSet<TabBarSceneId>,
     ) -> Result<Option<SurfacePaintProgramStep<'frame>>, ()> {
@@ -1614,10 +1694,21 @@ impl<'frame> SurfacePaintPlan<'frame> {
                 .drag_preview()
                 .map(SurfacePaintProgramStep::DragPreview),
             ResolvedSurfaceProgramStep::DropTarget(record) => {
-                Some(SurfacePaintProgramStep::DropTarget(
-                    self.receiver(PresentationHitRegionKind::DropTarget(record.id()))
-                        .ok_or(())?,
-                ))
+                let region = self
+                    .hit_manifest
+                    .region_for_kind(PresentationHitRegionKind::DropTarget(record.id()))
+                    .ok_or(())?;
+                if region.is_passive()
+                    || receiver_role(region.id().kind()) != Some(DockspaceReceiverRole::DropTarget)
+                {
+                    return Err(());
+                }
+                let center = crate::scene::paint_receiver_center(region.hit().rect()).ok_or(())?;
+                Some(SurfacePaintProgramStep::DropTarget(DropTargetPaintRecord {
+                    output: self.output,
+                    region,
+                    center,
+                }))
             }
             ResolvedSurfaceProgramStep::DropGuide(record) => {
                 let structural = DropGuidePaintRecord { record };
@@ -1647,7 +1738,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     fn resolve_surface_program_root(
-        self,
+        &self,
         root: ResolvedSurfaceProgramRoot<'frame>,
     ) -> SurfacePaintProgramRoot<'frame> {
         let kind = match root.contained_record() {
@@ -1665,7 +1756,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     fn resolve_surface_program_operation_record(
-        self,
+        &self,
         operation: ResolvedSurfaceProgramOperation<'frame>,
         menu_open_bars: &HashSet<TabBarSceneId>,
     ) -> Option<SurfacePaintProgramOperation<'frame>> {
@@ -1717,7 +1808,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     /// Returns the exact semantic output represented by this paint plan.
     #[must_use]
-    pub const fn semantic_output(self) -> DockspaceSemanticOutput {
+    pub const fn semantic_output(&self) -> DockspaceSemanticOutput {
         DockspaceSemanticOutput {
             ticket: self.output,
         }
@@ -1725,7 +1816,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     /// Returns the exact pane-focus request admitted for this surface.
     #[must_use]
-    pub const fn pane_focus_request(self) -> Option<DockspacePaneFocusRequest> {
+    pub const fn pane_focus_request(&self) -> Option<DockspacePaneFocusRequest> {
         self.pane_focus_request
     }
 
@@ -1993,7 +2084,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     #[must_use]
-    pub fn bounds(self) -> LogicalRect {
+    pub fn bounds(&self) -> LogicalRect {
         self.plan.bounds()
     }
 
@@ -2003,7 +2094,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// acknowledgement. It exists only after the core enters its active
     /// dragging phase and disappears with the terminal or cancelled gesture.
     #[must_use]
-    const fn drag_decoration(self) -> Option<DockspaceDragDecoration<'frame>> {
+    const fn drag_decoration(&self) -> Option<DockspaceDragDecoration<'frame>> {
         self.drag_decoration
     }
 
@@ -2126,7 +2217,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// remains visible while the pointer is between buttons or over a rejected
     /// target. The renderer must not infer active or disabled state from geometry.
     #[must_use]
-    fn drop_affordance(self) -> Option<DropAffordancePaintRecord<'frame>> {
+    fn drop_affordance(&self) -> Option<DropAffordancePaintRecord<'frame>> {
         self.drop_affordance
             .map(|affordance| DropAffordancePaintRecord { affordance })
     }
@@ -2150,7 +2241,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     #[must_use]
-    pub fn tab_receiver(self, item: ItemId) -> Option<DockspaceReceiverDescriptor> {
+    pub fn tab_receiver(&self, item: ItemId) -> Option<DockspaceReceiverDescriptor> {
         let tab = self.tab_record(item)?;
         self.tab_is_operable(tab).then_some(())?;
         self.receiver(PresentationHitRegionKind::TabBody(*tab.id()))
@@ -2159,7 +2250,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one painted pane body.
     #[must_use]
     pub fn receiver_for_pane(
-        self,
+        &self,
         pane: PanePaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let pane_id = pane.record.id();
@@ -2169,7 +2260,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one painted tab body.
     #[must_use]
     pub fn receiver_for_tab_body(
-        self,
+        &self,
         tab: TabPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         tab.operable().then_some(())?;
@@ -2180,7 +2271,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one painted tab close control.
     #[must_use]
     pub fn receiver_for_tab_close(
-        self,
+        &self,
         tab: TabPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let close_bounds = tab.record.close_bounds()?;
@@ -2194,7 +2285,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one whole-tab-group drag grip.
     #[must_use]
     pub fn receiver_for_tab_group_grip(
-        self,
+        &self,
         bar: TabBarPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let bar_id = *bar.record.id();
@@ -2207,7 +2298,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one core-compiled group-drag region.
     #[must_use]
     pub fn receiver_for_tab_group_drag_region(
-        self,
+        &self,
         region: TabGroupDragRegionPaintRecord,
     ) -> Option<DockspaceReceiverDescriptor> {
         self.receiver(PresentationHitRegionKind::TabGroupDrag {
@@ -2219,7 +2310,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the trailing-empty group receiver, when this bar has unused space.
     #[must_use]
     pub fn receiver_for_tab_group_trailing_empty(
-        self,
+        &self,
         bar: TabBarPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let bar_id = *bar.record.id();
@@ -2232,7 +2323,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the scroll receiver covering one overflowing tab-strip viewport.
     #[must_use]
     pub fn receiver_for_tab_strip_scroll(
-        self,
+        &self,
         bar: TabBarPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let bar_id = *bar.record.id();
@@ -2242,7 +2333,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one core-owned tab-strip control.
     #[must_use]
     pub fn receiver_for_tab_strip_control(
-        self,
+        &self,
         control: TabStripControlPaintRecord,
     ) -> Option<DockspaceReceiverDescriptor> {
         let control_id = control.record.id();
@@ -2252,7 +2343,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one visible tab-list menu row.
     #[must_use]
     pub fn receiver_for_tab_list_menu_row(
-        self,
+        &self,
         row: TabListMenuRowPaintRecord,
     ) -> Option<DockspaceReceiverDescriptor> {
         let session = row.session;
@@ -2263,7 +2354,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the blocker receiver covering one open tab-list menu frame.
     #[must_use]
     pub fn receiver_for_tab_list_menu_frame(
-        self,
+        &self,
         menu: TabListMenuPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let session = menu.record.session();
@@ -2273,7 +2364,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the scroll receiver for one open tab-list menu.
     #[must_use]
     pub fn receiver_for_tab_list_menu_scroll(
-        self,
+        &self,
         menu: TabListMenuPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let session = menu.record.session();
@@ -2283,7 +2374,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the full-surface backdrop receiver for one open tab-list menu.
     #[must_use]
     pub fn receiver_for_tab_list_menu_backdrop(
-        self,
+        &self,
         backdrop: TabListMenuBackdropPaintRecord,
     ) -> Option<DockspaceReceiverDescriptor> {
         let session = backdrop.record.session();
@@ -2293,7 +2384,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one painted splitter handle.
     #[must_use]
     pub fn receiver_for_splitter(
-        self,
+        &self,
         splitter: SplitterPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let splitter_id = *splitter.record.id();
@@ -2303,7 +2394,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one atomic splitter junction.
     #[must_use]
     pub fn receiver_for_splitter_junction(
-        self,
+        &self,
         junction: SplitterJunctionPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         self.receiver(PresentationHitRegionKind::SplitterJunction(
@@ -2313,7 +2404,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     /// Returns whether every incident handle accepts one atomic resize gesture.
     #[must_use]
-    pub fn splitter_junction_operable(self, junction: SplitterJunctionPaintRecord<'frame>) -> bool {
+    pub fn splitter_junction_operable(
+        &self,
+        junction: SplitterJunctionPaintRecord<'frame>,
+    ) -> bool {
         junction.record.operable()
     }
 
@@ -2321,7 +2415,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// scene-bound keyboard or accessibility adjustment.
     #[must_use]
     pub fn splitter_junction_axis_operable(
-        self,
+        &self,
         junction: SplitterJunctionPaintRecord<'frame>,
         axis: DockspaceAxis,
     ) -> bool {
@@ -2364,7 +2458,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact blocker receiver for one contained floating surface.
     #[must_use]
     pub fn receiver_for_contained_frame(
-        self,
+        &self,
         contained: ContainedPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let floating = contained.record.floating();
@@ -2374,7 +2468,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact title-drag receiver for one contained floating surface.
     #[must_use]
     pub fn receiver_for_contained_title(
-        self,
+        &self,
         contained: ContainedPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         contained.title_operable().then_some(())?;
@@ -2385,7 +2479,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact close receiver for one contained floating surface.
     #[must_use]
     pub fn receiver_for_contained_close(
-        self,
+        &self,
         contained: ContainedPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         contained.close_operable().then_some(())?;
@@ -2396,7 +2490,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact resize receiver for one contained floating edge.
     #[must_use]
     pub fn receiver_for_contained_resize(
-        self,
+        &self,
         contained: ContainedPaintRecord<'frame>,
         resize: ContainedResizePaintRecord,
     ) -> Option<DockspaceReceiverDescriptor> {
@@ -2412,7 +2506,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Returns the exact receiver for one core-selected drop-guide target.
     #[must_use]
     pub fn receiver_for_drop_target(
-        self,
+        &self,
         target: DropAffordanceTargetPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let target_id = target.target_id();
@@ -2421,7 +2515,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     #[must_use]
     pub fn center_drop_receiver_for_item(
-        self,
+        &self,
         item: ItemId,
     ) -> Option<DockspaceReceiverDescriptor> {
         let tab = self.tab_record(item)?;
@@ -2436,7 +2530,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     #[must_use]
-    fn drag_preview(self) -> Option<DockspaceDragPreview<'frame>> {
+    fn drag_preview(&self) -> Option<DockspaceDragPreview<'frame>> {
         let preview = self.drag_preview?;
         let layout_projected = self.plan.contained_projection().is_some_and(|projection| {
             projection.owner == ContainedLayoutOwner::Drag(preview.token().session())
@@ -2455,7 +2549,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     /// Returns the exact contained resize preview which this surface must paint.
     #[must_use]
-    fn contained_transform_preview(self) -> Option<DockspaceContainedTransformPreview<'frame>> {
+    fn contained_transform_preview(&self) -> Option<DockspaceContainedTransformPreview<'frame>> {
         let preview = self.contained_transform_preview?;
         let layout_projected = self.plan.contained_projection().is_some_and(|projection| {
             projection.owner == ContainedLayoutOwner::Transform(preview.token().session())
@@ -2473,14 +2567,14 @@ impl<'frame> SurfacePaintPlan<'frame> {
         })
     }
 
-    fn tab_record(self, item: ItemId) -> Option<&'frame crate::scene::TabRecord> {
+    fn tab_record(&self, item: ItemId) -> Option<&'frame crate::scene::TabRecord> {
         self.plan
             .tab_records()
             .iter()
             .find(|record| record.id().item == item)
     }
 
-    fn tab_is_operable(self, tab: &crate::scene::TabRecord) -> bool {
+    fn tab_is_operable(&self, tab: &crate::scene::TabRecord) -> bool {
         let bounds = tab.drag_hit().rect();
         bounds.width() > 0.0
             && bounds.height() > 0.0
@@ -2500,7 +2594,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             && self.plan.region_is_operable(bounds, tab.layer())
     }
 
-    fn receiver(self, kind: PresentationHitRegionKind) -> Option<DockspaceReceiverDescriptor> {
+    fn receiver(&self, kind: PresentationHitRegionKind) -> Option<DockspaceReceiverDescriptor> {
         let region = *self.hit_manifest.region_for_kind(kind)?;
         if region.is_passive() {
             return None;
@@ -2514,7 +2608,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     /// Returns tab bars whose popup menu is present in the ordered program.
-    fn program_menu_open_bars(self) -> HashSet<TabBarSceneId> {
+    fn program_menu_open_bars(&self) -> HashSet<TabBarSceneId> {
         if self.plan.tab_list_menu_records().is_empty() {
             return HashSet::new();
         }
@@ -2599,6 +2693,49 @@ mod tests {
         (session, surface)
     }
 
+    fn assert_preflight_matches_complete_resolution(plan: SurfacePaintPlan<'_>) {
+        let menu_open_bars = plan.program_menu_open_bars();
+        let fully_resolvable = plan
+            .plan
+            .visit_surface_program(|step| {
+                plan.resolve_surface_program_step(step, &menu_open_bars)
+                    .map(|_| ())
+            })
+            .is_ok();
+        assert_eq!(plan.validate_surface_program(), fully_resolvable);
+        assert_eq!(plan.program_valid, fully_resolvable);
+        let mut expected_resources = Vec::new();
+        let full_visit = plan.visit_surface_program(|step| {
+            match step {
+                SurfacePaintProgramStep::Operation {
+                    operation: SurfacePaintProgramOperation::Tab(tab),
+                    ..
+                } => expected_resources.push((tab.visual_id(), tab.item())),
+                SurfacePaintProgramStep::PopupMenu { menu, .. } => {
+                    expected_resources
+                        .extend(menu.rows().map(|row| (row.tab_visual_id(), row.item())));
+                }
+                SurfacePaintProgramStep::DragDecoration(decoration) => {
+                    if let Some(item) = decoration.ghost_item() {
+                        expected_resources.push((decoration.source_visual(), item));
+                    }
+                }
+                SurfacePaintProgramStep::DropTarget(target) => {
+                    let descriptor = target.receiver();
+                    assert_eq!(Some(descriptor), plan.receiver(descriptor.region.kind()));
+                }
+                _ => {}
+            }
+            Ok::<(), ()>(())
+        });
+        let mut actual_resources = Vec::new();
+        let resource_visit = plan.visit_tab_resources(|visual, item| {
+            actual_resources.push((visual, item));
+        });
+        assert_eq!(full_visit.is_ok(), resource_visit.is_ok());
+        assert_eq!(actual_resources, expected_resources);
+    }
+
     #[test]
     fn only_execution_mints_a_receipt_bound_to_its_exact_host_frame() {
         let (mut session, surface) = measured_surface_session();
@@ -2610,6 +2747,7 @@ mod tests {
             .paint_plan(surface)
             .expect("the inspection plan resolves")
             .expect("the measured surface is paintable");
+        assert_preflight_matches_complete_resolution(plan);
         let inspected: () = plan
             .visit_surface_program(|_| Ok::<(), ()>(()))
             .expect("inspection traverses the complete program without minting authority");
@@ -2677,6 +2815,7 @@ mod tests {
             valid.program_valid,
             "ready plans must preflight their program"
         );
+        assert_preflight_matches_complete_resolution(valid);
         let mut malformed = PresentationPlan::new(surface, valid.bounds());
         malformed
             .begin_surface_program_root(root, SurfaceProgramRootPresentation::Main)
@@ -2706,6 +2845,7 @@ mod tests {
             program_valid: malformed.validate_surface_program(),
             ..malformed
         };
+        assert_preflight_matches_complete_resolution(malformed);
 
         assert!(
             !malformed.program_valid,
@@ -2766,6 +2906,7 @@ mod tests {
             .paint_plan(surface)
             .expect("the paint plan lookup succeeds")
             .expect("the measured surface is paintable");
+        assert_preflight_matches_complete_resolution(valid);
         let mut malformed = PresentationPlan::new(surface, bounds);
         malformed
             .set_surface_background(DropTargetRecord::surface_background(
@@ -2789,6 +2930,7 @@ mod tests {
             program_valid: malformed.validate_surface_program(),
             ..malformed
         };
+        assert_preflight_matches_complete_resolution(malformed);
 
         assert!(
             !malformed.program_valid,
