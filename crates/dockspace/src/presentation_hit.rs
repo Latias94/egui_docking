@@ -438,12 +438,18 @@ impl PresentationHitManifest {
         emit_regions(plan, &mut |region| regions.push(region))?;
         let emission_rows = region_order::canonicalize_reusing_order(&mut regions, previous);
         debug_assert!(regions.windows(2).all(|pair| pair[0].id() != pair[1].id()));
-        let mut touch_regions = touch::compile(plan, &regions);
+        let touch = touch::compile_reusing_order(
+            plan,
+            &regions,
+            previous.map(|previous| previous.touch_order.as_ref()),
+        );
+        let mut touch_regions = touch.fragments;
         compact_region_rows(&mut regions, &mut touch_regions)
             .map_err(|()| SceneBuildError::InvalidSurfaceProgram { surface })?;
         Ok(Self {
             output,
             geometry: Arc::new(geometry_reuse::HitGeometry {
+                touch_order: touch.order,
                 emission_rows: (emission_rows.len() == regions.len()).then_some(emission_rows),
                 regions: regions.into_boxed_slice(),
                 touch_regions: touch_regions.into_boxed_slice(),

@@ -199,6 +199,7 @@ fn exact_identity_replay_reuses_order_while_preserving_changed_geometry_bits() {
     let emitted = previous_regions.clone();
     let emission_rows = canonicalize_regions(&mut previous_regions);
     let mut previous = HitGeometry {
+        touch_order: Box::new([]),
         regions: previous_regions.into_boxed_slice(),
         touch_regions: Box::new([]),
         emission_rows: Some(emission_rows),

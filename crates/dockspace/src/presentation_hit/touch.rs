@@ -131,14 +131,31 @@ pub(super) fn same_context(left: &PresentationPlan, right: &PresentationPlan) ->
     TouchContext::new(left).same_inputs(TouchContext::new(right))
 }
 
-pub(super) fn compile(
+pub(super) struct TouchGeometry {
+    pub(super) fragments: Vec<(usize, LogicalRect)>,
+    pub(super) order: Box<[usize]>,
+}
+
+#[cfg(test)]
+fn compile(
     plan: &PresentationPlan,
     regions: &[PresentationHitRegion],
 ) -> Vec<(usize, LogicalRect)> {
+    compile_reusing_order(plan, regions, None).fragments
+}
+
+pub(super) fn compile_reusing_order(
+    plan: &PresentationPlan,
+    regions: &[PresentationHitRegion],
+    previous_order: Option<&[usize]>,
+) -> TouchGeometry {
     let context = TouchContext::new(plan);
     let Some(facts) = context.facts else {
         // Synthetic plans have no exact configuration authority. Fail closed.
-        return Vec::new();
+        return TouchGeometry {
+            fragments: Vec::new(),
+            order: Box::new([]),
+        };
     };
     let config = facts.config();
     let splitter_extent = config
@@ -223,7 +240,8 @@ pub(super) fn compile(
             fragments: vec![rect],
         });
     }
-    let neighbors = TouchNeighbors::build(&allocations, &protected);
+    let (neighbors, order) =
+        TouchNeighbors::build_reusing_order(&allocations, &protected, previous_order);
     partition_allocations(&mut allocations, &neighbors);
     let mut compiled = Vec::new();
     let mut base = Vec::new();
@@ -264,7 +282,10 @@ pub(super) fn compile(
         );
     }
     debug_assert!(compiled.windows(2).all(|pair| pair[0].0 <= pair[1].0));
-    compiled
+    TouchGeometry {
+        fragments: compiled,
+        order,
+    }
 }
 
 #[cfg_attr(test, derive(Clone))]
@@ -357,10 +378,19 @@ impl TouchBounds {
 }
 
 impl TouchNeighbors {
+    #[cfg(test)]
     fn build(
         allocations: &[TouchAllocation<'_>],
         protected: &[(SceneLayerKey, LogicalRect)],
     ) -> Self {
+        Self::build_reusing_order(allocations, protected, None).0
+    }
+
+    fn build_reusing_order(
+        allocations: &[TouchAllocation<'_>],
+        protected: &[(SceneLayerKey, LogicalRect)],
+        previous_order: Option<&[usize]>,
+    ) -> (Self, Box<[usize]>) {
         let allocation_count = allocations.len();
         let dense = || Self::Dense((0..allocation_count + protected.len()).collect());
         let mut entries = Vec::with_capacity(allocation_count + protected.len());
@@ -385,7 +415,21 @@ impl TouchNeighbors {
         // the final per-row sort preserves all ordered subtraction semantics.
         let leaves = entries.len().next_power_of_two();
         let mut bounds = vec![TouchBounds::EMPTY; leaves * 2];
-        partition_neighbor_bounds(&mut entries, &mut bounds, 1, leaves);
+        if let Some(order) = previous_order.filter(|order| order.len() == entries.len()) {
+            // This private hint is always a complete permutation of row indices.
+            // Reuse only the tree topology: every current leaf and parent bounds
+            // is recomputed, so any changed geometry still receives exact queries.
+            entries = order.iter().map(|&row| entries[row]).collect();
+            for (index, entry) in entries.iter().enumerate() {
+                bounds[leaves + index] = entry.0;
+            }
+            for index in (1..leaves).rev() {
+                bounds[index] = bounds[index * 2].covering(bounds[index * 2 + 1]);
+            }
+        } else {
+            partition_neighbor_bounds(&mut entries, &mut bounds, 1, leaves);
+        }
+        let order = entries.iter().map(|entry| entry.2).collect::<Box<[_]>>();
         let mut neighbors = vec![Vec::new(); allocation_count];
         let mut links = 0_usize;
         let limit = allocation_count.saturating_mul(64);
@@ -423,14 +467,14 @@ impl TouchNeighbors {
                     links += 1;
                 }
                 if links > limit {
-                    return dense();
+                    return (dense(), order);
                 }
             }
         }
         for adjacent in &mut neighbors {
             adjacent.sort_unstable();
         }
-        Self::Sparse(neighbors)
+        (Self::Sparse(neighbors), order)
     }
 
     fn for_region(&self, index: usize) -> &[usize] {
@@ -460,15 +504,32 @@ fn partition_neighbor_bounds(
     let half = leaves / 2;
     let split = half.min(entries.len());
     if split < entries.len() {
-        // Partition on the longer current axis, retaining original identities
-        // as deterministic tie breakers. Unlike a single-axis leaf order, this
-        // groups disjoint long rows even when their input identities alternate.
-        let horizontal = covering.max_x - covering.min_x >= covering.max_y - covering.min_y;
+        // Split by the spread of centers, rather than the boxes' own extent:
+        // long parallel bands need separation on their short axis. Halving
+        // endpoints before addition keeps finite centers at extreme magnitudes.
+        let center = |bounds: TouchBounds| {
+            (
+                bounds.min_x * 0.5 + bounds.max_x * 0.5,
+                bounds.min_y * 0.5 + bounds.max_y * 0.5,
+            )
+        };
+        let centers = entries.iter().fold(TouchBounds::EMPTY, |all, entry| {
+            let (x, y) = center(entry.0);
+            all.covering(TouchBounds {
+                min_x: x,
+                min_y: y,
+                max_x: x,
+                max_y: y,
+            })
+        });
+        let horizontal = centers.max_x - centers.min_x >= centers.max_y - centers.min_y;
         entries.select_nth_unstable_by(split, |first, second| {
+            let first_center = center(first.0);
+            let second_center = center(second.0);
             let (first_axis, second_axis) = if horizontal {
-                (first.0.min_x, second.0.min_x)
+                (first_center.0, second_center.0)
             } else {
-                (first.0.min_y, second.0.min_y)
+                (first_center.1, second_center.1)
             };
             first_axis
                 .total_cmp(&second_axis)

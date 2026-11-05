@@ -240,6 +240,25 @@ fn sparse_touch_partition_matches_exhaustive_partition_with_overlapping_bases() 
             .collect::<Vec<_>>();
         let neighbors = TouchNeighbors::build(&allocations, &protected);
         assert!(matches!(&neighbors, TouchNeighbors::Sparse(_)));
+        let count = allocations.len() + protected.len();
+        let mut order = (0..count).rev().collect::<Vec<_>>();
+        for variant in 0..3 {
+            match variant {
+                0 => {}
+                1 => order.rotate_left(37),
+                _ => {
+                    order.pop();
+                }
+            }
+            let (reused, next_order) =
+                TouchNeighbors::build_reusing_order(&allocations, &protected, Some(&order));
+            let mut sorted_order = next_order.into_vec();
+            sorted_order.sort_unstable();
+            assert_eq!(sorted_order, (0..count).collect::<Vec<_>>());
+            for index in 0..allocations.len() {
+                assert_eq!(reused.for_region(index), neighbors.for_region(index));
+            }
+        }
         // A full scan is the reference oracle for both the partition and every
         // chrome cut that the broad phase must retain.
         for (index, allocation) in allocations.iter().enumerate() {
@@ -312,7 +331,7 @@ fn disjoint_long_rows_prune_both_axes_without_quadratic_chrome_pairs() {
                     }),
                     rect(
                         0.0,
-                        f64::from(u32::try_from(index).unwrap()) * 4.0,
+                        f64::from(u32::try_from((index * 137) % count).unwrap()) * 4.0,
                         5_000.0,
                         1.0,
                     ),
@@ -472,6 +491,7 @@ fn manifest(
             SurfaceSceneStamp::new(ticket(), SurfaceSceneRevision::new(1)),
         ),
         geometry: std::sync::Arc::new(super::super::geometry_reuse::HitGeometry {
+            touch_order: Box::new([]),
             regions: regions.into_boxed_slice(),
             touch_regions,
             emission_rows: None,

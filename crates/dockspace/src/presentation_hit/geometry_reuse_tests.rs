@@ -369,6 +369,7 @@ fn any_compacted_row_disables_reuse_and_cache_hints_do_not_change_equality() {
     let without_hint = PresentationHitManifest {
         output: complete.output,
         geometry: Arc::new(HitGeometry {
+            touch_order: complete.geometry.touch_order.clone(),
             regions: complete.geometry.regions.clone(),
             touch_regions: complete.geometry.touch_regions.clone(),
             emission_rows: None,

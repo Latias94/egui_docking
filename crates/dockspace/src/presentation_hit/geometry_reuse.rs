@@ -13,6 +13,8 @@ pub(super) struct HitGeometry {
     pub(super) touch_regions: Box<[(usize, LogicalRect)]>,
     // A private replay hint, unavailable after compaction removes any row.
     pub(super) emission_rows: Option<Box<[usize]>>,
+    // A spatial leaf permutation, independent from all output authority.
+    pub(super) touch_order: Box<[usize]>,
 }
 
 impl PartialEq for HitGeometry {
