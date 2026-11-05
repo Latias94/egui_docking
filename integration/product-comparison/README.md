@@ -32,6 +32,11 @@ target. Existing output directories are not overwritten.
 | `tab_click` | Real pointer press and release, two complete frames; assert actual tab selection changes |
 | `surface_resize` | Alternate logical surface width 16,384/16,448 and generate one complete frame |
 
+For CPU attribution, the standalone Rust example also accepts
+`--scenario idle`, `--scenario tab_click`, or `--scenario surface_resize`.
+This selects cases outside timing; the comparison runner always executes all
+three cases. Keep CPU sampling separate from formal measurement runs.
+
 Every case uses a fully visible balanced tree of 16/128/1,024 panes, two tabs per
 pane, alternating split axes, a height of 16,384, scale 1 and fixed 1/60-second
 input steps. Close buttons are disabled on both sides. UI styling, fonts and

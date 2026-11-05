@@ -30,6 +30,7 @@ struct Options {
     samples: usize,
     warmup: usize,
     panes: Vec<usize>,
+    scenario: Option<Scenario>,
 }
 
 impl Options {
@@ -38,6 +39,7 @@ impl Options {
             samples: 24,
             warmup: 6,
             panes: vec![16, 128, 1024],
+            scenario: None,
         };
         let mut arguments = std::env::args().skip(1);
         while let Some(argument) = arguments.next() {
@@ -73,6 +75,14 @@ impl Options {
                         })
                         .collect::<Result<_>>()?;
                 }
+                "--scenario" => {
+                    options.scenario = Some(match value.as_str() {
+                        "idle" => Scenario::Idle,
+                        "tab_click" => Scenario::TabClick,
+                        "surface_resize" => Scenario::SurfaceResize,
+                        _ => return Err(format!("unknown scenario {value:?}")),
+                    });
+                }
                 _ => return Err(format!("unknown option {flag:?}")),
             }
         }
@@ -91,7 +101,7 @@ impl Options {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Scenario {
     Idle,
     TabClick,
@@ -613,6 +623,12 @@ fn run() -> Result<()> {
     writeln!(output, "{HEADER}").map_err(|error| error.to_string())?;
     for count in options.panes {
         for scenario in [Scenario::Idle, Scenario::TabClick, Scenario::SurfaceResize] {
+            if options
+                .scenario
+                .is_some_and(|selected| selected != scenario)
+            {
+                continue;
+            }
             let mut harness = Harness::new(count, scenario)?;
             harness
                 .warm_ready()
