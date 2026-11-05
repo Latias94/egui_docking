@@ -9036,3 +9036,64 @@ regress; the record does not claim a general tail-latency improvement. Physical
 GUI qualification was not rerun for this internal compilation change. No remote
 publication is included, and the pre-existing CI and review changes remain
 outside these commits.
+
+
+## 2026-11-05 compilation scratch qualification
+
+Implementation: `5130dba`, based on `4484e40`.
+The [completed plan](plans/2026-11-05-compilation-scratch.md) and
+[full measurement record](performance/2026-11-05-compilation-scratch-results.md)
+preserve the initial and adjacent repeated baselines, complete final CSV,
+interleaved small-workload timings, exact commands and source/binary digests.
+
+Touch compilation borrows immutable hit records, reuses the first splitter lookup
+for each handle anchor and emits surviving base fragments directly. A call-local
+lookup proves strictly increasing complete splitter IDs before binary search;
+noncanonical or duplicate inventories keep the original linear first match.
+Missing handles still skip and missing junction participants retain their prior
+base fallback. Surface-program uniqueness sets preallocate from existing rosters
+and store borrowed value keys, with the same error-category and first-duplicate
+order; rejected drafts remain repairable. Magnetic catalog validation compares
+one sorted/deduplicated expected vector with the existing sorted target index,
+retaining every complete ID and all preceding checks. No borrowed reference enters
+the final output, and exact authority, old-output independence, atomic publication,
+the canonical graph/ledger and native first-live ownership remain unchanged.
+
+| Gate | Fresh result |
+| --- | --- |
+| Workspace, all features and targets | 2,085 passed |
+| Focused touch, program scratch and magnetic catalog checks | 29 passed |
+| Independent host, default | 292 passed, including all three 10,000-depth cases |
+| Independent host, persistence | 332 passed; already-covered depth binary filtered |
+| Official egui | 24 passed |
+| Product egui, default / persistence | 114 / 119 passed |
+| Fork-backed native, all features and targets | 556 passed; one pre-existing ignored case |
+| Workspace/native correctness and suspicious Clippy | Passed |
+| Strict core, egui and native documentation | Passed |
+| Workspace documentation examples | Ten passed |
+| Format, diff and renderer-neutral dependency checks | Passed |
+
+All Cargo validation runs use one build job and nextest one worker, reusing the
+existing targets. Two crossed independent read-only reviews found no evidenced
+P1/P2. New regressions cover exact lookup owners and ordered touch endpoint bits
+for full identities, permutations, duplicates and missing records; duplicate
+error precedence and unchanged failed drafts; and structurally valid extra
+magnetic catalog entries with guides enabled or disabled.
+
+Complete measurements use 12 samples and three warmups at 16/128/1,024 panes,
+complete ordered recording and the original output history. No Cargo build/test
+or CPU sampler started by this session overlaps the reported runs. At 1,024 panes
+changed-update p50 falls 8.0–10.2%; drag changes from 19.516 to 17.593 ms.
+Cumulative requested allocation traffic falls 6.1–6.6%, with all live checkpoints
+unchanged. The initial baseline and final run were separated by more than seven
+hours, so the primary comparison uses a frozen-baseline repeat immediately after
+the final run; changed-update baseline p50 differs by at most 1.2% at 1,024 panes.
+
+The complete run shows a 3.4% measurement-change p50 regression at 128 panes and
+some smaller-workload tail regressions. Four subsequent timing-only processes in
+baseline/final/final/baseline order do not reproduce that p50 regression; both
+observations and all 80 follow-up timing rows are retained. Final 1,024-pane
+changed-update p50 remains 16.990–21.147 ms, above a 16.7 ms budget before
+application rendering and GPU work. Physical GUI qualification is not rerun.
+No remote publication is included; pre-existing CI and review changes remain
+outside these commits.
