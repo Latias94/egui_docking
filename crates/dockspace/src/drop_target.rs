@@ -7,6 +7,10 @@ use crate::geometry::LogicalRect;
 use crate::hit_region::HitRegion;
 use crate::ids::{FloatingPresentationId, NodeId, RootId, SurfaceId};
 
+#[cfg(test)]
+#[path = "drop_target/ordering_tests.rs"]
+mod ordering_tests;
+
 /// Stable front-to-back presentation layer key validated by the core.
 ///
 /// Larger values are frontmost. The resolver never derives this value from
@@ -231,7 +235,7 @@ impl DropTargetId {
         }
     }
 
-    fn variant_order(self) -> u8 {
+    fn variant_order(&self) -> u8 {
         match self {
             Self::TabGap { .. } => 0,
             Self::Center { .. } => 1,
@@ -250,84 +254,82 @@ impl PartialOrd for DropTargetId {
 
 impl Ord for DropTargetId {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.variant_order()
-            .cmp(&other.variant_order())
-            .then_with(|| match (*self, *other) {
-                (
-                    Self::TabGap {
-                        surface: left_surface,
-                        root: left_root,
-                        tabs: left_tabs,
-                        index: left_index,
-                    },
-                    Self::TabGap {
-                        surface: right_surface,
-                        root: right_root,
-                        tabs: right_tabs,
-                        index: right_index,
-                    },
-                ) => left_surface
-                    .cmp(&right_surface)
-                    .then(left_root.cmp(&right_root))
-                    .then(left_tabs.cmp(&right_tabs))
-                    .then(left_index.cmp(&right_index)),
-                (
-                    Self::Center {
-                        surface: left_surface,
-                        root: left_root,
-                        tabs: left_tabs,
-                    },
-                    Self::Center {
-                        surface: right_surface,
-                        root: right_root,
-                        tabs: right_tabs,
-                    },
-                ) => left_surface
-                    .cmp(&right_surface)
-                    .then(left_root.cmp(&right_root))
-                    .then(left_tabs.cmp(&right_tabs)),
-                (
-                    Self::InnerEdge {
-                        surface: left_surface,
-                        root: left_root,
-                        node: left_node,
-                        edge: left_edge,
-                    },
-                    Self::InnerEdge {
-                        surface: right_surface,
-                        root: right_root,
-                        node: right_node,
-                        edge: right_edge,
-                    },
-                )
-                | (
-                    Self::OuterEdge {
-                        surface: left_surface,
-                        root: left_root,
-                        node: left_node,
-                        edge: left_edge,
-                    },
-                    Self::OuterEdge {
-                        surface: right_surface,
-                        root: right_root,
-                        node: right_node,
-                        edge: right_edge,
-                    },
-                ) => left_surface
-                    .cmp(&right_surface)
-                    .then(left_root.cmp(&right_root))
-                    .then(left_node.cmp(&right_node))
-                    .then(edge_order(left_edge).cmp(&edge_order(right_edge))),
-                (
-                    Self::SurfaceBackground {
-                        surface: left_surface,
-                    },
-                    Self::SurfaceBackground {
-                        surface: right_surface,
-                    },
-                ) => left_surface.cmp(&right_surface),
-                _ => Ordering::Equal,
-            })
+        match (self, other) {
+            (
+                Self::TabGap {
+                    surface: left_surface,
+                    root: left_root,
+                    tabs: left_tabs,
+                    index: left_index,
+                },
+                Self::TabGap {
+                    surface: right_surface,
+                    root: right_root,
+                    tabs: right_tabs,
+                    index: right_index,
+                },
+            ) => left_surface
+                .cmp(right_surface)
+                .then_with(|| left_root.cmp(right_root))
+                .then_with(|| left_tabs.cmp(right_tabs))
+                .then_with(|| left_index.cmp(right_index)),
+            (
+                Self::Center {
+                    surface: left_surface,
+                    root: left_root,
+                    tabs: left_tabs,
+                },
+                Self::Center {
+                    surface: right_surface,
+                    root: right_root,
+                    tabs: right_tabs,
+                },
+            ) => left_surface
+                .cmp(right_surface)
+                .then_with(|| left_root.cmp(right_root))
+                .then_with(|| left_tabs.cmp(right_tabs)),
+            (
+                Self::InnerEdge {
+                    surface: left_surface,
+                    root: left_root,
+                    node: left_node,
+                    edge: left_edge,
+                },
+                Self::InnerEdge {
+                    surface: right_surface,
+                    root: right_root,
+                    node: right_node,
+                    edge: right_edge,
+                },
+            )
+            | (
+                Self::OuterEdge {
+                    surface: left_surface,
+                    root: left_root,
+                    node: left_node,
+                    edge: left_edge,
+                },
+                Self::OuterEdge {
+                    surface: right_surface,
+                    root: right_root,
+                    node: right_node,
+                    edge: right_edge,
+                },
+            ) => left_surface
+                .cmp(right_surface)
+                .then_with(|| left_root.cmp(right_root))
+                .then_with(|| left_node.cmp(right_node))
+                .then_with(|| edge_order(*left_edge).cmp(&edge_order(*right_edge))),
+            (
+                Self::SurfaceBackground {
+                    surface: left_surface,
+                },
+                Self::SurfaceBackground {
+                    surface: right_surface,
+                },
+            ) => left_surface.cmp(right_surface),
+            _ => self.variant_order().cmp(&other.variant_order()),
+        }
     }
 }
 

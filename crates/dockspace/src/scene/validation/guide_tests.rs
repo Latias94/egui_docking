@@ -207,6 +207,46 @@ fn overlapping_pairs_keep_canonical_slot_order_across_catalog_orders() {
 }
 
 #[test]
+fn canonicalization_retains_unchanged_owners_and_guide_snapshots() {
+    let fixture = fixture(false);
+    let policy = DockPolicySnapshot::default();
+    let old = Arc::new(
+        validate(
+            &fixture.workspace,
+            &policy,
+            plan(&fixture, guides(&fixture.targets)),
+        )
+        .unwrap(),
+    );
+    let mut current = old.as_ref().clone();
+
+    for _ in 0..2 {
+        current.drop_targets.reverse();
+        current = validate(&fixture.workspace, &policy, current).unwrap();
+        assert_eq!(current.drop_targets(), old.drop_targets());
+        assert_eq!(current.drop_guide_clusters(), old.drop_guide_clusters());
+        for target in current.drop_targets() {
+            let original = fixture
+                .targets
+                .iter()
+                .find(|original| original.id() == target.id())
+                .unwrap();
+            assert!(Arc::ptr_eq(target, original));
+        }
+        for (_, guide) in current.drop_guide_clusters()[0].targets() {
+            let index = current
+                .drop_targets()
+                .binary_search_by_key(&guide.id(), |target| target.id())
+                .unwrap();
+            let target = &current.drop_targets()[index];
+            assert!(guide.shares_target(target));
+            assert_eq!(guide.hit(), target.region());
+            assert_eq!(guide.preview(), target.visual().rect());
+        }
+    }
+}
+
+#[test]
 fn canonical_rebinding_preserves_old_owners_and_stale_before_policy() {
     let mut fixture = fixture(false);
     let policy = DockPolicySnapshot::default();

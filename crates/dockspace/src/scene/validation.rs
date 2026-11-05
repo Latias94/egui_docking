@@ -1806,21 +1806,26 @@ fn canonicalize_ready(
     ready.magnetic_target_field.canonicalize();
 
     let surface = ready.surface;
+    let mut availability_changed = false;
     for target in &mut ready.drop_targets {
         let availability =
             canonical_drop_target_availability(target, workspace, workspace_index, surface, policy);
         if target.availability() != availability {
             Arc::make_mut(target).set_availability(availability);
+            availability_changed = true;
         }
     }
-    let canonical_targets = &ready.drop_targets;
-    for cluster in &mut ready.drop_guide_clusters {
-        cluster.for_each_target_mut(|guide| {
-            let index = canonical_targets
-                .binary_search_by_key(&guide.id(), |target| target.id())
-                .expect("validated guide target remains in the canonical catalog");
-            guide.rebind_target(Arc::clone(&canonical_targets[index]));
-        });
+    // Sorting retains each Arc; validated guides already share unchanged targets.
+    if availability_changed {
+        let canonical_targets = &ready.drop_targets;
+        for cluster in &mut ready.drop_guide_clusters {
+            cluster.for_each_target_mut(|guide| {
+                let index = canonical_targets
+                    .binary_search_by_key(&guide.id(), |target| target.id())
+                    .expect("validated guide target remains in the canonical catalog");
+                guide.rebind_target(Arc::clone(&canonical_targets[index]));
+            });
+        }
     }
 }
 
