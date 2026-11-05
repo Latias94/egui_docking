@@ -7,7 +7,8 @@ Date: 2026-11-05. Status: complete. Base: `0a2c94e`.
 Establish an executable product-level reference before choosing further
 optimizations. Existing internal `frame_cost` samples remain useful for attribution
 and unchanged; they are not a Dear ImGui comparison. The user authorized pushing
-the completed work first. `origin/refactor/dockspace` now points at `0a2c94e`.
+the completed work first; the initial push published `0a2c94e` to
+`origin/refactor/dockspace` before this comparison began.
 Preserve the pre-existing CI and review changes. No PR is requested.
 
 ## Shared workload contract

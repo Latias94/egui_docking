@@ -15,6 +15,30 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-05 product CPU comparison and snapshot extraction
+
+The [product comparison](performance/2026-11-05-product-comparison-results.md)
+adds an executable reference against unmodified pinned Dear ImGui docking. Both
+products build complete UI and CPU draw data for 16/128/1,024 fully visible panes,
+with real tab clicks and surface resizes. These timings include product text and
+meshes and are separate from the earlier internal recording-renderer timings.
+
+The adapter now moves already-cloned paint lists instead of deep-cloning their
+shapes again, retaining every prefix, layer, transform, marker and unknown-layer
+check. At 1,024 panes idle p50 falls from 95.203 to 77.186 ms, two-frame click
+from 213.510 to 176.821 ms and resize from 108.849 to 90.417 ms. ImGui remains
+1.123/2.275/1.112 ms in the final block. The audit is still quadratic; small-layout
+tail regressions remain recorded. No GPU or physical-window performance is
+claimed.
+
+Fresh serial gates pass workspace 2,090; public host 292 default / 332 persistence;
+official egui 24; product egui 114 / 119; native 556 with one pre-existing ignore.
+Default host includes all three 10,000-depth cases. Twenty focused proof tests,
+crossed reviews, correctness/suspicious Clippy, strict docs, ten doctests,
+formatting and dependency checks pass. Complete raw samples, exact source and
+binary hashes, process outputs and validation logs are linked from the result.
+Physical GUI and package qualification were not rerun.
+
 ## 2026-11-04 post-qualification boundary repairs
 
 The [boundary-repair record](audits/2026-11-04-output-input-boundary-repairs.md)

@@ -1,0 +1,41 @@
+{
+  "final_source_verification": "All final environment dockspace/benchmark/ImGui digests match after the 18 passing gates.",
+  "inventory_counts": {
+    "dockspace_sources": 548,
+    "benchmark_sources": 3,
+    "imgui_sources": 10
+  },
+  "validation_logs_sha256": {
+    "clippy-native.log": "fa04c519031c9813f7a23c64993ee17dd669ae3645f6a3da0e221058aac40bb9",
+    "clippy-product.log": "710e52e5e0fc316e00f959f6376111a6deb53e1064514bbfd9dc61d48cafd6ab",
+    "clippy-workspace.log": "db830694f46b9f9a955ed589febcdee5a45a6703d531358e1f6eb0779d53db77",
+    "dependency-boundary.log": "957ca9e5ba17315c4020b0502edb9be938d2956182a0de67ebd39b4ad4f5eb4c",
+    "diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docs-native.log": "b57614edb3da80bbfadc83d7a1141b92d7cb7d0f81dfacb0984882e93393987e",
+    "docs-workspace.log": "3e723dd9e30faf432640229fff8b7bc1bd54227634ad0d40f903a449541f6657",
+    "fmt-host.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt-product.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fmt-workspace.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "focused-output-proof-empty.log": "4a5e9f7988e14cc9f1c5e19245397926d8efbb547ffbf8b6d154090f3404bf00",
+    "focused-output-proof.log": "86ffb5f6a6b13b861a6983f622f1f0872c2a02c34863a21142f9e3c71d660727",
+    "host-default.log": "7894f7afbc31fefb536a2acaf0295e2697fec12f83d771e4634c66406c955d62",
+    "host-serde.log": "511ea3b438283586cfcf1554d5ce19cd5cad3129045501be4520765b96d36abb",
+    "native-all.log": "7898d292273b236a702a89a496c69a00ee01415289cd04d609dd0ab502ba6f66",
+    "official-egui.log": "d17a52f94e930b609a953c9696d5dcbcd1d21d5aa918a63804cf38c689d21340",
+    "product-default.log": "b48d40ed2bd84dd975ba9fca06ba50aa209c73b35d2c2771bb16f06ff5d6d0b3",
+    "product-serde.log": "19b2b385d6070e8ef3c0fdaceee2af7b7971ae548d5ab36f86b101cdecc592a4",
+    "results.json": "3cd703977b00a889f72513dae378e235c3026b0d11de5a2ee78adfddda4e4e20",
+    "workspace-all.log": "bb31e28aee415d01837be7b5a7400b09ef3cce8c88a07919d07a91b9c4f6b82a",
+    "doctests.log.gz": "c6560c101a66a5a5b7aa2e2399576563b6b5d0b23020fb0259e725eae520634e"
+  },
+  "historical_runner_sha256": "6268d56493b06ca8d75facd3ac9baeaee8b98e896dae38bfe24f23793cac63a7",
+  "historical_candidate_sha256": "1fff6cf258106adb6ab87f9e6cd4dce9f2139c85930be83b6b1bc84e6fa43676",
+  "unchanged_workload": "All raw per-sample frames/passes/content_calls/visible_contents/vertices/indices/draw_commands match across the three conditions.",
+  "source_delta": [
+    "crates/egui_dockspace/src/output_proof.rs"
+  ],
+  "runner_delta": "Cargo compiler-artifact executable resolution; benchmark executable sources unchanged.",
+  "compressed_log_content_sha256": {
+    "doctests.log.gz": "dfeaad118eaaba872413a7d9dc9f15cb597df8b965a48c89fec58da921ec4c45"
+  }
+}

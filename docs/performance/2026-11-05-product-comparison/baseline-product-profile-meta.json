@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/tmp/dockspace-product-comparison-01a1a5fb/baseline-egui-product-cost",
+    "--samples",
+    "64",
+    "--warmup",
+    "6",
+    "--panes",
+    "1024"
+  ],
+  "start_utc": "2026-11-05T03:32:59.877059+00:00",
+  "scope": "First eight seconds of the 1024-pane product command; chiefly idle complete UI frames and warmup. Profiling is separate from timing comparison runs.",
+  "end_utc": "2026-11-05T03:33:43.872649+00:00",
+  "returncode": 0,
+  "sampler_returncode": 0
+}
