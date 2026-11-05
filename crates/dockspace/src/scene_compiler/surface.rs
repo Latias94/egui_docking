@@ -3,6 +3,10 @@ use crate::graph::SplitWeight;
 use crate::layout::{RootMeasurement, measure_root_minimums};
 
 #[cfg(test)]
+#[path = "surface/junction_compile_tests.rs"]
+mod junction_compile_tests;
+
+#[cfg(test)]
 #[path = "surface/shared_splitter_tests.rs"]
 mod shared_splitter_tests;
 
@@ -253,12 +257,22 @@ pub(crate) fn compile_surface_scene(
 
 fn compile_splitter_junctions(ready: &mut PresentationPlan) -> Result<(), SceneCompilationError> {
     let candidates = derive_splitter_junction_candidates(ready.splitter_records())?;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let mut splitter_operability = BTreeMap::new();
+    for splitter in ready.splitter_records() {
+        splitter_operability
+            .entry(*splitter.id())
+            .or_insert(splitter.operable());
+    }
     for candidate in candidates {
         if ready.region_is_operable(candidate.hit, candidate.layer) {
             let operable = candidate.id().splitters().into_iter().all(|splitter| {
-                ready
-                    .splitter_record(splitter)
-                    .is_some_and(SplitterRecord::operable)
+                splitter_operability
+                    .get(&splitter)
+                    .copied()
+                    .unwrap_or(false)
             });
             let id = candidate.id();
             ready.push_splitter_junction_record(SplitterJunctionRecord::new(

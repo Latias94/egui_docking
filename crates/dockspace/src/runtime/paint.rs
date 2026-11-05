@@ -39,6 +39,8 @@ use super::{
 mod actions;
 mod drag_decoration;
 mod guides;
+#[cfg(test)]
+mod junction_query_tests;
 mod tab_chrome;
 mod tabs;
 pub use actions::ContainedResizeDirection;
@@ -2324,14 +2326,14 @@ impl<'frame> SurfacePaintPlan<'frame> {
         axis: DockspaceAxis,
     ) -> bool {
         let axis: Axis = axis.into();
-        let Some(record) = self
-            .plan
-            .splitter_junction_records()
-            .iter()
-            .find(|record| record.id() == junction.record.id())
+        // Runtime plans borrow the validator's canonical, unique record arrays.
+        let junctions = self.plan.splitter_junction_records();
+        let Ok(index) =
+            junctions.binary_search_by_key(&junction.record.id(), SplitterJunctionRecord::id)
         else {
             return false;
         };
+        let record = &junctions[index];
         let directions = match axis {
             Axis::Horizontal => [
                 SplitterJunctionDirection::North,
@@ -2342,18 +2344,21 @@ impl<'frame> SurfacePaintPlan<'frame> {
                 SplitterJunctionDirection::West,
             ],
         };
-        let mut ids = directions
-            .into_iter()
-            .filter_map(|direction| record.id().arm(direction))
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids.dedup();
-        !ids.is_empty()
-            && ids.into_iter().all(|id| {
-                self.plan
-                    .splitter_record(id)
-                    .is_some_and(|splitter| splitter.axis() == axis && splitter.operable())
-            })
+        let [first, second] = directions.map(|direction| record.id().arm(direction));
+        let Some(first) = first.or(second) else {
+            return false;
+        };
+        let splitters = self.plan.splitter_records();
+        let is_operable = |id| {
+            splitters
+                .binary_search_by_key(&id, |splitter| *splitter.id())
+                .ok()
+                .is_some_and(|index| {
+                    let splitter = &splitters[index];
+                    splitter.axis() == axis && splitter.operable()
+                })
+        };
+        is_operable(first) && second.filter(|id| *id != first).is_none_or(is_operable)
     }
 
     /// Returns the exact blocker receiver for one contained floating surface.
