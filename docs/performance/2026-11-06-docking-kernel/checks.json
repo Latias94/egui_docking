@@ -1,0 +1,156 @@
+{
+  "recorded_utc": "2026-11-06T13:54:01.561343+00:00",
+  "runtime_base": "a9ace585e1e8d812efd35c6149f549043bb7c999",
+  "measured_sources_still_match_formal": true,
+  "normal_test_build": {
+    "DOCKSPACE_BENCH_NO_WORK_COUNTERS": "absent",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--cargo-profile",
+        "production",
+        "--locked",
+        "--offline",
+        "-j",
+        "1"
+      ],
+      "returncode": 0,
+      "passed": 1943,
+      "skipped": 3
+    },
+    {
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--tests",
+        "--no-default-features",
+        "--cargo-profile",
+        "production",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "-E",
+        "kind(test)"
+      ],
+      "returncode": 0,
+      "passed": 4,
+      "skipped": 0
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--profile",
+        "production",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact",
+        "docking_cost::docking_work",
+        "--ignored",
+        "--nocapture",
+        "--test-threads",
+        "1"
+      ],
+      "returncode": 0,
+      "passed": 1,
+      "counter_cells": 21,
+      "all_source_predictions_equal": true
+    },
+    {
+      "command": [
+        "cargo",
+        "clippy",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--tests",
+        "--locked",
+        "--offline",
+        "--",
+        "-D",
+        "clippy::correctness",
+        "-D",
+        "clippy::suspicious"
+      ],
+      "returncode": 0,
+      "limits": "Not warning-free: existing all/pedantic warnings remain, plus the probe validator length and intentionally exact binary floating-point comparisons."
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T13:52:35.878892+00:00",
+      "finished_utc": "2026-11-06T13:52:37.449350+00:00"
+    },
+    {
+      "name": "python",
+      "command": [
+        "python3",
+        "-m",
+        "py_compile",
+        "scripts/compare_docking.py"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T13:52:37.449377+00:00",
+      "finished_utc": "2026-11-06T13:52:37.477620+00:00"
+    },
+    {
+      "name": "dependency-boundary",
+      "command": [
+        "python3",
+        "scripts/check_core_dependencies.py"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T13:52:37.477645+00:00",
+      "finished_utc": "2026-11-06T13:52:37.631330+00:00"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T13:52:37.631355+00:00",
+      "finished_utc": "2026-11-06T13:52:37.646546+00:00"
+    }
+  ],
+  "protected_user_files": {
+    "count": 49,
+    "hashes_unchanged": true
+  },
+  "formal_timing": {
+    "raw_rows": 8064,
+    "processes": 8,
+    "matrix_cells": 21,
+    "full_state_dumps": 168,
+    "group_summaries": 84,
+    "pooled_attribution_rows": 42,
+    "source_ledger": "compiled out"
+  },
+  "probes_are_ignored_in_ordinary_tests": true,
+  "no_production_algorithm_or_public_api_changes": true
+}

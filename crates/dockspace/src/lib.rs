@@ -66,6 +66,8 @@ pub mod coordinates;
 #[cfg(not(test))]
 #[allow(dead_code, unused_imports)]
 mod coordinates;
+#[cfg(test)]
+mod docking_cost;
 #[cfg(feature = "serde")]
 mod document;
 #[allow(dead_code)]

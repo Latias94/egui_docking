@@ -1,0 +1,32 @@
+{
+  "command": [
+    "/tmp/dockspace-docking-kernel-20261106-a9ace58/formal/dockspace_docking_cost",
+    "--exact",
+    "docking_cost::docking_cost",
+    "--ignored",
+    "--nocapture",
+    "--test-threads",
+    "1"
+  ],
+  "sample_command": [
+    "sample",
+    "28258",
+    "8",
+    "1",
+    "-file",
+    "/tmp/dockspace-docking-kernel-20261106-a9ace58/profile-center/center.sample.txt"
+  ],
+  "sample_returncode": 0,
+  "probe_returncode": 0,
+  "wall_seconds": 19.370940923690796,
+  "binary": "/tmp/dockspace-docking-kernel-20261106-a9ace58/formal/dockspace_docking_cost",
+  "limits": "Separate CPU sample, includes fixture setup, pre/post validators and disposal. This is not formal latency or a phase share.",
+  "settings": {
+    "DOCKSPACE_DOCK_COST_SAMPLES": "3000",
+    "DOCKSPACE_DOCK_COST_WARMUP": "8",
+    "DOCKSPACE_DOCK_COST_PANES": "1024",
+    "DOCKSPACE_DOCK_COST_VIEWS": "1",
+    "DOCKSPACE_DOCK_COST_CASE": "center_move"
+  },
+  "binary_sha256": "793e8f2c166cbee6cee4885b01052d25415c9ccac06fee4189be3945de96f6d7"
+}

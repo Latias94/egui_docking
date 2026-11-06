@@ -1236,6 +1236,10 @@ pub(crate) mod structural_work {
     }
 
     fn update(update: impl FnOnce(&mut StructuralWorkMetrics)) {
+        // Opt-in production-profile probes exclude the test ledger's graph traversals.
+        if option_env!("DOCKSPACE_BENCH_NO_WORK_COUNTERS").is_some() {
+            return;
+        }
         STRUCTURAL_WORK.with(|work| {
             let mut next = work.get();
             update(&mut next);
