@@ -1,0 +1,36 @@
+{
+  "base": "42fa235b91e36c4cb471532be4548f82e8015fd0",
+  "scope": "Canonical single-selection local transaction with general fallback",
+  "started_utc": "2026-11-06T03:43:13.931045+00:00",
+  "production_scope": [
+    "crates/dockspace/src/engine.rs",
+    "crates/dockspace/src/engine/native_projection.rs",
+    "crates/dockspace/src/engine/native_tear_off.rs",
+    "crates/dockspace/src/engine/pointer_timed.rs",
+    "crates/dockspace/src/engine/pointer_transaction.rs",
+    "crates/dockspace/src/engine/presentation_authority.rs",
+    "crates/dockspace/src/engine/semantic_candidate.rs",
+    "crates/dockspace/src/engine/tests.rs",
+    "crates/dockspace/src/engine/tests/local_selection.rs",
+    "crates/dockspace/src/engine/tests/native_lifecycle.rs",
+    "crates/dockspace/src/operation.rs",
+    "crates/dockspace/src/operation/tests/local_selection.rs",
+    "crates/dockspace/src/transaction.rs"
+  ],
+  "production_sha256": {
+    "crates/dockspace/src/engine.rs": "84a23d6cbe0d276c0be990b0a12c426730b92bbdb882f08b0fe97e6c925f2c08",
+    "crates/dockspace/src/engine/native_projection.rs": "7820d12ab234f497a7d1871702cee6f36b6d553272671303180fc64e49819466",
+    "crates/dockspace/src/engine/native_tear_off.rs": "315fcff123553e698c726416ea820d9f711924670b268ec87eed2eccdf1bff23",
+    "crates/dockspace/src/engine/pointer_timed.rs": "1a6bee938044957a3497a4c9854827f43ffad33a073e1354fe46ed8a8ed3e278",
+    "crates/dockspace/src/engine/pointer_transaction.rs": "593b7965a18df4dc28e282c778ee603f711c1dbd64d77fbd84042bb1e91387f9",
+    "crates/dockspace/src/engine/presentation_authority.rs": "1033b9428d0cbe62ba46cabe8f71c1fe816fe3c69dd6fdfc871a3cd1f47b5136",
+    "crates/dockspace/src/engine/semantic_candidate.rs": "12e5a078c15f4fda6c7031263aa97f7ef4ac7b25a2b00befa02ac2ba420f81ee",
+    "crates/dockspace/src/engine/tests.rs": "d85a114ad4b075941c274ecc62d575ea203934cc9a292754af63d2353c6eeab8",
+    "crates/dockspace/src/engine/tests/local_selection.rs": "4b17c458694ab02ca67923c13936151be676f29b94a76f69234ff1cce97e7c0a",
+    "crates/dockspace/src/engine/tests/native_lifecycle.rs": "68d80be389a07a3fd148fa9b4cb4329acc968a62422d33e3fc45082cc828d7d7",
+    "crates/dockspace/src/operation.rs": "6beeb5d219a9ff0c337fe9203105d6408a0e0cbf49ac92e3bfc7d861d854ed3c",
+    "crates/dockspace/src/operation/tests/local_selection.rs": "9bdf4e716e33563e8189a96e8aff9505277fc9d16366f1bfbcc1f84257b42dda",
+    "crates/dockspace/src/transaction.rs": "f119a6710352f3acaede3146b8b71cbe9ac0d17373daaa47ef34757dc783c19f"
+  },
+  "phase": "Qualified final source snapshot; binaries identified by recorded SHA-256."
+}

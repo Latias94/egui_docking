@@ -66,7 +66,7 @@ impl FromIterator<WorkspaceCommand> for WorkspaceTransaction {
 
 #[derive(Debug)]
 pub(crate) struct PreparedTransaction {
-    pub(crate) candidate: Workspace,
+    pub(crate) candidate: crate::operation::CanonicalWorkspace,
     pub(crate) outcomes: Vec<CommandOutcome>,
 }
 
@@ -76,9 +76,25 @@ impl PreparedTransaction {
     /// `original` is the snapshot used for preparation. The engine can check its
     /// publication barriers against the candidate before moving it into place.
     pub(crate) fn into_parts(self, original: &Workspace) -> (Workspace, TransactionReport) {
+        let (candidate, report) = self.into_canonical_parts(original);
+        (candidate.into_workspace(), report)
+    }
+
+    pub(crate) fn into_snapshot_parts(
+        self,
+        original: &Workspace,
+    ) -> (crate::operation::WorkspaceSnapshot, TransactionReport) {
+        let (candidate, report) = self.into_canonical_parts(original);
+        (candidate.into(), report)
+    }
+
+    fn into_canonical_parts(
+        self,
+        original: &Workspace,
+    ) -> (crate::operation::CanonicalWorkspace, TransactionReport) {
         let report = TransactionReport {
             outcomes: self.outcomes,
-            changed: self.candidate != *original,
+            changed: *self.candidate != *original,
         };
         (self.candidate, report)
     }

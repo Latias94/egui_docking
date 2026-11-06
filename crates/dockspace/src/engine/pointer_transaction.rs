@@ -3295,7 +3295,7 @@ impl DockEngine {
             self.version,
             policy.revision(),
             command.clone(),
-            staged.publication.workspace,
+            staged.publication.workspace.into_workspace(),
             report,
         );
         Ok((
@@ -3857,24 +3857,21 @@ impl DockEngine {
             }
         }
         if !commands.is_empty() {
-            let prepared =
-                match crate::operation::prepare_transaction(&self.workspace, policy, &commands) {
-                    Ok(prepared) => prepared,
-                    Err(TransactionError::Command { source, .. })
-                        if source.is_expected_rejection() =>
-                    {
-                        return Ok(InteractionOutcome::Rejected(
-                            InteractionRejection::CommandRejected(source),
-                        ));
-                    }
-                    Err(source) => {
-                        return Err(EngineError::PointerInteractionInvariant {
-                            cause,
-                            detail: source.to_string(),
-                        });
-                    }
-                };
-            let (workspace, report) = prepared.into_parts(&self.workspace);
+            let prepared = match self.workspace.prepare_transaction(policy, &commands) {
+                Ok(prepared) => prepared,
+                Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
+                    return Ok(InteractionOutcome::Rejected(
+                        InteractionRejection::CommandRejected(source),
+                    ));
+                }
+                Err(source) => {
+                    return Err(EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: source.to_string(),
+                    });
+                }
+            };
+            let (workspace, report) = prepared.into_snapshot_parts(&self.workspace);
             if let Some(surface) = self.first_pending_presentation_source_mismatch(
                 &workspace,
                 WorkspacePublicationAuthority::Ordinary,

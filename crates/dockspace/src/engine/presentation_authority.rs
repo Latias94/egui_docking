@@ -477,7 +477,8 @@ impl DockEngine {
             .finalize(tab_strip_states.popup_requirement())
             .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
         self.presentation_authority.presentation_requirements = requirements;
-        self.presentation_authority.workspace_index_source = Arc::downgrade(&self.workspace);
+        self.presentation_authority.workspace_index_source =
+            Arc::downgrade(self.workspace.as_arc());
         self.presentation_authority.tab_strip_states = tab_strip_states;
         let changed_stacking = surface_semantic_snapshots
             .iter()

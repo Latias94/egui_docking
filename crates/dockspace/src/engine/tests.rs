@@ -1,6 +1,7 @@
 use super::*;
 
 mod backend_ingress_prefix;
+mod local_selection;
 mod magnetic_targeting;
 
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};

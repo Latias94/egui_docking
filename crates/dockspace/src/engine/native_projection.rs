@@ -394,7 +394,7 @@ impl DockEngine {
             })?;
         Ok(Some(NativeFirstLiveProjection {
             stamp,
-            workspace: publication.workspace,
+            workspace: publication.workspace.into_workspace(),
             version,
             policy: self.policy.clone(),
             config: self.presentation_authority.presentation_config.clone(),

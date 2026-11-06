@@ -524,7 +524,7 @@ impl DockEngine {
             return Ok(Err(CommandError::SurfaceLifecycleFrozen { surface }));
         }
         match self.stage_workspace_publication(future, policy) {
-            Ok(publication) => Ok(Ok(publication.workspace)),
+            Ok(publication) => Ok(Ok(publication.workspace.into_workspace())),
             Err(source) if source.is_expected_rejection() => Ok(Err(source)),
             Err(source) => Err(EngineError::PointerInteractionInvariant {
                 cause,

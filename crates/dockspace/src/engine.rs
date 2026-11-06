@@ -1590,7 +1590,7 @@ pub struct DockEngine {
     authority_domain: EngineAuthorityDomainId,
     /// Canonical immutable snapshot shared by rollback candidates. Checked
     /// commands own the existing staging copy and publish a new snapshot.
-    workspace: Arc<Workspace>,
+    workspace: crate::operation::WorkspaceSnapshot,
     presentation_identity: PresentationIdentityAuthority,
     policy: DockPolicySnapshot,
     version: WorkspaceVersion,
@@ -1628,7 +1628,7 @@ pub struct DockEngine {
 
 #[derive(Debug)]
 struct StagedWorkspacePublication {
-    workspace: Workspace,
+    workspace: crate::operation::WorkspaceSnapshot,
     root_recovery_anchors: BTreeMap<crate::ids::SurfaceId, RootRecoveryAnchor>,
     bound_surface_recoveries: BTreeMap<crate::ids::SurfaceId, BoundSurfaceRecovery>,
 }
@@ -2123,8 +2123,7 @@ impl DockEngine {
         presentation_config: DockPresentationConfig,
         presentation_identity_frontier: PresentationIdentityFrontier,
     ) -> Result<Self, EngineError> {
-        workspace
-            .validate()
+        let workspace = crate::operation::WorkspaceSnapshot::validated(workspace)
             .map_err(EngineError::InvalidWorkspace)?;
         let presentation_identity =
             PresentationIdentityAuthority::new(&workspace, presentation_identity_frontier);
@@ -2180,16 +2179,15 @@ impl DockEngine {
                 detail: source.to_string(),
             }
         })?;
-        let workspace = Arc::new(workspace);
         Ok(Self {
             authority_domain,
-            workspace: Arc::clone(&workspace),
+            workspace: workspace.clone(),
             presentation_identity,
             policy,
             version,
             presentation_authority: PresentationAuthorityState::new(
                 authority_domain,
-                &workspace,
+                workspace.as_arc(),
                 presentation_config,
                 presentation_config_revision,
                 presentation_requirements,
@@ -3438,11 +3436,10 @@ impl DockEngine {
         authority: WorkspacePublicationAuthority,
         activation: JournalDeliveryActivation,
     ) -> Result<Result<StagedJournalWorkspaceCommand, CommandError>, EngineError> {
-        let prepared = match crate::operation::prepare_transaction(
-            self.workspace.as_ref(),
-            policy,
-            std::slice::from_ref(command),
-        ) {
+        let prepared = match self
+            .workspace
+            .prepare_transaction(policy, std::slice::from_ref(command))
+        {
             Ok(prepared) => prepared,
             Err(TransactionError::Command { index: 0, source })
                 if source.is_expected_rejection() =>
@@ -3456,7 +3453,7 @@ impl DockEngine {
                 });
             }
         };
-        let (workspace, report) = prepared.into_parts(self.workspace.as_ref());
+        let (workspace, report) = prepared.into_snapshot_parts(self.workspace.as_ref());
         self.stage_journal_workspace_draft(cause, policy, authority, activation, workspace, &report)
     }
 
@@ -3466,9 +3463,10 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         authority: WorkspacePublicationAuthority,
         activation: JournalDeliveryActivation,
-        mut workspace: Workspace,
+        workspace: impl Into<crate::operation::WorkspaceSnapshot>,
         report: &crate::transaction::TransactionReport,
     ) -> Result<Result<StagedJournalWorkspaceCommand, CommandError>, EngineError> {
+        let mut workspace = workspace.into();
         let mut changed = report.changed();
         // A successful manipulation may activate its delivered content. Stage
         // that command against the post-move source and publish both together;
@@ -3493,23 +3491,21 @@ impl DockEngine {
                 Ok(None) => continue,
                 Err(source) => return Ok(Err(source)),
             };
-            let activated =
-                match crate::operation::apply_owned_draft_command(&mut workspace, policy, &command)
+            let activated = match workspace.apply_draft_command(policy, &command) {
+                Ok(outcome) => outcome,
+                Err(TransactionError::Command { index: 0, source })
+                    if source.is_expected_rejection() =>
                 {
-                    Ok(outcome) => outcome,
-                    Err(TransactionError::Command { index: 0, source })
-                        if source.is_expected_rejection() =>
-                    {
-                        return Ok(Err(source));
-                    }
-                    Err(source) => {
-                        return Err(EngineError::PointerInteractionInvariant {
-                            cause,
-                            detail: source.to_string(),
-                        });
-                    }
-                };
-            changed = workspace != *self.workspace;
+                    return Ok(Err(source));
+                }
+                Err(source) => {
+                    return Err(EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: source.to_string(),
+                    });
+                }
+            };
+            changed = *workspace != *self.workspace;
             activation_outcomes.push(activated);
         }
         if let Some(surface) =
@@ -3731,8 +3727,7 @@ impl DockEngine {
                 reason: crate::policy::PolicyRejection::ArrangementLocked,
             });
         }
-        workspace
-            .validate()
+        let replacement = crate::operation::WorkspaceSnapshot::validated(workspace.clone())
             .map_err(EngineError::InvalidWorkspace)?;
         let previous_focus = self.viewport_focus.workspace_replacement_focus();
         let mut native_focus_surfaces = self
@@ -3777,7 +3772,7 @@ impl DockEngine {
                 .merge_restored(workspace, restored),
             None => self.presentation_identity.observe_workspace(workspace),
         }
-        self.workspace = Arc::new(workspace.clone());
+        self.workspace = replacement;
         self.surface_recovery.clear();
         self.root_recovery_anchors.clear();
         self.bound_surface_recoveries.clear();
@@ -4103,7 +4098,7 @@ impl DockEngine {
     ) -> Result<PreparedDragSource, InteractionRejection> {
         let index = self
             .presentation_authority
-            .workspace_index_for(&self.workspace, self.version);
+            .workspace_index_for(self.workspace.as_arc(), self.version);
         self.validate_payload_with_index(payload, index)
             .map_err(InteractionRejection::CommandRejected)?;
         let complete_root = match index {
@@ -5403,7 +5398,7 @@ impl DockEngine {
 
     fn stage_workspace_publication(
         &self,
-        candidate: Workspace,
+        candidate: impl Into<crate::operation::WorkspaceSnapshot>,
         policy: &DockPolicySnapshot,
     ) -> Result<StagedWorkspacePublication, CommandError> {
         self.stage_workspace_publication_with_authority(
@@ -5415,10 +5410,11 @@ impl DockEngine {
 
     fn stage_workspace_publication_with_authority(
         &self,
-        candidate: Workspace,
+        candidate: impl Into<crate::operation::WorkspaceSnapshot>,
         policy: &DockPolicySnapshot,
         authority: WorkspacePublicationAuthority,
     ) -> Result<StagedWorkspacePublication, CommandError> {
+        let candidate = candidate.into();
         let anchors = self.root_recovery_anchors.clone();
         let mut recoveries = self.bound_surface_recoveries.clone();
         let recovery_commit = match authority {
@@ -5675,11 +5671,10 @@ impl DockEngine {
                 CommandApplication::Rejected(CommandError::SurfaceLifecycleFrozen { surface }),
             ));
         }
-        let prepared = match crate::operation::prepare_transaction(
-            self.workspace.as_ref(),
-            policy,
-            std::slice::from_ref(command),
-        ) {
+        let prepared = match self
+            .workspace
+            .prepare_transaction(policy, std::slice::from_ref(command))
+        {
             Ok(prepared) => prepared,
             Err(TransactionError::Command { index: 0, source })
                 if source.is_expected_rejection() =>
@@ -5688,7 +5683,7 @@ impl DockEngine {
             }
             Err(source) => return Err(EngineError::Command { input, source }),
         };
-        let (candidate, report) = prepared.into_parts(self.workspace.as_ref());
+        let (candidate, report) = prepared.into_snapshot_parts(self.workspace.as_ref());
         if let Some(surface) =
             self.first_pending_presentation_source_mismatch(&candidate, authority)
         {
@@ -5748,7 +5743,7 @@ impl DockEngine {
     fn publish_workspace(&mut self, publication: StagedWorkspacePublication) {
         self.presentation_identity
             .observe_workspace(&publication.workspace);
-        self.workspace = Arc::new(publication.workspace);
+        self.workspace = publication.workspace;
         self.root_recovery_anchors = publication.root_recovery_anchors;
         self.bound_surface_recoveries = publication.bound_surface_recoveries;
     }
@@ -5915,7 +5910,7 @@ impl DockEngine {
         }
         let mut candidate = Self {
             authority_domain: self.authority_domain,
-            workspace: Arc::clone(&self.workspace),
+            workspace: self.workspace.clone(),
             presentation_identity: self.presentation_identity,
             policy: self.policy.clone(),
             version: self.version,
@@ -6088,7 +6083,7 @@ mod drag_source_index_tests {
             .unwrap();
         let indexed = engine
             .presentation_authority
-            .workspace_index_for(&engine.workspace, engine.version)
+            .workspace_index_for(engine.workspace.as_arc(), engine.version)
             .unwrap()
             .capture_item_source(
                 &engine.workspace,
@@ -6215,7 +6210,7 @@ mod drag_source_index_tests {
                 .unwrap(),
         );
         let previous_version = engine.version;
-        let previous_workspace = Arc::downgrade(&engine.workspace);
+        let previous_workspace = Arc::downgrade(engine.workspace.as_arc());
         let mut candidate = engine.workspace.as_ref().clone();
         *candidate.nodes.get_mut(fixture.tabs).unwrap() = Node::Tabs {
             items: vec![ItemId::new(1), ItemId::new(2)],
@@ -6233,7 +6228,7 @@ mod drag_source_index_tests {
         assert!(
             engine
                 .presentation_authority
-                .workspace_index_for(&engine.workspace, engine.version)
+                .workspace_index_for(engine.workspace.as_arc(), engine.version)
                 .is_none()
         );
         crate::drop_resolver::structural_work::reset();
@@ -6257,7 +6252,7 @@ mod drag_source_index_tests {
         assert!(
             engine
                 .presentation_authority
-                .workspace_index_for(&engine.workspace, engine.version)
+                .workspace_index_for(engine.workspace.as_arc(), engine.version)
                 .is_some()
         );
         crate::drop_resolver::structural_work::reset();
@@ -6286,8 +6281,8 @@ mod drag_source_index_tests {
                     .unwrap(),
             );
             if replace_source {
-                let previous = Arc::downgrade(&engine.workspace);
-                let _ = Arc::make_mut(&mut engine.workspace);
+                let previous = Arc::downgrade(engine.workspace.as_arc());
+                let _ = engine.workspace.draft_mut();
                 assert!(previous.upgrade().is_none());
             } else {
                 engine.version = WorkspaceVersion::new(
@@ -6298,7 +6293,7 @@ mod drag_source_index_tests {
             assert!(
                 engine
                     .presentation_authority
-                    .workspace_index_for(&engine.workspace, engine.version)
+                    .workspace_index_for(engine.workspace.as_arc(), engine.version)
                     .is_none()
             );
             crate::drop_resolver::structural_work::reset();

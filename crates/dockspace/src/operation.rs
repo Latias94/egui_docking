@@ -1,6 +1,8 @@
 //! Internal checked command execution against isolated workspace candidates.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use crate::RootPresentationOwner;
 use crate::canonical::canonicalize_draft;
@@ -25,6 +27,132 @@ use crate::surface_recovery::SurfaceRecoveryTransaction;
 use crate::transaction::{PreparedTransaction, clone_workspace_draft};
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
+
+/// Immutable engine snapshot whose selection eligibility belongs to its owner.
+/// Raw drafts remain ineligible until a checked transaction normalizes them.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkspaceSnapshot {
+    workspace: Arc<Workspace>,
+    selection_ready: bool,
+}
+
+impl WorkspaceSnapshot {
+    pub(crate) fn validated(
+        workspace: Workspace,
+    ) -> Result<Self, crate::validation::WorkspaceValidationErrors> {
+        // Strict validation rejects every topology rewrite and vacant surface
+        // that the general transaction would otherwise have to clean up.
+        workspace.validate()?;
+        Ok(Self::from(CanonicalWorkspace(workspace)))
+    }
+
+    pub(crate) fn as_arc(&self) -> &Arc<Workspace> {
+        &self.workspace
+    }
+
+    pub(crate) fn draft_mut(&mut self) -> &mut Workspace {
+        self.selection_ready = false;
+        Arc::make_mut(&mut self.workspace)
+    }
+
+    pub(crate) fn into_workspace(self) -> Workspace {
+        Arc::unwrap_or_clone(self.workspace)
+    }
+
+    pub(crate) fn apply_draft_command(
+        &mut self,
+        policy: &DockPolicySnapshot,
+        command: &WorkspaceCommand,
+    ) -> Result<CommandOutcome, TransactionError> {
+        let outcome = apply_owned_draft_command(self.draft_mut(), policy, command)?;
+        // The general follow-up has re-established the complete postcondition.
+        self.selection_ready = true;
+        Ok(outcome)
+    }
+
+    pub(crate) fn prepare_transaction(
+        &self,
+        policy: &DockPolicySnapshot,
+        commands: &[WorkspaceCommand],
+    ) -> Result<PreparedTransaction, TransactionError> {
+        if self.selection_ready
+            && let [WorkspaceCommand::Select { source }] = commands
+        {
+            #[cfg(test)]
+            crate::drop_resolver::structural_work::record_transaction_prepare(commands.len());
+            let mut candidate = clone_workspace_draft(self);
+            authorize_workspace_command(&candidate, policy, &commands[0])
+                .map_err(|source| TransactionError::Command { index: 0, source })?;
+            let applied = select(&mut candidate, source)
+                .map_err(|source| TransactionError::Command { index: 0, source })?;
+            // Select changes only the selected item and its exact MRU
+            // permutation. It preserves canonical topology, presentation
+            // ownership and the complete item multiset of this snapshot.
+            return Ok(PreparedTransaction {
+                candidate: CanonicalWorkspace(candidate),
+                outcomes: vec![applied.outcome],
+            });
+        }
+        prepare_transaction(self, policy, commands)
+    }
+}
+
+impl Deref for WorkspaceSnapshot {
+    type Target = Workspace;
+
+    fn deref(&self) -> &Self::Target {
+        &self.workspace
+    }
+}
+
+impl AsRef<Workspace> for WorkspaceSnapshot {
+    fn as_ref(&self) -> &Workspace {
+        self
+    }
+}
+
+impl PartialEq for WorkspaceSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        // Eligibility controls preparation cost, not workspace semantics.
+        self.workspace == other.workspace
+    }
+}
+
+impl From<Workspace> for WorkspaceSnapshot {
+    fn from(workspace: Workspace) -> Self {
+        Self {
+            workspace: Arc::new(workspace),
+            selection_ready: false,
+        }
+    }
+}
+
+impl From<CanonicalWorkspace> for WorkspaceSnapshot {
+    fn from(workspace: CanonicalWorkspace) -> Self {
+        Self {
+            workspace: Arc::new(workspace.0),
+            selection_ready: true,
+        }
+    }
+}
+
+/// Owned result issued only after full normalization or a preserving edit.
+#[derive(Debug)]
+pub(crate) struct CanonicalWorkspace(Workspace);
+
+impl CanonicalWorkspace {
+    pub(crate) fn into_workspace(self) -> Workspace {
+        self.0
+    }
+}
+
+impl Deref for CanonicalWorkspace {
+    type Target = Workspace;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// Core-private frozen payload for an approved content close.
 ///
@@ -556,7 +684,7 @@ fn prepare_transaction_inner(
     }
 
     Ok(PreparedTransaction {
-        candidate,
+        candidate: CanonicalWorkspace(candidate),
         outcomes,
     })
 }
@@ -3499,6 +3627,7 @@ fn edge_axis_and_order(edge: Edge) -> (Axis, bool) {
 #[cfg(test)]
 mod tests {
     mod arrangement_lock;
+    mod local_selection;
     mod logical_surfaces;
     mod split_resize;
 
