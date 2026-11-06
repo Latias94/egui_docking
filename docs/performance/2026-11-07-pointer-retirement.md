@@ -70,3 +70,9 @@ successful check receipts, exact source pairs against `c98569d`, reviewed final
 patches and the superseded diagnostic. Every member round-trips byte for byte.
 Local macOS qualification does not run physical X11. Fresh pushed-head physical
 smoke and all remote CI jobs remain required before declaring CI repaired.
+
+The fix author additionally performs a
+[mechanical evidence check](2026-11-07-pointer-retirement/author-evidence-check.md)
+against immutable `1c71696`, confirming all source pairs, archive members and
+RED/GREEN receipts. This is labeled as an author check; the independent source
+review remains the separate admission report and final test supplement.

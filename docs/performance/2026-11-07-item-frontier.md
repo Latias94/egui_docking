@@ -75,3 +75,8 @@ checks/work, the exact three control/candidate pairs, original/rebased reviews,
 diagnostic profile and actual control qualification. All members round-trip
 against their original bytes. The native pointer fix remains in both conditions;
 its remote physical CI is a separate requirement.
+
+The [independent evidence review](2026-11-07-item-frontier/evidence-review.md)
+binds immutable `3dd308c` and control `1c71696`, reproduces the complete
+observations/comparisons, verifies the mutation-only inclusive profile counts,
+and finds no blocking evidence issue or unsupported retention claim.
