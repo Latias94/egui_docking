@@ -90,7 +90,7 @@ the twofold target.
 
 At 1,024 panes, independently observed move mutation medians fall to about
 18–19 microseconds from the preceding approximately 78–81 microseconds. Fresh
-all-root layout remains about 110–113 microseconds, and complete owned export
+all-root layout remains about 110–116 microseconds, and complete owned export
 about 15–16 microseconds. Phase medians are separate distributions and must not
 be summed or subtracted to infer an exact per-sample budget. The remaining
 layout work and the small-root fixed costs justify the next structure/output
@@ -111,3 +111,10 @@ receipts, the original candidate and source review, ordinary logs and the real
 its input bytes. [Comparisons](2026-11-07-candidate-copy/comparisons.csv) retain
 all medians, p95 values, maxima and negative cells; the work CSV remains separate
 from the unchanged formal timing schema.
+
+[Independent evidence review](2026-11-07-candidate-copy/evidence-review.md)
+recomputes every statistic, checks every complete vector and binds the source
+receipts to `fbc8659` and the actual `93f2c57` predecessor. The archive's generic
+`baseline.json` is an earlier historical attachment; it is not the baseline for
+these paired comparisons. Their environment receipts name the actual frozen
+prepared-report executable and hash.

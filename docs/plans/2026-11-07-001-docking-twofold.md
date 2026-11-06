@@ -147,6 +147,6 @@ are 3.70–7.20x at 16 panes, 1.74–3.19x at 128 and 1.29–2.04x at 1,024. Kee
 the ten negative medians, all tails and cold-path cost in
 [the full evidence](../performance/2026-11-07-candidate-copy.md). Mutation now
 takes about 18–19 microseconds at 1,024 panes, and fresh all-root layout remains
-about 110–113 microseconds. Continue exact cold effects/initial issuance, then
+about 110–116 microseconds. Continue exact cold effects/initial issuance, then
 independently measured output slab, compact frames, numeric preparation and
 graph-owned structure; do not infer that the remaining architecture is exhausted.
