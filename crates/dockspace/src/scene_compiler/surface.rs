@@ -81,7 +81,6 @@ fn compile_surface_scene(
     let mut ready = PresentationPlan::from_measurements(actual, popup, bounds, popup_plane_bounds);
     ready.install_layout_facts(config.clone(), measurements);
     ready.set_contained_projection(contained_projection);
-    ready.set_resize_projection(resize_overrides);
     ready.set_contained_order(&presentation.contained);
     if tab_strip_states.popup_requirement() != popup {
         return Err(SceneCompilationError::PopupPlaneStateMismatch);
@@ -247,6 +246,8 @@ fn compile_surface_scene(
         ready.end_surface_program_root(record.root)?;
     }
 
+    // Resize ownership comes from the actual root bases bound above.
+    ready.set_resize_projection(resize_overrides);
     ready.derive_splitter_operability();
     compile_splitter_junctions(&mut ready)?;
     ready.finish_surface_program()?;

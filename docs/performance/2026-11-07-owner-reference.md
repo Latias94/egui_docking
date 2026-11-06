@@ -115,7 +115,15 @@ failure/stop logs remain part of the evidence.
 
 The previous runtime head `91f42ce` passes all six CI jobs in
 [run 42270945188](https://github.com/Latias94/egui_docking/actions/runs/42270945188).
-This checkpoint requires its own pushed-head CI result.
+The pushed checkpoint exposes a public-host regression in run `42279401245`:
+returning a four-arm resize to its original geometry incorrectly retains an
+unpresented intermediate output. `set_resize_projection` consulted root bases
+before the compiler had bound them, dropping every override. The follow-up
+binds resize projection after both root loops. The original assertion first
+fails locally and then passes; the complete no-feature public host suite passes
+292 tests; its persistence-feature variant passes 335 tests. The corrected
+pushed head still requires fresh CI. This does not change the measured
+renderer-free kernel path.
 
 The [evidence archive](2026-11-07-owner-reference/evidence.tar.xz) contains 436
 input files, 16,128 raw rows and 336 complete state vectors. Its manifest and
