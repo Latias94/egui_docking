@@ -142,23 +142,21 @@ fn dense_projection_keeps_identity_order_and_owned_old_outputs() {
     .project(bounds, &[])
     .unwrap();
     let retained = reference::capture(&first);
+    let cloned = first.clone();
+    let nodes = &cloned.nodes;
     let retained_preorder = first
-        .node_rects
+        .nodes
         .iter_preorder()
-        .map(|(&node, &rect)| (node, rect))
+        .map(|(&node, &result)| (node, result))
         .collect::<Vec<_>>();
     let expected_keys = retained.node_rects.keys().copied().collect::<Vec<_>>();
     assert_eq!(
-        first.node_rects.keys().copied().collect::<Vec<_>>(),
-        expected_keys
-    );
-    assert_eq!(
-        first.node_constraints.keys().copied().collect::<Vec<_>>(),
+        first.nodes.keys().copied().collect::<Vec<_>>(),
         expected_keys
     );
     assert_eq!(
         first
-            .node_rects
+            .nodes
             .iter()
             .rev()
             .map(|(&node, _)| node)
@@ -182,16 +180,31 @@ fn dense_projection_keeps_identity_order_and_owned_old_outputs() {
     drop(index);
     drop(workspace);
     assert_eq!(reference::capture(&first), retained);
+    drop(first);
+    assert_eq!(reference::capture(&cloned), retained);
     assert_eq!(
-        first
-            .node_rects
+        nodes
+            .iter()
+            .map(|(&node, result)| (node, result.rect))
+            .collect::<BTreeMap<_, _>>(),
+        retained.node_rects
+    );
+    assert_eq!(
+        nodes
+            .iter()
+            .map(|(&node, result)| (node, result.constraints))
+            .collect::<BTreeMap<_, _>>(),
+        retained.node_constraints
+    );
+    assert_eq!(
+        nodes
             .iter_preorder()
-            .map(|(&node, &rect)| (node, rect))
+            .map(|(&node, &result)| (node, result))
             .collect::<Vec<_>>(),
         retained_preorder
     );
-    assert_eq!(first.node_rects.values().len(), first.node_rects.len());
-    assert_eq!(first.splits.values().len(), first.splits.len());
+    assert_eq!(nodes.values().len(), nodes.len());
+    assert_eq!(cloned.splits.values().len(), cloned.splits.len());
 }
 
 #[test]
@@ -220,21 +233,20 @@ fn sparse_arena_projection_rejects_retired_generations() {
         LayoutMetrics::new(0.0).unwrap(),
     )
     .unwrap();
-    assert_eq!(projection.node_rects.len(), 1);
-    assert_eq!(projection.node_constraints.len(), 1);
+    assert_eq!(projection.nodes.len(), 1);
     assert!(projection.splits.is_empty());
-    assert_eq!(
-        projection.node_rects.keys().copied().collect::<Vec<_>>(),
-        [leaf]
-    );
+    assert_eq!(projection.nodes.keys().copied().collect::<Vec<_>>(), [leaf]);
     for stale in retired {
         assert_ne!(stale, leaf);
-        assert!(!projection.node_rects.contains_key(&stale));
-        assert_eq!(projection.node_constraints.get(&stale), None);
+        assert!(!projection.nodes.contains_key(&stale));
+        assert_eq!(projection.nodes.get(&stale), None);
         assert_eq!(projection.splits.get(&stale), None);
     }
     drop(workspace);
-    assert_eq!(projection.node_rects.get(&leaf), Some(&bounds));
+    assert_eq!(
+        projection.nodes.get(&leaf).map(|result| result.rect),
+        Some(bounds)
+    );
 }
 
 #[test]
@@ -334,21 +346,24 @@ fn sparse_recycled_tree_keeps_ordered_identity_and_cold_warm_oracle_results() {
         )
         .unwrap()
     );
-    assert_eq!(cold.node_rects.keys().copied().collect::<Vec<_>>(), ordered);
+    assert_eq!(cold.nodes.keys().copied().collect::<Vec<_>>(), ordered);
     let frozen = reference::capture(&cold);
-    let mut nodes = cold.node_rects.iter_preorder();
+    let mut nodes = cold.nodes.iter_preorder();
     assert_eq!(nodes.len(), preorder.len());
     assert_eq!(nodes.size_hint(), (preorder.len(), Some(preorder.len())));
     for (index, expected) in preorder.iter().enumerate() {
-        let (node, rect) = nodes.next().unwrap();
+        let (node, result) = nodes.next().unwrap();
         assert_eq!(node, expected);
-        assert_eq!(rect, &frozen.node_rects[expected]);
+        assert_eq!(result.rect, frozen.node_rects[expected]);
         assert_eq!(nodes.len(), preorder.len() - index - 1);
     }
     assert!(nodes.next().is_none());
     assert!(nodes.next_back().is_none());
     assert!(nodes.next().is_none());
-    let mut mixed = cold.node_constraints.iter_preorder();
+    let mut mixed = cold
+        .nodes
+        .iter_preorder()
+        .map(|(node, result)| (node, &result.constraints));
     assert_eq!(
         mixed.next(),
         Some((&root_node, &frozen.node_constraints[&root_node]))
@@ -361,11 +376,11 @@ fn sparse_recycled_tree_keeps_ordered_identity_and_cold_warm_oracle_results() {
         mixed.map(|(&node, _)| node).collect::<Vec<_>>(),
         preorder[1..preorder.len() - 1]
     );
-    assert_eq!(cold.node_constraints.len(), preorder.len());
+    assert_eq!(cold.nodes.len(), preorder.len());
     assert_eq!(cold.splits.len(), 2);
-    assert!(!cold.node_rects.contains_key(&kept[2]));
+    assert!(!cold.nodes.contains_key(&kept[2]));
     for stale in retired {
-        assert!(!cold.node_rects.contains_key(&stale));
+        assert!(!cold.nodes.contains_key(&stale));
     }
     let minimums = constraints
         .iter()
@@ -390,7 +405,7 @@ fn sparse_recycled_tree_keeps_ordered_identity_and_cold_warm_oracle_results() {
         let projection = measured.project(bounds, &[]).unwrap();
         assert_eq!(reference::capture(&projection), expected);
         assert_eq!(
-            projection.node_rects.keys().copied().collect::<Vec<_>>(),
+            projection.nodes.keys().copied().collect::<Vec<_>>(),
             ordered
         );
     }
@@ -557,11 +572,10 @@ fn projects_ten_thousand_nested_splits_without_call_stack_growth() {
     drop(leaf_constraints);
     drop(workspace);
 
-    assert_eq!(projection.node_rects.len(), DEPTH * 2 + 1);
-    assert_eq!(projection.node_constraints.len(), DEPTH * 2 + 1);
+    assert_eq!(projection.nodes.len(), DEPTH * 2 + 1);
     assert_eq!(projection.splits.len(), DEPTH);
-    assert_eq!(projection.node_rects[&subtree], bounds);
-    assert_eq!(projection.node_constraints[&central], leaf);
+    assert_eq!(projection.nodes[&subtree].rect, bounds);
+    assert_eq!(projection.nodes[&central].constraints, leaf);
     for split in projection.splits.values() {
         assert_eq!(split.child_minimum_extents.len(), 2);
         assert_eq!(split.child_maximum_extents.len(), 2);
@@ -1005,4 +1019,82 @@ fn raw_missing_node_keeps_depth_first_measurement_error_priority() {
             })
         );
     }
+}
+
+#[test]
+fn owned_node_rows_keep_previous_outputs_after_late_geometry_error() {
+    let mut builder = Workspace::builder();
+    let leaves = [1, 2].map(|item| builder.insert_node(Node::tabs([ItemId::new(item)])));
+    let split = builder.insert_node(Node::equal_split(Axis::Horizontal, leaves).unwrap());
+    builder.set_root(ROOT, RootRecord::new(split));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+    let workspace = builder.build().unwrap();
+    let minimum = f64::MAX * 0.375;
+    let leaf = Constraints::new(
+        LogicalSize::new(minimum, 0.0).unwrap(),
+        LogicalSize::new(minimum, 10.0).unwrap(),
+    )
+    .unwrap();
+    let constraints = leaves
+        .map(|node| (node, leaf))
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let metrics = LayoutMetrics::new(0.0).unwrap();
+    let first_bounds = LogicalRect::new(0.0, 0.0, f64::MAX, 10.0).unwrap();
+    let first = project_root(
+        &workspace,
+        ROOT,
+        first_bounds,
+        |node| constraints.get(&node).copied(),
+        metrics,
+    )
+    .unwrap();
+    let expected = reference::project(
+        &workspace,
+        ROOT,
+        first_bounds,
+        LeafMeasurements::Constraints(&constraints),
+        metrics,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(reference::capture(&first), expected);
+    let cloned = first.clone();
+    let nodes = &cloned.nodes;
+
+    // Minima fit in f64; the second child's endpoint overflows after the first visit.
+    let failing_bounds = LogicalRect::new(f64::MAX * 0.5, 0.0, f64::MAX * 0.5, 10.0).unwrap();
+    let actual = project_root(
+        &workspace,
+        ROOT,
+        failing_bounds,
+        |node| constraints.get(&node).copied(),
+        metrics,
+    );
+    let failed = reference::project(
+        &workspace,
+        ROOT,
+        failing_bounds,
+        LeafMeasurements::Constraints(&constraints),
+        metrics,
+        &[],
+    );
+    let error = LayoutError::Geometry(GeometryError::NonFinite {
+        component: "x",
+        value: f64::INFINITY,
+    });
+    assert_eq!(actual, Err(error.clone()));
+    assert_eq!(failed, Err(error));
+    drop(first);
+    drop(constraints);
+    drop(workspace);
+    assert_eq!(reference::capture(&cloned), expected);
+    assert_eq!(
+        nodes.get(&leaves[0]).map(|result| &result.rect),
+        expected.node_rects.get(&leaves[0])
+    );
+    assert_eq!(
+        nodes.get(&leaves[1]).map(|result| &result.constraints),
+        expected.node_constraints.get(&leaves[1])
+    );
 }

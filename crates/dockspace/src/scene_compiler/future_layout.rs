@@ -130,12 +130,14 @@ pub(crate) fn project_future_tab_gap_visual(
         });
     }
 
-    let node_bounds = projection.node_rects.get(&target.tabs()).copied().ok_or(
-        FutureLayoutProjectionError::MissingNodeProjection {
+    let node_bounds = projection
+        .nodes
+        .get(&target.tabs())
+        .map(|result| result.rect)
+        .ok_or(FutureLayoutProjectionError::MissingNodeProjection {
             root: target.root(),
             node: target.tabs(),
-        },
-    )?;
+        })?;
     let Node::Tabs { items, selected } =
         candidate
             .node(target.tabs())
@@ -326,9 +328,9 @@ fn future_presentation_menu_tab_bar(
             return Ok(None);
         }
         let node_bounds = projection
-            .node_rects
+            .nodes
             .get(&tabs)
-            .copied()
+            .map(|result| result.rect)
             .ok_or(FutureLayoutProjectionError::MissingNodeProjection { root, node: tabs })?;
         let bar = LogicalRect::new(
             node_bounds.x(),

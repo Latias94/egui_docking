@@ -1,6 +1,6 @@
 use super::*;
 use crate::graph::SplitWeight;
-use crate::layout::{NodeMap, RootMeasurement, measure_root_minimums};
+use crate::layout::{NodeMap, NodeResult, RootMeasurement, measure_root_minimums};
 
 #[cfg(test)]
 #[path = "surface/junction_compile_tests.rs"]
@@ -475,7 +475,7 @@ fn select_presentation_menu_tab_bar(
     root_node: NodeId,
     central: Option<NodeId>,
     root_bounds: LogicalRect,
-    node_rects: &NodeMap<LogicalRect>,
+    node_results: &NodeMap<NodeResult>,
 ) -> Result<Option<NodeId>, SceneCompilationError> {
     let visible_layout =
         |tabs| -> Result<Option<TabStripOptionalChromeLayout>, SceneCompilationError> {
@@ -486,9 +486,9 @@ fn select_presentation_menu_tab_bar(
             if requirement.policy().visibility() == TabBarVisibility::Hidden {
                 return Ok(None);
             }
-            let projected = node_rects
+            let projected = node_results
                 .get(&tabs)
-                .copied()
+                .map(|result| result.rect)
                 .ok_or(SceneCompilationError::MissingNodeProjection { root, node: tabs })?;
             let bounds = clip_rect(projected, root_bounds)?;
             let bar = LogicalRect::new(
@@ -820,7 +820,7 @@ fn compile_root(
                 root_record.node,
                 root_record.central,
                 bounds,
-                &projection.node_rects,
+                &projection.nodes,
             )
         })
         .transpose()?
@@ -837,8 +837,8 @@ fn compile_root(
         None
     };
 
-    for (node, projected) in &projection.node_rects {
-        let rect = clip_rect(*projected, bounds)?;
+    for (node, projected) in &projection.nodes {
+        let rect = clip_rect(projected.rect, bounds)?;
         match workspace
             .node(*node)
             .ok_or(SceneCompilationError::MissingNode {
@@ -916,18 +916,22 @@ fn compile_root(
                     let Some(splitter) = splitter else {
                         continue;
                     };
-                    let before = projection.node_rects.get(&children[index]).ok_or(
-                        SceneCompilationError::MissingNodeProjection {
+                    let before = projection
+                        .nodes
+                        .get(&children[index])
+                        .map(|result| &result.rect)
+                        .ok_or(SceneCompilationError::MissingNodeProjection {
                             root,
                             node: children[index],
-                        },
-                    )?;
-                    let after = projection.node_rects.get(&children[index + 1]).ok_or(
-                        SceneCompilationError::MissingNodeProjection {
+                        })?;
+                    let after = projection
+                        .nodes
+                        .get(&children[index + 1])
+                        .map(|result| &result.rect)
+                        .ok_or(SceneCompilationError::MissingNodeProjection {
                             root,
                             node: children[index + 1],
-                        },
-                    )?;
+                        })?;
                     let before_minimum_extent =
                         split.child_minimum_extents.get(index).copied().ok_or(
                             SceneCompilationError::MissingSplitMinimum {

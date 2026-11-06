@@ -8,7 +8,7 @@ use crate::error::CommandError;
 use crate::geometry::{GeometryError, LogicalRect};
 use crate::graph::Workspace;
 use crate::ids::{NodeId, RootId};
-use crate::layout::NodeMap;
+use crate::layout::{NodeMap, NodeResult};
 use crate::policy::DockPolicySnapshot;
 use crate::scene::{PresentationLayoutFacts, PresentationPlan};
 use crate::scene_compiler::{
@@ -51,15 +51,11 @@ pub(super) fn resolved_visual(
         return Ok(target_record.visual());
     };
     let rect = match target {
-        DockTarget::Center(target) => projected_center_rect(
-            candidate,
-            policy,
-            target_plan,
-            target,
-            &projection.node_rects,
-        )?,
+        DockTarget::Center(target) => {
+            projected_center_rect(candidate, policy, target_plan, target, &projection.nodes)?
+        }
         DockTarget::InnerEdge(_) | DockTarget::OuterEdge(_) => {
-            projected_payload_rect(original, candidate, root, payload, &projection.node_rects)?
+            projected_payload_rect(original, candidate, root, payload, &projection.nodes)?
         }
         DockTarget::TabGap { target, .. } => project_future_tab_gap_visual(
             original,
@@ -110,14 +106,15 @@ fn projected_center_rect(
     policy: &DockPolicySnapshot,
     target_plan: &PresentationPlan,
     target: &crate::command::TabTarget,
-    node_rects: &NodeMap<LogicalRect>,
+    node_results: &NodeMap<NodeResult>,
 ) -> Result<LogicalRect, DropPreviewProjectionError> {
-    let bounds = node_rects.get(&target.tabs()).copied().ok_or(
-        DropPreviewProjectionError::TargetProjectionMissing {
+    let bounds = node_results
+        .get(&target.tabs())
+        .map(|result| result.rect)
+        .ok_or(DropPreviewProjectionError::TargetProjectionMissing {
             root: target.root(),
             node: target.tabs(),
-        },
-    )?;
+        })?;
     let crate::graph::Node::Tabs { .. } = candidate.node(target.tabs()).ok_or(
         DropPreviewProjectionError::TargetProjectionMissing {
             root: target.root(),
@@ -155,7 +152,7 @@ fn projected_payload_rect(
     candidate: &Workspace,
     target_root: RootId,
     payload: &MovePayload,
-    node_rects: &NodeMap<LogicalRect>,
+    node_results: &NodeMap<NodeResult>,
 ) -> Result<LogicalRect, DropPreviewProjectionError> {
     let (source_root, source_node, items) = match payload {
         MovePayload::Item(source) => (source.root(), source.tabs(), vec![source.item()]),
@@ -177,13 +174,12 @@ fn projected_payload_rect(
         nodes.insert(destination_item_node(candidate, target_root, item)?);
     }
     let mut projected = nodes.into_iter().map(|node| {
-        node_rects
-            .get(&node)
-            .copied()
-            .ok_or(DropPreviewProjectionError::PayloadProjectionMissing {
+        node_results.get(&node).map(|result| result.rect).ok_or(
+            DropPreviewProjectionError::PayloadProjectionMissing {
                 root: target_root,
                 node,
-            })
+            },
+        )
     });
     let mut bounds = projected
         .next()

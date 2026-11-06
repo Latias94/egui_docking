@@ -114,8 +114,8 @@ impl Fixture {
             draw,
             HitRegion::new(draw),
             *axis,
-            self.projection.node_rects[&children[index]],
-            self.projection.node_rects[&children[index + 1]],
+            self.projection.nodes[&children[index]].rect,
+            self.projection.nodes[&children[index + 1]].rect,
             split.child_minimum_extents[index],
             split.child_minimum_extents[index + 1],
             split.child_maximum_extents[index],
@@ -228,8 +228,8 @@ fn close(actual: f64, expected: f64) {
 fn frontier_rejects_a_reordered_live_tree_with_equal_child_extents() {
     let (mut fixture, [_, _, c, d, inner, _, outer]) = nested(0);
     assert_eq!(
-        fixture.projection.node_rects[&c].width(),
-        fixture.projection.node_rects[&d].width()
+        fixture.projection.nodes[&c].rect.width(),
+        fixture.projection.nodes[&d].rect.width()
     );
     let mut replacement = fixture.workspace.node(inner).unwrap().clone();
     let Node::Split { children, .. } = &mut replacement else {
@@ -281,13 +281,13 @@ fn nested_touching_frontier_uses_descendant_limits_and_keeps_the_far_side_fixed(
             let updates = resize_axis_group_updates(&groups, [requested, 0.0]).unwrap();
             assert_eq!(updates.len(), 2);
             let projected = fixture.project_updates(&updates);
-            close(projected.node_rects[&a].width(), 500.0 + effective);
-            close(projected.node_rects[&b].width(), 500.0 - effective);
-            close(projected.node_rects[&c].width(), 249.5 - effective);
-            close(projected.node_rects[&d].width(), 249.5);
+            close(projected.nodes[&a].rect.width(), 500.0 + effective);
+            close(projected.nodes[&b].rect.width(), 500.0 - effective);
+            close(projected.nodes[&c].rect.width(), 249.5 - effective);
+            close(projected.nodes[&d].rect.width(), 249.5);
             close(
-                projected.node_rects[&d].x(),
-                fixture.projection.node_rects[&d].x(),
+                projected.nodes[&d].rect.x(),
+                fixture.projection.nodes[&d].rect.x(),
             );
         }
     }
@@ -314,13 +314,13 @@ fn two_axes_keep_orthogonal_sources_but_emit_each_split_once() {
         BTreeSet::from([outer, across, inner])
     );
     let projected = fixture.project_updates(&updates);
-    close(projected.node_rects[&b].width(), 482.0);
-    close(projected.node_rects[&b].height(), 324.0);
-    close(projected.node_rects[&d].width(), 249.5);
-    close(projected.node_rects[&d].height(), 276.0);
+    close(projected.nodes[&b].rect.width(), 482.0);
+    close(projected.nodes[&b].rect.height(), 324.0);
+    close(projected.nodes[&d].rect.width(), 249.5);
+    close(projected.nodes[&d].rect.height(), 276.0);
     close(
-        projected.node_rects[&d].x(),
-        fixture.projection.node_rects[&d].x(),
+        projected.nodes[&d].rect.x(),
+        fixture.projection.nodes[&d].rect.x(),
     );
 }
 
@@ -345,10 +345,10 @@ fn adjacent_incident_gaps_merge_before_solving_an_nary_split() {
     let updates = resize_axis_group_updates(&groups, [20.0, 0.0]).unwrap();
     assert_eq!(updates.len(), 1);
     let projected = fixture.project_updates(&updates);
-    close(projected.node_rects[&a].width(), 270.0);
-    close(projected.node_rects[&b].width(), 500.0);
-    close(projected.node_rects[&b].x(), 271.0);
-    close(projected.node_rects[&c].width(), 230.0);
+    close(projected.nodes[&a].rect.width(), 270.0);
+    close(projected.nodes[&b].rect.width(), 500.0);
+    close(projected.nodes[&b].rect.x(), 271.0);
+    close(projected.nodes[&c].rect.width(), 230.0);
     let mut edge = Some(1.0);
     assert!(merge_edge(&mut edge, -1.0).is_none());
 }
@@ -490,11 +490,11 @@ fn fractional_origins_bounds_and_gap_thickness_keep_valid_geometry_available() {
                 let updates = resize_axis_group_updates(&groups, delta).unwrap();
                 let projected = fixture.project_updates(&updates);
                 close(
-                    rect_extent(projected.node_rects[&a], axis),
+                    rect_extent(projected.nodes[&a].rect, axis),
                     initial.child_extents[0] + 17.125,
                 );
                 close(
-                    rect_extent(projected.node_rects[&b], axis),
+                    rect_extent(projected.nodes[&b].rect, axis),
                     initial.child_extents[1] - 17.125,
                 );
             }
@@ -553,7 +553,7 @@ fn small_far_central_keeps_nary_resize_available_on_both_axes() {
         let initial = fixture.projection.splits.get(&split).unwrap();
         assert_eq!(initial.central_index, Some(2));
         assert_eq!(initial.child_extents[2], 1e-6);
-        let original_far = fixture.projection.node_rects[&central];
+        let original_far = fixture.projection.nodes[&central].rect;
         let groups = fixture.groups(&[(split, 0)]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].splits.len(), 1);
@@ -611,15 +611,15 @@ fn small_far_central_keeps_nary_resize_available_on_both_axes() {
                 .is_some()
             );
             close(
-                rect_extent(projected.node_rects[&a], axis),
+                rect_extent(projected.nodes[&a].rect, axis),
                 initial.child_extents[0] + delta,
             );
             close(
-                rect_extent(projected.node_rects[&b], axis),
+                rect_extent(projected.nodes[&b].rect, axis),
                 initial.child_extents[1] - delta,
             );
             assert_eq!(resized.child_extents[2], 1e-6);
-            let far = projected.node_rects[&central];
+            let far = projected.nodes[&central].rect;
             for (actual, expected) in [
                 (far.min().x(), original_far.min().x()),
                 (far.min().y(), original_far.min().y()),
@@ -659,7 +659,7 @@ fn rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes() {
             1.0,
         );
         close(
-            rect_extent(fixture.projection.node_rects[&inner], axis),
+            rect_extent(fixture.projection.nodes[&inner].rect, axis),
             251.3,
         );
         let residual = fixture.projection.splits.get(&inner).unwrap().overflow;
@@ -668,10 +668,10 @@ fn rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes() {
         let updates = resize_axis_group_updates(&groups, delta_along(axis, -10.0)).unwrap();
         assert_eq!(updates.len(), 2);
         let projected = fixture.project_updates(&updates);
-        close(rect_extent(projected.node_rects[&c], axis), 210.3);
-        close(rect_extent(projected.node_rects[&d], axis), 50.0);
-        let far = projected.node_rects[&d];
-        let original_far = fixture.projection.node_rects[&d];
+        close(rect_extent(projected.nodes[&c].rect, axis), 210.3);
+        close(rect_extent(projected.nodes[&d].rect, axis), 50.0);
+        let far = projected.nodes[&d].rect;
+        let original_far = fixture.projection.nodes[&d].rect;
         close(far.x(), original_far.x());
         close(far.y(), original_far.y());
         for update in resize_axis_group_updates(&groups, delta_along(axis, 10.0)).unwrap() {
@@ -712,7 +712,7 @@ fn rounded_nested_maximum_unallocated_allows_reverse_shrink_on_both_axes() {
             1.0,
         );
         close(
-            rect_extent(fixture.projection.node_rects[&inner], axis),
+            rect_extent(fixture.projection.nodes[&inner].rect, axis),
             251.1,
         );
         let residual = fixture.projection.splits.get(&inner).unwrap().unallocated;
@@ -721,10 +721,10 @@ fn rounded_nested_maximum_unallocated_allows_reverse_shrink_on_both_axes() {
         let updates = resize_axis_group_updates(&groups, delta_along(axis, 10.0)).unwrap();
         assert_eq!(updates.len(), 2);
         let projected = fixture.project_updates(&updates);
-        close(rect_extent(projected.node_rects[&c], axis), 190.1);
-        close(rect_extent(projected.node_rects[&d], axis), 50.0);
-        let far = projected.node_rects[&d];
-        let original_far = fixture.projection.node_rects[&d];
+        close(rect_extent(projected.nodes[&c].rect, axis), 190.1);
+        close(rect_extent(projected.nodes[&d].rect, axis), 50.0);
+        let far = projected.nodes[&d].rect;
+        let original_far = fixture.projection.nodes[&d].rect;
         close(far.x(), original_far.x());
         close(far.y(), original_far.y());
         for update in resize_axis_group_updates(&groups, delta_along(axis, -10.0)).unwrap() {
@@ -754,7 +754,7 @@ fn large_origin_rounded_minimum_allows_reverse_expansion_on_both_axes() {
             ]),
             1.0,
         );
-        let actual = rect_extent(fixture.projection.node_rects[&a], axis);
+        let actual = rect_extent(fixture.projection.nodes[&a].rect, axis);
         assert!(
             actual < 200.1 && 200.1 - actual < 1e-7,
             "{axis:?}: {actual}"
@@ -762,8 +762,8 @@ fn large_origin_rounded_minimum_allows_reverse_expansion_on_both_axes() {
         let groups = fixture.groups(&[(split, 0)]);
         let updates = resize_axis_group_updates(&groups, delta_along(axis, 10.0)).unwrap();
         let projected = fixture.project_updates(&updates);
-        close(rect_extent(projected.node_rects[&a], axis), 210.1);
-        close(rect_extent(projected.node_rects[&b], axis), 789.9);
+        close(rect_extent(projected.nodes[&a].rect, axis), 210.1);
+        close(rect_extent(projected.nodes[&b].rect, axis), 789.9);
         let blocked = resize_axis_group_updates(&groups, delta_along(axis, -10.0)).unwrap();
         assert_eq!(blocked[0].weights(), groups[0].splits[0].weights.as_slice());
     }
@@ -785,7 +785,7 @@ fn large_origin_rounded_maximum_allows_reverse_shrink_on_both_axes() {
             ]),
             1.0,
         );
-        let actual = rect_extent(fixture.projection.node_rects[&a], axis);
+        let actual = rect_extent(fixture.projection.nodes[&a].rect, axis);
         assert!(
             actual > 200.3 && actual - 200.3 < 1e-7,
             "{axis:?}: {actual}"
@@ -793,8 +793,8 @@ fn large_origin_rounded_maximum_allows_reverse_shrink_on_both_axes() {
         let groups = fixture.groups(&[(split, 0)]);
         let updates = resize_axis_group_updates(&groups, delta_along(axis, -10.0)).unwrap();
         let projected = fixture.project_updates(&updates);
-        close(rect_extent(projected.node_rects[&a], axis), 190.3);
-        close(rect_extent(projected.node_rects[&b], axis), 809.7);
+        close(rect_extent(projected.nodes[&a].rect, axis), 190.3);
+        close(rect_extent(projected.nodes[&b].rect, axis), 809.7);
         let blocked = resize_axis_group_updates(&groups, delta_along(axis, 10.0)).unwrap();
         assert_eq!(blocked[0].weights(), groups[0].splits[0].weights.as_slice());
     }

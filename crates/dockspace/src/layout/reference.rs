@@ -39,14 +39,14 @@ pub(super) struct LayoutProjection {
 pub(super) fn capture(projection: &super::LayoutProjection) -> LayoutProjection {
     LayoutProjection {
         node_rects: projection
-            .node_rects
+            .nodes
             .iter()
-            .map(|(&node, &rect)| (node, rect))
+            .map(|(&node, result)| (node, result.rect))
             .collect(),
         node_constraints: projection
-            .node_constraints
+            .nodes
             .iter()
-            .map(|(&node, &constraints)| (node, constraints))
+            .map(|(&node, result)| (node, result.constraints))
             .collect(),
         splits: projection
             .splits

@@ -16,7 +16,9 @@ use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
 
 mod projection;
-pub use projection::{LayoutProjection, NodeIter, NodeMap, SplitIter, SplitMap, SplitProjection};
+pub use projection::{
+    LayoutProjection, NodeIter, NodeMap, NodeResult, SplitIter, SplitMap, SplitProjection,
+};
 
 mod topology;
 use crate::graph::root_structure::{RootNodeKind, RootStructure};
@@ -628,14 +630,7 @@ fn project_measurements(
         }
     }
     let mut projection = LayoutProjection {
-        node_rects: NodeMap::new(Arc::clone(&topology), vec![bounds; topology.nodes.len()]),
-        node_constraints: NodeMap::new(
-            Arc::clone(&topology),
-            measurements
-                .iter()
-                .map(|measurement| measurement.constraints)
-                .collect(),
-        ),
+        nodes: NodeMap::with_capacity(Arc::clone(&topology)),
         splits: SplitMap::new(Arc::clone(&topology), bounds),
     };
     project_subtree(
@@ -646,6 +641,7 @@ fn project_measurements(
         weight_overrides,
         &mut projection,
     )?;
+    debug_assert_eq!(projection.nodes.len(), topology.nodes.len());
     Ok(projection)
 }
 
@@ -971,7 +967,13 @@ fn prepare_split_projection<'layout>(
 ) -> Result<Option<SplitProjectionState<'layout>>, LayoutError> {
     let node = &topology.nodes[row];
     let node_id = node.id;
-    projection.node_rects.values[row] = bounds;
+    projection.nodes.record(
+        row,
+        NodeResult {
+            rect: bounds,
+            constraints: measurements[row].constraints,
+        },
+    );
     let RootNodeKind::Split {
         payload,
         children: child_range,
@@ -1424,14 +1426,14 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(actual, expected);
-                    assert_eq!(actual.node_constraints.len(), 6);
-                    assert_eq!(actual.node_constraints[&b], constraints[&b]);
+                    assert_eq!(actual.nodes.len(), 6);
+                    assert_eq!(actual.nodes[&b].constraints, constraints[&b]);
                     assert_eq!(
-                        actual.node_constraints[&inner].min(),
+                        actual.nodes[&inner].constraints.min(),
                         LogicalSize::new(31.0, 29.0).unwrap(),
                     );
                     assert_eq!(
-                        actual.node_constraints[&inner].max(),
+                        actual.nodes[&inner].constraints.max(),
                         LogicalSize::new(maximum.width(), 2.0 * maximum.height() + 3.0).unwrap(),
                     );
                 }

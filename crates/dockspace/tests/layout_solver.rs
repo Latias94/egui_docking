@@ -345,10 +345,10 @@ fn projects_workspace_nodes_and_splitter_rectangles() {
     )
     .expect("workspace should project");
 
-    assert_projection_close(projection.node_rects[&leaves[0]].width(), 196.0);
-    assert_projection_close(projection.node_rects[&leaves[1]].width(), 490.0);
-    assert_projection_close(projection.node_rects[&leaves[2]].width(), 294.0);
-    assert_projection_close(projection.node_rects[&leaves[0]].height(), 400.0);
+    assert_projection_close(projection.nodes[&leaves[0]].rect.width(), 196.0);
+    assert_projection_close(projection.nodes[&leaves[1]].rect.width(), 490.0);
+    assert_projection_close(projection.nodes[&leaves[2]].rect.width(), 294.0);
+    assert_projection_close(projection.nodes[&leaves[0]].rect.height(), 400.0);
     let splitters = projection.splits.get(&split).unwrap().splitter_rects;
     assert_eq!(splitters.len(), 2);
     assert_projection_close(splitters[0].x(), 296.0);
@@ -358,7 +358,7 @@ fn projects_workspace_nodes_and_splitter_rectangles() {
     assert_projection_close(splitters[1].width(), 10.0);
     let assigned_width = leaves
         .iter()
-        .map(|leaf| projection.node_rects[leaf].width())
+        .map(|leaf| projection.nodes[leaf].rect.width())
         .sum::<f64>()
         + splitters.iter().map(|rect| rect.width()).sum::<f64>();
     assert_projection_close(assigned_width, 1_000.0);
@@ -489,10 +489,10 @@ fn exact_split_override_changes_only_transient_projection() {
     )
     .expect("current override must project");
 
-    assert_projection_close(projection.node_rects[&leaves[0]].width(), 100.0);
-    assert_projection_close(projection.node_rects[&leaves[1]].width(), 300.0);
-    assert_projection_close(projection.node_rects[&leaves[2]].height(), 200.0);
-    assert_projection_close(projection.node_rects[&inner].height(), 200.0);
+    assert_projection_close(projection.nodes[&leaves[0]].rect.width(), 100.0);
+    assert_projection_close(projection.nodes[&leaves[1]].rect.width(), 300.0);
+    assert_projection_close(projection.nodes[&leaves[2]].rect.height(), 200.0);
+    assert_projection_close(projection.nodes[&inner].rect.height(), 200.0);
     assert_projection_close(projection.splits.get(&outer).unwrap().overflow, 0.0);
     assert_eq!(
         workspace, before,
@@ -683,7 +683,7 @@ fn projection_reports_leaf_minimum_overflow() {
     assert_eq!(
         leaves
             .iter()
-            .map(|leaf| projection.node_rects[leaf].width())
+            .map(|leaf| projection.nodes[leaf].rect.width())
             .collect::<Vec<_>>(),
         vec![150.0, 150.0, 150.0]
     );
@@ -738,10 +738,10 @@ fn central_leaf_semantics_propagate_through_ancestor_splits() {
     )
     .expect("workspace should project");
 
-    assert_projection_close(projection.node_rects[&left].width(), 247.5);
-    assert_projection_close(projection.node_rects[&vertical].width(), 742.5);
-    assert_projection_close(projection.node_rects[&central].height(), 234.0);
-    assert_projection_close(projection.node_rects[&bottom].height(), 156.0);
+    assert_projection_close(projection.nodes[&left].rect.width(), 247.5);
+    assert_projection_close(projection.nodes[&vertical].rect.width(), 742.5);
+    assert_projection_close(projection.nodes[&central].rect.height(), 234.0);
+    assert_projection_close(projection.nodes[&bottom].rect.height(), 156.0);
 }
 
 #[test]
@@ -810,7 +810,7 @@ fn nested_splitter_thickness_contributes_to_ancestor_constraints() {
     .expect("minimum conflict is a projection outcome");
 
     assert_projection_close(projection.splits.get(&outer).unwrap().overflow, 40.0);
-    assert_projection_close(projection.node_rects[&inner].width(), 130.0);
+    assert_projection_close(projection.nodes[&inner].rect.width(), 130.0);
 }
 
 #[test]
@@ -850,7 +850,7 @@ fn projects_ten_thousand_nested_splits_without_call_stack_growth() {
     )
     .expect("deep workspace should project iteratively");
 
-    assert_eq!(projection.node_rects.len(), DEPTH * 2 + 1);
+    assert_eq!(projection.nodes.len(), DEPTH * 2 + 1);
     assert_eq!(projection.splits.len(), DEPTH);
-    assert!(projection.node_rects.contains_key(&central));
+    assert!(projection.nodes.contains_key(&central));
 }

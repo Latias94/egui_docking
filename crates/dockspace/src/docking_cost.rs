@@ -327,7 +327,11 @@ fn append_node<'layout>(
 fn export_state(workspace: &Workspace, projections: &[RootProjection], panes: usize) -> Vec<u64> {
     let mut words = Vec::with_capacity(panes * 32 + projections.len() * 16);
     for projection in projections {
-        let mut nodes = projection.layout.node_rects.iter_preorder();
+        let mut nodes = projection
+            .layout
+            .nodes
+            .iter_preorder()
+            .map(|(id, result)| (id, &result.rect));
         append_node(
             workspace,
             projection,
@@ -353,7 +357,7 @@ fn preorder_export_matches_the_keyed_export_for_all_primary_commands() {
         path: u64,
         words: &mut Vec<u64>,
     ) {
-        let rect = projection.layout.node_rects[&node];
+        let rect = projection.layout.nodes[&node].rect;
         let (kind, items, selected) = match workspace.node(node).unwrap() {
             Node::Tabs { items, selected } => {
                 (0, items.as_slice(), selected.map_or(0, ItemId::get))
@@ -635,15 +639,7 @@ fn validate(
         measured
             .projections
             .iter()
-            .map(|row| row.layout.node_rects.len())
-            .sum::<usize>(),
-        counts.nodes
-    );
-    assert_eq!(
-        measured
-            .projections
-            .iter()
-            .map(|row| row.layout.node_constraints.len())
+            .map(|row| row.layout.nodes.len())
             .sum::<usize>(),
         counts.nodes
     );
@@ -667,7 +663,7 @@ fn validate(
         );
         let root = fixture.workspace.root(projection.root).unwrap();
         assert_eq!(root.central, None);
-        assert_eq!(projection.layout.node_rects[&root.node], fixture.bounds);
+        assert_eq!(projection.layout.nodes[&root.node].rect, fixture.bounds);
         for split in projection.layout.splits.values() {
             assert_eq!(split.overflow, 0.0);
             assert_eq!(split.unallocated, 0.0);

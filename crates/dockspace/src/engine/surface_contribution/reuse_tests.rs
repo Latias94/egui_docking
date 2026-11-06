@@ -455,7 +455,8 @@ fn unchanged_answers_rebuild_when_selected_items_have_different_actual_minima() 
         .root(ROOT)
         .unwrap()
         .projection()
-        .node_constraints[&tabs]
+        .nodes[&tabs]
+        .constraints
         .min();
     let expected = engine.version();
     support::submit_input(
@@ -492,7 +493,9 @@ fn unchanged_answers_rebuild_when_selected_items_have_different_actual_minima() 
         Some(SECOND)
     );
     let layout = current.plan().layout_facts().unwrap();
-    let current_minimum = layout.root(ROOT).unwrap().projection().node_constraints[&tabs].min();
+    let current_minimum = layout.root(ROOT).unwrap().projection().nodes[&tabs]
+        .constraints
+        .min();
     assert!(current_minimum.width() > previous_minimum.width());
     assert!(current_minimum.height() > previous_minimum.height());
     assert!(layout.measurements().same_values(&answers));

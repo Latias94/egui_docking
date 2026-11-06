@@ -115,24 +115,27 @@ pub(super) fn prepare_resize_axis_groups(
                 let root_facts = facts.root(root)?;
                 let projection = root_facts.projection();
                 let root_node = workspace.root(root)?.node;
-                if projection.node_rects.get(&root_node) != Some(&root_facts.bounds()) {
+                if projection.nodes.get(&root_node).map(|result| result.rect)
+                    != Some(root_facts.bounds())
+                {
                     return None;
                 }
-                let mut projected_nodes = projection.node_rects.iter_preorder();
+                let mut projected_nodes = projection.nodes.iter_preorder();
                 let mut pending = vec![(root_node, [0.0, 0.0], false)];
                 let mut visited = BTreeSet::new();
                 while let Some((node, outer_edges, check_extent)) = pending.pop() {
                     if !visited.insert(node) {
                         return None;
                     }
-                    let (&projected_node, &rect) = projected_nodes.next()?;
+                    let (&projected_node, result) = projected_nodes.next()?;
                     if projected_node != node {
                         return None;
                     }
+                    let rect = result.rect;
                     let incident = incidents.get(&(root, node));
                     let affected = outer_edges != [0.0, 0.0] || incident.is_some();
                     if affected || check_extent {
-                        let constraints = *projection.node_constraints.get(&node)?;
+                        let constraints = result.constraints;
                         intersect_extent_interval(
                             &mut group.common_delta,
                             rect_extent(rect, axis),
@@ -207,7 +210,7 @@ pub(super) fn prepare_resize_axis_groups(
                             },
                             axis: *split_axis,
                             bounds,
-                            constraints: *projection.node_constraints.get(&node)?,
+                            constraints: result.constraints,
                             weights: weights.clone(),
                             child_extents: split.child_extents.to_vec(),
                             child_minimum_extents: split.child_minimum_extents.to_vec(),
@@ -389,7 +392,7 @@ fn validate_split_projection(
     };
     for (index, child) in children.iter().enumerate() {
         let actual = split.child_extents[index];
-        let child_bounds = *projection.node_rects.get(child)?;
+        let child_bounds = projection.nodes.get(child)?.rect;
         let projected = rect_extent(child_bounds, axis);
         if actual <= 0.0
             || (actual - projected).abs()

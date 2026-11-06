@@ -8,6 +8,15 @@ use std::sync::Arc;
 
 use super::{Axis, Constraints, LogicalRect, NodeId, RootNodeKind, RootStructure};
 
+/// Complete geometry and composed constraints for one reachable node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodeResult {
+    /// Logical rectangle assigned to this node.
+    pub rect: LogicalRect,
+    /// Composed minimum and maximum logical sizes for this node.
+    pub constraints: Constraints,
+}
+
 /// Immutable node values with deterministic identity-ordered iteration.
 ///
 /// Storage is proportional to this root's reachable nodes, independently of the
@@ -15,13 +24,21 @@ use super::{Axis, Constraints, LogicalRect, NodeId, RootNodeKind, RootStructure}
 #[derive(Clone)]
 pub struct NodeMap<T> {
     topology: Arc<RootStructure>,
-    pub(super) values: Vec<T>,
+    values: Vec<T>,
 }
 
 impl<T> NodeMap<T> {
-    pub(super) fn new(topology: Arc<RootStructure>, values: Vec<T>) -> Self {
-        debug_assert_eq!(topology.nodes.len(), values.len());
+    pub(super) fn with_capacity(topology: Arc<RootStructure>) -> Self {
+        let values = Vec::with_capacity(topology.nodes.len());
         Self { topology, values }
+    }
+
+    pub(super) fn record(&mut self, row: usize, value: T) {
+        if row == self.values.len() {
+            self.values.push(value);
+        } else {
+            self.values[row] = value;
+        }
     }
 
     /// Returns the value for this exact node identity.
@@ -339,10 +356,8 @@ impl FusedIterator for SplitIter<'_> {}
 /// Complete deterministic projection of one workspace root.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutProjection {
-    /// Logical rectangle assigned to every reachable node.
-    pub node_rects: NodeMap<LogicalRect>,
-    /// Composed minimum and maximum logical sizes for every reachable node.
-    pub node_constraints: NodeMap<Constraints>,
+    /// Complete geometry and composed constraints for every reachable node.
+    pub nodes: NodeMap<NodeResult>,
     /// Complete split-specific geometry and allocation outcomes.
     pub splits: SplitMap,
 }

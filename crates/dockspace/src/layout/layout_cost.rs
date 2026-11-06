@@ -80,12 +80,11 @@ fn expected_rects(count: usize, bounds: LogicalRect, axis: Axis, rows: &mut Vec<
 }
 
 fn validate(projection: &LayoutProjection, nodes: &[NodeId], expected: &[LogicalRect]) -> u64 {
-    assert_eq!(projection.node_rects.len(), nodes.len());
-    assert_eq!(projection.node_constraints.len(), nodes.len());
+    assert_eq!(projection.nodes.len(), nodes.len());
     assert_eq!(projection.splits.len(), nodes.len() / 2);
     let mut digest = 0xcbf2_9ce4_8422_2325_u64;
     for (&node, &expected) in nodes.iter().zip(expected) {
-        let rect = projection.node_rects[&node];
+        let rect = projection.nodes[&node].rect;
         assert_eq!(rect, expected);
         for value in [rect.x(), rect.y(), rect.width(), rect.height()] {
             assert!(value >= 0.0 && value.fract() == 0.0 && value <= 65_536.0);
