@@ -12,7 +12,11 @@ pub use self::lifecycle::{
     SurfaceInteractionProjection, SurfacePaintProjection, SurfacePlanScene, SurfaceScene,
     SurfaceSceneSet, SurfaceSceneStamp,
 };
-pub(crate) use self::paint_program::{paint_receiver_center, validate_surface_paint_program};
+#[cfg(test)]
+pub(crate) use self::paint_program::validate_surface_paint_program;
+pub(crate) use self::paint_program::{
+    SurfacePaintProgramLink, link_surface_paint_program, paint_receiver_center,
+};
 use self::program::SurfaceProgram;
 #[cfg(test)]
 pub(crate) use self::program::SurfaceProgramBlock;

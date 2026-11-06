@@ -121,7 +121,7 @@ pub struct SurfacePlanScene {
     output_ticket: SurfacePresentationOutputTicket,
     plan: Arc<PresentationPlan>,
     hit_manifest: Arc<PresentationHitManifest>,
-    paint_program_valid: bool,
+    paint_program: Option<Arc<SurfacePaintProgramLink>>,
     semantic_manifest: Arc<PresentationSemanticManifest>,
     coordinate_capture: SurfaceCoordinateCapture,
 }
@@ -354,8 +354,8 @@ impl SurfacePlanScene {
     }
 
     /// Returns the preflight bound to this scene's exact immutable plan and manifest.
-    pub(crate) const fn paint_program_valid(&self) -> bool {
-        self.paint_program_valid
+    pub(crate) fn paint_program(&self) -> Option<&SurfacePaintProgramLink> {
+        self.paint_program.as_deref()
     }
 
     /// Returns the semantic receiver inventory bound to this exact output.
@@ -1266,7 +1266,7 @@ impl SurfaceSceneSet {
             &plan,
             previous.map(|output| (output.plan(), output.hit_manifest())),
         )?;
-        let paint_program_valid = validate_surface_paint_program(&plan, &hit_manifest);
+        let paint_program = link_surface_paint_program(&plan, &hit_manifest).map(Arc::new);
         let semantic_manifest = PresentationSemanticManifest::compile(output_ticket, &plan)?;
         let current = current.replace_scene(|current_scene| {
             let (retained_fallback, interaction_authority, confirmed_paint_fallback) =
@@ -1290,7 +1290,7 @@ impl SurfaceSceneSet {
                     output_ticket,
                     plan,
                     hit_manifest: Arc::new(hit_manifest),
-                    paint_program_valid,
+                    paint_program,
                     semantic_manifest: Arc::new(semantic_manifest),
                     coordinate_capture,
                 }),

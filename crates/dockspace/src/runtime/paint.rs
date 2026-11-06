@@ -1037,6 +1037,7 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) pane_focus_request: Option<DockspacePaneFocusRequest>,
     pub(super) candidate: crate::engine::HostFrameView<'frame>,
     pub(super) program_valid: bool,
+    pub(super) program_link: Option<&'frame crate::scene::SurfacePaintProgramLink>,
 }
 
 /// Opaque receipt that a host accepted one exact program from beginning to end.
@@ -1408,7 +1409,8 @@ impl DockspaceHostFrame<'_> {
             contained_transform_preview: view.presentation_contained_transform_preview(surface),
             pane_focus_request,
             candidate: view,
-            program_valid: candidate.paint_program_valid(),
+            program_valid: candidate.paint_program().is_some(),
+            program_link: candidate.paint_program(),
         };
         Ok(Some(plan))
     }
@@ -1608,9 +1610,18 @@ impl<'frame> SurfacePaintPlan<'frame> {
         }
 
         let menu_open_bars = self.program_menu_open_bars();
+        let mut targets = self.program_link.map(|link| link.targets());
         let mut sink_error = None;
         let traversal = self.plan.visit_surface_program(|step| {
-            let resolved = match self.resolve_surface_program_step(step, &menu_open_bars) {
+            let target = if matches!(step, ResolvedSurfaceProgramStep::DropTarget(_)) {
+                match targets.as_mut() {
+                    Some(targets) => Some(targets.next().ok_or(())?),
+                    None => None,
+                }
+            } else {
+                None
+            };
+            let resolved = match self.resolve_surface_program_step(step, &menu_open_bars, target) {
                 Ok(Some(step)) => step,
                 Ok(None) => return Ok(()),
                 Err(()) => return Err(()),
@@ -1626,7 +1637,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         if let Some(error) = sink_error {
             return Err(SurfacePaintProgramVisitError::Sink(error));
         }
-        if traversal.is_err() {
+        if traversal.is_err() || targets.is_some_and(|mut targets| targets.next().is_some()) {
             return Err(SurfacePaintProgramVisitError::InvalidProgram {
                 surface: self.surface,
             });
@@ -1643,6 +1654,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         &self,
         step: ResolvedSurfaceProgramStep<'frame>,
         menu_open_bars: &HashSet<TabBarSceneId>,
+        linked_target: Option<(usize, LogicalPoint)>,
     ) -> Result<Option<SurfacePaintProgramStep<'frame>>, ()> {
         Ok(match step {
             ResolvedSurfaceProgramStep::RootBegin(root) => {
@@ -1694,16 +1706,23 @@ impl<'frame> SurfacePaintPlan<'frame> {
                 .drag_preview()
                 .map(SurfacePaintProgramStep::DragPreview),
             ResolvedSurfaceProgramStep::DropTarget(record) => {
-                let region = self
-                    .hit_manifest
-                    .region_for_kind(PresentationHitRegionKind::DropTarget(record.id()))
-                    .ok_or(())?;
-                if region.is_passive()
-                    || receiver_role(region.id().kind()) != Some(DockspaceReceiverRole::DropTarget)
-                {
-                    return Err(());
-                }
-                let center = crate::scene::paint_receiver_center(region.hit().rect()).ok_or(())?;
+                let (region, center) = if let Some((row, center)) = linked_target {
+                    (self.hit_manifest.regions().get(row).ok_or(())?, center)
+                } else {
+                    let region = self
+                        .hit_manifest
+                        .region_for_kind(PresentationHitRegionKind::DropTarget(record.id()))
+                        .ok_or(())?;
+                    if region.is_passive()
+                        || receiver_role(region.id().kind())
+                            != Some(DockspaceReceiverRole::DropTarget)
+                    {
+                        return Err(());
+                    }
+                    let center =
+                        crate::scene::paint_receiver_center(region.hit().rect()).ok_or(())?;
+                    (region, center)
+                };
                 Some(SurfacePaintProgramStep::DropTarget(DropTargetPaintRecord {
                     output: self.output,
                     region,
@@ -2698,7 +2717,7 @@ mod tests {
         let fully_resolvable = plan
             .plan
             .visit_surface_program(|step| {
-                plan.resolve_surface_program_step(step, &menu_open_bars)
+                plan.resolve_surface_program_step(step, &menu_open_bars, None)
                     .map(|_| ())
             })
             .is_ok();
@@ -2734,6 +2753,55 @@ mod tests {
         });
         assert_eq!(full_visit.is_ok(), resource_visit.is_ok());
         assert_eq!(actual_resources, expected_resources);
+    }
+
+    #[test]
+    fn linked_target_receivers_match_identity_resolution_without_paint_time_searches() {
+        use crate::drop_resolver::structural_work;
+
+        let (mut session, surface) = measured_surface_session();
+        for width in [640.0, 800.0, 640.0] {
+            let mut frame = session.begin_host_frame().unwrap();
+            frame
+                .measure_surface(
+                    surface,
+                    UniformSurfaceMetrics::new(
+                        LogicalRect::new(0.0, 0.0, width, 480.0).unwrap(),
+                        LogicalSize::new(32.0, 24.0).unwrap(),
+                        80.0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let plan = frame.paint_plan(surface).unwrap().unwrap();
+            assert!(plan.program_link.is_some());
+            let collect = |plan: SurfacePaintPlan<'_>| {
+                let mut receivers = Vec::new();
+                plan.visit_surface_program(|step| {
+                    if let SurfacePaintProgramStep::DropTarget(target) = step {
+                        receivers.push(target.receiver());
+                    }
+                    Ok::<(), ()>(())
+                })
+                .unwrap();
+                receivers
+            };
+            structural_work::reset();
+            let linked = collect(plan);
+            assert!(!linked.is_empty());
+            assert_eq!(
+                structural_work::snapshot().presentation_hit_lookup_comparisons,
+                0,
+                "executing the installed link must not search target identities"
+            );
+            let resolved = collect(SurfacePaintPlan {
+                program_link: None,
+                ..plan
+            });
+            assert_eq!(linked, resolved);
+            assert!(structural_work::snapshot().presentation_hit_lookup_comparisons > 0);
+            frame.commit().unwrap();
+        }
     }
 
     #[test]

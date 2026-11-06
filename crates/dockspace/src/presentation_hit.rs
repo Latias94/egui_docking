@@ -497,6 +497,10 @@ impl PresentationHitManifest {
         self.region(PresentationHitRegionId::new(self.output.surface(), kind))
     }
 
+    pub(crate) fn region_index_for_kind(&self, kind: PresentationHitRegionKind) -> Option<usize> {
+        self.region_index(PresentationHitRegionId::new(self.output.surface(), kind))
+    }
+
     #[allow(
         dead_code,
         reason = "used by the pointer receiver receipt reducer added in the next protocol slice"
