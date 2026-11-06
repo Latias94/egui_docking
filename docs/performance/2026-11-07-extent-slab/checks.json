@@ -1,0 +1,226 @@
+{
+  "normal_counters_enabled": true,
+  "checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "started_utc": "2026-11-06T23:34:44.475405+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:34:46.073996+00:00"
+    },
+    {
+      "name": "targeted",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-E",
+        "test(semantic_edits_share_placements) | test(tab_mru) | test(mru) | test(history_only) | test(copy_tests) | test(layout) | test(owner_reference) | test(split_resize) | test(local_item_move) | test(local_selection) | test(transaction) | test(canonical) | test(close) | test(surface_recovery) | test(presentation_authority) | test(splitter_geometry)",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T23:34:46.084538+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:35:28.638266+00:00"
+    },
+    {
+      "name": "fixes",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-E",
+        "test(structural_drop_work_has_deterministic_scale_baselines) | test(real_host_frame_tab_press_and_release_have_bounded_clone_work) | test(engine_presented_drop_reuses_the_requirement_workspace_index) | test(changed_source_item_rejects_frozen_close_without_mutation)",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T23:35:28.713498+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:35:29.311715+00:00"
+    },
+    {
+      "name": "core-production",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--all-features",
+        "--cargo-profile",
+        "production",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T23:35:29.322342+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:39:12.521611+00:00"
+    },
+    {
+      "name": "public-integrations",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--tests",
+        "--no-default-features",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-E",
+        "kind(test)",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T23:39:12.588242+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:40:10.072209+00:00"
+    },
+    {
+      "name": "workspace",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T23:40:10.125856+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:41:51.541631+00:00"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "--",
+        "-A",
+        "warnings",
+        "-D",
+        "clippy::correctness",
+        "-D",
+        "clippy::suspicious"
+      ],
+      "started_utc": "2026-11-06T23:41:51.615943+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:42:12.406573+00:00"
+    },
+    {
+      "name": "docs",
+      "command": [
+        "cargo",
+        "doc",
+        "--package",
+        "dockspace",
+        "--package",
+        "egui_dockspace",
+        "--all-features",
+        "--no-deps",
+        "--locked",
+        "--offline"
+      ],
+      "started_utc": "2026-11-06T23:42:12.420583+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:42:19.986455+00:00"
+    },
+    {
+      "name": "doctests",
+      "command": [
+        "cargo",
+        "test",
+        "--doc",
+        "--workspace",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "-j1"
+      ],
+      "started_utc": "2026-11-06T23:42:20.000183+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:42:24.143680+00:00"
+    },
+    {
+      "name": "dependencies",
+      "command": [
+        "python3",
+        "scripts/check_core_dependencies.py"
+      ],
+      "started_utc": "2026-11-06T23:42:24.156652+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:42:24.246160+00:00"
+    },
+    {
+      "name": "host-default",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--manifest-path",
+        "integration/dockspace-host-harness/Cargo.toml",
+        "--target-dir",
+        "/Users/frankorz/codes/rust/egui_docking/target",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T23:42:24.257333+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:43:45.166456+00:00"
+    },
+    {
+      "name": "host-serde",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--manifest-path",
+        "integration/dockspace-host-harness/Cargo.toml",
+        "--target-dir",
+        "/Users/frankorz/codes/rust/egui_docking/target",
+        "--features",
+        "serde",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T23:43:45.241957+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T23:45:13.316532+00:00"
+    }
+  ],
+  "sources_match_formal_receipt": true
+}

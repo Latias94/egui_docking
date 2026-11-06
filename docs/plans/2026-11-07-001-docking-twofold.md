@@ -262,3 +262,10 @@ The target remains 28/42: all 128/1024 cells pass; every 16-pane cell exceeds
 2x. The separate child extent slab is currently under ordinary qualification;
 queued source reviews alone establish neither qualification nor performance.
 Fresh CI run `42312915309` for `e3c5171` is still in progress.
+
+The child extent slab passes all ordinary gates and preserves complete output,
+but 40/42 complete p50 comparisons regress against the capacity control. Reject
+its exact runtime patch and restore the two immutable control sources. The
+[complete rejected experiment](../performance/2026-11-07-extent-slab.md) retains
+all raw observations and negatives. Continue the other layout candidates on the
+retained three-Vec base; no source-only candidate is yet qualified or measured.

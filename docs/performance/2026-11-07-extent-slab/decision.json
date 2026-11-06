@@ -1,0 +1,73 @@
+{
+  "utc": "2026-11-06T23:50:06.083336+00:00",
+  "decision": "reject exact slab production patch",
+  "actual_control_commit": "e3c517195ddce2c7d1a6dbfd4328f152978968ec",
+  "candidate_binary_sha256": "22a1457de155c62b66c445c2a23b549b149e59172ed830f279333d409532124e",
+  "reason": "40/42 complete p50 regress against control; no material stable complete-operation benefit",
+  "runtime_patch_sha256": "1d8d6fd5418b393b48e8f3a008f440ed3b076fe2533862f57723a3805fed1bf5",
+  "statistics": {
+    "e3c517195ddce2c7d1a6dbfd4328f152978968ec": {
+      "p50": {
+        "improve": 1,
+        "regress": 40,
+        "ties": 1,
+        "reduction_range_percent": [
+          -12.634482758620692,
+          1.4398354473774466
+        ]
+      },
+      "p95": {
+        "improve": 8,
+        "regress": 33,
+        "ties": 1,
+        "reduction_range_percent": [
+          -41.4060606060606,
+          35.05128412678222
+        ]
+      },
+      "max": {
+        "improve": 19,
+        "regress": 22,
+        "ties": 1,
+        "reduction_range_percent": [
+          -515.2457757296468,
+          89.32510567999611
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 0,
+        "regress": 42,
+        "ties": 0,
+        "reduction_range_percent": [
+          -386.72,
+          -7.736720554272525
+        ]
+      },
+      "p95": {
+        "improve": 0,
+        "regress": 42,
+        "ties": 0,
+        "reduction_range_percent": [
+          -374.8928877463582,
+          -4.449797999867533
+        ]
+      },
+      "max": {
+        "improve": 9,
+        "regress": 33,
+        "ties": 0,
+        "reduction_range_percent": [
+          -749.5379815192608,
+          85.53410947712419
+        ]
+      }
+    }
+  },
+  "restored_control_sources": {
+    "crates/dockspace/src/layout.rs": "325f56f16cacbde46cce531461c8830417a6aa8ff4af06f6c87145a7528963df",
+    "crates/dockspace/src/layout/projection.rs": "d86c008dd78c5f1ed805de76b71d102a29dd3dab4e6ee37ca8f3cb74839edfb0"
+  },
+  "restored_byte_identical_to_control": true
+}
