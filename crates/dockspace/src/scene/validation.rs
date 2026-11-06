@@ -5,8 +5,18 @@ use crate::command::Edge;
 use crate::target_field::{pane_center_basin, root_edge_band};
 use crate::workspace::WorkspaceIndexView;
 
+mod record_order;
 mod target_catalog;
+use record_order::RecordOrder;
 use target_catalog::{DropTargetCatalog, DropTargetOrder, MagneticTargetCoverage};
+
+struct SemanticRecordOrder {
+    panes: RecordOrder<PaneSceneId>,
+    bars: RecordOrder<TabBarSceneId>,
+    tabs: RecordOrder<TabSceneId>,
+    gaps: RecordOrder<SplitterSceneId>,
+    splitters: RecordOrder<SplitterSceneId>,
+}
 
 #[cfg(test)]
 #[path = "validation/cost_tests.rs"]
@@ -132,14 +142,20 @@ impl<'a> PresentationPlanValidator<'a> {
                 actual: surface,
             });
         }
-        let drop_target_index = validate_semantic_uniqueness(&ready)?;
+        let (record_order, drop_target_index) = validate_semantic_uniqueness(&ready)?;
         validate_popup_plane(&ready)?;
         if !rect_has_area(ready.bounds) {
             return Err(SceneBuildError::EmptyReadySurfaceBounds { surface });
         }
         validate_surface_background(&ready, self.workspace, &self.workspace_index)?;
         if ready.measurement_ticket().is_some() {
-            validate_ready_semantics(&ready, self.workspace, &self.workspace_index, self.policy)?;
+            validate_ready_semantics(
+                &ready,
+                &record_order,
+                self.workspace,
+                &self.workspace_index,
+                self.policy,
+            )?;
         }
         let published_occlusions: HashSet<_> = ready
             .drop_occlusions
@@ -214,6 +230,7 @@ impl<'a> PresentationPlanValidator<'a> {
             self.workspace,
             &self.workspace_index,
             self.policy,
+            record_order,
             target_order,
         );
         if ready.measurement_ticket().is_some() {
@@ -484,7 +501,7 @@ fn validate_popup_plane(ready: &PresentationPlan) -> Result<(), SceneBuildError>
 
 fn validate_semantic_uniqueness(
     ready: &PresentationPlan,
-) -> Result<DropTargetCatalog<'_>, SceneBuildError> {
+) -> Result<(SemanticRecordOrder, DropTargetCatalog<'_>), SceneBuildError> {
     fn stable_duplicate<T: Copy + Ord>(values: impl IntoIterator<Item = T>) -> Option<T> {
         let mut values = values.into_iter().collect::<Vec<_>>();
         values.sort_unstable();
@@ -493,22 +510,18 @@ fn validate_semantic_uniqueness(
             .find_map(|pair| (pair[0] == pair[1]).then_some(pair[0]))
     }
 
-    if let Some(id) = stable_duplicate(ready.pane_records.iter().map(PaneRecord::id)) {
-        return Err(SceneBuildError::DuplicatePane { id });
-    }
-    if let Some(id) = stable_duplicate(ready.tab_bar_records.iter().map(|record| *record.id())) {
-        return Err(SceneBuildError::DuplicateTabBar { id });
-    }
-    if let Some(id) = stable_duplicate(ready.tab_records.iter().map(|record| *record.id())) {
-        return Err(SceneBuildError::DuplicateTab { id });
-    }
-    if let Some(id) = stable_duplicate(ready.splitter_gap_records.iter().map(SplitterGapRecord::id))
-    {
-        return Err(SceneBuildError::DuplicateSplitterGap { id });
-    }
-    if let Some(id) = stable_duplicate(ready.splitter_records.iter().map(|record| *record.id())) {
-        return Err(SceneBuildError::DuplicateSplitter { id });
-    }
+    let record_order = SemanticRecordOrder {
+        panes: RecordOrder::new(ready.pane_records.iter().map(PaneRecord::id))
+            .map_err(|id| SceneBuildError::DuplicatePane { id })?,
+        bars: RecordOrder::new(ready.tab_bar_records.iter().map(|record| *record.id()))
+            .map_err(|id| SceneBuildError::DuplicateTabBar { id })?,
+        tabs: RecordOrder::new(ready.tab_records.iter().map(|record| *record.id()))
+            .map_err(|id| SceneBuildError::DuplicateTab { id })?,
+        gaps: RecordOrder::new(ready.splitter_gap_records.iter().map(SplitterGapRecord::id))
+            .map_err(|id| SceneBuildError::DuplicateSplitterGap { id })?,
+        splitters: RecordOrder::new(ready.splitter_records.iter().map(|record| *record.id()))
+            .map_err(|id| SceneBuildError::DuplicateSplitter { id })?,
+    };
     if let Some(id) = stable_duplicate(
         ready
             .splitter_junction_records
@@ -564,7 +577,7 @@ fn validate_semantic_uniqueness(
     if let Some(id) = stable_duplicate(guide_targets) {
         return Err(SceneBuildError::DuplicateDropTarget { id });
     }
-    Ok(target_catalog)
+    Ok((record_order, target_catalog))
 }
 
 fn validate_contained_minimums(
@@ -668,15 +681,23 @@ fn validate_surface_background(
 
 fn validate_ready_semantics(
     ready: &PresentationPlan,
+    record_order: &SemanticRecordOrder,
     workspace: &Workspace,
     workspace_index: &SceneWorkspaceIndex,
     policy: &DockPolicySnapshot,
 ) -> Result<(), SceneBuildError> {
     validate_contained_records(ready, workspace, workspace_index)?;
     let expected_panes = expected_pane_records(ready, workspace, workspace_index)?;
-    validate_pane_and_tab_records(ready, workspace, workspace_index, policy, &expected_panes)?;
+    validate_pane_and_tab_records(
+        ready,
+        record_order,
+        workspace,
+        workspace_index,
+        policy,
+        &expected_panes,
+    )?;
     validate_presentation_menu_anchors(ready, workspace)?;
-    validate_splitter_records(ready, workspace, workspace_index, policy)?;
+    validate_splitter_records(ready, record_order, workspace, workspace_index, policy)?;
     Ok(())
 }
 
@@ -990,23 +1011,20 @@ fn expected_pane_records(
 
 fn validate_pane_and_tab_records(
     ready: &PresentationPlan,
+    record_order: &SemanticRecordOrder,
     workspace: &Workspace,
     workspace_index: &SceneWorkspaceIndex,
     policy: &DockPolicySnapshot,
     expected_panes: &BTreeMap<PaneSceneId, (Option<ItemId>, SceneLayerKey)>,
 ) -> Result<(), SceneBuildError> {
-    let panes = ready
-        .pane_records
-        .iter()
-        .map(|record| (record.id(), record))
-        .collect::<BTreeMap<_, _>>();
-    if panes.len() != expected_panes.len() {
+    let panes = &record_order.panes;
+    if panes.entries().len() != expected_panes.len() {
         return Err(SceneBuildError::PaneRecordSetMismatch {
             surface: ready.surface,
         });
     }
     for (id, (selected, layer)) in expected_panes {
-        let Some(record) = panes.get(id).copied() else {
+        let Some(record) = panes.get(&ready.pane_records, *id) else {
             return Err(SceneBuildError::PaneRecordSetMismatch {
                 surface: ready.surface,
             });
@@ -1026,23 +1044,13 @@ fn validate_pane_and_tab_records(
     // The expected pane roster already proves root membership, owner, and
     // selection. Tab-bar policy only needs that selected item's stable rule;
     // capturing a complete root fingerprint for every leaf repeats O(n) work.
-    let pane_policies = expected_panes
-        .iter()
-        .map(|(id, (selected, _))| {
-            (
-                *id,
-                policy.tab_bar_policy(DockTabBarPolicyRequest::new(
-                    ready.surface,
-                    selected.map(crate::policy::DockTargetRuleKey::Item),
-                )),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let bars = ready
-        .tab_bar_records
-        .iter()
-        .map(|record| (*record.id(), record))
-        .collect::<BTreeMap<_, _>>();
+    let pane_policy = |pane: &PaneRecord| {
+        policy.tab_bar_policy(DockTabBarPolicyRequest::new(
+            ready.surface,
+            pane.selected().map(crate::policy::DockTargetRuleKey::Item),
+        ))
+    };
+    let bars = &record_order.bars;
     let mut controls_by_bar = BTreeMap::<TabBarSceneId, BTreeMap<TabStripControlId, _>>::new();
     for control in &ready.tab_strip_control_records {
         let bar = control.id().bar();
@@ -1074,13 +1082,14 @@ fn validate_pane_and_tab_records(
             id,
         });
     }
-    if controls_by_bar.keys().any(|id| !bars.contains_key(id))
-        || menus_by_bar.keys().any(|id| !bars.contains_key(id))
+    let bar_exists = |id: &TabBarSceneId| bars.get(&ready.tab_bar_records, *id).is_some();
+    if controls_by_bar.keys().any(|id| !bar_exists(id))
+        || menus_by_bar.keys().any(|id| !bar_exists(id))
     {
         let id = controls_by_bar
             .keys()
             .chain(menus_by_bar.keys())
-            .find(|id| !bars.contains_key(id))
+            .find(|id| !bar_exists(id))
             .copied()
             .expect("a foreign tab-strip record was detected");
         return Err(SceneBuildError::InvalidTabBarRecord {
@@ -1089,35 +1098,26 @@ fn validate_pane_and_tab_records(
         });
     }
     let expected_bars = panes
-        .iter()
-        .filter(|(id, pane)| {
+        .iter(&ready.pane_records)
+        .filter(|(_, pane)| {
             rect_has_area(pane.bounds())
-                && pane_policies
-                    .get(id)
-                    .is_some_and(|policy| policy.visibility() == TabBarVisibility::Visible)
+                && pane_policy(pane).visibility() == TabBarVisibility::Visible
         })
         .count();
-    if bars.len() != expected_bars {
+    if bars.entries().len() != expected_bars {
         return Err(SceneBuildError::TabBarRecordSetMismatch {
             surface: ready.surface,
         });
     }
-    for (id, pane) in &panes {
+    for (id, pane) in panes.iter(&ready.pane_records) {
         let bar_id = TabBarSceneId {
             root: id.root,
             tabs: id.tabs,
         };
-        let tab_bar_policy =
-            pane_policies
-                .get(id)
-                .copied()
-                .ok_or(SceneBuildError::InvalidPaneRecord {
-                    surface: ready.surface,
-                    id: *id,
-                })?;
+        let tab_bar_policy = pane_policy(pane);
         if !rect_has_area(pane.bounds()) || tab_bar_policy.visibility() == TabBarVisibility::Hidden
         {
-            if bars.contains_key(&bar_id) {
+            if bar_exists(&bar_id) {
                 return Err(SceneBuildError::InvalidTabBarRecord {
                     surface: ready.surface,
                     id: bar_id,
@@ -1125,7 +1125,7 @@ fn validate_pane_and_tab_records(
             }
             continue;
         }
-        let Some(bar) = bars.get(&bar_id).copied() else {
+        let Some(bar) = bars.get(&ready.tab_bar_records, bar_id) else {
             return Err(SceneBuildError::TabBarRecordSetMismatch {
                 surface: ready.surface,
             });
@@ -1148,25 +1148,18 @@ fn validate_pane_and_tab_records(
         }
     }
 
-    let tabs_by_bar = ready.tab_records.iter().fold(
-        BTreeMap::<TabBarSceneId, Vec<&TabRecord>>::new(),
-        |mut grouped, record| {
-            grouped
-                .entry(TabBarSceneId {
-                    root: record.id().root,
-                    tabs: record.id().tabs,
-                })
-                .or_default()
-                .push(record);
-            grouped
-        },
-    );
-    if tabs_by_bar.keys().any(|id| !bars.contains_key(id)) {
+    let tabs = record_order.tabs.entries();
+    if tabs.iter().any(|(id, _)| {
+        !bar_exists(&TabBarSceneId {
+            root: id.root,
+            tabs: id.tabs,
+        })
+    }) {
         return Err(SceneBuildError::TabRecordSetMismatch {
             surface: ready.surface,
         });
     }
-    for (bar_id, bar) in bars {
+    for (bar_id, bar) in bars.iter(&ready.tab_bar_records) {
         let Some(Node::Tabs { items, selected }) = workspace.node(bar_id.tabs) else {
             return Err(SceneBuildError::InvalidTabBarRecord {
                 surface: ready.surface,
@@ -1226,17 +1219,21 @@ fn validate_pane_and_tab_records(
                 id: bar_id,
             });
         }
-        let visible = tabs_by_bar.get(&bar_id).map_or(&[][..], Vec::as_slice);
-        let visible_items = visible
-            .iter()
-            .map(|record| record.id().item)
-            .collect::<HashSet<_>>();
+        let bar_key = (bar_id.root, bar_id.tabs);
+        let start = tabs.partition_point(|(id, _)| (id.root, id.tabs) < bar_key);
+        let end = tabs.partition_point(|(id, _)| (id.root, id.tabs) <= bar_key);
+        let visible = &tabs[start..end];
+        let visible_record = |item| {
+            visible
+                .binary_search_by_key(&item, |(id, _)| id.item)
+                .ok()
+                .map(|row| &ready.tab_records[visible[row].1])
+        };
         let expected_hidden = items
             .iter()
             .copied()
-            .filter(|item| !visible_items.contains(item))
-            .collect::<Vec<_>>();
-        if bar.hidden_items() != expected_hidden {
+            .filter(|item| visible_record(*item).is_none());
+        if !bar.hidden_items().iter().copied().eq(expected_hidden) {
             return Err(SceneBuildError::InvalidTabBarRecord {
                 surface: ready.surface,
                 id: bar_id,
@@ -1245,8 +1242,8 @@ fn validate_pane_and_tab_records(
         let members_match = bar.members().len() == items.len()
             && bar.members().iter().enumerate().all(|(ordinal, member)| {
                 let tab = member.tab();
-                let visible_record = visible.iter().find(|record| *record.id() == tab);
-                let visibility_matches = match (member.visibility(), visible_record) {
+                let record = visible_record(tab.item).filter(|record| *record.id() == tab);
+                let visibility_matches = match (member.visibility(), record) {
                     (TabStripMemberVisibility::Visible, Some(record)) => {
                         member.full_bounds() == record.full_bounds()
                             && record.full_bounds() == record.visible_bounds()
@@ -1291,7 +1288,9 @@ fn validate_pane_and_tab_records(
             controls_by_bar.get(&bar_id),
             menus_by_bar.get(&bar_id).copied(),
         )?;
-        for record in visible {
+        let mut invalid_tab: Option<(usize, TabSceneId)> = None;
+        for &(_, row) in visible {
+            let record = &ready.tab_records[row];
             let id = *record.id();
             let ordinal_matches = items.get(record.ordinal()).copied() == Some(id.item);
             let close_allowed = policy.pane_close_capability(id.item).allows_close();
@@ -1335,11 +1334,18 @@ fn validate_pane_and_tab_records(
                 || !geometry_matches
                 || !workspace_index.semantic_node_exists(ready.surface, id.root, id.tabs)
             {
-                return Err(SceneBuildError::InvalidTabRecord {
-                    surface: ready.surface,
-                    id,
-                });
+                // The directory is sorted by ID, but diagnostics retain the
+                // earliest invalid record in the original bar input order.
+                if invalid_tab.is_none_or(|(first, _)| row < first) {
+                    invalid_tab = Some((row, id));
+                }
             }
+        }
+        if let Some((_, id)) = invalid_tab {
+            return Err(SceneBuildError::InvalidTabRecord {
+                surface: ready.surface,
+                id,
+            });
         }
     }
     Ok(())
@@ -1512,20 +1518,13 @@ pub(super) fn splitter_extent_satisfies_constraints(
 
 fn validate_splitter_records(
     ready: &PresentationPlan,
+    record_order: &SemanticRecordOrder,
     workspace: &Workspace,
     workspace_index: &SceneWorkspaceIndex,
     policy: &DockPolicySnapshot,
 ) -> Result<(), SceneBuildError> {
-    let splitters = ready
-        .splitter_records
-        .iter()
-        .map(|record| (*record.id(), record))
-        .collect::<BTreeMap<_, _>>();
-    let splitter_gaps = ready
-        .splitter_gap_records
-        .iter()
-        .map(|record| (record.id(), record.presentation()))
-        .collect::<BTreeMap<_, _>>();
+    let splitters = &record_order.splitters;
+    let splitter_gaps = &record_order.gaps;
     let compiled_roots = ready
         .pane_records
         .iter()
@@ -1566,28 +1565,38 @@ fn validate_splitter_records(
             }
         }
     }
-    if splitter_gaps.keys().copied().collect::<BTreeSet<_>>() != expected_splitters {
+    if !splitter_gaps
+        .entries()
+        .iter()
+        .map(|&(id, _)| id)
+        .eq(expected_splitters)
+    {
         return Err(SceneBuildError::SplitterGapRecordSetMismatch {
             surface: ready.surface,
         });
     }
-    let rendered_splitters = splitter_gaps
+    let rendered_splitters =
+        splitter_gaps
+            .iter(&ready.splitter_gap_records)
+            .filter_map(|(id, record)| {
+                (record.presentation() == SplitterGapPresentation::Rendered).then_some(id)
+            });
+    if !splitters
+        .entries()
         .iter()
-        .filter_map(|(id, presentation)| {
-            (*presentation == SplitterGapPresentation::Rendered).then_some(*id)
-        })
-        .collect::<BTreeSet<_>>();
-    if splitters.keys().copied().collect::<BTreeSet<_>>() != rendered_splitters {
+        .map(|&(id, _)| id)
+        .eq(rendered_splitters)
+    {
         return Err(SceneBuildError::SplitterRecordSetMismatch {
             surface: ready.surface,
         });
     }
     let mut validated_resize_arrays: Option<&SplitterRecord> = None;
-    for (id, record) in &splitters {
+    for (id, record) in splitters.iter(&ready.splitter_records) {
         let Some(Node::Split { axis, children, .. }) = workspace.node(id.split) else {
             return Err(SceneBuildError::InvalidSplitterRecord {
                 surface: ready.surface,
-                id: *id,
+                id,
             });
         };
         // Sibling gaps share immutable arrays; only that exact backing reuses this proof.
@@ -1629,7 +1638,7 @@ fn validate_splitter_records(
         {
             return Err(SceneBuildError::InvalidSplitterRecord {
                 surface: ready.surface,
-                id: *id,
+                id,
             });
         }
         validate_semantic_layer(ready.surface, id.root, record.layer(), workspace_index)?;
@@ -1643,23 +1652,27 @@ fn validate_splitter_records(
         {
             return Err(SceneBuildError::InvalidSplitterRecord {
                 surface: ready.surface,
-                id: *id,
+                id,
             });
         }
         validated_resize_arrays = Some(record);
     }
 
-    let expected_junctions = derive_splitter_junction_candidates(splitters.values().copied())
-        .map_err(|source| SceneBuildError::InvalidSplitterJunctionGeometry {
-            surface: ready.surface,
-            source,
-        })?
-        .into_iter()
-        .filter(|candidate| {
-            region_has_authoritative_area(candidate.hit, candidate.layer, &ready.drop_occlusions)
-        })
-        .map(|candidate| (candidate.id(), candidate))
-        .collect::<BTreeMap<_, _>>();
+    let expected_junctions = derive_splitter_junction_candidates(
+        splitters
+            .iter(&ready.splitter_records)
+            .map(|(_, record)| record),
+    )
+    .map_err(|source| SceneBuildError::InvalidSplitterJunctionGeometry {
+        surface: ready.surface,
+        source,
+    })?
+    .into_iter()
+    .filter(|candidate| {
+        region_has_authoritative_area(candidate.hit, candidate.layer, &ready.drop_occlusions)
+    })
+    .map(|candidate| (candidate.id(), candidate))
+    .collect::<BTreeMap<_, _>>();
     if ready.splitter_junction_records.len() != expected_junctions.len() {
         return Err(SceneBuildError::SplitterJunctionRecordSetMismatch {
             surface: ready.surface,
@@ -1674,7 +1687,7 @@ fn validate_splitter_records(
         };
         let expected_operable = expected.id().splitters().into_iter().all(|splitter| {
             splitters
-                .get(&splitter)
+                .get(&ready.splitter_records, splitter)
                 .is_some_and(|record| record.operable())
         });
         if junction.layer() != expected.layer
@@ -1742,27 +1755,20 @@ fn canonicalize_ready(
     workspace: &Workspace,
     workspace_index: &SceneWorkspaceIndex,
     policy: &DockPolicySnapshot,
+    record_order: SemanticRecordOrder,
     target_order: DropTargetOrder,
 ) {
-    ready.pane_records.sort_unstable_by_key(PaneRecord::id);
-    ready
-        .tab_records
-        .sort_unstable_by_key(|record| *record.id());
-    ready
-        .tab_bar_records
-        .sort_unstable_by_key(|record| *record.id());
+    record_order.panes.apply(&mut ready.pane_records);
+    record_order.tabs.apply(&mut ready.tab_records);
+    record_order.bars.apply(&mut ready.tab_bar_records);
     ready
         .tab_strip_control_records
         .sort_unstable_by_key(|record| record.id());
     ready
         .tab_list_menu_records
         .sort_unstable_by_key(TabListMenuRecord::session);
-    ready
-        .splitter_gap_records
-        .sort_unstable_by_key(SplitterGapRecord::id);
-    ready
-        .splitter_records
-        .sort_unstable_by_key(|record| *record.id());
+    record_order.gaps.apply(&mut ready.splitter_gap_records);
+    record_order.splitters.apply(&mut ready.splitter_records);
     ready
         .splitter_junction_records
         .sort_unstable_by_key(SplitterJunctionRecord::id);

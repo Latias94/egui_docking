@@ -13,9 +13,18 @@ const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 
 fn compiled_split(children: u16) -> (DockEngine, PresentationPlan) {
+    compiled_split_with_tabs(children, 1)
+}
+
+fn compiled_split_with_tabs(children: u16, tabs: u16) -> (DockEngine, PresentationPlan) {
     let content = DockspaceNode::equal_split(
         DockspaceAxis::Horizontal,
-        (1..=children).map(|item| DockspaceNode::tabs([ItemId::new(u64::from(item))])),
+        (0..children).map(|pane| {
+            DockspaceNode::tabs(
+                (1..=tabs)
+                    .map(|tab| ItemId::new(u64::from(pane) * u64::from(tabs) + u64::from(tab))),
+            )
+        }),
     )
     .unwrap();
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
@@ -35,7 +44,13 @@ fn compiled_split(children: u16) -> (DockEngine, PresentationPlan) {
         .set_bounds(
             requirements.bounds(),
             Measurement::Measured(
-                LogicalRect::new(0.0, 0.0, f64::from(children) * 128.0, 600.0).unwrap(),
+                LogicalRect::new(
+                    0.0,
+                    0.0,
+                    f64::from(children) * f64::from(tabs) * 128.0,
+                    600.0,
+                )
+                .unwrap(),
             ),
         )
         .unwrap();
@@ -182,5 +197,117 @@ fn duplicate_validation_keeps_the_smallest_identity_and_record_class_priority() 
             Err(SceneBuildError::DuplicatePane { id }) if id == expected
         ));
         plan.pane_records.reverse();
+    }
+}
+
+fn revalidate(
+    engine: &DockEngine,
+    plan: PresentationPlan,
+) -> Result<PresentationPlan, SceneBuildError> {
+    PresentationPlanValidator::for_manifest_surface(
+        engine.workspace(),
+        engine.version(),
+        engine.presentation_requirements(),
+        engine.policy_snapshot(),
+        SURFACE,
+    )
+    .unwrap()
+    .validate_and_canonicalize(plan)
+}
+
+#[test]
+fn semantic_row_orders_restore_all_records_and_linked_slots_after_permutation() {
+    let (engine, original) = compiled_split_with_tabs(4, 4);
+    let mut plan = original.clone();
+    for offset in 0..7 {
+        plan.pane_records.reverse();
+        plan.tab_bar_records
+            .rotate_left(offset % original.tab_bar_records.len());
+        plan.tab_records.rotate_right(offset);
+        plan.splitter_gap_records.reverse();
+        plan.splitter_records
+            .rotate_left(offset % original.splitter_records.len());
+        plan = revalidate(&engine, plan).unwrap();
+        assert_eq!(plan, original);
+    }
+}
+
+#[test]
+fn tab_directory_preserves_input_error_order_with_multiple_invalid_visible_records() {
+    let (engine, original) = compiled_split_with_tabs(4, 4);
+    let first_bar = *original.tab_bar_records()[0].id();
+    let mutate_selection = |record: &TabRecord| {
+        TabRecord::new(
+            *record.id(),
+            record.full_bounds(),
+            record.visible_bounds(),
+            record.text_bounds(),
+            record.drag_hit(),
+            record.close_visual_bounds(),
+            record.close_bounds(),
+            !record.selected(),
+            record.ordinal(),
+            record.layer(),
+        )
+    };
+    let mut plan = original.clone();
+    for record in &mut plan.tab_records {
+        if record.id().tabs == first_bar.tabs {
+            *record = mutate_selection(record);
+        }
+    }
+    for reverse in [false, true] {
+        if reverse {
+            plan.tab_records.reverse();
+        }
+        let expected = *plan
+            .tab_records
+            .iter()
+            .find(|record| record.id().tabs == first_bar.tabs)
+            .unwrap()
+            .id();
+        assert!(matches!(
+            revalidate(&engine, plan.clone()),
+            Err(SceneBuildError::InvalidTabRecord { id, .. }) if id == expected
+        ));
+    }
+}
+
+#[test]
+fn semantic_record_duplicates_keep_every_class_in_the_original_priority() {
+    let (_, original) = compiled_split_with_tabs(4, 4);
+    for class in 0..5 {
+        let mut plan = original.clone();
+        let expected = match class {
+            0 => SceneBuildError::DuplicatePane {
+                id: plan.pane_records[0].id(),
+            },
+            1 => SceneBuildError::DuplicateTabBar {
+                id: *plan.tab_bar_records[0].id(),
+            },
+            2 => SceneBuildError::DuplicateTab {
+                id: *plan.tab_records[0].id(),
+            },
+            3 => SceneBuildError::DuplicateSplitterGap {
+                id: plan.splitter_gap_records[0].id(),
+            },
+            _ => SceneBuildError::DuplicateSplitter {
+                id: *plan.splitter_records[0].id(),
+            },
+        };
+        if class == 0 {
+            plan.pane_records.push(plan.pane_records[0]);
+        }
+        if class <= 1 {
+            plan.tab_bar_records.push(plan.tab_bar_records[0].clone());
+        }
+        if class <= 2 {
+            plan.tab_records.push(plan.tab_records[0].clone());
+        }
+        if class <= 3 {
+            plan.splitter_gap_records.push(plan.splitter_gap_records[0]);
+        }
+        plan.splitter_records.push(plan.splitter_records[0].clone());
+        assert_eq!(validate_semantic_uniqueness(&plan).err(), Some(expected));
     }
 }

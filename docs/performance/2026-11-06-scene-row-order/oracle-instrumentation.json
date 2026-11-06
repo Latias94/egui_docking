@@ -1,0 +1,14 @@
+{
+  "path": "crates/dockspace/src/scene/validation.rs",
+  "candidate_sha256": "043631ee120f49a029690b5e264da4a0f7f56d1f12bd3006ea6172d3116a1b0a",
+  "instrumented_sha256": "bcb55ab6b7afb6cc1d163bd79497414e82544322360c4c066336869585d0c94c",
+  "base": "7f959df126701f06ce037386b3caccfce746e6d0",
+  "old_source_sha256": "bcf1fad02cd60064c911ac3cb7d32a2b7512391d22f5db19a5351781587b392c",
+  "completed_utc": "2026-11-06T06:32:42.552249+00:00",
+  "comparisons": 668,
+  "tests_passed": 560,
+  "returncode": 0,
+  "scope": "Same-input complete result/error comparison to frozen 7f959df validator; selected scene/native/tab-strip tests, not latency qualification",
+  "temporary_hook_removed": true,
+  "formatted_instrumented_sha256": "273ecca18a74578893af8da3dae2321091b49253153ce0e70bc5a41334c3b57c"
+}
