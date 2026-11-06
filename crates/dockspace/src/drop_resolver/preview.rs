@@ -8,6 +8,7 @@ use crate::error::CommandError;
 use crate::geometry::{GeometryError, LogicalRect};
 use crate::graph::Workspace;
 use crate::ids::{NodeId, RootId};
+use crate::layout::NodeMap;
 use crate::policy::DockPolicySnapshot;
 use crate::scene::{PresentationLayoutFacts, PresentationPlan};
 use crate::scene_compiler::{
@@ -109,7 +110,7 @@ fn projected_center_rect(
     policy: &DockPolicySnapshot,
     target_plan: &PresentationPlan,
     target: &crate::command::TabTarget,
-    node_rects: &std::collections::BTreeMap<NodeId, LogicalRect>,
+    node_rects: &NodeMap<LogicalRect>,
 ) -> Result<LogicalRect, DropPreviewProjectionError> {
     let bounds = node_rects.get(&target.tabs()).copied().ok_or(
         DropPreviewProjectionError::TargetProjectionMissing {
@@ -154,7 +155,7 @@ fn projected_payload_rect(
     candidate: &Workspace,
     target_root: RootId,
     payload: &MovePayload,
-    node_rects: &std::collections::BTreeMap<NodeId, LogicalRect>,
+    node_rects: &NodeMap<LogicalRect>,
 ) -> Result<LogicalRect, DropPreviewProjectionError> {
     let (source_root, source_node, items) = match payload {
         MovePayload::Item(source) => (source.root(), source.tabs(), vec![source.item()]),

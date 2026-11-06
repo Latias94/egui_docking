@@ -360,12 +360,9 @@ impl ContainedFloating {
     }
 }
 
-/// A validated docking workspace.
-///
-/// Public code constructs complex workspaces through [`WorkspaceBuilder`]. Runtime mutation is
-/// restricted to the core engine, which validates a candidate before atomically publishing it.
+/// Raw graph storage. Only graph-owned completion can publish it as a Workspace.
 #[derive(Debug, Clone, Default)]
-pub struct Workspace {
+pub(crate) struct WorkspaceData {
     pub(crate) nodes: SlotMap<NodeId, Node>,
     pub(crate) tab_mru: BTreeMap<NodeId, Vec<ItemId>>,
     pub(crate) roots: BTreeMap<RootId, RootRecord>,
@@ -373,7 +370,7 @@ pub struct Workspace {
     pub(crate) contained_floatings: BTreeMap<FloatingPresentationId, ContainedFloating>,
 }
 
-impl PartialEq for Workspace {
+impl PartialEq for WorkspaceData {
     fn eq(&self, other: &Self) -> bool {
         self.roots == other.roots
             && self.surfaces == other.surfaces
@@ -387,17 +384,102 @@ impl PartialEq for Workspace {
     }
 }
 
+/// A canonical workspace. Mutable storage is owned by graph's implementation.
+#[derive(Debug, Clone, Default)]
+pub struct Workspace {
+    storage: WorkspaceData,
+}
+
+impl PartialEq for Workspace {
+    fn eq(&self, other: &Self) -> bool {
+        self.storage == other.storage
+    }
+}
+
 impl Workspace {
     /// Creates the valid empty workspace.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Starts a mutable draft which must pass validation before becoming a workspace.
+    /// Starts an uncommitted workspace draft.
     pub fn builder() -> WorkspaceBuilder {
         WorkspaceBuilder::new()
     }
 
+    /// Converts this workspace into an editable draft, retaining node identities.
+    pub fn into_builder(self) -> WorkspaceBuilder {
+        WorkspaceBuilder {
+            workspace: self.storage,
+        }
+    }
+
+    pub(crate) fn storage(&self) -> &WorkspaceData {
+        &self.storage
+    }
+
+    /// Returns a node by runtime identity.
+    pub fn node(&self, id: NodeId) -> Option<&Node> {
+        self.storage.node(id)
+    }
+
+    /// Iterates nodes in deterministic arena order.
+    pub fn nodes(&self) -> impl Iterator<Item = (NodeId, &Node)> {
+        self.storage.nodes()
+    }
+
+    /// Returns the tabs stack's selected-first MRU permutation.
+    pub fn tab_mru(&self, tabs: NodeId) -> Option<&[ItemId]> {
+        self.storage.tab_mru(tabs)
+    }
+
+    /// Returns one root record.
+    pub fn root(&self, id: RootId) -> Option<&RootRecord> {
+        self.storage.root(id)
+    }
+
+    /// Iterates roots in stable identity order.
+    pub fn roots(&self) -> impl Iterator<Item = (RootId, &RootRecord)> {
+        self.storage.roots()
+    }
+
+    /// Returns one surface presentation.
+    pub fn surface(&self, id: SurfaceId) -> Option<&SurfacePresentation> {
+        self.storage.surface(id)
+    }
+
+    /// Iterates surfaces in stable identity order.
+    pub fn surfaces(&self) -> impl Iterator<Item = (SurfaceId, &SurfacePresentation)> {
+        self.storage.surfaces()
+    }
+
+    /// Returns one contained presentation.
+    pub fn contained_floating(&self, id: FloatingPresentationId) -> Option<&ContainedFloating> {
+        self.storage.contained_floating(id)
+    }
+
+    /// Iterates contained presentations in stable identity order.
+    pub fn contained_floatings(
+        &self,
+    ) -> impl Iterator<Item = (FloatingPresentationId, &ContainedFloating)> {
+        self.storage.contained_floatings()
+    }
+
+    /// Counts every owned item occurrence.
+    pub fn item_multiset(&self) -> BTreeMap<ItemId, usize> {
+        self.storage.item_multiset()
+    }
+
+    fn insert_runtime_node(&mut self, node: Node) -> NodeId {
+        self.storage.insert_runtime_node(node)
+    }
+
+    fn remove_runtime_node(&mut self, id: NodeId) -> Option<Node> {
+        self.storage.remove_runtime_node(id)
+    }
+}
+
+impl WorkspaceData {
     /// Returns a node by runtime identity.
     pub fn node(&self, id: NodeId) -> Option<&Node> {
         self.nodes.get(id)
@@ -493,38 +575,33 @@ impl Workspace {
         Some(node)
     }
 
-    #[allow(dead_code, reason = "used by later transactional workspace commands")]
-    pub(crate) fn roots_mut(&mut self) -> &mut BTreeMap<RootId, RootRecord> {
-        &mut self.roots
-    }
-
-    #[allow(dead_code, reason = "used by later transactional workspace commands")]
-    pub(crate) fn surfaces_mut(&mut self) -> &mut BTreeMap<SurfaceId, SurfacePresentation> {
-        &mut self.surfaces
-    }
-
-    #[allow(dead_code, reason = "used by later transactional workspace commands")]
-    pub(crate) fn contained_floatings_mut(
-        &mut self,
-    ) -> &mut BTreeMap<FloatingPresentationId, ContainedFloating> {
-        &mut self.contained_floatings
-    }
-
     pub(crate) fn validate_candidate(&self) -> Result<(), WorkspaceValidationErrors> {
-        crate::validation::validate_workspace(self)
+        crate::validation::validate_workspace_data(self)
     }
 }
 
 /// Mutable assembly state for constructing and decoding a workspace.
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceBuilder {
-    pub(crate) workspace: Workspace,
+    pub(crate) workspace: WorkspaceData,
 }
 
 impl WorkspaceBuilder {
     /// Creates an empty workspace draft.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Read-only raw storage for graph diagnostic fixtures.
+    #[cfg(test)]
+    pub(crate) fn draft(&self) -> &WorkspaceData {
+        &self.workspace
+    }
+
+    /// Mutable raw storage; build must still normalize and validate it.
+    #[cfg(test)]
+    pub(crate) fn draft_mut(&mut self) -> &mut WorkspaceData {
+        &mut self.workspace
     }
 
     /// Inserts a runtime node and returns its generational identity.
@@ -628,9 +705,8 @@ impl WorkspaceBuilder {
     ///
     /// Returns [`CanonicalizationError`] when normalization would hide corruption, lose an item,
     /// or produce a workspace that fails strict validation.
-    pub fn build(mut self) -> Result<Workspace, CanonicalizationError> {
-        crate::canonical::canonicalize_workspace(&mut self.workspace)?;
-        Ok(self.workspace)
+    pub fn build(self) -> Result<Workspace, CanonicalizationError> {
+        canonical::build_workspace(self.workspace)
     }
 
     /// Validates the draft without consuming or canonicalizing it.
@@ -720,3 +796,8 @@ mod tests {
         assert!(!is_exact_tab_mru(&[], None, None));
     }
 }
+
+#[path = "canonical.rs"]
+pub(crate) mod canonical;
+#[path = "operation.rs"]
+pub(crate) mod operation;

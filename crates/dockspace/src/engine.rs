@@ -3562,7 +3562,7 @@ impl DockEngine {
                             stage: "select delivered item after manipulation",
                         })?;
                 if matches!(
-                    workspace.nodes.get(source.tabs()),
+                    workspace.node(source.tabs()),
                     Some(Node::Tabs { selected: Some(selected), .. }) if *selected == item
                 ) {
                     Ok(None)
@@ -6222,13 +6222,14 @@ mod drag_source_index_tests {
         let previous_version = engine.version;
         let previous_workspace = Arc::downgrade(engine.workspace.as_arc());
         let mut candidate = engine.workspace.as_ref().clone();
-        *candidate.nodes.get_mut(fixture.tabs).unwrap() = Node::Tabs {
-            items: vec![ItemId::new(1), ItemId::new(2)],
-            selected: Some(ItemId::new(2)),
-        };
-        candidate
-            .tab_mru
-            .insert(fixture.tabs, vec![ItemId::new(2), ItemId::new(1)]);
+        let source = candidate
+            .capture_item_source(fixture.root, fixture.tabs, ItemId::new(2))
+            .unwrap();
+        crate::transaction::WorkspaceTransaction::from_commands([WorkspaceCommand::Select {
+            source,
+        }])
+        .apply(&mut candidate, &engine.policy)
+        .unwrap();
         let publication = engine
             .stage_workspace_publication(candidate, &engine.policy)
             .unwrap();
@@ -6292,7 +6293,7 @@ mod drag_source_index_tests {
             );
             if replace_source {
                 let previous = Arc::downgrade(engine.workspace.as_arc());
-                let _ = engine.workspace.draft_mut();
+                engine.workspace = engine.workspace.as_ref().clone().into();
                 assert!(previous.upgrade().is_none());
             } else {
                 engine.version = WorkspaceVersion::new(

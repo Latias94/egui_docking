@@ -46,7 +46,7 @@ pub mod backend_ingress;
 #[allow(dead_code, unused_imports)]
 mod backend_ingress;
 #[allow(dead_code, unused_imports)]
-mod canonical;
+pub(crate) use graph::canonical;
 #[cfg_attr(not(test), allow(dead_code))]
 mod close_plan;
 /// Stable application close decisions, targets, and opaque decision identities.
@@ -131,7 +131,7 @@ pub mod layout;
 #[allow(dead_code, unused_imports)]
 mod layout;
 pub mod model;
-mod operation;
+pub(crate) use graph::operation;
 #[cfg(feature = "serde")]
 mod persistence;
 #[cfg(test)]

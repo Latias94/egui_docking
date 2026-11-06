@@ -73,3 +73,9 @@ raising execution timeout cannot repair allocation failure. Preserve the existin
 expanded native-framework and cancel-close coverage. Earlier physical smoke
 failures are separate observations, not evidence that this latest run failed
 because of Rust code.
+
+## Qualified sealed-layout checkpoint
+
+The combined local-mutation/dense-output checkpoint passes 2,035 production core and 2,211 workspace tests, focused numeric/deep regressions, integration, lint and docs gates. Both complete paired comparisons preserve all state vectors. At 1,024 panes Center is 61.66–65.93% faster than ea4161e, but still 7.95–10.20x ImGui; resize remains 4.21–4.64x. No applicable cell meets 2x. Continue with runtime structural compilation, root-reference ownership and candidate copy attribution; this is not a stopping point. See [the complete evidence](../performance/2026-11-07-sealed-layout.md).
+
+The macOS allocation retry and expanded coverage commit aa3c99b both passed all six CI jobs. Preserve those checks and require fresh CI for subsequent runtime heads.

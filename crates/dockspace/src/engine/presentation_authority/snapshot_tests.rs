@@ -89,22 +89,17 @@ fn snapshot_source_version_and_same_version_mutation_keep_live_fallback() {
             .is_none()
     );
     let mut candidate = engine.candidate();
-    let tabs = candidate
-        .workspace
+    let mut changed = candidate.workspace.as_ref().clone();
+    let source = changed
         .capture_item_source_by_id(ItemId::new(2))
         .unwrap()
-        .unwrap()
-        .tabs();
-    let Node::Tabs { selected, .. } = candidate.workspace.draft_mut().nodes.get_mut(tabs).unwrap()
-    else {
-        unreachable!()
-    };
-    *selected = Some(ItemId::new(2));
-    candidate
-        .workspace
-        .draft_mut()
-        .tab_mru
-        .insert(tabs, vec![ItemId::new(2), ItemId::new(1)]);
+        .unwrap();
+    crate::transaction::WorkspaceTransaction::from_commands([
+        crate::command::WorkspaceCommand::Select { source },
+    ])
+    .apply(&mut changed, &candidate.policy)
+    .unwrap();
+    candidate.workspace = changed.into();
     assert!(
         candidate
             .presentation_authority

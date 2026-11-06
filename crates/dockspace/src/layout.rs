@@ -8,10 +8,15 @@ use thiserror::Error;
 use crate::command::{NodeFingerprint, NodeSource};
 use crate::error::{CommandError, ReferenceRole};
 use crate::geometry::{Constraints, GeometryError, LogicalRect, LogicalSize};
-use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight, Workspace};
+use crate::graph::{
+    Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight, Workspace, WorkspaceData,
+};
 use crate::ids::{NodeId, RootId};
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
+
+mod projection;
+pub use projection::{LayoutProjection, NodeIter, NodeMap, SplitIter, SplitMap, SplitProjection};
 
 mod topology;
 use topology::LayoutNodeKind;
@@ -139,38 +144,6 @@ pub enum LayoutMetricsError {
         /// Rejected thickness.
         value: f64,
     },
-}
-
-/// Geometry and constraint outcomes for one split node.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SplitProjection {
-    /// Direction in which child rectangles were allocated.
-    pub axis: Axis,
-    /// Logical rectangles reserved between adjacent children.
-    pub splitter_rects: Vec<LogicalRect>,
-    /// Minimum projected extent for each direct child along this split's axis.
-    pub child_minimum_extents: Vec<f64>,
-    /// Maximum projected extent for each direct child along this split's axis.
-    pub child_maximum_extents: Vec<f64>,
-    /// Actual projected extent for each direct child along this split's axis.
-    pub child_extents: Vec<f64>,
-    /// Direct child which contains the root's declared central leaf, when any.
-    pub central_index: Option<usize>,
-    /// Extent by which child minima exceed the split bounds.
-    pub overflow: f64,
-    /// Extent left unused after every child reached its maximum.
-    pub unallocated: f64,
-}
-
-/// Complete deterministic projection of one workspace root.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LayoutProjection {
-    /// Logical rectangle assigned to every reachable node.
-    pub node_rects: BTreeMap<NodeId, LogicalRect>,
-    /// Composed minimum and maximum logical sizes for every reachable node.
-    pub node_constraints: BTreeMap<NodeId, Constraints>,
-    /// Split-specific outcomes keyed by split node identity.
-    pub splits: BTreeMap<NodeId, SplitProjection>,
 }
 
 /// Transient split weights applied to one exact frozen split source.
@@ -339,10 +312,52 @@ pub fn solve_axis(
     central_index: Option<usize>,
 ) -> Result<AxisLayout, LayoutError> {
     validate_inputs(extent, weights, constraints, central_index)?;
+    let mut sizes = vec![0.0; weights.len()];
+    let mut eligible = Vec::new();
+    let outcome = solve_validated_axis_into(
+        extent,
+        weights,
+        constraints,
+        central_index,
+        &mut sizes,
+        &mut eligible,
+    )?;
+    Ok(AxisLayout {
+        sizes,
+        overflow: outcome.overflow,
+        unallocated: outcome.unallocated,
+    })
+}
 
+#[derive(Clone, Copy)]
+struct AxisOutcome {
+    overflow: f64,
+    unallocated: f64,
+}
+
+fn solve_axis_into(
+    extent: f64,
+    weights: &[f64],
+    constraints: &[AxisConstraint],
+    central_index: Option<usize>,
+    sizes: &mut [f64],
+    eligible: &mut Vec<usize>,
+) -> Result<AxisOutcome, LayoutError> {
+    validate_inputs(extent, weights, constraints, central_index)?;
+    solve_validated_axis_into(extent, weights, constraints, central_index, sizes, eligible)
+}
+
+fn solve_validated_axis_into(
+    extent: f64,
+    weights: &[f64],
+    constraints: &[AxisConstraint],
+    central_index: Option<usize>,
+    sizes: &mut [f64],
+    eligible: &mut Vec<usize>,
+) -> Result<AxisOutcome, LayoutError> {
+    debug_assert_eq!(sizes.len(), weights.len());
     if weights.is_empty() {
-        return Ok(AxisLayout {
-            sizes: Vec::new(),
+        return Ok(AxisOutcome {
             overflow: 0.0,
             unallocated: extent,
         });
@@ -358,49 +373,47 @@ pub fn solve_axis(
     )?;
 
     if min_total > extent {
-        return Ok(AxisLayout {
-            sizes: constraints
-                .iter()
-                .map(|constraint| constraint.min)
-                .collect(),
+        for (size, constraint) in sizes.iter_mut().zip(constraints) {
+            *size = constraint.min;
+        }
+        return Ok(AxisOutcome {
             overflow: min_total - extent,
             unallocated: 0.0,
         });
     }
     if max_total < extent {
-        return Ok(AxisLayout {
-            sizes: constraints
-                .iter()
-                .map(|constraint| constraint.max)
-                .collect(),
+        for (size, constraint) in sizes.iter_mut().zip(constraints) {
+            *size = constraint.max;
+        }
+        return Ok(AxisOutcome {
             overflow: 0.0,
             unallocated: extent - max_total,
         });
     }
 
-    let desired = desired_sizes(extent, weights, central_index)?;
-    let mut sizes = desired
-        .into_iter()
-        .zip(constraints)
-        .map(|(size, constraint)| size.clamp(constraint.min, constraint.max))
-        .collect::<Vec<_>>();
+    desired_sizes_into(extent, weights, central_index, sizes)?;
+    for (size, constraint) in sizes.iter_mut().zip(constraints) {
+        *size = size.clamp(constraint.min, constraint.max);
+    }
 
     let assigned = checked_sum(sizes.iter().copied(), "assigned size")?;
     if assigned < extent {
         grow_to_extent(
-            &mut sizes,
+            sizes,
             extent - assigned,
             weights,
             constraints,
             central_index,
+            eligible,
         );
     } else if assigned > extent {
         shrink_to_extent(
-            &mut sizes,
+            sizes,
             assigned - extent,
             weights,
             constraints,
             central_index,
+            eligible,
         );
     }
 
@@ -417,8 +430,7 @@ pub fn solve_axis(
         0.0
     };
 
-    Ok(AxisLayout {
-        sizes,
+    Ok(AxisOutcome {
         overflow,
         unallocated,
     })
@@ -540,64 +552,97 @@ impl RootMeasurement<'_> {
     }
 
     fn project_with_weights(
-        mut self,
+        self,
         bounds: LogicalRect,
         weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     ) -> Result<LayoutProjection, LayoutError> {
-        if self.minimums_only {
-            let minimum = self.minimum();
-            let leaf_maximum = LogicalSize::new(
-                bounds.width().max(minimum.width()),
-                bounds.height().max(minimum.height()),
-            )?;
-            let mut child_values = Vec::new();
-            for &row in &self.topology.postorder {
-                let maximum = match &self.topology.nodes[row].kind {
-                    LayoutNodeKind::Tabs => leaf_maximum,
-                    LayoutNodeKind::Split { axis, children, .. } => {
-                        child_values.clear();
-                        child_values.extend(
-                            self.topology.children[children.clone()]
-                                .iter()
-                                .map(|&row| self.measurements[row]),
-                        );
-                        compose_maximum(
-                            *axis,
-                            &child_values,
-                            total_splitter_extent(
-                                self.topology.nodes[row].id,
-                                children.len(),
-                                self.metrics,
-                            )?,
-                        )?
-                    }
-                };
-                let measurement = &mut self.measurements[row];
-                measurement.constraints = Constraints::new(measurement.constraints.min(), maximum)?;
-            }
-        }
-        let mut projection = LayoutProjection {
-            node_rects: BTreeMap::new(),
-            node_constraints: BTreeMap::new(),
-            splits: BTreeMap::new(),
-        };
-        project_subtree(
-            &self.topology,
+        project_measurements(
+            self.topology,
+            self.measurements,
             bounds,
             self.metrics,
-            &self.measurements,
+            self.minimums_only,
             weight_overrides,
-            &mut projection,
-        )?;
-        projection.node_constraints = self
-            .topology
-            .nodes
-            .iter()
-            .zip(self.measurements)
-            .map(|(node, measurement)| (node.id, measurement.constraints))
-            .collect();
-        Ok(projection)
+        )
     }
+}
+
+fn project_measurements(
+    topology: Arc<RootLayoutTopology>,
+    mut measurements: Vec<SubtreeMeasurement>,
+    bounds: LogicalRect,
+    metrics: LayoutMetrics,
+    minimums_only: bool,
+    weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
+) -> Result<LayoutProjection, LayoutError> {
+    if minimums_only {
+        let minimum = measurements[0].constraints.min();
+        let leaf_maximum = LogicalSize::new(
+            bounds.width().max(minimum.width()),
+            bounds.height().max(minimum.height()),
+        )?;
+        let mut child_values = Vec::new();
+        for &row in &topology.postorder {
+            let maximum = match &topology.nodes[row].kind {
+                LayoutNodeKind::Tabs => leaf_maximum,
+                LayoutNodeKind::Split { axis, children, .. } => {
+                    child_values.clear();
+                    child_values.extend(
+                        topology.children[children.clone()]
+                            .iter()
+                            .map(|&row| measurements[row]),
+                    );
+                    compose_maximum(
+                        *axis,
+                        &child_values,
+                        total_splitter_extent(topology.nodes[row].id, children.len(), metrics)?,
+                    )?
+                }
+            };
+            let measurement = &mut measurements[row];
+            measurement.constraints = Constraints::new(measurement.constraints.min(), maximum)?;
+        }
+    }
+    let mut projection = LayoutProjection {
+        node_rects: NodeMap::new(Arc::clone(&topology), vec![bounds; topology.nodes.len()]),
+        node_constraints: NodeMap::new(
+            Arc::clone(&topology),
+            measurements
+                .iter()
+                .map(|measurement| measurement.constraints)
+                .collect(),
+        ),
+        splits: SplitMap::new(Arc::clone(&topology), bounds),
+    };
+    project_subtree(
+        &topology,
+        bounds,
+        metrics,
+        &measurements,
+        weight_overrides,
+        &mut projection,
+    )?;
+    Ok(projection)
+}
+
+#[cfg(test)]
+fn project_draft(
+    draft: &crate::graph::WorkspaceBuilder,
+    root: RootId,
+    bounds: LogicalRect,
+    leaves: LeafMeasurements<'_>,
+    metrics: LayoutMetrics,
+) -> Result<LayoutProjection, LayoutError> {
+    let (topology, measurements) =
+        RootLayoutTopology::compile(draft.draft(), root, leaves, metrics)?;
+    project_measurements(
+        Arc::new(topology),
+        measurements,
+        bounds,
+        metrics,
+        matches!(leaves, LeafMeasurements::Minimums(_)),
+        &BTreeMap::new(),
+    )
 }
 
 fn validate_split_weight_overrides(
@@ -754,7 +799,8 @@ fn measure_root<'workspace>(
     leaves: LeafMeasurements<'_>,
     metrics: LayoutMetrics,
 ) -> Result<RootMeasurement<'workspace>, LayoutError> {
-    let (topology, measurements) = RootLayoutTopology::compile(workspace, root, leaves, metrics)?;
+    let (topology, measurements) =
+        RootLayoutTopology::compile(workspace.storage(), root, leaves, metrics)?;
     Ok(RootMeasurement {
         workspace,
         root,
@@ -899,33 +945,29 @@ fn total_splitter_extent(
     }
 }
 
-struct SplitProjectionState<'workspace> {
+struct SplitProjectionState<'layout> {
     node_id: NodeId,
     axis: Axis,
-    children: &'workspace [usize],
-    sizes: Vec<f64>,
+    children: &'layout [usize],
+    child_start: usize,
+    splitter_start: usize,
     next_child: usize,
     pending_child_size: Option<f64>,
     bounds: LogicalRect,
     cursor: f64,
-    splitter_rects: Vec<LogicalRect>,
-    child_minimum_extents: Vec<f64>,
-    child_maximum_extents: Vec<f64>,
-    central_index: Option<usize>,
-    overflow: f64,
-    unallocated: f64,
     splitter_thickness: f64,
 }
 
-enum ProjectionFrame<'workspace> {
+enum ProjectionFrame<'layout> {
     Enter { row: usize, bounds: LogicalRect },
-    ContinueSplit(SplitProjectionState<'workspace>),
+    ContinueSplit(SplitProjectionState<'layout>),
 }
 
 #[derive(Default)]
 struct ProjectionScratch {
     constraints: Vec<AxisConstraint>,
     weights: Vec<f64>,
+    eligible: Vec<usize>,
 }
 
 fn project_subtree(
@@ -975,16 +1017,18 @@ fn prepare_split_projection<'layout>(
 ) -> Result<Option<SplitProjectionState<'layout>>, LayoutError> {
     let node = &topology.nodes[row];
     let node_id = node.id;
-    projection.node_rects.insert(node_id, bounds);
+    projection.node_rects.values[row] = bounds;
     let LayoutNodeKind::Split {
         axis,
-        children,
+        children: child_range,
         weights,
+        split,
+        splitters,
     } = &node.kind
     else {
         return Ok(None);
     };
-    let children = &topology.children[children.clone()];
+    let children = &topology.children[child_range.clone()];
     scratch.constraints.clear();
     scratch.constraints.extend(children.iter().map(|&row| {
         let constraints = measurements[row].constraints;
@@ -999,16 +1043,15 @@ fn prepare_split_projection<'layout>(
             },
         }
     }));
-    let child_minimum_extents = scratch
-        .constraints
-        .iter()
-        .map(|constraint| constraint.min())
-        .collect();
-    let child_maximum_extents = scratch
-        .constraints
-        .iter()
-        .map(|constraint| constraint.max())
-        .collect();
+    for ((minimum, maximum), constraint) in projection.splits.child_minimum_extents
+        [child_range.clone()]
+    .iter_mut()
+    .zip(&mut projection.splits.child_maximum_extents[child_range.clone()])
+    .zip(&scratch.constraints)
+    {
+        *minimum = constraint.min();
+        *maximum = constraint.max();
+    }
     let axis_weights = if let Some(overrides) = weight_overrides.get(&node_id) {
         overrides.as_slice()
     } else {
@@ -1029,12 +1072,17 @@ fn prepare_split_projection<'layout>(
     };
     let (splitter_extent, splitter_thickness) =
         projected_splitter_geometry(node_id, children.len(), extent, metrics)?;
-    let solved = solve_axis(
+    let solved = solve_axis_into(
         extent - splitter_extent,
         axis_weights,
         &scratch.constraints,
         central_index,
+        &mut projection.splits.child_extents[child_range.clone()],
+        &mut scratch.eligible,
     )?;
+    projection
+        .splits
+        .set_outcome(*split, central_index, solved.overflow, solved.unallocated);
     let cursor = match axis {
         Axis::Horizontal => bounds.x(),
         Axis::Vertical => bounds.y(),
@@ -1043,17 +1091,12 @@ fn prepare_split_projection<'layout>(
         node_id,
         axis: *axis,
         children,
-        sizes: solved.sizes,
+        child_start: child_range.start,
+        splitter_start: splitters.start,
         next_child: 0,
         pending_child_size: None,
         bounds,
         cursor,
-        splitter_rects: Vec::with_capacity(children.len().saturating_sub(1)),
-        child_minimum_extents,
-        child_maximum_extents,
-        central_index,
-        overflow: solved.overflow,
-        unallocated: solved.unallocated,
         splitter_thickness,
     }))
 }
@@ -1079,9 +1122,9 @@ fn projected_splitter_geometry(
     Ok((available, available / splitter_count))
 }
 
-fn advance_split_projection<'workspace>(
-    mut state: SplitProjectionState<'workspace>,
-    stack: &mut Vec<ProjectionFrame<'workspace>>,
+fn advance_split_projection<'layout>(
+    mut state: SplitProjectionState<'layout>,
+    stack: &mut Vec<ProjectionFrame<'layout>>,
     projection: &mut LayoutProjection,
 ) -> Result<(), LayoutError> {
     if let Some(size) = state.pending_child_size.take() {
@@ -1101,7 +1144,8 @@ fn advance_split_projection<'workspace>(
                     state.splitter_thickness,
                 )?,
             };
-            state.splitter_rects.push(splitter);
+            projection.splits.splitter_rects[state.splitter_start + state.next_child - 1] =
+                splitter;
             state.cursor += state.splitter_thickness;
         }
         stack.push(ProjectionFrame::ContinueSplit(state));
@@ -1109,19 +1153,6 @@ fn advance_split_projection<'workspace>(
     }
 
     if state.next_child == state.children.len() {
-        projection.splits.insert(
-            state.node_id,
-            SplitProjection {
-                axis: state.axis,
-                splitter_rects: state.splitter_rects,
-                child_minimum_extents: state.child_minimum_extents,
-                child_maximum_extents: state.child_maximum_extents,
-                child_extents: state.sizes,
-                central_index: state.central_index,
-                overflow: state.overflow,
-                unallocated: state.unallocated,
-            },
-        );
         return Ok(());
     }
 
@@ -1129,16 +1160,10 @@ fn advance_split_projection<'workspace>(
         LayoutError::SplitCardinalityMismatch {
             node: state.node_id,
             children: state.children.len(),
-            weights: state.sizes.len(),
+            weights: state.children.len(),
         },
     )?;
-    let size = state.sizes.get(state.next_child).copied().ok_or(
-        LayoutError::SplitCardinalityMismatch {
-            node: state.node_id,
-            children: state.children.len(),
-            weights: state.sizes.len(),
-        },
-    )?;
+    let size = projection.splits.child_extents[state.child_start + state.next_child];
     let child_bounds = match state.axis {
         Axis::Horizontal => {
             LogicalRect::new(state.cursor, state.bounds.y(), size, state.bounds.height())?
@@ -1201,11 +1226,12 @@ fn validate_inputs(
     Ok(())
 }
 
-fn desired_sizes(
+fn desired_sizes_into(
     extent: f64,
     weights: &[f64],
     central_index: Option<usize>,
-) -> Result<Vec<f64>, LayoutError> {
+    sizes: &mut [f64],
+) -> Result<(), LayoutError> {
     if let Some(central) = central_index {
         let sibling_total = checked_sum(
             weights
@@ -1219,27 +1245,23 @@ fn desired_sizes(
         } else {
             extent
         };
-        let mut sizes = weights
-            .iter()
-            .enumerate()
-            .map(|(index, weight)| {
-                if index == central {
-                    0.0
-                } else {
-                    weight * scale
-                }
-            })
-            .collect::<Vec<_>>();
+        for (index, (size, weight)) in sizes.iter_mut().zip(weights).enumerate() {
+            *size = if index == central {
+                0.0
+            } else {
+                weight * scale
+            };
+        }
         let siblings = checked_sum(sizes.iter().copied(), "desired size")?;
         sizes[central] = (extent - siblings).max(0.0);
-        return Ok(sizes);
+        return Ok(());
     }
 
     let weight_total = checked_sum(weights.iter().copied(), "weight")?;
-    Ok(weights
-        .iter()
-        .map(|weight| extent * (*weight / weight_total))
-        .collect())
+    for (size, weight) in sizes.iter_mut().zip(weights) {
+        *size = extent * (*weight / weight_total);
+    }
+    Ok(())
 }
 
 fn grow_to_extent(
@@ -1248,13 +1270,22 @@ fn grow_to_extent(
     weights: &[f64],
     constraints: &[AxisConstraint],
     central_index: Option<usize>,
+    eligible: &mut Vec<usize>,
 ) {
     if let Some(central) = central_index {
         let amount = remainder.min((constraints[central].max - sizes[central]).max(0.0));
         apply_bounded_delta(&mut sizes[central], amount, true, constraints[central]);
         remainder -= amount;
     }
-    redistribute(sizes, remainder, weights, constraints, true, central_index);
+    redistribute(
+        sizes,
+        remainder,
+        weights,
+        constraints,
+        true,
+        central_index,
+        eligible,
+    );
 }
 
 fn shrink_to_extent(
@@ -1263,13 +1294,22 @@ fn shrink_to_extent(
     weights: &[f64],
     constraints: &[AxisConstraint],
     central_index: Option<usize>,
+    eligible: &mut Vec<usize>,
 ) {
     if let Some(central) = central_index {
         let amount = excess.min((sizes[central] - constraints[central].min).max(0.0));
         apply_bounded_delta(&mut sizes[central], amount, false, constraints[central]);
         excess -= amount;
     }
-    redistribute(sizes, excess, weights, constraints, false, central_index);
+    redistribute(
+        sizes,
+        excess,
+        weights,
+        constraints,
+        false,
+        central_index,
+        eligible,
+    );
 }
 
 fn redistribute(
@@ -1279,22 +1319,22 @@ fn redistribute(
     constraints: &[AxisConstraint],
     grow: bool,
     excluded: Option<usize>,
+    eligible: &mut Vec<usize>,
 ) {
     let tolerance = allocation_tolerance(amount, amount, amount);
     while amount > tolerance {
-        let eligible = (0..sizes.len())
-            .filter(|&index| {
-                excluded != Some(index)
-                    && capacity(sizes[index], constraints[index], grow) > tolerance
-                    && weights[index] > 0.0
-            })
-            .collect::<Vec<_>>();
+        eligible.clear();
+        eligible.extend((0..sizes.len()).filter(|&index| {
+            excluded != Some(index)
+                && capacity(sizes[index], constraints[index], grow) > tolerance
+                && weights[index] > 0.0
+        }));
         if eligible.is_empty() {
             break;
         }
         let weight_total: f64 = eligible.iter().map(|&index| weights[index]).sum();
         let before = amount;
-        for &index in &eligible {
+        for &index in eligible.iter() {
             let share = before * (weights[index] / weight_total);
             let delta = share.min(capacity(sizes[index], constraints[index], grow));
             apply_bounded_delta(&mut sizes[index], delta, grow, constraints[index]);

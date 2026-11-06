@@ -47,8 +47,9 @@ proptest! {
         for item in items {
             let command = selection(&snapshot, item);
             let original = snapshot.clone();
-            let (expected, expected_report) = prepare_transaction(
-                &snapshot, &policy, std::slice::from_ref(&command),
+            let (expected, expected_report) = prepare_general_candidate(
+                &snapshot, TransactionAuthority::Policy(&policy), std::slice::from_ref(&command),
+                snapshot.as_ref().clone(),
             ).unwrap().into_parts(&snapshot);
             structural_work::reset();
             let (actual, report) = snapshot.prepare_transaction(
@@ -90,7 +91,7 @@ fn stale_wrong_root_missing_and_recycled_sources_keep_general_rejections() {
     absent_item.item = ItemId::new(99);
     let mut missing_root = source.clone();
     missing_root.root = RootId::new(99);
-    let mut arena = snapshot.nodes.clone();
+    let mut arena = snapshot.storage().nodes.clone();
     arena.remove(source.tabs());
     let recycled = arena.insert(Node::tabs([ItemId::new(99)]));
     assert_ne!(recycled, source.tabs());
@@ -109,21 +110,29 @@ fn stale_wrong_root_missing_and_recycled_sources_keep_general_rejections() {
         assert_eq!(actual, expected);
     }
 
-    let mut replacement = snapshot.as_ref().clone();
-    let tabs = replacement.nodes.remove(retired_source.tabs()).unwrap();
-    let mru = replacement.tab_mru.remove(&retired_source.tabs()).unwrap();
-    let recycled = replacement.nodes.insert(tabs);
+    let mut replacement = snapshot.as_ref().clone().into_builder();
+    let tabs = replacement
+        .workspace
+        .nodes
+        .remove(retired_source.tabs())
+        .unwrap();
+    let mru = replacement
+        .workspace
+        .tab_mru
+        .remove(&retired_source.tabs())
+        .unwrap();
+    let recycled = replacement.workspace.nodes.insert(tabs);
     assert_ne!(recycled, retired_source.tabs());
-    replacement.tab_mru.insert(recycled, mru);
-    let root = replacement.root(MAIN).unwrap().node;
-    let Node::Split { children, .. } = replacement.nodes.get_mut(root).unwrap() else {
+    replacement.workspace.tab_mru.insert(recycled, mru);
+    let root = replacement.draft().root(MAIN).unwrap().node;
+    let Node::Split { children, .. } = replacement.workspace.nodes.get_mut(root).unwrap() else {
         unreachable!()
     };
     *children
         .iter_mut()
         .find(|child| **child == retired_source.tabs())
         .unwrap() = recycled;
-    let replacement = WorkspaceSnapshot::validated(replacement).unwrap();
+    let replacement = WorkspaceSnapshot::validated(replacement.build().unwrap()).unwrap();
     let commands = [WorkspaceCommand::Select {
         source: retired_source,
     }];
@@ -136,52 +145,37 @@ fn stale_wrong_root_missing_and_recycled_sources_keep_general_rejections() {
 }
 
 #[test]
-fn unknown_and_mutated_snapshots_use_general_cleanup_and_rejection() {
+fn raw_corruption_must_cross_builder_checks_before_snapshot_ownership() {
     let original = WorkspaceSnapshot::validated(selection_fixture()).unwrap();
-    let policy = default_policy();
     for corrupt in [false, true] {
-        let mut draft = original.clone();
-        let orphan = draft.draft_mut().nodes.insert(Node::tabs(if corrupt {
+        let mut builder = original.as_ref().clone().into_builder();
+        let orphan = builder.insert_node(Node::tabs(if corrupt {
             vec![ItemId::new(99)]
         } else {
-            Vec::new()
+            vec![]
         }));
-        draft.draft_mut().tab_mru.insert(
-            orphan,
-            if corrupt {
-                vec![ItemId::new(99)]
-            } else {
-                Vec::new()
-            },
-        );
-        assert!(!Arc::ptr_eq(original.as_arc(), draft.as_arc()));
-        let command = selection(&draft, 2);
-        let commands = std::slice::from_ref(&command);
-        let expected = prepare_transaction(&draft, &policy, commands)
-            .map(|prepared| prepared.into_parts(&draft));
-        structural_work::reset();
-        let actual = draft
-            .prepare_transaction(&policy, commands)
-            .map(|prepared| prepared.into_parts(&draft));
-        assert_eq!(actual, expected);
-        assert!(structural_work::snapshot().item_multiset_scans > 0);
-        assert_eq!(actual.is_err(), corrupt);
-        assert!(original.validate().is_ok());
+        let built = builder.build();
+        assert_eq!(built.is_err(), corrupt);
+        if let Ok(workspace) = built {
+            assert!(workspace.node(orphan).is_none());
+            let snapshot = WorkspaceSnapshot::from(workspace);
+            let command = selection(&snapshot, 2);
+            structural_work::reset();
+            snapshot
+                .prepare_transaction(&default_policy(), &[command])
+                .unwrap();
+            assert_eq!(structural_work::snapshot().item_multiset_scans, 0);
+        }
+        original.validate().unwrap();
     }
-    let mut draft = WorkspaceSnapshot::from(original.as_ref().clone());
-    let other = draft
+    let other = original
         .capture_item_source_by_id(ItemId::new(6))
         .unwrap()
         .unwrap()
         .tabs();
-    draft.draft_mut().tab_mru.remove(&other);
-    let command = selection(&draft, 2);
-    assert_eq!(
-        draft
-            .prepare_transaction(&policy, std::slice::from_ref(&command))
-            .unwrap_err(),
-        prepare_transaction(&draft, &policy, &[command]).unwrap_err(),
-    );
+    let mut builder = original.as_ref().clone().into_builder();
+    builder.draft_mut().tab_mru.remove(&other);
+    assert!(builder.build().is_err());
 }
 
 #[test]

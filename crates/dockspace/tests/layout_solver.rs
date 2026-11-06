@@ -349,7 +349,7 @@ fn projects_workspace_nodes_and_splitter_rectangles() {
     assert_projection_close(projection.node_rects[&leaves[1]].width(), 490.0);
     assert_projection_close(projection.node_rects[&leaves[2]].width(), 294.0);
     assert_projection_close(projection.node_rects[&leaves[0]].height(), 400.0);
-    let splitters = &projection.splits[&split].splitter_rects;
+    let splitters = projection.splits.get(&split).unwrap().splitter_rects;
     assert_eq!(splitters.len(), 2);
     assert_projection_close(splitters[0].x(), 296.0);
     assert_projection_close(splitters[0].width(), 10.0);
@@ -362,8 +362,8 @@ fn projects_workspace_nodes_and_splitter_rectangles() {
         .sum::<f64>()
         + splitters.iter().map(|rect| rect.width()).sum::<f64>();
     assert_projection_close(assigned_width, 1_000.0);
-    assert_projection_close(projection.splits[&split].overflow, 0.0);
-    assert_projection_close(projection.splits[&split].unallocated, 0.0);
+    assert_projection_close(projection.splits.get(&split).unwrap().overflow, 0.0);
+    assert_projection_close(projection.splits.get(&split).unwrap().unallocated, 0.0);
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn split_projection_exposes_ordered_direct_child_bounds_and_unallocated_extent()
         layout_metrics(10.0),
     )
     .expect("finite child maxima should project");
-    let projected_split = &projection.splits[&split];
+    let projected_split = projection.splits.get(&split).unwrap();
 
     assert_eq!(
         projected_split.child_minimum_extents,
@@ -454,12 +454,16 @@ fn split_projection_uses_each_direct_subtree_axis_maximum() {
     .expect("nested direct-child maxima should project");
 
     assert_eq!(
-        projection.splits[&outer].child_maximum_extents,
+        projection.splits.get(&outer).unwrap().child_maximum_extents,
         vec![80.0, 150.0],
         "a perpendicular subtree's axis maximum is the intersection of its children"
     );
     assert_eq!(
-        projection.splits[&nested].child_maximum_extents,
+        projection
+            .splits
+            .get(&nested)
+            .unwrap()
+            .child_maximum_extents,
         vec![90.0, 110.0],
         "the nested split exposes maxima along its own axis"
     );
@@ -488,7 +492,7 @@ fn exact_split_override_changes_only_transient_projection() {
     assert_projection_close(projection.node_rects[&leaves[1]].width(), 300.0);
     assert_projection_close(projection.node_rects[&leaves[2]].height(), 200.0);
     assert_projection_close(projection.node_rects[&inner].height(), 200.0);
-    assert_projection_close(projection.splits[&outer].overflow, 0.0);
+    assert_projection_close(projection.splits.get(&outer).unwrap().overflow, 0.0);
     assert_eq!(
         workspace, before,
         "transient projection must not mutate state"
@@ -671,8 +675,8 @@ fn projection_reports_leaf_minimum_overflow() {
     )
     .expect("constraint conflict is a projection outcome");
 
-    assert_projection_close(projection.splits[&split].overflow, 70.0);
-    assert_projection_close(projection.splits[&split].unallocated, 0.0);
+    assert_projection_close(projection.splits.get(&split).unwrap().overflow, 70.0);
+    assert_projection_close(projection.splits.get(&split).unwrap().unallocated, 0.0);
     assert_eq!(
         leaves
             .iter()
@@ -802,7 +806,7 @@ fn nested_splitter_thickness_contributes_to_ancestor_constraints() {
     )
     .expect("minimum conflict is a projection outcome");
 
-    assert_projection_close(projection.splits[&outer].overflow, 40.0);
+    assert_projection_close(projection.splits.get(&outer).unwrap().overflow, 40.0);
     assert_projection_close(projection.node_rects[&inner].width(), 130.0);
 }
 

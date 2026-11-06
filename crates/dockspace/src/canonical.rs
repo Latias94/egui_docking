@@ -12,10 +12,10 @@ use thiserror::Error;
 
 use crate::graph::{
     InvalidSplitWeight, InvalidSplitWeights, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight,
-    Workspace, WorkspaceBuilder, is_exact_tab_mru,
+    Workspace, WorkspaceBuilder, WorkspaceData, is_exact_tab_mru,
 };
 use crate::ids::{ItemId, NodeId, RootId};
-use crate::transaction::clone_workspace_draft;
+use crate::transaction::{clone_workspace_data_draft, clone_workspace_draft};
 use crate::validation::WorkspaceValidationErrors;
 
 /// Summary of one successfully published canonicalization transaction.
@@ -185,14 +185,18 @@ pub enum CanonicalizationError {
 pub fn canonicalize_workspace(
     workspace: &mut Workspace,
 ) -> Result<CanonicalizationReport, CanonicalizationError> {
-    validate_rewrite_input(workspace)?;
+    validate_rewrite_input(workspace.storage())?;
 
     let mut candidate = clone_workspace_draft(workspace);
-    canonicalize_validated_draft(&mut candidate)?;
+    canonicalize_validated_draft(&mut candidate.storage)?;
 
     let report = CanonicalizationReport {
         changed: candidate != *workspace,
-        removed_nodes: workspace.nodes.len().saturating_sub(candidate.nodes.len()),
+        removed_nodes: workspace
+            .storage
+            .nodes
+            .len()
+            .saturating_sub(candidate.storage.nodes.len()),
     };
     *workspace = candidate;
     Ok(report)
@@ -203,12 +207,166 @@ pub fn canonicalize_workspace(
 /// All input, item-ownership and output checks still run. On failure the draft
 /// may be partially rewritten and must be discarded rather than published.
 /// On success it has passed the complete workspace validator.
-pub(crate) fn canonicalize_draft(workspace: &mut Workspace) -> Result<(), CanonicalizationError> {
+pub(super) fn canonicalize_draft(workspace: &mut Workspace) -> Result<(), CanonicalizationError> {
+    canonicalize_data(&mut workspace.storage)
+}
+
+pub(super) fn build_workspace(
+    mut storage: WorkspaceData,
+) -> Result<Workspace, CanonicalizationError> {
+    canonicalize_data(&mut storage)?;
+    Ok(Workspace { storage })
+}
+
+/// Finishes the structural changes made by one checked Item move.
+pub(super) fn finish_item_move(
+    workspace: &mut Workspace,
+    source_root: RootId,
+    source: NodeId,
+    outer_root: Option<RootId>,
+    inserted_split: Option<NodeId>,
+) -> Result<(), CanonicalizationError> {
+    let mut output_splits = Vec::new();
+    if let Some(split) = inserted_split {
+        let Some(Node::Split {
+            children, weights, ..
+        }) = workspace.node(split)
+        else {
+            return Err(CanonicalizationError::TraversalInvariant {
+                stage: "locate edge insertion split",
+            });
+        };
+        if validate_split_weights(split, children, weights).is_err() {
+            // Rebuild the complete input diagnostic only on a failed frontier.
+            validate_rewrite_input(&workspace.storage)?;
+            return Err(CanonicalizationError::TraversalInvariant {
+                stage: "diagnose edge insertion weights",
+            });
+        }
+        output_splits.push(split);
+    }
+    let mut results = SecondaryMap::new();
+    // Independent roots retain the full normalizer's stable root error order.
+    if let Some(target_root) = outer_root.filter(|&root| root < source_root) {
+        finish_item_target_root(workspace, target_root, &mut results, &mut output_splits)?;
+    }
+    if matches!(workspace.node(source), Some(Node::Tabs { items, .. }) if items.is_empty()) {
+        if let Some(record) = workspace.root(source_root).copied() {
+            if record.central != Some(source) {
+                let path = workspace.path_to_node(source_root, source).ok_or(
+                    CanonicalizationError::TraversalInvariant {
+                        stage: "locate emptied source path",
+                    },
+                )?;
+                let storage = &mut workspace.storage;
+                results.insert(source, None);
+                storage.remove_runtime_node(source);
+                for &parent in path[..path.len() - 1].iter().rev() {
+                    rewrite_local_split(storage, parent, &mut results, &mut output_splits)?;
+                }
+                let next = results
+                    .get(record.node)
+                    .copied()
+                    .flatten()
+                    .ok_or(CanonicalizationError::EmptyRoot { root: source_root })?;
+                storage
+                    .roots
+                    .get_mut(&source_root)
+                    .ok_or(CanonicalizationError::TraversalInvariant {
+                        stage: "publish repaired root",
+                    })?
+                    .node = next;
+            }
+        } else {
+            workspace.remove_runtime_node(source);
+        }
+    }
+
+    if let Some(target_root) = outer_root.filter(|&root| root >= source_root) {
+        finish_item_target_root(workspace, target_root, &mut results, &mut output_splits)?;
+    }
+    // A later ancestor can retire an earlier output. Check the final live
+    // frontier after every rewrite, preserving canonical errors before output errors.
+    if output_splits.into_iter().any(|split| {
+        matches!(workspace.node(split), Some(Node::Split { children, weights, .. })
+            if children.len() < 2 || validate_split_weights(split, children, weights).is_err())
+    }) {
+        workspace
+            .storage
+            .validate_candidate()
+            .map_err(CanonicalizationError::InvalidOutput)?;
+        return Err(CanonicalizationError::TraversalInvariant {
+            stage: "diagnose rewritten split weights",
+        });
+    }
+    Ok(())
+}
+
+fn finish_item_target_root(
+    workspace: &mut Workspace,
+    target_root: RootId,
+    results: &mut SecondaryMap<NodeId, Option<NodeId>>,
+    output_splits: &mut Vec<NodeId>,
+) -> Result<(), CanonicalizationError> {
+    // An outer edge can wrap the old root in a split of that same axis,
+    // independently of whether the source became empty.
+    if let Some(record) = workspace.root(target_root).copied()
+        && let Some(Node::Split { axis, children, .. }) = workspace.node(record.node)
+        && children.iter().any(|&child| {
+            matches!(workspace.node(child), Some(Node::Split { axis: child_axis, .. }) if child_axis == axis)
+        })
+    {
+        rewrite_local_split(&mut workspace.storage, record.node, results, output_splits)?;
+    }
+    Ok(())
+}
+
+fn rewrite_local_split(
+    storage: &mut WorkspaceData,
+    parent: NodeId,
+    results: &mut SecondaryMap<NodeId, Option<NodeId>>,
+    output_splits: &mut Vec<NodeId>,
+) -> Result<(), CanonicalizationError> {
+    let Some(Node::Split { axis, children, .. }) = storage.nodes.get(parent) else {
+        return Err(CanonicalizationError::TraversalInvariant {
+            stage: "repair source ancestor",
+        });
+    };
+    let axis = *axis;
+    for &child in children {
+        if !results.contains_key(child) {
+            // The closed Item edit cannot have changed another child.
+            results.insert(child, Some(child));
+        }
+    }
+    let flattened = children.iter().filter_map(|&child| {
+        let next = results.get(child).copied().flatten()?;
+        matches!(storage.nodes.get(next), Some(Node::Split { axis: child_axis, .. }) if *child_axis == axis)
+            .then_some(next)
+    }).collect::<Vec<_>>();
+    let next = rewrite_split(storage, parent, results)?;
+    results.insert(parent, next);
+    if next == Some(parent) {
+        output_splits.push(parent);
+        for child in flattened {
+            storage.remove_runtime_node(child);
+        }
+    } else {
+        storage.remove_runtime_node(parent);
+    }
+    Ok(())
+}
+
+fn canonicalize_data(workspace: &mut WorkspaceData) -> Result<(), CanonicalizationError> {
     validate_rewrite_input(workspace)?;
     canonicalize_validated_draft(workspace)
 }
 
-fn canonicalize_validated_draft(workspace: &mut Workspace) -> Result<(), CanonicalizationError> {
+fn canonicalize_validated_draft(
+    workspace: &mut WorkspaceData,
+) -> Result<(), CanonicalizationError> {
+    #[cfg(test)]
+    crate::drop_resolver::structural_work::record_canonical_full_pass();
     let original_items = workspace.item_multiset();
     let protected_central: HashSet<NodeId> = workspace
         .roots
@@ -265,12 +423,24 @@ impl WorkspaceBuilder {
     /// Returns [`CanonicalizationError`] under the same conditions as
     /// [`canonicalize_workspace`]. The draft remains unchanged on failure.
     pub fn canonicalize(&mut self) -> Result<CanonicalizationReport, CanonicalizationError> {
-        canonicalize_workspace(&mut self.workspace)
+        validate_rewrite_input(&self.workspace)?;
+        let mut candidate = clone_workspace_data_draft(&self.workspace);
+        canonicalize_validated_draft(&mut candidate)?;
+        let report = CanonicalizationReport {
+            changed: candidate != self.workspace,
+            removed_nodes: self
+                .workspace
+                .nodes
+                .len()
+                .saturating_sub(candidate.nodes.len()),
+        };
+        self.workspace = candidate;
+        Ok(report)
     }
 }
 
 fn rewrite_subtree(
-    workspace: &mut Workspace,
+    workspace: &mut WorkspaceData,
     node_id: NodeId,
     protected_central: &HashSet<NodeId>,
     results: &mut SecondaryMap<NodeId, Option<NodeId>>,
@@ -318,7 +488,7 @@ fn rewrite_subtree(
 }
 
 fn rewrite_split(
-    workspace: &mut Workspace,
+    workspace: &mut WorkspaceData,
     node_id: NodeId,
     results: &SecondaryMap<NodeId, Option<NodeId>>,
 ) -> Result<Option<NodeId>, CanonicalizationError> {
@@ -422,14 +592,42 @@ fn rewrite_split(
     Ok(Some(node_id))
 }
 
-fn validate_rewrite_input(workspace: &Workspace) -> Result<(), CanonicalizationError> {
+fn validate_rewrite_input(workspace: &WorkspaceData) -> Result<(), CanonicalizationError> {
     let parents = validate_nodes(workspace)?;
     validate_acyclic(workspace)?;
     validate_roots(workspace, &parents)
 }
 
+fn validate_split_weights(
+    node: NodeId,
+    children: &[NodeId],
+    weights: &[SplitWeight],
+) -> Result<(), CanonicalizationError> {
+    if children.len() != weights.len() {
+        return Err(CanonicalizationError::SplitWeightCountMismatch {
+            node,
+            children: children.len(),
+            weights: weights.len(),
+        });
+    }
+
+    let mut sum = 0.0_f64;
+    for (index, weight) in weights.iter().copied().enumerate() {
+        SplitWeight::new(weight.get()).map_err(|source| CanonicalizationError::InvalidWeight {
+            node,
+            index,
+            source,
+        })?;
+        sum += f64::from(weight.get());
+    }
+    if (sum - 1.0).abs() > NORMALIZED_WEIGHT_TOLERANCE {
+        return Err(CanonicalizationError::WeightsNotNormalized { node, sum });
+    }
+    Ok(())
+}
+
 fn validate_nodes(
-    workspace: &Workspace,
+    workspace: &WorkspaceData,
 ) -> Result<SecondaryMap<NodeId, NodeId>, CanonicalizationError> {
     let mut parents = SecondaryMap::<NodeId, NodeId>::new();
     let mut item_owners = BTreeMap::<ItemId, NodeId>::new();
@@ -469,28 +667,7 @@ fn validate_nodes(
             Node::Split {
                 children, weights, ..
             } => {
-                if children.len() != weights.len() {
-                    return Err(CanonicalizationError::SplitWeightCountMismatch {
-                        node: node_id,
-                        children: children.len(),
-                        weights: weights.len(),
-                    });
-                }
-
-                let mut sum = 0.0_f64;
-                for (index, weight) in weights.iter().copied().enumerate() {
-                    SplitWeight::new(weight.get()).map_err(|source| {
-                        CanonicalizationError::InvalidWeight {
-                            node: node_id,
-                            index,
-                            source,
-                        }
-                    })?;
-                    sum += f64::from(weight.get());
-                }
-                if (sum - 1.0).abs() > NORMALIZED_WEIGHT_TOLERANCE {
-                    return Err(CanonicalizationError::WeightsNotNormalized { node: node_id, sum });
-                }
+                validate_split_weights(node_id, children, weights)?;
 
                 for child in children {
                     if !workspace.nodes.contains_key(*child) {
@@ -519,7 +696,7 @@ fn validate_nodes(
 }
 
 fn validate_roots(
-    workspace: &Workspace,
+    workspace: &WorkspaceData,
     parents: &SecondaryMap<NodeId, NodeId>,
 ) -> Result<(), CanonicalizationError> {
     let mut root_nodes = HashMap::<NodeId, RootId>::new();
@@ -571,7 +748,7 @@ fn validate_roots(
     Ok(())
 }
 
-fn validate_acyclic(workspace: &Workspace) -> Result<(), CanonicalizationError> {
+fn validate_acyclic(workspace: &WorkspaceData) -> Result<(), CanonicalizationError> {
     let mut in_degree: SecondaryMap<NodeId, usize> =
         workspace.nodes.keys().map(|node| (node, 0)).collect();
     for node in workspace.nodes.values() {
@@ -633,7 +810,7 @@ fn validate_acyclic(workspace: &Workspace) -> Result<(), CanonicalizationError> 
 }
 
 fn reachable_from_roots(
-    workspace: &Workspace,
+    workspace: &WorkspaceData,
 ) -> Result<SecondaryMap<NodeId, ()>, CanonicalizationError> {
     let mut reachable = SecondaryMap::with_capacity(workspace.nodes.capacity());
     let mut stack = Vec::new();
@@ -660,7 +837,7 @@ fn reachable_from_roots(
 }
 
 fn reachable_from(
-    workspace: &Workspace,
+    workspace: &WorkspaceData,
     root: NodeId,
 ) -> Result<HashSet<NodeId>, CanonicalizationError> {
     let mut reachable = HashSet::new();
@@ -669,7 +846,7 @@ fn reachable_from(
 }
 
 fn collect_reachable(
-    workspace: &Workspace,
+    workspace: &WorkspaceData,
     node: NodeId,
     reachable: &mut HashSet<NodeId>,
 ) -> Result<(), CanonicalizationError> {
@@ -703,7 +880,7 @@ mod tests {
 
     const ROOT: RootId = RootId::new(1);
 
-    fn singleton_draft() -> (Workspace, NodeId, NodeId) {
+    fn singleton_draft() -> (WorkspaceBuilder, NodeId, NodeId) {
         let mut builder = Workspace::builder();
         let leaf = builder.insert_node(Node::tabs([ItemId::new(1)]));
         let wrapper = builder.insert_node(Node::Split {
@@ -712,44 +889,44 @@ mod tests {
             weights: vec![SplitWeight::new(1.0).expect("unit weight is valid")],
         });
         builder.set_root(ROOT, crate::graph::RootRecord::new(wrapper));
-        (builder.workspace, leaf, wrapper)
+        (builder, leaf, wrapper)
     }
 
     #[test]
     fn atomic_wrapper_counts_its_full_clone_and_preserves_idempotent_reports() {
-        let (mut workspace, leaf, wrapper) = singleton_draft();
-        workspace
-            .surfaces
-            .insert(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
-
+        let (mut builder, leaf, wrapper) = singleton_draft();
+        builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
         for changed in [true, false] {
-            let volume = WorkspaceCloneVolume::capture(&workspace);
+            let volume = WorkspaceCloneVolume::capture_data(builder.draft());
             structural_work::reset();
-            let report = canonicalize_workspace(&mut workspace).expect("draft is canonicalizable");
+            let report = builder.canonicalize().expect("draft is canonicalizable");
             assert_eq!(report.changed, changed);
             assert_eq!(report.removed_nodes, usize::from(changed));
-            assert_eq!(workspace.root(ROOT).expect("root survives").node, leaf);
-            assert!(workspace.node(wrapper).is_none());
-            workspace.validate().expect("published graph is strict");
+            assert_eq!(builder.draft().root(ROOT).unwrap().node, leaf);
+            assert!(builder.draft().node(wrapper).is_none());
+            builder.validate().expect("normalized graph is strict");
             let clones = structural_work::snapshot().workspace_deep_clones;
             assert_eq!(clones.transaction_candidates.calls, 1);
             assert_eq!(clones.transaction_candidates.volume, volume);
         }
+        builder
+            .build()
+            .expect("only checked data becomes a workspace");
     }
 
     #[test]
     fn late_failures_dirty_only_the_discardable_draft_and_preserve_error_order() {
         for orphan_item in [false, true] {
-            let (mut workspace, leaf, wrapper) = singleton_draft();
+            let (mut builder, leaf, wrapper) = singleton_draft();
             if orphan_item {
-                workspace.insert_runtime_node(Node::tabs([ItemId::new(2)]));
+                builder.insert_node(Node::tabs([ItemId::new(2)]));
             }
-            let original = workspace.clone();
-            let volume = WorkspaceCloneVolume::capture(&workspace);
-            let mut draft = workspace.clone();
+            let original = builder.draft().clone();
+            let volume = WorkspaceCloneVolume::capture_data(builder.draft());
+            let mut draft = builder.draft().clone();
 
             structural_work::reset();
-            let error = canonicalize_draft(&mut draft).expect_err("late check must fail");
+            let error = canonicalize_data(&mut draft).expect_err("late check must fail");
             assert_eq!(draft.root(ROOT).expect("root survives").node, leaf);
             assert!(draft.node(wrapper).is_none());
             assert_ne!(draft, original);
@@ -777,8 +954,8 @@ mod tests {
 
             for _ in 0..2 {
                 structural_work::reset();
-                assert_eq!(canonicalize_workspace(&mut workspace), Err(error.clone()));
-                assert_eq!(workspace, original);
+                assert_eq!(builder.canonicalize(), Err(error.clone()));
+                assert_eq!(builder.draft(), &original);
                 let clones = structural_work::snapshot().workspace_deep_clones;
                 assert_eq!(clones.transaction_candidates.calls, 1);
                 assert_eq!(clones.transaction_candidates.volume, volume);
@@ -788,21 +965,21 @@ mod tests {
 
     #[test]
     fn invalid_input_is_rejected_before_rewriting_or_atomic_cloning() {
-        let (mut workspace, leaf, _) = singleton_draft();
-        workspace.nodes[leaf] = Node::Tabs {
+        let (mut builder, leaf, _) = singleton_draft();
+        builder.draft_mut().nodes[leaf] = Node::Tabs {
             items: vec![ItemId::new(1)],
             selected: Some(ItemId::new(2)),
         };
-        let original = workspace.clone();
+        let original = builder.draft().clone();
         let error = CanonicalizationError::InvalidSelection {
             node: leaf,
             selected: Some(ItemId::new(2)),
         };
 
         structural_work::reset();
-        assert_eq!(canonicalize_workspace(&mut workspace), Err(error.clone()));
-        assert_eq!(canonicalize_draft(&mut workspace), Err(error));
-        assert_eq!(workspace, original);
+        assert_eq!(builder.canonicalize(), Err(error.clone()));
+        assert_eq!(canonicalize_data(builder.draft_mut()), Err(error));
+        assert_eq!(builder.draft(), &original);
         assert_eq!(
             structural_work::snapshot()
                 .workspace_deep_clones

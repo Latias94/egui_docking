@@ -75,7 +75,7 @@ pub(super) fn prepare_resize_axis_groups(
         if *axis != record.axis()
             || split.axis != *axis
             || id.index >= children.len().checked_sub(1)?
-            || record.child_extents() != split.child_extents.as_slice()
+            || record.child_extents() != split.child_extents
             || record.central_index() != split.central_index
             || record.weights() != weights.as_slice()
             || record.before_minimum_extent() != *split.child_minimum_extents.get(id.index)?
@@ -171,7 +171,7 @@ pub(super) fn prepare_resize_axis_groups(
                         let bounds = *projection.node_rects.get(&node)?;
                         validate_split_projection(
                             projection,
-                            split,
+                            &split,
                             *split_axis,
                             bounds,
                             children,
@@ -189,7 +189,7 @@ pub(super) fn prepare_resize_axis_groups(
                         if *split_axis == axis {
                             intersect_split_intervals(
                                 &mut group.common_delta,
-                                split,
+                                &split,
                                 &coefficients,
                             )?;
                         }
@@ -204,9 +204,9 @@ pub(super) fn prepare_resize_axis_groups(
                             bounds,
                             constraints: *projection.node_constraints.get(&node)?,
                             weights: weights.clone(),
-                            child_extents: split.child_extents.clone(),
-                            child_minimum_extents: split.child_minimum_extents.clone(),
-                            child_maximum_extents: split.child_maximum_extents.clone(),
+                            child_extents: split.child_extents.to_vec(),
+                            child_minimum_extents: split.child_minimum_extents.to_vec(),
+                            child_maximum_extents: split.child_maximum_extents.to_vec(),
                             child_coefficients: coefficients,
                             central_index: split.central_index,
                         });
@@ -331,7 +331,7 @@ fn intersect_extent_interval(
 #[allow(clippy::too_many_arguments)]
 fn validate_split_projection(
     projection: &LayoutProjection,
-    split: &SplitProjection,
+    split: &SplitProjection<'_>,
     axis: Axis,
     bounds: LogicalRect,
     children: &[NodeId],
@@ -403,7 +403,7 @@ fn validate_split_projection(
 
 fn intersect_split_intervals(
     interval: &mut ResizeDeltaInterval,
-    split: &SplitProjection,
+    split: &SplitProjection<'_>,
     coefficients: &[f64],
 ) -> Option<()> {
     let total = split.child_extents.iter().sum::<f64>();

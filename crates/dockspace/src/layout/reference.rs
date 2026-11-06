@@ -3,10 +3,82 @@
 use super::*;
 use std::collections::BTreeSet;
 
+/// Geometry and constraint outcomes for one split node.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct SplitProjection {
+    /// Direction in which child rectangles were allocated.
+    pub axis: Axis,
+    /// Logical rectangles reserved between adjacent children.
+    pub splitter_rects: Vec<LogicalRect>,
+    /// Minimum projected extent for each direct child along this split's axis.
+    pub child_minimum_extents: Vec<f64>,
+    /// Maximum projected extent for each direct child along this split's axis.
+    pub child_maximum_extents: Vec<f64>,
+    /// Actual projected extent for each direct child along this split's axis.
+    pub child_extents: Vec<f64>,
+    /// Direct child which contains the root's declared central leaf, when any.
+    pub central_index: Option<usize>,
+    /// Extent by which child minima exceed the split bounds.
+    pub overflow: f64,
+    /// Extent left unused after every child reached its maximum.
+    pub unallocated: f64,
+}
+
+/// Complete deterministic projection of one workspace root.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct LayoutProjection {
+    /// Logical rectangle assigned to every reachable node.
+    pub node_rects: BTreeMap<NodeId, LogicalRect>,
+    /// Composed minimum and maximum logical sizes for every reachable node.
+    pub node_constraints: BTreeMap<NodeId, Constraints>,
+    /// Split-specific outcomes keyed by split node identity.
+    pub splits: BTreeMap<NodeId, SplitProjection>,
+}
+
+/// Copies actual output into the frozen oracle's independent owned value types.
+pub(super) fn capture(projection: &super::LayoutProjection) -> LayoutProjection {
+    LayoutProjection {
+        node_rects: projection
+            .node_rects
+            .iter()
+            .map(|(&node, &rect)| (node, rect))
+            .collect(),
+        node_constraints: projection
+            .node_constraints
+            .iter()
+            .map(|(&node, &constraints)| (node, constraints))
+            .collect(),
+        splits: projection
+            .splits
+            .iter()
+            .map(|(&node, split)| {
+                (
+                    node,
+                    SplitProjection {
+                        axis: split.axis,
+                        splitter_rects: split.splitter_rects.to_vec(),
+                        child_minimum_extents: split.child_minimum_extents.to_vec(),
+                        child_maximum_extents: split.child_maximum_extents.to_vec(),
+                        child_extents: split.child_extents.to_vec(),
+                        central_index: split.central_index,
+                        overflow: split.overflow,
+                        unallocated: split.unallocated,
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+pub(super) fn capture_result(
+    result: &Result<super::LayoutProjection, LayoutError>,
+) -> Result<LayoutProjection, LayoutError> {
+    result.as_ref().map(capture).map_err(Clone::clone)
+}
+
 /// One root's postorder measurements, bound to the workspace that produced them.
 pub(crate) struct RootMeasurement<'workspace> {
-    workspace: &'workspace Workspace,
-    root: RootId,
+    workspace: &'workspace WorkspaceData,
     node: NodeId,
     metrics: LayoutMetrics,
     minimum: LogicalSize,
@@ -18,32 +90,6 @@ pub(crate) struct RootMeasurement<'workspace> {
 impl RootMeasurement<'_> {
     pub(crate) fn minimum(&self) -> LogicalSize {
         self.minimum
-    }
-
-    pub(crate) fn project(
-        self,
-        bounds: LogicalRect,
-        weight_overrides: &[SplitWeightOverride<'_>],
-    ) -> Result<LayoutProjection, LayoutError> {
-        let weights =
-            validate_split_weight_overrides(self.workspace, self.root, weight_overrides, None)?;
-        self.project_with_weights(bounds, &weights)
-    }
-
-    pub(crate) fn project_with_index(
-        self,
-        bounds: LogicalRect,
-        weight_overrides: &[SplitWeightOverride<'_>],
-        index: &WorkspaceIndex,
-        version: WorkspaceVersion,
-    ) -> Result<LayoutProjection, LayoutError> {
-        let weights = validate_split_weight_overrides(
-            self.workspace,
-            self.root,
-            weight_overrides,
-            Some((index, version)),
-        )?;
-        self.project_with_weights(bounds, &weights)
     }
 
     fn project_with_weights(
@@ -116,7 +162,7 @@ enum MeasurementFrame<'workspace> {
 }
 
 fn measure_root<'workspace>(
-    workspace: &'workspace Workspace,
+    workspace: &'workspace WorkspaceData,
     root: RootId,
     leaves: LeafMeasurements<'_>,
     metrics: LayoutMetrics,
@@ -214,7 +260,6 @@ fn measure_root<'workspace>(
     let minimum = root_measurement.constraints.min();
     Ok(RootMeasurement {
         workspace,
-        root,
         node: root_record.node,
         metrics,
         minimum,
@@ -265,7 +310,7 @@ enum ProjectionFrame<'workspace> {
 }
 
 fn project_subtree(
-    workspace: &Workspace,
+    workspace: &WorkspaceData,
     node_id: NodeId,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
@@ -303,7 +348,7 @@ fn project_subtree(
 }
 
 fn prepare_split_projection<'workspace>(
-    workspace: &'workspace Workspace,
+    workspace: &'workspace WorkspaceData,
     node_id: NodeId,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
@@ -506,14 +551,315 @@ pub(super) fn project(
 ) -> Result<LayoutProjection, LayoutError> {
     match leaves {
         LeafMeasurements::Minimums(_) => {
-            measure_root(workspace, root, leaves, metrics)?.project(bounds, overrides)
+            let measured = measure_root(workspace.storage(), root, leaves, metrics)?;
+            let weights = validate_split_weight_overrides(workspace, root, overrides, None)?;
+            measured.project_with_weights(bounds, &weights)
         }
         LeafMeasurements::Constraints(_) => {
             workspace
                 .root(root)
                 .ok_or(LayoutError::MissingRoot { root })?;
             let weights = validate_split_weight_overrides(workspace, root, overrides, None)?;
-            measure_root(workspace, root, leaves, metrics)?.project_with_weights(bounds, &weights)
+            measure_root(workspace.storage(), root, leaves, metrics)?
+                .project_with_weights(bounds, &weights)
         }
     }
+}
+
+pub(super) fn project_draft(
+    draft: &crate::graph::WorkspaceBuilder,
+    root: RootId,
+    bounds: LogicalRect,
+    leaves: LeafMeasurements<'_>,
+    metrics: LayoutMetrics,
+) -> Result<LayoutProjection, LayoutError> {
+    measure_root(draft.draft(), root, leaves, metrics)?
+        .project_with_weights(bounds, &BTreeMap::new())
+}
+
+// Keep the numerical implementation independent from production allocation changes.
+pub(super) fn solve_axis(
+    extent: f64,
+    weights: &[f64],
+    constraints: &[AxisConstraint],
+    central_index: Option<usize>,
+) -> Result<AxisLayout, LayoutError> {
+    validate_inputs(extent, weights, constraints, central_index)?;
+
+    if weights.is_empty() {
+        return Ok(AxisLayout {
+            sizes: Vec::new(),
+            overflow: 0.0,
+            unallocated: extent,
+        });
+    }
+
+    let min_total = checked_sum(
+        constraints.iter().map(|constraint| constraint.min),
+        "minimum",
+    )?;
+    let max_total = checked_sum(
+        constraints.iter().map(|constraint| constraint.max),
+        "maximum",
+    )?;
+
+    if min_total > extent {
+        return Ok(AxisLayout {
+            sizes: constraints
+                .iter()
+                .map(|constraint| constraint.min)
+                .collect(),
+            overflow: min_total - extent,
+            unallocated: 0.0,
+        });
+    }
+    if max_total < extent {
+        return Ok(AxisLayout {
+            sizes: constraints
+                .iter()
+                .map(|constraint| constraint.max)
+                .collect(),
+            overflow: 0.0,
+            unallocated: extent - max_total,
+        });
+    }
+
+    let desired = desired_sizes(extent, weights, central_index)?;
+    let mut sizes = desired
+        .into_iter()
+        .zip(constraints)
+        .map(|(size, constraint)| size.clamp(constraint.min, constraint.max))
+        .collect::<Vec<_>>();
+
+    let assigned = checked_sum(sizes.iter().copied(), "assigned size")?;
+    if assigned < extent {
+        grow_to_extent(
+            &mut sizes,
+            extent - assigned,
+            weights,
+            constraints,
+            central_index,
+        );
+    } else if assigned > extent {
+        shrink_to_extent(
+            &mut sizes,
+            assigned - extent,
+            weights,
+            constraints,
+            central_index,
+        );
+    }
+
+    let assigned = checked_sum(sizes.iter().copied(), "assigned size")?;
+    let tolerance = allocation_tolerance(extent, min_total, max_total);
+    let overflow = if assigned > extent + tolerance {
+        assigned - extent
+    } else {
+        0.0
+    };
+    let unallocated = if assigned + tolerance < extent {
+        extent - assigned
+    } else {
+        0.0
+    };
+
+    Ok(AxisLayout {
+        sizes,
+        overflow,
+        unallocated,
+    })
+}
+
+fn validate_inputs(
+    extent: f64,
+    weights: &[f64],
+    constraints: &[AxisConstraint],
+    central_index: Option<usize>,
+) -> Result<(), LayoutError> {
+    if !extent.is_finite() {
+        return Err(LayoutError::NonFiniteExtent { value: extent });
+    }
+    if extent < 0.0 {
+        return Err(LayoutError::NegativeExtent { value: extent });
+    }
+    if weights.len() != constraints.len() {
+        return Err(LayoutError::LengthMismatch {
+            weights: weights.len(),
+            constraints: constraints.len(),
+        });
+    }
+    if let Some(index) = central_index
+        && index >= weights.len()
+    {
+        return Err(LayoutError::CentralIndexOutOfBounds {
+            index,
+            child_count: weights.len(),
+        });
+    }
+
+    for (index, &value) in weights.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(LayoutError::NonFiniteWeight { index, value });
+        }
+        if value < 0.0 {
+            return Err(LayoutError::NegativeWeight { index, value });
+        }
+    }
+
+    let weight_total = checked_sum(weights.iter().copied(), "weight")?;
+    if central_index.is_none() && !weights.is_empty() && weight_total <= 0.0 {
+        return Err(LayoutError::ZeroWeightTotal);
+    }
+
+    Ok(())
+}
+
+fn desired_sizes(
+    extent: f64,
+    weights: &[f64],
+    central_index: Option<usize>,
+) -> Result<Vec<f64>, LayoutError> {
+    if let Some(central) = central_index {
+        let sibling_total = checked_sum(
+            weights
+                .iter()
+                .enumerate()
+                .filter_map(|(index, weight)| (index != central).then_some(*weight)),
+            "sibling weight",
+        )?;
+        let scale = if sibling_total > 1.0 {
+            extent / sibling_total
+        } else {
+            extent
+        };
+        let mut sizes = weights
+            .iter()
+            .enumerate()
+            .map(|(index, weight)| {
+                if index == central {
+                    0.0
+                } else {
+                    weight * scale
+                }
+            })
+            .collect::<Vec<_>>();
+        let siblings = checked_sum(sizes.iter().copied(), "desired size")?;
+        sizes[central] = (extent - siblings).max(0.0);
+        return Ok(sizes);
+    }
+
+    let weight_total = checked_sum(weights.iter().copied(), "weight")?;
+    Ok(weights
+        .iter()
+        .map(|weight| extent * (*weight / weight_total))
+        .collect())
+}
+
+fn grow_to_extent(
+    sizes: &mut [f64],
+    mut remainder: f64,
+    weights: &[f64],
+    constraints: &[AxisConstraint],
+    central_index: Option<usize>,
+) {
+    if let Some(central) = central_index {
+        let amount = remainder.min((constraints[central].max - sizes[central]).max(0.0));
+        apply_bounded_delta(&mut sizes[central], amount, true, constraints[central]);
+        remainder -= amount;
+    }
+    redistribute(sizes, remainder, weights, constraints, true, central_index);
+}
+
+fn shrink_to_extent(
+    sizes: &mut [f64],
+    mut excess: f64,
+    weights: &[f64],
+    constraints: &[AxisConstraint],
+    central_index: Option<usize>,
+) {
+    if let Some(central) = central_index {
+        let amount = excess.min((sizes[central] - constraints[central].min).max(0.0));
+        apply_bounded_delta(&mut sizes[central], amount, false, constraints[central]);
+        excess -= amount;
+    }
+    redistribute(sizes, excess, weights, constraints, false, central_index);
+}
+
+fn redistribute(
+    sizes: &mut [f64],
+    mut amount: f64,
+    weights: &[f64],
+    constraints: &[AxisConstraint],
+    grow: bool,
+    excluded: Option<usize>,
+) {
+    let tolerance = allocation_tolerance(amount, amount, amount);
+    while amount > tolerance {
+        let eligible = (0..sizes.len())
+            .filter(|&index| {
+                excluded != Some(index)
+                    && capacity(sizes[index], constraints[index], grow) > tolerance
+                    && weights[index] > 0.0
+            })
+            .collect::<Vec<_>>();
+        if eligible.is_empty() {
+            break;
+        }
+        let weight_total: f64 = eligible.iter().map(|&index| weights[index]).sum();
+        let before = amount;
+        for &index in &eligible {
+            let share = before * (weights[index] / weight_total);
+            let delta = share.min(capacity(sizes[index], constraints[index], grow));
+            apply_bounded_delta(&mut sizes[index], delta, grow, constraints[index]);
+            amount -= delta;
+        }
+        if before - amount <= tolerance {
+            break;
+        }
+    }
+
+    // Consume floating-point residue and zero-weight capacity in stable child order.
+    for index in 0..sizes.len() {
+        if amount <= tolerance {
+            break;
+        }
+        if excluded == Some(index) {
+            continue;
+        }
+        let delta = amount.min(capacity(sizes[index], constraints[index], grow));
+        apply_bounded_delta(&mut sizes[index], delta, grow, constraints[index]);
+        amount -= delta;
+    }
+}
+
+fn capacity(size: f64, constraint: AxisConstraint, grow: bool) -> f64 {
+    if grow {
+        (constraint.max - size).max(0.0)
+    } else {
+        (size - constraint.min).max(0.0)
+    }
+}
+
+fn apply_bounded_delta(size: &mut f64, delta: f64, grow: bool, constraint: AxisConstraint) {
+    if grow {
+        *size = (*size + delta).min(constraint.max);
+    } else {
+        *size = (*size - delta).max(constraint.min);
+    }
+}
+
+fn checked_sum(
+    values: impl IntoIterator<Item = f64>,
+    quantity: &'static str,
+) -> Result<f64, LayoutError> {
+    let sum = values.into_iter().sum::<f64>();
+    if sum.is_finite() {
+        Ok(sum)
+    } else {
+        Err(LayoutError::NonFiniteAggregate { quantity })
+    }
+}
+
+fn allocation_tolerance(a: f64, b: f64, c: f64) -> f64 {
+    a.abs().max(b.abs()).max(c.abs()).max(1.0) * f64::EPSILON * 64.0
 }

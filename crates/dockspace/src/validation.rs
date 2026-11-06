@@ -7,7 +7,9 @@ use std::fmt;
 use slotmap::SecondaryMap;
 use thiserror::Error;
 
-use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, Workspace, is_exact_tab_mru};
+use crate::graph::{
+    Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, Workspace, WorkspaceData, is_exact_tab_mru,
+};
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 
 /// The stable presentation location that owns a root.
@@ -364,6 +366,14 @@ impl Workspace {
 ///
 /// Returns all deterministic invariant violations found in `workspace`.
 pub fn validate_workspace(workspace: &Workspace) -> Result<(), WorkspaceValidationErrors> {
+    validate_workspace_data(workspace.storage())
+}
+
+pub(crate) fn validate_workspace_data(
+    workspace: &WorkspaceData,
+) -> Result<(), WorkspaceValidationErrors> {
+    #[cfg(test)]
+    crate::drop_resolver::structural_work::record_workspace_full_validation();
     let mut validator = Validator::new(workspace);
     validator.validate_graph();
     validator.validate_central_regions();
@@ -402,7 +412,7 @@ enum Frame {
 }
 
 struct Validator<'workspace> {
-    workspace: &'workspace Workspace,
+    workspace: &'workspace WorkspaceData,
     errors: Vec<WorkspaceValidationError>,
     visits: SecondaryMap<NodeId, Visit>,
     items: HashMap<ItemId, NodeId>,
@@ -410,7 +420,7 @@ struct Validator<'workspace> {
 }
 
 impl<'workspace> Validator<'workspace> {
-    fn new(workspace: &'workspace Workspace) -> Self {
+    fn new(workspace: &'workspace WorkspaceData) -> Self {
         Self {
             workspace,
             errors: Vec::new(),

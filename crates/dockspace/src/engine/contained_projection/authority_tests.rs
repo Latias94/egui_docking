@@ -33,13 +33,14 @@ fn core_fixture() -> (DockEngine, TestPresentationHost) {
 
 fn core_fixture_at(source_rect: LogicalRect) -> (DockEngine, TestPresentationHost) {
     let (session, _) = fixture(PANE_COUNT);
-    let mut workspace = session.workspace().clone();
-    workspace
-        .contained_floatings_mut()
+    let mut builder = session.workspace().clone().into_builder();
+    builder
+        .draft_mut()
+        .contained_floatings
         .get_mut(&FLOATING)
         .unwrap()
         .rect = source_rect;
-    let mut engine = DockEngine::new(workspace, DockPolicy::default()).unwrap();
+    let mut engine = DockEngine::new(builder.build().unwrap(), DockPolicy::default()).unwrap();
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface_with(
         &mut engine,

@@ -468,7 +468,7 @@ impl DockEngine {
             return None;
         }
         matches!(
-            self.workspace.nodes.get(tab.tabs),
+            self.workspace.node(tab.tabs),
             Some(Node::Tabs { items, selected })
                 if items.contains(&tab.item) && *selected != Some(tab.item)
         )

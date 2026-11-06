@@ -3749,7 +3749,7 @@ impl DockEngine {
             return Ok(InteractionOutcome::Rejected(rejection));
         }
         let source_payload = match prepared.source {
-            TabGestureSource::Item(source) => match self.workspace.nodes.get(source.tabs) {
+            TabGestureSource::Item(source) => match self.workspace.node(source.tabs) {
                 Some(Node::Tabs { items, .. }) if items.contains(&source.item) => {
                     Ok(MovePayload::Item(ItemSource {
                         root: source.root,
@@ -3769,10 +3769,7 @@ impl DockEngine {
                 }),
             },
             TabGestureSource::Group(_) => {
-                if matches!(
-                    self.workspace.nodes.get(prepared.tabs),
-                    Some(Node::Tabs { .. })
-                ) {
+                if matches!(self.workspace.node(prepared.tabs), Some(Node::Tabs { .. })) {
                     Ok(MovePayload::Tabs(prepared.source_node.clone()))
                 } else {
                     Err(CommandError::NodeIsNotTabs {
@@ -3833,7 +3830,7 @@ impl DockEngine {
             && let TabGestureSource::Item(source) = prepared.source
         {
             let already_selected = matches!(
-                self.workspace.nodes.get(source.tabs),
+                self.workspace.node(source.tabs),
                 Some(Node::Tabs {
                     selected: Some(selected),
                     ..

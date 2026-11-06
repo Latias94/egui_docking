@@ -2,7 +2,7 @@
 
 use crate::command::{CommandOutcome, WorkspaceCommand};
 use crate::error::TransactionError;
-use crate::graph::Workspace;
+use crate::graph::{Workspace, WorkspaceData};
 use crate::policy::DockPolicySnapshot;
 
 /// Copies one complete transaction or atomic canonicalization draft, accounting
@@ -11,6 +11,13 @@ use crate::policy::DockPolicySnapshot;
 pub(crate) fn clone_workspace_draft(workspace: &Workspace) -> Workspace {
     #[cfg(test)]
     crate::drop_resolver::structural_work::record_transaction_candidate_clone(workspace);
+    workspace.clone()
+}
+
+/// Copies an uncommitted draft without granting runtime workspace ownership.
+pub(crate) fn clone_workspace_data_draft(workspace: &WorkspaceData) -> WorkspaceData {
+    #[cfg(test)]
+    crate::drop_resolver::structural_work::record_transaction_candidate_data_clone(workspace);
     workspace.clone()
 }
 
@@ -66,7 +73,7 @@ impl FromIterator<WorkspaceCommand> for WorkspaceTransaction {
 
 #[derive(Debug)]
 pub(crate) struct PreparedTransaction {
-    pub(crate) candidate: crate::operation::CanonicalWorkspace,
+    pub(crate) candidate: Workspace,
     pub(crate) outcomes: Vec<CommandOutcome>,
 }
 
@@ -76,27 +83,19 @@ impl PreparedTransaction {
     /// `original` is the snapshot used for preparation. The engine can check its
     /// publication barriers against the candidate before moving it into place.
     pub(crate) fn into_parts(self, original: &Workspace) -> (Workspace, TransactionReport) {
-        let (candidate, report) = self.into_canonical_parts(original);
-        (candidate.into_workspace(), report)
+        let report = TransactionReport {
+            outcomes: self.outcomes,
+            changed: self.candidate != *original,
+        };
+        (self.candidate, report)
     }
 
     pub(crate) fn into_snapshot_parts(
         self,
         original: &Workspace,
     ) -> (crate::operation::WorkspaceSnapshot, TransactionReport) {
-        let (candidate, report) = self.into_canonical_parts(original);
+        let (candidate, report) = self.into_parts(original);
         (candidate.into(), report)
-    }
-
-    fn into_canonical_parts(
-        self,
-        original: &Workspace,
-    ) -> (crate::operation::CanonicalWorkspace, TransactionReport) {
-        let report = TransactionReport {
-            outcomes: self.outcomes,
-            changed: *self.candidate != *original,
-        };
-        (self.candidate, report)
     }
 
     pub(crate) fn publish(self, workspace: &mut Workspace) -> TransactionReport {

@@ -1,6 +1,6 @@
 use super::*;
 use crate::graph::SplitWeight;
-use crate::layout::{RootMeasurement, measure_root_minimums_with_index};
+use crate::layout::{NodeMap, RootMeasurement, measure_root_minimums_with_index};
 
 #[cfg(test)]
 #[path = "surface/junction_compile_tests.rs"]
@@ -488,7 +488,7 @@ fn select_presentation_menu_tab_bar(
     root_node: NodeId,
     central: Option<NodeId>,
     root_bounds: LogicalRect,
-    node_rects: &BTreeMap<NodeId, LogicalRect>,
+    node_rects: &NodeMap<LogicalRect>,
 ) -> Result<Option<NodeId>, SceneCompilationError> {
     let visible_layout =
         |tabs| -> Result<Option<TabStripOptionalChromeLayout>, SceneCompilationError> {
@@ -898,7 +898,7 @@ fn compile_root(
                     .get(node)
                     .ok_or(SceneCompilationError::MissingSplitProjection { root, split: *node })?;
                 let hit_rects = splitter_hit_rects(
-                    &split.splitter_rects,
+                    split.splitter_rects,
                     *axis,
                     config.splitter_hit_extent(),
                     bounds,
@@ -980,7 +980,7 @@ fn compile_root(
                                 .find(|override_| override_.source().node() == *node)
                                 .map_or(weights.as_slice(), |override_| override_.weights());
                             (
-                                Arc::<[f64]>::from(split.child_extents.as_slice()),
+                                Arc::<[f64]>::from(split.child_extents),
                                 Arc::<[SplitWeight]>::from(effective_weights),
                             )
                         });

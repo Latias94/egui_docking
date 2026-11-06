@@ -103,10 +103,10 @@ impl WorkspaceIndex {
         node: NodeId,
         role: ReferenceRole,
     ) -> Result<(), CommandError> {
-        if !workspace.roots.contains_key(&root) {
+        if !workspace.storage().roots.contains_key(&root) {
             return Err(CommandError::MissingRoot { root });
         }
-        if !workspace.nodes.contains_key(node) {
+        if !workspace.storage().nodes.contains_key(node) {
             return Err(CommandError::MissingNode { role, node });
         }
         if let std::collections::btree_map::Entry::Vacant(entry) = self.roots.entry(root) {
@@ -129,7 +129,7 @@ impl WorkspaceIndex {
         version: WorkspaceVersion,
     ) -> Result<Self, CommandError> {
         let mut owners = BTreeMap::new();
-        for (surface, presentation) in &workspace.surfaces {
+        for (surface, presentation) in &workspace.storage().surfaces {
             if let Some(root) = presentation.main_root
                 && owners
                     .insert(root, RootPresentationOwner::Main { surface: *surface })
@@ -141,6 +141,7 @@ impl WorkspaceIndex {
             }
             for floating in &presentation.contained {
                 let root = workspace
+                    .storage()
                     .contained_floatings
                     .get(floating)
                     .ok_or(CommandError::Invariant {
@@ -165,7 +166,7 @@ impl WorkspaceIndex {
         }
 
         let mut roots = BTreeMap::new();
-        for root in workspace.roots.keys().copied() {
+        for root in workspace.storage().roots.keys().copied() {
             let owner = owners.get(&root).copied().ok_or(CommandError::Invariant {
                 stage: "index root presentation owner",
             })?;
@@ -325,7 +326,7 @@ impl WorkspaceIndex {
             .roots
             .get(&root)
             .ok_or(CommandError::MissingRoot { root })?;
-        if !workspace.nodes.contains_key(node) {
+        if !workspace.storage().nodes.contains_key(node) {
             return Err(CommandError::MissingNode { role, node });
         }
         if !indexed.members.contains(&node) {
@@ -587,6 +588,7 @@ impl Workspace {
         surface: SurfaceId,
     ) -> Result<ContainedRosterSource, CommandError> {
         let presentation = self
+            .storage()
             .surfaces
             .get(&surface)
             .ok_or(CommandError::MissingSurface { surface })?;
@@ -609,7 +611,7 @@ impl Workspace {
         item: ItemId,
     ) -> Result<ItemSource, CommandError> {
         let fingerprint = self.capture_reference(root, tabs, ReferenceRole::Source)?;
-        match self.nodes.get(tabs) {
+        match self.storage().nodes.get(tabs) {
             Some(Node::Tabs { items, .. }) if items.contains(&item) => Ok(ItemSource {
                 root,
                 tabs,
@@ -646,17 +648,21 @@ impl Workspace {
     /// [`Self::capture_item_source_by_id`]. Mutation paths must still capture a
     /// source fingerprint before constructing a command.
     pub(crate) fn locate_item_by_id(&self, item: ItemId) -> Option<(RootId, NodeId, usize)> {
-        let (tabs, tab_index) = self.nodes.iter().find_map(|(tabs, node)| match node {
-            Node::Tabs { items, .. } => items
+        let (tabs, tab_index) =
+            self.storage()
+                .nodes
                 .iter()
-                .position(|candidate| *candidate == item)
-                .map(|index| (tabs, index)),
-            Node::Split { .. } => None,
-        })?;
-        let root = self
-            .roots
-            .iter()
-            .find_map(|(root, record)| self.subtree_contains(record.node, tabs).then_some(*root))?;
+                .find_map(|(tabs, node)| match node {
+                    Node::Tabs { items, .. } => items
+                        .iter()
+                        .position(|candidate| *candidate == item)
+                        .map(|index| (tabs, index)),
+                    Node::Split { .. } => None,
+                })?;
+        let root =
+            self.storage().roots.iter().find_map(|(root, record)| {
+                self.subtree_contains(record.node, tabs).then_some(*root)
+            })?;
         Some((root, tabs, tab_index))
     }
 
@@ -748,6 +754,7 @@ impl Workspace {
         fraction: DockFraction,
     ) -> Result<EdgeTarget, CommandError> {
         let node = self
+            .storage()
             .roots
             .get(&root)
             .ok_or(CommandError::MissingRoot { root })?
@@ -773,27 +780,7 @@ impl Workspace {
         tabs: NodeId,
         central: bool,
     ) -> Result<DockTargetRuleKey, CommandError> {
-        match self.nodes.get(tabs) {
-            Some(Node::Tabs {
-                selected: Some(item),
-                ..
-            }) => Ok(DockTargetRuleKey::Item(*item)),
-            // An empty central leaf is a deliberate docking sink, not an
-            // unselected pane. It has no item identity, so root scope is the
-            // only stable policy identity available to the core.
-            Some(Node::Tabs {
-                items,
-                selected: None,
-            }) if central && items.is_empty() => Ok(DockTargetRuleKey::Root(root)),
-            Some(Node::Tabs { selected: None, .. }) => {
-                Err(CommandError::TargetTabsUnselected { tabs })
-            }
-            Some(Node::Split { .. }) => Err(CommandError::NodeIsNotTabs { node: tabs }),
-            None => Err(CommandError::MissingNode {
-                role: ReferenceRole::Target,
-                node: tabs,
-            }),
-        }
+        pane_local_target_rule(self.storage(), root, tabs, central)
     }
 
     fn target_owner_facts(
@@ -802,6 +789,7 @@ impl Workspace {
         node: NodeId,
     ) -> Result<(SurfaceId, bool), CommandError> {
         let central = self
+            .storage()
             .roots
             .get(&root)
             .ok_or(CommandError::MissingRoot { root })?
@@ -845,10 +833,10 @@ impl Workspace {
         node: NodeId,
         role: ReferenceRole,
     ) -> Result<NodeFingerprint, CommandError> {
-        if !self.roots.contains_key(&root) {
+        if !self.storage().roots.contains_key(&root) {
             return Err(CommandError::MissingRoot { root });
         }
-        if !self.nodes.contains_key(node) {
+        if !self.storage().nodes.contains_key(node) {
             return Err(CommandError::MissingNode { role, node });
         }
         if !self.root_contains_node(root, node) {
@@ -872,6 +860,7 @@ impl Workspace {
         owner: RootPresentationOwner,
     ) -> Result<WorkspaceRootIndex, CommandError> {
         let record = self
+            .storage()
             .roots
             .get(&root)
             .ok_or(CommandError::MissingRoot { root })?;
@@ -895,10 +884,14 @@ impl Workspace {
                     stage: "capture acyclic root fingerprint",
                 });
             }
-            let node = self.nodes.get(id).ok_or(CommandError::MissingNode {
-                role: ReferenceRole::Source,
-                node: id,
-            })?;
+            let node = self
+                .storage()
+                .nodes
+                .get(id)
+                .ok_or(CommandError::MissingNode {
+                    role: ReferenceRole::Source,
+                    node: id,
+                })?;
             #[cfg(test)]
             crate::drop_resolver::structural_work::record_root_fingerprint_node_visit();
             let snapshot = match node {
@@ -913,7 +906,8 @@ impl Workspace {
                         items: Arc::from(items.as_slice()),
                         selected: *selected,
                         mru: Arc::from(
-                            self.tab_mru
+                            self.storage()
+                                .tab_mru
                                 .get(&id)
                                 .ok_or(CommandError::Invariant {
                                     stage: "capture tabs MRU fingerprint",
@@ -960,7 +954,7 @@ impl Workspace {
     }
 
     pub(crate) fn root_contains_node(&self, root: RootId, needle: NodeId) -> bool {
-        let Some(record) = self.roots.get(&root) else {
+        let Some(record) = self.storage().roots.get(&root) else {
             return false;
         };
         self.subtree_contains(record.node, needle)
@@ -976,7 +970,7 @@ impl Workspace {
             if !visited.insert(node_id) {
                 continue;
             }
-            if let Some(Node::Split { children, .. }) = self.nodes.get(node_id) {
+            if let Some(Node::Split { children, .. }) = self.storage().nodes.get(node_id) {
                 stack.extend(children.iter().rev().copied());
             }
         }
@@ -984,7 +978,7 @@ impl Workspace {
     }
 
     pub(crate) fn parent_link(&self, root: RootId, needle: NodeId) -> Option<ParentLink> {
-        let root_node = self.roots.get(&root)?.node;
+        let root_node = self.storage().roots.get(&root)?.node;
         if root_node == needle {
             return None;
         }
@@ -994,7 +988,7 @@ impl Workspace {
             if !visited.insert(node_id) {
                 continue;
             }
-            if let Some(Node::Split { children, .. }) = self.nodes.get(node_id) {
+            if let Some(Node::Split { children, .. }) = self.storage().nodes.get(node_id) {
                 for (index, child) in children.iter().copied().enumerate() {
                     if child == needle {
                         return Some(ParentLink {
@@ -1009,6 +1003,28 @@ impl Workspace {
         None
     }
 
+    /// Finds one current ancestor path for a graph-owned local repair.
+    pub(crate) fn path_to_node(&self, root: RootId, needle: NodeId) -> Option<Vec<NodeId>> {
+        let root_node = self.root(root)?.node;
+        let mut path = Vec::new();
+        let mut pending = vec![(root_node, false)];
+        while let Some((node, exiting)) = pending.pop() {
+            if exiting {
+                path.pop();
+                continue;
+            }
+            path.push(node);
+            if node == needle {
+                return Some(path);
+            }
+            pending.push((node, true));
+            if let Some(Node::Split { children, .. }) = self.node(node) {
+                pending.extend(children.iter().rev().copied().map(|child| (child, false)));
+            }
+        }
+        None
+    }
+
     pub(crate) fn subtree_has_items(&self, root: NodeId) -> bool {
         let mut stack = vec![root];
         let mut visited = HashSet::new();
@@ -1016,7 +1032,7 @@ impl Workspace {
             if !visited.insert(node_id) {
                 continue;
             }
-            match self.nodes.get(node_id) {
+            match self.storage().nodes.get(node_id) {
                 Some(Node::Tabs { items, .. }) if !items.is_empty() => return true,
                 Some(Node::Split { children, .. }) => {
                     stack.extend(children.iter().rev().copied());
@@ -1035,7 +1051,7 @@ impl Workspace {
             if !visited.insert(node_id) {
                 continue;
             }
-            match self.nodes.get(node_id) {
+            match self.storage().nodes.get(node_id) {
                 Some(Node::Tabs {
                     items: tab_items, ..
                 }) => items.extend(tab_items.iter().copied()),
@@ -1054,7 +1070,7 @@ impl Workspace {
     /// root is absent or the workspace has not passed validation.
     #[must_use]
     pub fn presentation_for_root(&self, root: RootId) -> Option<RootPresentationOwner> {
-        for (surface_id, surface) in &self.surfaces {
+        for (surface_id, surface) in &self.storage().surfaces {
             if surface.main_root == Some(root) {
                 return Some(RootPresentationOwner::Main {
                     surface: *surface_id,
@@ -1062,6 +1078,7 @@ impl Workspace {
             }
             for floating_id in &surface.contained {
                 if self
+                    .storage()
                     .contained_floatings
                     .get(floating_id)
                     .is_some_and(|floating| floating.root == root)
@@ -1074,6 +1091,33 @@ impl Workspace {
             }
         }
         None
+    }
+}
+
+fn pane_local_target_rule(
+    storage: &crate::graph::WorkspaceData,
+    root: RootId,
+    tabs: NodeId,
+    central: bool,
+) -> Result<DockTargetRuleKey, CommandError> {
+    match storage.nodes.get(tabs) {
+        Some(Node::Tabs {
+            selected: Some(item),
+            ..
+        }) => Ok(DockTargetRuleKey::Item(*item)),
+        // An empty central leaf is a deliberate docking sink, not an
+        // unselected pane. It has no item identity, so root scope is the
+        // only stable policy identity available to the core.
+        Some(Node::Tabs {
+            items,
+            selected: None,
+        }) if central && items.is_empty() => Ok(DockTargetRuleKey::Root(root)),
+        Some(Node::Tabs { selected: None, .. }) => Err(CommandError::TargetTabsUnselected { tabs }),
+        Some(Node::Split { .. }) => Err(CommandError::NodeIsNotTabs { node: tabs }),
+        None => Err(CommandError::MissingNode {
+            role: ReferenceRole::Target,
+            node: tabs,
+        }),
     }
 }
 
@@ -1122,14 +1166,15 @@ mod tests {
             .capture_tab_target(&workspace, first_version, root, left)
             .expect("first target should capture");
 
-        let mut changed = workspace.clone();
+        let mut changed = workspace.clone().into_builder();
         *changed
+            .draft_mut()
             .nodes
             .get_mut(split)
             .expect("fixture split should remain live") =
             Node::equal_split(Axis::Vertical, [right, left])
                 .expect("changed topology remains valid");
-        changed.validate().expect("changed fixture should validate");
+        let changed = changed.build().expect("changed fixture should validate");
 
         assert!(matches!(
             first_index.capture_tab_target(&changed, next_version, root, left),
@@ -1167,12 +1212,13 @@ mod tests {
             .expect("first target should capture");
         assert_eq!(old_target.surface(), SurfaceId::new(1));
 
-        let mut changed = workspace.clone();
-        changed.surfaces.clear();
+        let mut changed = workspace.clone().into_builder();
+        changed.draft_mut().surfaces.clear();
         changed
+            .draft_mut()
             .surfaces
             .insert(SurfaceId::new(2), SurfacePresentation::with_main(root));
-        changed.validate().expect("rehome fixture should validate");
+        let changed = changed.build().expect("rehome fixture should validate");
         let next_index =
             WorkspaceIndex::build(&changed, next_version).expect("replacement index should derive");
         let next_target = next_index
@@ -1249,13 +1295,17 @@ mod tests {
             index_version(1),
         )
         .unwrap();
-        let Some(Node::Tabs { selected, .. }) = workspace.nodes.get_mut(tabs) else {
-            panic!("fixture is a tabs leaf");
-        };
-        *selected = Some(ItemId::new(2));
-        workspace
-            .tab_mru
-            .insert(tabs, vec![ItemId::new(2), ItemId::new(1)]);
+        let source = workspace
+            .capture_item_source(root, tabs, ItemId::new(2))
+            .unwrap();
+        crate::transaction::WorkspaceTransaction::from_commands([
+            crate::command::WorkspaceCommand::Select { source },
+        ])
+        .apply(
+            &mut workspace,
+            &crate::policy::DockPolicySnapshot::default(),
+        )
+        .unwrap();
 
         crate::drop_resolver::structural_work::reset();
         let rebound = index
@@ -1373,42 +1423,37 @@ mod tests {
         let fraction = DockFraction::new(0.5).expect("test fraction is valid");
 
         assert!(matches!(
-            builder.workspace.capture_tab_target(root, tabs),
+            super::pane_local_target_rule(builder.draft(), root, tabs, false),
             Err(CommandError::TargetTabsUnselected { tabs: actual }) if actual == tabs
         ));
-        assert!(matches!(
-            builder
-                .workspace
-                .capture_inner_edge_target(root, tabs, Edge::Left, fraction),
-            Err(CommandError::TargetTabsUnselected { tabs: actual }) if actual == tabs
-        ));
-        assert_eq!(
-            builder
-                .workspace
-                .capture_outer_edge_target(root, Edge::Left, fraction)
-                .expect("outer root target does not need a representative item")
-                .rule(),
-            DockTargetRuleKey::Root(root)
-        );
+        assert!(builder.build().is_err());
 
+        let mut builder = WorkspaceBuilder::new();
         let empty_central = builder.insert_node(Node::tabs([]));
         builder.set_root(
             root,
             RootRecord::new(empty_central).with_central(empty_central),
         );
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder.build().unwrap();
         assert_eq!(
-            builder
-                .workspace
+            workspace
                 .capture_tab_target(root, empty_central)
-                .expect("empty central leaf is an explicit tab target")
+                .unwrap()
                 .rule(),
             DockTargetRuleKey::Root(root)
         );
         assert_eq!(
-            builder
-                .workspace
+            workspace
                 .capture_inner_edge_target(root, empty_central, Edge::Left, fraction)
-                .expect("empty central leaf is an explicit edge target")
+                .unwrap()
+                .rule(),
+            DockTargetRuleKey::Root(root)
+        );
+        assert_eq!(
+            workspace
+                .capture_outer_edge_target(root, Edge::Left, fraction)
+                .unwrap()
                 .rule(),
             DockTargetRuleKey::Root(root)
         );

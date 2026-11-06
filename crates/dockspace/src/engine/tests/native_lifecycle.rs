@@ -4782,20 +4782,14 @@ fn stale_roster_precondition_is_a_nonpublishing_recovery_rejection() {
     let transaction = roster
         .compile_rehome_transaction(engine.workspace(), &placement)
         .expect("current roster must compile");
-    let Some(Node::Tabs { selected, .. }) = engine.workspace.draft_mut().nodes.get_mut(source_tabs)
-    else {
-        panic!("source root must remain tabs");
-    };
-    *selected = Some(ItemId::new(42));
-    engine
-        .workspace
-        .draft_mut()
-        .tab_mru
-        .insert(source_tabs, vec![ItemId::new(42), ItemId::new(40)]);
-    engine
-        .workspace
-        .validate()
-        .expect("stale source mutation must remain valid");
+    let mut changed = engine.workspace.as_ref().clone();
+    let source = changed
+        .capture_item_source(source_root, source_tabs, ItemId::new(42))
+        .unwrap();
+    crate::transaction::WorkspaceTransaction::from_commands([WorkspaceCommand::Select { source }])
+        .apply(&mut changed, &engine.policy)
+        .unwrap();
+    engine.workspace = changed.into();
     let before = engine.workspace().clone();
     let version = engine.version();
     let mut events = Vec::new();

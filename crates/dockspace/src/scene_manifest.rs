@@ -2190,13 +2190,14 @@ mod tests {
         let policy = DockPolicySnapshot::default();
         let original = derive(&policy);
         let mut changed = workspace.clone();
-        let Some(Node::Tabs { selected, .. }) = changed.nodes.get_mut(tabs) else {
-            panic!("fixture is a tabs leaf");
-        };
-        *selected = Some(ItemId::new(2));
-        changed
-            .tab_mru
-            .insert(tabs, vec![ItemId::new(2), ItemId::new(1)]);
+        let source = changed
+            .capture_item_source(root, tabs, ItemId::new(2))
+            .unwrap();
+        crate::transaction::WorkspaceTransaction::from_commands([
+            crate::command::WorkspaceCommand::Select { source },
+        ])
+        .apply(&mut changed, &policy)
+        .unwrap();
         let (affected, rebound) = original
             .after_selection(&changed, version(4, 6), &policy, root, tabs)
             .unwrap()

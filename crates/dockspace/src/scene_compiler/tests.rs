@@ -1570,12 +1570,16 @@ fn measured_future_drop_preview_does_not_reindex_the_candidate_workspace() {
 #[test]
 fn stale_manifest_index_cannot_compile_a_changed_topology_revision() {
     let (workspace, manifest, measurements, _) = balanced_hot_root_fixture(16);
-    let mut changed = workspace.clone();
+    let mut changed = workspace.clone().into_builder();
     let root = RootId::new(701);
-    let root_node = changed.root(root).expect("fixture root should exist").node;
+    let root_node = workspace
+        .root(root)
+        .expect("fixture root should exist")
+        .node;
     let Node::Split {
         children, weights, ..
     } = changed
+        .draft_mut()
         .nodes
         .get_mut(root_node)
         .expect("fixture root node should exist")
@@ -1584,9 +1588,7 @@ fn stale_manifest_index_cannot_compile_a_changed_topology_revision() {
     };
     children.reverse();
     weights.reverse();
-    changed
-        .validate()
-        .expect("changed topology should validate");
+    let changed = changed.build().expect("changed topology should validate");
     let current = WorkspaceVersion::new(version().epoch(), WorkspaceRevision::new(6));
 
     assert!(matches!(

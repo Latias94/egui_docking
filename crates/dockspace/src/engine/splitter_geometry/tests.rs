@@ -95,7 +95,7 @@ impl Fixture {
         else {
             unreachable!();
         };
-        let split = &self.projection.splits[&node];
+        let split = self.projection.splits.get(&node).unwrap();
         let draw = split.splitter_rects[index];
         let record = SplitterRecord::new(
             SplitterSceneId {
@@ -112,7 +112,7 @@ impl Fixture {
             split.child_minimum_extents[index + 1],
             split.child_maximum_extents[index],
             split.child_maximum_extents[index + 1],
-            split.child_extents.clone(),
+            split.child_extents.to_vec(),
             split.central_index,
             weights.clone(),
             SceneLayerKey::surface_base(),
@@ -344,7 +344,7 @@ fn zero_effective_motion_preserves_constrained_split_intent_bitwise() {
     let (fixture, split) = constrained();
     let groups = fixture.groups(&[(split, 0)]);
     assert_eq!(
-        fixture.projection.splits[&split].child_extents,
+        fixture.projection.splits.get(&split).unwrap().child_extents,
         [200.0, 200.0]
     );
     for requested in [0.0, -48.0] {
@@ -447,7 +447,7 @@ fn fractional_origins_bounds_and_gap_thickness_keep_valid_geometry_available() {
                         .collect(),
                     thickness,
                 );
-                let initial = &fixture.projection.splits[&split];
+                let initial = fixture.projection.splits.get(&split).unwrap();
                 rounded_gap |= rect_extent(initial.splitter_rects[0], axis) != thickness;
                 let groups = fixture.groups(&[(split, 0)]);
                 let delta = match axis {
@@ -517,7 +517,7 @@ fn small_far_central_keeps_nary_resize_available_on_both_axes() {
             ]),
             1.0,
         );
-        let initial = &fixture.projection.splits[&split];
+        let initial = fixture.projection.splits.get(&split).unwrap();
         assert_eq!(initial.central_index, Some(2));
         assert_eq!(initial.child_extents[2], 1e-6);
         let original_far = fixture.projection.node_rects[&central];
@@ -564,11 +564,11 @@ fn small_far_central_keeps_nary_resize_available_on_both_axes() {
             }
 
             let projected = fixture.project_updates(&updates);
-            let resized = &projected.splits[&split];
+            let resized = projected.splits.get(&split).unwrap();
             assert!(
                 validate_split_projection(
                     &projected,
-                    resized,
+                    &resized,
                     axis,
                     fixture.bounds,
                     &[a, b, central],
@@ -629,7 +629,7 @@ fn rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes() {
             rect_extent(fixture.projection.node_rects[&inner], axis),
             251.3,
         );
-        let residual = fixture.projection.splits[&inner].overflow;
+        let residual = fixture.projection.splits.get(&inner).unwrap().overflow;
         assert!(residual > 0.0 && residual < 1e-10, "{axis:?}: {residual}");
         let groups = fixture.groups(&[(outer, 0)]);
         let updates = resize_axis_group_updates(&groups, delta_along(axis, -10.0)).unwrap();
@@ -682,7 +682,7 @@ fn rounded_nested_maximum_unallocated_allows_reverse_shrink_on_both_axes() {
             rect_extent(fixture.projection.node_rects[&inner], axis),
             251.1,
         );
-        let residual = fixture.projection.splits[&inner].unallocated;
+        let residual = fixture.projection.splits.get(&inner).unwrap().unallocated;
         assert!(residual > 0.0 && residual < 1e-10, "{axis:?}: {residual}");
         let groups = fixture.groups(&[(outer, 0)]);
         let updates = resize_axis_group_updates(&groups, delta_along(axis, 10.0)).unwrap();
@@ -788,7 +788,7 @@ fn large_origin_real_overflow_unallocated_and_compressed_gaps_remain_unavailable
                     .collect(),
                 1.0,
             );
-            let projected = &fixture.projection.splits[&split];
+            let projected = fixture.projection.splits.get(&split).unwrap();
             if extent == 0.5 {
                 close(rect_extent(projected.splitter_rects[0], axis), 0.5);
             } else if minimum > 200.0 {

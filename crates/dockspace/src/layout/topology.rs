@@ -14,6 +14,9 @@ pub(crate) struct RootLayoutTopology {
     pub(super) children: Vec<usize>,
     pub(super) weight_bits: Vec<u32>,
     pub(super) postorder: Vec<usize>,
+    pub(super) ordered_rows: Vec<usize>,
+    pub(super) split_rows: Vec<usize>,
+    pub(super) splitter_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +32,8 @@ pub(super) enum LayoutNodeKind {
         axis: Axis,
         children: Range<usize>,
         weights: Range<usize>,
+        split: usize,
+        splitters: Range<usize>,
     },
 }
 
@@ -40,7 +45,7 @@ enum CompileFrame {
 impl RootLayoutTopology {
     /// Compile while measuring, retaining the original depth-first error order.
     pub(super) fn compile(
-        workspace: &Workspace,
+        workspace: &WorkspaceData,
         root: RootId,
         leaves: LeafMeasurements<'_>,
         metrics: LayoutMetrics,
@@ -56,6 +61,9 @@ impl RootLayoutTopology {
             children: Vec::new(),
             weight_bits: Vec::new(),
             postorder: Vec::new(),
+            ordered_rows: Vec::new(),
+            split_rows: Vec::new(),
+            splitter_count: 0,
         };
         let mut rows = HashMap::<NodeId, usize>::new();
         let mut values = Vec::<Option<SubtreeMeasurement>>::new();
@@ -139,11 +147,16 @@ impl RootLayoutTopology {
                         )?,
                         contains_central: child_values.iter().any(|child| child.contains_central),
                     });
+                    let first_splitter = topology.splitter_count;
+                    topology.splitter_count += children.len().saturating_sub(1);
                     topology.nodes[row].kind = LayoutNodeKind::Split {
                         axis: *axis,
                         children: start..topology.children.len(),
                         weights: first_weight..topology.weight_bits.len(),
+                        split: topology.split_rows.len(),
+                        splitters: first_splitter..topology.splitter_count,
                     };
+                    topology.split_rows.push(row);
                     topology.postorder.push(row);
                 }
             }
@@ -154,7 +167,26 @@ impl RootLayoutTopology {
             .map(|(value, node)| value.ok_or(LayoutError::MissingNode { node: node.id }))
             .collect::<Result<Vec<_>, _>>()?;
         topology.check_central(&values)?;
+        topology.ordered_rows.extend(0..topology.nodes.len());
+        topology
+            .ordered_rows
+            .sort_unstable_by_key(|&row| topology.nodes[row].id);
+        topology.split_rows.clear();
+        topology.split_rows.extend(
+            topology
+                .ordered_rows
+                .iter()
+                .copied()
+                .filter(|&row| matches!(&topology.nodes[row].kind, LayoutNodeKind::Split { .. })),
+        );
         Ok((topology, values))
+    }
+
+    pub(super) fn row(&self, node: &NodeId) -> Option<usize> {
+        self.ordered_rows
+            .binary_search_by_key(node, |&row| self.nodes[row].id)
+            .ok()
+            .map(|index| self.ordered_rows[index])
     }
 
     /// A version alone cannot authorize reuse after an internal same-version edit.
@@ -175,6 +207,7 @@ impl RootLayoutTopology {
                         axis,
                         children,
                         weights,
+                        ..
                     },
                     Some(Node::Split {
                         axis: live_axis,

@@ -53,6 +53,40 @@ fn fixture(seed: &mut u64, central: bool) -> (Workspace, Vec<NodeId>) {
 
 proptest::proptest! {
     #[test]
+    fn caller_owned_axis_matches_frozen_solver(
+        mut seed in proptest::prelude::any::<u64>(),
+        count in 0_usize..16,
+        has_central in proptest::prelude::any::<bool>(),
+        extent in 0_u16..8192,
+    ) {
+        let weights = (0..count).map(|_| {
+            f64::from(u16::try_from(next(&mut seed) % 65).unwrap()) * 0.125
+        }).collect::<Vec<_>>();
+        let constraints = (0..count).map(|_| {
+            let minimum = f64::from(u16::try_from(next(&mut seed) % 129).unwrap()) * 0.125;
+            let extra = f64::from(u16::try_from(next(&mut seed) % 1025).unwrap()) * 0.125;
+            AxisConstraint::new(minimum, minimum + extra).unwrap()
+        }).collect::<Vec<_>>();
+        let central = if has_central && count > 0 {
+            Some(usize::try_from(next(&mut seed) % u64::try_from(count).unwrap()).unwrap())
+        } else {
+            None
+        };
+        let extent = f64::from(extent) * 0.125;
+        let expected = reference::solve_axis(extent, &weights, &constraints, central);
+        let actual = solve_axis(extent, &weights, &constraints, central);
+        proptest::prop_assert_eq!(&actual, &expected);
+        if let (Ok(actual), Ok(expected)) = (actual, expected) {
+            proptest::prop_assert_eq!(
+                actual.sizes.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+                expected.sizes.iter().map(|value| value.to_bits()).collect::<Vec<_>>()
+            );
+            proptest::prop_assert_eq!(actual.overflow.to_bits(), expected.overflow.to_bits());
+            proptest::prop_assert_eq!(actual.unallocated.to_bits(), expected.unallocated.to_bits());
+        }
+    }
+
+    #[test]
     fn dense_layout_matches_frozen_traversal(
         mut seed in proptest::prelude::any::<u64>(),
         central in proptest::prelude::any::<bool>(),
@@ -72,7 +106,7 @@ proptest::proptest! {
         let metrics = LayoutMetrics::new(f64::from(thickness) * 0.125).unwrap();
         let expected = reference::project(&workspace, ROOT, bounds, LeafMeasurements::Constraints(&constraints), metrics, &[]);
         let actual = project_root(&workspace, ROOT, bounds, &constraints, metrics);
-        proptest::prop_assert_eq!(actual, expected);
+        proptest::prop_assert_eq!(reference::capture_result(&actual), expected);
 
         let minimums = constraints.iter().map(|(&id, value)| (id, value.min())).collect::<BTreeMap<_, _>>();
         let expected = reference::project(&workspace, ROOT, bounds, LeafMeasurements::Minimums(&minimums), metrics, &[]);
@@ -82,10 +116,170 @@ proptest::proptest! {
         for _ in 0..2 {
             let actual = measure_root_minimums_with_index(&workspace, ROOT, &minimums, metrics, &index, version)
                 .and_then(|measured| measured.project(bounds, &[]));
-            proptest::prop_assert_eq!(&actual, &expected);
+            proptest::prop_assert_eq!(&reference::capture_result(&actual), &expected);
         }
         proptest::prop_assert_eq!(index, before);
     }
+}
+
+#[test]
+fn dense_projection_keeps_identity_order_and_owned_old_outputs() {
+    let (workspace, leaves) = fixture(&mut 37, true);
+    let version = WorkspaceVersion::initial();
+    let index = WorkspaceIndex::build(&workspace, version).unwrap();
+    let minimums = leaves
+        .iter()
+        .map(|&node| (node, LogicalSize::new(4.0, 3.0).unwrap()))
+        .collect::<BTreeMap<_, _>>();
+    let bounds = LogicalRect::new(-17.25, 31.5, 1000.0, 900.0).unwrap();
+    let first = measure_root_minimums_with_index(
+        &workspace,
+        ROOT,
+        &minimums,
+        LayoutMetrics::new(1.0).unwrap(),
+        &index,
+        version,
+    )
+    .unwrap()
+    .project(bounds, &[])
+    .unwrap();
+    let retained = reference::capture(&first);
+    let expected_keys = retained.node_rects.keys().copied().collect::<Vec<_>>();
+    assert_eq!(
+        first.node_rects.keys().copied().collect::<Vec<_>>(),
+        expected_keys
+    );
+    assert_eq!(
+        first.node_constraints.keys().copied().collect::<Vec<_>>(),
+        expected_keys
+    );
+    assert_eq!(
+        first
+            .node_rects
+            .iter()
+            .rev()
+            .map(|(&node, _)| node)
+            .collect::<Vec<_>>(),
+        expected_keys.iter().rev().copied().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        first.splits.keys().copied().collect::<Vec<_>>(),
+        retained.splits.keys().copied().collect::<Vec<_>>()
+    );
+    let second = measure_root_minimums_with_index(
+        &workspace,
+        ROOT,
+        &minimums,
+        LayoutMetrics::new(3.0).unwrap(),
+        &index,
+        version,
+    )
+    .unwrap()
+    .project(LogicalRect::new(8.0, 2.0, 250.0, 200.0).unwrap(), &[])
+    .unwrap();
+    assert_ne!(first, second);
+    drop(index);
+    drop(workspace);
+    assert_eq!(reference::capture(&first), retained);
+    assert_eq!(first.node_rects.values().len(), first.node_rects.len());
+    assert_eq!(first.splits.values().len(), first.splits.len());
+}
+
+#[test]
+fn sparse_arena_projection_rejects_retired_generations() {
+    let mut draft = Workspace::builder();
+    let retired = (1..=512)
+        .map(|item| draft.insert_node(Node::tabs([ItemId::new(item)])))
+        .collect::<Vec<_>>();
+    for &node in &retired {
+        draft.draft_mut().remove_runtime_node(node).unwrap();
+    }
+    let leaf = draft.insert_node(Node::tabs([ItemId::new(1024)]));
+    draft.set_root(ROOT, RootRecord::new(leaf));
+    draft.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+    let workspace = draft.build().unwrap();
+    let bounds = LogicalRect::new(1.0, 2.0, 10.0, 20.0).unwrap();
+    let constraints = BTreeMap::from([(
+        leaf,
+        Constraints::new(LogicalSize::new(0.0, 0.0).unwrap(), bounds.size()).unwrap(),
+    )]);
+    let projection = project_root(
+        &workspace,
+        ROOT,
+        bounds,
+        &constraints,
+        LayoutMetrics::new(0.0).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(projection.node_rects.len(), 1);
+    assert_eq!(projection.node_constraints.len(), 1);
+    assert!(projection.splits.is_empty());
+    assert_eq!(
+        projection.node_rects.keys().copied().collect::<Vec<_>>(),
+        [leaf]
+    );
+    for stale in retired {
+        assert_ne!(stale, leaf);
+        assert!(!projection.node_rects.contains_key(&stale));
+        assert_eq!(projection.node_constraints.get(&stale), None);
+        assert_eq!(projection.splits.get(&stale), None);
+    }
+    drop(workspace);
+    assert_eq!(projection.node_rects.get(&leaf), Some(&bounds));
+}
+
+#[test]
+fn projects_ten_thousand_nested_splits_without_call_stack_growth() {
+    const DEPTH: usize = 10_000;
+
+    let leaf = Constraints::new(
+        LogicalSize::new(0.0, 0.0).unwrap(),
+        LogicalSize::new(10_000.0, 10_000.0).unwrap(),
+    )
+    .unwrap();
+    let mut builder = Workspace::builder();
+    let central = builder.insert_node(Node::tabs([ItemId::new(1)]));
+    let mut leaf_constraints = BTreeMap::from([(central, leaf)]);
+    let mut subtree = central;
+    for depth in 0..DEPTH {
+        let side =
+            builder.insert_node(Node::tabs([ItemId::new(u64::try_from(depth + 2).unwrap())]));
+        leaf_constraints.insert(side, leaf);
+        let axis = if depth % 2 == 0 {
+            Axis::Horizontal
+        } else {
+            Axis::Vertical
+        };
+        subtree = builder.insert_node(Node::equal_split(axis, [subtree, side]).unwrap());
+    }
+    builder.set_root(ROOT, RootRecord::new(subtree).with_central(central));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+    let workspace = builder.build().unwrap();
+    let bounds = LogicalRect::new(0.0, 0.0, 1_000.0, 1_000.0).unwrap();
+    let projection = project_root(
+        &workspace,
+        ROOT,
+        bounds,
+        &leaf_constraints,
+        LayoutMetrics::new(0.0).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(leaf_constraints.len(), DEPTH + 1);
+    drop(leaf_constraints);
+    drop(workspace);
+
+    assert_eq!(projection.node_rects.len(), DEPTH * 2 + 1);
+    assert_eq!(projection.node_constraints.len(), DEPTH * 2 + 1);
+    assert_eq!(projection.splits.len(), DEPTH);
+    assert_eq!(projection.node_rects[&subtree], bounds);
+    assert_eq!(projection.node_constraints[&central], leaf);
+    for split in projection.splits.values() {
+        assert_eq!(split.child_minimum_extents.len(), 2);
+        assert_eq!(split.child_maximum_extents.len(), 2);
+        assert_eq!(split.child_extents.len(), 2);
+        assert_eq!(split.splitter_rects.len(), 1);
+    }
+    drop(projection);
 }
 
 #[test]
@@ -115,7 +309,7 @@ fn cached_topology_reuses_structure_with_current_metrics_and_answers() {
     assert!(Arc::ptr_eq(&first.topology, &second.topology));
     let bounds = LogicalRect::new(0.0, 0.0, 257.0, 39.0).unwrap();
     assert_eq!(
-        second.project(bounds, &[]),
+        reference::capture_result(&second.project(bounds, &[])),
         reference::project(
             &workspace,
             ROOT,
@@ -145,15 +339,19 @@ fn refreshed_index_reuses_layout_without_reusing_semantic_authority() {
     let old_target = index
         .capture_tab_target(&workspace, version, ROOT, leaves[0])
         .unwrap();
-    let mut changed = workspace.clone();
-    let Node::Tabs { items, selected } = changed.nodes.get_mut(leaves[0]).unwrap() else {
+    let mut draft = workspace.clone().into_builder();
+    let mut tabs = workspace.node(leaves[0]).unwrap().clone();
+    let Node::Tabs { items, selected } = &mut tabs else {
         unreachable!()
     };
     let item = crate::ids::ItemId::new(1_000_000);
     items.push(item);
     *selected = Some(item);
-    changed.tab_mru.get_mut(&leaves[0]).unwrap().insert(0, item);
-    changed.validate().unwrap();
+    draft.replace_node(leaves[0], tabs).unwrap();
+    let mut mru = workspace.tab_mru(leaves[0]).unwrap().to_vec();
+    mru.insert(0, item);
+    draft.set_tab_mru(leaves[0], mru).unwrap();
+    let changed = draft.build().unwrap();
     let refreshed = WorkspaceIndex::build_reusing_layout(&changed, next_version, &index).unwrap();
     assert_eq!(
         refreshed,
@@ -184,7 +382,7 @@ fn refreshed_index_reuses_layout_without_reusing_semantic_authority() {
     assert!(Arc::ptr_eq(&first.topology, &second.topology));
     let bounds = LogicalRect::new(0.0, 0.0, 350.0, 240.0).unwrap();
     assert_eq!(
-        second.project(bounds, &[]),
+        reference::capture_result(&second.project(bounds, &[])),
         reference::project(
             &changed,
             ROOT,
@@ -201,12 +399,15 @@ fn refreshed_index_filters_a_hint_compiled_after_a_same_version_edit() {
     let (workspace, leaves) = fixture(&mut 37, true);
     let version = WorkspaceVersion::initial();
     let index = WorkspaceIndex::build(&workspace, version).unwrap();
-    let mut changed = workspace.clone();
     let root = workspace.root(ROOT).unwrap().node;
-    let Node::Split { children, .. } = changed.nodes.get_mut(root).unwrap() else {
+    let mut changed_root = workspace.node(root).unwrap().clone();
+    let Node::Split { children, .. } = &mut changed_root else {
         unreachable!()
     };
     children.swap(0, 1);
+    let mut draft = workspace.clone().into_builder();
+    draft.replace_node(root, changed_root).unwrap();
+    let changed = draft.build().unwrap();
     let minimums = leaves
         .iter()
         .map(|&id| (id, LogicalSize::new(4.0, 3.0).unwrap()))
@@ -229,7 +430,7 @@ fn refreshed_index_filters_a_hint_compiled_after_a_same_version_edit() {
     assert!(!Arc::ptr_eq(&stale.topology, &current.topology));
     let bounds = LogicalRect::new(0.0, 0.0, 350.0, 240.0).unwrap();
     assert_eq!(
-        current.project(bounds, &[]),
+        reference::capture_result(&current.project(bounds, &[])),
         reference::project(
             &workspace,
             ROOT,
@@ -255,34 +456,38 @@ fn same_version_topology_edits_miss_without_replacing_the_original_hint() {
         measure_root_minimums_with_index(&workspace, ROOT, &minimums, metrics, &index, version)
             .unwrap();
     let root_node = workspace.root(ROOT).unwrap().node;
-    for edit in 0..5 {
-        let mut changed = workspace.clone();
+    for edit in [0, 1, 2, 4] {
+        let mut changed = workspace.clone().into_builder();
         match edit {
             0 => {
-                let Node::Split { axis, .. } = changed.nodes.get_mut(root_node).unwrap() else {
+                let Node::Split { axis, .. } =
+                    changed.draft_mut().nodes.get_mut(root_node).unwrap()
+                else {
                     unreachable!()
                 };
                 *axis = Axis::Vertical;
             }
             1 => {
-                let Node::Split { weights, .. } = changed.nodes.get_mut(root_node).unwrap() else {
+                let Node::Split { weights, .. } =
+                    changed.draft_mut().nodes.get_mut(root_node).unwrap()
+                else {
                     unreachable!()
                 };
                 *weights = SplitWeight::normalize(std::iter::repeat_n(1.0, weights.len())).unwrap();
             }
             2 => {
-                changed.roots.get_mut(&ROOT).unwrap().central = Some(leaves[0]);
-            }
-            3 => {
-                changed.nodes.remove(leaves[0]);
+                changed.draft_mut().roots.get_mut(&ROOT).unwrap().central = Some(leaves[0]);
             }
             _ => {
-                let Node::Split { children, .. } = changed.nodes.get_mut(root_node).unwrap() else {
+                let Node::Split { children, .. } =
+                    changed.draft_mut().nodes.get_mut(root_node).unwrap()
+                else {
                     unreachable!()
                 };
                 children.swap(0, 1);
             }
         }
+        let changed = changed.build().unwrap();
         let bounds = LogicalRect::new(0.0, 0.0, 400.0, 300.0).unwrap();
         let expected = reference::project(
             &changed,
@@ -298,38 +503,34 @@ fn same_version_topology_edits_miss_without_replacing_the_original_hint() {
             assert!(!Arc::ptr_eq(&first.topology, &measured.topology));
         }
         assert_eq!(
-            actual.and_then(|measured| measured.project(bounds, &[])),
+            reference::capture_result(&actual.and_then(|measured| measured.project(bounds, &[]))),
             expected
         );
         let refreshed = WorkspaceIndex::build_reusing_layout(&changed, version, &index);
-        if edit == 3 {
-            assert!(
-                matches!(refreshed, Err(crate::error::CommandError::MissingNode { node, .. }) if node == leaves[0])
-            );
-        } else {
-            let refreshed = refreshed.expect("a live structural edit must build a fresh index");
-            assert!(
-                refreshed
-                    .layout_topology_slot(ROOT, version)
-                    .unwrap()
-                    .get()
-                    .is_none()
-            );
-            assert_eq!(
-                measure_root_minimums_with_index(
+        let refreshed = refreshed.expect("a live structural edit must build a fresh index");
+        assert!(
+            refreshed
+                .layout_topology_slot(ROOT, version)
+                .unwrap()
+                .get()
+                .is_none()
+        );
+        assert_eq!(
+            reference::capture_result(
+                &measure_root_minimums_with_index(
                     &changed, ROOT, &minimums, metrics, &refreshed, version
                 )
-                .and_then(|measured| measured.project(bounds, &[])),
-                reference::project(
-                    &changed,
-                    ROOT,
-                    bounds,
-                    LeafMeasurements::Minimums(&minimums),
-                    metrics,
-                    &[]
-                )
-            );
-        }
+                .and_then(|measured| measured.project(bounds, &[]))
+            ),
+            reference::project(
+                &changed,
+                ROOT,
+                bounds,
+                LeafMeasurements::Minimums(&minimums),
+                metrics,
+                &[]
+            )
+        );
         assert!(Arc::ptr_eq(
             index
                 .layout_topology_slot(ROOT, version)
@@ -372,7 +573,7 @@ fn minimum_measurement_errors_precede_override_validation_for_cold_and_warm_topo
             version,
         )
         .and_then(|measured| measured.project_with_index(bounds, &overrides, &index, version));
-        assert_eq!(actual, expected);
+        assert_eq!(reference::capture_result(&actual), expected);
         assert_eq!(
             reference::project(
                 &workspace,
@@ -401,7 +602,7 @@ fn minimum_measurement_errors_precede_override_validation_for_cold_and_warm_topo
             metrics,
             &overrides
         ),
-        public
+        reference::capture_result(&public)
     );
 }
 
@@ -426,8 +627,9 @@ fn completed_subtree_reuse_keeps_active_cycle_and_leaf_error_order() {
     .unwrap();
 
     for cycle in [false, true] {
-        let mut changed = workspace.clone();
-        let Node::Split { children, .. } = changed.nodes.get_mut(second).unwrap() else {
+        let mut changed = workspace.clone().into_builder();
+        let Node::Split { children, .. } = changed.draft_mut().nodes.get_mut(second).unwrap()
+        else {
             unreachable!()
         };
         // The first subtree is complete before this second edge reaches it.
@@ -442,16 +644,21 @@ fn completed_subtree_reuse_keeps_active_cycle_and_leaf_error_order() {
                 .filter(|&node| !omit_first || node != leaves[0])
                 .map(|node| (node, leaf))
                 .collect();
-            let actual = project_root(&changed, ROOT, bounds, &constraints, metrics);
+            let actual = project_draft(
+                &changed,
+                ROOT,
+                bounds,
+                LeafMeasurements::Constraints(&constraints),
+                metrics,
+            );
             assert_eq!(
-                actual,
-                reference::project(
+                reference::capture_result(&actual),
+                reference::project_draft(
                     &changed,
                     ROOT,
                     bounds,
                     LeafMeasurements::Constraints(&constraints),
                     metrics,
-                    &[]
                 )
             );
             if omit_first {
@@ -470,9 +677,10 @@ fn completed_subtree_reuse_keeps_active_cycle_and_leaf_error_order() {
 
 #[test]
 fn malformed_topology_keeps_depth_first_measurement_error_priority() {
-    let (mut workspace, leaves) = fixture(&mut 7, false);
+    let (workspace, leaves) = fixture(&mut 7, false);
     let root_node = workspace.root(ROOT).unwrap().node;
-    let Node::Split { children, .. } = workspace.nodes.get_mut(root_node).unwrap() else {
+    let mut draft = workspace.into_builder();
+    let Node::Split { children, .. } = draft.draft_mut().nodes.get_mut(root_node).unwrap() else {
         unreachable!()
     };
     *children.last_mut().unwrap() = root_node;
@@ -486,16 +694,63 @@ fn malformed_topology_keeps_depth_first_measurement_error_priority() {
             .map(|id| (id, LogicalSize::new(0.0, 0.0).unwrap()))
             .collect::<BTreeMap<_, _>>();
         assert_eq!(
-            measure_root_minimums(&workspace, ROOT, &minimums, metrics)
-                .and_then(|measured| measured.project(bounds, &[])),
-            reference::project(
-                &workspace,
+            reference::capture_result(&project_draft(
+                &draft,
+                ROOT,
+                bounds,
+                LeafMeasurements::Minimums(&minimums),
+                metrics
+            )),
+            reference::project_draft(
+                &draft,
                 ROOT,
                 bounds,
                 LeafMeasurements::Minimums(&minimums),
                 metrics,
-                &[]
             )
+        );
+    }
+}
+
+#[test]
+fn raw_missing_node_keeps_depth_first_measurement_error_priority() {
+    let (workspace, leaves) = fixture(&mut 7, false);
+    let missing = *leaves.last().unwrap();
+    let mut draft = workspace.into_builder();
+    draft.draft_mut().remove_runtime_node(missing).unwrap();
+    let bounds = LogicalRect::new(0.0, 0.0, 512.0, 512.0).unwrap();
+    let metrics = LayoutMetrics::new(1.0).unwrap();
+    for omit_first in [true, false] {
+        let minimums = leaves
+            .iter()
+            .copied()
+            .filter(|&node| !omit_first || node != leaves[0])
+            .map(|node| (node, LogicalSize::new(0.0, 0.0).unwrap()))
+            .collect::<BTreeMap<_, _>>();
+        let actual = project_draft(
+            &draft,
+            ROOT,
+            bounds,
+            LeafMeasurements::Minimums(&minimums),
+            metrics,
+        );
+        assert_eq!(
+            reference::capture_result(&actual),
+            reference::project_draft(
+                &draft,
+                ROOT,
+                bounds,
+                LeafMeasurements::Minimums(&minimums),
+                metrics,
+            )
+        );
+        assert_eq!(
+            actual,
+            Err(if omit_first {
+                LayoutError::MissingLeafConstraints { node: leaves[0] }
+            } else {
+                LayoutError::MissingNode { node: missing }
+            })
         );
     }
 }

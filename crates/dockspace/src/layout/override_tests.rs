@@ -175,11 +175,14 @@ fn distinct_equal_fingerprints_remain_valid_and_stale_duplicates_fail_before_dup
         .workspace
         .capture_node_source(fixture.root, node)
         .unwrap();
-    if let Some(Node::Split { weights, .. }) = fixture.workspace.nodes.get_mut(node) {
-        *weights = SplitWeight::normalize([0.3, 0.7]).unwrap();
-    } else {
+    let mut changed = fixture.workspace.node(node).unwrap().clone();
+    let Node::Split { weights, .. } = &mut changed else {
         panic!("fixture source must remain a split");
-    }
+    };
+    *weights = SplitWeight::normalize([0.3, 0.7]).unwrap();
+    let mut draft = fixture.workspace.into_builder();
+    draft.replace_node(node, changed).unwrap();
+    fixture.workspace = draft.build().unwrap();
     let current = fixture
         .workspace
         .capture_node_source(fixture.root, node)

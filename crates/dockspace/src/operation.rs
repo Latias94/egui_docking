@@ -28,12 +28,10 @@ use crate::transaction::{PreparedTransaction, clone_workspace_draft};
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
 
-/// Immutable engine snapshot whose selection eligibility belongs to its owner.
-/// Raw drafts remain ineligible until a checked transaction normalizes them.
+/// Immutable carrier for a workspace issued by the graph owner.
 #[derive(Debug, Clone)]
 pub(crate) struct WorkspaceSnapshot {
     workspace: Arc<Workspace>,
-    selection_ready: bool,
 }
 
 impl WorkspaceSnapshot {
@@ -43,16 +41,11 @@ impl WorkspaceSnapshot {
         // Strict validation rejects every topology rewrite and vacant surface
         // that the general transaction would otherwise have to clean up.
         workspace.validate()?;
-        Ok(Self::from(CanonicalWorkspace(workspace)))
+        Ok(Self::from(workspace))
     }
 
     pub(crate) fn as_arc(&self) -> &Arc<Workspace> {
         &self.workspace
-    }
-
-    pub(crate) fn draft_mut(&mut self) -> &mut Workspace {
-        self.selection_ready = false;
-        Arc::make_mut(&mut self.workspace)
     }
 
     pub(crate) fn into_workspace(self) -> Workspace {
@@ -64,10 +57,7 @@ impl WorkspaceSnapshot {
         policy: &DockPolicySnapshot,
         command: &WorkspaceCommand,
     ) -> Result<CommandOutcome, TransactionError> {
-        let outcome = apply_owned_draft_command(self.draft_mut(), policy, command)?;
-        // The general follow-up has re-established the complete postcondition.
-        self.selection_ready = true;
-        Ok(outcome)
+        apply_owned_draft_command(Arc::make_mut(&mut self.workspace), policy, command)
     }
 
     pub(crate) fn prepare_transaction(
@@ -75,24 +65,6 @@ impl WorkspaceSnapshot {
         policy: &DockPolicySnapshot,
         commands: &[WorkspaceCommand],
     ) -> Result<PreparedTransaction, TransactionError> {
-        if self.selection_ready
-            && let [WorkspaceCommand::Select { source }] = commands
-        {
-            #[cfg(test)]
-            crate::drop_resolver::structural_work::record_transaction_prepare(commands.len());
-            let mut candidate = clone_workspace_draft(self);
-            authorize_workspace_command(&candidate, policy, &commands[0])
-                .map_err(|source| TransactionError::Command { index: 0, source })?;
-            let applied = select(&mut candidate, source)
-                .map_err(|source| TransactionError::Command { index: 0, source })?;
-            // Select changes only the selected item and its exact MRU
-            // permutation. It preserves canonical topology, presentation
-            // ownership and the complete item multiset of this snapshot.
-            return Ok(PreparedTransaction {
-                candidate: CanonicalWorkspace(candidate),
-                outcomes: vec![applied.outcome],
-            });
-        }
         prepare_transaction(self, policy, commands)
     }
 }
@@ -113,7 +85,6 @@ impl AsRef<Workspace> for WorkspaceSnapshot {
 
 impl PartialEq for WorkspaceSnapshot {
     fn eq(&self, other: &Self) -> bool {
-        // Eligibility controls preparation cost, not workspace semantics.
         self.workspace == other.workspace
     }
 }
@@ -122,35 +93,7 @@ impl From<Workspace> for WorkspaceSnapshot {
     fn from(workspace: Workspace) -> Self {
         Self {
             workspace: Arc::new(workspace),
-            selection_ready: false,
         }
-    }
-}
-
-impl From<CanonicalWorkspace> for WorkspaceSnapshot {
-    fn from(workspace: CanonicalWorkspace) -> Self {
-        Self {
-            workspace: Arc::new(workspace.0),
-            selection_ready: true,
-        }
-    }
-}
-
-/// Owned result issued only after full normalization or a preserving edit.
-#[derive(Debug)]
-pub(crate) struct CanonicalWorkspace(Workspace);
-
-impl CanonicalWorkspace {
-    pub(crate) fn into_workspace(self) -> Workspace {
-        self.0
-    }
-}
-
-impl Deref for CanonicalWorkspace {
-    type Target = Workspace;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 
@@ -649,6 +592,76 @@ fn prepare_transaction_inner(
     #[cfg(test)]
     crate::drop_resolver::structural_work::record_transaction_prepare(commands.len());
     let mut candidate = clone_workspace_draft(workspace);
+    if let [command @ WorkspaceCommand::Select { source }] = commands
+        && let TransactionAuthority::Policy(policy) = authority
+    {
+        authorize_workspace_command(&candidate, policy, command)
+            .map_err(|source| TransactionError::Command { index: 0, source })?;
+        let applied = select(&mut candidate, source)
+            .map_err(|source| TransactionError::Command { index: 0, source })?;
+        // Selected and its exact MRU permutation preserve all other invariants.
+        return Ok(PreparedTransaction {
+            candidate,
+            outcomes: vec![applied.outcome],
+        });
+    }
+    if let [
+        command @ WorkspaceCommand::Move {
+            payload: MovePayload::Item(source),
+            target,
+        },
+    ] = commands
+        && matches!(authority, TransactionAuthority::Policy(_))
+    {
+        // Only removing a singleton, unprotected root can vacate its surface.
+        let retires_root = workspace.root(source.root()).is_some_and(|record| {
+            record.node == source.tabs() && record.central.is_none()
+                && matches!(workspace.node(source.tabs()), Some(Node::Tabs { items, .. }) if items.len() == 1)
+        });
+        let source_surface = if retires_root {
+            workspace
+                .presentation_for_root(source.root())
+                .map(|owner| match owner {
+                    RootPresentationOwner::Main { surface }
+                    | RootPresentationOwner::Contained { surface, .. } => surface,
+                })
+        } else {
+            None
+        };
+        let (mut applied, inserted_split) = apply_command(&mut candidate, authority, command)
+            .map_err(|source| TransactionError::Command { index: 0, source })?;
+        if let Some(surface) = source_surface {
+            prune_vacant_surface(&mut candidate, surface);
+        }
+        // A checked Item move transfers one existing item. Repair its source
+        // path and any outer wrapper without revalidating unrelated roots.
+        super::canonical::finish_item_move(
+            &mut candidate,
+            source.root(),
+            source.tabs(),
+            match target {
+                DockTarget::OuterEdge(edge) => Some(edge.root()),
+                _ => None,
+            },
+            inserted_split,
+        )?;
+        if let CommandOutcome::Moved { changed, .. } = &mut applied.outcome {
+            *changed = candidate != *workspace;
+        }
+        return Ok(PreparedTransaction {
+            candidate,
+            outcomes: vec![applied.outcome],
+        });
+    }
+    prepare_general_candidate(workspace, authority, commands, candidate)
+}
+
+fn prepare_general_candidate(
+    workspace: &Workspace,
+    authority: TransactionAuthority<'_>,
+    commands: &[WorkspaceCommand],
+    mut candidate: Workspace,
+) -> Result<PreparedTransaction, TransactionError> {
     // Typed command deltas own the staged item roster. Reconcile the graph once,
     // after canonicalization, so multi-command transactions stay linear in items.
     let mut item_ledger = workspace.item_multiset();
@@ -657,7 +670,7 @@ fn prepare_transaction_inner(
     for (index, command) in commands.iter().enumerate() {
         validate_declared_open_item(&item_ledger, command)
             .map_err(|source| TransactionError::Command { index, source })?;
-        let applied = apply_command(&mut candidate, authority, command)
+        let (applied, _) = apply_command(&mut candidate, authority, command)
             .map_err(|source| TransactionError::Command { index, source })?;
         apply_item_delta(&mut item_ledger, applied.delta)
             .map_err(|source| TransactionError::Command { index, source })?;
@@ -680,7 +693,7 @@ fn prepare_transaction_inner(
     }
 
     Ok(PreparedTransaction {
-        candidate: CanonicalWorkspace(candidate),
+        candidate,
         outcomes,
     })
 }
@@ -688,6 +701,19 @@ fn prepare_transaction_inner(
 /// Applies a follow-up command to an already discardable transaction draft.
 /// A failure invalidates that whole draft; the caller must not publish it.
 pub(crate) fn apply_owned_draft_command(
+    workspace: &mut Workspace,
+    policy: &DockPolicySnapshot,
+    command: &WorkspaceCommand,
+) -> Result<CommandOutcome, TransactionError> {
+    // This candidate is already discardable. Keep only a valid empty value
+    // observable if its owned follow-up fails and is abandoned by the caller.
+    let mut candidate = std::mem::take(workspace);
+    let outcome = apply_owned_draft_inner(&mut candidate, policy, command)?;
+    *workspace = candidate;
+    Ok(outcome)
+}
+
+fn apply_owned_draft_inner(
     draft: &mut Workspace,
     policy: &DockPolicySnapshot,
     command: &WorkspaceCommand,
@@ -695,7 +721,7 @@ pub(crate) fn apply_owned_draft_command(
     let mut expected = draft.item_multiset();
     validate_declared_open_item(&expected, command)
         .map_err(|source| TransactionError::Command { index: 0, source })?;
-    let applied = apply_command(draft, TransactionAuthority::Policy(policy), command)
+    let (applied, _) = apply_command(draft, TransactionAuthority::Policy(policy), command)
         .map_err(|source| TransactionError::Command { index: 0, source })?;
     apply_item_delta(&mut expected, applied.delta)
         .map_err(|source| TransactionError::Command { index: 0, source })?;
@@ -1251,6 +1277,7 @@ fn root_payload_policy_facts(
     undocks_source: bool,
 ) -> Result<DockPayloadPolicyFacts, CommandError> {
     let record = workspace
+        .storage
         .roots
         .get(&root)
         .ok_or(CommandError::MissingRoot { root })?;
@@ -1296,10 +1323,9 @@ fn move_undocks_source(workspace: &Workspace, payload: &MovePayload, target: &Do
                     return true;
                 }
                 !matches!(
-                    workspace.nodes.get(source.tabs()),
+                    workspace.storage.nodes.get(source.tabs()),
                     Some(Node::Tabs { items, .. }) if items.len() == 1
-                        && workspace
-                            .roots
+                        && workspace.storage.roots
                             .get(&source.root())
                             .is_some_and(|root| root.central != Some(source.tabs()))
                 )
@@ -1324,7 +1350,10 @@ fn validate_move_target_semantics(
         if workspace.subtree_contains(source_node, target_node) {
             if source_node == target_node
                 && target_is_tabs(target)
-                && matches!(workspace.nodes.get(source_node), Some(Node::Tabs { .. }))
+                && matches!(
+                    workspace.storage.nodes.get(source_node),
+                    Some(Node::Tabs { .. })
+                )
             {
                 return Ok(());
             }
@@ -1334,13 +1363,17 @@ fn validate_move_target_semantics(
             });
         }
         if target_is_tabs(target)
-            && !matches!(workspace.nodes.get(source_node), Some(Node::Tabs { .. }))
+            && !matches!(
+                workspace.storage.nodes.get(source_node),
+                Some(Node::Tabs { .. })
+            )
         {
             return Err(CommandError::SplitPayloadIntoTabs { node: source_node });
         }
 
         let source_root = payload_root(payload);
         let source_record = workspace
+            .storage
             .roots
             .get(&source_root)
             .ok_or(CommandError::MissingRoot { root: source_root })?;
@@ -1371,7 +1404,7 @@ fn validate_edge_insertion_weight(
     let fraction = target.fraction().get();
     let branch = workspace
         .parent_link(target.root(), target.node())
-        .and_then(|parent| match workspace.nodes.get(parent.parent) {
+        .and_then(|parent| match workspace.storage.nodes.get(parent.parent) {
             Some(Node::Split {
                 axis: parent_axis,
                 weights,
@@ -1422,7 +1455,7 @@ fn apply_command(
     workspace: &mut Workspace,
     authority: TransactionAuthority<'_>,
     command: &WorkspaceCommand,
-) -> Result<AppliedCommand, CommandError> {
+) -> Result<(AppliedCommand, Option<NodeId>), CommandError> {
     if let TransactionAuthority::Policy(policy) = authority {
         if matches!(command, WorkspaceCommand::Move { .. }) {
             policy.check_arrangement_unlocked()?;
@@ -1430,7 +1463,7 @@ fn apply_command(
             authorize_workspace_command(workspace, policy, command)?;
         }
     }
-    match command {
+    let applied = match command {
         WorkspaceCommand::Select { source } => select(workspace, source),
         WorkspaceCommand::Reorder {
             source,
@@ -1442,7 +1475,7 @@ fn apply_command(
                 TransactionAuthority::Policy(policy) => Some(policy),
                 TransactionAuthority::SurfaceRecovery => None,
             };
-            move_payload(workspace, policy, payload, target)
+            return move_payload(workspace, policy, payload, target);
         }
         WorkspaceCommand::ResizeSplits { splits } => resize_splits(workspace, splits),
         WorkspaceCommand::AttachEmptySurface { surface, root } => {
@@ -1506,7 +1539,8 @@ fn apply_command(
             expected_roster,
         } => raise_contained(workspace, source, *floating, expected_roster),
         WorkspaceCommand::RemoveEmptyRoot { source } => remove_empty_root(workspace, source),
-    }
+    };
+    applied.map(|applied| (applied, None))
 }
 
 fn select(workspace: &mut Workspace, source: &ItemSource) -> Result<AppliedCommand, CommandError> {
@@ -1514,6 +1548,7 @@ fn select(workspace: &mut Workspace, source: &ItemSource) -> Result<AppliedComma
     let tabs = source.tabs();
     let item = source.item();
     let node = workspace
+        .storage
         .nodes
         .get_mut(tabs)
         .ok_or(CommandError::MissingNode {
@@ -1568,7 +1603,7 @@ fn open(
         source_root: root,
         item,
     };
-    insert_payload(workspace, payload, target)?;
+    let _ = insert_payload(workspace, payload, target)?;
     Ok(AppliedCommand {
         outcome: CommandOutcome::Opened { item, root },
         delta: ItemDelta::Open(item),
@@ -1580,7 +1615,7 @@ fn move_payload(
     policy: Option<&DockPolicySnapshot>,
     payload: &MovePayload,
     target: &DockTarget,
-) -> Result<AppliedCommand, CommandError> {
+) -> Result<(AppliedCommand, Option<NodeId>), CommandError> {
     // This private owner checks and executes the exact command against its
     // exclusive candidate. No checked token or index can cross a mutation.
     check_move(workspace, policy, payload, target)?;
@@ -1588,30 +1623,36 @@ fn move_payload(
     if let MovePayload::Item(source) = payload
         && let Some(changed) = move_item_within_same_tabs(workspace, source, target)?
     {
-        return Ok(AppliedCommand {
-            outcome: CommandOutcome::Moved {
-                items: vec![source.item()],
-                source_root: source.root(),
-                target_root: target_root(target),
-                changed,
+        return Ok((
+            AppliedCommand {
+                outcome: CommandOutcome::Moved {
+                    items: vec![source.item()],
+                    source_root: source.root(),
+                    target_root: target_root(target),
+                    changed,
+                },
+                delta: ItemDelta::None,
             },
-            delta: ItemDelta::None,
-        });
+            None,
+        ));
     }
 
     if let Some(source_node) = payload_node(payload)
         && source_node == target_node(target)
         && target_is_tabs(target)
     {
-        return Ok(AppliedCommand {
-            outcome: CommandOutcome::Moved {
-                items: workspace.collect_items_in_subtree(source_node),
-                source_root: payload_root(payload),
-                target_root: target_root(target),
-                changed: false,
+        return Ok((
+            AppliedCommand {
+                outcome: CommandOutcome::Moved {
+                    items: workspace.collect_items_in_subtree(source_node),
+                    source_root: payload_root(payload),
+                    target_root: target_root(target),
+                    changed: false,
+                },
+                delta: ItemDelta::None,
             },
-            delta: ItemDelta::None,
-        });
+            None,
+        ));
     }
 
     let exact_noop_source = match (payload, target) {
@@ -1622,31 +1663,37 @@ fn move_payload(
         _ => None,
     };
     if let Some(source) = exact_noop_source {
-        return Ok(AppliedCommand {
-            outcome: CommandOutcome::Moved {
-                items: workspace.collect_items_in_subtree(source.node()),
-                source_root: source.root(),
-                target_root: target_root(target),
-                changed: false,
+        return Ok((
+            AppliedCommand {
+                outcome: CommandOutcome::Moved {
+                    items: workspace.collect_items_in_subtree(source.node()),
+                    source_root: source.root(),
+                    target_root: target_root(target),
+                    changed: false,
+                },
+                delta: ItemDelta::None,
             },
-            delta: ItemDelta::None,
-        });
+            None,
+        ));
     }
 
     let detached = detach_payload(workspace, payload)?;
     let source_root = detached.source_root();
     let items = detached.items();
     let target_root = target_root(target);
-    insert_payload(workspace, detached, target)?;
-    Ok(AppliedCommand {
-        outcome: CommandOutcome::Moved {
-            items,
-            source_root,
-            target_root,
-            changed: true,
+    let inserted_split = insert_payload(workspace, detached, target)?;
+    Ok((
+        AppliedCommand {
+            outcome: CommandOutcome::Moved {
+                items,
+                source_root,
+                target_root,
+                changed: true,
+            },
+            delta: ItemDelta::None,
         },
-        delta: ItemDelta::None,
-    })
+        inserted_split,
+    ))
 }
 
 fn node_move_is_exact_inner_edge_noop(
@@ -1657,7 +1704,7 @@ fn node_move_is_exact_inner_edge_noop(
     if source.root() != target.root() {
         return false;
     }
-    let Some(root) = workspace.roots.get(&source.root()) else {
+    let Some(root) = workspace.storage.roots.get(&source.root()) else {
         return false;
     };
     if root
@@ -1679,7 +1726,7 @@ fn node_move_is_exact_inner_edge_noop(
         axis,
         children,
         weights,
-    }) = workspace.nodes.get(source_parent.parent)
+    }) = workspace.storage.nodes.get(source_parent.parent)
     else {
         return false;
     };
@@ -1727,7 +1774,7 @@ pub(crate) fn validate_split_resizes(
     let validated = validate_split_resizes_structure(workspace, splits)?;
     for resize in splits {
         let split = resize.split();
-        let axis = match workspace.nodes.get(split.node()) {
+        let axis = match workspace.storage.nodes.get(split.node()) {
             Some(Node::Split { axis, .. }) => *axis,
             _ => {
                 return Err(CommandError::Invariant {
@@ -1765,7 +1812,7 @@ fn validate_split_resizes_structure(
         let split = resize.split();
         let weights = resize.weights();
         if let Some((expected, members)) = roots.get(&split.root()) {
-            if !workspace.nodes.contains_key(split.node()) {
+            if !workspace.storage.nodes.contains_key(split.node()) {
                 return Err(CommandError::MissingNode {
                     role: ReferenceRole::Source,
                     node: split.node(),
@@ -1807,6 +1854,7 @@ fn validate_split_resizes_structure(
             return Err(CommandError::DuplicateSplitResize { split: node_id });
         }
         let node = workspace
+            .storage
             .nodes
             .get(node_id)
             .ok_or(CommandError::MissingNode {
@@ -1846,7 +1894,7 @@ fn resize_splits(
 ) -> Result<AppliedCommand, CommandError> {
     let validated = validate_split_resizes_structure(workspace, splits)?;
     for resize in splits {
-        let current = match workspace.nodes.get_mut(resize.split().node()) {
+        let current = match workspace.storage.nodes.get_mut(resize.split().node()) {
             Some(Node::Split { weights, .. }) => weights,
             _ => {
                 return Err(CommandError::Invariant {
@@ -1871,14 +1919,16 @@ fn attach_empty_surface(
     root: RootId,
 ) -> Result<AppliedCommand, CommandError> {
     ensure_root_ids_available(workspace, root)?;
-    if workspace.surfaces.contains_key(&surface) {
+    if workspace.storage.surfaces.contains_key(&surface) {
         return Err(CommandError::SurfaceIdCollision { surface });
     }
     let central = workspace.insert_runtime_node(Node::tabs([]));
     workspace
+        .storage
         .roots
         .insert(root, RootRecord::new(central).with_central(central));
     workspace
+        .storage
         .surfaces
         .insert(surface, SurfacePresentation::with_main(root));
     Ok(AppliedCommand {
@@ -1892,24 +1942,24 @@ fn retire_empty_surface(
     surface: SurfaceId,
 ) -> Result<AppliedCommand, CommandError> {
     let presentation = workspace
+        .storage
         .surfaces
         .get(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
     let mut roots = Vec::with_capacity(presentation.contained.len().saturating_add(1));
     roots.extend(presentation.main_root);
     for floating in &presentation.contained {
-        let record =
-            workspace
-                .contained_floatings
-                .get(floating)
-                .ok_or(CommandError::MissingFloating {
-                    floating: *floating,
-                })?;
+        let record = workspace.storage.contained_floatings.get(floating).ok_or(
+            CommandError::MissingFloating {
+                floating: *floating,
+            },
+        )?;
         roots.push(record.root);
     }
     let mut items = 0;
     for root in &roots {
         let record = workspace
+            .storage
             .roots
             .get(root)
             .ok_or(CommandError::MissingRoot { root: *root })?;
@@ -1922,7 +1972,7 @@ fn retire_empty_surface(
         let record = remove_root_and_presentation(workspace, root)?;
         remove_subtree_nodes(workspace, record.node)?;
     }
-    workspace.surfaces.remove(&surface);
+    workspace.storage.surfaces.remove(&surface);
     Ok(AppliedCommand {
         outcome: CommandOutcome::EmptySurfaceRetired { surface },
         delta: ItemDelta::None,
@@ -1936,13 +1986,17 @@ fn create_surface_root(
     content: &RootContent,
 ) -> Result<AppliedCommand, CommandError> {
     ensure_root_ids_available(workspace, root)?;
-    if workspace.surfaces.contains_key(&surface) {
+    if workspace.storage.surfaces.contains_key(&surface) {
         return Err(CommandError::SurfaceIdCollision { surface });
     }
     validate_root_content(workspace, content)?;
     let (node, central, items, delta) = detach_root_content(workspace, content)?;
-    workspace.roots.insert(root, RootRecord { node, central });
     workspace
+        .storage
+        .roots
+        .insert(root, RootRecord { node, central });
+    workspace
+        .storage
         .surfaces
         .insert(surface, SurfacePresentation::with_main(root));
     Ok(AppliedCommand {
@@ -1966,24 +2020,33 @@ fn create_contained_root(
     content: &RootContent,
 ) -> Result<AppliedCommand, CommandError> {
     ensure_root_ids_available(workspace, root)?;
-    if workspace.contained_floatings.contains_key(&floating) {
+    if workspace
+        .storage
+        .contained_floatings
+        .contains_key(&floating)
+    {
         return Err(CommandError::FloatingIdCollision { floating });
     }
-    if !workspace.surfaces.contains_key(&surface) {
+    if !workspace.storage.surfaces.contains_key(&surface) {
         return Err(CommandError::MissingSurface { surface });
     }
     contained_insertion_index(workspace, surface, floating, position)?;
     validate_root_content(workspace, content)?;
     let (node, central, items, delta) = detach_root_content(workspace, content)?;
-    if !workspace.surfaces.contains_key(&surface) {
+    if !workspace.storage.surfaces.contains_key(&surface) {
         return Err(CommandError::MissingSurface { surface });
     }
     let insertion_index = contained_insertion_index(workspace, surface, floating, position)?;
-    workspace.roots.insert(root, RootRecord { node, central });
     workspace
+        .storage
+        .roots
+        .insert(root, RootRecord { node, central });
+    workspace
+        .storage
         .contained_floatings
         .insert(floating, ContainedFloating::new(root, rect));
     let presentation = workspace
+        .storage
         .surfaces
         .get_mut(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -2015,6 +2078,7 @@ fn install_main_root(
     validate_root_content(workspace, content)?;
     let (node, central, items, delta) = detach_root_content(workspace, content)?;
     let presentation = workspace
+        .storage
         .surfaces
         .get_mut(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -2024,7 +2088,10 @@ fn install_main_root(
             root: existing,
         });
     }
-    workspace.roots.insert(root, RootRecord { node, central });
+    workspace
+        .storage
+        .roots
+        .insert(root, RootRecord { node, central });
     presentation.main_root = Some(root);
     Ok(AppliedCommand {
         outcome: CommandOutcome::MainRootInstalled {
@@ -2044,6 +2111,7 @@ fn rehome_root(
     validate_node_source(workspace, source)?;
     let root = source.root();
     let root_node = workspace
+        .storage
         .roots
         .get(&root)
         .ok_or(CommandError::MissingRoot { root })?
@@ -2092,11 +2160,12 @@ fn rehome_root_to_new_surface(
     current: RootPresentationOwner,
     surface: SurfaceId,
 ) -> Result<AppliedCommand, CommandError> {
-    if workspace.surfaces.contains_key(&surface) {
+    if workspace.storage.surfaces.contains_key(&surface) {
         return Err(CommandError::SurfaceIdCollision { surface });
     }
     detach_root_presentation(workspace, root, current)?;
     workspace
+        .storage
         .surfaces
         .insert(surface, SurfacePresentation::with_main(root));
     Ok(rehome_outcome(root, surface, None, true))
@@ -2122,6 +2191,7 @@ fn rehome_root_to_main(
     }
     detach_root_presentation(workspace, root, current)?;
     let presentation = workspace
+        .storage
         .surfaces
         .get_mut(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -2155,7 +2225,7 @@ fn rehome_root_to_contained(
         rect,
         position,
     } = target;
-    if !workspace.surfaces.contains_key(&surface) {
+    if !workspace.storage.surfaces.contains_key(&surface) {
         return Err(CommandError::MissingSurface { surface });
     }
     if let RootPresentationOwner::Contained {
@@ -2173,20 +2243,26 @@ fn rehome_root_to_contained(
         if current_surface == surface {
             return Err(CommandError::RehomeMetadataRequiresDedicatedCommand { floating });
         }
-    } else if workspace.contained_floatings.contains_key(&floating) {
+    } else if workspace
+        .storage
+        .contained_floatings
+        .contains_key(&floating)
+    {
         return Err(CommandError::FloatingIdCollision { floating });
     }
 
     contained_insertion_index(workspace, surface, floating, position)?;
     detach_root_presentation(workspace, root, current)?;
-    if !workspace.surfaces.contains_key(&surface) {
+    if !workspace.storage.surfaces.contains_key(&surface) {
         return Err(CommandError::MissingSurface { surface });
     }
     let insertion_index = contained_insertion_index(workspace, surface, floating, position)?;
     workspace
+        .storage
         .contained_floatings
         .insert(floating, ContainedFloating::new(root, rect));
     let presentation = workspace
+        .storage
         .surfaces
         .get_mut(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -2218,6 +2294,7 @@ fn promote_contained(
 
     detach_root_presentation(workspace, root, current)?;
     let presentation = workspace
+        .storage
         .surfaces
         .get_mut(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -2265,6 +2342,7 @@ fn update_contained_rect(
 ) -> Result<AppliedCommand, CommandError> {
     validate_contained(workspace, surface, root, floating)?;
     let record = workspace
+        .storage
         .contained_floatings
         .get_mut(&floating)
         .ok_or(CommandError::MissingFloating { floating })?;
@@ -2306,6 +2384,7 @@ fn update_contained_presentation(
     validate_contained(workspace, surface, root, floating)?;
 
     let record = workspace
+        .storage
         .contained_floatings
         .get(&floating)
         .ok_or(CommandError::MissingFloating { floating })?;
@@ -2318,6 +2397,7 @@ fn update_contained_presentation(
     }
 
     let presentation = workspace
+        .storage
         .surfaces
         .get(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -2339,6 +2419,7 @@ fn update_contained_presentation(
 
     if rect_changed {
         workspace
+            .storage
             .contained_floatings
             .get_mut(&floating)
             .ok_or(CommandError::MissingFloating { floating })?
@@ -2346,6 +2427,7 @@ fn update_contained_presentation(
     }
     if order_changed {
         let presentation = workspace
+            .storage
             .surfaces
             .get_mut(&surface)
             .ok_or(CommandError::MissingSurface { surface })?;
@@ -2400,6 +2482,7 @@ fn raise_contained(
     }
     validate_contained(workspace, surface, root, floating)?;
     let presentation = workspace
+        .storage
         .surfaces
         .get_mut(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -2564,7 +2647,7 @@ fn validate_item_source_with(
         source.fingerprint(),
         ReferenceRole::Source,
     )?;
-    match workspace.nodes.get(source.tabs()) {
+    match workspace.storage.nodes.get(source.tabs()) {
         Some(Node::Tabs { items, .. }) if items.contains(&source.item()) => Ok(()),
         Some(Node::Tabs { .. }) => Err(CommandError::ItemNotInTabs {
             tabs: source.tabs(),
@@ -2605,6 +2688,7 @@ fn validate_root_source(
     validate_node_source(workspace, source)?;
     let root = source.root();
     let root_node = workspace
+        .storage
         .roots
         .get(&root)
         .ok_or(CommandError::MissingRoot { root })?
@@ -2631,7 +2715,10 @@ fn validate_move_payload_with(
         MovePayload::Item(source) => validate_item_source_with(workspace, references, source),
         MovePayload::Tabs(source) => {
             validate_node_source_with(workspace, references, source)?;
-            if !matches!(workspace.nodes.get(source.node()), Some(Node::Tabs { .. })) {
+            if !matches!(
+                workspace.storage.nodes.get(source.node()),
+                Some(Node::Tabs { .. })
+            ) {
                 return Err(CommandError::NodeIsNotTabs {
                     node: source.node(),
                 });
@@ -2728,7 +2815,7 @@ fn validate_tab_target(
             stage: "rederive frozen tabs target facts",
         });
     }
-    match workspace.nodes.get(target.tabs()) {
+    match workspace.storage.nodes.get(target.tabs()) {
         Some(Node::Tabs { items, .. }) => {
             if let Some(index) = insertion_index
                 && index > items.len()
@@ -2772,6 +2859,7 @@ fn move_removes_complete_root(
 ) -> Result<bool, CommandError> {
     let root = payload_root(payload);
     let record = workspace
+        .storage
         .roots
         .get(&root)
         .ok_or(CommandError::MissingRoot { root })?;
@@ -2784,7 +2872,7 @@ fn move_removes_complete_root(
 }
 
 fn ensure_root_ids_available(workspace: &Workspace, root: RootId) -> Result<(), CommandError> {
-    if workspace.roots.contains_key(&root) {
+    if workspace.storage.roots.contains_key(&root) {
         Err(CommandError::RootIdCollision { root })
     } else {
         Ok(())
@@ -2833,11 +2921,12 @@ fn detach_payload(
             let node = source.node();
             let source_root = source.root();
             let items = workspace.collect_items_in_subtree(node);
-            let (selected, mru, is_tabs) = match workspace.nodes.get(node) {
+            let (selected, mru, is_tabs) = match workspace.storage.nodes.get(node) {
                 Some(Node::Tabs { selected, .. }) => (
                     *selected,
                     Some(
                         workspace
+                            .storage
                             .tab_mru
                             .get(&node)
                             .ok_or(CommandError::Invariant {
@@ -2875,6 +2964,7 @@ fn detach_node(
     node: NodeId,
 ) -> Result<Option<NodeId>, CommandError> {
     let record = *workspace
+        .storage
         .roots
         .get(&root)
         .ok_or(CommandError::MissingRoot { root })?;
@@ -2908,6 +2998,7 @@ fn remove_split_child(
     index: usize,
 ) -> Result<(), CommandError> {
     let node = workspace
+        .storage
         .nodes
         .get_mut(parent)
         .ok_or(CommandError::MissingNode {
@@ -2954,17 +3045,17 @@ fn insert_payload(
     workspace: &mut Workspace,
     payload: DetachedPayload,
     target: &DockTarget,
-) -> Result<(), CommandError> {
+) -> Result<Option<NodeId>, CommandError> {
     match target {
         DockTarget::Center(target) => {
             let index = tabs_len(workspace, target.tabs())?;
-            merge_payload_into_tabs(workspace, payload, target.tabs(), index)
+            merge_payload_into_tabs(workspace, payload, target.tabs(), index).map(|()| None)
         }
         DockTarget::TabGap { target, index } => {
-            merge_payload_into_tabs(workspace, payload, target.tabs(), *index)
+            merge_payload_into_tabs(workspace, payload, target.tabs(), *index).map(|()| None)
         }
         DockTarget::InnerEdge(target) | DockTarget::OuterEdge(target) => {
-            insert_payload_at_edge(workspace, &payload, target)
+            insert_payload_at_edge(workspace, &payload, target).map(Some)
         }
     }
 }
@@ -2988,13 +3079,15 @@ fn merge_payload_into_tabs(
             if !is_tabs {
                 return Err(CommandError::SplitPayloadIntoTabs { node });
             }
-            let source = workspace
-                .nodes
-                .get_mut(node)
-                .ok_or(CommandError::MissingNode {
-                    role: ReferenceRole::Source,
-                    node,
-                })?;
+            let source =
+                workspace
+                    .storage
+                    .nodes
+                    .get_mut(node)
+                    .ok_or(CommandError::MissingNode {
+                        role: ReferenceRole::Source,
+                        node,
+                    })?;
             let Node::Tabs {
                 items: source_items,
                 selected: source_selected,
@@ -3005,6 +3098,7 @@ fn merge_payload_into_tabs(
             source_items.clear();
             *source_selected = None;
             workspace
+                .storage
                 .tab_mru
                 .get_mut(&node)
                 .ok_or(CommandError::Invariant {
@@ -3026,6 +3120,7 @@ fn insert_items(
     source_mru: Option<&[ItemId]>,
 ) -> Result<(), CommandError> {
     let node = workspace
+        .storage
         .nodes
         .get_mut(tabs)
         .ok_or(CommandError::MissingNode {
@@ -3048,6 +3143,7 @@ fn insert_items(
         *selected = Some(item);
     }
     let target_mru = workspace
+        .storage
         .tab_mru
         .get_mut(&tabs)
         .ok_or(CommandError::Invariant {
@@ -3073,14 +3169,14 @@ fn insert_payload_at_edge(
     workspace: &mut Workspace,
     payload: &DetachedPayload,
     target: &EdgeTarget,
-) -> Result<(), CommandError> {
+) -> Result<NodeId, CommandError> {
     let payload_node = match payload {
         DetachedPayload::Item { item, .. } => workspace.insert_runtime_node(Node::tabs([*item])),
         DetachedPayload::Node { node, .. } => *node,
     };
     let (axis, before) = edge_axis_and_order(target.edge());
     if let Some(parent) = workspace.parent_link(target.root(), target.node()) {
-        let parent_axis = match workspace.nodes.get(parent.parent) {
+        let parent_axis = match workspace.storage.nodes.get(parent.parent) {
             Some(Node::Split { axis, .. }) => *axis,
             _ => {
                 return Err(CommandError::Invariant {
@@ -3089,7 +3185,7 @@ fn insert_payload_at_edge(
             }
         };
         if parent_axis == axis {
-            return split_existing_branch(
+            split_existing_branch(
                 workspace,
                 parent.parent,
                 target.node(),
@@ -3097,7 +3193,8 @@ fn insert_payload_at_edge(
                 before,
                 target.fraction().get(),
                 axis,
-            );
+            )?;
+            return Ok(parent.parent);
         }
     }
     wrap_target_branch(
@@ -3122,6 +3219,7 @@ fn split_existing_branch(
     axis: Axis,
 ) -> Result<(), CommandError> {
     let node = workspace
+        .storage
         .nodes
         .get_mut(parent)
         .ok_or(CommandError::MissingNode {
@@ -3180,7 +3278,7 @@ fn wrap_target_branch(
     axis: Axis,
     before: bool,
     fraction: f32,
-) -> Result<(), CommandError> {
+) -> Result<NodeId, CommandError> {
     let payload_weight =
         SplitWeight::new(fraction).map_err(|_| CommandError::InvalidEdgeWeight { axis })?;
     let target_weight =
@@ -3196,13 +3294,15 @@ fn wrap_target_branch(
         weights,
     });
     if let Some(parent) = workspace.parent_link(root, target) {
-        let node = workspace
-            .nodes
-            .get_mut(parent.parent)
-            .ok_or(CommandError::MissingNode {
-                role: ReferenceRole::Target,
-                node: parent.parent,
-            })?;
+        let node =
+            workspace
+                .storage
+                .nodes
+                .get_mut(parent.parent)
+                .ok_or(CommandError::MissingNode {
+                    role: ReferenceRole::Target,
+                    node: parent.parent,
+                })?;
         let Node::Split { children, .. } = node else {
             return Err(CommandError::NodeIsNotSplit {
                 node: parent.parent,
@@ -3216,6 +3316,7 @@ fn wrap_target_branch(
         *slot = wrapper;
     } else {
         let record = workspace
+            .storage
             .roots
             .get_mut(&root)
             .ok_or(CommandError::MissingRoot { root })?;
@@ -3228,7 +3329,7 @@ fn wrap_target_branch(
         }
         record.node = wrapper;
     }
-    Ok(())
+    Ok(wrapper)
 }
 
 fn move_item_within_same_tabs(
@@ -3246,9 +3347,10 @@ fn move_item_within_same_tabs(
             if target.node() == source.tabs() =>
         {
             let is_noncentral_singleton = matches!(
-                workspace.nodes.get(source.tabs()),
+                workspace.storage.nodes.get(source.tabs()),
                 Some(Node::Tabs { items, .. }) if items.len() == 1
             ) && workspace
+                .storage
                 .roots
                 .get(&source.root())
                 .is_some_and(|record| record.central != Some(source.tabs()));
@@ -3268,6 +3370,7 @@ fn reorder_item(
     insertion_index: usize,
 ) -> Result<(usize, usize, bool), CommandError> {
     let node = workspace
+        .storage
         .nodes
         .get_mut(tabs)
         .ok_or(CommandError::MissingNode {
@@ -3303,6 +3406,7 @@ fn reorder_item(
 
 fn remove_item(workspace: &mut Workspace, tabs: NodeId, item: ItemId) -> Result<(), CommandError> {
     let node = workspace
+        .storage
         .nodes
         .get_mut(tabs)
         .ok_or(CommandError::MissingNode {
@@ -3319,6 +3423,7 @@ fn remove_item(workspace: &mut Workspace, tabs: NodeId, item: ItemId) -> Result<
     items.remove(index);
     let was_selected = *selected == Some(item);
     let mru = workspace
+        .storage
         .tab_mru
         .get_mut(&tabs)
         .ok_or(CommandError::Invariant {
@@ -3343,6 +3448,7 @@ fn promote_tab_mru(
     item: ItemId,
 ) -> Result<(), CommandError> {
     let mru = workspace
+        .storage
         .tab_mru
         .get_mut(&tabs)
         .ok_or(CommandError::Invariant {
@@ -3363,6 +3469,7 @@ fn promote_tab_mru(
 
 fn cleanup_item_source_root(workspace: &mut Workspace, root: RootId) -> Result<(), CommandError> {
     let record = *workspace
+        .storage
         .roots
         .get(&root)
         .ok_or(CommandError::MissingRoot { root })?;
@@ -3383,6 +3490,7 @@ fn remove_root_and_presentation(
         })?;
     detach_root_presentation(workspace, root, presentation)?;
     workspace
+        .storage
         .roots
         .remove(&root)
         .ok_or(CommandError::MissingRoot { root })
@@ -3412,6 +3520,7 @@ fn detach_root_presentation(
     match presentation {
         RootPresentationOwner::Main { surface } => {
             if workspace
+                .storage
                 .surfaces
                 .get(&surface)
                 .map(|entry| entry.main_root)
@@ -3422,6 +3531,7 @@ fn detach_root_presentation(
                 });
             }
             workspace
+                .storage
                 .surfaces
                 .get_mut(&surface)
                 .ok_or(CommandError::MissingSurface { surface })?
@@ -3429,6 +3539,7 @@ fn detach_root_presentation(
         }
         RootPresentationOwner::Contained { surface, floating } => {
             let record = workspace
+                .storage
                 .contained_floatings
                 .remove(&floating)
                 .ok_or(CommandError::MissingFloating { floating })?;
@@ -3438,6 +3549,7 @@ fn detach_root_presentation(
                 });
             }
             let presentation = workspace
+                .storage
                 .surfaces
                 .get_mut(&surface)
                 .ok_or(CommandError::MissingSurface { surface })?;
@@ -3461,6 +3573,7 @@ fn validate_contained(
     floating: FloatingPresentationId,
 ) -> Result<(), CommandError> {
     let record = workspace
+        .storage
         .contained_floatings
         .get(&floating)
         .ok_or(CommandError::MissingFloating { floating })?;
@@ -3468,6 +3581,7 @@ fn validate_contained(
         return floating_presentation_mismatch(workspace, floating, root, surface);
     }
     let presentation = workspace
+        .storage
         .surfaces
         .get(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -3481,6 +3595,7 @@ fn validate_contained(
 
 fn require_rootless_surface(workspace: &Workspace, surface: SurfaceId) -> Result<(), CommandError> {
     let presentation = workspace
+        .storage
         .surfaces
         .get(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -3498,6 +3613,7 @@ fn contained_insertion_index(
     position: ContainedPosition,
 ) -> Result<usize, CommandError> {
     let presentation = workspace
+        .storage
         .surfaces
         .get(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -3536,6 +3652,7 @@ fn contained_reinsertion_index(
     position: ContainedPosition,
 ) -> Result<usize, CommandError> {
     let presentation = workspace
+        .storage
         .surfaces
         .get(&surface)
         .ok_or(CommandError::MissingSurface { surface })?;
@@ -3577,6 +3694,7 @@ fn contained_reinsertion_index(
 
 fn contained_surface(workspace: &Workspace, floating: FloatingPresentationId) -> Option<SurfaceId> {
     workspace
+        .storage
         .surfaces
         .iter()
         .find_map(|(surface, presentation)| {
@@ -3594,6 +3712,7 @@ fn floating_presentation_mismatch<T>(
     expected_surface: SurfaceId,
 ) -> Result<T, CommandError> {
     let record = workspace
+        .storage
         .contained_floatings
         .get(&floating)
         .ok_or(CommandError::MissingFloating { floating })?;
@@ -3610,13 +3729,21 @@ fn floating_presentation_mismatch<T>(
 }
 
 fn prune_vacant_surfaces(workspace: &mut Workspace) {
-    workspace.surfaces.retain(|_, presentation| {
+    workspace.storage.surfaces.retain(|_, presentation| {
         presentation.main_root.is_some() || !presentation.contained.is_empty()
     });
 }
 
+fn prune_vacant_surface(workspace: &mut Workspace, surface: SurfaceId) {
+    if workspace.surface(surface).is_some_and(|presentation| {
+        presentation.main_root.is_none() && presentation.contained.is_empty()
+    }) {
+        workspace.storage.surfaces.remove(&surface);
+    }
+}
+
 fn tabs_len(workspace: &Workspace, tabs: NodeId) -> Result<usize, CommandError> {
-    match workspace.nodes.get(tabs) {
+    match workspace.storage.nodes.get(tabs) {
         Some(Node::Tabs { items, .. }) => Ok(items.len()),
         Some(Node::Split { .. }) => Err(CommandError::NodeIsNotTabs { node: tabs }),
         None => Err(CommandError::MissingNode {
@@ -3668,9 +3795,11 @@ fn edge_axis_and_order(edge: Edge) -> (Axis, bool) {
 }
 
 #[cfg(test)]
+#[path = "operation/tests"]
 mod tests {
     mod arrangement_lock;
     mod checked_move;
+    mod local_item_move;
     mod local_selection;
     mod logical_surfaces;
     mod split_resize;
@@ -3915,6 +4044,7 @@ mod tests {
     fn append_item_to_root(workspace: &mut Workspace, root: RootId, item: ItemId) {
         let node = workspace.root(root).expect("test root must exist").node;
         let Node::Tabs { items, .. } = workspace
+            .storage
             .nodes
             .get_mut(node)
             .expect("test root node must exist")
@@ -3923,6 +4053,7 @@ mod tests {
         };
         items.push(item);
         workspace
+            .storage
             .tab_mru
             .get_mut(&node)
             .expect("test tabs MRU must exist")
@@ -3993,6 +4124,7 @@ mod tests {
         let policy = default_policy();
         let prepared = capture_surface_close(&workspace, &policy);
         workspace
+            .storage
             .surfaces
             .get_mut(&SOURCE)
             .expect("source surface must exist")

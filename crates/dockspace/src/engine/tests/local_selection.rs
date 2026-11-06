@@ -114,13 +114,9 @@ fn journal_selection_keeps_the_checked_result_and_discarded_frame_is_atomic() {
         frame.candidate.workspace().tab_mru(tabs),
         Some([ItemId::new(2), ItemId::new(1)].as_slice())
     );
-    let mut invalid = engine.workspace().clone();
-    invalid.tab_mru.remove(&tabs);
-    assert!(
-        stream
-            .append(&mut frame, EngineInput::ReplaceWorkspace(invalid))
-            .is_err()
-    );
+    let mut invalid = engine.workspace().clone().into_builder();
+    invalid.draft_mut().tab_mru.remove(&tabs);
+    assert!(invalid.build().is_err());
     drop(frame);
     assert_eq!(engine.workspace, original);
     assert_eq!(engine.version(), version);

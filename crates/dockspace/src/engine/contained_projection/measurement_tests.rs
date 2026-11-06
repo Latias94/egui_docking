@@ -77,19 +77,18 @@ fn measured_source_keeps_motion_without_authorizing_blocked_or_unknown_targets()
 #[test]
 fn measuring_another_surface_still_refreshes_the_active_contained_source() {
     let (original, _) = fixture(16);
-    let mut workspace = original.workspace().clone();
+    let mut builder = original.workspace().clone().into_builder();
     let other_surface = SurfaceId::new(99);
     let other_root = RootId::new(99);
-    let tabs = workspace.insert_runtime_node(crate::graph::Node::tabs([ItemId::new(9_999)]));
-    workspace
-        .roots_mut()
-        .insert(other_root, crate::graph::RootRecord::new(tabs));
-    workspace.surfaces_mut().insert(
+    let tabs = builder.insert_node(crate::graph::Node::tabs([ItemId::new(9_999)]));
+    builder.set_root(other_root, crate::graph::RootRecord::new(tabs));
+    builder.set_surface(
         other_surface,
         crate::graph::SurfacePresentation::with_main(other_root),
     );
     let mut session =
-        DockspaceSession::from_workspace_for_test(workspace, DockPolicy::default()).unwrap();
+        DockspaceSession::from_workspace_for_test(builder.build().unwrap(), DockPolicy::default())
+            .unwrap();
     session.enable_host_pointer().unwrap();
     let metrics = UniformSurfaceMetrics::new(
         rect(0.0, 0.0, 131_072.0, 720.0),

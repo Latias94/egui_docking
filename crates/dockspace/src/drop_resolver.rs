@@ -1106,6 +1106,10 @@ pub(crate) mod structural_work {
 
     impl WorkspaceCloneVolume {
         pub(crate) fn capture(workspace: &Workspace) -> Self {
+            Self::capture_data(workspace.storage())
+        }
+
+        pub(crate) fn capture_data(workspace: &crate::graph::WorkspaceData) -> Self {
             let mut volume = Self {
                 nodes: workspace.nodes.len(),
                 tab_mru_items: workspace.tab_mru.values().map(Vec::len).sum(),
@@ -1221,6 +1225,8 @@ pub(crate) mod structural_work {
         pub(crate) presentation_roster_surface_freezes: usize,
         pub(crate) selection_pane_visits: usize,
         pub(crate) selection_lookups: usize,
+        pub(crate) canonical_full_passes: usize,
+        pub(crate) workspace_full_validations: usize,
         pub(crate) item_multiset_scans: usize,
         pub(crate) item_multiset_item_visits: usize,
         pub(crate) transaction_prepares: usize,
@@ -1293,6 +1299,14 @@ pub(crate) mod structural_work {
         update(|work| work.selection_lookups += 1);
     }
 
+    pub(crate) fn record_canonical_full_pass() {
+        update(|work| work.canonical_full_passes += 1);
+    }
+
+    pub(crate) fn record_workspace_full_validation() {
+        update(|work| work.workspace_full_validations += 1);
+    }
+
     pub(crate) fn record_item_multiset_scan(item_visits: usize) {
         update(|work| {
             work.item_multiset_scans += 1;
@@ -1312,6 +1326,16 @@ pub(crate) mod structural_work {
             work.workspace_deep_clones
                 .transaction_candidates
                 .record(workspace);
+        });
+    }
+
+    pub(crate) fn record_transaction_candidate_data_clone(workspace: &crate::graph::WorkspaceData) {
+        update(|work| {
+            let clones = &mut work.workspace_deep_clones.transaction_candidates;
+            clones.calls += 1;
+            clones
+                .volume
+                .accumulate(WorkspaceCloneVolume::capture_data(workspace));
         });
     }
 
