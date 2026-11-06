@@ -1,0 +1,8 @@
+{
+  "crates/dockspace/src/operation.rs": "61f4ddde1d2bec8fae050cc455c1cf45161ad0949b56a74b85e95ebc117aeda9",
+  "crates/dockspace/src/workspace.rs": "941048a4a3f1905fa66b6f335fc04a6949afd3c8bffcd9c3e8da6526f3263128",
+  "crates/dockspace/src/canonical.rs": "baf05788203163e013824c5ebf6de3ec9bae40b902e84d09d3c7f0e8c6a97c5c",
+  "crates/dockspace/src/validation.rs": "1e71cd27d8932e98e5ab56260d492242fa24f815cac13e2add73efdaaceb80bf",
+  "crates/dockspace/src/drop_resolver.rs": "8b0af79ba94b039347db24cca17df6365b7793039c88559f61f046429b4b15e0",
+  "crates/dockspace/src/operation/tests/checked_move.rs": "fe42f130f328253444a7d29bec738f58f0058a59f19afebd9be14195d04013dc"
+}

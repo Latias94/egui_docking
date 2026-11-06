@@ -1,0 +1,195 @@
+{
+  "recorded_utc": "2026-11-06T15:21:12.384576+00:00",
+  "baseline": "a2bcabc1440caa664fb5f4a64c4669c4eecfdce4",
+  "runtime_sources_unchanged_since_final_timing": true,
+  "normal_test_environment": {
+    "CARGO_BUILD_JOBS": "1",
+    "DOCKSPACE_BENCH_NO_WORK_COUNTERS": "absent"
+  },
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--all-features",
+        "--cargo-profile",
+        "production",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "--no-fail-fast"
+      ],
+      "log": "checks/nextest-v2.log.gz",
+      "returncode": 0,
+      "passed": 2023,
+      "skipped": 3
+    },
+    {
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--tests",
+        "--no-default-features",
+        "--cargo-profile",
+        "production",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "-E",
+        "kind(test)"
+      ],
+      "log": "checks/nextest-integrations.log.gz",
+      "returncode": 0,
+      "passed": 4,
+      "skipped": 0
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--all-features",
+        "--profile",
+        "production",
+        "--locked",
+        "--offline",
+        "--",
+        "--exact",
+        "docking_cost::docking_work",
+        "--ignored",
+        "--nocapture",
+        "--test-threads",
+        "1"
+      ],
+      "log": "checks/work-counts-v2.log.gz",
+      "returncode": 0,
+      "passed": 1,
+      "work_count_cells": 21,
+      "all_source_predictions_equal": true
+    },
+    {
+      "name": "clippy-final",
+      "command": [
+        "cargo",
+        "clippy",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--tests",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--",
+        "-D",
+        "clippy::correctness",
+        "-D",
+        "clippy::suspicious"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T15:13:58.519108+00:00",
+      "finished_utc": "2026-11-06T15:14:23.326852+00:00"
+    },
+    {
+      "name": "doctests",
+      "command": [
+        "cargo",
+        "test",
+        "--package",
+        "dockspace",
+        "--doc",
+        "--all-features",
+        "--locked",
+        "--offline"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T15:14:23.327295+00:00",
+      "finished_utc": "2026-11-06T15:14:34.011970+00:00"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T15:14:34.012206+00:00",
+      "finished_utc": "2026-11-06T15:14:35.617473+00:00"
+    },
+    {
+      "name": "python",
+      "command": [
+        "python3",
+        "-m",
+        "py_compile",
+        "scripts/compare_docking.py"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T15:14:35.617734+00:00",
+      "finished_utc": "2026-11-06T15:14:35.655950+00:00"
+    },
+    {
+      "name": "dependency-boundary",
+      "command": [
+        "python3",
+        "scripts/check_core_dependencies.py"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T15:14:35.659649+00:00",
+      "finished_utc": "2026-11-06T15:14:35.752165+00:00"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T15:14:35.752377+00:00",
+      "finished_utc": "2026-11-06T15:14:35.773024+00:00"
+    }
+  ],
+  "clippy_limit": "Correctness/suspicious checks pass. All/pedantic style warnings remain, including long tests and test table complexity.",
+  "documentation_tests_passed": 9,
+  "independent_reviews": [
+    "implementation-review.md",
+    "recovery-review.md",
+    "v2-implementation-review.md",
+    "simplification-review.md",
+    "first-evidence-review.md",
+    "final-evidence-review.md"
+  ],
+  "performance_gate": {
+    "center_1024_one_view_reduction_percent": [
+      43.915306,
+      42.787024
+    ],
+    "center_1024_four_views_reduction_percent": [
+      27.965679,
+      27.05098
+    ],
+    "center_threshold_percent": 20,
+    "all_move_cells_improve_both_groups": true,
+    "resize_limits": "Small one-view median slowing and mixed tails remain unexplained; no zero-regression or universal stability claim."
+  },
+  "preserved_user_files": {
+    "count": 49,
+    "hashes_unchanged": true
+  },
+  "measurements_serialized": true,
+  "public_api_changes": false
+}

@@ -2589,8 +2589,9 @@ mod tests {
         assert_eq!(work.transaction_prepares, 1);
         assert_eq!(work.transaction_commands, 1);
         assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
-        assert_eq!(work.root_fingerprint_builds, 6);
-        assert_eq!(work.root_fingerprint_node_visits, 10);
+        // The winning move derives its three-node source and singleton target once.
+        assert_eq!(work.root_fingerprint_builds, 2);
+        assert_eq!(work.root_fingerprint_node_visits, 4);
     }
 
     #[test]

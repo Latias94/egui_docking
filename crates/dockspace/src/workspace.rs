@@ -79,6 +79,51 @@ impl PartialEq for WorkspaceRootIndex {
 impl Eq for WorkspaceRootIndex {}
 
 impl WorkspaceIndex {
+    /// Derives only the current root needed by one private command preparation.
+    /// The operation owner must discard this index before mutating its candidate.
+    pub(crate) fn for_command_reference(
+        workspace: &Workspace,
+        root: RootId,
+        node: NodeId,
+        role: ReferenceRole,
+    ) -> Result<Self, CommandError> {
+        let mut index = Self {
+            version: WorkspaceVersion::initial(),
+            roots: BTreeMap::new(),
+        };
+        index.include_command_reference(workspace, root, node, role)?;
+        Ok(index)
+    }
+
+    /// Extends the same unchanged candidate's command-local facts on demand.
+    pub(crate) fn include_command_reference(
+        &mut self,
+        workspace: &Workspace,
+        root: RootId,
+        node: NodeId,
+        role: ReferenceRole,
+    ) -> Result<(), CommandError> {
+        if !workspace.roots.contains_key(&root) {
+            return Err(CommandError::MissingRoot { root });
+        }
+        if !workspace.nodes.contains_key(node) {
+            return Err(CommandError::MissingNode { role, node });
+        }
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.roots.entry(root) {
+            if !workspace.root_contains_node(root, node) {
+                return Err(CommandError::NodeOutsideRoot { role, root, node });
+            }
+            let owner = workspace
+                .presentation_for_root(root)
+                .ok_or(CommandError::Invariant {
+                    stage: "capture root presentation owner",
+                })?;
+            entry.insert(workspace.build_root_index(root, owner)?);
+        }
+        self.capture_reference(workspace, self.version, root, node, role)?;
+        Ok(())
+    }
+
     pub(crate) fn build(
         workspace: &Workspace,
         version: WorkspaceVersion,
@@ -962,6 +1007,24 @@ impl Workspace {
             }
         }
         None
+    }
+
+    pub(crate) fn subtree_has_items(&self, root: NodeId) -> bool {
+        let mut stack = vec![root];
+        let mut visited = HashSet::new();
+        while let Some(node_id) = stack.pop() {
+            if !visited.insert(node_id) {
+                continue;
+            }
+            match self.nodes.get(node_id) {
+                Some(Node::Tabs { items, .. }) if !items.is_empty() => return true,
+                Some(Node::Split { children, .. }) => {
+                    stack.extend(children.iter().rev().copied());
+                }
+                Some(Node::Tabs { .. }) | None => {}
+            }
+        }
+        false
     }
 
     pub(crate) fn collect_items_in_subtree(&self, root: NodeId) -> Vec<ItemId> {

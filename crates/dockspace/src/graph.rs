@@ -20,12 +20,23 @@ pub(crate) fn is_exact_tab_mru(
     let Some(mru) = mru else {
         return false;
     };
-    let mru_items: BTreeSet<_> = mru.iter().copied().collect();
-    let visual_items: BTreeSet<_> = items.iter().copied().collect();
-    mru.len() == items.len()
-        && mru.first().copied() == selected
-        && mru_items.len() == mru.len()
-        && mru_items == visual_items
+    if mru.len() != items.len() || mru.first().copied() != selected {
+        return false;
+    }
+    match (items, mru) {
+        ([], []) => true,
+        ([item], [most_recent]) => item == most_recent,
+        ([first, second], [most_recent, previous]) => {
+            first != second
+                && ((first == most_recent && second == previous)
+                    || (first == previous && second == most_recent))
+        }
+        _ => {
+            let mru_items: BTreeSet<_> = mru.iter().copied().collect();
+            let visual_items: BTreeSet<_> = items.iter().copied().collect();
+            mru_items.len() == mru.len() && mru_items == visual_items
+        }
+    }
 }
 
 /// Direction in which the children of a split are laid out.
@@ -670,4 +681,42 @@ fn initial_tab_mru(node: &Node) -> Option<Vec<ItemId>> {
             .filter(|item| Some(*item) != *selected),
     );
     Some(mru)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_tab_mru_requires_selected_first_unique_membership() {
+        let a = ItemId::new(1);
+        let b = ItemId::new(2);
+        let c = ItemId::new(3);
+        let cases: &[(&[ItemId], Option<ItemId>, &[ItemId], bool)] = &[
+            (&[], None, &[], true),
+            (&[], Some(a), &[], false),
+            (&[], None, &[a], false),
+            (&[a], Some(a), &[a], true),
+            (&[a], None, &[a], false),
+            (&[a], Some(b), &[b], false),
+            (&[a], Some(a), &[], false),
+            (&[a, b], Some(a), &[a, b], true),
+            (&[a, b], Some(b), &[b, a], true),
+            (&[a, a], Some(a), &[a, a], false),
+            (&[a, a], Some(a), &[a, b], false),
+            (&[a, b], Some(a), &[a, a], false),
+            (&[a, b], Some(a), &[a, c], false),
+            (&[a, b], Some(a), &[b, a], false),
+            (&[a, b, c], Some(c), &[c, a, b], true),
+            (&[a, b, c], Some(c), &[c, a, a], false),
+        ];
+        for &(items, selected, mru, expected) in cases {
+            assert_eq!(
+                is_exact_tab_mru(items, selected, Some(mru)),
+                expected,
+                "items={items:?}, selected={selected:?}, mru={mru:?}"
+            );
+        }
+        assert!(!is_exact_tab_mru(&[], None, None));
+    }
 }

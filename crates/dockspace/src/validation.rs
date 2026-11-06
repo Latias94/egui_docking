@@ -6,7 +6,7 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, Workspace};
+use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, Workspace, is_exact_tab_mru};
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 
 /// The stable presentation location that owns a root.
@@ -531,7 +531,8 @@ impl<'workspace> Validator<'workspace> {
             None => {}
         }
 
-        let Some(node) = self.workspace.nodes.get(node_id).cloned() else {
+        let workspace = self.workspace;
+        let Some(node) = workspace.nodes.get(node_id) else {
             if let Some(parent) = parent {
                 self.errors.push(WorkspaceValidationError::MissingChild {
                     parent,
@@ -546,26 +547,26 @@ impl<'workspace> Validator<'workspace> {
         stack.push(Frame::Exit(node_id));
 
         match node {
-            Node::Tabs { items, selected } => self.validate_tabs(node_id, &items, selected),
+            Node::Tabs { items, selected } => self.validate_tabs(node_id, items, *selected),
             Node::Split {
                 axis,
                 children,
                 weights,
             } => {
                 if let (Some(parent), Some(parent_axis)) = (parent, parent_axis)
-                    && parent_axis == axis
+                    && parent_axis == *axis
                 {
                     self.errors.push(WorkspaceValidationError::SameAxisNesting {
                         parent,
                         child: node_id,
-                        axis,
+                        axis: *axis,
                     });
                 }
-                self.validate_split(node_id, &children, &weights);
-                stack.extend(children.into_iter().rev().map(|child| Frame::Enter {
+                self.validate_split(node_id, children, weights);
+                stack.extend(children.iter().rev().copied().map(|child| Frame::Enter {
                     node: child,
                     parent: Some(node_id),
-                    parent_axis: Some(axis),
+                    parent_axis: Some(*axis),
                     owner,
                 }));
             }
@@ -606,6 +607,9 @@ impl<'workspace> Validator<'workspace> {
                 .push(WorkspaceValidationError::MissingTabMru { tabs });
             return;
         };
+        if items.len() <= 2 && is_exact_tab_mru(items, selected, Some(mru)) {
+            return;
+        }
         if mru.len() != items.len() {
             self.errors
                 .push(WorkspaceValidationError::TabMruLengthMismatch {
@@ -908,6 +912,118 @@ mod tests {
             error,
             WorkspaceValidationError::InvalidSplitWeight { index: 0, .. }
         )));
+    }
+
+    #[test]
+    fn validation_preserves_preorder_and_tab_diagnostic_order() {
+        let mut builder = Workspace::builder();
+        let item = ItemId::new(1);
+        let selected = Some(ItemId::new(2));
+        let foreign = ItemId::new(3);
+        let first = builder.insert_node(Node::Tabs {
+            items: vec![item],
+            selected,
+        });
+        builder
+            .set_tab_mru(first, [foreign, foreign])
+            .expect("malformed MRU is accepted in drafts");
+        let second = builder.insert_node(Node::tabs([item]));
+        let nested = builder.insert_node(Node::Split {
+            axis: Axis::Horizontal,
+            children: vec![first, second],
+            weights: vec![SplitWeight(0.25), SplitWeight(0.25)],
+        });
+        let root_node = builder.insert_node(
+            Node::equal_split(Axis::Horizontal, [nested, first]).expect("valid root split"),
+        );
+        let root = RootId::new(1);
+        builder.set_root(root, RootRecord::new(root_node));
+        builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
+
+        let expected = vec![
+            WorkspaceValidationError::SameAxisNesting {
+                parent: root_node,
+                child: nested,
+                axis: Axis::Horizontal,
+            },
+            WorkspaceValidationError::SplitWeightsNotNormalized {
+                split: nested,
+                sum: 0.5,
+            },
+            WorkspaceValidationError::InvalidSelection {
+                tabs: first,
+                selected,
+            },
+            WorkspaceValidationError::TabMruLengthMismatch {
+                tabs: first,
+                items: 1,
+                mru: 2,
+            },
+            WorkspaceValidationError::TabMruItemNotInTabs {
+                tabs: first,
+                item: foreign,
+            },
+            WorkspaceValidationError::DuplicateTabMruItem {
+                tabs: first,
+                item: foreign,
+            },
+            WorkspaceValidationError::TabMruItemNotInTabs {
+                tabs: first,
+                item: foreign,
+            },
+            WorkspaceValidationError::TabItemMissingFromMru { tabs: first, item },
+            WorkspaceValidationError::SelectedTabNotMostRecent {
+                tabs: first,
+                selected,
+                most_recent: Some(foreign),
+            },
+            WorkspaceValidationError::DuplicateItem {
+                item,
+                first_tabs: first,
+                duplicate_tabs: second,
+            },
+            WorkspaceValidationError::SharedNode {
+                node: first,
+                first_root: Some(root),
+                second_root: Some(root),
+            },
+        ];
+        assert_eq!(errors(&builder), expected);
+    }
+
+    #[test]
+    fn strict_validation_checks_small_tab_stacks_completely() {
+        let a = ItemId::new(1);
+        let b = ItemId::new(2);
+        let c = ItemId::new(3);
+        let cases: &[(&[ItemId], Option<ItemId>, &[ItemId], bool)] = &[
+            (&[], None, &[], true),
+            (&[a], Some(a), &[a], true),
+            (&[a, b], Some(a), &[a, b], true),
+            (&[a, b], Some(b), &[b, a], true),
+            (&[], Some(a), &[], false),
+            (&[a], Some(a), &[], false),
+            (&[a, a], Some(a), &[a, a], false),
+            (&[a, b], Some(a), &[a, a], false),
+            (&[a, b], Some(a), &[a, c], false),
+            (&[a, b], Some(a), &[b, a], false),
+        ];
+        for &(items, selected, mru, valid) in cases {
+            let mut builder = Workspace::builder();
+            let tabs = builder.insert_node(Node::Tabs {
+                items: items.to_vec(),
+                selected,
+            });
+            builder.set_tab_mru(tabs, mru.iter().copied()).unwrap();
+            let root = RootId::new(1);
+            builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+            builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
+            assert_eq!(
+                builder.validate().is_ok(),
+                valid,
+                "items={items:?}, selected={selected:?}, mru={mru:?}"
+            );
+        }
     }
 
     #[test]

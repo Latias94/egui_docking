@@ -657,11 +657,7 @@ fn prepare_transaction_inner(
     for (index, command) in commands.iter().enumerate() {
         validate_declared_open_item(&item_ledger, command)
             .map_err(|source| TransactionError::Command { index, source })?;
-        if let TransactionAuthority::Policy(policy) = authority {
-            authorize_workspace_command(&candidate, policy, command)
-                .map_err(|source| TransactionError::Command { index, source })?;
-        }
-        let applied = apply_command(&mut candidate, command)
+        let applied = apply_command(&mut candidate, authority, command)
             .map_err(|source| TransactionError::Command { index, source })?;
         apply_item_delta(&mut item_ledger, applied.delta)
             .map_err(|source| TransactionError::Command { index, source })?;
@@ -699,9 +695,7 @@ pub(crate) fn apply_owned_draft_command(
     let mut expected = draft.item_multiset();
     validate_declared_open_item(&expected, command)
         .map_err(|source| TransactionError::Command { index: 0, source })?;
-    authorize_workspace_command(draft, policy, command)
-        .map_err(|source| TransactionError::Command { index: 0, source })?;
-    let applied = apply_command(draft, command)
+    let applied = apply_command(draft, TransactionAuthority::Policy(policy), command)
         .map_err(|source| TransactionError::Command { index: 0, source })?;
     apply_item_delta(&mut expected, applied.delta)
         .map_err(|source| TransactionError::Command { index: 0, source })?;
@@ -905,15 +899,6 @@ pub(crate) struct DropCommandEligibility<'a> {
 }
 
 impl<'a> DropCommandEligibility<'a> {
-    pub(crate) fn new(
-        workspace: &'a Workspace,
-        policy: &'a DockPolicySnapshot,
-        payload: &'a MovePayload,
-    ) -> Result<Self, CommandError> {
-        validate_move_payload(workspace, payload)?;
-        Self::new_validated(workspace, policy, payload)
-    }
-
     pub(crate) fn new_indexed(
         workspace: &'a Workspace,
         version: WorkspaceVersion,
@@ -955,10 +940,6 @@ impl<'a> DropCommandEligibility<'a> {
         })
     }
 
-    pub(crate) fn check_target(&self, target: &DockTarget) -> Result<(), CommandError> {
-        self.check_target_with(ReferenceAuthority::Live, target)
-    }
-
     pub(crate) fn check_target_indexed(
         &self,
         version: WorkspaceVersion,
@@ -975,7 +956,10 @@ impl<'a> DropCommandEligibility<'a> {
     ) -> Result<(), CommandError> {
         validate_target_with(self.workspace, references, target)?;
         validate_move_target_semantics(self.workspace, self.payload, target)?;
+        self.check_validated_target(target)
+    }
 
+    fn check_validated_target(&self, target: &DockTarget) -> Result<(), CommandError> {
         let operation = if target_is_tabs(target) {
             DockDropOperation::TabMerge
         } else {
@@ -1046,7 +1030,65 @@ fn authorize_move(
     payload: &MovePayload,
     target: &DockTarget,
 ) -> Result<(), CommandError> {
-    DropCommandEligibility::new(workspace, policy, payload)?.check_target(target)
+    check_move(workspace, Some(policy), payload, target)
+}
+
+/// Derives current facts for one command only. The caller's immutable borrow
+/// prevents edits until every source, target, semantic and policy check ends.
+fn check_move(
+    workspace: &Workspace,
+    policy: Option<&DockPolicySnapshot>,
+    payload: &MovePayload,
+    target: &DockTarget,
+) -> Result<(), CommandError> {
+    let (root, node) = match payload {
+        MovePayload::Item(source) => (source.root(), source.tabs()),
+        MovePayload::Tabs(source) | MovePayload::Subtree(source) => (source.root(), source.node()),
+    };
+    let mut index =
+        WorkspaceIndex::for_command_reference(workspace, root, node, ReferenceRole::Source)?;
+    validate_move_payload_with(
+        workspace,
+        ReferenceAuthority::Indexed {
+            version: index.version(),
+            index: &index,
+        },
+        payload,
+    )?;
+    if let DockTarget::InnerEdge(edge) | DockTarget::OuterEdge(edge) = target {
+        let requested = if matches!(target, DockTarget::InnerEdge(_)) {
+            EdgeTargetScope::Inner
+        } else {
+            EdgeTargetScope::Outer
+        };
+        if edge.scope() != requested {
+            return Err(CommandError::EdgeTargetScopeMismatch {
+                node: edge.node(),
+                captured: edge.scope(),
+                requested,
+            });
+        }
+    }
+    index.include_command_reference(
+        workspace,
+        target_root(target),
+        target_node(target),
+        ReferenceRole::Target,
+    )?;
+    validate_target_with(
+        workspace,
+        ReferenceAuthority::Indexed {
+            version: index.version(),
+            index: &index,
+        },
+        target,
+    )?;
+    validate_move_target_semantics(workspace, payload, target)?;
+    if let Some(policy) = policy {
+        DropCommandEligibility::new_validated(workspace, policy, payload)?
+            .check_validated_target(target)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn authorize_captured_drag_source(
@@ -1378,8 +1420,16 @@ fn validate_declared_open_item(
 
 fn apply_command(
     workspace: &mut Workspace,
+    authority: TransactionAuthority<'_>,
     command: &WorkspaceCommand,
 ) -> Result<AppliedCommand, CommandError> {
+    if let TransactionAuthority::Policy(policy) = authority {
+        if matches!(command, WorkspaceCommand::Move { .. }) {
+            policy.check_arrangement_unlocked()?;
+        } else {
+            authorize_workspace_command(workspace, policy, command)?;
+        }
+    }
     match command {
         WorkspaceCommand::Select { source } => select(workspace, source),
         WorkspaceCommand::Reorder {
@@ -1387,7 +1437,13 @@ fn apply_command(
             insertion_index,
         } => reorder(workspace, source, *insertion_index),
         WorkspaceCommand::Open { item, target } => open(workspace, *item, target),
-        WorkspaceCommand::Move { payload, target } => move_payload(workspace, payload, target),
+        WorkspaceCommand::Move { payload, target } => {
+            let policy = match authority {
+                TransactionAuthority::Policy(policy) => Some(policy),
+                TransactionAuthority::SurfaceRecovery => None,
+            };
+            move_payload(workspace, policy, payload, target)
+        }
         WorkspaceCommand::ResizeSplits { splits } => resize_splits(workspace, splits),
         WorkspaceCommand::AttachEmptySurface { surface, root } => {
             attach_empty_surface(workspace, *surface, *root)
@@ -1521,11 +1577,13 @@ fn open(
 
 fn move_payload(
     workspace: &mut Workspace,
+    policy: Option<&DockPolicySnapshot>,
     payload: &MovePayload,
     target: &DockTarget,
 ) -> Result<AppliedCommand, CommandError> {
-    validate_move_payload(workspace, payload)?;
-    validate_target(workspace, target)?;
+    // This private owner checks and executes the exact command against its
+    // exclusive candidate. No checked token or index can cross a mutation.
+    check_move(workspace, policy, payload, target)?;
 
     if let MovePayload::Item(source) = payload
         && let Some(changed) = move_item_within_same_tabs(workspace, source, target)?
@@ -1541,34 +1599,19 @@ fn move_payload(
         });
     }
 
-    let source_node = payload_node(payload);
-    if let Some(source_node) = source_node {
-        let target_node = target_node(target);
-        if workspace.subtree_contains(source_node, target_node) {
-            if source_node == target_node
-                && target_is_tabs(target)
-                && matches!(workspace.nodes.get(source_node), Some(Node::Tabs { .. }))
-            {
-                return Ok(AppliedCommand {
-                    outcome: CommandOutcome::Moved {
-                        items: workspace.collect_items_in_subtree(source_node),
-                        source_root: payload_root(payload),
-                        target_root: target_root(target),
-                        changed: false,
-                    },
-                    delta: ItemDelta::None,
-                });
-            }
-            return Err(CommandError::TargetInsidePayload {
-                source_node,
-                target: target_node,
-            });
-        }
-        if target_is_tabs(target)
-            && !matches!(workspace.nodes.get(source_node), Some(Node::Tabs { .. }))
-        {
-            return Err(CommandError::SplitPayloadIntoTabs { node: source_node });
-        }
+    if let Some(source_node) = payload_node(payload)
+        && source_node == target_node(target)
+        && target_is_tabs(target)
+    {
+        return Ok(AppliedCommand {
+            outcome: CommandOutcome::Moved {
+                items: workspace.collect_items_in_subtree(source_node),
+                source_root: payload_root(payload),
+                target_root: target_root(target),
+                changed: false,
+            },
+            delta: ItemDelta::None,
+        });
     }
 
     let exact_noop_source = match (payload, target) {
@@ -2603,10 +2646,10 @@ fn validate_move_payload_with(
 }
 
 fn ensure_nonempty_payload(workspace: &Workspace, node: NodeId) -> Result<(), CommandError> {
-    if workspace.collect_items_in_subtree(node).is_empty() {
-        Err(CommandError::EmptyPayload { node })
-    } else {
+    if workspace.subtree_has_items(node) {
         Ok(())
+    } else {
+        Err(CommandError::EmptyPayload { node })
     }
 }
 
@@ -3323,7 +3366,7 @@ fn cleanup_item_source_root(workspace: &mut Workspace, root: RootId) -> Result<(
         .roots
         .get(&root)
         .ok_or(CommandError::MissingRoot { root })?;
-    if workspace.collect_items_in_subtree(record.node).is_empty() && record.central.is_none() {
+    if record.central.is_none() && !workspace.subtree_has_items(record.node) {
         remove_root_and_presentation(workspace, root)?;
     }
     Ok(())
@@ -3627,6 +3670,7 @@ fn edge_axis_and_order(edge: Edge) -> (Axis, bool) {
 #[cfg(test)]
 mod tests {
     mod arrangement_lock;
+    mod checked_move;
     mod local_selection;
     mod logical_surfaces;
     mod split_resize;

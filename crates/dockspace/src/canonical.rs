@@ -272,17 +272,19 @@ fn rewrite_subtree(
     let mut results = HashMap::<NodeId, Option<NodeId>>::new();
 
     while let Some((current_id, exiting)) = stack.pop() {
-        let current = workspace.nodes.get(current_id).cloned().ok_or(
-            CanonicalizationError::MissingChild {
-                owner: None,
-                child: current_id,
-            },
-        )?;
+        let current =
+            workspace
+                .nodes
+                .get(current_id)
+                .ok_or(CanonicalizationError::MissingChild {
+                    owner: None,
+                    child: current_id,
+                })?;
 
         if !exiting {
             stack.push((current_id, true));
             if let Node::Split { children, .. } = current {
-                stack.extend(children.into_iter().rev().map(|child| (child, false)));
+                stack.extend(children.iter().rev().copied().map(|child| (child, false)));
             }
             continue;
         }
@@ -295,11 +297,7 @@ fn rewrite_subtree(
                     Some(current_id)
                 }
             }
-            Node::Split {
-                axis,
-                children,
-                weights,
-            } => rewrite_split(workspace, current_id, axis, children, weights, &results)?,
+            Node::Split { .. } => rewrite_split(workspace, current_id, &results)?,
         };
         results.insert(current_id, result);
     }
@@ -315,14 +313,24 @@ fn rewrite_subtree(
 fn rewrite_split(
     workspace: &mut Workspace,
     node_id: NodeId,
-    axis: crate::graph::Axis,
-    children: Vec<NodeId>,
-    weights: Vec<SplitWeight>,
     results: &HashMap<NodeId, Option<NodeId>>,
 ) -> Result<Option<NodeId>, CanonicalizationError> {
+    let Some(Node::Split {
+        axis,
+        children,
+        weights,
+    }) = workspace.nodes.get(node_id)
+    else {
+        return Err(CanonicalizationError::TraversalInvariant {
+            stage: "split rewriting",
+        });
+    };
+    let axis = *axis;
     let mut topology_changed = false;
-    let mut rewritten = Vec::with_capacity(children.len());
-    for (child, weight) in children.into_iter().zip(weights) {
+    let mut needs_flattening = false;
+    let mut retained_children = 0;
+    let mut only_child = None;
+    for &child in children {
         let child_result =
             results
                 .get(&child)
@@ -333,32 +341,46 @@ fn rewrite_split(
                 })?;
         topology_changed |= child_result != Some(child);
         if let Some(child) = child_result {
-            rewritten.push((child, weight.get()));
+            retained_children += 1;
+            only_child = Some(child);
+            needs_flattening |= matches!(
+                workspace.nodes.get(child),
+                Some(Node::Split { axis: child_axis, .. }) if *child_axis == axis
+            );
         }
     }
 
-    match rewritten.len() {
-        0 => return Ok(None),
-        1 => return Ok(Some(rewritten[0].0)),
-        _ => {}
+    if retained_children < 2 {
+        return Ok(only_child);
     }
 
-    let mut flattened = Vec::with_capacity(rewritten.len());
-    for (child, parent_weight) in rewritten {
-        let same_axis = match workspace.nodes.get(child) {
-            Some(Node::Split {
-                axis: child_axis,
-                children,
-                weights,
-            }) if *child_axis == axis => Some((children.clone(), weights.clone())),
-            _ => None,
-        };
+    // Input weights are already normalized. Preserve unchanged storage and bits.
+    if !topology_changed && !needs_flattening {
+        return Ok(Some(node_id));
+    }
 
-        if let Some((grandchildren, child_weights)) = same_axis {
-            topology_changed = true;
-            flattened.extend(grandchildren.into_iter().zip(child_weights).map(
-                |(grandchild, child_weight)| (grandchild, parent_weight * child_weight.get()),
-            ));
+    let mut flattened = Vec::with_capacity(retained_children);
+    for (&child, &weight) in children.iter().zip(weights) {
+        let Some(child) = results.get(&child).copied().flatten() else {
+            continue;
+        };
+        let parent_weight = weight.get();
+        if let Some(Node::Split {
+            axis: child_axis,
+            children: grandchildren,
+            weights: child_weights,
+        }) = workspace.nodes.get(child)
+            && *child_axis == axis
+        {
+            flattened.extend(
+                grandchildren
+                    .iter()
+                    .copied()
+                    .zip(child_weights.iter().copied())
+                    .map(|(grandchild, child_weight)| {
+                        (grandchild, parent_weight * child_weight.get())
+                    }),
+            );
         } else {
             flattened.push((child, parent_weight));
         }
@@ -368,12 +390,6 @@ fn rewrite_split(
         0 => return Ok(None),
         1 => return Ok(Some(flattened[0].0)),
         _ => {}
-    }
-
-    // Input validation already established normalized weights. Rewriting an
-    // unchanged split would accumulate rounding and turn no-op edits into changes.
-    if !topology_changed {
-        return Ok(Some(node_id));
     }
 
     let children: Vec<NodeId> = flattened.iter().map(|(child, _)| *child).collect();
