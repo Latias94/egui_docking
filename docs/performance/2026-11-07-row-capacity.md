@@ -65,3 +65,8 @@ The [archive](2026-11-07-row-capacity/evidence.tar.xz) retains 430 inputs plus
 its manifest, 16,128 raw observations, 336 complete vectors, ordinary checks/work,
 the exact two source pairs and independent source review. Every member
 round-trips against its original bytes.
+
+The [independent evidence review](2026-11-07-row-capacity/evidence-review.md)
+binds immutable candidate `e3c5171` to `3dd308c`, verifies every archived
+input/vector and recomputes the complete statistics. It finds no evidence or
+retention-judgment blocker and confirms the goal remains incomplete.

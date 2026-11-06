@@ -250,3 +250,15 @@ including actual output/backpressure and physical X11/XTest guide-control
 docking. It crosses retirement quiescence, verifies child-window destruction
 and viewport removal, and reaches successful completion. The native repair
 checkpoint is verified; subsequent performance heads still need fresh CI.
+
+## Item row reservation checkpoint
+
+The row-capacity slice is committed and pushed as `e3c5171`. All ordinary
+gates pass, and its 21-row, 20-column work CSV matches the Item-frontier
+control exactly. Complete comparisons improve 27/42 p50 cells and regress
+15, including both small single-view Center groups. Retain the bounded edge
+benefit with every tail and negative in the [evidence and independent review](../performance/2026-11-07-row-capacity.md).
+The target remains 28/42: all 128/1024 cells pass; every 16-pane cell exceeds
+2x. The separate child extent slab is currently under ordinary qualification;
+queued source reviews alone establish neither qualification nor performance.
+Fresh CI run `42312915309` for `e3c5171` is still in progress.
