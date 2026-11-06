@@ -50,11 +50,11 @@ proptest! {
             let (expected, expected_report) = prepare_general_candidate(
                 &snapshot, TransactionAuthority::Policy(&policy), std::slice::from_ref(&command),
                 snapshot.as_ref().clone(),
-            ).unwrap().into_parts(&snapshot);
+            ).unwrap().into_parts();
             structural_work::reset();
             let (actual, report) = snapshot.prepare_transaction(
                 &policy, std::slice::from_ref(&command),
-            ).unwrap().into_snapshot_parts(&snapshot);
+            ).unwrap().into_snapshot_parts();
             let work = structural_work::snapshot();
             prop_assert_eq!(work.item_multiset_scans, 0);
             prop_assert_eq!(work.transaction_prepares, 1);
@@ -84,7 +84,7 @@ fn stale_wrong_root_missing_and_recycled_sources_keep_general_rejections() {
             }],
         )
         .unwrap()
-        .into_snapshot_parts(&snapshot);
+        .into_snapshot_parts();
     let mut wrong_root = source.clone();
     wrong_root.root = CONTAINED_B;
     let mut absent_item = source.clone();
@@ -200,11 +200,11 @@ fn mixed_and_multi_command_batches_preserve_general_atomicity() {
     ] {
         let original = snapshot.clone();
         let expected = prepare_transaction(&snapshot, &policy, &commands)
-            .map(|prepared| prepared.into_parts(&snapshot));
+            .map(|prepared| prepared.into_parts());
         structural_work::reset();
         let actual = snapshot
             .prepare_transaction(&policy, &commands)
-            .map(|prepared| prepared.into_parts(&snapshot));
+            .map(|prepared| prepared.into_parts());
         match (actual, expected) {
             (
                 Err(TransactionError::Command {
@@ -258,7 +258,7 @@ fn checked_batches_and_followups_preserve_eligibility_for_the_next_selection() {
             let (candidate, _) = snapshot
                 .prepare_transaction(&policy, &[noop, command])
                 .unwrap()
-                .into_snapshot_parts(&snapshot);
+                .into_snapshot_parts();
             snapshot = candidate;
         }
         assert!(structural_work::snapshot().item_multiset_scans > 0);

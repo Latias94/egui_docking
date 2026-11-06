@@ -935,7 +935,7 @@ impl<'a> DropEligibilityContext<'a> {
             Ok(prepared) => {
                 let visual = preview::resolved_visual(
                     self.workspace,
-                    &prepared.candidate,
+                    prepared.candidate(),
                     self.policy,
                     self.target_plan,
                     self.source_layout_facts,
@@ -945,7 +945,7 @@ impl<'a> DropEligibilityContext<'a> {
                 .map_err(|source| DropResolutionError::PreviewProjection {
                     detail: source.to_string(),
                 })?;
-                let (candidate, report) = prepared.into_parts(self.workspace);
+                let (candidate, report) = prepared.into_parts();
                 Ok(PreparedDropWinner::Eligible {
                     mutation: PreparedDropMutation::new(
                         self.workspace_version,

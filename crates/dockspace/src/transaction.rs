@@ -3,6 +3,7 @@
 use crate::command::{CommandOutcome, WorkspaceCommand};
 use crate::error::TransactionError;
 use crate::graph::{Workspace, WorkspaceData};
+use crate::operation::PreparedTransaction;
 use crate::policy::DockPolicySnapshot;
 
 /// Copies one complete transaction or atomic canonicalization draft, accounting
@@ -197,40 +198,6 @@ impl FromIterator<WorkspaceCommand> for WorkspaceTransaction {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct PreparedTransaction {
-    pub(crate) candidate: Workspace,
-    pub(crate) outcomes: Vec<CommandOutcome>,
-}
-
-impl PreparedTransaction {
-    /// Consumes the prepared candidate and its report without publishing it.
-    ///
-    /// `original` is the snapshot used for preparation. The engine can check its
-    /// publication barriers against the candidate before moving it into place.
-    pub(crate) fn into_parts(self, original: &Workspace) -> (Workspace, TransactionReport) {
-        let report = TransactionReport {
-            outcomes: self.outcomes,
-            changed: self.candidate != *original,
-        };
-        (self.candidate, report)
-    }
-
-    pub(crate) fn into_snapshot_parts(
-        self,
-        original: &Workspace,
-    ) -> (crate::operation::WorkspaceSnapshot, TransactionReport) {
-        let (candidate, report) = self.into_parts(original);
-        (candidate.into(), report)
-    }
-
-    pub(crate) fn publish(self, workspace: &mut Workspace) -> TransactionReport {
-        let (candidate, report) = self.into_parts(workspace);
-        *workspace = candidate;
-        report
-    }
-}
-
 /// Result published by one successful transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionReport {
@@ -239,6 +206,10 @@ pub struct TransactionReport {
 }
 
 impl TransactionReport {
+    pub(crate) fn new(outcomes: Vec<CommandOutcome>, changed: bool) -> Self {
+        Self { outcomes, changed }
+    }
+
     /// Returns per-command outcomes in command order.
     pub fn outcomes(&self) -> &[CommandOutcome] {
         &self.outcomes
@@ -307,7 +278,7 @@ mod tests {
         structural_work::reset();
         let prepared = prepare_transaction(&workspace, &policy, std::slice::from_ref(&command))
             .expect("move prepares");
-        let (candidate, report) = prepared.into_parts(&workspace);
+        let (candidate, report) = prepared.into_parts();
         assert_eq!(workspace, original);
         assert_eq!(
             candidate.root(SOURCE),
@@ -444,7 +415,7 @@ mod tests {
         structural_work::reset();
         let prepared = prepare_transaction(&workspace, &DockPolicySnapshot::default(), &[command])
             .expect("self-center move is a checked no-op");
-        let (candidate, report) = prepared.into_parts(&workspace);
+        let (candidate, report) = prepared.into_parts();
         assert_eq!(candidate, workspace);
         assert!(!report.changed());
         assert!(matches!(

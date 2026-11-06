@@ -131,3 +131,10 @@ now pass 2x (the large resize/edge cells), while the total large-workload ratio
 is 1.74–2.96x. Every small-pane cell still exceeds 2x. Five p95 and nine max
 cells regress. Keep [the complete results](../performance/2026-11-07-export-reader.md)
 and continue prepared-report, payload sharing and layout allocation/structure.
+
+Prepared-report ownership passes 84 focused, 2,227 workspace and 292/335 public
+host tests. Its complete-operation effect is flat/mixed (14/42 medians regress,
+1,024-pane range -0.93% to +4.37%). Retain it for immutable candidate/report
+pairing and one owner of final reporting; do not count it as a material speedup.
+See [the full observations](../performance/2026-11-07-prepared-report.md).
+Candidate copying remains the dominant measured move cost to test next.

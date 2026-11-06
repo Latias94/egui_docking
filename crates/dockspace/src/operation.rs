@@ -24,9 +24,47 @@ use crate::policy::{
     DockPresentationTarget, DockResizePolicyRequest, DockTabBarPolicyRequest, PolicyDecision,
 };
 use crate::surface_recovery::SurfaceRecoveryTransaction;
-use crate::transaction::{PreparedTransaction, clone_workspace_draft};
+use crate::transaction::{TransactionReport, clone_workspace_draft};
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
+
+/// A completed candidate paired with the report frozen by its prepare owner.
+#[derive(Debug)]
+pub(crate) struct PreparedTransaction {
+    candidate: Workspace,
+    report: TransactionReport,
+}
+
+impl PreparedTransaction {
+    fn new(candidate: Workspace, outcomes: Vec<CommandOutcome>, changed: bool) -> Self {
+        Self {
+            candidate,
+            report: TransactionReport::new(outcomes, changed),
+        }
+    }
+
+    /// Borrows the completed candidate without allowing its report to drift.
+    pub(crate) fn candidate(&self) -> &Workspace {
+        &self.candidate
+    }
+
+    /// Consumes this candidate and its preparation-relative report.
+    /// Publication barriers still run before the engine publishes the candidate.
+    pub(crate) fn into_parts(self) -> (Workspace, TransactionReport) {
+        (self.candidate, self.report)
+    }
+
+    pub(crate) fn into_snapshot_parts(self) -> (WorkspaceSnapshot, TransactionReport) {
+        let (candidate, report) = self.into_parts();
+        (candidate.into(), report)
+    }
+
+    pub(crate) fn publish(self, workspace: &mut Workspace) -> TransactionReport {
+        let (candidate, report) = self.into_parts();
+        *workspace = candidate;
+        report
+    }
+}
 
 /// Immutable carrier for a workspace issued by the graph owner.
 #[derive(Debug, Clone)]
@@ -606,10 +644,12 @@ fn prepare_transaction_inner(
         let applied = select(&mut candidate, source)
             .map_err(|source| TransactionError::Command { index: 0, source })?;
         // Selected and its exact MRU permutation preserve all other invariants.
-        return Ok(PreparedTransaction {
+        let changed = applied.outcome.changes_workspace();
+        return Ok(PreparedTransaction::new(
             candidate,
-            outcomes: vec![applied.outcome],
-        });
+            vec![applied.outcome],
+            changed,
+        ));
     }
     if let [
         command @ WorkspaceCommand::Move {
@@ -634,7 +674,7 @@ fn prepare_transaction_inner(
         } else {
             None
         };
-        let (mut applied, inserted_split) = apply_command(&mut candidate, authority, command)
+        let (applied, inserted_split) = apply_command(&mut candidate, authority, command)
             .map_err(|source| TransactionError::Command { index: 0, source })?;
         if let Some(surface) = source_surface {
             prune_vacant_surface(&mut candidate, surface);
@@ -651,16 +691,15 @@ fn prepare_transaction_inner(
             },
             inserted_split,
         )?;
-        if let CommandOutcome::Moved { changed, .. } = &mut applied.outcome {
-            *changed = candidate != *workspace;
-            if !*changed {
-                candidate.retain_original_issuance(workspace);
-            }
-        }
-        return Ok(PreparedTransaction {
+        // Different-pane center/gap transfers change membership. A real edge
+        // transfer retains a newly allocated nonempty tabs identity; normalization
+        // cannot restore the original Workspace. All no-ops return before detach.
+        let changed = applied.outcome.changes_workspace();
+        return Ok(PreparedTransaction::new(
             candidate,
-            outcomes: vec![applied.outcome],
-        });
+            vec![applied.outcome],
+            changed,
+        ));
     }
     prepare_general_candidate(workspace, authority, commands, candidate)
 }
@@ -770,11 +809,14 @@ impl<'policy> TransactionDraft<'policy> {
         }
         prune_vacant_surfaces(&mut self.candidate);
         canonicalize_draft(&mut self.candidate)?;
+        // General batches may restore their initial durable values. Compare
+        // once after normalization; authority issuance is deliberately separate.
+        let changed = self.candidate != *workspace;
         if self.outcomes.len() == 1
-            && let Some(CommandOutcome::Moved { changed, .. }) = self.outcomes.first_mut()
+            && let Some(CommandOutcome::Moved { changed: moved, .. }) = self.outcomes.first_mut()
         {
-            *changed = self.candidate != *workspace;
-            if !*changed {
+            *moved = changed;
+            if !changed {
                 self.candidate.retain_original_issuance(workspace);
             }
         }
@@ -785,10 +827,11 @@ impl<'policy> TransactionDraft<'policy> {
                 actual: actual_items,
             });
         }
-        Ok(PreparedTransaction {
-            candidate: self.candidate,
-            outcomes: self.outcomes,
-        })
+        Ok(PreparedTransaction::new(
+            self.candidate,
+            self.outcomes,
+            changed,
+        ))
     }
 }
 

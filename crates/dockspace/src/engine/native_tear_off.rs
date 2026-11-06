@@ -512,7 +512,7 @@ impl DockEngine {
                 });
             }
         };
-        let (future, report) = prepared.into_parts(&self.workspace);
+        let (future, report) = prepared.into_parts();
         if report.outcomes().len() != 1 {
             return Err(EngineError::ReductionCauseInvariant {
                 detail: "native root create preflight produced a non-unit outcome roster",

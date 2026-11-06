@@ -3454,7 +3454,7 @@ impl DockEngine {
                 });
             }
         };
-        let (workspace, report) = prepared.into_snapshot_parts(self.workspace.as_ref());
+        let (workspace, report) = prepared.into_snapshot_parts();
         self.stage_journal_workspace_draft(cause, policy, authority, activation, workspace, &report)
     }
 
@@ -5684,7 +5684,7 @@ impl DockEngine {
             }
             Err(source) => return Err(EngineError::Command { input, source }),
         };
-        let (candidate, report) = prepared.into_snapshot_parts(self.workspace.as_ref());
+        let (candidate, report) = prepared.into_snapshot_parts();
         if let Some(surface) =
             self.first_pending_presentation_source_mismatch(&candidate, authority)
         {

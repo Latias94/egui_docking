@@ -130,10 +130,10 @@ fn local_item_moves_match_complete_normalization_and_exact_mru() {
                                 commands,
                                 fixture.workspace.clone(),
                             )
-                            .map(|prepared| prepared.into_parts(&fixture.workspace));
+                            .map(|prepared| prepared.into_parts());
                             structural_work::reset();
                             let actual = prepare_transaction(&fixture.workspace, &policy, commands)
-                                .map(|prepared| prepared.into_parts(&fixture.workspace));
+                                .map(|prepared| prepared.into_parts());
                             let work = structural_work::snapshot();
                             assert_eq!(work.item_multiset_scans, 0);
                             assert_eq!(work.canonical_full_passes, 0);
@@ -145,7 +145,16 @@ fn local_item_moves_match_complete_normalization_and_exact_mru() {
                                 actual, expected,
                                 "axis={axis:?} last={last} central={central} selected={selected} destination={destination} kind={kind}"
                             );
-                            if let Ok((candidate, _)) = actual {
+                            if let Ok((candidate, report)) = actual {
+                                if !report.changed() {
+                                    let WorkspaceCommand::Move { payload, target } = &command
+                                    else {
+                                        unreachable!("this matrix constructs only Item moves");
+                                    };
+                                    check_move(&candidate, Some(&policy), payload, target).expect(
+                                        "an Item no-op must keep both original references usable",
+                                    );
+                                }
                                 super::owner_reference::assert_actual_placement(&candidate);
                                 candidate.validate().unwrap();
                                 assert_eq!(
@@ -203,7 +212,7 @@ fn last_item_retires_only_its_source_presentation_and_candidate_can_be_discarded
             std::slice::from_ref(&movement),
         )
         .unwrap();
-        let (candidate, report) = prepared.into_parts(&workspace);
+        let (candidate, report) = prepared.into_parts();
         assert_eq!(workspace, original);
         assert!(candidate.root(LOCAL_ROOT).is_none());
         assert!(candidate.node(source).is_none());
@@ -245,12 +254,12 @@ fn a_mixed_program_selects_complete_fallback_before_any_edit() {
         std::slice::from_ref(&movement),
     )
     .unwrap()
-    .into_parts(&fixture.workspace);
+    .into_parts();
     structural_work::reset();
     let (general, report) =
         prepare_transaction(&fixture.workspace, &default_policy(), &[noop, movement])
             .unwrap()
-            .into_parts(&fixture.workspace);
+            .into_parts();
     let work = structural_work::snapshot();
     assert!(work.item_multiset_scans > 0);
     assert_eq!(work.canonical_full_passes, 1);
@@ -258,6 +267,68 @@ fn a_mixed_program_selects_complete_fallback_before_any_edit() {
     assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
     assert_eq!(report.outcomes().len(), 2);
     assert_eq!(general, local);
+}
+
+#[test]
+fn an_item_edge_move_restoring_the_same_shape_still_changes_node_identity() {
+    let mut builder = Workspace::builder();
+    let source = builder.insert_node(Node::tabs([MOVED]));
+    let target = builder.insert_node(Node::tabs([ItemId::new(3)]));
+    let split = builder.insert_node(Node::equal_split(Axis::Horizontal, [source, target]).unwrap());
+    builder.set_root(LOCAL_ROOT, RootRecord::new(split));
+    builder.set_surface(
+        SurfaceId::new(1),
+        SurfacePresentation::with_main(LOCAL_ROOT),
+    );
+    let workspace = builder.build().unwrap();
+    let movement = WorkspaceCommand::Move {
+        payload: MovePayload::Item(
+            workspace
+                .capture_item_source(LOCAL_ROOT, source, MOVED)
+                .unwrap(),
+        ),
+        target: DockTarget::InnerEdge(
+            workspace
+                .capture_inner_edge_target(
+                    LOCAL_ROOT,
+                    target,
+                    Edge::Left,
+                    DockFraction::new(0.5).unwrap(),
+                )
+                .unwrap(),
+        ),
+    };
+    let (candidate, report) = prepare_transaction(&workspace, &default_policy(), &[movement])
+        .unwrap()
+        .into_parts();
+    assert_eq!(candidate.root(LOCAL_ROOT), workspace.root(LOCAL_ROOT));
+    let Node::Split {
+        children, weights, ..
+    } = candidate.node(split).unwrap()
+    else {
+        panic!("the original split must survive normalization");
+    };
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[1], target);
+    assert_ne!(children[0], source);
+    assert_eq!(
+        weights
+            .iter()
+            .map(|weight| weight.get())
+            .collect::<Vec<_>>(),
+        [0.5, 0.5]
+    );
+    assert_eq!(candidate.node(children[0]), workspace.node(source));
+    assert_eq!(candidate.tab_mru(children[0]), workspace.tab_mru(source));
+    assert!(candidate.node(source).is_none());
+    assert_ne!(candidate, workspace);
+    assert!(report.changed());
+    assert!(matches!(
+        report.outcomes(),
+        [CommandOutcome::Moved { changed: true, .. }]
+    ));
+    super::owner_reference::assert_actual_placement(&candidate);
+    candidate.validate().unwrap();
 }
 
 #[test]

@@ -3274,7 +3274,7 @@ impl DockEngine {
                 });
             }
         };
-        let (workspace, report) = prepared.into_parts(self.workspace.as_ref());
+        let (workspace, report) = prepared.into_parts();
         let staged = match self.stage_journal_workspace_draft(
             cause,
             policy,
@@ -3868,7 +3868,7 @@ impl DockEngine {
                     });
                 }
             };
-            let (workspace, report) = prepared.into_snapshot_parts(&self.workspace);
+            let (workspace, report) = prepared.into_snapshot_parts();
             if let Some(surface) = self.first_pending_presentation_source_mismatch(
                 &workspace,
                 WorkspacePublicationAuthority::Ordinary,

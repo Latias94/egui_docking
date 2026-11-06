@@ -2507,7 +2507,7 @@ impl DockEngine {
                     Err(source) if source.is_expected_rejection() => return Ok(None),
                     Err(source) => return Err(EngineError::Command { input, source }),
                 };
-                let (candidate, report) = prepared.into_parts(&self.workspace);
+                let (candidate, report) = prepared.into_parts();
                 if candidate.surface(roster.surface()).is_some()
                     || self
                         .first_workspace_publication_mismatch(
@@ -2730,7 +2730,7 @@ impl DockEngine {
             Err(source) if source.is_expected_rejection() => return Ok(false),
             Err(source) => return Err(EngineError::Command { input, source }),
         };
-        let (mut candidate, report) = prepared.into_parts(&self.workspace);
+        let (mut candidate, report) = prepared.into_parts();
         let mut changed = report.changed();
         let mut outcomes = report.into_outcomes();
         if let Some(selection) = selection {

@@ -451,8 +451,8 @@ fn cross_root_subtree_and_staged_merged_residue_have_actual_placement() {
     }
     assert_actual_placement(&stage.candidate);
     let prepared = stage.finish(&original).unwrap();
-    assert!(prepared.candidate.node(tabs[0]).is_none());
-    assert_actual_placement(&prepared.candidate);
+    assert!(prepared.candidate().node(tabs[0]).is_none());
+    assert_actual_placement(prepared.candidate());
 }
 
 #[test]

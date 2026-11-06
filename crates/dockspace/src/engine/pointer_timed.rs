@@ -728,7 +728,7 @@ impl DockEngine {
             }
             Err(error) => return Err(invariant(error.to_string())),
         };
-        let (candidate, report) = prepared.into_snapshot_parts(&self.workspace);
+        let (candidate, report) = prepared.into_snapshot_parts();
         if let Some(surface) = self
             .first_pending_presentation_source_mismatch(
                 &candidate,

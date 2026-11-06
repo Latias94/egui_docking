@@ -310,7 +310,7 @@ impl DockEngine {
             }
             Err(source) => return Err(EngineError::Command { input, source }),
         };
-        let (workspace, report) = prepared.into_snapshot_parts(&self.workspace);
+        let (workspace, report) = prepared.into_snapshot_parts();
         if let Some(surface) = self.first_pending_presentation_source_mismatch(
             &workspace,
             WorkspacePublicationAuthority::Ordinary,
