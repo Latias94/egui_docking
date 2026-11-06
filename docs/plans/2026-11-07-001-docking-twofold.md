@@ -150,3 +150,23 @@ takes about 18–19 microseconds at 1,024 panes, and fresh all-root layout remai
 about 110–116 microseconds. Continue exact cold effects/initial issuance, then
 independently measured output slab, compact frames, numeric preparation and
 graph-owned structure; do not infer that the remaining architecture is exhausted.
+
+Closed cold effects and one-pass initial carrier discovery pass 2,062 production
+core, 2,238 workspace and 292/335 public host tests plus the ordinary gates. The
+existing recovery-scale test falls to a coarse 0.008 seconds, with zero actual
+fingerprint builds/visits; this is not a formal isolated cold benchmark. Retain
+the cleanup with its measured hot-path costs: 26/42 p50 cells regress against
+`fbc8659`, range -12.51% to +7.78%, and this ImGui campaign has 10/42 cells within
+2x. Preserve [all negative observations](../performance/2026-11-07-cold-effects.md).
+The feasible shared-SplitArc RootStructure candidate now has a full vertical
+draft and independent review underway; prioritize it once frozen and reviewed,
+then revisit the queued slab/frame/fusion and single NodeResult ownership slices.
+The two duplicate field-view families in the original NodeResult proposal are
+unnecessary under the breaking scope and should be replaced by one result map.
+
+CI run `42285373560` passes five jobs and every native-coordinator step before
+the final physical X11/XTest smoke, which fails on a three-second inspection
+socket read. Preserve request identity and stage diagnostics, investigate the
+pending-viewport paint obligation in the pinned fork, and verify a concrete fix
+without extending timeouts, skipping the scenario or treating a rerun as causal
+evidence. Fresh pushed-head CI remains required.

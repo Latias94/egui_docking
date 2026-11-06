@@ -7,7 +7,6 @@ use std::sync::{Arc, Weak};
 use slotmap::SparseSecondaryMap;
 
 use super::{Node, Workspace, WorkspaceData};
-use crate::command::NodeFingerprint;
 use crate::ids::{NodeId, RootId};
 use crate::workspace::{ParentLink, RootPresentationOwner};
 
@@ -90,21 +89,43 @@ impl Default for WorkspaceAuthority {
     }
 }
 
-/// Cold transition before-values are temporary actual geometry/semantic values,
-/// never an alternative authority accepted by command validation.
-pub(super) struct ColdRootTransition(Vec<(RootId, Option<NodeFingerprint>)>);
-
 impl Workspace {
     pub(super) fn issue_storage(
         storage: WorkspaceData,
     ) -> Result<Self, crate::error::CommandError> {
+        let mut presentations = Vec::with_capacity(storage.roots.len());
+        for (&surface, presentation) in &storage.surfaces {
+            if let Some(root) = presentation.main_root
+                && storage.roots.contains_key(&root)
+            {
+                presentations.push((root, RootPresentationOwner::Main { surface }));
+            }
+            for &floating in &presentation.contained {
+                if let Some(record) = storage.contained_floatings.get(&floating)
+                    && storage.roots.contains_key(&record.root)
+                {
+                    presentations.push((
+                        record.root,
+                        RootPresentationOwner::Contained { surface, floating },
+                    ));
+                }
+            }
+        }
+        // Validated input has one carrier per root. Stable sorting also keeps
+        // the former first-carrier diagnostic behavior for internal raw input.
+        presentations.sort_by_key(|(root, _)| *root);
+        presentations.dedup_by_key(|(root, _)| *root);
+        if presentations.len() != storage.roots.len() {
+            return Err(crate::error::CommandError::Invariant {
+                stage: "refresh root presentation authority",
+            });
+        }
         let mut workspace = Self {
             storage,
             authority: WorkspaceAuthority::default(),
         };
-        let roots = workspace.storage.roots.keys().copied().collect::<Vec<_>>();
-        for root in roots {
-            workspace.refresh_root_placement(root)?;
+        for (root, presentation) in presentations {
+            workspace.complete_root_birth(root, presentation)?;
         }
         Ok(workspace)
     }
@@ -244,81 +265,50 @@ impl Workspace {
         Ok(())
     }
 
-    fn refresh_root_placement(&mut self, root: RootId) -> Result<(), crate::error::CommandError> {
-        let Some(record) = self.storage.roots.get(&root).copied() else {
-            self.authority.roots.remove(&root);
-            return Ok(());
-        };
-        self.assign_subtree(root, record.node, None);
-        let presentation =
-            self.presentation_in_storage(root)
-                .ok_or(crate::error::CommandError::Invariant {
-                    stage: "refresh root presentation authority",
-                })?;
-        self.authority
+    /// Completes a fresh root written by one concrete creation command.
+    /// The writer has installed its actual carrier and detached any donor.
+    pub(super) fn complete_root_birth(
+        &mut self,
+        root: RootId,
+        presentation: RootPresentationOwner,
+    ) -> Result<(), crate::error::CommandError> {
+        let record = self
+            .storage
             .roots
-            .entry(root)
-            .and_modify(|owner| {
-                owner.presentation = presentation;
-            })
-            .or_insert_with(|| RootOwner {
+            .get(&root)
+            .copied()
+            .ok_or(crate::error::CommandError::MissingRoot { root })?;
+        if self.authority.roots.contains_key(&root) {
+            return Err(crate::error::CommandError::Invariant {
+                stage: "complete fresh root birth",
+            });
+        }
+        self.assign_subtree(root, record.node, None);
+        self.authority.roots.insert(
+            root,
+            RootOwner {
                 reference: RootReference::fresh(root),
                 presentation,
-            });
+            },
+        );
         Ok(())
     }
 
-    fn actual_root_value(
-        &self,
-        root: RootId,
-    ) -> Result<Option<NodeFingerprint>, crate::error::CommandError> {
-        if self.storage.roots.contains_key(&root) {
-            self.root_fingerprint(root).map(Some)
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub(super) fn begin_cold_roots(
-        &self,
-        roots: impl IntoIterator<Item = RootId>,
-    ) -> Result<ColdRootTransition, crate::error::CommandError> {
-        let roots = roots.into_iter().collect::<std::collections::BTreeSet<_>>();
-        roots
-            .into_iter()
-            .map(|root| Ok((root, self.actual_root_value(root)?)))
-            .collect::<Result<Vec<_>, _>>()
-            .map(ColdRootTransition)
-    }
-
-    pub(super) fn begin_cold_completion(
-        &self,
-    ) -> Result<ColdRootTransition, crate::error::CommandError> {
-        self.begin_cold_roots(self.storage.roots.keys().copied())
-    }
-
-    pub(super) fn finish_cold_roots(
+    /// Completes the actual carrier written by a checked rehome/promote owner.
+    /// Membership is unchanged; a same-carrier no-op preserves exact issuance.
+    pub(super) fn complete_root_rehome(
         &mut self,
-        before: ColdRootTransition,
+        root: RootId,
+        presentation: RootPresentationOwner,
     ) -> Result<(), crate::error::CommandError> {
-        for (root, previous) in before.0 {
-            if let Some(previous) = &previous {
-                for node in &previous.0.nodes {
-                    if self
-                        .authority
-                        .placements
-                        .get(node.id)
-                        .is_some_and(|placement| placement.root == root)
-                    {
-                        self.forget_placement(node.id);
-                    }
-                }
-            }
-            self.refresh_root_placement(root)?;
-            let current = self.actual_root_value(root)?;
-            if previous != current {
-                self.complete_root_change(root)?;
-            }
+        let owner = self
+            .authority
+            .roots
+            .get_mut(&root)
+            .ok_or(crate::error::CommandError::MissingRoot { root })?;
+        if owner.presentation != presentation {
+            owner.presentation = presentation;
+            owner.reference = RootReference::fresh(root);
         }
         Ok(())
     }

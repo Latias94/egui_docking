@@ -280,7 +280,10 @@ fn staged_moves_keep_transient_structure_until_one_final_normalization_and_roll_
             })?;
             Ok(())
         });
-        assert_eq!(structural_work::snapshot().canonical_full_passes, 1);
+        let work = structural_work::snapshot();
+        assert_eq!(work.canonical_full_passes, 1);
+        assert_eq!(work.root_fingerprint_builds, 0);
+        assert_eq!(work.root_fingerprint_node_visits, 0);
         if invalid_rect {
             assert!(
                 matches!(result, Err(TransactionError::Canonicalization(CanonicalizationError::InvalidOutput(errors)))
@@ -610,4 +613,171 @@ fn a_new_root_and_its_donor_issue_actual_refs_before_the_next_prefix() {
         .verify_reference(C, tabs[3], unrelated.reference(), ReferenceRole::Source)
         .unwrap();
     assert_actual_placement(&workspace);
+}
+
+#[test]
+fn rehome_effects_are_prefix_local_and_preserve_strict_net_zero_aba() {
+    let (mut workspace, tabs) = fixture();
+    let original = workspace.clone();
+    let node = workspace.root(A).unwrap().node;
+    let old = workspace.capture_node_source(A, node).unwrap();
+    let unrelated = workspace.capture_node_source(B, tabs[2]).unwrap();
+    structural_work::reset();
+    let report = WorkspaceTransaction::apply_with(&mut workspace, &default_policy(), |stage| {
+        stage.push(|current| {
+            Ok(WorkspaceCommand::RehomeRoot {
+                source: current.capture_node_source(A, node)?,
+                target: RootPresentationTarget::Contained {
+                    surface: SurfaceId::new(2),
+                    floating: FloatingPresentationId::new(99),
+                    rect: rect(0.0),
+                    position: ContainedPosition::Front,
+                },
+            })
+        })?;
+        stage.push(|current| {
+            let source = current.capture_node_source(A, node)?;
+            assert_ne!(source.reference(), old.reference());
+            let target = current.capture_tab_target(B, tabs[2])?;
+            assert_eq!(target.reference(), unrelated.reference());
+            Ok(WorkspaceCommand::RehomeRoot {
+                source,
+                target: RootPresentationTarget::Main {
+                    surface: SurfaceId::new(1),
+                },
+            })
+        })?;
+        Ok(())
+    })
+    .unwrap();
+    let work = structural_work::snapshot();
+    assert_eq!(work.root_fingerprint_builds, 0);
+    assert_eq!(work.root_fingerprint_node_visits, 0);
+    assert_eq!(work.canonical_full_passes, 1);
+    assert!(!report.changed());
+    assert_eq!(workspace, original);
+    assert!(matches!(
+        workspace.verify_reference(A, node, old.reference(), ReferenceRole::Source),
+        Err(CommandError::StaleNode { .. })
+    ));
+    workspace
+        .verify_reference(B, tabs[2], unrelated.reference(), ReferenceRole::Source)
+        .unwrap();
+    assert_actual_placement(&workspace);
+}
+
+#[test]
+fn an_exact_cold_move_noop_preserves_a_frozen_same_root_followup() {
+    let (mut workspace, tabs) = fixture();
+    let source = workspace.capture_node_source(A, tabs[0]).unwrap();
+    let followup = workspace
+        .capture_item_source(A, tabs[0], ItemId::new(2))
+        .unwrap();
+    let noop = WorkspaceCommand::Move {
+        payload: MovePayload::Tabs(source),
+        target: DockTarget::InnerEdge(
+            workspace
+                .capture_inner_edge_target(A, tabs[1], Edge::Left, DockFraction::new(0.5).unwrap())
+                .unwrap(),
+        ),
+    };
+    structural_work::reset();
+    let report =
+        WorkspaceTransaction::from_commands([noop, WorkspaceCommand::Select { source: followup }])
+            .apply(&mut workspace, &default_policy())
+            .unwrap();
+    let work = structural_work::snapshot();
+    assert_eq!(work.root_fingerprint_builds, 0);
+    assert_eq!(work.root_fingerprint_node_visits, 0);
+    assert!(matches!(
+        report.outcomes(),
+        [
+            CommandOutcome::Moved { changed: false, .. },
+            CommandOutcome::Selected { changed: true, .. }
+        ]
+    ));
+    assert_actual_placement(&workspace);
+}
+
+#[test]
+fn initial_issuance_uses_actual_mixed_carriers_and_rebuilds_fresh_refs() {
+    let (original, _) = fixture();
+    let mut builder = original.into_builder();
+    let extra = RootId::new(4);
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(9)]));
+    builder.set_root(extra, RootRecord::new(tabs));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(C));
+    builder.set_surface(SurfaceId::new(2), SurfacePresentation::rootless());
+    builder.set_surface(SurfaceId::new(3), SurfacePresentation::with_main(extra));
+    for (root, surface, floating) in [(B, 1, 20), (A, 2, 10)] {
+        let surface = SurfaceId::new(surface);
+        let floating = FloatingPresentationId::new(floating);
+        builder.set_contained_floating(floating, ContainedFloating::new(root, rect(0.0)));
+        builder.attach_contained(surface, floating).unwrap();
+    }
+    let workspace = builder.build().unwrap();
+    let rebuilt = workspace.clone().into_builder().build().unwrap();
+    assert_eq!(workspace, rebuilt);
+    assert_actual_placement(&workspace);
+    assert_actual_placement(&rebuilt);
+    for (root, record) in workspace.roots() {
+        assert_eq!(
+            workspace.presentation_for_root(root),
+            workspace.presentation_in_storage(root)
+        );
+        let source = workspace.capture_node_source(root, record.node).unwrap();
+        assert_eq!(source.reference().root(), root);
+        assert_ne!(source.reference(), rebuilt.root_reference(root).unwrap());
+        assert!(matches!(
+            rebuilt.verify_reference(root, record.node, source.reference(), ReferenceRole::Source),
+            Err(CommandError::StaleNode {
+                role: ReferenceRole::Source,
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn initial_issuance_preserves_empty_workspace_and_builder_presentation_errors() {
+    let empty = Workspace::builder().build().unwrap();
+    assert_eq!(empty, Workspace::new());
+    assert!(empty.roots().next().is_none());
+    assert!(empty.surfaces().next().is_none());
+    assert!(empty.root_reference(A).is_none());
+    let (original, tabs) = fixture();
+    assert!(matches!(
+        empty.capture_node_source(A, tabs[0]),
+        Err(CommandError::MissingRoot { root: A })
+    ));
+    for corruption in 0..5 {
+        let mut builder = original.clone().into_builder();
+        let surface = SurfaceId::new(1);
+        let floating = FloatingPresentationId::new(99);
+        let foreign = RootId::new(99);
+        match corruption {
+            0 => {
+                builder.set_surface(surface, SurfacePresentation::with_main(foreign));
+            }
+            1 => {
+                builder.attach_contained(surface, floating).unwrap();
+            }
+            2 => {
+                builder.set_surface(surface, SurfacePresentation::with_main(B));
+            }
+            3 => {
+                builder.set_surface(surface, SurfacePresentation::rootless());
+            }
+            _ => {
+                builder
+                    .set_contained_floating(floating, ContainedFloating::new(foreign, rect(0.0)));
+                builder.attach_contained(surface, floating).unwrap();
+            }
+        }
+        let expected = builder.validate().unwrap_err();
+        let Err(CanonicalizationError::InvalidOutput(actual)) = builder.build() else {
+            panic!("presentation corruption {corruption} must fail before issuance");
+        };
+        assert_eq!(actual, expected, "presentation corruption {corruption}");
+    }
 }

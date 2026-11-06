@@ -1685,10 +1685,9 @@ mod tests {
             assert_eq!(work.transaction_commands, command_count);
             assert!(work.item_multiset_scans <= 4);
             assert!(work.item_multiset_item_visits <= item_count * 4);
-            // Each command changes one singleton root; one whole-forest
-            // canonical completion is allowed after the complete program.
-            assert!(work.root_fingerprint_builds <= 6 * (command_count + 1));
-            assert!(work.root_fingerprint_node_visits <= 6 * (command_count + 1));
+            // Actual rehome/canonical effects issue refs without value snapshots.
+            assert_eq!(work.root_fingerprint_builds, 0);
+            assert_eq!(work.root_fingerprint_node_visits, 0);
         }
     }
 

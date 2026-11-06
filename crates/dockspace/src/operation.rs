@@ -373,9 +373,6 @@ pub(crate) fn prepare_content_close(
     }
 
     let mut candidate = clone_workspace_draft(workspace);
-    let before = candidate
-        .begin_cold_completion()
-        .map_err(close_command_error)?;
     let outcome = match prepared {
         PreparedContentClose::Item {
             source,
@@ -396,12 +393,13 @@ pub(crate) fn prepare_content_close(
             };
             remove_item(&mut candidate, source.tabs(), item).map_err(close_command_error)?;
             if let Some(successor) = successor {
-                let successor = candidate
-                    .capture_item_source(root, source.tabs(), successor)
+                select_tabs_item(&mut candidate, source.tabs(), successor)
                     .map_err(close_command_error)?;
-                select(&mut candidate, &successor).map_err(close_command_error)?;
             }
             cleanup_item_source_root(&mut candidate, root).map_err(close_command_error)?;
+            candidate
+                .complete_root_change(root)
+                .map_err(close_command_error)?;
             CloseCommitOutcome::ItemClosed { item, root }
         }
         PreparedContentClose::Root {
@@ -472,9 +470,6 @@ pub(crate) fn prepare_content_close(
             actual: actual_after,
         });
     }
-    candidate
-        .finish_cold_roots(before)
-        .map_err(close_command_error)?;
     Ok(PreparedContentCloseCommit { candidate, outcome })
 }
 
@@ -1560,46 +1555,6 @@ fn apply_command(
             authorize_workspace_command(workspace, policy, command)?;
         }
     }
-    let cold = match command {
-        // These writers complete their exact graph changes directly. Removing
-        // a root also retires its owner and unroots its actual members.
-        WorkspaceCommand::Select { .. }
-        | WorkspaceCommand::Reorder { .. }
-        | WorkspaceCommand::ResizeSplits { .. }
-        | WorkspaceCommand::Move {
-            payload: MovePayload::Item(_),
-            ..
-        }
-        | WorkspaceCommand::RemoveEmptyRoot { .. }
-        | WorkspaceCommand::RetireEmptySurface { .. }
-        // Rectangles and peer roster order are separate preconditions. They
-        // leave exact root graph/presentation-carrier authority unchanged.
-        | WorkspaceCommand::UpdateContainedRect { .. }
-        | WorkspaceCommand::UpdateContainedPresentation { .. }
-        | WorkspaceCommand::RaiseContained { .. } => None,
-        WorkspaceCommand::Move { payload, target } => {
-            Some(workspace.begin_cold_roots([payload_root(payload), target_root(target)])?)
-        }
-        WorkspaceCommand::Open { target, .. } => {
-            Some(workspace.begin_cold_roots([target_root(target)])?)
-        }
-        WorkspaceCommand::AttachEmptySurface { root, .. } => {
-            Some(workspace.begin_cold_roots([*root])?)
-        }
-        WorkspaceCommand::CreateSurfaceRoot { root, content, .. }
-        | WorkspaceCommand::CreateContainedRoot { root, content, .. }
-        | WorkspaceCommand::InstallMainRoot { root, content, .. } => {
-            let donor = match content {
-                RootContent::OpenItem(_) => None,
-                RootContent::Move(payload) => Some(payload_root(payload)),
-            };
-            Some(workspace.begin_cold_roots(std::iter::once(*root).chain(donor))?)
-        }
-        WorkspaceCommand::RehomeRoot { source, .. }
-        | WorkspaceCommand::PromoteContained { source, .. } => {
-            Some(workspace.begin_cold_roots([source.root()])?)
-        }
-    };
     let result = match command {
         WorkspaceCommand::Select { source } => select(workspace, source),
         WorkspaceCommand::Reorder {
@@ -1612,11 +1567,7 @@ fn apply_command(
                 TransactionAuthority::Policy(policy) => Some(policy),
                 TransactionAuthority::SurfaceRecovery => None,
             };
-            let result = move_payload(workspace, policy, payload, target)?;
-            if let Some(before) = cold {
-                workspace.finish_cold_roots(before)?;
-            }
-            return Ok(result);
+            return move_payload(workspace, policy, payload, target);
         }
         WorkspaceCommand::ResizeSplits { splits } => resize_splits(workspace, splits),
         WorkspaceCommand::AttachEmptySurface { surface, root } => {
@@ -1682,9 +1633,6 @@ fn apply_command(
         WorkspaceCommand::RemoveEmptyRoot { source } => remove_empty_root(workspace, source),
     };
     let applied = result?;
-    if let Some(before) = cold {
-        workspace.finish_cold_roots(before)?;
-    }
     Ok((applied, None))
 }
 
@@ -1692,6 +1640,27 @@ fn select(workspace: &mut Workspace, source: &ItemSource) -> Result<AppliedComma
     validate_item_source(workspace, source)?;
     let tabs = source.tabs();
     let item = source.item();
+    let changed = select_tabs_item(workspace, tabs, item)?;
+    if changed {
+        workspace.complete_selection_change(source.root(), tabs)?;
+    }
+    Ok(AppliedCommand {
+        outcome: CommandOutcome::Selected {
+            item,
+            tabs,
+            changed,
+        },
+        delta: ItemDelta::None,
+    })
+}
+
+/// Shares the concrete selected/MRU edit with the approved close owner, which
+/// has already picked a surviving successor from this actual tabs stack.
+fn select_tabs_item(
+    workspace: &mut Workspace,
+    tabs: NodeId,
+    item: ItemId,
+) -> Result<bool, CommandError> {
     let node = workspace
         .storage
         .nodes
@@ -1706,17 +1675,7 @@ fn select(workspace: &mut Workspace, source: &ItemSource) -> Result<AppliedComma
     let changed = *selected != Some(item);
     *selected = Some(item);
     promote_tab_mru(workspace, tabs, item)?;
-    if changed {
-        workspace.complete_selection_change(source.root(), tabs)?;
-    }
-    Ok(AppliedCommand {
-        outcome: CommandOutcome::Selected {
-            item,
-            tabs,
-            changed,
-        },
-        delta: ItemDelta::None,
-    })
+    Ok(changed)
 }
 
 fn reorder(
@@ -1755,6 +1714,7 @@ fn open(
         item,
     };
     let _ = insert_payload(workspace, payload, target)?;
+    workspace.complete_root_change(root)?;
     Ok(AppliedCommand {
         outcome: CommandOutcome::Opened { item, root },
         delta: ItemDelta::Open(item),
@@ -1836,11 +1796,9 @@ fn move_payload(
     let items = detached.items();
     let target_root = target_root(target);
     let inserted_split = insert_payload(workspace, detached, target)?;
-    if matches!(payload, MovePayload::Item(_)) {
-        workspace.complete_root_change(source_root)?;
-        if target_root != source_root {
-            workspace.complete_root_change(target_root)?;
-        }
+    workspace.complete_root_change(source_root)?;
+    if target_root != source_root {
+        workspace.complete_root_change(target_root)?;
     }
     Ok((
         AppliedCommand {
@@ -2059,6 +2017,7 @@ fn attach_empty_surface(
         .storage
         .surfaces
         .insert(surface, SurfacePresentation::with_main(root));
+    workspace.complete_root_birth(root, RootPresentationOwner::Main { surface })?;
     Ok(AppliedCommand {
         outcome: CommandOutcome::EmptySurfaceAttached { surface, root },
         delta: ItemDelta::None,
@@ -2127,6 +2086,7 @@ fn create_surface_root(
         .storage
         .surfaces
         .insert(surface, SurfacePresentation::with_main(root));
+    workspace.complete_root_birth(root, RootPresentationOwner::Main { surface })?;
     Ok(AppliedCommand {
         outcome: CommandOutcome::SurfaceRootCreated {
             surface,
@@ -2184,6 +2144,7 @@ fn create_contained_root(
         });
     }
     presentation.contained.insert(insertion_index, floating);
+    workspace.complete_root_birth(root, RootPresentationOwner::Contained { surface, floating })?;
     Ok(AppliedCommand {
         outcome: CommandOutcome::ContainedRootCreated {
             surface,
@@ -2221,6 +2182,7 @@ fn install_main_root(
         .roots
         .insert(root, RootRecord { node, central });
     presentation.main_root = Some(root);
+    workspace.complete_root_birth(root, RootPresentationOwner::Main { surface })?;
     Ok(AppliedCommand {
         outcome: CommandOutcome::MainRootInstalled {
             surface,
@@ -2256,7 +2218,7 @@ fn rehome_root(
         .ok_or(CommandError::Invariant {
             stage: "locate root presentation before rehome",
         })?;
-    match target {
+    let outcome = match target {
         RootPresentationTarget::NewSurface { surface } => {
             rehome_root_to_new_surface(workspace, root, current, surface)
         }
@@ -2279,7 +2241,16 @@ fn rehome_root(
                 position,
             },
         ),
-    }
+    }?;
+    let presentation = match target {
+        RootPresentationTarget::NewSurface { surface }
+        | RootPresentationTarget::Main { surface } => RootPresentationOwner::Main { surface },
+        RootPresentationTarget::Contained {
+            surface, floating, ..
+        } => RootPresentationOwner::Contained { surface, floating },
+    };
+    workspace.complete_root_rehome(root, presentation)?;
+    Ok(outcome)
 }
 
 fn rehome_root_to_new_surface(
@@ -2433,6 +2404,7 @@ fn promote_contained(
         });
     }
     presentation.main_root = Some(root);
+    workspace.complete_root_rehome(root, RootPresentationOwner::Main { surface })?;
     Ok(AppliedCommand {
         outcome: CommandOutcome::ContainedPromoted {
             surface,
@@ -3019,6 +2991,9 @@ fn detach_root_content(
         RootContent::Move(payload) => {
             let detached = detach_payload(workspace, payload)?;
             let items = detached.items();
+            // RootContent::Move always removes actual content from its donor.
+            // This completion precedes the next command's capture/check.
+            workspace.complete_root_change(detached.source_root())?;
             match detached {
                 DetachedPayload::Item { item, .. } => {
                     let node = workspace.insert_runtime_node(Node::tabs([item]));

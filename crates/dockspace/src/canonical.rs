@@ -191,13 +191,8 @@ pub fn canonicalize_workspace(
     validate_rewrite_input(workspace.storage())?;
 
     let mut candidate = clone_workspace_draft(workspace);
-    let before = candidate
-        .begin_cold_completion()
-        .map_err(CanonicalizationError::AuthorityCompletion)?;
-    canonicalize_validated_draft(&mut candidate.storage)?;
-    candidate
-        .finish_cold_roots(before)
-        .map_err(CanonicalizationError::AuthorityCompletion)?;
+    let effects = canonicalize_validated_draft(&mut candidate.storage)?;
+    complete_runtime_rewrite(&mut candidate, effects)?;
 
     let report = CanonicalizationReport {
         changed: candidate != *workspace,
@@ -217,13 +212,8 @@ pub fn canonicalize_workspace(
 /// may be partially rewritten and must be discarded rather than published.
 /// On success it has passed the complete workspace validator.
 pub(super) fn canonicalize_draft(workspace: &mut Workspace) -> Result<(), CanonicalizationError> {
-    let before = workspace
-        .begin_cold_completion()
-        .map_err(CanonicalizationError::AuthorityCompletion)?;
-    canonicalize_data(&mut workspace.storage)?;
-    workspace
-        .finish_cold_roots(before)
-        .map_err(CanonicalizationError::AuthorityCompletion)
+    let effects = canonicalize_data(&mut workspace.storage)?;
+    complete_runtime_rewrite(workspace, effects)
 }
 
 pub(super) fn build_workspace(
@@ -374,7 +364,7 @@ fn rewrite_local_split(
         matches!(storage.nodes.get(next), Some(Node::Split { axis: child_axis, .. }) if *child_axis == axis)
             .then_some(next)
     }).collect::<Vec<_>>();
-    let next = rewrite_split(storage, parent, results)?;
+    let (next, _) = rewrite_split(storage, parent, results)?;
     results.insert(parent, next);
     if next == Some(parent) {
         output_splits.push(parent);
@@ -387,14 +377,47 @@ fn rewrite_local_split(
     Ok(())
 }
 
-fn canonicalize_data(workspace: &mut WorkspaceData) -> Result<(), CanonicalizationError> {
+/// Actual writes produced by this one canonical traversal, not predicted dirt.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CanonicalEffects {
+    changed_roots: Vec<RootId>,
+    retired_nodes: Vec<NodeId>,
+}
+
+fn complete_runtime_rewrite(
+    workspace: &mut Workspace,
+    effects: CanonicalEffects,
+) -> Result<(), CanonicalizationError> {
+    for node in effects.retired_nodes {
+        workspace.forget_placement(node);
+    }
+    for root in effects.changed_roots {
+        let node = workspace
+            .root(root)
+            .ok_or(CanonicalizationError::TraversalInvariant {
+                stage: "complete rewritten root placement",
+            })?
+            .node;
+        workspace.assign_subtree(root, node, None);
+        // Canonical rewriting changes no presentation carrier. The concrete
+        // command writer already completed carrier ownership at its prefix.
+        workspace
+            .complete_root_change(root)
+            .map_err(CanonicalizationError::AuthorityCompletion)?;
+    }
+    Ok(())
+}
+
+fn canonicalize_data(
+    workspace: &mut WorkspaceData,
+) -> Result<CanonicalEffects, CanonicalizationError> {
     validate_rewrite_input(workspace)?;
     canonicalize_validated_draft(workspace)
 }
 
 fn canonicalize_validated_draft(
     workspace: &mut WorkspaceData,
-) -> Result<(), CanonicalizationError> {
+) -> Result<CanonicalEffects, CanonicalizationError> {
     #[cfg(test)]
     crate::drop_resolver::structural_work::record_canonical_full_pass();
     let original_items = workspace.item_multiset();
@@ -410,19 +433,27 @@ fn canonicalize_validated_draft(
         .map(|(root, record)| (*root, record.node))
         .collect();
 
+    let mut effects = CanonicalEffects::default();
     let mut rewritten = SecondaryMap::with_capacity(workspace.nodes.capacity());
     for (root, node) in roots {
-        let next = rewrite_subtree(workspace, node, &protected_central, &mut rewritten)?
-            .ok_or(CanonicalizationError::EmptyRoot { root })?;
+        let (next, changed) = rewrite_subtree(workspace, node, &protected_central, &mut rewritten)?;
+        let next = next.ok_or(CanonicalizationError::EmptyRoot { root })?;
+        if changed {
+            effects.changed_roots.push(root);
+        }
         if let Some(record) = workspace.roots.get_mut(&root) {
             record.node = next;
         }
     }
 
     let reachable = reachable_from_roots(workspace)?;
-    workspace
-        .nodes
-        .retain(|node, _| reachable.contains_key(node));
+    workspace.nodes.retain(|node, _| {
+        let live = reachable.contains_key(node);
+        if !live {
+            effects.retired_nodes.push(node);
+        }
+        live
+    });
     workspace
         .tab_mru
         .retain(|node, _| reachable.contains_key(*node));
@@ -439,7 +470,7 @@ fn canonicalize_validated_draft(
         .validate_candidate()
         .map_err(CanonicalizationError::InvalidOutput)?;
 
-    Ok(())
+    Ok(effects)
 }
 
 impl WorkspaceBuilder {
@@ -474,8 +505,9 @@ fn rewrite_subtree(
     node_id: NodeId,
     protected_central: &HashSet<NodeId>,
     results: &mut SecondaryMap<NodeId, Option<NodeId>>,
-) -> Result<Option<NodeId>, CanonicalizationError> {
+) -> Result<(Option<NodeId>, bool), CanonicalizationError> {
     let mut stack = vec![(node_id, false)];
+    let mut changed = false;
 
     while let Some((current_id, exiting)) = stack.pop() {
         let current =
@@ -495,33 +527,35 @@ fn rewrite_subtree(
             continue;
         }
 
-        let result = match current {
+        let (result, local_changed) = match current {
             Node::Tabs { items, .. } => {
                 if items.is_empty() && !protected_central.contains(&current_id) {
-                    None
+                    (None, true)
                 } else {
-                    Some(current_id)
+                    (Some(current_id), false)
                 }
             }
             Node::Split { .. } => rewrite_split(workspace, current_id, results)?,
         };
+        changed |= local_changed;
         results.insert(current_id, result);
     }
 
-    results
+    let next = results
         .get(node_id)
         .copied()
         .ok_or(CanonicalizationError::MissingChild {
             owner: None,
             child: node_id,
-        })
+        })?;
+    Ok((next, changed))
 }
 
 fn rewrite_split(
     workspace: &mut WorkspaceData,
     node_id: NodeId,
     results: &SecondaryMap<NodeId, Option<NodeId>>,
-) -> Result<Option<NodeId>, CanonicalizationError> {
+) -> Result<(Option<NodeId>, bool), CanonicalizationError> {
     let Some(Node::Split {
         axis,
         children,
@@ -558,12 +592,12 @@ fn rewrite_split(
     }
 
     if retained_children < 2 {
-        return Ok(only_child);
+        return Ok((only_child, true));
     }
 
     // Input weights are already normalized. Preserve unchanged storage and bits.
     if !topology_changed && !needs_flattening {
-        return Ok(Some(node_id));
+        return Ok((Some(node_id), false));
     }
 
     let mut flattened = Vec::with_capacity(retained_children);
@@ -594,8 +628,8 @@ fn rewrite_split(
     }
 
     match flattened.len() {
-        0 => return Ok(None),
-        1 => return Ok(Some(flattened[0].0)),
+        0 => return Ok((None, true)),
+        1 => return Ok((Some(flattened[0].0), true)),
         _ => {}
     }
 
@@ -621,7 +655,7 @@ fn rewrite_split(
             owner: None,
             child: node_id,
         })?;
-    Ok(Some(node_id))
+    Ok((Some(node_id), true))
 }
 
 fn validate_rewrite_input(workspace: &WorkspaceData) -> Result<(), CanonicalizationError> {

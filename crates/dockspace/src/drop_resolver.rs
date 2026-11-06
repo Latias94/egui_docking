@@ -2955,20 +2955,13 @@ mod tests {
         assert_eq!(clone_volume.surfaces, spec.surfaces);
         assert_eq!(clone_volume.contained_records, 1);
         assert_eq!(clone_volume.contained_roster_entries, 1);
-        // Cold InstallMainRoot snapshots its donor before/after plus birth (3),
-        // then full canonical completion snapshots all R+1 roots twice.
-        assert_eq!(work.root_fingerprint_builds, 2 * spec.surfaces + 5);
-        // Removing this fixture's first singleton leaf collapses its binary
-        // parent. The new root adds one leaf, so canonical volume is V-1.
+        // Closed command writers and canonical rewrite effects issue authority
+        // directly. The actual prepared geometry remains independently owned.
+        assert_eq!(work.root_fingerprint_builds, 0);
+        assert_eq!(work.root_fingerprint_node_visits, 0);
         assert_eq!(
             resolved.mutation.candidate.nodes().count(),
             clone_volume.nodes - 1
-        );
-        // Donor before/after: 2S. Pre-normalization forest: V+1.
-        // Post-normalization forest: V-1. Birth: 1. Total: 2S+2V+1.
-        assert_eq!(
-            work.root_fingerprint_node_visits,
-            2 * workload.source_root_nodes + 2 * clone_volume.nodes + 1
         );
 
         ResolutionWorkBaseline {
@@ -3020,36 +3013,36 @@ mod tests {
             [
                 ResolutionWorkBaseline {
                     spec: specs[0],
-                    root_fingerprint_builds: 7,
-                    root_fingerprint_node_visits: 125,
+                    root_fingerprint_builds: 0,
+                    root_fingerprint_node_visits: 0,
                     source_root_nodes: 31,
                     transaction_clone_nodes: 31,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[1],
-                    root_fingerprint_builds: 21,
-                    root_fingerprint_node_visits: 559,
+                    root_fingerprint_builds: 0,
+                    root_fingerprint_node_visits: 0,
                     source_root_nodes: 31,
                     transaction_clone_nodes: 248,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[2],
-                    root_fingerprint_builds: 21,
-                    root_fingerprint_node_visits: 947,
+                    root_fingerprint_builds: 0,
+                    root_fingerprint_node_visits: 0,
                     source_root_nodes: 226,
                     transaction_clone_nodes: 247,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[3],
-                    root_fingerprint_builds: 69,
-                    root_fingerprint_node_visits: 4_159,
+                    root_fingerprint_builds: 0,
+                    root_fingerprint_node_visits: 0,
                     source_root_nodes: 63,
                     transaction_clone_nodes: 2_016,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[4],
-                    root_fingerprint_builds: 69,
-                    root_fingerprint_node_visits: 7_875,
+                    root_fingerprint_builds: 0,
+                    root_fingerprint_node_visits: 0,
                     source_root_nodes: 1_922,
                     transaction_clone_nodes: 2_015,
                 },

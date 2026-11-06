@@ -242,11 +242,10 @@ fn engine_presented_drop_reuses_the_requirement_workspace_index() {
     assert_eq!(work.drop_targets_assessed, 1);
     assert_eq!(work.geometric_winners, 1);
     assert_eq!(work.transaction_prepares, 1);
-    // InstallMainRoot classifies donor before/after and new-root birth (3),
-    // then canonical completion snapshots all three singleton roots twice (6).
-    // The current requirement index contributes no rebuild to these 9 values.
-    assert_eq!(work.root_fingerprint_builds, 9);
-    assert_eq!(work.root_fingerprint_node_visits, 9);
+    // The current index is reused; command/canonical effects no longer capture
+    // full root values merely to classify their own actual writes.
+    assert_eq!(work.root_fingerprint_builds, 0);
+    assert_eq!(work.root_fingerprint_node_visits, 0);
 }
 
 struct DurableRectFixture {
