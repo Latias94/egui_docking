@@ -840,7 +840,9 @@ fn docking_work() {
     let output =
         std::env::var_os("DOCKSPACE_DOCK_COST_OUT").expect("runner supplies the counter CSV path");
     let mut output = BufWriter::new(std::fs::File::create_new(output).unwrap());
-    writeln!(output, "panes,views,case,fingerprint_builds,fingerprint_node_visits,item_multiset_scans,item_multiset_item_visits,transaction_candidates,cloned_nodes,cloned_tab_items").unwrap();
+    // Existing cloned_* columns are logical inventory. Appended columns count
+    // concrete shared-store forks and payload clones within the same sample.
+    writeln!(output, "panes,views,case,fingerprint_builds,fingerprint_node_visits,item_multiset_scans,item_multiset_item_visits,transaction_candidates,cloned_nodes,cloned_tab_items,node_store_forks,node_handle_clones,mru_store_forks,mru_handle_clones,node_payload_clones,tab_item_copies,split_child_copies,split_weight_copies,mru_payload_clones,mru_item_copies").unwrap();
     for panes in panes {
         for &views in &views {
             for &case in &cases {
@@ -863,9 +865,10 @@ fn docking_work() {
                     expected_state(panes, views, WIDTHS[0], case)
                 );
                 let clones = work.workspace_deep_clones.transaction_candidates;
+                let storage = work.workspace_storage;
                 writeln!(
                     output,
-                    "{panes},{views},{},{},{},{},{},{},{},{}",
+                    "{panes},{views},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                     case.name(),
                     work.root_fingerprint_builds,
                     work.root_fingerprint_node_visits,
@@ -873,7 +876,17 @@ fn docking_work() {
                     work.item_multiset_item_visits,
                     clones.calls,
                     clones.volume.nodes,
-                    clones.volume.tab_items
+                    clones.volume.tab_items,
+                    storage.node_store_forks,
+                    storage.node_handle_clones,
+                    storage.mru_store_forks,
+                    storage.mru_handle_clones,
+                    storage.node_payload_clones,
+                    storage.tab_item_copies,
+                    storage.split_child_copies,
+                    storage.split_weight_copies,
+                    storage.mru_payload_clones,
+                    storage.mru_item_copies
                 )
                 .unwrap();
             }

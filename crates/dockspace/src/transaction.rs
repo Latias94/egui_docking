@@ -6,9 +6,9 @@ use crate::graph::{Workspace, WorkspaceData};
 use crate::operation::PreparedTransaction;
 use crate::policy::DockPolicySnapshot;
 
-/// Copies one complete transaction or atomic canonicalization draft, accounting
-/// for its full structural volume in the existing test-only clone ledger.
-/// Both use the `transaction_candidates` counter, including standalone wrappers.
+/// Forks one complete transaction or atomic canonicalization draft. Slot/map
+/// metadata is copied while node/MRU payloads share until their first write.
+/// The existing ledger records logical inventory, not physical payload copies.
 pub(crate) fn clone_workspace_draft(workspace: &Workspace) -> Workspace {
     #[cfg(test)]
     crate::drop_resolver::structural_work::record_transaction_candidate_clone(workspace);

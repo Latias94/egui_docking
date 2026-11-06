@@ -1083,11 +1083,12 @@ pub(crate) mod structural_work {
 
     use crate::graph::{Node, Workspace};
 
-    /// Structural volume copied by one explicit core-owned workspace clone.
+    /// Logical inventory carried through one explicit core-owned workspace fork.
     ///
-    /// This deliberately counts durable graph records and vector elements, not
-    /// allocator calls or bytes. It is therefore deterministic across allocators
-    /// and platforms while still exposing the size multiplied by each clone site.
+    /// Nodes and vector elements count occurrences in the source Workspace; Arc
+    /// sharing means these are not physical payload-copy or allocation counts.
+    /// Legacy deep-clone field names retain these inventory semantics. Actual
+    /// store handle forks and payload cloning are recorded in workspace_storage.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct WorkspaceCloneVolume {
         pub(crate) nodes: usize,
@@ -1142,7 +1143,7 @@ pub(crate) mod structural_work {
         }
     }
 
-    /// Calls and cumulative structural volume for one named deep-clone category.
+    /// Calls and cumulative source inventory for one named legacy clone category.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct DeepCloneWork {
         pub(crate) calls: usize,
@@ -1157,7 +1158,7 @@ pub(crate) mod structural_work {
         }
     }
 
-    /// Explicit workspace clone sites owned by transaction preparation.
+    /// Explicit Workspace fork sites; payload sharing does not zero their inventory.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct WorkspaceDeepCloneWork {
         pub(crate) engine_candidates: DeepCloneWork,
@@ -1165,7 +1166,7 @@ pub(crate) mod structural_work {
     }
 
     /// Whole-engine candidate preparation. Workspace authority is shared;
-    /// explicit mutation preparation owns the separate deep-copy counters.
+    /// explicit mutation preparation owns the separate fork-inventory counters.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct EngineDeepCloneWork {
         pub(crate) atomic_candidates: DeepCloneWork,
@@ -1204,12 +1205,33 @@ pub(crate) mod structural_work {
         }
     }
 
+    /// Actual shared-store operations, separate from legacy logical inventory.
+    ///
+    /// Node Clone counts every concrete Node value copy after reset, including
+    /// make_mut and owned Builder returns. MRU clones count shared-store payload
+    /// detachment, not unrelated domain Vec copies. Slot/map allocations, vacant
+    /// slot extent and placement-directory copying are not measured here.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct WorkspaceStorageWork {
+        pub(crate) node_store_forks: usize,
+        pub(crate) node_handle_clones: usize,
+        pub(crate) mru_store_forks: usize,
+        pub(crate) mru_handle_clones: usize,
+        pub(crate) node_payload_clones: usize,
+        pub(crate) tab_item_copies: usize,
+        pub(crate) split_child_copies: usize,
+        pub(crate) split_weight_copies: usize,
+        pub(crate) mru_payload_clones: usize,
+        pub(crate) mru_item_copies: usize,
+    }
+
     /// Test-only deterministic work performed by docking resolution and its
     /// transaction/authority dependencies.
     ///
-    /// This is an explicit-call-site ledger, not a global `Clone` interceptor:
-    /// caller-owned fixture clones and small field-local clones are intentionally
-    /// outside its authority.
+    /// Legacy Workspace inventory uses explicit core call sites. The separate
+    /// workspace_storage counters run at the concrete store/Node/MRU Clone
+    /// implementations, so fixture copies after reset also appear there.
+    /// Arbitrary Vec clones and allocator events are not intercepted.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct StructuralWorkMetrics {
         pub(crate) root_fingerprint_builds: usize,
@@ -1228,6 +1250,7 @@ pub(crate) mod structural_work {
         pub(crate) transaction_prepares: usize,
         pub(crate) transaction_commands: usize,
         pub(crate) workspace_deep_clones: WorkspaceDeepCloneWork,
+        pub(crate) workspace_storage: WorkspaceStorageWork,
         pub(crate) engine_deep_clones: EngineDeepCloneWork,
     }
 
@@ -1259,6 +1282,43 @@ pub(crate) mod structural_work {
         snapshot.presentation_hit_lookup_comparisons =
             PRESENTATION_HIT_LOOKUP_COMPARISONS.with(Cell::get);
         snapshot
+    }
+
+    pub(crate) fn record_node_store_clone(handles: usize) {
+        update(|work| {
+            work.workspace_storage.node_store_forks += 1;
+            work.workspace_storage.node_handle_clones += handles;
+        });
+    }
+
+    pub(crate) fn record_mru_store_clone(handles: usize) {
+        update(|work| {
+            work.workspace_storage.mru_store_forks += 1;
+            work.workspace_storage.mru_handle_clones += handles;
+        });
+    }
+
+    pub(crate) fn record_node_payload_clone(node: &Node) {
+        update(|work| {
+            let copies = &mut work.workspace_storage;
+            copies.node_payload_clones += 1;
+            match node {
+                Node::Tabs { items, .. } => copies.tab_item_copies += items.len(),
+                Node::Split {
+                    children, weights, ..
+                } => {
+                    copies.split_child_copies += children.len();
+                    copies.split_weight_copies += weights.len();
+                }
+            }
+        });
+    }
+
+    pub(crate) fn record_mru_payload_clone(items: usize) {
+        update(|work| {
+            work.workspace_storage.mru_payload_clones += 1;
+            work.workspace_storage.mru_item_copies += items;
+        });
     }
 
     pub(crate) fn record_root_fingerprint_build() {

@@ -2,13 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use slotmap::SlotMap;
+use std::sync::Arc;
 use thiserror::Error;
 
 use crate::canonical::CanonicalizationError;
 use crate::geometry::LogicalRect;
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::validation::WorkspaceValidationErrors;
+use shared_storage::{NodeStore, TabMruStore};
 
 pub(crate) const NORMALIZED_WEIGHT_TOLERANCE: f64 = 1.0e-5;
 
@@ -173,7 +174,7 @@ pub enum InvalidSplitWeights {
 }
 
 /// Runtime node in a docking forest.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Node {
     /// Ordered tabs sharing one content rectangle.
     Tabs {
@@ -191,6 +192,28 @@ pub enum Node {
         /// Normalized child shares, one per child.
         weights: Vec<SplitWeight>,
     },
+}
+
+impl Clone for Node {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        crate::drop_resolver::structural_work::record_node_payload_clone(self);
+        match self {
+            Self::Tabs { items, selected } => Self::Tabs {
+                items: items.clone(),
+                selected: *selected,
+            },
+            Self::Split {
+                axis,
+                children,
+                weights,
+            } => Self::Split {
+                axis: *axis,
+                children: children.clone(),
+                weights: weights.clone(),
+            },
+        }
+    }
 }
 
 impl Node {
@@ -363,8 +386,8 @@ impl ContainedFloating {
 /// Raw graph storage. Only graph-owned completion can publish it as a Workspace.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WorkspaceData {
-    pub(crate) nodes: SlotMap<NodeId, Node>,
-    pub(crate) tab_mru: BTreeMap<NodeId, Vec<ItemId>>,
+    pub(crate) nodes: NodeStore,
+    pub(crate) tab_mru: TabMruStore,
     pub(crate) roots: BTreeMap<RootId, RootRecord>,
     pub(crate) surfaces: BTreeMap<SurfaceId, SurfacePresentation>,
     pub(crate) contained_floatings: BTreeMap<FloatingPresentationId, ContainedFloating>,
@@ -475,7 +498,7 @@ impl Workspace {
         self.storage.insert_runtime_node(node)
     }
 
-    fn remove_runtime_node(&mut self, id: NodeId) -> Option<Node> {
+    fn remove_runtime_node(&mut self, id: NodeId) -> Option<Arc<Node>> {
         self.forget_placement(id);
         self.storage.remove_runtime_node(id)
     }
@@ -571,7 +594,7 @@ impl WorkspaceData {
         id
     }
 
-    pub(crate) fn remove_runtime_node(&mut self, id: NodeId) -> Option<Node> {
+    pub(crate) fn remove_runtime_node(&mut self, id: NodeId) -> Option<Arc<Node>> {
         let node = self.nodes.remove(id)?;
         self.tab_mru.remove(&id);
         Some(node)
@@ -617,19 +640,18 @@ impl WorkspaceBuilder {
     ///
     /// Returns [`WorkspaceBuildError::MissingNode`] for a stale or absent runtime identity.
     pub fn replace_node(&mut self, id: NodeId, node: Node) -> Result<Node, WorkspaceBuildError> {
-        let slot = self
+        let initial_mru = initial_tab_mru(&node);
+        let previous = self
             .workspace
             .nodes
-            .get_mut(id)
+            .replace(id, node)
             .ok_or(WorkspaceBuildError::MissingNode { node: id })?;
-        let initial_mru = initial_tab_mru(&node);
-        let previous = std::mem::replace(slot, node);
         if let Some(mru) = initial_mru {
             self.workspace.tab_mru.insert(id, mru);
         } else {
             self.workspace.tab_mru.remove(&id);
         }
-        Ok(previous)
+        Ok(Arc::unwrap_or_clone(previous))
     }
 
     /// Replaces a tabs stack's complete most-recent-first item permutation.
@@ -802,6 +824,9 @@ mod tests {
 mod authority;
 #[path = "canonical.rs"]
 pub(crate) mod canonical;
+#[cfg(test)]
+mod copy_tests;
 #[path = "operation.rs"]
 pub(crate) mod operation;
+mod shared_storage;
 pub use authority::RootReference;

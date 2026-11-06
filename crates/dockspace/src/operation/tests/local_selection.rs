@@ -119,9 +119,11 @@ fn stale_wrong_root_missing_and_recycled_sources_keep_general_rejections() {
     let mru = replacement
         .workspace
         .tab_mru
-        .remove(&retired_source.tabs())
-        .unwrap();
-    let recycled = replacement.workspace.nodes.insert(tabs);
+        .get(&retired_source.tabs())
+        .unwrap()
+        .clone();
+    replacement.workspace.tab_mru.remove(&retired_source.tabs());
+    let recycled = replacement.workspace.nodes.insert((*tabs).clone());
     assert_ne!(recycled, retired_source.tabs());
     replacement.workspace.tab_mru.insert(recycled, mru);
     let root = replacement.draft().root(MAIN).unwrap().node;

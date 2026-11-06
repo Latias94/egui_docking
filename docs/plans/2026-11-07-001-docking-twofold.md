@@ -138,3 +138,15 @@ host tests. Its complete-operation effect is flat/mixed (14/42 medians regress,
 pairing and one owner of final reporting; do not count it as a material speedup.
 See [the full observations](../performance/2026-11-07-prepared-report.md).
 Candidate copying remains the dominant measured move cost to test next.
+
+Shared immutable Node/MRU payloads pass 2,058 production core, 2,234 workspace
+and 292/335 public host tests plus the ordinary integration/lint/docs gates.
+Against `93f2c57`, complete 1,024-pane moves improve 25.39–29.55%, while resize
+regresses 1.55–5.47%. Thirteen of 42 group/cells reach 2x; the remaining ratios
+are 3.70–7.20x at 16 panes, 1.74–3.19x at 128 and 1.29–2.04x at 1,024. Keep
+the ten negative medians, all tails and cold-path cost in
+[the full evidence](../performance/2026-11-07-candidate-copy.md). Mutation now
+takes about 18–19 microseconds at 1,024 panes, and fresh all-root layout remains
+about 110–113 microseconds. Continue exact cold effects/initial issuance, then
+independently measured output slab, compact frames, numeric preparation and
+graph-owned structure; do not infer that the remaining architecture is exhausted.

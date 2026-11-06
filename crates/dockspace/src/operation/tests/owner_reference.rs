@@ -463,7 +463,7 @@ fn recycled_primary_node_generation_never_inherits_old_membership() {
     let original = workspace.capture_node_source(A, tabs[0]).unwrap();
     let mut builder = workspace.into_builder();
     let removed = builder.workspace.remove_runtime_node(tabs[0]).unwrap();
-    let replacement = builder.insert_node(removed);
+    let replacement = builder.insert_node((*removed).clone());
     assert_ne!(replacement, tabs[0]);
     let root_node = builder.draft().root(A).unwrap().node;
     let Node::Split { children, .. } = builder.draft_mut().nodes.get_mut(root_node).unwrap() else {

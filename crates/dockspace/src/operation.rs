@@ -3651,8 +3651,8 @@ fn remove_subtree_nodes(workspace: &mut Workspace, root: NodeId) -> Result<(), C
                 role: ReferenceRole::Source,
                 node: node_id,
             })?;
-        if let Node::Split { children, .. } = node {
-            stack.extend(children.into_iter().rev());
+        if let Node::Split { children, .. } = node.as_ref() {
+            stack.extend(children.iter().rev().copied());
         }
     }
     Ok(())

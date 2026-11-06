@@ -607,18 +607,20 @@ fn rewrite_split(
         },
     )?;
 
-    let slot = workspace
+    workspace
         .nodes
-        .get_mut(node_id)
+        .replace(
+            node_id,
+            Node::Split {
+                axis,
+                children,
+                weights,
+            },
+        )
         .ok_or(CanonicalizationError::MissingChild {
             owner: None,
             child: node_id,
         })?;
-    *slot = Node::Split {
-        axis,
-        children,
-        weights,
-    };
     Ok(Some(node_id))
 }
 
@@ -662,7 +664,7 @@ fn validate_nodes(
     let mut parents = SecondaryMap::<NodeId, NodeId>::new();
     let mut item_owners = BTreeMap::<ItemId, NodeId>::new();
 
-    for (node_id, node) in &workspace.nodes {
+    for (node_id, node) in workspace.nodes.iter() {
         match node {
             Node::Tabs { items, selected } => {
                 let selection_is_valid = if items.is_empty() {
@@ -996,7 +998,7 @@ mod tests {
     #[test]
     fn invalid_input_is_rejected_before_rewriting_or_atomic_cloning() {
         let (mut builder, leaf, _) = singleton_draft();
-        builder.draft_mut().nodes[leaf] = Node::Tabs {
+        *builder.draft_mut().nodes.get_mut(leaf).unwrap() = Node::Tabs {
             items: vec![ItemId::new(1)],
             selected: Some(ItemId::new(2)),
         };
