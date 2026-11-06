@@ -11,6 +11,10 @@ mod junction_compile_tests;
 mod shared_splitter_tests;
 
 #[cfg(test)]
+#[path = "surface/finalize_tests.rs"]
+mod finalize_tests;
+
+#[cfg(test)]
 thread_local! {
     static SURFACE_COMPILATION_COUNT: Cell<usize> = const { Cell::new(0) };
 }
@@ -29,7 +33,7 @@ pub(crate) fn surface_compilation_count() -> usize {
 /// The adapter supplies only measurements minted by `requirements`. Structural
 /// identities, layout, layers, targets, guides, previews, and policy outcomes
 /// are derived here from core state.
-pub(crate) fn compile_surface_scene(
+fn compile_surface_scene(
     workspace: &Workspace,
     workspace_index: &WorkspaceIndex,
     workspace_version: WorkspaceVersion,
@@ -304,6 +308,73 @@ fn compile_splitter_junctions(ready: &mut PresentationPlan) -> Result<(), SceneC
     Ok(())
 }
 
+pub(crate) struct CompiledSurfacePlan<'a> {
+    plan: PresentationPlan,
+    workspace: &'a Workspace,
+    version: WorkspaceVersion,
+    policy: &'a DockPolicySnapshot,
+    manifest: &'a SceneRequirementManifest,
+    contained_projection: Option<ContainedLayoutProjection>,
+}
+
+impl<'a> CompiledSurfacePlan<'a> {
+    /// Finalizes exactly the immutable inputs used by the sole constructor.
+    pub(crate) fn finalize(self) -> Result<PresentationPlan, SceneBuildError> {
+        PresentationPlanValidator::finalize_compiled(self)
+    }
+
+    pub(crate) fn into_finalization(
+        self,
+    ) -> Result<(PresentationPlan, PresentationPlanValidator<'a>), SceneBuildError> {
+        let validator = PresentationPlanValidator::for_manifest_surface(
+            self.workspace,
+            self.version,
+            self.manifest,
+            self.policy,
+            self.plan.surface(),
+        )?
+        .with_contained_projection(self.contained_projection)?;
+        Ok((self.plan, validator))
+    }
+}
+
+/// The host supplies measurements, while this constructor owns the complete
+/// record roster, structural identities, junctions and magnetic-field recipe.
+/// No mutable plan escapes between construction and geometry finalization.
+pub(crate) fn compile_surface_plan<'a>(
+    workspace: &'a Workspace,
+    workspace_version: WorkspaceVersion,
+    policy: &'a DockPolicySnapshot,
+    config: &DockPresentationConfig,
+    manifest: &'a SceneRequirementManifest,
+    measurements: &SurfaceMeasurements,
+    tab_strip_states: &TabStripStateStore,
+    resize_overrides: &[SplitWeightOverride<'_>],
+    contained_projection: Option<ContainedLayoutProjection>,
+) -> Result<CompiledSurfacePlan<'a>, PresentationCompilationError> {
+    let plan = compile_surface_measurements_with_guide_emission(
+        workspace,
+        workspace_version,
+        policy,
+        config,
+        manifest,
+        measurements,
+        tab_strip_states,
+        resize_overrides,
+        contained_projection,
+        true,
+    )?;
+    Ok(CompiledSurfacePlan {
+        plan,
+        workspace,
+        version: workspace_version,
+        policy,
+        manifest,
+        contained_projection,
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn compile_surface_measurements(
     workspace: &Workspace,
     workspace_version: WorkspaceVersion,

@@ -73,7 +73,7 @@ impl NativeFirstLiveProjection {
             return Err(SurfaceContributionPrepareError::SurfaceOutsideRoster { surface });
         }
         let manifest = self.manifest.clone().with_popup(popup);
-        let plan = compile_surface_measurements(
+        compile_surface_plan(
             &self.workspace,
             self.version,
             &self.policy,
@@ -84,15 +84,8 @@ impl NativeFirstLiveProjection {
             &[],
             None,
         )
-        .map_err(SurfaceContributionPrepareError::Compilation)?;
-        PresentationPlanValidator::for_manifest_surface(
-            &self.workspace,
-            self.version,
-            &manifest,
-            &self.policy,
-            surface,
-        )
-        .and_then(|validator| validator.validate_and_canonicalize(plan))
+        .map_err(SurfaceContributionPrepareError::Compilation)?
+        .finalize()
         .map_err(SurfaceContributionPrepareError::Validation)
     }
 }

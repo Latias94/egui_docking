@@ -1,0 +1,166 @@
+{
+  "baseline_commit": "aba4c27b00746de929329fac0a0db3054448a7f6",
+  "samples": 24,
+  "warmup": 6,
+  "panes": [
+    16,
+    128,
+    1024
+  ],
+  "source_changes": [
+    "crates/dockspace/src/engine.rs",
+    "crates/dockspace/src/engine/native_projection.rs",
+    "crates/dockspace/src/engine/surface_contribution.rs",
+    "crates/dockspace/src/scene/validation.rs",
+    "crates/dockspace/src/scene_compiler.rs",
+    "crates/dockspace/src/scene_compiler/surface.rs",
+    "crates/dockspace/src/scene_compiler/surface/finalize_tests.rs"
+  ],
+  "binary_sha256": {
+    "baseline": "bf16b70592c385604a708e0a1207a9dd7cbb927898d74f0d7ec5f69f8cb19bcc",
+    "candidate": "11aa6b3379605f4e06a3bd9f38c36a142bb80c5aa2f64fd008a70b9de4e58a8f"
+  },
+  "runs": [
+    {
+      "group": 1,
+      "run": 1,
+      "condition": "baseline",
+      "command": [
+        "/private/tmp/dockspace-compiled-plan-20261106-aba4c27/baseline-product-bin",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-06T07:48:58.623213+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T07:49:01.216036+00:00"
+    },
+    {
+      "group": 1,
+      "run": 2,
+      "condition": "candidate",
+      "command": [
+        "/private/tmp/dockspace-compiled-plan-20261106-aba4c27/candidate-product-bin",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-06T07:49:01.217538+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T07:49:03.734138+00:00"
+    },
+    {
+      "group": 1,
+      "run": 3,
+      "condition": "candidate",
+      "command": [
+        "/private/tmp/dockspace-compiled-plan-20261106-aba4c27/candidate-product-bin",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-06T07:49:03.735339+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T07:49:06.250283+00:00"
+    },
+    {
+      "group": 1,
+      "run": 4,
+      "condition": "baseline",
+      "command": [
+        "/private/tmp/dockspace-compiled-plan-20261106-aba4c27/baseline-product-bin",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-06T07:49:06.251353+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T07:49:08.850042+00:00"
+    },
+    {
+      "group": 2,
+      "run": 1,
+      "condition": "candidate",
+      "command": [
+        "/private/tmp/dockspace-compiled-plan-20261106-aba4c27/candidate-product-bin",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-06T07:49:08.851096+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T07:49:11.368033+00:00"
+    },
+    {
+      "group": 2,
+      "run": 2,
+      "condition": "baseline",
+      "command": [
+        "/private/tmp/dockspace-compiled-plan-20261106-aba4c27/baseline-product-bin",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-06T07:49:11.369386+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T07:49:13.961903+00:00"
+    },
+    {
+      "group": 2,
+      "run": 3,
+      "condition": "baseline",
+      "command": [
+        "/private/tmp/dockspace-compiled-plan-20261106-aba4c27/baseline-product-bin",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-06T07:49:13.962987+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T07:49:16.547269+00:00"
+    },
+    {
+      "group": 2,
+      "run": 4,
+      "condition": "candidate",
+      "command": [
+        "/private/tmp/dockspace-compiled-plan-20261106-aba4c27/candidate-product-bin",
+        "--samples",
+        "24",
+        "--warmup",
+        "6",
+        "--panes",
+        "16,128,1024"
+      ],
+      "started_utc": "2026-11-06T07:49:16.548327+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T07:49:19.054839+00:00"
+    }
+  ],
+  "finished_utc": "2026-11-06T07:49:19.067563+00:00",
+  "results_sha256": {
+    "raw.csv": "49209691f976219ee4c9f01955bf4a1bd7f578bb3503ccb0c95d76e429d8a49e",
+    "summary.csv": "b5c9106af44bf070cccef954765b35f3d12cd1ab797db01d6bb6fecf54989fd9"
+  }
+}

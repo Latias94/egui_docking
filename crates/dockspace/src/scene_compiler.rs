@@ -28,13 +28,13 @@ use crate::presentation_config::{DockPresentationConfig, PresentationConfigRevis
 use crate::scene::{
     ContainedLayoutProjection, ContainedMinimumMeasurement, ContainedRecord,
     ContainedResizeDirection, ContainedResizeRecord, PaneRecord, PaneSceneId,
-    PresentationMenuAnchorHost, PresentationMenuAnchorRecord, PresentationPlan, RootLayoutFacts,
-    SceneBuildError, SplitterGapPresentation, SplitterGapRecord, SplitterJunctionRecord,
-    SplitterRecord, SplitterSceneId, SurfaceProgramBuildError, SurfaceProgramRootOperation,
-    SurfaceProgramRootPresentation, TabBarRecord, TabBarSceneId, TabGroupDragRecord,
-    TabListMenuBackdropRecord, TabListMenuGeometryAvailability, TabListMenuRecord,
-    TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord, TabStripMemberRecord,
-    TabStripMemberVisibility,
+    PresentationMenuAnchorHost, PresentationMenuAnchorRecord, PresentationPlan,
+    PresentationPlanValidator, RootLayoutFacts, SceneBuildError, SplitterGapPresentation,
+    SplitterGapRecord, SplitterJunctionRecord, SplitterRecord, SplitterSceneId,
+    SurfaceProgramBuildError, SurfaceProgramRootOperation, SurfaceProgramRootPresentation,
+    TabBarRecord, TabBarSceneId, TabGroupDragRecord, TabListMenuBackdropRecord,
+    TabListMenuGeometryAvailability, TabListMenuRecord, TabListMenuRowRecord, TabRecord,
+    TabSceneId, TabStripControlRecord, TabStripMemberRecord, TabStripMemberVisibility,
 };
 use crate::scene_manifest::{
     AuthoritativeSurfaceMeasurements, ManifestBuildError, ManifestMeasurementError,
@@ -63,13 +63,13 @@ pub(crate) use requirements::{
     SceneRequirementDerivationError, derive_scene_requirement_draft,
     derive_scene_requirement_draft_with_index,
 };
-pub(crate) use surface::compile_surface_measurements;
+pub(crate) use surface::{CompiledSurfacePlan, compile_surface_plan};
 pub use surface::{PresentationCompilationError, SceneCompilationError};
 
 #[cfg(test)]
 pub(crate) use surface::{
-    compile_surface_measurements_without_guides, reset_surface_compilation_count,
-    surface_compilation_count,
+    compile_surface_measurements, compile_surface_measurements_without_guides,
+    reset_surface_compilation_count, surface_compilation_count,
 };
 
 #[cfg(test)]

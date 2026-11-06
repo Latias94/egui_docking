@@ -1,0 +1,209 @@
+[
+  {
+    "check": "focused-compiled-finalization",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "dockspace",
+      "--all-features",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast",
+      "-E",
+      "test(scene::validation) | test(scene_compiler)"
+    ],
+    "started_utc": "2026-11-06T07:28:00.743128+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:28:41.413721+00:00"
+  },
+  {
+    "check": "workspace-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T07:28:41.414163+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:30:27.381288+00:00"
+  },
+  {
+    "check": "host-default",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T07:30:27.381778+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:31:49.007810+00:00"
+  },
+  {
+    "check": "host-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T07:31:49.009778+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:33:17.658516+00:00"
+  },
+  {
+    "check": "native-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T07:33:17.660386+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:34:44.499921+00:00"
+  },
+  {
+    "check": "clippy-workspace",
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started_utc": "2026-11-06T07:34:44.500421+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:35:09.904343+00:00"
+  },
+  {
+    "check": "clippy-native",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started_utc": "2026-11-06T07:35:09.904904+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:35:32.338240+00:00"
+  },
+  {
+    "check": "doctests",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--all-features",
+      "--doc",
+      "--locked",
+      "--offline"
+    ],
+    "started_utc": "2026-11-06T07:35:32.338705+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:35:34.673992+00:00"
+  },
+  {
+    "check": "fmt-workspace",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "started_utc": "2026-11-06T07:35:34.674291+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:35:36.267402+00:00"
+  },
+  {
+    "check": "dependency-boundary",
+    "command": [
+      "python3",
+      "scripts/check_core_dependencies.py"
+    ],
+    "started_utc": "2026-11-06T07:35:36.267909+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:35:36.371659+00:00"
+  },
+  {
+    "check": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "started_utc": "2026-11-06T07:35:36.371920+00:00",
+    "source_snapshot_sha256": "3c904250404be9ffa6e71c3aa6d087ffaf5ac748a317cef9df43996a16fc1b70",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T07:35:36.405046+00:00"
+  }
+]

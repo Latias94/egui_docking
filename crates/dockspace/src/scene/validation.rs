@@ -120,11 +120,76 @@ impl<'a> PresentationPlanValidator<'a> {
         Ok(self)
     }
 
-    /// Validates and canonicalizes one plan without publishing partial state.
+    /// Validates arbitrary plans, including deliberately malformed test facts.
     pub(crate) fn validate_and_canonicalize(
         &self,
-        mut ready: PresentationPlan,
+        ready: PresentationPlan,
     ) -> Result<PresentationPlan, SceneBuildError> {
+        let (record_order, drop_target_index) = self.begin_validation(&ready)?;
+        if ready.measurement_ticket().is_some() {
+            validate_ready_semantics(
+                &ready,
+                &record_order,
+                self.workspace,
+                &self.workspace_index,
+                self.policy,
+            )?;
+        }
+        let target_coverage = self.validate_drop_records(&ready, &drop_target_index)?;
+        validate_magnetic_target_field(
+            &ready,
+            target_coverage,
+            self.workspace,
+            &self.workspace_index,
+        )?;
+        let target_order = drop_target_index.into_order();
+        self.finish_validation(ready, record_order, target_order)
+    }
+
+    /// The compiler owns the record roster and the junction/field recipe.
+    /// Keep checks on derived geometry and current input authority, without
+    /// independently rebuilding those same structural outputs a second time.
+    pub(crate) fn finalize_compiled(
+        compiled: crate::scene_compiler::CompiledSurfacePlan<'_>,
+    ) -> Result<PresentationPlan, SceneBuildError> {
+        let (ready, validator) = compiled.into_finalization()?;
+        let (record_order, drop_target_index) = validator.begin_validation(&ready)?;
+        validate_contained_records(&ready, validator.workspace, &validator.workspace_index)?;
+        for (id, record) in record_order.panes.iter(&ready.pane_records) {
+            if !rect_contains(ready.bounds, record.bounds())
+                || !rect_contains(record.bounds(), record.content_bounds())
+            {
+                return Err(SceneBuildError::InvalidPaneRecord {
+                    surface: ready.surface,
+                    id,
+                });
+            }
+        }
+        validate_tab_records(
+            &ready,
+            &record_order,
+            validator.workspace,
+            &validator.workspace_index,
+            validator.policy,
+        )?;
+        validate_presentation_menu_anchors(&ready, validator.workspace)?;
+        validate_splitter_geometry(
+            &ready,
+            &record_order,
+            validator.workspace,
+            &validator.workspace_index,
+            validator.policy,
+        )?;
+        let target_coverage = validator.validate_drop_records(&ready, &drop_target_index)?;
+        validate_compiled_target_coverage(&ready, target_coverage)?;
+        let target_order = drop_target_index.into_order();
+        validator.finish_validation(ready, record_order, target_order)
+    }
+
+    fn begin_validation<'plan>(
+        &self,
+        ready: &'plan PresentationPlan,
+    ) -> Result<(SemanticRecordOrder, DropTargetCatalog<'plan>), SceneBuildError> {
         let surface = ready.surface;
         if ready.contained_projection() != self.contained_projection
             && let Some(projection) = ready.contained_projection().or(self.contained_projection)
@@ -142,21 +207,21 @@ impl<'a> PresentationPlanValidator<'a> {
                 actual: surface,
             });
         }
-        let (record_order, drop_target_index) = validate_semantic_uniqueness(&ready)?;
-        validate_popup_plane(&ready)?;
+        let (record_order, drop_target_index) = validate_semantic_uniqueness(ready)?;
+        validate_popup_plane(ready)?;
         if !rect_has_area(ready.bounds) {
             return Err(SceneBuildError::EmptyReadySurfaceBounds { surface });
         }
-        validate_surface_background(&ready, self.workspace, &self.workspace_index)?;
-        if ready.measurement_ticket().is_some() {
-            validate_ready_semantics(
-                &ready,
-                &record_order,
-                self.workspace,
-                &self.workspace_index,
-                self.policy,
-            )?;
-        }
+        validate_surface_background(ready, self.workspace, &self.workspace_index)?;
+        Ok((record_order, drop_target_index))
+    }
+
+    fn validate_drop_records<'catalog, 'plan>(
+        &self,
+        ready: &'plan PresentationPlan,
+        drop_target_index: &'catalog DropTargetCatalog<'plan>,
+    ) -> Result<MagneticTargetCoverage<'catalog, 'plan>, SceneBuildError> {
+        let surface = ready.surface;
         let published_occlusions: HashSet<_> = ready
             .drop_occlusions
             .iter()
@@ -205,26 +270,28 @@ impl<'a> PresentationPlanValidator<'a> {
             }
         }
         for target in &ready.drop_targets {
-            validate_drop_target(&ready, target, self.workspace, &self.workspace_index)?;
+            validate_drop_target(ready, target, self.workspace, &self.workspace_index)?;
         }
-        let mut target_coverage = MagneticTargetCoverage::new(&drop_target_index);
+        let mut target_coverage = MagneticTargetCoverage::new(drop_target_index);
         for cluster in &ready.drop_guide_clusters {
             validate_drop_guide_cluster(
-                &ready,
+                ready,
                 &mut target_coverage,
                 cluster,
                 self.workspace,
                 &self.workspace_index,
             )?;
         }
-        validate_magnetic_target_field(
-            &ready,
-            target_coverage,
-            self.workspace,
-            &self.workspace_index,
-        )?;
+        Ok(target_coverage)
+    }
+
+    fn finish_validation(
+        &self,
+        mut ready: PresentationPlan,
+        record_order: SemanticRecordOrder,
+        target_order: DropTargetOrder,
+    ) -> Result<PresentationPlan, SceneBuildError> {
         validate_contained_minimums(&ready, &self.workspace_index)?;
-        let target_order = drop_target_index.into_order();
         canonicalize_ready(
             &mut ready,
             self.workspace,
@@ -238,6 +305,31 @@ impl<'a> PresentationPlanValidator<'a> {
         }
         Ok(ready)
     }
+}
+
+fn validate_compiled_target_coverage(
+    ready: &PresentationPlan,
+    mut coverage: MagneticTargetCoverage<'_, '_>,
+) -> Result<(), SceneBuildError> {
+    let invalid = || SceneBuildError::InvalidMagneticTargetField {
+        surface: ready.surface,
+    };
+    // Zero content or unavailable guide geometry can omit a field/cluster.
+    // Check the actual emitted coverage, without deriving their recipe again.
+    for field in ready.magnetic_target_field.roots() {
+        for id in field.edges().targets() {
+            coverage.get(&id).ok_or_else(&invalid)?;
+        }
+    }
+    for field in ready.magnetic_target_field.panes() {
+        for id in std::iter::once(field.center_target()).chain(field.edges().targets()) {
+            coverage.get(&id).ok_or_else(&invalid)?;
+        }
+    }
+    if !coverage.is_complete() {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 fn validate_magnetic_target_field(
@@ -1041,9 +1133,20 @@ fn validate_pane_and_tab_records(
         }
     }
 
-    // The expected pane roster already proves root membership, owner, and
-    // selection. Tab-bar policy only needs that selected item's stable rule;
-    // capturing a complete root fingerprint for every leaf repeats O(n) work.
+    validate_tab_records(ready, record_order, workspace, workspace_index, policy)
+}
+
+fn validate_tab_records(
+    ready: &PresentationPlan,
+    record_order: &SemanticRecordOrder,
+    workspace: &Workspace,
+    workspace_index: &SceneWorkspaceIndex,
+    policy: &DockPolicySnapshot,
+) -> Result<(), SceneBuildError> {
+    let panes = &record_order.panes;
+    // The caller establishes membership, owner and selection through either
+    // the expected roster or the sealed compiler. Policy needs only the
+    // selected item's stable rule, not another complete root fingerprint.
     let pane_policy = |pane: &PaneRecord| {
         policy.tab_bar_policy(DockTabBarPolicyRequest::new(
             ready.surface,
@@ -1523,6 +1626,16 @@ fn validate_splitter_records(
     workspace_index: &SceneWorkspaceIndex,
     policy: &DockPolicySnapshot,
 ) -> Result<(), SceneBuildError> {
+    validate_splitter_record_sets(ready, record_order, workspace)?;
+    validate_splitter_geometry(ready, record_order, workspace, workspace_index, policy)?;
+    validate_splitter_junction_records(ready, record_order)
+}
+
+fn validate_splitter_record_sets(
+    ready: &PresentationPlan,
+    record_order: &SemanticRecordOrder,
+    workspace: &Workspace,
+) -> Result<(), SceneBuildError> {
     let splitters = &record_order.splitters;
     let splitter_gaps = &record_order.gaps;
     let compiled_roots = ready
@@ -1591,6 +1704,17 @@ fn validate_splitter_records(
             surface: ready.surface,
         });
     }
+    Ok(())
+}
+
+fn validate_splitter_geometry(
+    ready: &PresentationPlan,
+    record_order: &SemanticRecordOrder,
+    workspace: &Workspace,
+    workspace_index: &SceneWorkspaceIndex,
+    policy: &DockPolicySnapshot,
+) -> Result<(), SceneBuildError> {
+    let splitters = &record_order.splitters;
     let mut validated_resize_arrays: Option<&SplitterRecord> = None;
     for (id, record) in splitters.iter(&ready.splitter_records) {
         let Some(Node::Split { axis, children, .. }) = workspace.node(id.split) else {
@@ -1658,6 +1782,14 @@ fn validate_splitter_records(
         validated_resize_arrays = Some(record);
     }
 
+    Ok(())
+}
+
+fn validate_splitter_junction_records(
+    ready: &PresentationPlan,
+    record_order: &SemanticRecordOrder,
+) -> Result<(), SceneBuildError> {
+    let splitters = &record_order.splitters;
     let expected_junctions = derive_splitter_junction_candidates(
         splitters
             .iter(&ready.splitter_records)

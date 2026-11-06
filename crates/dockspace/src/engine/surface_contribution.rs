@@ -359,7 +359,7 @@ impl DockEngine {
                 &self.presentation_authority.tab_strip_states,
             )
         } else {
-            compile_surface_measurements(
+            compile_surface_plan(
                 &self.workspace,
                 self.version,
                 &self.policy,
@@ -371,28 +371,13 @@ impl DockEngine {
                 contained_projection,
             )
             .map_err(SurfaceContributionPrepareError::Compilation)
+            .and_then(|plan| {
+                plan.finalize()
+                    .map_err(SurfaceContributionPrepareError::Validation)
+            })
         };
         let state = match compiled {
             Ok(plan) => {
-                let plan = if native_projection.is_some() {
-                    plan
-                } else {
-                    let validator = PresentationPlanValidator::for_manifest_surface(
-                        &self.workspace,
-                        self.version,
-                        &self.presentation_authority.presentation_requirements,
-                        &self.policy,
-                        surface,
-                    )
-                    .map_err(SurfaceContributionPrepareError::Validation)?;
-                    let validator = validator
-                        .with_contained_projection(contained_projection)
-                        .map_err(SurfaceContributionPrepareError::Validation)?;
-                    let plan = validator
-                        .validate_and_canonicalize(plan)
-                        .map_err(SurfaceContributionPrepareError::Validation)?;
-                    plan
-                };
                 if matches!(
                     token.coordinates,
                     SurfaceCoordinateCapture::NativeUnavailable { .. }

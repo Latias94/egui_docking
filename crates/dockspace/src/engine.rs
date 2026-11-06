@@ -228,8 +228,10 @@ use crate::scene::{
     SurfaceSceneSet, SurfaceSceneStamp, TabBarRecord, TabListMenuBackdropRecord, TabListMenuRecord,
     TabStripMemberRecord,
 };
+#[cfg(test)]
+use crate::scene_compiler::compile_surface_measurements;
 use crate::scene_compiler::{
-    PresentationCompilationError, compile_surface_measurements, derive_scene_requirement_draft,
+    PresentationCompilationError, compile_surface_plan, derive_scene_requirement_draft,
     derive_scene_requirement_draft_with_index,
 };
 use crate::scene_manifest::{
