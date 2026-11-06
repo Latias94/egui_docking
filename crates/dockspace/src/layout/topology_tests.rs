@@ -128,6 +128,120 @@ fn cached_topology_reuses_structure_with_current_metrics_and_answers() {
 }
 
 #[test]
+fn refreshed_index_reuses_layout_without_reusing_semantic_authority() {
+    let (workspace, leaves) = fixture(&mut 37, true);
+    let version = WorkspaceVersion::initial();
+    let next_version =
+        WorkspaceVersion::new(version.epoch(), version.revision().checked_next().unwrap());
+    let index = WorkspaceIndex::build(&workspace, version).unwrap();
+    let mut minimums = leaves
+        .iter()
+        .map(|&id| (id, LogicalSize::new(4.0, 3.0).unwrap()))
+        .collect::<BTreeMap<_, _>>();
+    let metrics = LayoutMetrics::new(1.0).unwrap();
+    let first =
+        measure_root_minimums_with_index(&workspace, ROOT, &minimums, metrics, &index, version)
+            .unwrap();
+    let old_target = index
+        .capture_tab_target(&workspace, version, ROOT, leaves[0])
+        .unwrap();
+    let mut changed = workspace.clone();
+    let Node::Tabs { items, selected } = changed.nodes.get_mut(leaves[0]).unwrap() else {
+        unreachable!()
+    };
+    let item = crate::ids::ItemId::new(1_000_000);
+    items.push(item);
+    *selected = Some(item);
+    changed.tab_mru.get_mut(&leaves[0]).unwrap().insert(0, item);
+    changed.validate().unwrap();
+    let refreshed = WorkspaceIndex::build_reusing_layout(&changed, next_version, &index).unwrap();
+    assert_eq!(
+        refreshed,
+        WorkspaceIndex::build(&changed, next_version).unwrap()
+    );
+    assert!(matches!(
+        refreshed.verify_reference(
+            &changed,
+            next_version,
+            ROOT,
+            leaves[0],
+            old_target.fingerprint(),
+            crate::error::ReferenceRole::Target
+        ),
+        Err(crate::error::CommandError::StaleNode { .. })
+    ));
+    minimums.insert(leaves[0], LogicalSize::new(19.0, 27.0).unwrap());
+    let metrics = LayoutMetrics::new(3.0).unwrap();
+    let second = measure_root_minimums_with_index(
+        &changed,
+        ROOT,
+        &minimums,
+        metrics,
+        &refreshed,
+        next_version,
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&first.topology, &second.topology));
+    let bounds = LogicalRect::new(0.0, 0.0, 350.0, 240.0).unwrap();
+    assert_eq!(
+        second.project(bounds, &[]),
+        reference::project(
+            &changed,
+            ROOT,
+            bounds,
+            LeafMeasurements::Minimums(&minimums),
+            metrics,
+            &[]
+        )
+    );
+}
+
+#[test]
+fn refreshed_index_filters_a_hint_compiled_after_a_same_version_edit() {
+    let (workspace, leaves) = fixture(&mut 37, true);
+    let version = WorkspaceVersion::initial();
+    let index = WorkspaceIndex::build(&workspace, version).unwrap();
+    let mut changed = workspace.clone();
+    let root = workspace.root(ROOT).unwrap().node;
+    let Node::Split { children, .. } = changed.nodes.get_mut(root).unwrap() else {
+        unreachable!()
+    };
+    children.swap(0, 1);
+    let minimums = leaves
+        .iter()
+        .map(|&id| (id, LogicalSize::new(4.0, 3.0).unwrap()))
+        .collect::<BTreeMap<_, _>>();
+    let metrics = LayoutMetrics::new(1.0).unwrap();
+    let stale =
+        measure_root_minimums_with_index(&changed, ROOT, &minimums, metrics, &index, version)
+            .unwrap();
+    let refreshed = WorkspaceIndex::build_reusing_layout(&workspace, version, &index).unwrap();
+    assert!(
+        refreshed
+            .layout_topology_slot(ROOT, version)
+            .unwrap()
+            .get()
+            .is_none()
+    );
+    let current =
+        measure_root_minimums_with_index(&workspace, ROOT, &minimums, metrics, &refreshed, version)
+            .unwrap();
+    assert!(!Arc::ptr_eq(&stale.topology, &current.topology));
+    let bounds = LogicalRect::new(0.0, 0.0, 350.0, 240.0).unwrap();
+    assert_eq!(
+        current.project(bounds, &[]),
+        reference::project(
+            &workspace,
+            ROOT,
+            bounds,
+            LeafMeasurements::Minimums(&minimums),
+            metrics,
+            &[]
+        )
+    );
+}
+
+#[test]
 fn same_version_topology_edits_miss_without_replacing_the_original_hint() {
     let (workspace, leaves) = fixture(&mut 91, false);
     let version = WorkspaceVersion::initial();
@@ -187,6 +301,35 @@ fn same_version_topology_edits_miss_without_replacing_the_original_hint() {
             actual.and_then(|measured| measured.project(bounds, &[])),
             expected
         );
+        let refreshed = WorkspaceIndex::build_reusing_layout(&changed, version, &index);
+        if edit == 3 {
+            assert!(
+                matches!(refreshed, Err(crate::error::CommandError::MissingNode { node, .. }) if node == leaves[0])
+            );
+        } else {
+            let refreshed = refreshed.expect("a live structural edit must build a fresh index");
+            assert!(
+                refreshed
+                    .layout_topology_slot(ROOT, version)
+                    .unwrap()
+                    .get()
+                    .is_none()
+            );
+            assert_eq!(
+                measure_root_minimums_with_index(
+                    &changed, ROOT, &minimums, metrics, &refreshed, version
+                )
+                .and_then(|measured| measured.project(bounds, &[])),
+                reference::project(
+                    &changed,
+                    ROOT,
+                    bounds,
+                    LeafMeasurements::Minimums(&minimums),
+                    metrics,
+                    &[]
+                )
+            );
+        }
         assert!(Arc::ptr_eq(
             index
                 .layout_topology_slot(ROOT, version)

@@ -1,0 +1,984 @@
+{
+  "baseline_commit": "f4b12d7ea88d561d717fd3898de8f81c4ce71785",
+  "product_1024": [
+    {
+      "group": 1,
+      "scenario": "idle",
+      "baseline": {
+        "p50_ns": 8369250,
+        "p95_ns": 8642666,
+        "max_ns": 8890667
+      },
+      "candidate": {
+        "p50_ns": 8358416,
+        "p95_ns": 9234792,
+        "max_ns": 9269792
+      },
+      "change_percent": -0.12945007019744548
+    },
+    {
+      "group": 1,
+      "scenario": "tab_click",
+      "baseline": {
+        "p50_ns": 29139250,
+        "p95_ns": 30137833,
+        "max_ns": 38227042
+      },
+      "candidate": {
+        "p50_ns": 28906333,
+        "p95_ns": 29490375,
+        "max_ns": 29765750
+      },
+      "change_percent": -0.7993239359283422
+    },
+    {
+      "group": 1,
+      "scenario": "surface_resize",
+      "baseline": {
+        "p50_ns": 19029250,
+        "p95_ns": 19754750,
+        "max_ns": 19967958
+      },
+      "candidate": {
+        "p50_ns": 19117708,
+        "p95_ns": 19619125,
+        "max_ns": 19976125
+      },
+      "change_percent": 0.4648527924116852
+    },
+    {
+      "group": 2,
+      "scenario": "idle",
+      "baseline": {
+        "p50_ns": 8349375,
+        "p95_ns": 8827500,
+        "max_ns": 9108875
+      },
+      "candidate": {
+        "p50_ns": 8556917,
+        "p95_ns": 10218667,
+        "max_ns": 14667125
+      },
+      "change_percent": 2.4857189909424315
+    },
+    {
+      "group": 2,
+      "scenario": "tab_click",
+      "baseline": {
+        "p50_ns": 29103167,
+        "p95_ns": 29779375,
+        "max_ns": 36506374
+      },
+      "candidate": {
+        "p50_ns": 29118208,
+        "p95_ns": 29818584,
+        "max_ns": 30162875
+      },
+      "change_percent": 0.05168166062476942
+    },
+    {
+      "group": 2,
+      "scenario": "surface_resize",
+      "baseline": {
+        "p50_ns": 19094875,
+        "p95_ns": 20284000,
+        "max_ns": 25027500
+      },
+      "candidate": {
+        "p50_ns": 19502750,
+        "p95_ns": 21717625,
+        "max_ns": 26427916
+      },
+      "change_percent": 2.1360443574519383
+    }
+  ],
+  "headless_1024_update": [
+    {
+      "scenario": "idle",
+      "baseline": [
+        {
+          "group": 1,
+          "run": 1,
+          "p50": 1893666,
+          "p95": 2185042,
+          "max": 2389625
+        },
+        {
+          "group": 1,
+          "run": 4,
+          "p50": 1875042,
+          "p95": 2192958,
+          "max": 2411875
+        },
+        {
+          "group": 2,
+          "run": 2,
+          "p50": 1909125,
+          "p95": 2186792,
+          "max": 2682208
+        },
+        {
+          "group": 2,
+          "run": 3,
+          "p50": 1895125,
+          "p95": 2299000,
+          "max": 2466166
+        }
+      ],
+      "candidate": [
+        {
+          "group": 1,
+          "run": 2,
+          "p50": 1883375,
+          "p95": 2379958,
+          "max": 2511625
+        },
+        {
+          "group": 1,
+          "run": 3,
+          "p50": 1913000,
+          "p95": 2365417,
+          "max": 2479834
+        },
+        {
+          "group": 2,
+          "run": 1,
+          "p50": 1890250,
+          "p95": 2278375,
+          "max": 2555833
+        },
+        {
+          "group": 2,
+          "run": 4,
+          "p50": 1907750,
+          "p95": 2193458,
+          "max": 2556500
+        }
+      ]
+    },
+    {
+      "scenario": "select",
+      "baseline": [
+        {
+          "group": 1,
+          "run": 1,
+          "p50": 11959375,
+          "p95": 12719791,
+          "max": 13146625
+        },
+        {
+          "group": 1,
+          "run": 4,
+          "p50": 11819792,
+          "p95": 12598792,
+          "max": 12773959
+        },
+        {
+          "group": 2,
+          "run": 2,
+          "p50": 11957709,
+          "p95": 12470916,
+          "max": 12784083
+        },
+        {
+          "group": 2,
+          "run": 3,
+          "p50": 11948042,
+          "p95": 12542042,
+          "max": 12798583
+        }
+      ],
+      "candidate": [
+        {
+          "group": 1,
+          "run": 2,
+          "p50": 11295166,
+          "p95": 12002417,
+          "max": 12073458
+        },
+        {
+          "group": 1,
+          "run": 3,
+          "p50": 11429750,
+          "p95": 12450709,
+          "max": 13552959
+        },
+        {
+          "group": 2,
+          "run": 1,
+          "p50": 11475084,
+          "p95": 11809292,
+          "max": 12051583
+        },
+        {
+          "group": 2,
+          "run": 4,
+          "p50": 11486208,
+          "p95": 12072083,
+          "max": 12339917
+        }
+      ]
+    },
+    {
+      "scenario": "measurement_change",
+      "baseline": [
+        {
+          "group": 1,
+          "run": 1,
+          "p50": 12847625,
+          "p95": 14095083,
+          "max": 14678417
+        },
+        {
+          "group": 1,
+          "run": 4,
+          "p50": 12642833,
+          "p95": 13301375,
+          "max": 13747208
+        },
+        {
+          "group": 2,
+          "run": 2,
+          "p50": 12805667,
+          "p95": 13316750,
+          "max": 13570333
+        },
+        {
+          "group": 2,
+          "run": 3,
+          "p50": 12810667,
+          "p95": 13659042,
+          "max": 19495459
+        }
+      ],
+      "candidate": [
+        {
+          "group": 1,
+          "run": 2,
+          "p50": 12678209,
+          "p95": 13412625,
+          "max": 13567291
+        },
+        {
+          "group": 1,
+          "run": 3,
+          "p50": 12734500,
+          "p95": 13338708,
+          "max": 13589416
+        },
+        {
+          "group": 2,
+          "run": 1,
+          "p50": 12695708,
+          "p95": 13255833,
+          "max": 14854625
+        },
+        {
+          "group": 2,
+          "run": 4,
+          "p50": 12796000,
+          "p95": 13210666,
+          "max": 13263125
+        }
+      ]
+    },
+    {
+      "scenario": "drag",
+      "baseline": [
+        {
+          "group": 1,
+          "run": 1,
+          "p50": 14137250,
+          "p95": 14950875,
+          "max": 19385416
+        },
+        {
+          "group": 1,
+          "run": 4,
+          "p50": 14087375,
+          "p95": 14776666,
+          "max": 20582333
+        },
+        {
+          "group": 2,
+          "run": 2,
+          "p50": 14220416,
+          "p95": 14670917,
+          "max": 15132250
+        },
+        {
+          "group": 2,
+          "run": 3,
+          "p50": 14266250,
+          "p95": 14657375,
+          "max": 14849083
+        }
+      ],
+      "candidate": [
+        {
+          "group": 1,
+          "run": 2,
+          "p50": 14202416,
+          "p95": 14846291,
+          "max": 15228541
+        },
+        {
+          "group": 1,
+          "run": 3,
+          "p50": 14207250,
+          "p95": 14883041,
+          "max": 17367333
+        },
+        {
+          "group": 2,
+          "run": 1,
+          "p50": 14249291,
+          "p95": 14663500,
+          "max": 14856042
+        },
+        {
+          "group": 2,
+          "run": 4,
+          "p50": 14177542,
+          "p95": 14770167,
+          "max": 14961667
+        }
+      ]
+    },
+    {
+      "scenario": "outputs_in_flight",
+      "baseline": [
+        {
+          "group": 1,
+          "run": 1,
+          "p50": 12027625,
+          "p95": 12446584,
+          "max": 12633250
+        },
+        {
+          "group": 1,
+          "run": 4,
+          "p50": 12020459,
+          "p95": 12745625,
+          "max": 13084167
+        },
+        {
+          "group": 2,
+          "run": 2,
+          "p50": 12008709,
+          "p95": 12611417,
+          "max": 12798000
+        },
+        {
+          "group": 2,
+          "run": 3,
+          "p50": 12002625,
+          "p95": 12516167,
+          "max": 13940833
+        }
+      ],
+      "candidate": [
+        {
+          "group": 1,
+          "run": 2,
+          "p50": 11481708,
+          "p95": 11977958,
+          "max": 12305500
+        },
+        {
+          "group": 1,
+          "run": 3,
+          "p50": 11450500,
+          "p95": 12142542,
+          "max": 13017125
+        },
+        {
+          "group": 2,
+          "run": 1,
+          "p50": 11425875,
+          "p95": 12029125,
+          "max": 12155083
+        },
+        {
+          "group": 2,
+          "run": 4,
+          "p50": 11473250,
+          "p95": 11855916,
+          "max": 12119000
+        }
+      ]
+    }
+  ],
+  "allocation_comparison": [
+    {
+      "panes": 16,
+      "scenario": "idle",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 190,
+        "requested_bytes": 379032,
+        "live_before_tracked_bytes": 248712,
+        "live_after_tracked_bytes": 376056,
+        "case_prefix_peak_tracked_bytes": 436600
+      },
+      "candidate": {
+        "allocation_events": 190,
+        "requested_bytes": 379032,
+        "live_before_tracked_bytes": 248712,
+        "live_after_tracked_bytes": 376056,
+        "case_prefix_peak_tracked_bytes": 436600
+      }
+    },
+    {
+      "panes": 16,
+      "scenario": "idle",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 158,
+        "requested_bytes": 93928,
+        "live_before_tracked_bytes": 376056,
+        "live_after_tracked_bytes": 248712,
+        "case_prefix_peak_tracked_bytes": 436600
+      },
+      "candidate": {
+        "allocation_events": 158,
+        "requested_bytes": 93928,
+        "live_before_tracked_bytes": 376056,
+        "live_after_tracked_bytes": 248712,
+        "case_prefix_peak_tracked_bytes": 436600
+      }
+    },
+    {
+      "panes": 16,
+      "scenario": "select",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 1806,
+        "requested_bytes": 910780,
+        "live_before_tracked_bytes": 248712,
+        "live_after_tracked_bytes": 506208,
+        "case_prefix_peak_tracked_bytes": 595000
+      },
+      "candidate": {
+        "allocation_events": 1627,
+        "requested_bytes": 889908,
+        "live_before_tracked_bytes": 248712,
+        "live_after_tracked_bytes": 506208,
+        "case_prefix_peak_tracked_bytes": 592688
+      }
+    },
+    {
+      "panes": 16,
+      "scenario": "select",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 166,
+        "requested_bytes": 95088,
+        "live_before_tracked_bytes": 506208,
+        "live_after_tracked_bytes": 248712,
+        "case_prefix_peak_tracked_bytes": 595000
+      },
+      "candidate": {
+        "allocation_events": 166,
+        "requested_bytes": 95088,
+        "live_before_tracked_bytes": 506208,
+        "live_after_tracked_bytes": 248712,
+        "case_prefix_peak_tracked_bytes": 592688
+      }
+    },
+    {
+      "panes": 16,
+      "scenario": "measurement_change",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 1279,
+        "requested_bytes": 1238388,
+        "live_before_tracked_bytes": 248712,
+        "live_after_tracked_bytes": 580840,
+        "case_prefix_peak_tracked_bytes": 641384
+      },
+      "candidate": {
+        "allocation_events": 1279,
+        "requested_bytes": 1238388,
+        "live_before_tracked_bytes": 248712,
+        "live_after_tracked_bytes": 580840,
+        "case_prefix_peak_tracked_bytes": 641384
+      }
+    },
+    {
+      "panes": 16,
+      "scenario": "measurement_change",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 166,
+        "requested_bytes": 95088,
+        "live_before_tracked_bytes": 580840,
+        "live_after_tracked_bytes": 248712,
+        "case_prefix_peak_tracked_bytes": 641384
+      },
+      "candidate": {
+        "allocation_events": 166,
+        "requested_bytes": 95088,
+        "live_before_tracked_bytes": 580840,
+        "live_after_tracked_bytes": 248712,
+        "case_prefix_peak_tracked_bytes": 641384
+      }
+    },
+    {
+      "panes": 16,
+      "scenario": "drag",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 1737,
+        "requested_bytes": 1296436,
+        "live_before_tracked_bytes": 259528,
+        "live_after_tracked_bytes": 592360,
+        "case_prefix_peak_tracked_bytes": 675792
+      },
+      "candidate": {
+        "allocation_events": 1737,
+        "requested_bytes": 1296436,
+        "live_before_tracked_bytes": 259528,
+        "live_after_tracked_bytes": 592360,
+        "case_prefix_peak_tracked_bytes": 675792
+      }
+    },
+    {
+      "panes": 16,
+      "scenario": "drag",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 598,
+        "requested_bytes": 142364,
+        "live_before_tracked_bytes": 592360,
+        "live_after_tracked_bytes": 260232,
+        "case_prefix_peak_tracked_bytes": 675792
+      },
+      "candidate": {
+        "allocation_events": 598,
+        "requested_bytes": 142364,
+        "live_before_tracked_bytes": 592360,
+        "live_after_tracked_bytes": 260232,
+        "case_prefix_peak_tracked_bytes": 675792
+      }
+    },
+    {
+      "panes": 16,
+      "scenario": "outputs_in_flight",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 1825,
+        "requested_bytes": 913852,
+        "live_before_tracked_bytes": 584480,
+        "live_after_tracked_bytes": 841624,
+        "case_prefix_peak_tracked_bytes": 934696
+      },
+      "candidate": {
+        "allocation_events": 1646,
+        "requested_bytes": 892980,
+        "live_before_tracked_bytes": 584480,
+        "live_after_tracked_bytes": 841624,
+        "case_prefix_peak_tracked_bytes": 932384
+      }
+    },
+    {
+      "panes": 16,
+      "scenario": "outputs_in_flight",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 166,
+        "requested_bytes": 95120,
+        "live_before_tracked_bytes": 841624,
+        "live_after_tracked_bytes": 249088,
+        "case_prefix_peak_tracked_bytes": 934696
+      },
+      "candidate": {
+        "allocation_events": 166,
+        "requested_bytes": 95120,
+        "live_before_tracked_bytes": 841624,
+        "live_after_tracked_bytes": 249088,
+        "case_prefix_peak_tracked_bytes": 932384
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "idle",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 487,
+        "requested_bytes": 2298432,
+        "live_before_tracked_bytes": 1828960,
+        "live_after_tracked_bytes": 2845136,
+        "case_prefix_peak_tracked_bytes": 2928720
+      },
+      "candidate": {
+        "allocation_events": 487,
+        "requested_bytes": 2298432,
+        "live_before_tracked_bytes": 1828960,
+        "live_after_tracked_bytes": 2845136,
+        "case_prefix_peak_tracked_bytes": 2928720
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "idle",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 351,
+        "requested_bytes": 143864,
+        "live_before_tracked_bytes": 2845136,
+        "live_after_tracked_bytes": 1828960,
+        "case_prefix_peak_tracked_bytes": 2928720
+      },
+      "candidate": {
+        "allocation_events": 351,
+        "requested_bytes": 143864,
+        "live_before_tracked_bytes": 2845136,
+        "live_after_tracked_bytes": 1828960,
+        "case_prefix_peak_tracked_bytes": 2928720
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "select",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 11070,
+        "requested_bytes": 6503508,
+        "live_before_tracked_bytes": 1828960,
+        "live_after_tracked_bytes": 3829616,
+        "case_prefix_peak_tracked_bytes": 4091024
+      },
+      "candidate": {
+        "allocation_events": 9963,
+        "requested_bytes": 6334276,
+        "live_before_tracked_bytes": 1828960,
+        "live_after_tracked_bytes": 3829616,
+        "case_prefix_peak_tracked_bytes": 4052112
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "select",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 359,
+        "requested_bytes": 145024,
+        "live_before_tracked_bytes": 3829616,
+        "live_after_tracked_bytes": 1828960,
+        "case_prefix_peak_tracked_bytes": 4091024
+      },
+      "candidate": {
+        "allocation_events": 359,
+        "requested_bytes": 145024,
+        "live_before_tracked_bytes": 3829616,
+        "live_after_tracked_bytes": 1828960,
+        "case_prefix_peak_tracked_bytes": 4052112
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "measurement_change",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 8008,
+        "requested_bytes": 9575780,
+        "live_before_tracked_bytes": 1828960,
+        "live_after_tracked_bytes": 4461304,
+        "case_prefix_peak_tracked_bytes": 4544888
+      },
+      "candidate": {
+        "allocation_events": 8008,
+        "requested_bytes": 9575780,
+        "live_before_tracked_bytes": 1828960,
+        "live_after_tracked_bytes": 4461304,
+        "case_prefix_peak_tracked_bytes": 4544888
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "measurement_change",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 359,
+        "requested_bytes": 145024,
+        "live_before_tracked_bytes": 4461304,
+        "live_after_tracked_bytes": 1828960,
+        "case_prefix_peak_tracked_bytes": 4544888
+      },
+      "candidate": {
+        "allocation_events": 359,
+        "requested_bytes": 145024,
+        "live_before_tracked_bytes": 4461304,
+        "live_after_tracked_bytes": 1828960,
+        "case_prefix_peak_tracked_bytes": 4544888
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "drag",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 9932,
+        "requested_bytes": 9749948,
+        "live_before_tracked_bytes": 1871904,
+        "live_after_tracked_bytes": 4507640,
+        "case_prefix_peak_tracked_bytes": 4648304
+      },
+      "candidate": {
+        "allocation_events": 9932,
+        "requested_bytes": 9749948,
+        "live_before_tracked_bytes": 1871904,
+        "live_after_tracked_bytes": 4507640,
+        "case_prefix_peak_tracked_bytes": 4648304
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "drag",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 2705,
+        "requested_bytes": 365364,
+        "live_before_tracked_bytes": 4507640,
+        "live_after_tracked_bytes": 1875296,
+        "case_prefix_peak_tracked_bytes": 4648304
+      },
+      "candidate": {
+        "allocation_events": 2705,
+        "requested_bytes": 365364,
+        "live_before_tracked_bytes": 4507640,
+        "live_after_tracked_bytes": 1875296,
+        "case_prefix_peak_tracked_bytes": 4648304
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "outputs_in_flight",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 11088,
+        "requested_bytes": 6506284,
+        "live_before_tracked_bytes": 4487344,
+        "live_after_tracked_bytes": 6487648,
+        "case_prefix_peak_tracked_bytes": 6753496
+      },
+      "candidate": {
+        "allocation_events": 9982,
+        "requested_bytes": 6337348,
+        "live_before_tracked_bytes": 4487344,
+        "live_after_tracked_bytes": 6487648,
+        "case_prefix_peak_tracked_bytes": 6712400
+      }
+    },
+    {
+      "panes": 128,
+      "scenario": "outputs_in_flight",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 359,
+        "requested_bytes": 145056,
+        "live_before_tracked_bytes": 6487648,
+        "live_after_tracked_bytes": 1829336,
+        "case_prefix_peak_tracked_bytes": 6753496
+      },
+      "candidate": {
+        "allocation_events": 359,
+        "requested_bytes": 145056,
+        "live_before_tracked_bytes": 6487648,
+        "live_after_tracked_bytes": 1829336,
+        "case_prefix_peak_tracked_bytes": 6712400
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "idle",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 2793,
+        "requested_bytes": 17747440,
+        "live_before_tracked_bytes": 14542120,
+        "live_after_tracked_bytes": 22668952,
+        "case_prefix_peak_tracked_bytes": 22972488
+      },
+      "candidate": {
+        "allocation_events": 2793,
+        "requested_bytes": 17747440,
+        "live_before_tracked_bytes": 14542120,
+        "live_after_tracked_bytes": 22668952,
+        "case_prefix_peak_tracked_bytes": 22972488
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "idle",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 1824,
+        "requested_bytes": 586136,
+        "live_before_tracked_bytes": 22668952,
+        "live_after_tracked_bytes": 14542120,
+        "case_prefix_peak_tracked_bytes": 22972488
+      },
+      "candidate": {
+        "allocation_events": 1824,
+        "requested_bytes": 586136,
+        "live_before_tracked_bytes": 22668952,
+        "live_after_tracked_bytes": 14542120,
+        "case_prefix_peak_tracked_bytes": 22972488
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "select",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 84659,
+        "requested_bytes": 51861180,
+        "live_before_tracked_bytes": 14542120,
+        "live_after_tracked_bytes": 30513856,
+        "case_prefix_peak_tracked_bytes": 32191264
+      },
+      "candidate": {
+        "allocation_events": 76351,
+        "requested_bytes": 50508388,
+        "live_before_tracked_bytes": 14542120,
+        "live_after_tracked_bytes": 30513856,
+        "case_prefix_peak_tracked_bytes": 31871904
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "select",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 1832,
+        "requested_bytes": 587296,
+        "live_before_tracked_bytes": 30513856,
+        "live_after_tracked_bytes": 14542120,
+        "case_prefix_peak_tracked_bytes": 32191264
+      },
+      "candidate": {
+        "allocation_events": 1832,
+        "requested_bytes": 587296,
+        "live_before_tracked_bytes": 30513856,
+        "live_after_tracked_bytes": 14542120,
+        "case_prefix_peak_tracked_bytes": 31871904
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "measurement_change",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 62390,
+        "requested_bytes": 75792380,
+        "live_before_tracked_bytes": 14542120,
+        "live_after_tracked_bytes": 35624456,
+        "case_prefix_peak_tracked_bytes": 35927992
+      },
+      "candidate": {
+        "allocation_events": 62390,
+        "requested_bytes": 75792380,
+        "live_before_tracked_bytes": 14542120,
+        "live_after_tracked_bytes": 35624456,
+        "case_prefix_peak_tracked_bytes": 35927992
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "measurement_change",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 1832,
+        "requested_bytes": 587296,
+        "live_before_tracked_bytes": 35624456,
+        "live_after_tracked_bytes": 14542120,
+        "case_prefix_peak_tracked_bytes": 35927992
+      },
+      "candidate": {
+        "allocation_events": 1832,
+        "requested_bytes": 587296,
+        "live_before_tracked_bytes": 35624456,
+        "live_after_tracked_bytes": 14542120,
+        "case_prefix_peak_tracked_bytes": 35927992
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "drag",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 70312,
+        "requested_bytes": 76528100,
+        "live_before_tracked_bytes": 14788584,
+        "live_after_tracked_bytes": 35877896,
+        "case_prefix_peak_tracked_bytes": 36315312
+      },
+      "candidate": {
+        "allocation_events": 70312,
+        "requested_bytes": 76528100,
+        "live_before_tracked_bytes": 14788584,
+        "live_after_tracked_bytes": 35877896,
+        "case_prefix_peak_tracked_bytes": 36315312
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "drag",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 16247,
+        "requested_bytes": 2004636,
+        "live_before_tracked_bytes": 35877896,
+        "live_after_tracked_bytes": 14795560,
+        "case_prefix_peak_tracked_bytes": 36315312
+      },
+      "candidate": {
+        "allocation_events": 16247,
+        "requested_bytes": 2004636,
+        "live_before_tracked_bytes": 35877896,
+        "live_after_tracked_bytes": 14795560,
+        "case_prefix_peak_tracked_bytes": 36315312
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "outputs_in_flight",
+      "phase": "update",
+      "baseline": {
+        "allocation_events": 84678,
+        "requested_bytes": 51864252,
+        "live_before_tracked_bytes": 35829696,
+        "live_after_tracked_bytes": 51801080,
+        "case_prefix_peak_tracked_bytes": 53482928
+      },
+      "candidate": {
+        "allocation_events": 76370,
+        "requested_bytes": 50511460,
+        "live_before_tracked_bytes": 35829696,
+        "live_after_tracked_bytes": 51801080,
+        "case_prefix_peak_tracked_bytes": 53161384
+      }
+    },
+    {
+      "panes": 1024,
+      "scenario": "outputs_in_flight",
+      "phase": "settlement",
+      "baseline": {
+        "allocation_events": 1832,
+        "requested_bytes": 587328,
+        "live_before_tracked_bytes": 51801080,
+        "live_after_tracked_bytes": 14542496,
+        "case_prefix_peak_tracked_bytes": 53482928
+      },
+      "candidate": {
+        "allocation_events": 1832,
+        "requested_bytes": 587328,
+        "live_before_tracked_bytes": 51801080,
+        "live_after_tracked_bytes": 14542496,
+        "case_prefix_peak_tracked_bytes": 53161384
+      }
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "name": "product-build-and-reference",
+    "command": [
+      "python3",
+      "scripts/compare_products.py",
+      "--backend",
+      "fork",
+      "--profile",
+      "production",
+      "--samples",
+      "24",
+      "--warmup",
+      "6",
+      "--panes",
+      "16,128,1024",
+      "--runs",
+      "4",
+      "--out",
+      "/private/tmp/dockspace-structure-analysis-20261106-f4b12d7/candidate-product"
+    ],
+    "started_utc": "2026-11-06T05:23:42.274389+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:25:29.412978+00:00"
+  },
+  {
+    "name": "headless-build",
+    "command": [
+      "cargo",
+      "build",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--release",
+      "--locked",
+      "--offline",
+      "--example",
+      "frame_cost",
+      "--message-format=json-render-diagnostics"
+    ],
+    "started_utc": "2026-11-06T05:25:50.590191+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:27:05.609519+00:00"
+  }
+]

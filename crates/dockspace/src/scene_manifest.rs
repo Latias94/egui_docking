@@ -889,6 +889,10 @@ impl SceneRequirementManifest {
         &self.workspace_index
     }
 
+    pub(crate) fn shared_workspace_index(&self) -> Arc<WorkspaceIndex> {
+        Arc::clone(&self.workspace_index)
+    }
+
     /// Returns the presentation configuration revision used by compilation.
     #[must_use]
     pub const fn config(&self) -> PresentationConfigRevision {

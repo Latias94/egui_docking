@@ -60,13 +60,11 @@ pub(crate) use future_layout::{
     FutureLayoutProjectionError, project_future_root, project_future_tab_gap_visual,
 };
 pub(crate) use requirements::{
-    derive_scene_requirement_draft, derive_scene_requirement_draft_with_index,
+    SceneRequirementDerivationError, derive_scene_requirement_draft,
+    derive_scene_requirement_draft_with_index,
 };
 pub(crate) use surface::compile_surface_measurements;
 pub use surface::{PresentationCompilationError, SceneCompilationError};
-
-#[cfg(test)]
-use requirements::SceneRequirementDerivationError;
 
 #[cfg(test)]
 pub(crate) use surface::{

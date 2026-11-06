@@ -45,8 +45,8 @@ pub enum RootPresentationOwner {
 /// Immutable structural authority derived for one exact workspace revision.
 ///
 /// Scene compilation shares this index across every target captured from the
-/// same requirement manifest. Replacing the manifest replaces the complete
-/// index, so no entry can be reused across workspace revisions.
+/// same requirement manifest. Every new revision derives fresh semantic facts;
+/// only independently matched layout acceleration rows may cross revisions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceIndex {
     version: WorkspaceVersion,
@@ -132,6 +132,27 @@ impl WorkspaceIndex {
             });
         }
         Ok(Self { version, roots })
+    }
+
+    pub(crate) fn build_reusing_layout(
+        workspace: &Workspace,
+        version: WorkspaceVersion,
+        previous: &Self,
+    ) -> Result<Self, CommandError> {
+        let mut index = Self::build(workspace, version)?;
+        for (&root, record) in &mut index.roots {
+            if let Some(topology) = previous
+                .roots
+                .get(&root)
+                .and_then(|record| record.layout_topology.get())
+                .filter(|topology| topology.matches(workspace, root))
+            {
+                // Selection, MRU and measurement answers are not topology.
+                // The new index keeps its freshly captured full fingerprint.
+                record.layout_topology = OnceLock::from(Arc::clone(topology));
+            }
+        }
+        Ok(index)
     }
 
     #[cfg(test)]

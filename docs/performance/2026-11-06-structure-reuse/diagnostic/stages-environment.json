@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/tmp/dockspace-structure-analysis-20261106-f4b12d7/instrumented-frame-cost",
+    "--timing-only",
+    "--samples",
+    "32",
+    "--warmup",
+    "6",
+    "--in-flight",
+    "1",
+    "--panes",
+    "16,128,1024"
+  ],
+  "started_utc": "2026-11-06T04:57:23.700576+00:00",
+  "scope": "Temporary RAII cost attribution; printing and nested spans perturb durations; not latency qualification.",
+  "returncode": 0,
+  "finished_utc": "2026-11-06T04:57:28.340628+00:00"
+}

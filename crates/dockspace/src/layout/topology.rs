@@ -161,7 +161,7 @@ impl RootLayoutTopology {
     }
 
     /// A version alone cannot authorize reuse after an internal same-version edit.
-    pub(super) fn matches(&self, workspace: &Workspace, root: RootId) -> bool {
+    pub(crate) fn matches(&self, workspace: &Workspace, root: RootId) -> bool {
         if root != self.root
             || workspace.root(root).is_none_or(|record| {
                 record.node != self.root_node || record.central != self.central

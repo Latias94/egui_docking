@@ -4,6 +4,9 @@ use super::native_projection::NativeFirstLiveProjection;
 use super::presentation_roster::PresentationAllocationIssuer;
 use super::*;
 
+#[cfg(test)]
+mod snapshot_tests;
+
 /// Sole owner of renderer-neutral presentation state for one engine domain.
 ///
 /// Keeping the manifest, transient tab-strip state, compiled scene, and
@@ -16,7 +19,8 @@ pub(super) struct PresentationAuthorityState {
     pub(super) presentation_config: DockPresentationConfig,
     pub(super) presentation_config_revision: PresentationConfigRevision,
     pub(super) presentation_requirements: SceneRequirementManifest,
-    /// Weak provenance of the current index; never retains an old complete workspace.
+    /// Weak provenance of the index and live semantic snapshots; never retains
+    /// an old complete workspace. Prospective native snapshots are separate inputs.
     workspace_index_source: std::sync::Weak<Workspace>,
     pub(super) tab_strip_states: TabStripStateStore,
     pub(super) surface_semantic_snapshots: BTreeMap<crate::ids::SurfaceId, SurfaceSemanticSnapshot>,
@@ -113,6 +117,26 @@ impl PresentationAuthorityState {
             .ptr_eq(&Arc::downgrade(workspace))
             && index.version() == version)
             .then_some(index)
+    }
+
+    fn surface_semantic_snapshots_for(
+        &self,
+        workspace: &Arc<Workspace>,
+        version: WorkspaceVersion,
+    ) -> Option<BTreeMap<SurfaceId, SurfaceSemanticSnapshot>> {
+        self.workspace_index_for(workspace, version)?;
+        // The owner publishes these snapshots with the indexed allocation.
+        // Exclude prospective native surfaces: their provenance must still be
+        // checked against the current saga before they join the live roster.
+        workspace
+            .surfaces()
+            .map(|(surface, _)| {
+                self.surface_semantic_snapshots
+                    .get(&surface)
+                    .cloned()
+                    .map(|snapshot| (surface, snapshot))
+            })
+            .collect()
     }
 
     pub(super) fn issue_host_presentation_attempt(
@@ -231,9 +255,14 @@ impl DockEngine {
         }
         self.native_admission
             .reconcile_pending_creates(&self.viewport);
-        let mut surface_semantic_snapshots =
-            Self::capture_surface_semantic_snapshots(&self.workspace)
-                .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
+        let mut surface_semantic_snapshots = match self
+            .presentation_authority
+            .surface_semantic_snapshots_for(self.workspace.as_arc(), self.version)
+        {
+            Some(snapshots) => snapshots,
+            None => Self::capture_surface_semantic_snapshots(&self.workspace)
+                .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?,
+        };
         let mut native_projections = BTreeMap::new();
         let pending_creates = self
             .viewport
@@ -386,10 +415,34 @@ impl DockEngine {
                 revised_surfaces.insert(surface);
             }
         }
-        let mut draft = derive_scene_requirement_draft(
+        let workspace_index = if self
+            .presentation_authority
+            .workspace_index_for(self.workspace.as_arc(), self.version)
+            .is_some()
+        {
+            self.presentation_requirements().shared_workspace_index()
+        } else {
+            Arc::new(
+                crate::workspace::WorkspaceIndex::build_reusing_layout(
+                    &self.workspace,
+                    self.version,
+                    self.presentation_requirements().workspace_index(),
+                )
+                .map_err(|source| {
+                    PresentationRequirementFailure::Invariant(
+                        crate::scene_compiler::SceneRequirementDerivationError::WorkspaceIndex {
+                            source,
+                        }
+                        .to_string(),
+                    )
+                })?,
+            )
+        };
+        let mut draft = derive_scene_requirement_draft_with_index(
             self.authority_domain,
             &self.workspace,
             self.version,
+            workspace_index,
             self.presentation_authority.presentation_config_revision,
             &self.policy,
             requirement_revision,

@@ -1,0 +1,186 @@
+[
+  {
+    "check": "focused-structure-reuse",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "dockspace",
+      "--all-features",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast",
+      "-E",
+      "test(topology_tests) | test(snapshot_tests)"
+    ],
+    "started_utc": "2026-11-06T05:12:37.442728+00:00",
+    "source_snapshot_sha256": "5a922449393c498e603601787905e6f4c599d5a659376375503895c317b6f682",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:12:52.245198+00:00"
+  },
+  {
+    "check": "workspace-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T05:12:52.245765+00:00",
+    "source_snapshot_sha256": "5a922449393c498e603601787905e6f4c599d5a659376375503895c317b6f682",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:14:23.545570+00:00"
+  },
+  {
+    "check": "host-default",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T05:14:23.546246+00:00",
+    "source_snapshot_sha256": "5a922449393c498e603601787905e6f4c599d5a659376375503895c317b6f682",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:15:34.493665+00:00"
+  },
+  {
+    "check": "host-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T05:15:34.494078+00:00",
+    "source_snapshot_sha256": "5a922449393c498e603601787905e6f4c599d5a659376375503895c317b6f682",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:16:55.423739+00:00"
+  },
+  {
+    "check": "native-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T05:16:55.424716+00:00",
+    "source_snapshot_sha256": "5a922449393c498e603601787905e6f4c599d5a659376375503895c317b6f682",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:18:10.816804+00:00"
+  },
+  {
+    "check": "clippy-workspace",
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started_utc": "2026-11-06T05:18:10.818882+00:00",
+    "source_snapshot_sha256": "5a922449393c498e603601787905e6f4c599d5a659376375503895c317b6f682",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:18:28.420843+00:00"
+  },
+  {
+    "check": "clippy-native",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started_utc": "2026-11-06T05:18:28.421442+00:00",
+    "source_snapshot_sha256": "5a922449393c498e603601787905e6f4c599d5a659376375503895c317b6f682",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:18:56.411837+00:00"
+  },
+  {
+    "check": "doctests",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--all-features",
+      "--doc",
+      "--locked",
+      "--offline"
+    ],
+    "started_utc": "2026-11-06T05:18:56.412113+00:00",
+    "source_snapshot_sha256": "5a922449393c498e603601787905e6f4c599d5a659376375503895c317b6f682",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T05:18:58.605270+00:00"
+  },
+  {
+    "check": "fmt-workspace",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "started_utc": "2026-11-06T05:18:58.605575+00:00",
+    "source_snapshot_sha256": "5a922449393c498e603601787905e6f4c599d5a659376375503895c317b6f682",
+    "returncode": 1,
+    "finished_utc": "2026-11-06T05:19:00.157605+00:00"
+  }
+]
