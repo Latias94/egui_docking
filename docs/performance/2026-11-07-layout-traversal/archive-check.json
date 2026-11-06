@@ -1,0 +1,9 @@
+{
+  "regular_data_files": 759,
+  "archive_manifest_files": 1,
+  "archive_bytes": 756224,
+  "archive_sha256": "429d9776066e3b4f3f60f76799c9124111f482f4a1261551161da0420abb3f68",
+  "all_members_roundtrip_equal": true,
+  "aggregate_raw_rows": 31488,
+  "sample_zero_vectors": 580
+}

@@ -1,6 +1,6 @@
 //! Dense structural rows shared by repeated measurements of one indexed root.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 
 use super::*;
@@ -57,19 +57,19 @@ impl RootLayoutTopology {
             weight_bits: Vec::new(),
             postorder: Vec::new(),
         };
-        let mut completed = HashMap::<NodeId, usize>::new();
-        let mut visiting = HashSet::new();
+        let mut rows = HashMap::<NodeId, usize>::new();
         let mut values = Vec::<Option<SubtreeMeasurement>>::new();
         let mut child_values = Vec::new();
         let mut pending = vec![CompileFrame::Enter(record.node)];
         while let Some(frame) = pending.pop() {
             match frame {
                 CompileFrame::Enter(node) => {
-                    if completed.contains_key(&node) {
+                    if let Some(&row) = rows.get(&node) {
+                        // A row is active until its measurement is complete.
+                        if values[row].is_none() {
+                            return Err(LayoutError::Cycle { node });
+                        }
                         continue;
-                    }
-                    if !visiting.insert(node) {
-                        return Err(LayoutError::Cycle { node });
                     }
                     let live = workspace
                         .node(node)
@@ -80,6 +80,7 @@ impl RootLayoutTopology {
                         kind: LayoutNodeKind::Tabs,
                     });
                     values.push(None);
+                    rows.insert(node, row);
                     match live {
                         Node::Tabs { .. } => {
                             values[row] = Some(SubtreeMeasurement {
@@ -87,8 +88,6 @@ impl RootLayoutTopology {
                                 contains_central: record.central == Some(node),
                             });
                             topology.postorder.push(row);
-                            visiting.remove(&node);
-                            completed.insert(node, row);
                         }
                         Node::Split {
                             children, weights, ..
@@ -118,7 +117,7 @@ impl RootLayoutTopology {
                     child_values.clear();
                     let start = topology.children.len();
                     for child in children {
-                        let child_row = *completed
+                        let child_row = *rows
                             .get(child)
                             .ok_or(LayoutError::MissingNode { node: *child })?;
                         child_values.push(
@@ -146,8 +145,6 @@ impl RootLayoutTopology {
                         weights: first_weight..topology.weight_bits.len(),
                     };
                     topology.postorder.push(row);
-                    visiting.remove(&node);
-                    completed.insert(node, row);
                 }
             }
         }

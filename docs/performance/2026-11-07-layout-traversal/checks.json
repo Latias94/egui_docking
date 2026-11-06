@@ -1,0 +1,137 @@
+{
+  "normal_test_environment": {
+    "CARGO_BUILD_JOBS": "1",
+    "DOCKSPACE_BENCH_NO_WORK_COUNTERS": "absent"
+  },
+  "checks": [
+    {
+      "name": "nextest-core",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--all-features",
+        "--cargo-profile",
+        "production",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "--no-fail-fast"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T15:56:07.050760+00:00",
+      "finished_utc": "2026-11-06T15:59:51.045424+00:00"
+    },
+    {
+      "name": "nextest-integrations",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--tests",
+        "--no-default-features",
+        "--cargo-profile",
+        "production",
+        "--locked",
+        "--offline",
+        "-j",
+        "1",
+        "-E",
+        "kind(test)"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T15:59:51.046144+00:00",
+      "finished_utc": "2026-11-06T16:05:25.250078+00:00"
+    },
+    {
+      "name": "doctests",
+      "command": [
+        "cargo",
+        "test",
+        "--package",
+        "dockspace",
+        "--doc",
+        "--all-features",
+        "--locked",
+        "--offline"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T16:05:25.250814+00:00",
+      "finished_utc": "2026-11-06T16:05:32.906575+00:00"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--tests",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--",
+        "-D",
+        "clippy::correctness",
+        "-D",
+        "clippy::suspicious"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T16:05:32.906849+00:00",
+      "finished_utc": "2026-11-06T16:05:47.797716+00:00"
+    },
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T16:05:47.798176+00:00",
+      "finished_utc": "2026-11-06T16:05:49.444104+00:00"
+    },
+    {
+      "name": "dependency-boundary",
+      "command": [
+        "python3",
+        "scripts/check_core_dependencies.py"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T16:05:49.444399+00:00",
+      "finished_utc": "2026-11-06T16:05:49.616977+00:00"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "returncode": 0,
+      "started_utc": "2026-11-06T16:05:49.617259+00:00",
+      "finished_utc": "2026-11-06T16:05:49.650949+00:00"
+    }
+  ],
+  "core_passed": 2024,
+  "core_skipped": 3,
+  "integration_passed": 4,
+  "documentation_passed": 9,
+  "style_warning_limit": "Correctness/suspicious checks pass; existing all/pedantic warnings remain.",
+  "source_review": "layout-traversal-review.md",
+  "evidence_review": "layout-evidence-review.md",
+  "publication_corrections_applied": [
+    "Disclose 128-pane/four-view center group-2 p95 and 10.296042 ms maximum, without assigning an unproven cause.",
+    "Round raw-summed four-view center mutation share to 64.34 percent."
+  ],
+  "final_result_sha256": "88e0dc40fe31bb053a31ef169b81e26aeb7c451e3f5c55f6ef6f8021ebd4e8b4"
+}

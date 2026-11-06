@@ -406,6 +406,69 @@ fn minimum_measurement_errors_precede_override_validation_for_cold_and_warm_topo
 }
 
 #[test]
+fn completed_subtree_reuse_keeps_active_cycle_and_leaf_error_order() {
+    let mut builder = Workspace::builder();
+    let leaves = [1, 2, 3, 4].map(|item| builder.insert_node(Node::tabs([ItemId::new(item)])));
+    let first =
+        builder.insert_node(Node::equal_split(Axis::Vertical, [leaves[0], leaves[1]]).unwrap());
+    let second =
+        builder.insert_node(Node::equal_split(Axis::Vertical, [leaves[2], leaves[3]]).unwrap());
+    let root = builder.insert_node(Node::equal_split(Axis::Horizontal, [first, second]).unwrap());
+    builder.set_root(ROOT, RootRecord::new(root));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+    let workspace = builder.build().unwrap();
+    let bounds = LogicalRect::new(0.0, 0.0, 512.0, 512.0).unwrap();
+    let metrics = LayoutMetrics::new(1.0).unwrap();
+    let leaf = Constraints::new(
+        LogicalSize::new(0.0, 0.0).unwrap(),
+        LogicalSize::new(512.0, 512.0).unwrap(),
+    )
+    .unwrap();
+
+    for cycle in [false, true] {
+        let mut changed = workspace.clone();
+        let Node::Split { children, .. } = changed.nodes.get_mut(second).unwrap() else {
+            unreachable!()
+        };
+        // The first subtree is complete before this second edge reaches it.
+        children[0] = first;
+        if cycle {
+            children[1] = root;
+        }
+        for omit_first in [false, true] {
+            let constraints = leaves
+                .iter()
+                .copied()
+                .filter(|&node| !omit_first || node != leaves[0])
+                .map(|node| (node, leaf))
+                .collect();
+            let actual = project_root(&changed, ROOT, bounds, &constraints, metrics);
+            assert_eq!(
+                actual,
+                reference::project(
+                    &changed,
+                    ROOT,
+                    bounds,
+                    LeafMeasurements::Constraints(&constraints),
+                    metrics,
+                    &[]
+                )
+            );
+            if omit_first {
+                assert_eq!(
+                    actual,
+                    Err(LayoutError::MissingLeafConstraints { node: leaves[0] })
+                );
+            } else if cycle {
+                assert_eq!(actual, Err(LayoutError::Cycle { node: root }));
+            } else {
+                assert!(actual.is_ok());
+            }
+        }
+    }
+}
+
+#[test]
 fn malformed_topology_keeps_depth_first_measurement_error_priority() {
     let (mut workspace, leaves) = fixture(&mut 7, false);
     let root_node = workspace.root(ROOT).unwrap().node;

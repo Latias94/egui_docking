@@ -174,6 +174,13 @@ The residual small one-view resize shift is an explicit limitation, not a
 claimed optimization or a proven irreducible cost. No further samples are
 selected to erase it.
 
+A subsequent [layout traversal follow-up](2026-11-07-layout-traversal.md) preserves
+these results, adds preparation controls and removes duplicate active-path
+bookkeeping from the actual layout compiler. Its final complete matrix improves
+all resize medians in both groups against both frozen baselines. That later
+qualification does not rewrite this checked-move-only result or assign its
+historical variation one proven cause.
+
 ## Remaining difference from ImGui
 
 A separate final-candidate/ImGui run uses the same renderer-free boundary,
