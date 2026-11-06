@@ -5,6 +5,10 @@ and Dear ImGui docking. Both products actually build the docking UI, tab labels,
 selected content text and a small colored square. It complements the internal
 `frame_cost` attribution benchmark; the two workloads are not interchangeable.
 
+For the shared binary split-tree geometry workload without either renderer,
+see [renderer-free layout attribution](layout.md). That probe separately reports
+complete Rust projection, prepared-input projection and ImGui's in-place update.
+
 The Dear ImGui reference is pinned to
 [`d88f238d1d363ef387382b2e29ad12cf96f826ac`](https://github.com/ocornut/imgui/tree/d88f238d1d363ef387382b2e29ad12cf96f826ac).
 The runner reads that checkout without modifying it. Provide its path explicitly

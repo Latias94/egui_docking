@@ -1,0 +1,23 @@
+warning: method `presentation_identity_frontier` is never used
+   --> crates/dockspace/src/engine/host_frame.rs:543:25
+    |
+526 | impl<'frame> HostFrameView<'frame> {
+    | ---------------------------------- method in this implementation
+...
+543 |     pub(crate) const fn presentation_identity_frontier(&self) -> PresentationIdentityFrontier {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dockspace` (lib test) generated 1 warning
+    Finished `production` profile [optimized] target(s) in 0.04s
+────────────
+ Nextest run ID 9c800a40-2d45-42de-bfbd-115e9742488b with nextest profile: default
+    Starting 5 tests across 1 binary (1900 tests skipped)
+        PASS [   0.006s] (1/5) dockspace layout::override_tests::batch_validation_preserves_root_duplicate_and_weight_error_priority
+        PASS [   0.005s] (2/5) dockspace layout::override_tests::distinct_equal_fingerprints_remain_valid_and_stale_duplicates_fail_before_duplicate_checks
+        PASS [   0.007s] (3/5) dockspace layout::override_tests::override_batches_build_one_root_proof_and_indexed_projection_builds_none
+        PASS [   0.005s] (4/5) dockspace layout::override_tests::verified_fingerprints_never_authorize_missing_or_foreign_nodes
+        PASS [   0.006s] (5/5) dockspace layout::tests::measured_minimums_preserve_projection_constraints_and_resize_overrides
+────────────
+     Summary [   0.030s] 5 tests run: 5 passed, 1900 skipped

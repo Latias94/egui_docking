@@ -1432,6 +1432,9 @@ fn allocation_tolerance(a: f64, b: f64, c: f64) -> f64 {
 mod override_tests;
 
 #[cfg(test)]
+mod layout_cost;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::graph::{RootRecord, SurfacePresentation};
