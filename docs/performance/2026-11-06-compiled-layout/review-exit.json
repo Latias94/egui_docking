@@ -1,0 +1,14 @@
+{
+  "command": [
+    "codex",
+    "exec",
+    "-C",
+    "/Users/frankorz/codes/rust/egui_docking",
+    "-s",
+    "read-only",
+    "-o",
+    "/tmp/dockspace-compiled-layout-20261106-f28a381/independent-review.md",
+    "-"
+  ],
+  "returncode": 0
+}

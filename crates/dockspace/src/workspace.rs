@@ -1,7 +1,7 @@
 //! Checked workspace queries used to capture mutation preconditions.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::command::{
     ContainedRosterSource, DockFraction, Edge, EdgeTarget, EdgeTargetScope, FingerprintNode,
@@ -11,6 +11,7 @@ use crate::command::{
 use crate::error::{CommandError, ReferenceRole};
 use crate::graph::{Node, Workspace};
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
+use crate::layout::RootLayoutTopology;
 use crate::policy::DockTargetRuleKey;
 use crate::transition::WorkspaceVersion;
 
@@ -52,7 +53,7 @@ pub(crate) struct WorkspaceIndex {
     roots: BTreeMap<RootId, WorkspaceRootIndex>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct WorkspaceRootIndex {
     root_node: NodeId,
     central: Option<NodeId>,
@@ -60,7 +61,22 @@ struct WorkspaceRootIndex {
     members: HashSet<NodeId>,
     item_count: usize,
     fingerprint: NodeFingerprint,
+    layout_topology: OnceLock<Arc<RootLayoutTopology>>,
 }
+
+impl PartialEq for WorkspaceRootIndex {
+    fn eq(&self, other: &Self) -> bool {
+        // Filling a layout acceleration table cannot change indexed authority.
+        self.root_node == other.root_node
+            && self.central == other.central
+            && self.owner == other.owner
+            && self.members == other.members
+            && self.item_count == other.item_count
+            && self.fingerprint == other.fingerprint
+    }
+}
+
+impl Eq for WorkspaceRootIndex {}
 
 impl WorkspaceIndex {
     pub(crate) fn build(
@@ -128,6 +144,17 @@ impl WorkspaceIndex {
 
     pub(crate) const fn version(&self) -> WorkspaceVersion {
         self.version
+    }
+
+    pub(crate) fn layout_topology_slot(
+        &self,
+        root: RootId,
+        version: WorkspaceVersion,
+    ) -> Option<&OnceLock<Arc<RootLayoutTopology>>> {
+        if self.version != version {
+            return None;
+        }
+        self.roots.get(&root).map(|record| &record.layout_topology)
     }
 
     pub(crate) fn at_version(&self, version: WorkspaceVersion) -> Option<WorkspaceIndexView<'_>> {
@@ -789,6 +816,7 @@ impl Workspace {
             members: visited,
             item_count,
             fingerprint,
+            layout_topology: OnceLock::new(),
         })
     }
 

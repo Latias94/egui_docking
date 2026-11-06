@@ -1,0 +1,17 @@
+{
+  "created_utc": "2026-11-06T02:37:40.911060+00:00",
+  "runtime_directory": "/tmp/dockspace-compiled-layout-20261106-f28a381",
+  "baseline_commit": "f28a381499455c252b8772ed772340f6dff9072a",
+  "candidate_source_sha256": {
+    "crates/dockspace/src/layout.rs": "dcd7f1bb43698f6e8c7ea6217d7c2fc736b694829af99d08dfa9e7a01e97f154",
+    "crates/dockspace/src/layout/topology.rs": "2098ea4b8d3b6d1616936cd898ed78dcb563ce86369eeb86815ed6543a993895",
+    "crates/dockspace/src/layout/topology_tests.rs": "2ee65b386b1a6468cb8c14254282684b6029848651ab6c770fb35b40088e1a9a",
+    "crates/dockspace/src/layout/reference.rs": "e008e5dd72df42599c32483589fe0380743d5cb5a2d7c3a8bc91006bfadeb86b",
+    "crates/dockspace/src/scene_compiler/surface.rs": "7c68021dbba7e340afd3138c54b67986584a71ba4c566ac95f07aefc936f3e3b",
+    "crates/dockspace/src/workspace.rs": "fbeb4bab9d6d76b730df8f49449b6b7299efd72663f400426af3c8c73b7e89a6"
+  },
+  "protected_user_files_checked_unchanged": 49,
+  "binaries": "Frozen and hash-checked locally; executables are excluded from this source archive.",
+  "logs": "Build/check logs are byte-preserving gzip files; CSV, stdout, stderr and metadata are copied verbatim.",
+  "review": "Read-only independent CLI review; P3 test-oracle wrapper finding closed by red/green regression; production sources unchanged after review."
+}

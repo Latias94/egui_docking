@@ -1,0 +1,97 @@
+{
+  "datasets": {
+    "baseline-layout": {
+      "rows": 3456,
+      "processes": 8,
+      "summaries": 18,
+      "coverage_and_nearest_rank_percentiles": "pass"
+    },
+    "candidate-layout": {
+      "rows": 3456,
+      "processes": 8,
+      "summaries": 18,
+      "coverage_and_nearest_rank_percentiles": "pass"
+    },
+    "baseline-product": {
+      "rows": 864,
+      "processes": 4,
+      "summaries": 18,
+      "coverage_and_nearest_rank_percentiles": "pass"
+    },
+    "candidate-product": {
+      "rows": 864,
+      "processes": 4,
+      "summaries": 18,
+      "coverage_and_nearest_rank_percentiles": "pass"
+    },
+    "frozen-layout": {
+      "rows": 4608,
+      "processes": 8,
+      "summaries": 24,
+      "coverage_and_nearest_rank_percentiles": "pass"
+    },
+    "frozen-product": {
+      "rows": 1728,
+      "processes": 8,
+      "summaries": 36,
+      "coverage_and_nearest_rank_percentiles": "pass"
+    },
+    "frozen-product-reverse": {
+      "rows": 1728,
+      "processes": 8,
+      "summaries": 36,
+      "coverage_and_nearest_rank_percentiles": "pass"
+    }
+  },
+  "geometry_digests": {
+    "1024,16380": "1c3838e13df2dd15",
+    "1024,16444": "2abb4460c9df8400",
+    "128,16380": "5bd4cb5a00ee9a95",
+    "128,16444": "08bba5477fb521c0",
+    "16,16380": "e631a56e8b05a595",
+    "16,16444": "c9c12cdd5000bc40"
+  },
+  "workload_equality": {
+    "all_product_samples": "pass",
+    "metrics": [
+      "tabs_per_pane",
+      "frames",
+      "passes",
+      "content_calls",
+      "visible_contents",
+      "vertices",
+      "indices",
+      "draw_commands"
+    ]
+  },
+  "layout_source_changes": {
+    "changed": [
+      "crates/dockspace/src/layout.rs",
+      "crates/dockspace/src/scene_compiler/surface.rs",
+      "crates/dockspace/src/workspace.rs"
+    ],
+    "added": [
+      "crates/dockspace/src/layout/reference.rs",
+      "crates/dockspace/src/layout/topology.rs",
+      "crates/dockspace/src/layout/topology_tests.rs"
+    ]
+  },
+  "product_source_changes": {
+    "changed": [
+      "crates/dockspace/src/layout.rs",
+      "crates/dockspace/src/scene_compiler/surface.rs",
+      "crates/dockspace/src/workspace.rs"
+    ],
+    "added": [
+      "crates/dockspace/src/layout/reference.rs",
+      "crates/dockspace/src/layout/topology.rs",
+      "crates/dockspace/src/layout/topology_tests.rs"
+    ]
+  },
+  "headless_attribution": {
+    "process_summaries": 80,
+    "allocation_and_time_summaries": 120,
+    "baseline_matching_source_files": 363,
+    "checks": "pass; per-sample timings are not exposed by this unchanged harness"
+  }
+}

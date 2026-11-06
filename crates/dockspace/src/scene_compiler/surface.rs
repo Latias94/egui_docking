@@ -1,6 +1,6 @@
 use super::*;
 use crate::graph::SplitWeight;
-use crate::layout::{RootMeasurement, measure_root_minimums};
+use crate::layout::{RootMeasurement, measure_root_minimums_with_index};
 
 #[cfg(test)]
 #[path = "surface/junction_compile_tests.rs"]
@@ -126,8 +126,15 @@ pub(crate) fn compile_surface_scene(
     }
 
     if let Some(root) = presentation.main_root {
-        let root_measurement =
-            measure_root_layout(workspace, config, requirements, measurements, root)?;
+        let root_measurement = measure_root_layout(
+            workspace,
+            workspace_index,
+            workspace_version,
+            config,
+            requirements,
+            measurements,
+            root,
+        )?;
         ready.begin_surface_program_root(root, SurfaceProgramRootPresentation::Main)?;
         compile_root(
             workspace,
@@ -160,8 +167,15 @@ pub(crate) fn compile_surface_scene(
 
     let frontmost_contained = presentation.contained.last().copied();
     for (index, (floating, record, outer, layer)) in contained_placements.into_iter().enumerate() {
-        let root_measurement =
-            measure_root_layout(workspace, config, requirements, measurements, record.root)?;
+        let root_measurement = measure_root_layout(
+            workspace,
+            workspace_index,
+            workspace_version,
+            config,
+            requirements,
+            measurements,
+            record.root,
+        )?;
         let minimum = contained_minimum_size(config, root_measurement.layout.minimum())?;
         ready.push_contained_minimum(ContainedMinimumMeasurement::new(floating, minimum));
 
@@ -1878,6 +1892,8 @@ struct RootLayoutMeasurement<'workspace> {
 
 fn measure_root_layout<'workspace>(
     workspace: &'workspace Workspace,
+    workspace_index: &WorkspaceIndex,
+    workspace_version: WorkspaceVersion,
     config: &DockPresentationConfig,
     requirements: &SurfaceRequirements,
     measurements: AuthoritativeSurfaceMeasurements<'_>,
@@ -1886,11 +1902,13 @@ fn measure_root_layout<'workspace>(
     let surface = requirements.ticket().surface();
     let pane_minimums = root_pane_minimum_measurements(requirements, measurements, root)?;
     let minimums = root_leaf_minimums(workspace, config, requirements, root, &pane_minimums)?;
-    let layout = measure_root_minimums(
+    let layout = measure_root_minimums_with_index(
         workspace,
         root,
         &minimums,
         LayoutMetrics::new(config.splitter_thickness())?,
+        workspace_index,
+        workspace_version,
     )
     .map_err(|error| match error {
         LayoutError::MissingRoot { root } => SceneCompilationError::MissingRoot { surface, root },

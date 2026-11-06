@@ -1,0 +1,11 @@
+panes,tabs_per_pane,scenario,instrumentation,phase,end_state,samples,warmup,outputs_before,outputs_after,metric,p50,p95,max
+1024,2,idle,dhat_inactive,update,retained_in_flight,48,6,0,1,time_ns,1825500,2030000,2937583
+1024,2,idle,dhat_inactive,settlement,settled,48,6,1,0,time_ns,502166,595000,731333
+1024,2,select,dhat_inactive,update,retained_in_flight,48,6,0,1,time_ns,13368250,13982042,14259709
+1024,2,select,dhat_inactive,settlement,settled,48,6,1,0,time_ns,1012958,1309083,1838209
+1024,2,drag,dhat_inactive,update,retained_in_flight,48,6,0,1,time_ns,13704625,14464583,14643958
+1024,2,drag,dhat_inactive,settlement,settled,48,6,1,0,time_ns,1669375,2151541,2331541
+1024,2,measurement_change,dhat_inactive,update,retained_in_flight,48,6,0,1,time_ns,12464125,13126583,18304042
+1024,2,measurement_change,dhat_inactive,settlement,settled,48,6,1,0,time_ns,1094875,1395875,4761709
+1024,2,outputs_in_flight,dhat_inactive,update,retained_in_flight,48,6,1,2,time_ns,13618291,13969333,19672750
+1024,2,outputs_in_flight,dhat_inactive,settlement,settled,48,6,2,0,time_ns,1493375,1801125,1937041

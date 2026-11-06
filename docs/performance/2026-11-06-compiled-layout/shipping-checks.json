@@ -1,0 +1,8 @@
+{
+  "checked_utc": "2026-11-06T02:38:29.984236+00:00",
+  "original_user_files_unchanged": 49,
+  "candidate_source_files_matching_measured_hashes": 6,
+  "scanned_artifact_count": 222,
+  "specific_secret_signature_findings": 0,
+  "staging_before_commit": "empty"
+}

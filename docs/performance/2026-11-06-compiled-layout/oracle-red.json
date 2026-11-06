@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--package",
+    "dockspace",
+    "--all-features",
+    "--lib",
+    "--locked",
+    "--offline",
+    "-j",
+    "1",
+    "-E",
+    "test(minimum_measurement_errors_precede_override_validation_for_cold_and_warm_topology)"
+  ],
+  "returncode": 100
+}

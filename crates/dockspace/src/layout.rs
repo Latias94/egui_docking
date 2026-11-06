@@ -1,6 +1,6 @@
 //! Deterministic, renderer-neutral layout projection.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -12,6 +12,10 @@ use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight, Workspa
 use crate::ids::{NodeId, RootId};
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
+
+mod topology;
+use topology::LayoutNodeKind;
+pub(crate) use topology::RootLayoutTopology;
 
 /// Minimum and maximum extent accepted by one child on a split axis.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -493,16 +497,15 @@ pub(crate) fn measure_root_minimums<'workspace>(
     )
 }
 
-/// One root's postorder measurements, bound to the workspace that produced them.
+/// One root's measurements over stable, dense structural rows.
 pub(crate) struct RootMeasurement<'workspace> {
     workspace: &'workspace Workspace,
     root: RootId,
-    node: NodeId,
     metrics: LayoutMetrics,
     minimum: LogicalSize,
-    measurements: BTreeMap<NodeId, SubtreeMeasurement>,
-    /// Nonempty only when scene leaf maxima must be completed after bounds are known.
-    minimum_postorder: Vec<NodeId>,
+    topology: Arc<RootLayoutTopology>,
+    measurements: Vec<SubtreeMeasurement>,
+    minimums_only: bool,
 }
 
 impl RootMeasurement<'_> {
@@ -541,45 +544,45 @@ impl RootMeasurement<'_> {
         bounds: LogicalRect,
         weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     ) -> Result<LayoutProjection, LayoutError> {
-        if !self.minimum_postorder.is_empty() {
-            // Contained chrome fixes bounds after measurement; only maxima need completion.
+        if self.minimums_only {
             let minimum = self.minimum();
             let leaf_maximum = LogicalSize::new(
                 bounds.width().max(minimum.width()),
                 bounds.height().max(minimum.height()),
             )?;
-            for node in &self.minimum_postorder {
-                let maximum = match self
-                    .workspace
-                    .node(*node)
-                    .ok_or(LayoutError::MissingNode { node: *node })?
-                {
-                    Node::Tabs { .. } => leaf_maximum,
-                    Node::Split { axis, children, .. } => {
-                        let children = child_measurements(children, &self.measurements)?;
+            let mut child_values = Vec::new();
+            for &row in &self.topology.postorder {
+                let maximum = match &self.topology.nodes[row].kind {
+                    LayoutNodeKind::Tabs => leaf_maximum,
+                    LayoutNodeKind::Split { axis, children, .. } => {
+                        child_values.clear();
+                        child_values.extend(
+                            self.topology.children[children.clone()]
+                                .iter()
+                                .map(|&row| self.measurements[row]),
+                        );
                         compose_maximum(
                             *axis,
-                            &children,
-                            total_splitter_extent(*node, children.len(), self.metrics)?,
+                            &child_values,
+                            total_splitter_extent(
+                                self.topology.nodes[row].id,
+                                children.len(),
+                                self.metrics,
+                            )?,
                         )?
                     }
                 };
-                let measurement = self
-                    .measurements
-                    .get_mut(node)
-                    .ok_or(LayoutError::MissingNode { node: *node })?;
+                let measurement = &mut self.measurements[row];
                 measurement.constraints = Constraints::new(measurement.constraints.min(), maximum)?;
             }
         }
-
         let mut projection = LayoutProjection {
             node_rects: BTreeMap::new(),
             node_constraints: BTreeMap::new(),
             splits: BTreeMap::new(),
         };
         project_subtree(
-            self.workspace,
-            self.node,
+            &self.topology,
             bounds,
             self.metrics,
             &self.measurements,
@@ -587,9 +590,11 @@ impl RootMeasurement<'_> {
             &mut projection,
         )?;
         projection.node_constraints = self
-            .measurements
-            .into_iter()
-            .map(|(node, measurement)| (node, measurement.constraints))
+            .topology
+            .nodes
+            .iter()
+            .zip(self.measurements)
+            .map(|(node, measurement)| (node.id, measurement.constraints))
             .collect();
         Ok(projection)
     }
@@ -743,137 +748,55 @@ impl LeafMeasurements<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum MeasurementFrame<'workspace> {
-    Enter(NodeId),
-    Exit {
-        node_id: NodeId,
-        axis: Axis,
-        children: &'workspace [NodeId],
-    },
-}
-
 fn measure_root<'workspace>(
     workspace: &'workspace Workspace,
     root: RootId,
     leaves: LeafMeasurements<'_>,
     metrics: LayoutMetrics,
 ) -> Result<RootMeasurement<'workspace>, LayoutError> {
-    let root_record = workspace
-        .root(root)
-        .ok_or(LayoutError::MissingRoot { root })?;
-    let minimums_only = matches!(leaves, LeafMeasurements::Minimums(_));
-    let mut measurements = BTreeMap::new();
-    let mut visiting = BTreeSet::new();
-    let mut minimum_postorder = Vec::new();
-    let mut stack = vec![MeasurementFrame::Enter(root_record.node)];
-
-    while let Some(frame) = stack.pop() {
-        match frame {
-            MeasurementFrame::Enter(current) => {
-                if measurements.contains_key(&current) {
-                    continue;
-                }
-                if !visiting.insert(current) {
-                    return Err(LayoutError::Cycle { node: current });
-                }
-
-                let node = workspace
-                    .node(current)
-                    .ok_or(LayoutError::MissingNode { node: current })?;
-                match node {
-                    Node::Tabs { .. } => {
-                        let measurement = SubtreeMeasurement {
-                            constraints: leaves.get(current)?,
-                            contains_central: root_record.central == Some(current),
-                        };
-                        visiting.remove(&current);
-                        measurements.insert(current, measurement);
-                        if minimums_only {
-                            minimum_postorder.push(current);
-                        }
-                    }
-                    Node::Split {
-                        axis,
-                        children,
-                        weights,
-                    } => {
-                        if children.len() != weights.len() {
-                            return Err(LayoutError::SplitCardinalityMismatch {
-                                node: current,
-                                children: children.len(),
-                                weights: weights.len(),
-                            });
-                        }
-                        stack.push(MeasurementFrame::Exit {
-                            node_id: current,
-                            axis: *axis,
-                            children,
-                        });
-                        stack.extend(children.iter().rev().copied().map(MeasurementFrame::Enter));
-                    }
-                }
-            }
-            MeasurementFrame::Exit {
-                node_id: current,
-                axis,
-                children,
-            } => {
-                let children = child_measurements(children, &measurements)?;
-                let measurement = SubtreeMeasurement {
-                    constraints: compose_constraints(
-                        current,
-                        axis,
-                        &children,
-                        metrics,
-                        minimums_only,
-                    )?,
-                    contains_central: children.iter().any(|child| child.contains_central),
-                };
-                visiting.remove(&current);
-                measurements.insert(current, measurement);
-                if minimums_only {
-                    minimum_postorder.push(current);
-                }
-            }
-        }
-    }
-
-    let root_measurement = measurements
-        .get(&root_record.node)
-        .ok_or(LayoutError::MissingNode {
-            node: root_record.node,
-        })?;
-    if let Some(central) = root_record.central
-        && !root_measurement.contains_central
-    {
-        return Err(LayoutError::CentralNodeNotReachable { root, central });
-    }
-    let minimum = root_measurement.constraints.min();
+    let (topology, measurements) = RootLayoutTopology::compile(workspace, root, leaves, metrics)?;
     Ok(RootMeasurement {
         workspace,
         root,
-        node: root_record.node,
         metrics,
-        minimum,
+        minimum: measurements[0].constraints.min(),
+        topology: Arc::new(topology),
         measurements,
-        minimum_postorder,
+        minimums_only: matches!(leaves, LeafMeasurements::Minimums(_)),
     })
 }
 
-fn child_measurements(
-    children: &[NodeId],
-    measurements: &BTreeMap<NodeId, SubtreeMeasurement>,
-) -> Result<Vec<SubtreeMeasurement>, LayoutError> {
-    children
-        .iter()
-        .map(|child| {
-            measurements
-                .get(child)
-                .copied()
-                .ok_or(LayoutError::MissingNode { node: *child })
-        })
-        .collect()
+/// Reuse only exact structural rows; metrics and constraint answers remain live.
+pub(crate) fn measure_root_minimums_with_index<'workspace>(
+    workspace: &'workspace Workspace,
+    root: RootId,
+    leaf_minimums: &BTreeMap<NodeId, LogicalSize>,
+    metrics: LayoutMetrics,
+    index: &WorkspaceIndex,
+    version: WorkspaceVersion,
+) -> Result<RootMeasurement<'workspace>, LayoutError> {
+    let slot = index.layout_topology_slot(root, version);
+    let leaves = LeafMeasurements::Minimums(leaf_minimums);
+    if let Some(topology) = slot.and_then(std::sync::OnceLock::get)
+        && topology.matches(workspace, root)
+    {
+        let measurements = topology.measure(leaves, metrics)?;
+        return Ok(RootMeasurement {
+            workspace,
+            root,
+            metrics,
+            minimum: measurements[0].constraints.min(),
+            topology: Arc::clone(topology),
+            measurements,
+            minimums_only: true,
+        });
+    }
+    let measured = measure_root(workspace, root, leaves, metrics)?;
+    if let Some(slot) = slot {
+        // A stale same-version hint never replaces the first checked topology.
+        let _ = slot.set(Arc::clone(&measured.topology));
+    }
+    Ok(measured)
 }
 
 fn compose_constraints(
@@ -979,7 +902,7 @@ fn total_splitter_extent(
 struct SplitProjectionState<'workspace> {
     node_id: NodeId,
     axis: Axis,
-    children: &'workspace [NodeId],
+    children: &'workspace [usize],
     sizes: Vec<f64>,
     next_child: usize,
     pending_child_size: Option<f64>,
@@ -995,111 +918,111 @@ struct SplitProjectionState<'workspace> {
 }
 
 enum ProjectionFrame<'workspace> {
-    Enter {
-        node_id: NodeId,
-        bounds: LogicalRect,
-    },
+    Enter { row: usize, bounds: LogicalRect },
     ContinueSplit(SplitProjectionState<'workspace>),
 }
 
+#[derive(Default)]
+struct ProjectionScratch {
+    constraints: Vec<AxisConstraint>,
+    weights: Vec<f64>,
+}
+
 fn project_subtree(
-    workspace: &Workspace,
-    node_id: NodeId,
+    topology: &RootLayoutTopology,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
-    measurements: &BTreeMap<NodeId, SubtreeMeasurement>,
+    measurements: &[SubtreeMeasurement],
     weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     projection: &mut LayoutProjection,
 ) -> Result<(), LayoutError> {
-    let mut stack = vec![ProjectionFrame::Enter { node_id, bounds }];
-
+    let mut stack = vec![ProjectionFrame::Enter { row: 0, bounds }];
+    let mut scratch = ProjectionScratch::default();
     while let Some(frame) = stack.pop() {
         match frame {
-            ProjectionFrame::Enter {
-                node_id: current,
-                bounds: current_bounds,
-            } => {
+            ProjectionFrame::Enter { row, bounds } => {
                 if let Some(state) = prepare_split_projection(
-                    workspace,
-                    current,
-                    current_bounds,
+                    topology,
+                    row,
+                    bounds,
                     metrics,
                     measurements,
                     weight_overrides,
                     projection,
+                    &mut scratch,
                 )? {
                     stack.push(ProjectionFrame::ContinueSplit(state));
                 }
             }
             ProjectionFrame::ContinueSplit(state) => {
-                advance_split_projection(state, &mut stack, projection)?;
+                advance_split_projection(state, &mut stack, projection)?
             }
         }
     }
-
     Ok(())
 }
 
-fn prepare_split_projection<'workspace>(
-    workspace: &'workspace Workspace,
-    node_id: NodeId,
+#[allow(clippy::too_many_arguments)]
+fn prepare_split_projection<'layout>(
+    topology: &'layout RootLayoutTopology,
+    row: usize,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
-    measurements: &BTreeMap<NodeId, SubtreeMeasurement>,
+    measurements: &[SubtreeMeasurement],
     weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     projection: &mut LayoutProjection,
-) -> Result<Option<SplitProjectionState<'workspace>>, LayoutError> {
+    scratch: &mut ProjectionScratch,
+) -> Result<Option<SplitProjectionState<'layout>>, LayoutError> {
+    let node = &topology.nodes[row];
+    let node_id = node.id;
     projection.node_rects.insert(node_id, bounds);
-    let node = workspace
-        .node(node_id)
-        .ok_or(LayoutError::MissingNode { node: node_id })?;
-    let Node::Split {
+    let LayoutNodeKind::Split {
         axis,
         children,
         weights,
-    } = node
+    } = &node.kind
     else {
         return Ok(None);
     };
-    if children.len() != weights.len() {
-        return Err(LayoutError::SplitCardinalityMismatch {
-            node: node_id,
-            children: children.len(),
-            weights: weights.len(),
-        });
-    }
-
-    let child_measurements = child_measurements(children, measurements)?;
-    let axis_constraints = child_measurements
-        .iter()
-        .map(|child| match axis {
+    let children = &topology.children[children.clone()];
+    scratch.constraints.clear();
+    scratch.constraints.extend(children.iter().map(|&row| {
+        let constraints = measurements[row].constraints;
+        match axis {
             Axis::Horizontal => AxisConstraint {
-                min: child.constraints.min().width(),
-                max: child.constraints.max().width(),
+                min: constraints.min().width(),
+                max: constraints.max().width(),
             },
             Axis::Vertical => AxisConstraint {
-                min: child.constraints.min().height(),
-                max: child.constraints.max().height(),
+                min: constraints.min().height(),
+                max: constraints.max().height(),
             },
-        })
-        .collect::<Vec<_>>();
-    let child_minimum_extents = axis_constraints
+        }
+    }));
+    let child_minimum_extents = scratch
+        .constraints
         .iter()
         .map(|constraint| constraint.min())
         .collect();
-    let child_maximum_extents = axis_constraints
+    let child_maximum_extents = scratch
+        .constraints
         .iter()
         .map(|constraint| constraint.max())
         .collect();
-    let axis_weights = weight_overrides.get(&node_id).cloned().unwrap_or_else(|| {
-        weights
-            .iter()
-            .map(|weight| f64::from(weight.get()))
-            .collect()
-    });
-    let central_index = child_measurements
+    let axis_weights = if let Some(overrides) = weight_overrides.get(&node_id) {
+        overrides.as_slice()
+    } else {
+        scratch.weights.clear();
+        scratch.weights.extend(
+            topology.weight_bits[weights.clone()]
+                .iter()
+                .map(|&bits| f64::from(f32::from_bits(bits))),
+        );
+        &scratch.weights
+    };
+    let central_index = children
         .iter()
-        .position(|child| child.contains_central);
+        .position(|&row| measurements[row].contains_central);
     let extent = match axis {
         Axis::Horizontal => bounds.width(),
         Axis::Vertical => bounds.height(),
@@ -1108,8 +1031,8 @@ fn prepare_split_projection<'workspace>(
         projected_splitter_geometry(node_id, children.len(), extent, metrics)?;
     let solved = solve_axis(
         extent - splitter_extent,
-        &axis_weights,
-        &axis_constraints,
+        axis_weights,
+        &scratch.constraints,
         central_index,
     )?;
     let cursor = match axis {
@@ -1228,7 +1151,7 @@ fn advance_split_projection<'workspace>(
     state.pending_child_size = Some(size);
     stack.push(ProjectionFrame::ContinueSplit(state));
     stack.push(ProjectionFrame::Enter {
-        node_id: child,
+        row: child,
         bounds: child_bounds,
     });
     Ok(())
@@ -1430,6 +1353,12 @@ fn allocation_tolerance(a: f64, b: f64, c: f64) -> f64 {
 
 #[cfg(test)]
 mod override_tests;
+
+#[cfg(test)]
+mod reference;
+
+#[cfg(test)]
+mod topology_tests;
 
 #[cfg(test)]
 mod layout_cost;
