@@ -1,6 +1,5 @@
 //! Opt-in checked docking and layout attribution without a host or renderer.
 
-use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -199,11 +198,11 @@ fn collect_constraints(
     workspace: &Workspace,
     node: NodeId,
     leaf: Constraints,
-    constraints: &mut BTreeMap<NodeId, Constraints>,
+    constraints: &mut Vec<(NodeId, Constraints)>,
 ) {
     match workspace.node(node).unwrap() {
         Node::Tabs { .. } => {
-            constraints.insert(node, leaf);
+            constraints.push((node, leaf));
         }
         Node::Split { children, .. } => {
             for &child in children {
@@ -229,13 +228,14 @@ fn project_all_roots(fixture: &Fixture) -> Vec<RootProjection> {
                 "primary matrix has no floating roots"
             );
             let root = presentation.main_root.unwrap();
-            let mut constraints = BTreeMap::new();
+            let mut constraints = Vec::new();
             collect_constraints(
                 &fixture.workspace,
                 fixture.workspace.root(root).unwrap().node,
                 leaf,
                 &mut constraints,
             );
+            let mut constraints = constraints.into_iter().peekable();
             RootProjection {
                 ordinal: u64::try_from(view + 1).unwrap(),
                 root,
@@ -243,7 +243,11 @@ fn project_all_roots(fixture: &Fixture) -> Vec<RootProjection> {
                     &fixture.workspace,
                     root,
                     fixture.bounds,
-                    &constraints,
+                    |node| {
+                        constraints
+                            .next_if(|(id, _)| *id == node)
+                            .map(|(_, constraints)| constraints)
+                    },
                     fixture.metrics,
                 )
                 .unwrap(),

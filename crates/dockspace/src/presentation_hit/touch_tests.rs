@@ -428,11 +428,12 @@ fn plan(config: DockPresentationConfig) -> PresentationPlan {
         root_bounds.size(),
     )
     .expect("root constraints are valid");
+    let leaf_constraints = std::collections::BTreeMap::from([(leaf, constraints)]);
     let projection = project_root(
         &workspace,
         root,
         root_bounds,
-        &[(leaf, constraints)].into_iter().collect(),
+        |node| leaf_constraints.get(&node).copied(),
         LayoutMetrics::new(config.splitter_thickness()).expect("splitter metric is valid"),
     )
     .expect("root projection is valid");

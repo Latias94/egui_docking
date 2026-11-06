@@ -37,8 +37,16 @@ impl Fixture {
         thickness: f64,
     ) -> Self {
         let metrics = LayoutMetrics::new(thickness).unwrap();
-        let projection =
-            Arc::new(project_root(&workspace, ROOT, bounds, &constraints, metrics).unwrap());
+        let projection = Arc::new(
+            project_root(
+                &workspace,
+                ROOT,
+                bounds,
+                |node| constraints.get(&node).copied(),
+                metrics,
+            )
+            .unwrap(),
+        );
         let ticket = SurfaceMeasurementTicket::new(
             EngineAuthorityDomainId::new_for_test(1),
             WorkspaceEpoch::new(1),
@@ -145,7 +153,7 @@ impl Fixture {
             &self.workspace,
             ROOT,
             self.bounds,
-            &self.constraints,
+            |node| self.constraints.get(&node).copied(),
             self.metrics,
             &overrides,
         )

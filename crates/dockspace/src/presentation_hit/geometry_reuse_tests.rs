@@ -101,11 +101,12 @@ impl Fixture {
         let workspace = builder.build().unwrap();
         let constraints =
             Constraints::new(LogicalSize::new(0.0, 0.0).unwrap(), self.root_bounds.size()).unwrap();
+        let leaf_constraints = std::collections::BTreeMap::from([(tabs, constraints)]);
         let projection = project_root(
             &workspace,
             root,
             self.root_bounds,
-            &[(tabs, constraints)].into_iter().collect(),
+            |node| leaf_constraints.get(&node).copied(),
             LayoutMetrics::new(self.config.splitter_thickness()).unwrap(),
         )
         .unwrap();

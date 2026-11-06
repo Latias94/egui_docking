@@ -57,8 +57,9 @@ impl RootLayoutTopology {
     pub(super) fn compile(
         workspace: &Workspace,
         root: RootId,
-        leaves: LeafMeasurements<'_>,
+        read_leaf: &mut impl FnMut(NodeId) -> Result<Constraints, LayoutError>,
         metrics: LayoutMetrics,
+        minimums_only: bool,
     ) -> Result<(Self, Vec<SubtreeMeasurement>), LayoutError> {
         let record = workspace
             .root(root)
@@ -96,7 +97,7 @@ impl RootLayoutTopology {
                     match live {
                         Node::Tabs { .. } => {
                             values[row] = SubtreeMeasurement {
-                                constraints: leaves.get(node)?,
+                                constraints: read_leaf(node)?,
                                 contains_central: record.central == Some(node),
                             };
                             topology.postorder.push(row);
@@ -150,7 +151,7 @@ impl RootLayoutTopology {
                             *axis,
                             &child_values,
                             metrics,
-                            matches!(leaves, LeafMeasurements::Minimums(_)),
+                            minimums_only,
                         )?,
                         contains_central: child_values.iter().any(|child| child.contains_central),
                     };

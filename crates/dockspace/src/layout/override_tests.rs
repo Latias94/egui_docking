@@ -86,11 +86,12 @@ fn rejected_by_both_paths(
     let metrics = LayoutMetrics::new(1.0).unwrap();
     let version = WorkspaceVersion::initial();
     let index = WorkspaceIndex::build(&fixture.workspace, version).unwrap();
+    let constraints = constraints(fixture);
     let public = project_root_with_overrides(
         &fixture.workspace,
         fixture.root,
         bounds(),
-        &constraints(fixture),
+        |node| constraints.get(&node).copied(),
         metrics,
         overrides,
     );
@@ -133,13 +134,14 @@ fn override_batches_verify_owner_references_without_building_fingerprints() {
         let version = WorkspaceVersion::initial();
         let index = WorkspaceIndex::build(&fixture.workspace, version).unwrap();
         let metrics = LayoutMetrics::new(1.0).unwrap();
+        let constraints = constraints(&fixture);
 
         crate::drop_resolver::structural_work::reset();
         let public = project_root_with_overrides(
             &fixture.workspace,
             fixture.root,
             bounds(),
-            &constraints(&fixture),
+            |node| constraints.get(&node).copied(),
             metrics,
             &overrides,
         )

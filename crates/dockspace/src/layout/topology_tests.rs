@@ -105,7 +105,7 @@ proptest::proptest! {
         let bounds = LogicalRect::new(-17.25, 31.5, f64::from(width) * 0.25, f64::from(height) * 0.25).unwrap();
         let metrics = LayoutMetrics::new(f64::from(thickness) * 0.125).unwrap();
         let expected = reference::project(&workspace, ROOT, bounds, LeafMeasurements::Constraints(&constraints), metrics, &[]);
-        let actual = project_root(&workspace, ROOT, bounds, &constraints, metrics);
+        let actual = project_root(&workspace, ROOT, bounds, |node| constraints.get(&node).copied(), metrics);
         proptest::prop_assert_eq!(reference::capture_result(&actual), expected);
 
         let minimums = constraints.iter().map(|(&id, value)| (id, value.min())).collect::<BTreeMap<_, _>>();
@@ -207,7 +207,7 @@ fn sparse_arena_projection_rejects_retired_generations() {
         &workspace,
         ROOT,
         bounds,
-        &constraints,
+        |node| constraints.get(&node).copied(),
         LayoutMetrics::new(0.0).unwrap(),
     )
     .unwrap();
@@ -291,7 +291,28 @@ fn sparse_recycled_tree_keeps_ordered_identity_and_cold_warm_oracle_results() {
         .collect::<BTreeMap<_, _>>();
     let metrics = LayoutMetrics::new(3.5).unwrap();
     let bounds = LogicalRect::new(-31.25, 18.5, 400.0, 200.0).unwrap();
-    let cold = project_root(&workspace, ROOT, bounds, &constraints, metrics).unwrap();
+    let leaf_order = [recycled[1], kept[1], recycled[0], kept[0]];
+    let answers = leaf_order
+        .into_iter()
+        .map(|node| (node, constraints[&node]))
+        .collect::<Vec<_>>();
+    let mut answers = answers.into_iter().peekable();
+    let mut queries = Vec::new();
+    let cold = project_root(
+        &workspace,
+        ROOT,
+        bounds,
+        |node| {
+            queries.push(node);
+            answers
+                .next_if(|(id, _)| *id == node)
+                .map(|(_, constraints)| constraints)
+        },
+        metrics,
+    )
+    .unwrap();
+    assert_eq!(queries, leaf_order);
+    assert!(answers.next().is_none());
     assert_eq!(
         reference::capture(&cold),
         reference::project(
@@ -345,6 +366,127 @@ fn sparse_recycled_tree_keeps_ordered_identity_and_cold_warm_oracle_results() {
 }
 
 #[test]
+fn constraint_reader_preserves_depth_first_errors_and_override_precedence() {
+    let mut builder = Workspace::builder();
+    let leaves = [1, 2, 3, 4].map(|item| builder.insert_node(Node::tabs([ItemId::new(item)])));
+    let nested = builder
+        .insert_node(Node::equal_split(Axis::Vertical, leaves[..2].iter().copied()).unwrap());
+    let root_node = builder.insert_node(
+        Node::split(
+            Axis::Horizontal,
+            [nested, leaves[2], leaves[3]],
+            [0.5, 0.25, 0.25],
+        )
+        .unwrap(),
+    );
+    builder.set_root(ROOT, RootRecord::new(root_node));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+    let workspace = builder.build().unwrap();
+    let metrics = LayoutMetrics::new(1.0).unwrap();
+    let bounds = LogicalRect::new(0.0, 0.0, 512.0, 512.0).unwrap();
+    let leaf = Constraints::new(
+        LogicalSize::new(0.0, 0.0).unwrap(),
+        LogicalSize::new(1024.0, 1024.0).unwrap(),
+    )
+    .unwrap();
+    let constraints = leaves
+        .map(|node| (node, leaf))
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    for missing in [0, 2, 3] {
+        let mut incomplete = constraints.clone();
+        incomplete.remove(&leaves[missing]);
+        let mut queries = Vec::new();
+        let actual = project_root(
+            &workspace,
+            ROOT,
+            bounds,
+            |node| {
+                queries.push(node);
+                incomplete.get(&node).copied()
+            },
+            metrics,
+        );
+        assert_eq!(
+            actual,
+            Err(LayoutError::MissingLeafConstraints {
+                node: leaves[missing]
+            })
+        );
+        assert_eq!(queries, leaves[..=missing]);
+        assert_eq!(
+            reference::capture_result(&actual),
+            reference::project(
+                &workspace,
+                ROOT,
+                bounds,
+                LeafMeasurements::Constraints(&incomplete),
+                metrics,
+                &[],
+            )
+        );
+    }
+
+    let source = workspace.capture_node_source(ROOT, root_node).unwrap();
+    let mut queries = Vec::new();
+    let actual = project_root_with_overrides(
+        &workspace,
+        ROOT,
+        bounds,
+        |node| {
+            queries.push(node);
+            None
+        },
+        metrics,
+        &[SplitWeightOverride::new(&source, &[])],
+    );
+    assert!(matches!(
+        actual,
+        Err(LayoutError::SplitWeightOverrideLengthMismatch { .. })
+    ));
+    assert!(queries.is_empty());
+
+    let mut incomplete = constraints;
+    incomplete.remove(&leaves[2]);
+    let overflowing = Constraints::new(
+        LogicalSize::new(0.0, 0.0).unwrap(),
+        LogicalSize::new(1024.0, f64::MAX).unwrap(),
+    )
+    .unwrap();
+    for node in &leaves[..2] {
+        incomplete.insert(*node, overflowing);
+    }
+    let actual = project_root(
+        &workspace,
+        ROOT,
+        bounds,
+        |node| {
+            queries.push(node);
+            incomplete.get(&node).copied()
+        },
+        metrics,
+    );
+    assert_eq!(
+        actual,
+        Err(LayoutError::NonFiniteAggregate {
+            quantity: "subtree maximum height"
+        })
+    );
+    assert_eq!(queries, leaves[..2]);
+    assert_eq!(
+        reference::capture_result(&actual),
+        reference::project(
+            &workspace,
+            ROOT,
+            bounds,
+            LeafMeasurements::Constraints(&incomplete),
+            metrics,
+            &[],
+        )
+    );
+}
+
+#[test]
 fn projects_ten_thousand_nested_splits_without_call_stack_growth() {
     const DEPTH: usize = 10_000;
 
@@ -376,7 +518,7 @@ fn projects_ten_thousand_nested_splits_without_call_stack_growth() {
         &workspace,
         ROOT,
         bounds,
-        &leaf_constraints,
+        |node| leaf_constraints.get(&node).copied(),
         LayoutMetrics::new(0.0).unwrap(),
     )
     .unwrap();
@@ -703,8 +845,14 @@ fn minimum_measurement_errors_precede_override_validation_for_cold_and_warm_topo
         );
     }
     let constraints = BTreeMap::new();
-    let public =
-        project_root_with_overrides(&workspace, ROOT, bounds, &constraints, metrics, &overrides);
+    let public = project_root_with_overrides(
+        &workspace,
+        ROOT,
+        bounds,
+        |node| constraints.get(&node).copied(),
+        metrics,
+        &overrides,
+    );
     assert!(matches!(
         public,
         Err(LayoutError::SplitWeightOverrideLengthMismatch { .. })

@@ -340,7 +340,7 @@ fn projects_workspace_nodes_and_splitter_rectangles() {
         &workspace,
         root,
         LogicalRect::new(100.0, 50.0, 1_000.0, 400.0).expect("valid bounds"),
-        &leaf_constraints,
+        |node| leaf_constraints.get(&node).copied(),
         layout_metrics(10.0),
     )
     .expect("workspace should project");
@@ -391,7 +391,7 @@ fn split_projection_exposes_ordered_direct_child_bounds_and_unallocated_extent()
         &workspace,
         root,
         LogicalRect::new(0.0, 0.0, 800.0, 200.0).expect("valid bounds"),
-        &leaf_constraints,
+        |node| leaf_constraints.get(&node).copied(),
         layout_metrics(10.0),
     )
     .expect("finite child maxima should project");
@@ -448,7 +448,7 @@ fn split_projection_uses_each_direct_subtree_axis_maximum() {
         &workspace,
         root,
         LogicalRect::new(0.0, 0.0, 500.0, 300.0).expect("valid bounds"),
-        &leaf_constraints,
+        |node| leaf_constraints.get(&node).copied(),
         layout_metrics(10.0),
     )
     .expect("nested direct-child maxima should project");
@@ -477,12 +477,13 @@ fn exact_split_override_changes_only_transient_projection() {
         .expect("inner split source must be current");
     let weights = SplitWeight::normalize([0.25, 0.75]).expect("override must be normalized");
     let before = workspace.clone();
+    let constraints = leaf_constraints(leaves);
 
     let projection = project_root_with_overrides(
         &workspace,
         root,
         LogicalRect::new(0.0, 0.0, 400.0, 400.0).expect("valid bounds"),
-        &leaf_constraints(leaves),
+        |node| constraints.get(&node).copied(),
         layout_metrics(0.0),
         &[SplitWeightOverride::new(&source, &weights)],
     )
@@ -515,13 +516,14 @@ fn stale_split_override_fingerprint_fails_closed() {
     assert_eq!(root, current_root);
     assert_eq!(captured_inner, current_inner);
     let weights = SplitWeight::normalize([0.25, 0.75]).expect("override must be normalized");
+    let constraints = leaf_constraints(leaves);
 
     assert!(matches!(
         project_root_with_overrides(
             &current_workspace,
             current_root,
             LogicalRect::new(0.0, 0.0, 400.0, 400.0).expect("valid bounds"),
-            &leaf_constraints(leaves),
+            |node| constraints.get(&node).copied(),
             layout_metrics(0.0),
             &[SplitWeightOverride::new(&source, &weights)],
         ),
@@ -560,13 +562,14 @@ fn split_override_must_belong_to_the_projected_root() {
         .capture_node_source(second_root, second_split)
         .expect("second source must be current");
     let weights = SplitWeight::normalize([0.25, 0.75]).expect("override must be normalized");
+    let constraints = leaf_constraints([first_left, first_right]);
 
     assert!(matches!(
         project_root_with_overrides(
             &workspace,
             first_root,
             LogicalRect::new(0.0, 0.0, 400.0, 400.0).expect("valid bounds"),
-            &leaf_constraints([first_left, first_right]),
+            |node| constraints.get(&node).copied(),
             layout_metrics(0.0),
             &[SplitWeightOverride::new(&source, &weights)],
         ),
@@ -591,7 +594,7 @@ fn split_override_rejects_wrong_length_unnormalized_and_duplicate_weights() {
             &workspace,
             root,
             bounds,
-            &constraints,
+            |node| constraints.get(&node).copied(),
             layout_metrics(0.0),
             &[SplitWeightOverride::new(&source, &wrong_length)],
         ),
@@ -611,7 +614,7 @@ fn split_override_rejects_wrong_length_unnormalized_and_duplicate_weights() {
             &workspace,
             root,
             bounds,
-            &constraints,
+            |node| constraints.get(&node).copied(),
             layout_metrics(0.0),
             &[SplitWeightOverride::new(&source, &unnormalized)],
         ),
@@ -625,7 +628,7 @@ fn split_override_rejects_wrong_length_unnormalized_and_duplicate_weights() {
             &workspace,
             root,
             bounds,
-            &constraints,
+            |node| constraints.get(&node).copied(),
             layout_metrics(0.0),
             &[duplicate, duplicate],
         ),
@@ -641,7 +644,7 @@ fn split_override_rejects_wrong_length_unnormalized_and_duplicate_weights() {
             &workspace,
             root,
             bounds,
-            &constraints,
+            |node| constraints.get(&node).copied(),
             layout_metrics(0.0),
             &[SplitWeightOverride::new(&leaf_source, &one_weight)],
         ),
@@ -670,7 +673,7 @@ fn projection_reports_leaf_minimum_overflow() {
         &workspace,
         root,
         LogicalRect::new(0.0, 0.0, 400.0, 200.0).expect("valid bounds"),
-        &leaf_constraints,
+        |node| leaf_constraints.get(&node).copied(),
         layout_metrics(10.0),
     )
     .expect("constraint conflict is a projection outcome");
@@ -698,7 +701,7 @@ fn projection_requires_explicit_constraints_for_every_leaf() {
             &workspace,
             root,
             LogicalRect::new(0.0, 0.0, 1_000.0, 400.0).expect("valid bounds"),
-            &leaf_constraints,
+            |node| leaf_constraints.get(&node).copied(),
             layout_metrics(10.0),
         ),
         Err(LayoutError::MissingLeafConstraints { .. })
@@ -730,7 +733,7 @@ fn central_leaf_semantics_propagate_through_ancestor_splits() {
         &workspace,
         root,
         LogicalRect::new(0.0, 0.0, 1_000.0, 400.0).expect("valid bounds"),
-        &leaf_constraints,
+        |node| leaf_constraints.get(&node).copied(),
         layout_metrics(10.0),
     )
     .expect("workspace should project");
@@ -753,7 +756,7 @@ fn projection_uniformly_compresses_splitters_to_fit_collapsed_bounds() {
         &workspace,
         root,
         LogicalRect::new(0.0, 0.0, 100.0, 100.0).expect("valid bounds"),
-        &leaf_constraints,
+        |node| leaf_constraints.get(&node).copied(),
         layout_metrics(60.0),
     )
     .expect("collapsed renderer bounds still have a deterministic projection");
@@ -801,7 +804,7 @@ fn nested_splitter_thickness_contributes_to_ancestor_constraints() {
         &workspace,
         root,
         LogicalRect::new(0.0, 0.0, 100.0, 100.0).expect("valid bounds"),
-        &leaf_constraints,
+        |node| leaf_constraints.get(&node).copied(),
         layout_metrics(10.0),
     )
     .expect("minimum conflict is a projection outcome");
@@ -842,7 +845,7 @@ fn projects_ten_thousand_nested_splits_without_call_stack_growth() {
         &workspace,
         root,
         LogicalRect::new(0.0, 0.0, 1_000.0, 1_000.0).expect("valid bounds"),
-        &leaf_constraints,
+        |node| leaf_constraints.get(&node).copied(),
         layout_metrics(0.0),
     )
     .expect("deep workspace should project iteratively");

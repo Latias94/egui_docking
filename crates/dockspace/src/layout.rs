@@ -438,7 +438,10 @@ fn solve_validated_axis_into(
 
 /// Projects a validated workspace root into renderer-neutral logical rectangles.
 ///
-/// `leaf_constraints` must contain an entry for every reachable tabs node.
+/// `read_leaf` supplies explicit constraints for every reachable tabs node, once
+/// per leaf in left-to-right depth-first measurement order. Returning `None`
+/// rejects that exact leaf. The reader is consumed during this call and is not
+/// retained by the owned projection.
 /// Split subtree constraints are composed deterministically from those leaves;
 /// callers do not provide duplicate constraints for internal nodes. `metrics`
 /// explicitly includes the preferred splitter thickness in measurement. Projection
@@ -454,10 +457,10 @@ pub fn project_root(
     workspace: &Workspace,
     root: RootId,
     bounds: LogicalRect,
-    leaf_constraints: &BTreeMap<NodeId, Constraints>,
+    read_leaf: impl FnMut(NodeId) -> Option<Constraints>,
     metrics: LayoutMetrics,
 ) -> Result<LayoutProjection, LayoutError> {
-    project_root_with_overrides(workspace, root, bounds, leaf_constraints, metrics, &[])
+    project_root_with_overrides(workspace, root, bounds, read_leaf, metrics, &[])
 }
 
 /// Projects a root while applying explicit, validated transient split weights.
@@ -476,7 +479,7 @@ pub fn project_root_with_overrides(
     workspace: &Workspace,
     root: RootId,
     bounds: LogicalRect,
-    leaf_constraints: &BTreeMap<NodeId, Constraints>,
+    mut read_leaf: impl FnMut(NodeId) -> Option<Constraints>,
     metrics: LayoutMetrics,
     weight_overrides: &[SplitWeightOverride<'_>],
 ) -> Result<LayoutProjection, LayoutError> {
@@ -485,13 +488,21 @@ pub fn project_root_with_overrides(
         .ok_or(LayoutError::MissingRoot { root })?;
     let weight_overrides =
         validate_split_weight_overrides(workspace, root, weight_overrides, None)?;
-    measure_root(
+    let (topology, measurements) = RootLayoutTopology::compile(
         workspace,
         root,
-        LeafMeasurements::Constraints(leaf_constraints),
+        &mut |node| read_leaf(node).ok_or(LayoutError::MissingLeafConstraints { node }),
         metrics,
-    )?
-    .project_with_weights(bounds, &weight_overrides)
+        false,
+    )?;
+    project_measurements(
+        Arc::new(topology),
+        measurements,
+        bounds,
+        metrics,
+        false,
+        &weight_overrides,
+    )
 }
 
 /// Measures scene minima once, before root bounds determine the uniform leaf maximum.
@@ -748,7 +759,14 @@ fn measure_root<'workspace>(
     leaves: LeafMeasurements<'_>,
     metrics: LayoutMetrics,
 ) -> Result<RootMeasurement<'workspace>, LayoutError> {
-    let (topology, measurements) = RootLayoutTopology::compile(workspace, root, leaves, metrics)?;
+    let minimums_only = matches!(leaves, LeafMeasurements::Minimums(_));
+    let (topology, measurements) = RootLayoutTopology::compile(
+        workspace,
+        root,
+        &mut |node| leaves.get(node),
+        metrics,
+        minimums_only,
+    )?;
     Ok(RootMeasurement {
         workspace,
         root,
@@ -756,7 +774,7 @@ fn measure_root<'workspace>(
         minimum: measurements[0].constraints.min(),
         topology: Arc::new(topology),
         measurements,
-        minimums_only: matches!(leaves, LeafMeasurements::Minimums(_)),
+        minimums_only,
     })
 }
 
@@ -1401,7 +1419,7 @@ mod tests {
                 let constraints = minimums
                     .iter()
                     .map(|(node, minimum)| (*node, Constraints::new(*minimum, maximum).unwrap()))
-                    .collect();
+                    .collect::<BTreeMap<_, _>>();
                 for overrides in [&[][..], &overrides[..]] {
                     let measured =
                         measure_root_minimums(&workspace, root, &minimums, metrics).unwrap();
@@ -1411,7 +1429,7 @@ mod tests {
                         &workspace,
                         root,
                         bounds,
-                        &constraints,
+                        |node| constraints.get(&node).copied(),
                         metrics,
                         overrides,
                     )

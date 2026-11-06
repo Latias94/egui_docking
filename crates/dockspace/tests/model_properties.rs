@@ -100,9 +100,9 @@ proptest! {
         let metrics = LayoutMetrics::new(splitter_thickness).expect("generated metric is valid");
         let bounds = LogicalRect::new(0.0, 0.0, 100_000.0, 100_000.0)
             .expect("fixture bounds are valid");
-        let first = project_root(&workspace, root, bounds, &leaf_constraints, metrics)
+        let first = project_root(&workspace, root, bounds, |node| leaf_constraints.get(&node).copied(), metrics)
             .expect("generated workspace projects");
-        let second = project_root(&workspace, root, bounds, &leaf_constraints, metrics)
+        let second = project_root(&workspace, root, bounds, |node| leaf_constraints.get(&node).copied(), metrics)
             .expect("generated workspace replays");
         prop_assert_eq!(first, second);
     }

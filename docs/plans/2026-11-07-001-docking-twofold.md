@@ -97,3 +97,20 @@ prepared-report equality sealing and complete-output traversal. Continue actual
 candidate-copy and cold mutation-effect ownership work after attribution. Keep
 all timed leaf materialization, complete owned export, strict numeric/error
 behavior, staged atomicity and current-reference semantics.
+
+## Fresh leaf-reader checkpoint and CI correction
+
+The explicit DFS leaf-reader slice passes 2,224 workspace tests and ordinary
+public integration/lint/docs gates. Both complete comparisons preserve all
+vectors. At 1,024 panes it improves complete p50 6.74–18.52% against `ecf78ba`,
+but seven medians regress, including both four-view 16-pane resize groups. The
+remaining ImGui ratio is 2.25–3.66x at 1,024 panes and 4.60–8.87x at 16 panes;
+no cell reaches 2x. Keep small-root fixed costs and every tail visible in
+[the evidence](../performance/2026-11-07-leaf-reader.md).
+
+Pushed-head CI exposed a real unpresented resize-output retirement regression:
+the new projection ownership filter ran before root geometry bases were bound.
+Fix `5089b4f` moves registration after both root loops. The original public
+return-to-origin test fails first, then the complete 292/335-test no-feature and
+persistence-feature host suites pass. The corrected head's Workspace, host,
+Windows and macOS jobs pass; remaining jobs still require their final result.

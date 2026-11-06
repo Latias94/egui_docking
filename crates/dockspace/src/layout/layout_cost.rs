@@ -174,10 +174,14 @@ fn layout_cost() {
                 let start = Instant::now();
                 let projection = match measured {
                     Some(measured) => black_box(measured).project(bounds, &[]).unwrap(),
-                    None => {
-                        project_root(black_box(&workspace), ROOT, bounds, &constraints, metrics)
-                            .unwrap()
-                    }
+                    None => project_root(
+                        black_box(&workspace),
+                        ROOT,
+                        bounds,
+                        |node| constraints.get(&node).copied(),
+                        metrics,
+                    )
+                    .unwrap(),
                 };
                 black_box(&projection);
                 let elapsed_ns = start.elapsed().as_nanos();
