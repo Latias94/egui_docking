@@ -1,0 +1,53 @@
+{
+  "reproduction-one": {
+    "rows": 1152,
+    "processes": 8,
+    "coverage_and_workload_and_percentiles": "pass"
+  },
+  "reproduction-original": {
+    "rows": 1728,
+    "processes": 8,
+    "coverage_and_workload_and_percentiles": "pass"
+  },
+  "imgui-assert-comparison": {
+    "rows": 3072,
+    "processes": 8,
+    "coverage_and_workload_and_percentiles": "pass"
+  },
+  "validation-frozen-product": {
+    "rows": 1728,
+    "processes": 8,
+    "coverage_and_workload_and_percentiles": "pass"
+  },
+  "validation-candidate-product": {
+    "rows": 864,
+    "processes": 4,
+    "coverage_and_percentiles": "pass",
+    "only_changed_sources": [
+      "crates/dockspace/src/canonical.rs",
+      "crates/dockspace/src/operation.rs"
+    ]
+  },
+  "validation-headless": {
+    "process_summaries": 240,
+    "timing_processes": 8,
+    "allocation_processes": 2,
+    "checks": "pass; unchanged harness exposes process summaries, not raw timing samples"
+  },
+  "stages": {
+    "stage_groups": 252,
+    "coverage": {
+      "idle,16": 32,
+      "idle,128": 32,
+      "idle,1024": 32,
+      "select,16": 32,
+      "select,128": 32,
+      "select,1024": 32,
+      "measurement_change,16": 32,
+      "measurement_change,128": 32,
+      "measurement_change,1024": 32
+    },
+    "nearest_rank_percentiles_and_call_counts": "pass",
+    "limits": "Instrumented times are diagnostic. Nested spans overlap; stages are not independently removable work."
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "command": [
+    "codex",
+    "exec",
+    "-C",
+    "/Users/frankorz/codes/rust/egui_docking",
+    "-s",
+    "read-only",
+    "-o",
+    "/tmp/dockspace-selection-analysis-20261106-eea8a7f/design-review.md",
+    "-"
+  ],
+  "started_utc": "2026-11-06T02:56:16.334027+00:00",
+  "returncode": 0,
+  "finished_utc": "2026-11-06T03:07:06.520431+00:00"
+}

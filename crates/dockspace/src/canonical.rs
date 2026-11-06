@@ -201,6 +201,7 @@ pub fn canonicalize_workspace(
 ///
 /// All input, item-ownership and output checks still run. On failure the draft
 /// may be partially rewritten and must be discarded rather than published.
+/// On success it has passed the complete workspace validator.
 pub(crate) fn canonicalize_draft(workspace: &mut Workspace) -> Result<(), CanonicalizationError> {
     validate_rewrite_input(workspace)?;
     canonicalize_validated_draft(workspace)

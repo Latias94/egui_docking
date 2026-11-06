@@ -1,0 +1,61 @@
+{
+  "scope": "Single-variable ImGui assertion-cost experiment; remove only -DNDEBUG, retain source, optimization and LTO settings. Not parity with dockspace runtime validation.",
+  "build_command": [
+    "/usr/bin/clang++",
+    "-std=c++17",
+    "-O3",
+    "-flto=thin",
+    "-I",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui",
+    "/Users/frankorz/codes/rust/egui_docking/integration/product-comparison/imgui_product_cost.cpp",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui/imgui.cpp",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui/imgui_draw.cpp",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui/imgui_tables.cpp",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui/imgui_widgets.cpp",
+    "-o",
+    "/tmp/dockspace-selection-analysis-20261106-eea8a7f/imgui-assertions-enabled"
+  ],
+  "baseline_build_command": [
+    "/usr/bin/clang++",
+    "-std=c++17",
+    "-O3",
+    "-DNDEBUG",
+    "-flto=thin",
+    "-I",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui",
+    "/Users/frankorz/codes/rust/egui_docking/integration/product-comparison/imgui_product_cost.cpp",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui/imgui.cpp",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui/imgui_draw.cpp",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui/imgui_tables.cpp",
+    "/Users/frankorz/codes/rust/egui_docking/repo-ref/imgui/imgui_widgets.cpp",
+    "-o",
+    "/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-workspace/target/production/imgui_product_cost"
+  ],
+  "imgui_commit": "d88f238d1d363ef387382b2e29ad12cf96f826ac",
+  "imgui_sources": {
+    "imgui.cpp": "4a3f6d979763314ff188f2430bce3296afaae876a15d30ea1cef43094219c8ac",
+    "imgui_draw.cpp": "5c44a55a973f16c2fed8f44196d876213a8ce2cf1982ab7f761c9d6c5278e204",
+    "imgui_tables.cpp": "3b7d775ece6dc4a83756acd588d4f83c0ca885d420e524ebb90213e2783c25f8",
+    "imgui_widgets.cpp": "65f1d0d2b4d7cb7784650c8581d5c8c0419d35e0f0ded03596cd43aa0607441d",
+    "imgui.h": "db55bb94484cc63924e4ca4b07fe2aff46ea3b967b5c9d5031833b6870bfe599",
+    "imgui_internal.h": "964cba6849d9993c60a9c989fc10cc6ba9690e6802b31df49d07e1ddc612a170",
+    "imconfig.h": "fa91f606da783669ffd485f3f9e0cd0d92cddeac459efce4c2b9327cce7a3233",
+    "imstb_rectpack.h": "889b396795202d1457560a797a7242e96f6f132d4b88ca2d69be58bf05e1771f",
+    "imstb_textedit.h": "a985f5fa0ed97353d493b497961e9eef52082edcd045cf6954b69990ec9d0741",
+    "imstb_truetype.h": "c51a0f7e7ea760f2366bd3752635ec58e21fccfec4a832501639990ba6ce0528"
+  },
+  "benchmark_sources": {
+    "scripts/compare_products.py": "226401f5a4569acd64b6cd8cabc47fe0318e4b9d86755c9f7ae5d17777bb14e7",
+    "integration/product-comparison/imgui_product_cost.cpp": "84672cae993f42e640b94ffdb484c7d1665f3d4f9f9844817ba86b6ff81ad51d",
+    "integration/egui-product-harness/examples/product_cost.rs": "272545879cc8b573b2a2aefec32498f1dc59130f1f770e9e9e5e510c6172ab93"
+  },
+  "started_utc": "2026-11-06T02:59:58.604815+00:00",
+  "returncode": 0,
+  "finished_utc": "2026-11-06T03:00:03.329941+00:00",
+  "binary_sha256": {
+    "assertions_enabled": "cdb416c9532c5d20c12ead4d29326a511d83fae2bd7f2912011f362b1b895b94",
+    "assertions_disabled": "15b40045bbd19bf24f1d9f029923f43cf5ae14e5d4d34a8645864491f88b1909"
+  },
+  "compiler_version": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+  "compiler_matches_original_baseline": true
+}

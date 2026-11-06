@@ -1,0 +1,156 @@
+{
+  "scope": "Single-variable ImGui assertion-cost experiment; remove only -DNDEBUG, retain source, optimization and LTO settings. Not parity with dockspace runtime validation.",
+  "samples": 128,
+  "warmup": 16,
+  "panes": [
+    1024
+  ],
+  "binary_sha256": {
+    "assertions_enabled": "cdb416c9532c5d20c12ead4d29326a511d83fae2bd7f2912011f362b1b895b94",
+    "assertions_disabled": "15b40045bbd19bf24f1d9f029923f43cf5ae14e5d4d34a8645864491f88b1909"
+  },
+  "runs": [
+    {
+      "group": 1,
+      "run": 1,
+      "condition": "assertions_disabled",
+      "command": [
+        "/tmp/dockspace-compiled-layout-20261106-f28a381/baseline-product-dear_imgui",
+        "--samples",
+        "128",
+        "--warmup",
+        "16",
+        "--panes",
+        "1024"
+      ],
+      "started_utc": "2026-11-06T03:11:31.125009+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T03:11:32.327308+00:00"
+    },
+    {
+      "group": 1,
+      "run": 2,
+      "condition": "assertions_enabled",
+      "command": [
+        "/private/tmp/dockspace-selection-analysis-20261106-eea8a7f/imgui-assertions-enabled",
+        "--samples",
+        "128",
+        "--warmup",
+        "16",
+        "--panes",
+        "1024"
+      ],
+      "started_utc": "2026-11-06T03:11:32.328545+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T03:11:33.444892+00:00"
+    },
+    {
+      "group": 1,
+      "run": 3,
+      "condition": "assertions_enabled",
+      "command": [
+        "/private/tmp/dockspace-selection-analysis-20261106-eea8a7f/imgui-assertions-enabled",
+        "--samples",
+        "128",
+        "--warmup",
+        "16",
+        "--panes",
+        "1024"
+      ],
+      "started_utc": "2026-11-06T03:11:33.445897+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T03:11:34.565367+00:00"
+    },
+    {
+      "group": 1,
+      "run": 4,
+      "condition": "assertions_disabled",
+      "command": [
+        "/tmp/dockspace-compiled-layout-20261106-f28a381/baseline-product-dear_imgui",
+        "--samples",
+        "128",
+        "--warmup",
+        "16",
+        "--panes",
+        "1024"
+      ],
+      "started_utc": "2026-11-06T03:11:34.566893+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T03:11:35.752201+00:00"
+    },
+    {
+      "group": 2,
+      "run": 1,
+      "condition": "assertions_enabled",
+      "command": [
+        "/private/tmp/dockspace-selection-analysis-20261106-eea8a7f/imgui-assertions-enabled",
+        "--samples",
+        "128",
+        "--warmup",
+        "16",
+        "--panes",
+        "1024"
+      ],
+      "started_utc": "2026-11-06T03:11:35.753302+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T03:11:36.873190+00:00"
+    },
+    {
+      "group": 2,
+      "run": 2,
+      "condition": "assertions_disabled",
+      "command": [
+        "/tmp/dockspace-compiled-layout-20261106-f28a381/baseline-product-dear_imgui",
+        "--samples",
+        "128",
+        "--warmup",
+        "16",
+        "--panes",
+        "1024"
+      ],
+      "started_utc": "2026-11-06T03:11:36.874928+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T03:11:38.072126+00:00"
+    },
+    {
+      "group": 2,
+      "run": 3,
+      "condition": "assertions_disabled",
+      "command": [
+        "/tmp/dockspace-compiled-layout-20261106-f28a381/baseline-product-dear_imgui",
+        "--samples",
+        "128",
+        "--warmup",
+        "16",
+        "--panes",
+        "1024"
+      ],
+      "started_utc": "2026-11-06T03:11:38.073152+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T03:11:39.269670+00:00"
+    },
+    {
+      "group": 2,
+      "run": 4,
+      "condition": "assertions_enabled",
+      "command": [
+        "/private/tmp/dockspace-selection-analysis-20261106-eea8a7f/imgui-assertions-enabled",
+        "--samples",
+        "128",
+        "--warmup",
+        "16",
+        "--panes",
+        "1024"
+      ],
+      "started_utc": "2026-11-06T03:11:39.270738+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T03:11:40.398621+00:00"
+    }
+  ],
+  "finished_utc": "2026-11-06T03:11:40.413831+00:00",
+  "workload_counts_identical": true,
+  "results_sha256": {
+    "raw.csv": "279078e2aad1563adf0f2d15eb6c52d79c5af47f9d250c0c70b67e8cbf80cdb0",
+    "summary.csv": "cdd62fb70266c4fea7a89b5e623a81bb4904d735a2de30f7f13a417ebbfdb356"
+  }
+}

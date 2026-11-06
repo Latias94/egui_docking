@@ -1,0 +1,6 @@
+请做严格限定的只读审查。不要编辑，不跑Cargo/benchmark/采样/联网/代理，不读取大文件或无关路径。最终英文输出不超过350词，完成完整结论。
+当前工作区相对eea8a7f只有生产改动：operation.rs去掉四个成功canonicalize_draft之后紧接的validate（两个content_close、prepare_transaction_inner、apply_owned_draft_command），canonical.rs为canonicalize_draft补文档：成功时已通过完整workspace validator。请只检查这个最小diff及canonicalize_draft→canonicalize_validated_draft→Workspace::validate_candidate→validation::validate_workspace调用链，确认：
+1. 四处是否均无中间状态变更且所有成功分支都已完整validate；
+2. 是否改变错误变体/顺序、事务原子性、close/item reconciliation、公开语义；
+3. 有无必须修复问题（具体文件行号），或明确无阻塞问题和测试建议。
+无需复查更大架构方案或成本数字。只读取上述函数附近代码即可。

@@ -224,7 +224,6 @@ pub(crate) fn prepare_surface_content_close(
 
     prune_vacant_surfaces(&mut candidate);
     canonicalize_draft(&mut candidate).map_err(TransactionError::from)?;
-    candidate.validate().map_err(TransactionError::from)?;
     let actual_after = candidate.item_multiset();
     if actual_after != expected_after {
         return Err(TransactionError::ItemReconciliation {
@@ -354,7 +353,6 @@ pub(crate) fn prepare_content_close(
     }
     prune_vacant_surfaces(&mut candidate);
     canonicalize_draft(&mut candidate).map_err(TransactionError::from)?;
-    candidate.validate().map_err(TransactionError::from)?;
     let actual_after = candidate.item_multiset();
     if actual_after != expected_after {
         return Err(TransactionError::ItemReconciliation {
@@ -544,7 +542,6 @@ fn prepare_transaction_inner(
 
     prune_vacant_surfaces(&mut candidate);
     canonicalize_draft(&mut candidate)?;
-    candidate.validate()?;
     if commands.len() == 1
         && let Some(CommandOutcome::Moved { changed, .. }) = outcomes.first_mut()
     {
@@ -582,7 +579,6 @@ pub(crate) fn apply_owned_draft_command(
         .map_err(|source| TransactionError::Command { index: 0, source })?;
     prune_vacant_surfaces(draft);
     canonicalize_draft(draft)?;
-    draft.validate()?;
     let actual = draft.item_multiset();
     if actual != expected {
         return Err(TransactionError::ItemReconciliation { expected, actual });

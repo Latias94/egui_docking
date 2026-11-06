@@ -1,0 +1,177 @@
+[
+  {
+    "check": "workspace-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T03:07:01.053465+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:08:13.944394+00:00"
+  },
+  {
+    "check": "host-default",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T03:08:13.944943+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:09:07.190694+00:00"
+  },
+  {
+    "check": "host-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T03:09:07.191148+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:10:05.146725+00:00"
+  },
+  {
+    "check": "native-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T03:10:05.147693+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:10:53.462307+00:00"
+  },
+  {
+    "check": "clippy-workspace",
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started_utc": "2026-11-06T03:10:53.463135+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:11:09.981127+00:00"
+  },
+  {
+    "check": "clippy-native",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started_utc": "2026-11-06T03:11:09.981687+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:11:26.945162+00:00"
+  },
+  {
+    "check": "doctests",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--all-features",
+      "--doc",
+      "--locked",
+      "--offline"
+    ],
+    "started_utc": "2026-11-06T03:11:26.945584+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:11:29.055034+00:00"
+  },
+  {
+    "check": "fmt-workspace",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "started_utc": "2026-11-06T03:11:29.055309+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:11:30.632316+00:00"
+  },
+  {
+    "check": "dependency-boundary",
+    "command": [
+      "python3",
+      "scripts/check_core_dependencies.py"
+    ],
+    "started_utc": "2026-11-06T03:11:30.632634+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:11:30.730337+00:00"
+  },
+  {
+    "check": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "started_utc": "2026-11-06T03:11:30.730589+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T03:11:30.758690+00:00"
+  }
+]

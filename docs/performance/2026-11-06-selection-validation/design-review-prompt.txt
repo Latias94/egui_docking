@@ -1,0 +1,18 @@
+请只读审查 dockspace 下一阶段性能重构的诊断与方案。不要编辑仓库，不运行 Cargo/benchmark/采样，不联网，不派发代理。输出英文 Markdown 到指定结果文件（其余过程可中文）。用户明确允许必要架构重构，核心定位是跨 UI 框架 docking 抽象，所有现有输入/输出 authority、原子回滚、错误与几何语义必须保留。
+
+当前 commit eea8a7f8798187214b6fd086585906db67c99036。上轮已做 dense layout topology，纯 layout 提升约20%，完整点击基本持平；产品 idle 曾稳定退化1.4–2.7%，本轮冻结二进制复测两组为 +1.169%/-0.260%，仅1024pane且更长预热为 +0.185%/+0.767%，故目前不能稳定重现或归因。
+
+诊断实验 /tmp/dockspace-selection-analysis-20261106-eea8a7f：
+- stages-summary.csv/stages-raw.csv: 对现有公开无绘制 frame_cost 工作负载加临时边界计时，已在构建后按精确原哈希恢复全部12个源码文件。instrumentation.diff 和 probe.rs 保留插桩细节。每case每scale32个正式update，6warmup；nested span不得相加、独立p50不得相加、带日志数据不是正式延迟成绩。
+- 1024pane select update p50约14.0ms：submit_selection3.80、measure8.49、encode1.03、commit0.55。
+- transaction2.17ms内部：clone0.053、canonicalize1.244、validate0.420、commands0.199；select sourcevalidation0.172ms而实际edit/MRU0.000167ms。
+- scene_compile3.570ms、scene_validate3.305ms、scene_install0.741ms。requirements_refresh每update3次合计p50约1.519ms（嵌套source_snapshots三次共0.417，index0.138，draft0.419）。
+- measurement_change install3.80ms中hit3.25ms；select install hit0.265ms，说明不能声称每次新scene都重建touch。
+
+请检查：
+1. 上述阶段归属与源代码路径是否支持结论，有无误用nested sums或漏算计时窗口的风险。
+2. 选择局部字段变化目前通过哪些完整工作区规范化、validation、fingerprint、snapshot、index rebuild；哪些是必需语义、哪些为可避免重复事实构造。注意先前 workspace Arc 与 shared manifest 已存在，clone不是主要原因。
+3. 三个候选方向比较（具体收益仅为未验证假设）：A.为已验证snapshot上的Select建立可回滚局部edit/journal；B.独立结构身份/编译拓扑与selection/measurement generation；C.编译时产生不可伪造的validated scene row/proof供私有消费，外来facts继续边界validation。请给实现范围、依赖顺序、必要保留检查、语义回归测试、应先选哪一个及原因。
+4. 寻找现有深模块可复用而非添加重叠public protocol/多cache。不要建议直接跳过validate或直接把3ms当可全省收益。指出我们遗漏的设计约束并引用当前真实路径与行号。
+
+关注 crates/dockspace/src/operation.rs、canonical.rs、transaction.rs、workspace.rs、engine/product_action.rs、engine/presentation_authority.rs、scene_compiler/requirements.rs、scene_compiler/surface.rs、engine/surface_contribution.rs、scene/validation.rs、scene/lifecycle.rs、runtime/measurement.rs。请输出具体发现、优先级和可执行的下一模块建议。
