@@ -83,3 +83,8 @@ The [evidence archive](2026-11-07-placement-sharing/evidence.tar.xz) contains
 436 inputs plus its manifest: 16,128 raw observations, 336 complete vectors,
 qualification/work receipts, both actual source versions and the policy-fixture
 correction. Every archived input round-trips against its original bytes.
+
+The [independent evidence review](2026-11-07-placement-sharing/evidence-review.md)
+binds immutable candidate `c98569d` and control `8654090`, reproduces all raw
+aggregates/vectors and published comparisons, and finds no blocking evidence
+issue or unsupported uniform-win claim.
