@@ -34,7 +34,7 @@ Baselines:
 - public winit fork: `f378b50f29cafafec31cd8675c17646b4ef57d70`
 
 The public revisions above are historical publication baselines. Current
-tracked native Git pins select egui `56e3db49b66096b58a23b8eb762bdc0a73ae043c`
+tracked native Git pins select egui `f94ee58b3914de7ad71dab36919b329ef36b4035`
 and Winit `2664589f0bd6fd03b2a5490f23bcd692853e63dd`; egui's internal Winit
 dependency and the integration lockfile agree. Earlier locked/offline qualification
 used locally seeded Git objects without path overrides. Both exact revisions

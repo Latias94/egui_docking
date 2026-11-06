@@ -2386,12 +2386,21 @@ fn root_step_before_drag_route(
     if request.source_viewport == ViewportId::ROOT {
         return Ok(source_step);
     }
-    inspection
-        .tree(
-            ViewportId::ROOT,
-            bounded_stage_deadline(request.deadline, Duration::from_secs(3)),
-        )
-        .map(|snapshot| snapshot.step)
+    let stage = format!("{} root checkpoint before drag route", request.label);
+    let deadline = bounded_stage_deadline(request.deadline, Duration::from_secs(3));
+    eprintln!(
+        "physical-smoke: {stage}: viewport={:?} awaiting semantic output",
+        ViewportId::ROOT,
+    );
+    let snapshot = inspection
+        .tree(ViewportId::ROOT, deadline)
+        .map_err(|error| format!("{stage}: {error}"))?;
+    eprintln!(
+        "physical-smoke: {stage}: viewport={:?} step={}",
+        ViewportId::ROOT,
+        snapshot.step,
+    );
+    Ok(snapshot.step)
 }
 
 #[derive(Debug, PartialEq)]

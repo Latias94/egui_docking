@@ -458,8 +458,13 @@ fork branches:
 
 | Dependency | Qualified and published revision | Tracked Git revision |
 | --- | --- | --- |
-| egui/eframe fork | `56e3db49b66096b58a23b8eb762bdc0a73ae043c` | `56e3db49b66096b58a23b8eb762bdc0a73ae043c` |
+| egui/eframe fork | `f94ee58b3914de7ad71dab36919b329ef36b4035` (inspection component) | `f94ee58b3914de7ad71dab36919b329ef36b4035` |
 | Winit fork | `2664589f0bd6fd03b2a5490f23bcd692853e63dd` | `2664589f0bd6fd03b2a5490f23bcd692853e63dd` |
+
+The latest egui revision adds pending-child inspection paint scheduling over
+`60c40304`. Its seven plugin tests and formatting pass locally. Current-head
+physical X11 smoke is pending; the historical integration counts below retain
+their original source scopes.
 
 The tracked revisions are visible in the
 [native workspace manifest](../integration/egui-fork-workspace/Cargo.toml) and

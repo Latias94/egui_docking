@@ -1,0 +1,9 @@
+{
+  "regular_input_files": 33,
+  "all_members_roundtrip_equal": true,
+  "archive_bytes": 34704,
+  "native_check_passed": true,
+  "plugin_tests": 7,
+  "physical_driver_unit_tests": 29,
+  "linux_physical_smoke": "pending"
+}

@@ -194,7 +194,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Latias94/egui
-          ref: 56e3db49b66096b58a23b8eb762bdc0a73ae043c
+          ref: f94ee58b3914de7ad71dab36919b329ef36b4035
           path: .ci/egui-fork
           persist-credentials: false
       - name: Check out pinned winit fork
@@ -261,6 +261,13 @@ jobs:
           cargo nextest run --manifest-path .ci/egui-fork/Cargo.toml
           --package egui --lib --locked --test-threads=1
           -E 'test(completed_pass_hit_authority) | test(elastic_scroll_authority) | test(nested_scroll_authority)'
+
+      - name: Run pinned viewport inspection tests
+        env:
+          CARGO_BUILD_JOBS: 1
+        run: >-
+          cargo nextest run --manifest-path .ci/egui-fork/Cargo.toml
+          --package egui_inspection --lib --features plugin --locked -j1
 
       - name: Run pinned eframe native framework tests
         run: >-

@@ -250,20 +250,16 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.37.0`. The excluded
 native workspace pins egui/eframe fork
-`56e3db49b66096b58a23b8eb762bdc0a73ae043c` and Winit
+`f94ee58b3914de7ad71dab36919b329ef36b4035` and Winit
 `2664589f0bd6fd03b2a5490f23bcd692853e63dd`. The egui fork's own Winit dependency,
 all integration patches, inspection dependency and lockfiles select that same
-pair. Both branches are published, and new empty repositories fetch their exact
-SHAs directly from GitHub. The three CI checkout refs now agree. A detached
-clean checkout and independent initially empty Cargo Git caches pass the native
-commands without local object seeding or path overrides. Winit's source-fork
-tests first generate their ignored workspace lockfile before locked commands;
-Linux framework tests install Wayland headers, and monitor tests select their
-actual module. Default/noassert libraries, framework seams, source-fork facts
-and five real X11 window journeys pass. This is local CI-equivalent reproduction;
-GitHub Actions has not been run for these local root commits. Separately owned
-workflow edits remain uncommitted.
-Exact source and qualification
+pair. Both exact revisions are published. CI checks out those revisions and
+runs the selected-viewport inspection regressions before native qualification.
+The latest inspection change preserves pending child paint requests until fresh
+output or removal; its plugin tests pass locally. Current-head physical X11
+qualification remains tracked separately from historical clean-checkout results.
+Winit's source tests generate their ignored lockfile before locked commands;
+Linux framework tests install Wayland headers. Exact source and qualification
 limits are recorded in [`docs/VALIDATION.md`](docs/VALIDATION.md).
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).

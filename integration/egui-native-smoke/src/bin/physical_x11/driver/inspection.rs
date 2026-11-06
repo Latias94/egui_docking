@@ -65,12 +65,14 @@ impl InspectionClient {
     }
 
     fn request(&mut self, request: &Request, deadline: Instant) -> Result<Response, String> {
-        self.set_write_deadline(deadline, "write semantic inspection request")?;
+        self.set_write_deadline(deadline, "write semantic inspection request")
+            .map_err(|error| format!("{error}; request={request:?}"))?;
         write_message(&mut self.stream, request)
             .map_err(|error| format!("write semantic inspection request {request:?}: {error}"))?;
-        self.set_read_deadline(deadline, "read semantic inspection response")?;
+        self.set_read_deadline(deadline, "read semantic inspection response")
+            .map_err(|error| format!("{error}; request={request:?}"))?;
         read_message(&mut self.stream)
-            .map_err(|error| format!("read semantic inspection response: {error}"))
+            .map_err(|error| format!("read semantic inspection response for {request:?}: {error}"))
     }
 
     pub(super) fn viewports(
@@ -246,6 +248,10 @@ mod tests {
         server.join().expect("test inspection peer exits");
 
         assert!(error.contains("response"), "unexpected error: {error}");
+        assert!(
+            error.contains("ListViewports"),
+            "missing request identity: {error}"
+        );
         assert!(
             elapsed < Duration::from_secs(1),
             "request exceeded its bounded deadline: {elapsed:?}"
