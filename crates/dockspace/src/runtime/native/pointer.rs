@@ -107,7 +107,7 @@ pub enum NativeDesktopPosition {
 /// Event-time native hover classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativePointerHover {
-    /// One exact current docking-window binding is under the pointer.
+    /// One exact docking-window incarnation was observed under the pointer.
     Dock(NativeSurfaceBinding),
     /// A foreign native window is under the pointer.
     Foreign,
@@ -120,7 +120,7 @@ pub enum NativePointerHover {
 /// Independent delivery or capture owner fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativePointerOwner {
-    /// One exact current docking-window binding.
+    /// One exact docking-window incarnation was observed as an owner.
     Native(NativeSurfaceBinding),
     /// A receiver outside this dockspace.
     Foreign,
@@ -760,6 +760,12 @@ impl RuntimeNativeState {
             .preflight_native_transport_append(1, pointer_authority_descendant_bytes(&roster)?)
             .map_err(NativePlatformError::from_ingress)?;
         compile_pointer_authority(roster, self.recorder.pointer_through(), |owner| {
+            // A recovery checkpoint asserts current capture, not historical facts.
+            if let NativePointerOwner::Native(binding) = owner
+                && !self.contains_binding(binding)
+            {
+                return Err(NativePlatformError::InvalidPointerFacts);
+            }
             self.capture_owner(owner)
         })
     }
@@ -1111,7 +1117,9 @@ impl RuntimeNativeState {
         &self,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativePlatformError> {
-        if binding.provider != self.provider() || !self.binding_is_live(binding) {
+        // Queued facts retain their exact incarnation until quiescence. Current
+        // routing and action authority are checked at the reducer's ordinal.
+        if !self.recognizes_binding(binding) {
             return Err(NativePlatformError::InvalidPointerFacts);
         }
         Ok(())

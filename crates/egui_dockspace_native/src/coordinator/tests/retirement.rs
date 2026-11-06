@@ -1,7 +1,8 @@
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton, NativePointerEvent,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeLocalPointerFact,
+    NativeLocalPointerLocation, NativePointerButton, NativePointerEvent, NativePointerHover,
+    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerState,
 };
 use winit::dpi::PhysicalPosition;
 use winit::event::{
@@ -740,6 +741,20 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         .expect("child viewport binds");
     let mut initially_presented = paint_and_present_all_surfaces(&mut native);
     assert!(initially_presented.take_native_effects().is_empty());
+    let point = PhysicalPoint::new(10.0, 20.0).unwrap();
+    let coordinates = native.session.native_local_coordinates(second).unwrap();
+    let geometry = coordinates.geometry();
+    let retained_local = coordinates
+        .capture(
+            second,
+            NativeLocalPointerFact::new(
+                point,
+                geometry.content_size(),
+                geometry.native_scale_factor(),
+            ),
+            geometry,
+        )
+        .unwrap();
 
     let mut redock = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -772,9 +787,111 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         effects[0].operation(),
         NativeEffectOperation::ReleaseChild { binding } if *binding == second
     ));
+    // Retain this callback before release suppression; later ingress must not
+    // reinterpret its frozen child facts using the now-suppressed route map.
+    let historical_pointer = native.bridge.with_viewports(|routes| {
+        NativeWindowEventRecord::for_test_snapshot(
+            13,
+            first_window,
+            Some(ViewportId::ROOT),
+            WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(10.0, 20.0),
+                facts: PointerEventFacts {
+                    hover: PointerWindowRoute::Window(second_window),
+                    capture: PointerWindowRoute::Window(second_window),
+                    ..PointerEventFacts::default()
+                },
+            },
+            routes,
+        )
+    });
+    let historical_routes = historical_pointer.pointer_routes().unwrap();
+    assert_eq!(
+        historical_routes.delivery(),
+        NativePointerRouteSnapshot::Dock(first)
+    );
+    assert_eq!(
+        historical_routes.hover(),
+        NativePointerRouteSnapshot::Dock(second)
+    );
+    assert_eq!(
+        historical_routes.capture(),
+        NativePointerRouteSnapshot::Dock(second)
+    );
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(historical_pointer));
     native
         .accept_native_effects(&egui::Context::default(), effects)
         .expect("the exact child release acknowledgement is retained");
+
+    assert!(!native.session.is_current_native_binding(second));
+    assert!(native.session.recognizes_native_binding(second));
+    let version_before_history = native.session.version();
+    let front = native.bridge.front_event().unwrap();
+    assert_eq!(front.ordinal(), 13);
+    assert_eq!(front.pointer_routes(), Some(historical_routes));
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .expect("the retained pre-suppression callback must drain without InvalidPointerFacts")
+            .is_some()
+    );
+    assert!(native.bridge.front_event().is_none());
+    commit_pending_pointer_frame(&mut native);
+    assert_eq!(native.session.version(), version_before_history);
+    assert!(!native.session.has_active_gesture());
+    drop(front);
+
+    // Recognition admits history, never a fresh recovery capture checkpoint.
+    let recorded = native.session.native_input_recorded_count();
+    let error = native
+        .session
+        .report_native_pointer_roster(NativePointerRoster::Exact(vec![NativePointerState::new(
+            NativePointerId::new(1),
+            [NativePointerButton::Primary],
+            NativePointerOwner::Native(second),
+        )]))
+        .expect_err("a retained retired binding cannot authorize current roster capture");
+    assert_eq!(error.native_kind(), Some(NativeHostErrorKind::InvalidFacts));
+    assert_eq!(native.session.native_input_recorded_count(), recorded);
+
+    assert!(native.session.native_local_coordinates(second).is_none());
+    for input in [
+        NativePointerInput::new(
+            NativePointerId::new(70),
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(point),
+                NativePointerHover::Dock(first),
+                None,
+            ),
+            NativePointerOwner::Native(second),
+            NativePointerOwner::Native(second),
+        ),
+        NativePointerInput::new_local(
+            NativePointerId::new(71),
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            NativeLocalPointerLocation::Exact(retained_local),
+            NativePointerOwner::Native(second),
+            NativePointerOwner::Native(second),
+        ),
+    ] {
+        native
+            .session
+            .record_native_pointer(input)
+            .expect("the exact retained delivery and local facts remain recordable");
+        let mut frame = native
+            .begin_host_frame(|_| panic!("a retired delivery cannot query a current receiver"))
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap();
+        assert_eq!(native.session.version(), version_before_history);
+        assert!(!native.session.has_active_gesture());
+    }
 
     let destroyed = native.bridge.with_viewports_mut(|routes| {
         NativeWindowEventRecord::for_test_ingress(
@@ -845,9 +962,15 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     event_frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the callback boundary settles every surface");
-    event_frame
+    let event_report = event_frame
         .commit()
         .expect("the destruction callback boundary commits");
+    assert!(event_report.inputs().iter().any(|input| matches!(
+        input,
+        HostInputOutcome::NativeInputBindingRetired { binding } if *binding == second
+    )));
+    assert!(!native.session.has_active_gesture());
+    assert!(!native.pointer_translator.references_binding(second));
 
     assert_eq!(native.viewport_binding(child), Some(second));
     assert!(!native.session.is_current_native_binding(second));
@@ -967,6 +1090,30 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     reclaimed_frame
         .commit()
         .expect("the quiescence prefix retires its exact destroyed guard");
+
+    let mut foreign = coordinator();
+    let (foreign_binding, _) = register_roots(&mut foreign);
+    for rejected_binding in [second, foreign_binding] {
+        assert!(!native.session.recognizes_native_binding(rejected_binding));
+        let recorded = native.session.native_input_recorded_count();
+        let input = NativePointerInput::new(
+            NativePointerId::new(72),
+            NativePointerEvent::Moved,
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Unknown,
+                NativePointerHover::Dock(rejected_binding),
+                None,
+            ),
+            NativePointerOwner::Native(first),
+            NativePointerOwner::Native(rejected_binding),
+        );
+        let error = native
+            .session
+            .record_native_pointer(input)
+            .expect_err("forgotten and foreign incarnations cannot enter pointer history");
+        assert_eq!(error.native_kind(), Some(NativeHostErrorKind::InvalidFacts));
+        assert_eq!(native.session.native_input_recorded_count(), recorded);
+    }
 }
 
 #[test]

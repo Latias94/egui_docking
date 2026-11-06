@@ -506,10 +506,14 @@ impl DockspaceSession {
     /// host frame resolves its receiver query and commits. A failed frame does
     /// not consume the edge.
     ///
+    /// Historical facts may name an exact recognized window incarnation after
+    /// its admission ends and before quiescence. The reducer checks current
+    /// routing and action authority at the edge's position in the input order.
+    ///
     /// # Errors
     ///
-    /// Returns an error for the wrong host profile, stale window or work-area
-    /// bindings, contradictory route facts, or sequence exhaustion.
+    /// Returns an error for the wrong host profile, foreign or forgotten window
+    /// bindings, stale work-area bindings, contradictory facts, or sequence exhaustion.
     pub fn record_native_pointer(
         &mut self,
         input: NativePointerInput,
@@ -530,10 +534,13 @@ impl DockspaceSession {
     /// the remaining iterator. Caller iteration and its destructor finish before
     /// any committed data is reclaimed or any record is appended.
     ///
+    /// Window lifetime acceptance follows [`Self::record_native_pointer`];
+    /// historical facts do not grant current routing or action authority.
+    ///
     /// # Errors
     ///
-    /// Returns an error for the wrong host profile, stale window or work-area
-    /// bindings, contradictory route facts, or sequence exhaustion.
+    /// Returns an error for the wrong host profile, foreign or forgotten window
+    /// bindings, stale work-area bindings, contradictory facts, or sequence exhaustion.
     pub fn record_native_pointer_batch(
         &mut self,
         inputs: impl IntoIterator<Item = NativePointerInput>,
@@ -551,10 +558,13 @@ impl DockspaceSession {
     /// its own commit boundary, so host frames may commit a prefix of the
     /// sequence and replay its remaining suffix.
     ///
+    /// Window lifetime acceptance follows [`Self::record_native_pointer`];
+    /// historical facts do not grant current routing or action authority.
+    ///
     /// # Errors
     ///
-    /// Returns an error for the wrong host profile, stale window or work-area
-    /// bindings, contradictory route facts, or sequence exhaustion.
+    /// Returns an error for the wrong host profile, foreign or forgotten window
+    /// bindings, stale work-area bindings, contradictory facts, or sequence exhaustion.
     pub fn record_native_pointer_sequence(
         &mut self,
         inputs: impl IntoIterator<Item = NativePointerInput>,

@@ -170,3 +170,68 @@ socket read. Preserve request identity and stage diagnostics, investigate the
 pending-viewport paint obligation in the pinned fork, and verify a concrete fix
 without extending timeouts, skipping the scenario or treating a rerun as causal
 evidence. Fresh pushed-head CI remains required.
+
+## Graph-owned structures and history checkpoint
+
+Shared immutable root structures pass 2,240 workspace tests and the ordinary
+gates. They improve 36/42 complete p50 group/cells against `80403cb`, including
+roughly 25–31% for large resize/center/cross-view cases, but regress both large
+single-view edge groups. Single NodeResult ownership then passes 2,241 workspace
+tests; its performance is mixed, with 22 negative medians. Keep it as a simpler
+single result owner without calling it a measured hot-path winner. Preserve
+[root-structure evidence](../performance/2026-11-07-root-structure.md) and
+[NodeResult evidence](../performance/2026-11-07-node-result.md), including their
+independent evidence reviews and every negative observation.
+
+Owning MRU directly in each Tabs payload passes 2,244 workspace tests and the
+ordinary gates. All center/cross-view medians improve against `fa1d4d0`; the
+complete result has 38 improvements and four regressions. The unchanged ImGui
+comparison reaches 25/42 group/cells within 2x: 0/14 at 16 panes, 11/14 at 128,
+and 14/14 at 1024. The remaining ranges are 2.73–5.14x, 1.54–2.08x and
+1.09–1.50x, respectively. The
+[full MRU evidence and independent review](../performance/2026-11-07-tabs-mru.md)
+retain tails, logical copy counts and
+unsuccessful size diagnostics without inventing allocator-byte attribution.
+
+Continue independent placement/root metadata ownership and fresh layout buffer
+experiments. Existing queued extent-slab, indexed child composition and compact
+continuation candidates are not qualified or measured merely because their
+source reviews pass. A bounded Allocations recording timed out before producing
+useful samples; no allocation-time share is established by that attempt.
+
+## Retained native input after admission retirement
+
+The pending inspection-paint fix is pinned and pushed in `b662164`. CI run
+`42297763668` passes the earlier inspection and native-framework gates, then
+fails after successful Center merge, physical release and passthrough restore
+with `Native(InvalidPointerFacts)` during retirement quiescence. This is a
+second concrete failure and keeps CI repair open.
+
+An extension to the existing retirement fixture preserves a real callback's
+ordinal and exact child hover/capture across release suppression. Root's serial
+nextest run compiles successfully and fails at the added expected replay point
+with the exact `InvalidPointerFacts` chain. The child is no longer current but
+remains recognized. This proves the retained-fact/current-admission mismatch;
+it does not prove the precise X11 callback chronology of that CI run. Independent
+review must establish the reducer's current-action gates before widening fact
+admission, retain foreign/forgotten/backend/work-area rejection, and require
+fresh physical smoke at the pushed corrected head.
+
+The bounded admission fix now passes the same causal test, 340 core boundary
+cases, 545 native tests, 2,245 workspace tests, 593 fork-workspace cases and 545
+native tests with the native crate's debug assertions disabled, plus the lint,
+format, docs and dependency gates. Exact historical journal facts are recognized;
+recovery rosters retain current-binding checks and actions retain reducer-time
+authority. See [the evidence](../performance/2026-11-07-pointer-retirement.md).
+The original physical run's exact callback remains unknown. Fresh remote CI is
+still required.
+
+Placement sharing passes all ordinary gates and complete comparisons, with
+17/42 complete medians improving, 24 regressing and one tie. Large center/cross
+mutation medians fall from about 11 to 6.1 microseconds, while complete-operation
+improvements there are 2.16–6.46%. Small cases remain mixed/worse, so this is a
+bounded ownership benefit and not a uniform performance winner. ImGui has
+26/42 cells within 2x; all fourteen 16-pane cells remain above the target. Keep
+[all negatives and the independent evidence review](../performance/2026-11-07-placement-sharing.md).
+Continue the reviewed Item-frontier placement-completion and fresh-layout
+storage candidates; this is not a stopping point.
