@@ -129,6 +129,13 @@ original patch and exact changed control/candidate file pairs. Every complete
 vector and digest agrees; both binaries remain unchanged. Each member was read
 back and compared with its input bytes.
 
+[Independent evidence review](2026-11-07-root-structure/evidence-review.md)
+reproduces all 2,520 phase/statistic values and 84 comparison rows, checks every
+archive member and binds the actual measured control/candidate sources. The
+ordinary work probe totals six successful builds, 2,926 rows and 1,460 shared
+split handles across the six edge cells. Its 21 cells are one observation each,
+independent of the repeated timing groups.
+
 The original author's set-hash format text says lexical order, but its set hash
 uses the existing manifest-array order. Independent review reproduces that
 order and verifies each file hash and the patch. The frozen original receipt is
