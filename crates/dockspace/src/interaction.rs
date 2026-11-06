@@ -3658,11 +3658,12 @@ pub enum InteractionCounterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::DockTarget;
     use crate::coordinates::CoordinateSnapshot;
     use crate::drop_guide::{DropGuideClusterRecord, DropGuideTargetRecord};
     use crate::drop_resolver::{DropResolution, resolve_presented_drop};
-    use crate::drop_target::{DropTargetAvailability, DropTargetRecord, DropVisual, SceneLayerKey};
+    use crate::drop_target::{
+        DropTargetAvailability, DropTargetLocation, DropTargetRecord, DropVisual, SceneLayerKey,
+    };
     use crate::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
     use crate::hit_region::HitRegion;
     use crate::ids::{EngineAuthorityDomainId, ReducerTickId, WorkspaceRevision};
@@ -4112,22 +4113,23 @@ mod tests {
             LogicalRect::new(0.0, 0.0, 300.0, 200.0).expect("test target bounds must be valid");
         let point = LogicalPoint::new(100.0, 100.0).expect("test target point is finite");
         let target = Arc::new(DropTargetRecord::new(
-            DropTargetId::Center {
+            DropTargetLocation::Center {
                 surface: target_surface,
                 root: target_root,
                 tabs: target_tabs,
             },
-            DockTarget::Center(
-                workspace
-                    .capture_tab_target(target_root, target_tabs)
-                    .expect("test target must be current"),
-            ),
             DropTargetAvailability::Available,
             HitRegion::new(bounds),
             SceneLayerKey::surface_base(),
             DropVisual::new(bounds),
         ));
         let mut plan = PresentationPlan::new(target_surface, bounds);
+        plan.bind_command_basis(
+            target_root,
+            workspace
+                .root_fingerprint(target_root)
+                .expect("test target root is current"),
+        );
         plan.push_drop_target(Arc::clone(&target));
         plan.push_drop_guide_cluster(DropGuideClusterRecord::inner_center(
             target_surface,

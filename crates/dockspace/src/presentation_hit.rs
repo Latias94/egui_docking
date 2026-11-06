@@ -413,13 +413,27 @@ impl PresentationHitRegion {
 }
 
 /// Canonical hit inventory bound to one exact semantic presentation output.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct PresentationHitManifest {
     output: SurfacePresentationOutputTicket,
     geometry: Arc<geometry_reuse::HitGeometry>,
 }
 
+impl PartialEq for PresentationHitManifest {
+    fn eq(&self, other: &Self) -> bool {
+        self.output == other.output
+            && (Arc::ptr_eq(&self.geometry, &other.geometry) || self.geometry == other.geometry)
+    }
+}
+
 impl PresentationHitManifest {
+    pub(crate) fn rebind_output(&self, output: SurfacePresentationOutputTicket) -> Self {
+        Self {
+            output,
+            geometry: Arc::clone(&self.geometry),
+        }
+    }
+
     pub(crate) fn compile(
         output: SurfacePresentationOutputTicket,
         plan: &PresentationPlan,

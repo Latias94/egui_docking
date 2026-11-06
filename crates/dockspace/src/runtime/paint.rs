@@ -1534,7 +1534,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Hosts preserve the current candidate until its release presentation
     /// obligation settles, including after the physical pointer was released.
     #[must_use]
-    pub const fn has_manipulation_preview(&self) -> bool {
+    pub fn has_manipulation_preview(&self) -> bool {
         self.drag_preview.is_some()
             || self.contained_transform_preview.is_some()
             || self.plan.contained_projection().is_some()
@@ -1781,7 +1781,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
     ) -> Option<SurfacePaintProgramOperation<'frame>> {
         Some(match operation {
             ResolvedSurfaceProgramOperation::Pane(record) => {
-                SurfacePaintProgramOperation::Pane(PanePaintRecord { record })
+                SurfacePaintProgramOperation::Pane(PanePaintRecord {
+                    record,
+                    selected: self.plan.pane_selected(record),
+                })
             }
             ResolvedSurfaceProgramOperation::TabBar(record) => {
                 SurfacePaintProgramOperation::TabBar(TabBarPaintRecord { record })
@@ -1789,6 +1792,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             ResolvedSurfaceProgramOperation::Tab(record) => {
                 SurfacePaintProgramOperation::Tab(TabPaintRecord {
                     record,
+                    selected: self.plan.tab_selected(record),
                     operable: self.tab_is_operable(record),
                 })
             }
@@ -2122,7 +2126,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self.plan
             .pane_records()
             .iter()
-            .map(|record| PanePaintRecord { record })
+            .map(move |record| PanePaintRecord {
+                record,
+                selected: self.plan.pane_selected(record),
+            })
     }
 
     #[cfg(test)]
@@ -2132,6 +2139,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .iter()
             .map(move |record| TabPaintRecord {
                 record,
+                selected: self.plan.tab_selected(record),
                 operable: self.tab_is_operable(record),
             })
     }

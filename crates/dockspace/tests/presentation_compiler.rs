@@ -1,16 +1,18 @@
 use super::support;
 
-use dockspace::command::{DockTarget, Edge};
+use dockspace::command::{DockTarget, Edge, MovePayload, WorkspaceCommand};
 use dockspace::drop_guide::{
     DropGuideClusterRecord, DropGuideScope, DropGuideSlot, DropGuideTargetRecord,
 };
 use dockspace::drop_target::{
-    DropDestination, DropTargetAvailability, DropTargetId, DropTargetRecord, DropTargetUnavailable,
+    DropTargetAvailability, DropTargetId, DropTargetLocation, DropTargetRecord,
+    DropTargetUnavailable,
 };
 use dockspace::engine::DockEngine;
-use dockspace::geometry::LogicalRect;
+use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
+use dockspace::interaction::{DragGeneration, DragSessionId};
 use dockspace::policy::{
     CloseCapability, DockItemRule, DockPolicy, DockSurfaceRule, DockTargetRule, DockTargetRuleKey,
     TabBarInteraction, TabBarPolicy, TabBarVisibility,
@@ -372,10 +374,10 @@ fn central_root_compiles_center_only_inner_and_exact_outer_guides() {
     assert_close(top.hit().rect().height(), GUIDE_HIT_EXTENT * scale);
     assert_compact_cluster_geometry(outer, ready.bounds());
     assert!(matches!(
-        canonical_target(ready, top).destination(),
-        DropDestination::Topology(DockTarget::OuterEdge(target))
-            if target.edge() == Edge::Top
-                && (f64::from(target.fraction().get()) - 0.5).abs() < f64::EPSILON
+        canonical_target(ready, top).location(),
+        DropTargetLocation::OuterEdge { surface: SURFACE, root: ROOT, node, edge: Edge::Top, fraction }
+            if node == tabs
+                && (f64::from(fraction.get()) - 0.5).abs() < f64::EPSILON
     ));
     assert_eq!(top.preview().height(), ready.bounds().height() * 0.5);
 }
@@ -383,13 +385,23 @@ fn central_root_compiles_center_only_inner_and_exact_outer_guides() {
 #[test]
 fn empty_central_root_compiles_a_center_and_four_explicit_outer_guides() {
     let mut builder = Workspace::builder();
+    let source_root = RootId::new(99);
+    let source_surface = SurfaceId::new(99);
+    let source_item = ItemId::new(99);
+    let source_tabs = builder.insert_node(Node::tabs([source_item]));
+    builder.set_root(source_root, RootRecord::new(source_tabs));
+    builder.set_surface(source_surface, SurfacePresentation::with_main(source_root));
     let tabs = builder.insert_node(Node::tabs([]));
     builder.set_root(ROOT, RootRecord::new(tabs).with_central(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     let workspace = builder.build().expect("empty central workspace is valid");
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
     let mut host = TestPresentationHost::new(&mut engine);
-    publish_surface(&mut engine, &mut host, SURFACE, bounds());
+    support::publish_surfaces(
+        &mut engine,
+        &mut host,
+        [(SURFACE, bounds()), (source_surface, bounds())],
+    );
     let ready = next_plan(&engine, SURFACE);
 
     let inner = ready
@@ -402,9 +414,9 @@ fn empty_central_root_compiles_a_center_and_four_explicit_outer_guides() {
         .target(DropGuideSlot::Center)
         .expect("empty central center target exists");
     assert!(matches!(
-        canonical_target(ready, center).destination(),
-        DropDestination::Topology(DockTarget::Center(target))
-            if target.rule() == DockTargetRuleKey::Root(ROOT)
+        canonical_target(ready, center).location(),
+        DropTargetLocation::Center { surface: SURFACE, root: ROOT, tabs: target_tabs }
+            if target_tabs == tabs
     ));
 
     let outer = ready
@@ -421,6 +433,38 @@ fn empty_central_root_compiles_a_center_and_four_explicit_outer_guides() {
         5,
         "empty tabs expose only the five canonical center/outer targets"
     );
+
+    let region = center.hit().rect();
+    let point = LogicalPoint::new(
+        region.x() + region.width() * 0.5,
+        region.y() + region.height() * 0.5,
+    )
+    .expect("center guide midpoint is finite");
+    let payload = MovePayload::Item(
+        engine
+            .workspace()
+            .capture_item_source(source_root, source_tabs, source_item)
+            .expect("source item is current"),
+    );
+    let query = dockspace::drop_resolver::resolve_drop(
+        engine.scene(),
+        engine.workspace(),
+        engine.policy_snapshot(),
+        DragSessionId::new(engine.version().epoch(), DragGeneration::new(1)),
+        payload,
+        None,
+        SURFACE,
+        point,
+    )
+    .expect("an empty central target must bind through the normal drop resolver");
+    let dockspace::drop_resolver::DropResolution::Resolved(resolved) = query.resolution() else {
+        panic!("the empty central center must accept a current source item");
+    };
+    assert!(matches!(
+        resolved.command(),
+        WorkspaceCommand::Move { target: DockTarget::Center(target), .. }
+            if target.rule() == DockTargetRuleKey::Root(ROOT)
+    ));
 }
 
 #[test]

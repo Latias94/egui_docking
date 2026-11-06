@@ -58,7 +58,7 @@ struct WorkspaceRootIndex {
     root_node: NodeId,
     central: Option<NodeId>,
     owner: RootPresentationOwner,
-    members: HashSet<NodeId>,
+    members: Arc<HashSet<NodeId>>,
     item_count: usize,
     fingerprint: NodeFingerprint,
     layout_topology: OnceLock<Arc<RootLayoutTopology>>,
@@ -155,6 +155,77 @@ impl WorkspaceIndex {
         Ok(index)
     }
 
+    /// Rebinds canonical selection semantics without deriving topology again.
+    ///
+    /// The owner must have applied exactly one topology-preserving Select to
+    /// this index's workspace. Membership and layout acceleration stay shared;
+    /// only the selected root's semantic snapshot receives a new value.
+    pub(crate) fn after_selection(
+        &self,
+        workspace: &Workspace,
+        version: WorkspaceVersion,
+        root: RootId,
+        tabs: NodeId,
+    ) -> Result<Self, CommandError> {
+        if version.epoch() != self.version.epoch() {
+            return Err(CommandError::Invariant {
+                stage: "rebind selection within the same workspace epoch",
+            });
+        }
+        let indexed = self
+            .roots
+            .get(&root)
+            .ok_or(CommandError::MissingRoot { root })?;
+        if !indexed.members.contains(&tabs) {
+            return Err(CommandError::NodeOutsideRoot {
+                role: ReferenceRole::Source,
+                root,
+                node: tabs,
+            });
+        }
+        let selected = match workspace.node(tabs) {
+            Some(Node::Tabs { selected, .. }) => *selected,
+            Some(Node::Split { .. }) => {
+                return Err(CommandError::NodeIsNotTabs { node: tabs });
+            }
+            None => {
+                return Err(CommandError::MissingNode {
+                    role: ReferenceRole::Source,
+                    node: tabs,
+                });
+            }
+        };
+        let mru = workspace.tab_mru(tabs).ok_or(CommandError::Invariant {
+            stage: "rebind selected tabs MRU fingerprint",
+        })?;
+        let mut roots = self.roots.clone();
+        let updated = roots
+            .get_mut(&root)
+            .ok_or(CommandError::MissingRoot { root })?;
+        let fingerprint = Arc::make_mut(&mut updated.fingerprint.0);
+        let record = fingerprint
+            .nodes
+            .iter_mut()
+            .find(|record| record.id == tabs)
+            .ok_or(CommandError::Invariant {
+                stage: "rebind indexed tabs fingerprint",
+            })?;
+        match &mut record.node {
+            FingerprintNode::Tabs {
+                selected: previous,
+                mru: previous_mru,
+                ..
+            } => {
+                *previous = selected;
+                *previous_mru = Arc::from(mru);
+            }
+            FingerprintNode::Split { .. } => {
+                return Err(CommandError::NodeIsNotTabs { node: tabs });
+            }
+        }
+        Ok(Self { version, roots })
+    }
+
     #[cfg(test)]
     pub(crate) fn empty_for_test(version: WorkspaceVersion) -> Self {
         Self {
@@ -165,6 +236,10 @@ impl WorkspaceIndex {
 
     pub(crate) const fn version(&self) -> WorkspaceVersion {
         self.version
+    }
+
+    pub(crate) fn root_fingerprint(&self, root: RootId) -> Option<&NodeFingerprint> {
+        self.roots.get(&root).map(|record| &record.fingerprint)
     }
 
     pub(crate) fn layout_topology_slot(
@@ -394,7 +469,11 @@ pub(crate) struct WorkspaceIndexView<'a> {
     index: &'a WorkspaceIndex,
 }
 
-impl WorkspaceIndexView<'_> {
+impl<'index> WorkspaceIndexView<'index> {
+    pub(crate) fn root_fingerprint(&self, root: RootId) -> Option<&'index NodeFingerprint> {
+        self.index.root_fingerprint(root)
+    }
+
     pub(crate) fn root_owner(&self, root: RootId) -> Option<RootPresentationOwner> {
         self.index.roots.get(&root).map(|record| record.owner)
     }
@@ -408,13 +487,6 @@ impl WorkspaceIndexView<'_> {
             .roots
             .get(&root)
             .is_some_and(|record| record.members.contains(&node))
-    }
-
-    pub(crate) fn fingerprint_is_current(&self, root: RootId, expected: &NodeFingerprint) -> bool {
-        self.index
-            .roots
-            .get(&root)
-            .is_some_and(|record| record.fingerprint == *expected)
     }
 }
 
@@ -793,15 +865,16 @@ impl Workspace {
                                 stage: "capture root item count",
                             })?;
                     FingerprintNode::Tabs {
-                        items: items.clone(),
+                        items: Arc::from(items.as_slice()),
                         selected: *selected,
-                        mru: self
-                            .tab_mru
-                            .get(&id)
-                            .ok_or(CommandError::Invariant {
-                                stage: "capture tabs MRU fingerprint",
-                            })?
-                            .clone(),
+                        mru: Arc::from(
+                            self.tab_mru
+                                .get(&id)
+                                .ok_or(CommandError::Invariant {
+                                    stage: "capture tabs MRU fingerprint",
+                                })?
+                                .as_slice(),
+                        ),
                     }
                 }
                 Node::Split {
@@ -812,7 +885,7 @@ impl Workspace {
                     stack.extend(children.iter().rev().copied());
                     FingerprintNode::Split {
                         axis: *axis,
-                        children: children.clone(),
+                        children: Arc::from(children.as_slice()),
                         weight_bits: weights
                             .iter()
                             .map(|weight| weight.get().to_bits())
@@ -834,7 +907,7 @@ impl Workspace {
             root_node: record.node,
             central: record.central,
             owner,
-            members: visited,
+            members: Arc::new(visited),
             item_count,
             fingerprint,
             layout_topology: OnceLock::new(),
@@ -1083,6 +1156,74 @@ mod tests {
 
         assert_eq!(work.root_fingerprint_builds, root_count);
         assert_eq!(work.root_fingerprint_node_visits, node_count);
+    }
+
+    #[test]
+    fn selection_rebinds_semantics_without_rebuilding_membership_or_layout() {
+        let root = RootId::new(1);
+        let other_root = RootId::new(2);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));
+        let other = builder.insert_node(Node::tabs([ItemId::new(3)]));
+        builder.set_root(root, RootRecord::new(tabs));
+        builder.set_root(other_root, RootRecord::new(other));
+        builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
+        builder.set_surface(
+            SurfaceId::new(2),
+            SurfacePresentation::with_main(other_root),
+        );
+        let mut workspace = builder.build().unwrap();
+        let index = WorkspaceIndex::build(&workspace, index_version(1)).unwrap();
+        crate::layout::measure_root_minimums_with_index(
+            &workspace,
+            root,
+            &std::collections::BTreeMap::from([(
+                tabs,
+                crate::geometry::LogicalSize::new(4.0, 3.0).unwrap(),
+            )]),
+            crate::layout::LayoutMetrics::new(1.0).unwrap(),
+            &index,
+            index_version(1),
+        )
+        .unwrap();
+        let Some(Node::Tabs { selected, .. }) = workspace.nodes.get_mut(tabs) else {
+            panic!("fixture is a tabs leaf");
+        };
+        *selected = Some(ItemId::new(2));
+        workspace
+            .tab_mru
+            .insert(tabs, vec![ItemId::new(2), ItemId::new(1)]);
+
+        crate::drop_resolver::structural_work::reset();
+        let rebound = index
+            .after_selection(&workspace, index_version(2), root, tabs)
+            .unwrap();
+        let work = crate::drop_resolver::structural_work::snapshot();
+        assert_eq!(work.root_fingerprint_builds, 0);
+        assert_eq!(work.root_fingerprint_node_visits, 0);
+        assert!(std::sync::Arc::ptr_eq(
+            &index.roots[&root].members,
+            &rebound.roots[&root].members,
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            index.roots[&root].layout_topology.get().unwrap(),
+            rebound.roots[&root].layout_topology.get().unwrap(),
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &index.root_fingerprint(other_root).unwrap().0,
+            &rebound.root_fingerprint(other_root).unwrap().0,
+        ));
+        let previous = index.root_fingerprint(root).unwrap();
+        let current = rebound
+            .at_version(index_version(2))
+            .unwrap()
+            .root_fingerprint(root)
+            .unwrap();
+        assert_ne!(previous, current);
+        assert!(previous.presentation_structure_eq(current));
+        assert_eq!(current, &workspace.root_fingerprint(root).unwrap());
+        assert_eq!(index.version(), index_version(1));
+        assert_eq!(rebound.version(), index_version(2));
     }
 
     #[test]

@@ -1351,11 +1351,11 @@ fn native_first_live_projection_compiles_child_without_publishing_ownership() {
     let selected_panes = plan
         .pane_records()
         .iter()
-        .filter(|pane| pane.selected().is_some())
+        .filter(|pane| plan.pane_selected(pane).is_some())
         .collect::<Vec<_>>();
     assert_eq!(selected_panes.len(), 1);
     assert_eq!(selected_panes[0].id().root, ROOT);
-    assert_eq!(selected_panes[0].selected(), Some(source_selected));
+    assert_eq!(plan.pane_selected(selected_panes[0]), Some(source_selected));
     let mut program_steps = 0;
     plan.visit_surface_program(|_| {
         program_steps += 1;

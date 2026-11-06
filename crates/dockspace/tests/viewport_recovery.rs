@@ -458,7 +458,7 @@ fn child_next_tab_event(
         .plan()
         .tab_records()
         .iter()
-        .find(|tab| tab.selected() && tab.id().item == ItemId::new(2))
+        .find(|tab| projection.plan().tab_selected(tab) && tab.id().item == ItemId::new(2))
         .map(|tab| *tab.id())
         .expect("child left leaf must select item 2");
     let event = SemanticReceiverEvent::new(

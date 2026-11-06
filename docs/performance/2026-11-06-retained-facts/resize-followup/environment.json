@@ -1,0 +1,91 @@
+{
+  "purpose": "Check whether the small 128-pane resize difference repeats; separate follow-up, does not replace the formal groups.",
+  "runs": [
+    {
+      "run": 1,
+      "condition": "baseline",
+      "command": [
+        "/tmp/dockspace-fearless-20261106-34ab23a/baseline-product-bin",
+        "--samples",
+        "96",
+        "--warmup",
+        "12",
+        "--panes",
+        "128",
+        "--scenario",
+        "surface_resize"
+      ],
+      "started_utc": "2026-11-06T12:09:49.983533+00:00",
+      "binary_sha256": "c00a38ed2552d942dd99048eb06c491d27b0881e41efc122c12d148e7ddfb518",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T12:09:50.173593+00:00"
+    },
+    {
+      "run": 2,
+      "condition": "candidate",
+      "command": [
+        "/tmp/dockspace-fearless-20261106-34ab23a/candidate-product-bin",
+        "--samples",
+        "96",
+        "--warmup",
+        "12",
+        "--panes",
+        "128",
+        "--scenario",
+        "surface_resize"
+      ],
+      "started_utc": "2026-11-06T12:09:50.174203+00:00",
+      "binary_sha256": "1d928f145e8396f207f110043bbeac4d8e0a37eb73ef40f28dc9f3f6a94cb9f0",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T12:09:50.364244+00:00"
+    },
+    {
+      "run": 3,
+      "condition": "candidate",
+      "command": [
+        "/tmp/dockspace-fearless-20261106-34ab23a/candidate-product-bin",
+        "--samples",
+        "96",
+        "--warmup",
+        "12",
+        "--panes",
+        "128",
+        "--scenario",
+        "surface_resize"
+      ],
+      "started_utc": "2026-11-06T12:09:50.364870+00:00",
+      "binary_sha256": "1d928f145e8396f207f110043bbeac4d8e0a37eb73ef40f28dc9f3f6a94cb9f0",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T12:09:50.547217+00:00"
+    },
+    {
+      "run": 4,
+      "condition": "baseline",
+      "command": [
+        "/tmp/dockspace-fearless-20261106-34ab23a/baseline-product-bin",
+        "--samples",
+        "96",
+        "--warmup",
+        "12",
+        "--panes",
+        "128",
+        "--scenario",
+        "surface_resize"
+      ],
+      "started_utc": "2026-11-06T12:09:50.547848+00:00",
+      "binary_sha256": "c00a38ed2552d942dd99048eb06c491d27b0881e41efc122c12d148e7ddfb518",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T12:09:50.738139+00:00"
+    }
+  ],
+  "complete_work_fields_equal": [
+    "frames",
+    "passes",
+    "content_calls",
+    "visible_contents",
+    "vertices",
+    "indices",
+    "draw_commands"
+  ],
+  "source_snapshot_sha256": "4d874443ffdae2220c70401fe6f46335d004823983887dd09b6e0bc13dcfbc20"
+}

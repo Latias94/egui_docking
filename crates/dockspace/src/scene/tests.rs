@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
-use crate::command::DockTarget;
 use crate::drop_guide::DropGuideTargetRecord;
-use crate::drop_target::{DropTargetId, DropTargetRecord, DropVisual, SurfaceBackground};
+use crate::drop_target::{DropTargetLocation, DropTargetRecord, DropVisual, SurfaceBackground};
 use crate::geometry::LogicalSize;
 use crate::graph::{ContainedFloating, RootRecord, SurfacePresentation};
 use crate::hit_region::HitRegion;
@@ -19,6 +18,50 @@ use crate::transition::WorkspaceVersion;
 
 fn bounds() -> LogicalRect {
     LogicalRect::new(0.0, 0.0, 800.0, 600.0).expect("valid bounds")
+}
+
+#[test]
+fn a_surface_binding_only_stores_its_own_pane_selections() {
+    use crate::behavior_tests::support::{MeasurementProfile, measurements};
+    use crate::engine::{DockEngine, PreparedSurfacePaintCandidate};
+    use crate::policy::DockPolicy;
+
+    let mut builder = Workspace::builder();
+    let mut last = None;
+    for ordinal in 1..=128 {
+        let surface = SurfaceId::new(ordinal);
+        let root = RootId::new(ordinal);
+        let item = ItemId::new(ordinal);
+        let tabs = builder.insert_node(Node::tabs([item]));
+        builder.set_root(root, RootRecord::new(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        last = Some((surface, tabs, item));
+    }
+    let engine = DockEngine::new(builder.build().unwrap(), DockPolicy::default()).unwrap();
+    let (surface, tabs, item) = last.unwrap();
+    let token = engine.begin_surface_contribution(surface).unwrap();
+    let contribution = engine
+        .prepare_surface_contribution(
+            token,
+            measurements(&engine, surface, bounds(), MeasurementProfile::default()),
+        )
+        .unwrap();
+    let PreparedSurfacePaintCandidate::Ready(candidate) = contribution.paint_candidate() else {
+        panic!("the last one-pane surface has complete measurements");
+    };
+    let plan = candidate.plan();
+    assert_eq!(plan.selection.len(), 1);
+    assert!(
+        plan.selection.capacity() < 128,
+        "global slot indices must not size a surface binding"
+    );
+    assert_eq!(plan.selected_in_tabs(tabs), Some(item));
+
+    let mut rebound_fixture = plan.clone();
+    rebound_fixture.bind_workspace_selection(engine.workspace());
+    assert_eq!(rebound_fixture.selection.len(), 1);
+    assert!(rebound_fixture.selection.capacity() < 128);
+    assert_eq!(rebound_fixture, *plan);
 }
 
 #[test]
@@ -378,7 +421,6 @@ fn rooted_workspace(surface: SurfaceId, root: RootId, item: ItemId) -> (Workspac
 }
 
 fn center_guide(
-    workspace: &Workspace,
     surface: SurfaceId,
     root: RootId,
     tabs: NodeId,
@@ -386,18 +428,13 @@ fn center_guide(
 ) -> (Arc<DropTargetRecord>, DropGuideClusterRecord) {
     let hit = LogicalRect::new(340.0, 250.0, 120.0, 100.0).expect("guide hit is valid");
     let draw = LogicalRect::new(370.0, 280.0, 60.0, 40.0).expect("guide draw is valid");
-    let target_id = DropTargetId::Center {
+    let location = DropTargetLocation::Center {
         surface,
         root,
         tabs,
     };
     let target = Arc::new(DropTargetRecord::new(
-        target_id,
-        DockTarget::Center(
-            workspace
-                .capture_tab_target(root, tabs)
-                .expect("tabs target is current"),
-        ),
+        location,
         DropTargetAvailability::Available,
         HitRegion::new(hit),
         SceneLayerKey::surface_base(),
@@ -663,14 +700,14 @@ fn guide_cluster_layer_is_derived_from_root_presentation() {
     let (workspace, tabs) = rooted_workspace(surface, root, ItemId::new(72));
 
     let mut valid = PresentationPlan::new(surface, bounds());
-    let (target, guide) = center_guide(&workspace, surface, root, tabs, SceneLayerKey::new(1));
+    let (target, guide) = center_guide(surface, root, tabs, SceneLayerKey::new(1));
     valid.push_drop_target(target);
     valid.push_drop_guide_cluster(guide);
     let valid = validate(&workspace, valid).expect("main-layer guide validates");
     assert_eq!(valid.drop_guide_clusters().len(), 1);
 
     let mut invalid = PresentationPlan::new(surface, bounds());
-    let (target, guide) = center_guide(&workspace, surface, root, tabs, SceneLayerKey::new(2));
+    let (target, guide) = center_guide(surface, root, tabs, SceneLayerKey::new(2));
     invalid.push_drop_target(target);
     invalid.push_drop_guide_cluster(guide);
     assert!(matches!(

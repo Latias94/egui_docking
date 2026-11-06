@@ -14,6 +14,7 @@ use super::{DockspacePaintLayer, DockspaceVisualId, VisualIdentity};
 #[derive(Debug, Clone, Copy)]
 pub struct PanePaintRecord<'plan> {
     pub(super) record: &'plan PaneRecord,
+    pub(super) selected: Option<ItemId>,
 }
 
 impl PanePaintRecord<'_> {
@@ -49,7 +50,7 @@ impl PanePaintRecord<'_> {
 
     #[must_use]
     pub const fn selected(self) -> Option<ItemId> {
-        self.record.selected()
+        self.selected
     }
 
     #[must_use]
@@ -62,6 +63,7 @@ impl PanePaintRecord<'_> {
 #[derive(Debug, Clone, Copy)]
 pub struct TabPaintRecord<'plan> {
     pub(super) record: &'plan TabRecord,
+    pub(super) selected: bool,
     pub(super) operable: bool,
 }
 
@@ -123,7 +125,7 @@ impl TabPaintRecord<'_> {
 
     #[must_use]
     pub const fn selected(self) -> bool {
-        self.record.selected()
+        self.selected
     }
 
     /// Returns whether the exact tab body may publish semantic actions.

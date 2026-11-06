@@ -481,7 +481,7 @@ fn narrow_three_tab_strip_publishes_only_operable_tabs_and_stable_gap_indices() 
             .collect::<Vec<_>>(),
         [1, 2]
     );
-    assert!(automatic.tab_records()[1].selected());
+    assert!(automatic.tab_selected(&automatic.tab_records()[1]));
 }
 
 #[test]
@@ -1098,7 +1098,14 @@ fn structural_records_are_stable_unique_and_keep_final_accessibility_state() {
         (
             plan.tab_records()
                 .iter()
-                .map(|tab| (*tab.id(), tab.selected(), tab.ordinal(), tab.layer()))
+                .map(|tab| {
+                    (
+                        *tab.id(),
+                        plan.tab_selected(tab),
+                        tab.ordinal(),
+                        tab.layer(),
+                    )
+                })
                 .collect::<Vec<_>>(),
             plan.tab_bar_records()
                 .iter()
@@ -1125,7 +1132,7 @@ fn structural_records_are_stable_unique_and_keep_final_accessibility_state() {
         first_plan
             .tab_records()
             .iter()
-            .filter(|tab| tab.selected())
+            .filter(|tab| first_plan.tab_selected(tab))
             .map(|tab| tab.id().item)
             .collect::<Vec<_>>(),
         vec![selected, right_item],

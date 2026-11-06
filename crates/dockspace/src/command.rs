@@ -63,6 +63,9 @@ impl NodeFingerprint {
     }
 
     fn presentation_eq(&self, other: &Self, compare_weights: bool) -> bool {
+        if Arc::ptr_eq(&self.0, &other.0) {
+            return true;
+        }
         self.0.root == other.0.root
             && self.0.root_node == other.0.root_node
             && self.0.central == other.0.central
@@ -134,14 +137,14 @@ pub(crate) struct NodeFingerprintRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FingerprintNode {
     Tabs {
-        items: Vec<ItemId>,
+        items: Arc<[ItemId]>,
         selected: Option<ItemId>,
-        mru: Vec<ItemId>,
+        mru: Arc<[ItemId]>,
     },
     Split {
         axis: Axis,
-        children: Vec<NodeId>,
-        weight_bits: Vec<u32>,
+        children: Arc<[NodeId]>,
+        weight_bits: Arc<[u32]>,
     },
 }
 

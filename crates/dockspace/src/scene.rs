@@ -35,14 +35,14 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::RootPresentationOwner;
-use crate::command::{DockTarget, NodeFingerprint};
+use crate::command::NodeFingerprint;
 use crate::coordinates::CoordinateSnapshot;
 use crate::drop_guide::{
     DropGuideClusterId, DropGuideClusterRecord, DropGuideScope, DropGuideSlot,
     DropGuideTargetRecord,
 };
 use crate::drop_target::{
-    DropDestination, DropOcclusionRecord, DropTargetAvailability, DropTargetId, DropTargetKind,
+    DropOcclusionRecord, DropTargetAvailability, DropTargetId, DropTargetKind, DropTargetLocation,
     DropTargetRecord, DropTargetUnavailable,
 };
 use crate::geometry::{GeometryError, LogicalRect};
@@ -205,14 +205,37 @@ impl SurfaceCoordinateCapture {
 }
 
 /// Complete semantic facts compiled as one candidate surface projection.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct PresentationPlan {
     surface: SurfaceId,
     provenance: PresentationPlanProvenance,
+    layout_facts: Option<PresentationLayoutFacts>,
+    selection: Arc<slotmap::SparseSecondaryMap<NodeId, Option<ItemId>>>,
+    command_basis: BTreeMap<RootId, NodeFingerprint>,
+    facts: Arc<SurfaceFacts>,
+}
+
+impl PartialEq for PresentationPlan {
+    fn eq(&self, other: &Self) -> bool {
+        self.surface == other.surface
+            && self.provenance == other.provenance
+            && self.command_basis == other.command_basis
+            && self.selection == other.selection
+            && (self.shares_facts(other) || self.facts == other.facts)
+            && match (&self.layout_facts, &other.layout_facts) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left.same_inputs(right),
+                _ => false,
+            }
+    }
+}
+
+/// Geometry and executable associations whose lifetime follows their actual inputs.
+#[derive(Debug, Clone, PartialEq)]
+struct SurfaceFacts {
     popup: PopupPlaneRequirement,
     bounds: LogicalRect,
     popup_plane_bounds: Option<LogicalRect>,
-    layout_facts: Option<PresentationLayoutFacts>,
     contained_projection: Option<ContainedLayoutProjection>,
     resize_projection: Vec<crate::command::SplitResize>,
     contained_order: Option<Vec<FloatingPresentationId>>,
@@ -305,32 +328,104 @@ impl PresentationPlan {
         Self {
             surface,
             provenance,
-            popup,
-            bounds,
-            popup_plane_bounds,
             layout_facts: None,
-            contained_projection: None,
-            resize_projection: Vec::new(),
-            contained_order: None,
-            pane_records: Vec::new(),
-            tab_records: Vec::new(),
-            tab_bar_records: Vec::new(),
-            tab_strip_control_records: Vec::new(),
-            tab_list_menu_records: Vec::new(),
-            tab_list_menu_backdrop_records: Vec::new(),
-            presentation_menu_anchor_records: Vec::new(),
-            splitter_gap_records: Vec::new(),
-            splitter_records: Vec::new(),
-            splitter_junction_records: Vec::new(),
-            contained_records: Vec::new(),
-            contained_minimums: Vec::new(),
-            surface_background: None,
-            drop_occlusions: Vec::new(),
-            drop_guide_clusters: Vec::new(),
-            drop_targets: Vec::new(),
-            magnetic_target_field: MagneticTargetField::default(),
-            surface_program: SurfaceProgram::default(),
+            selection: Arc::new(slotmap::SparseSecondaryMap::new()),
+            command_basis: BTreeMap::new(),
+            facts: Arc::new(SurfaceFacts {
+                popup,
+                bounds,
+                popup_plane_bounds,
+                contained_projection: None,
+                resize_projection: Vec::new(),
+                contained_order: None,
+                pane_records: Vec::new(),
+                tab_records: Vec::new(),
+                tab_bar_records: Vec::new(),
+                tab_strip_control_records: Vec::new(),
+                tab_list_menu_records: Vec::new(),
+                tab_list_menu_backdrop_records: Vec::new(),
+                presentation_menu_anchor_records: Vec::new(),
+                splitter_gap_records: Vec::new(),
+                splitter_records: Vec::new(),
+                splitter_junction_records: Vec::new(),
+                contained_records: Vec::new(),
+                contained_minimums: Vec::new(),
+                surface_background: None,
+                drop_occlusions: Vec::new(),
+                drop_guide_clusters: Vec::new(),
+                drop_targets: Vec::new(),
+                magnetic_target_field: MagneticTargetField::default(),
+                surface_program: SurfaceProgram::default(),
+            }),
         }
+    }
+
+    fn facts_mut(&mut self) -> &mut SurfaceFacts {
+        Arc::make_mut(&mut self.facts)
+    }
+
+    pub(crate) fn bind_workspace_selection(&mut self, workspace: &Workspace) {
+        let mut selection =
+            slotmap::SparseSecondaryMap::with_capacity(self.facts.pane_records.len());
+        for pane in &self.facts.pane_records {
+            if let Some(Node::Tabs { selected, .. }) = workspace.node(pane.id().tabs) {
+                selection.insert(pane.id().tabs, *selected);
+            }
+        }
+        self.selection = Arc::new(selection);
+    }
+
+    pub(crate) fn bind_command_basis(&mut self, root: RootId, basis: NodeFingerprint) {
+        self.command_basis.insert(root, basis);
+    }
+
+    pub(crate) fn command_basis(&self, root: RootId) -> Option<&NodeFingerprint> {
+        self.command_basis.get(&root)
+    }
+
+    pub(crate) fn selected_in_tabs(&self, tabs: NodeId) -> Option<ItemId> {
+        self.selection.get(tabs).copied().flatten()
+    }
+
+    /// Returns the selected item from this plan's current semantic binding.
+    #[must_use]
+    pub fn pane_selected(&self, pane: &PaneRecord) -> Option<ItemId> {
+        self.selected_in_tabs(pane.id().tabs)
+    }
+
+    /// Returns whether this tab is selected in this plan's current semantic binding.
+    #[must_use]
+    pub fn tab_selected(&self, tab: &TabRecord) -> bool {
+        self.selected_in_tabs(tab.id().tabs) == Some(tab.id().item)
+    }
+
+    pub(crate) fn shares_facts(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.facts, &other.facts)
+    }
+
+    /// Rebinds a dependency-checked selection without mutating its sealed facts.
+    pub(crate) fn rebind_selection(
+        &self,
+        ticket: SurfaceMeasurementTicket,
+        bar: TabBarSceneId,
+        selected: Option<ItemId>,
+        basis: NodeFingerprint,
+        measurements: crate::scene_manifest::SurfaceMeasurements,
+    ) -> Option<Self> {
+        if ticket.surface() != self.surface
+            || basis.root() != bar.root
+            || !self.selection.contains_key(bar.tabs)
+            || !self.command_basis.contains_key(&bar.root)
+        {
+            return None;
+        }
+        let layout = self.layout_facts.as_ref()?;
+        let mut rebound = self.clone();
+        rebound.provenance = PresentationPlanProvenance::Measured(ticket);
+        Arc::make_mut(&mut rebound.selection).insert(bar.tabs, selected);
+        rebound.command_basis.insert(bar.root, basis);
+        rebound.layout_facts = Some(layout.rebind_measurements(measurements));
+        Some(rebound)
     }
 
     /// Returns the owning surface.
@@ -343,20 +438,20 @@ impl PresentationPlan {
     ///
     /// Popup geometry is instead constrained by [`Self::popup_plane_bounds`].
     #[must_use]
-    pub const fn bounds(&self) -> LogicalRect {
-        self.bounds
+    pub fn bounds(&self) -> LogicalRect {
+        self.facts.bounds
     }
 
     /// Returns the authoritative surface-local popup plane when a workspace popup is active.
     #[must_use]
-    pub const fn popup_plane_bounds(&self) -> Option<LogicalRect> {
-        self.popup_plane_bounds
+    pub fn popup_plane_bounds(&self) -> Option<LogicalRect> {
+        self.facts.popup_plane_bounds
     }
 
     /// Returns the exact workspace-global popup requirement compiled here.
     #[must_use]
-    pub const fn popup(&self) -> PopupPlaneRequirement {
-        self.popup
+    pub fn popup(&self) -> PopupPlaneRequirement {
+        self.facts.popup
     }
 
     pub(crate) fn install_layout_facts(
@@ -368,27 +463,28 @@ impl PresentationPlan {
         self.layout_facts = Some(PresentationLayoutFacts::new(config, measurements));
     }
 
-    pub(crate) const fn contained_projection(&self) -> Option<ContainedLayoutProjection> {
-        self.contained_projection
+    pub(crate) fn contained_projection(&self) -> Option<ContainedLayoutProjection> {
+        self.facts.contained_projection
     }
 
     pub(crate) fn set_contained_projection(
         &mut self,
         projection: Option<ContainedLayoutProjection>,
     ) {
-        self.contained_projection = projection;
+        self.facts_mut().contained_projection = projection;
     }
 
     pub(crate) fn set_resize_projection(
         &mut self,
         overrides: &[crate::layout::SplitWeightOverride<'_>],
     ) {
-        self.resize_projection = overrides
+        let surface = self.surface;
+        self.facts_mut().resize_projection = overrides
             .iter()
             .filter(|entry| match entry.source().fingerprint().0.presentation {
-                crate::command::FingerprintPresentation::Main { surface }
-                | crate::command::FingerprintPresentation::Contained { surface, .. } => {
-                    surface == self.surface
+                crate::command::FingerprintPresentation::Main { surface: owner }
+                | crate::command::FingerprintPresentation::Contained { surface: owner, .. } => {
+                    owner == surface
                 }
             })
             .map(|entry| {
@@ -398,15 +494,15 @@ impl PresentationPlan {
     }
 
     pub(crate) fn resize_projection(&self) -> &[crate::command::SplitResize] {
-        &self.resize_projection
+        &self.facts.resize_projection
     }
 
     pub(crate) fn set_contained_order(&mut self, order: &[FloatingPresentationId]) {
-        self.contained_order = Some(order.to_vec());
+        self.facts_mut().contained_order = Some(order.to_vec());
     }
 
     pub(crate) fn contained_order(&self) -> Option<&[FloatingPresentationId]> {
-        self.contained_order.as_deref()
+        self.facts.contained_order.as_deref()
     }
 
     pub(crate) fn push_root_layout_facts(&mut self, facts: RootLayoutFacts) {
@@ -419,7 +515,7 @@ impl PresentationPlan {
 
     #[cfg(test)]
     pub(crate) fn clear_magnetic_target_field_for_test(&mut self) {
-        self.magnetic_target_field = MagneticTargetField::default();
+        self.facts_mut().magnetic_target_field = MagneticTargetField::default();
     }
 
     #[cfg(test)]
@@ -428,7 +524,8 @@ impl PresentationPlan {
         replacement: Arc<DropTargetRecord>,
     ) -> bool {
         let id = replacement.id();
-        let Some(target) = self
+        let facts = self.facts_mut();
+        let Some(target) = facts
             .drop_targets
             .iter_mut()
             .find(|target| target.id() == id)
@@ -436,7 +533,7 @@ impl PresentationPlan {
             return false;
         };
         *target = Arc::clone(&replacement);
-        for cluster in &mut self.drop_guide_clusters {
+        for cluster in &mut facts.drop_guide_clusters {
             cluster.for_each_target_mut(|guide| {
                 if guide.id() == id {
                     guide.rebind_target(Arc::clone(&replacement));
@@ -464,49 +561,56 @@ impl PresentationPlan {
     }
 
     pub(crate) fn push_tab_record(&mut self, record: TabRecord) {
-        self.tab_records.push(record);
+        self.facts_mut().tab_records.push(record);
     }
 
     pub(crate) fn push_pane_record(&mut self, record: PaneRecord) {
-        self.pane_records.push(record);
+        self.facts_mut().pane_records.push(record);
     }
 
     pub(crate) fn push_tab_bar_record(&mut self, record: TabBarRecord) {
-        self.tab_bar_records.push(record);
+        self.facts_mut().tab_bar_records.push(record);
     }
 
     pub(crate) fn push_tab_strip_control_record(&mut self, record: TabStripControlRecord) {
-        self.tab_strip_control_records.push(record);
+        self.facts_mut().tab_strip_control_records.push(record);
     }
 
     pub(crate) fn push_tab_list_menu_record(&mut self, record: TabListMenuRecord) {
-        self.surface_program.defer_popup_menu(record.session());
-        self.tab_list_menu_records.push(record);
+        self.facts_mut()
+            .surface_program
+            .defer_popup_menu(record.session());
+        self.facts_mut().tab_list_menu_records.push(record);
     }
 
     pub(crate) fn push_tab_list_menu_backdrop_record(&mut self, record: TabListMenuBackdropRecord) {
-        self.surface_program.defer_popup_backdrop(record.session());
-        self.tab_list_menu_backdrop_records.push(record);
+        self.facts_mut()
+            .surface_program
+            .defer_popup_backdrop(record.session());
+        self.facts_mut().tab_list_menu_backdrop_records.push(record);
     }
 
     pub(crate) fn push_presentation_menu_anchor_record(
         &mut self,
         record: PresentationMenuAnchorRecord,
     ) {
-        self.presentation_menu_anchor_records.push(record);
+        self.facts_mut()
+            .presentation_menu_anchor_records
+            .push(record);
     }
 
     pub(crate) fn push_splitter_gap_record(&mut self, record: SplitterGapRecord) {
-        self.splitter_gap_records.push(record);
+        self.facts_mut().splitter_gap_records.push(record);
     }
 
     pub(crate) fn push_splitter_record(&mut self, record: SplitterRecord) {
-        self.splitter_records.push(record);
+        self.facts_mut().splitter_records.push(record);
     }
 
     pub(crate) fn derive_splitter_operability(&mut self) {
-        let occlusions = &self.drop_occlusions;
-        for record in &mut self.splitter_records {
+        let facts = self.facts_mut();
+        let occlusions = &facts.drop_occlusions;
+        for record in &mut facts.splitter_records {
             record.retain_operability(region_has_authoritative_area(
                 record.hit().rect(),
                 record.layer(),
@@ -521,7 +625,7 @@ impl PresentationPlan {
     /// controls fully covered by a structurally higher contained presentation.
     #[must_use]
     pub fn region_is_operable(&self, region: LogicalRect, layer: SceneLayerKey) -> bool {
-        region_has_authoritative_area(region, layer, &self.drop_occlusions)
+        region_has_authoritative_area(region, layer, &self.facts.drop_occlusions)
     }
 
     pub(crate) fn point_is_on_authoritative_layer(
@@ -529,8 +633,9 @@ impl PresentationPlan {
         point: crate::geometry::LogicalPoint,
         layer: SceneLayerKey,
     ) -> bool {
-        self.bounds.contains(point)
+        self.facts.bounds.contains(point)
             && self
+                .facts
                 .drop_occlusions
                 .iter()
                 .filter(|occlusion| occlusion.region().contains(point))
@@ -541,16 +646,16 @@ impl PresentationPlan {
     }
 
     pub(crate) fn push_splitter_junction_record(&mut self, record: SplitterJunctionRecord) {
-        self.splitter_junction_records.push(record);
+        self.facts_mut().splitter_junction_records.push(record);
     }
 
     pub(crate) fn push_contained_record(&mut self, record: ContainedRecord) {
-        self.contained_records.push(record);
+        self.facts_mut().contained_records.push(record);
     }
 
     /// Adds one contained minimum-size measurement before scene submission.
     pub(crate) fn push_contained_minimum(&mut self, measurement: ContainedMinimumMeasurement) {
-        self.contained_minimums.push(measurement);
+        self.facts_mut().contained_minimums.push(measurement);
     }
 
     /// Installs the sole explicit rootless-surface background authority.
@@ -564,40 +669,43 @@ impl PresentationPlan {
         background: DropTargetRecord,
     ) -> Result<(), SceneBuildError> {
         if !matches!(
-            background.destination(),
-            DropDestination::SurfaceBackground(_)
+            background.location(),
+            DropTargetLocation::SurfaceBackground { .. }
         ) {
             return Err(SceneBuildError::InvalidSurfaceBackgroundRecord {
                 surface: self.surface,
                 target: background.id(),
             });
         }
-        if self.surface_background.is_some() {
+        if self.facts.surface_background.is_some() {
             return Err(SceneBuildError::DuplicateSurfaceBackground {
                 surface: self.surface,
             });
         }
-        self.surface_program
+        self.facts_mut()
+            .surface_program
             .defer_surface_background(background.id());
-        self.surface_background = Some(background);
+        self.facts_mut().surface_background = Some(background);
         Ok(())
     }
 
     /// Adds one exact, unclipped contained-floating occlusion before scene submission.
     pub(crate) fn push_drop_occlusion(&mut self, occlusion: DropOcclusionRecord) {
-        self.drop_occlusions.push(occlusion);
+        self.facts_mut().drop_occlusions.push(occlusion);
     }
 
     /// Adds one complete docking-guide cluster before scene submission.
     pub(crate) fn push_drop_guide_cluster(&mut self, cluster: DropGuideClusterRecord) {
-        self.surface_program.defer_guide(&cluster);
-        self.drop_guide_clusters.push(cluster);
+        self.facts_mut().surface_program.defer_guide(&cluster);
+        self.facts_mut().drop_guide_clusters.push(cluster);
     }
 
     /// Adds one structural drop target before this fact is submitted to a scene.
     pub(crate) fn push_drop_target(&mut self, target: Arc<DropTargetRecord>) {
-        self.surface_program.defer_drop_target(target.id());
-        self.drop_targets.push(target);
+        self.facts_mut()
+            .surface_program
+            .defer_drop_target(target.id());
+        self.facts_mut().drop_targets.push(target);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -612,7 +720,7 @@ impl PresentationPlan {
         edges: MagneticEdgeTargets,
         config: &DockPresentationConfig,
     ) -> Result<(), GeometryError> {
-        self.magnetic_target_field.push_pane(
+        self.facts_mut().magnetic_target_field.push_pane(
             root,
             tabs,
             layer,
@@ -632,26 +740,27 @@ impl PresentationPlan {
         edges: MagneticEdgeTargets,
         config: &DockPresentationConfig,
     ) {
-        self.magnetic_target_field
+        self.facts_mut()
+            .magnetic_target_field
             .push_root(root, layer, bounds, edges, config);
     }
 
     /// Returns core-compiled tabs-leaf and pane-content records.
     #[must_use]
     pub fn pane_records(&self) -> &[PaneRecord] {
-        &self.pane_records
+        &self.facts.pane_records
     }
 
     /// Returns core-compiled records for every visible operable tab.
     #[must_use]
     pub fn tab_records(&self) -> &[TabRecord] {
-        &self.tab_records
+        &self.facts.tab_records
     }
 
     /// Returns core-compiled records for every tab bar.
     #[must_use]
     pub fn tab_bar_records(&self) -> &[TabBarRecord] {
-        &self.tab_bar_records
+        &self.facts.tab_bar_records
     }
 
     /// Resolves the sole authoritative tab strip which owns wheel input at `point`.
@@ -664,6 +773,7 @@ impl PresentationPlan {
         point: crate::geometry::LogicalPoint,
     ) -> Option<TabBarSceneId> {
         if self
+            .facts
             .tab_list_menu_backdrop_records
             .iter()
             .any(|backdrop| backdrop.bounds().contains(point))
@@ -672,7 +782,7 @@ impl PresentationPlan {
         }
 
         let mut owner = None;
-        for bar in &self.tab_bar_records {
+        for bar in &self.facts.tab_bar_records {
             if !bar.viewport().contains(point)
                 || !self.point_is_on_authoritative_layer(point, bar.layer())
             {
@@ -693,43 +803,44 @@ impl PresentationPlan {
     /// Returns core-compiled tab-strip controls in canonical identity order.
     #[must_use]
     pub fn tab_strip_control_records(&self) -> &[TabStripControlRecord] {
-        &self.tab_strip_control_records
+        &self.facts.tab_strip_control_records
     }
 
     /// Returns the core-compiled open workspace tab-list menu, when present.
     #[must_use]
     pub fn tab_list_menu_records(&self) -> &[TabListMenuRecord] {
-        &self.tab_list_menu_records
+        &self.facts.tab_list_menu_records
     }
 
     /// Returns full-surface popup receiver coverage for this plan.
     #[must_use]
     pub fn tab_list_menu_backdrop_records(&self) -> &[TabListMenuBackdropRecord] {
-        &self.tab_list_menu_backdrop_records
+        &self.facts.tab_list_menu_backdrop_records
     }
 
     /// Returns one core-selected presentation command menu anchor per visible root.
     #[must_use]
     pub fn presentation_menu_anchor_records(&self) -> &[PresentationMenuAnchorRecord] {
-        &self.presentation_menu_anchor_records
+        &self.facts.presentation_menu_anchor_records
     }
 
     /// Returns one exact availability record for every structural splitter gap.
     #[must_use]
     pub fn splitter_gap_records(&self) -> &[SplitterGapRecord] {
-        &self.splitter_gap_records
+        &self.facts.splitter_gap_records
     }
 
     /// Returns core-compiled draw and hit records for every splitter.
     #[must_use]
     pub fn splitter_records(&self) -> &[SplitterRecord] {
-        &self.splitter_records
+        &self.facts.splitter_records
     }
 
     /// Returns one exact splitter record by structural identity.
     #[must_use]
     pub fn splitter_record(&self, id: SplitterSceneId) -> Option<&SplitterRecord> {
-        self.splitter_records
+        self.facts
+            .splitter_records
             .iter()
             .find(|record| *record.id() == id)
     }
@@ -742,19 +853,20 @@ impl PresentationPlan {
     /// complete junction accepts one atomic pointer resize.
     #[must_use]
     pub fn splitter_junction_records(&self) -> &[SplitterJunctionRecord] {
-        &self.splitter_junction_records
+        &self.facts.splitter_junction_records
     }
 
     /// Returns core-compiled contained-floating chrome in structural roster order.
     #[must_use]
     pub fn contained_records(&self) -> &[ContainedRecord] {
-        &self.contained_records
+        &self.facts.contained_records
     }
 
     /// Returns one exact core-compiled contained chrome record by stable identity.
     #[must_use]
     pub fn contained_record(&self, floating: FloatingPresentationId) -> Option<&ContainedRecord> {
-        self.contained_records
+        self.facts
+            .contained_records
             .iter()
             .find(|record| record.floating() == floating)
     }
@@ -763,7 +875,8 @@ impl PresentationPlan {
         &self,
         floating: FloatingPresentationId,
     ) -> Option<LogicalRect> {
-        self.drop_occlusions
+        self.facts
+            .drop_occlusions
             .iter()
             .find(|record| record.floating() == floating)
             .map(|record| record.region().rect())
@@ -772,31 +885,31 @@ impl PresentationPlan {
     /// Returns exact contained measurements in stable identity order after sealing.
     #[must_use]
     pub fn contained_minimums(&self) -> &[ContainedMinimumMeasurement] {
-        &self.contained_minimums
+        &self.facts.contained_minimums
     }
 
     /// Returns the sole explicit background authority of a rootless ready surface.
     #[must_use]
-    pub const fn surface_background(&self) -> Option<&DropTargetRecord> {
-        self.surface_background.as_ref()
+    pub fn surface_background(&self) -> Option<&DropTargetRecord> {
+        self.facts.surface_background.as_ref()
     }
 
     /// Returns contained-floating occlusions in stable identity order after sealing.
     #[must_use]
     pub fn drop_occlusions(&self) -> &[DropOcclusionRecord] {
-        &self.drop_occlusions
+        &self.facts.drop_occlusions
     }
 
     /// Returns docking-guide clusters in canonical structural order after sealing.
     #[must_use]
     pub fn drop_guide_clusters(&self) -> &[DropGuideClusterRecord] {
-        &self.drop_guide_clusters
+        &self.facts.drop_guide_clusters
     }
 
     /// Returns drop targets in canonical structural-identity order after sealing.
     #[must_use]
     pub fn drop_targets(&self) -> &[Arc<DropTargetRecord>] {
-        &self.drop_targets
+        &self.facts.drop_targets
     }
 
     /// Returns one exact drop target regardless of its paint ownership.
@@ -806,14 +919,16 @@ impl PresentationPlan {
     /// they never own availability, destination, or command semantics.
     #[must_use]
     pub(crate) fn drop_target(&self, id: DropTargetId) -> Option<&DropTargetRecord> {
-        self.surface_background
+        self.facts
+            .surface_background
             .as_ref()
             .filter(|record| record.id() == id)
             .or_else(|| {
-                self.drop_targets
+                self.facts
+                    .drop_targets
                     .binary_search_by_key(&id, |record| record.id())
                     .ok()
-                    .map(|index| self.drop_targets[index].as_ref())
+                    .map(|index| self.facts.drop_targets[index].as_ref())
             })
     }
 
@@ -823,7 +938,8 @@ impl PresentationPlan {
         layer: SceneLayerKey,
         permits: impl FnMut(DropTargetId) -> bool,
     ) -> Option<MagneticTargetCandidate> {
-        self.magnetic_target_field
+        self.facts
+            .magnetic_target_field
             .candidate_at(point, layer, permits)
     }
 }

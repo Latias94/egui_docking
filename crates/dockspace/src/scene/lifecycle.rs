@@ -1261,13 +1261,24 @@ impl SurfaceSceneSet {
             SurfaceScene::Stale(stale) => Some(stale.paint_fallback()),
             SurfaceScene::Bootstrap(_) => None,
         };
-        let hit_manifest = PresentationHitManifest::compile_reusing(
-            output_ticket,
-            &plan,
-            previous.map(|output| (output.plan(), output.hit_manifest())),
-        )?;
-        let paint_program = link_surface_paint_program(&plan, &hit_manifest).map(Arc::new);
-        let semantic_manifest = PresentationSemanticManifest::compile(output_ticket, &plan)?;
+        let (hit_manifest, paint_program, semantic_manifest) = if let Some(previous) =
+            previous.filter(|previous| plan.shares_facts(previous.plan()))
+        {
+            (
+                previous.hit_manifest().rebind_output(output_ticket),
+                previous.paint_program.clone(),
+                previous.semantic_manifest().rebind_output(output_ticket),
+            )
+        } else {
+            let hit_manifest = PresentationHitManifest::compile_reusing(
+                output_ticket,
+                &plan,
+                previous.map(|output| (output.plan(), output.hit_manifest())),
+            )?;
+            let paint_program = link_surface_paint_program(&plan, &hit_manifest).map(Arc::new);
+            let semantic_manifest = PresentationSemanticManifest::compile(output_ticket, &plan)?;
+            (hit_manifest, paint_program, semantic_manifest)
+        };
         let current = current.replace_scene(|current_scene| {
             let (retained_fallback, interaction_authority, confirmed_paint_fallback) =
                 match current_scene {

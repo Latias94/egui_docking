@@ -6,14 +6,13 @@ use std::sync::Arc;
 
 use crate::RootPresentationOwner;
 use crate::command::{
-    DockTarget, EdgeTargetScope, MovePayload, NodeSource, RootContent, RootPresentationTarget,
-    WorkspaceCommand,
+    DockTarget, MovePayload, NodeSource, RootContent, RootPresentationTarget, WorkspaceCommand,
 };
 use crate::drop_guide::{
     DropGuideClusterId, DropGuideClusterRecord, DropGuideScope, DropGuideSlot,
 };
 use crate::drop_target::{
-    DropDestination, DropTargetAvailability, DropTargetId, DropTargetKind, DropTargetRecord,
+    DropTargetAvailability, DropTargetId, DropTargetKind, DropTargetLocation, DropTargetRecord,
     DropTargetUnavailable, DropVisual, SceneLayerKey, SurfaceBackground,
 };
 use crate::error::{CommandError, TransactionError};
@@ -852,14 +851,34 @@ impl<'a> DropEligibilityContext<'a> {
             ));
         }
 
-        let command = match target.destination() {
-            DropDestination::Topology(destination) => {
+        let command = match target.location() {
+            DropTargetLocation::SurfaceBackground { surface } => {
+                let complete_root_source = match &self.complete_root_source {
+                    Ok(source) => source.as_ref(),
+                    Err(error) => return classify_command_error(error.clone()),
+                };
+                let Some(command) = prepare_surface_background_command(
+                    self.workspace,
+                    self.source,
+                    complete_root_source,
+                    SurfaceBackground::new(surface),
+                    self.surface_background_offer,
+                ) else {
+                    return Ok(PreparedDropTarget::Rejected(
+                        DropRejectionReason::SurfaceBackgroundRootOfferMissing,
+                    ));
+                };
+                command
+            }
+            location => {
                 let destination = match rebind_topology_target(
                     self.workspace,
                     self.workspace_version,
                     self.workspace_index,
-                    target.id(),
-                    destination,
+                    location,
+                    location
+                        .root()
+                        .and_then(|root| self.target_plan.command_basis(root)),
                 ) {
                     Ok(destination) => destination,
                     Err(TargetRebindError::Stale) => {
@@ -869,11 +888,6 @@ impl<'a> DropEligibilityContext<'a> {
                     }
                     Err(TargetRebindError::Command(error)) => {
                         return classify_command_error(error);
-                    }
-                    Err(TargetRebindError::IdentityInvariant) => {
-                        return Err(DropResolutionError::PresentedTargetIdentityMismatch {
-                            target: target.id(),
-                        });
                     }
                 };
                 match &self.topology {
@@ -892,24 +906,6 @@ impl<'a> DropEligibilityContext<'a> {
                     payload: self.source.clone(),
                     target: destination,
                 }
-            }
-            DropDestination::SurfaceBackground(destination) => {
-                let complete_root_source = match &self.complete_root_source {
-                    Ok(source) => source.as_ref(),
-                    Err(error) => return classify_command_error(error.clone()),
-                };
-                let Some(command) = prepare_surface_background_command(
-                    self.workspace,
-                    self.source,
-                    complete_root_source,
-                    *destination,
-                    self.surface_background_offer,
-                ) else {
-                    return Ok(PreparedDropTarget::Rejected(
-                        DropRejectionReason::SurfaceBackgroundRootOfferMissing,
-                    ));
-                };
-                command
             }
         };
         Ok(PreparedDropTarget::Eligible(command))
@@ -978,7 +974,6 @@ impl<'a> DropEligibilityContext<'a> {
 enum TargetRebindError {
     Stale,
     Command(CommandError),
-    IdentityInvariant,
 }
 
 impl From<CommandError> for TargetRebindError {
@@ -998,107 +993,62 @@ fn rebind_topology_target(
     workspace: &Workspace,
     workspace_version: WorkspaceVersion,
     workspace_index: &WorkspaceIndex,
-    id: DropTargetId,
-    frozen: &DockTarget,
+    location: DropTargetLocation,
+    frozen: Option<&crate::command::NodeFingerprint>,
 ) -> Result<DockTarget, TargetRebindError> {
-    let rebound = match (id, frozen) {
-        (
-            DropTargetId::Center {
-                surface,
-                root,
-                tabs,
-            },
-            DockTarget::Center(target),
-        ) if target.surface() == surface && target.root() == root && target.tabs() == tabs => {
-            DockTarget::Center(workspace_index.capture_tab_target(
-                workspace,
-                workspace_version,
-                root,
-                tabs,
-            )?)
-        }
-        (
-            DropTargetId::TabGap {
-                surface,
-                root,
-                tabs,
-                index,
-            },
-            DockTarget::TabGap {
-                target,
-                index: frozen_index,
-            },
-        ) if target.surface() == surface
-            && target.root() == root
-            && target.tabs() == tabs
-            && *frozen_index == index =>
-        {
-            DockTarget::TabGap {
-                target: workspace_index.capture_tab_target(
-                    workspace,
-                    workspace_version,
-                    root,
-                    tabs,
-                )?,
-                index,
-            }
-        }
-        (
-            DropTargetId::InnerEdge {
-                surface,
-                root,
-                node,
-                edge,
-            },
-            DockTarget::InnerEdge(target),
-        ) if target.surface() == surface
-            && target.root() == root
-            && target.node() == node
-            && target.edge() == edge
-            && target.scope() == EdgeTargetScope::Inner =>
-        {
-            DockTarget::InnerEdge(workspace_index.capture_inner_edge_target(
-                workspace,
-                workspace_version,
-                root,
-                node,
-                edge,
-                target.fraction(),
-            )?)
-        }
-        (
-            DropTargetId::OuterEdge {
-                surface,
-                root,
-                node,
-                edge,
-            },
-            DockTarget::OuterEdge(target),
-        ) if target.surface() == surface
-            && target.root() == root
-            && target.node() == node
-            && target.edge() == edge
-            && target.scope() == EdgeTargetScope::Outer =>
-        {
+    let frozen = frozen.ok_or(TargetRebindError::Stale)?;
+    if location.root() != Some(frozen.root()) {
+        return Err(TargetRebindError::Stale);
+    }
+    let rebound = match location {
+        DropTargetLocation::Center { root, tabs, .. } => DockTarget::Center(
+            workspace_index.capture_tab_target(workspace, workspace_version, root, tabs)?,
+        ),
+        DropTargetLocation::TabGap {
+            root, tabs, index, ..
+        } => DockTarget::TabGap {
+            target: workspace_index.capture_tab_target(workspace, workspace_version, root, tabs)?,
+            index,
+        },
+        DropTargetLocation::InnerEdge {
+            root,
+            node,
+            edge,
+            fraction,
+            ..
+        } => DockTarget::InnerEdge(workspace_index.capture_inner_edge_target(
+            workspace,
+            workspace_version,
+            root,
+            node,
+            edge,
+            fraction,
+        )?),
+        DropTargetLocation::OuterEdge {
+            root,
+            node,
+            edge,
+            fraction,
+            ..
+        } => {
             let rebound = workspace_index.capture_outer_edge_target(
                 workspace,
                 workspace_version,
                 root,
                 edge,
-                target.fraction(),
+                fraction,
             )?;
             if rebound.node() != node {
                 return Err(TargetRebindError::Stale);
             }
             DockTarget::OuterEdge(rebound)
         }
-        _ => return Err(TargetRebindError::IdentityInvariant),
+        DropTargetLocation::SurfaceBackground { .. } => return Err(TargetRebindError::Stale),
     };
-    if rebound.surface() != id.surface() {
+    if rebound.surface() != location.surface() {
         return Err(TargetRebindError::Stale);
     }
-    if !dock_target_fingerprint(frozen).presentation_structure_eq(dock_target_fingerprint(&rebound))
-    {
+    if !frozen.presentation_structure_eq(dock_target_fingerprint(&rebound)) {
         return Err(TargetRebindError::Stale);
     }
     Ok(rebound)
@@ -1333,10 +1283,6 @@ pub(crate) mod structural_work {
 
     pub(crate) fn record_presentation_roster_surface_freeze() {
         update(|work| work.presentation_roster_surface_freezes += 1);
-    }
-
-    pub(crate) fn record_selection_pane_visit() {
-        update(|work| work.selection_pane_visits += 1);
     }
 
     pub(crate) fn record_selection_lookup() {
@@ -2163,7 +2109,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::command::{CommandOutcome, DockFraction, DockTarget, Edge};
+    use crate::command::{CommandOutcome, DockFraction, Edge};
     use crate::drop_guide::{
         DropGuideEdgeSet, DropGuideScope, DropGuideSlot, DropGuideTargetRecord,
     };
@@ -2495,12 +2441,10 @@ mod tests {
 
     fn guide_target_record(
         targets: &mut Vec<Arc<DropTargetRecord>>,
-        id: DropTargetId,
-        target: DockTarget,
+        location: DropTargetLocation,
     ) -> DropGuideTargetRecord {
         let target = Arc::new(DropTargetRecord::new(
-            id,
-            target,
+            location,
             DropTargetAvailability::Available,
             HitRegion::new(rect()),
             SceneLayerKey::new(2),
@@ -2517,39 +2461,23 @@ mod tests {
         let mut targets = Vec::new();
         let center = guide_target_record(
             &mut targets,
-            DropTargetId::Center {
+            DropTargetLocation::Center {
                 surface: TARGET_SURFACE,
                 root: CONTAINED_ROOT,
                 tabs: fixture.contained_tabs,
             },
-            DockTarget::Center(
-                fixture
-                    .workspace
-                    .capture_tab_target(CONTAINED_ROOT, fixture.contained_tabs)
-                    .expect("center guide target must be current"),
-            ),
         );
         let inner_edges = {
             let mut inner_edge = |edge| {
                 guide_target_record(
                     &mut targets,
-                    DropTargetId::InnerEdge {
+                    DropTargetLocation::InnerEdge {
                         surface: TARGET_SURFACE,
                         root: CONTAINED_ROOT,
                         node: fixture.contained_tabs,
                         edge,
+                        fraction,
                     },
-                    DockTarget::InnerEdge(
-                        fixture
-                            .workspace
-                            .capture_inner_edge_target(
-                                CONTAINED_ROOT,
-                                fixture.contained_tabs,
-                                edge,
-                                fraction,
-                            )
-                            .expect("inner guide target must be current"),
-                    ),
                 )
             };
             DropGuideEdgeSet::new(
@@ -2563,18 +2491,13 @@ mod tests {
             let mut outer_edge = |edge| {
                 guide_target_record(
                     &mut targets,
-                    DropTargetId::OuterEdge {
+                    DropTargetLocation::OuterEdge {
                         surface: TARGET_SURFACE,
                         root: CONTAINED_ROOT,
                         node: fixture.contained_tabs,
                         edge,
+                        fraction,
                     },
-                    DockTarget::OuterEdge(
-                        fixture
-                            .workspace
-                            .capture_outer_edge_target(CONTAINED_ROOT, edge, fraction)
-                            .expect("outer guide target must be current"),
-                    ),
                 )
             };
             DropGuideEdgeSet::new(
@@ -3391,15 +3314,12 @@ mod tests {
         let target = plan
             .drop_target(target_id)
             .expect("production compilation must publish the contained outer target");
-        let DropDestination::Topology(destination) = target.destination() else {
-            panic!("contained center target must carry a topology destination");
-        };
+        let location = target.location();
         let target_region = target.region();
         let target_layer = target.layer();
         let target_visual = target.visual();
         let replacement = Arc::new(DropTargetRecord::new(
-            target_id,
-            destination.clone(),
+            location,
             DropTargetAvailability::Unavailable(DropTargetUnavailable::AdapterUnavailable),
             target_region,
             target_layer,
@@ -3503,17 +3423,12 @@ mod tests {
     #[test]
     fn rejected_front_target_never_falls_through_to_background() {
         let fixture = fixture();
-        let topology = fixture
-            .workspace
-            .capture_tab_target(CONTAINED_ROOT, fixture.contained_tabs)
-            .expect("contained target must be current");
         let target = DropTargetRecord::new(
-            DropTargetId::Center {
+            DropTargetLocation::Center {
                 surface: TARGET_SURFACE,
                 root: CONTAINED_ROOT,
                 tabs: fixture.contained_tabs,
             },
-            DockTarget::Center(topology),
             DropTargetAvailability::Unavailable(DropTargetUnavailable::AdapterUnavailable),
             HitRegion::new(rect()),
             SceneLayerKey::new(2),
@@ -3558,17 +3473,12 @@ mod tests {
         let fixture = fixture();
         let surface_bounds =
             LogicalRect::new(0.0, 0.0, 600.0, 450.0).expect("surface bounds are valid");
-        let topology = fixture
-            .workspace
-            .capture_tab_target(CONTAINED_ROOT, fixture.contained_tabs)
-            .expect("contained target must be current");
         let outside_target = DropTargetRecord::new(
-            DropTargetId::Center {
+            DropTargetLocation::Center {
                 surface: TARGET_SURFACE,
                 root: CONTAINED_ROOT,
                 tabs: fixture.contained_tabs,
             },
-            DockTarget::Center(topology),
             DropTargetAvailability::Available,
             HitRegion::new(
                 LogicalRect::new(600.0, 350.0, 100.0, 100.0).expect("outside hit region is valid"),
@@ -4291,7 +4201,7 @@ mod tests {
         let payload_bounds = committed_plan
             .pane_records()
             .iter()
-            .find(|pane| pane.selected() == Some(moved))
+            .find(|pane| committed_plan.pane_selected(pane) == Some(moved))
             .expect("the moved item must own its new target leaf")
             .bounds();
 

@@ -36,7 +36,7 @@ pub(crate) struct ContainedLayoutProjection {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PresentationLayoutFacts {
     config: DockPresentationConfig,
-    roots: BTreeMap<RootId, RootLayoutFacts>,
+    roots: Arc<BTreeMap<RootId, RootLayoutFacts>>,
     measurements: Arc<SurfaceMeasurements>,
 }
 
@@ -47,7 +47,7 @@ impl PresentationLayoutFacts {
     ) -> Self {
         Self {
             config,
-            roots: BTreeMap::new(),
+            roots: Arc::new(BTreeMap::new()),
             measurements: Arc::new(measurements.snapshot()),
         }
     }
@@ -65,7 +65,9 @@ impl PresentationLayoutFacts {
     }
 
     pub(crate) fn insert_root(&mut self, facts: RootLayoutFacts) -> bool {
-        self.roots.insert(facts.root(), facts).is_none()
+        Arc::make_mut(&mut self.roots)
+            .insert(facts.root(), facts)
+            .is_none()
     }
 
     pub(crate) fn tab_intrinsic(&self, key: TabIntrinsicKey) -> Option<TabIntrinsic> {
@@ -78,6 +80,21 @@ impl PresentationLayoutFacts {
 
     pub(crate) fn measurements(&self) -> &Arc<SurfaceMeasurements> {
         &self.measurements
+    }
+
+    pub(crate) fn rebind_measurements(&self, measurements: SurfaceMeasurements) -> Self {
+        Self {
+            config: self.config.clone(),
+            roots: Arc::clone(&self.roots),
+            measurements: Arc::new(measurements),
+        }
+    }
+
+    pub(crate) fn same_inputs(&self, other: &Self) -> bool {
+        self.config == other.config
+            && (Arc::ptr_eq(&self.roots, &other.roots) || self.roots == other.roots)
+            && (Arc::ptr_eq(&self.measurements, &other.measurements)
+                || self.measurements == other.measurements)
     }
 }
 
@@ -121,5 +138,9 @@ impl RootLayoutFacts {
         self.pane_minimums
             .iter()
             .map(|(key, minimum)| (*key, *minimum))
+    }
+
+    pub(crate) fn pane_minimum(&self, key: PaneMinimumKey) -> Option<LogicalSize> {
+        self.pane_minimums.get(&key).copied()
     }
 }

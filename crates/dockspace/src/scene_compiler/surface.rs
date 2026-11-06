@@ -130,6 +130,9 @@ fn compile_surface_scene(
     }
 
     if let Some(root) = presentation.main_root {
+        if let Some(basis) = workspace_index.root_fingerprint(root) {
+            ready.bind_command_basis(root, basis.clone());
+        }
         let root_measurement = measure_root_layout(
             workspace,
             workspace_index,
@@ -171,6 +174,9 @@ fn compile_surface_scene(
 
     let frontmost_contained = presentation.contained.last().copied();
     for (index, (floating, record, outer, layer)) in contained_placements.into_iter().enumerate() {
+        if let Some(basis) = workspace_index.root_fingerprint(record.root) {
+            ready.bind_command_basis(record.root, basis.clone());
+        }
         let root_measurement = measure_root_layout(
             workspace,
             workspace_index,
@@ -862,9 +868,6 @@ fn compile_root(
                         node: *node,
                     })?;
                 compile_tabs_leaf(
-                    workspace,
-                    workspace_index,
-                    workspace_version,
                     policy,
                     config,
                     requirements,
@@ -1008,9 +1011,6 @@ fn compile_root(
 
     if let Some(geometry) = outer_guides {
         let outer_guide = compile_outer_targets_and_guide(
-            workspace,
-            workspace_index,
-            workspace_version,
             policy,
             geometry,
             surface,
@@ -1024,9 +1024,6 @@ fn compile_root(
         ready.push_drop_guide_cluster(outer_guide);
     } else {
         compile_outer_targets_without_guide(
-            workspace,
-            workspace_index,
-            workspace_version,
             policy,
             config,
             surface,
@@ -1061,9 +1058,6 @@ fn compile_root(
 
 #[allow(clippy::too_many_arguments)]
 fn compile_tabs_leaf(
-    workspace: &Workspace,
-    workspace_index: &WorkspaceIndex,
-    workspace_version: WorkspaceVersion,
     policy: &DockPolicySnapshot,
     config: &DockPresentationConfig,
     requirements: &SurfaceRequirements,
@@ -1101,13 +1095,10 @@ fn compile_tabs_leaf(
         content_height,
     )?;
     let pane_id = PaneSceneId { root, tabs };
-    ready.push_pane_record(PaneRecord::new(pane_id, bounds, content, selected, layer));
+    ready.push_pane_record(PaneRecord::new(pane_id, bounds, content, layer));
     ready.push_surface_program_pane_operation(pane_id, selected)?;
     if rect_has_area(tab_bar) {
         compile_tab_strip(
-            workspace,
-            workspace_index,
-            workspace_version,
             policy,
             config,
             tab_bar_requirement,
@@ -1127,9 +1118,6 @@ fn compile_tabs_leaf(
     if rect_has_area(bounds) {
         let inner_guide = if let Some(outer_guides) = outer_guides {
             compile_inner_targets_and_guide(
-                workspace,
-                workspace_index,
-                workspace_version,
                 policy,
                 config,
                 outer_guides,
@@ -1150,9 +1138,6 @@ fn compile_tabs_leaf(
             ready.push_drop_guide_cluster(inner_guide);
         } else {
             compile_inner_targets_without_guide(
-                workspace,
-                workspace_index,
-                workspace_version,
                 policy,
                 config,
                 surface,
@@ -1209,9 +1194,6 @@ fn compile_tabs_leaf(
 
 #[allow(clippy::too_many_arguments)]
 fn compile_tab_strip(
-    workspace: &Workspace,
-    workspace_index: &WorkspaceIndex,
-    workspace_version: WorkspaceVersion,
     policy: &DockPolicySnapshot,
     config: &DockPresentationConfig,
     requirement: &TabBarRequirement,
@@ -1296,8 +1278,7 @@ fn compile_tab_strip(
     let max_scroll = (total_width - viewport.width()).max(0.0);
     let selected_range = selected.and_then(|selected| {
         let index = items.iter().position(|item| *item == selected)?;
-        let start = widths[..index].iter().sum::<f64>();
-        Some((start, start + widths[index]))
+        tab_local_range(widths.iter().copied(), index)
     });
     let requested_scroll = state
         .and_then(|state| state.scroll_offset())
@@ -1334,6 +1315,7 @@ fn compile_tab_strip(
         members.push(TabStripMemberRecord::new(
             TabSceneId { root, tabs, item },
             ordinal,
+            width,
             full,
             visibility,
         ));
@@ -1356,7 +1338,6 @@ fn compile_tab_strip(
                 } else {
                     None
                 },
-                selected == Some(item),
                 ordinal,
                 layer,
             ));
@@ -1478,19 +1459,13 @@ fn compile_tab_strip(
     }
 
     if interaction == TabBarInteraction::Enabled {
-        let target =
-            workspace_index.capture_tab_target(workspace, workspace_version, root, tabs)?;
         let availability = tab_availability(policy);
         for gap in tab_gap_geometries(viewport, &full_tabs, config.splitter_thickness())? {
             ready.push_drop_target(Arc::new(DropTargetRecord::new(
-                DropTargetId::TabGap {
+                DropTargetLocation::TabGap {
                     surface,
                     root,
                     tabs,
-                    index: gap.index,
-                },
-                DockTarget::TabGap {
-                    target: target.clone(),
                     index: gap.index,
                 },
                 availability,
@@ -2073,6 +2048,87 @@ pub(super) fn pane_outer_minimum(
     )?)
 }
 
+/// Checks the selection-dependent inputs of an otherwise unchanged sealed surface.
+pub(crate) fn selection_geometry_unchanged(
+    plan: &PresentationPlan,
+    config: &DockPresentationConfig,
+    requirement: &TabBarRequirement,
+    selected: Option<crate::ids::ItemId>,
+    tab_strip_states: &TabStripStateStore,
+) -> Result<bool, SceneCompilationError> {
+    let bar = requirement.id();
+    let Some(layout) = plan.layout_facts() else {
+        return Ok(false);
+    };
+    let Some(root) = layout.root(bar.root) else {
+        return Ok(false);
+    };
+    let old_selected = plan.selected_in_tabs(bar.tabs);
+    let Some(old_minimum) =
+        root.pane_minimum(PaneMinimumKey::new(bar.root, bar.tabs, old_selected))
+    else {
+        return Ok(false);
+    };
+    let Some(new_minimum) = root.pane_minimum(PaneMinimumKey::new(bar.root, bar.tabs, selected))
+    else {
+        return Ok(false);
+    };
+    let visibility = requirement.policy().visibility();
+    if pane_outer_minimum(old_minimum, config, visibility)?
+        != pane_outer_minimum(new_minimum, config, visibility)?
+    {
+        return Ok(false);
+    }
+    let Some(record) = plan
+        .tab_bar_records()
+        .iter()
+        .find(|record| *record.id() == bar)
+    else {
+        return Ok(visibility != TabBarVisibility::Visible);
+    };
+    let state = tab_strip_states.state(TabStripStateKey::new(plan.surface(), bar));
+    let requested = state
+        .and_then(|state| state.scroll_offset())
+        .unwrap_or(0.0)
+        .clamp(0.0, record.maximum_scroll_offset());
+    let scroll = if state.is_none_or(|state| state.resolved_selection() != selected) {
+        selected
+            .and_then(|item| {
+                record
+                    .members()
+                    .iter()
+                    .position(|member| member.tab().item == item)
+            })
+            .and_then(|index| {
+                tab_local_range(
+                    record
+                        .members()
+                        .iter()
+                        .map(|member| member.allocated_width()),
+                    index,
+                )
+            })
+            .map_or(requested, |(start, end)| {
+                reveal_tab_range(
+                    requested,
+                    record.maximum_scroll_offset(),
+                    record.viewport().width(),
+                    start,
+                    end,
+                )
+            })
+    } else {
+        requested
+    };
+    Ok(scroll == record.scroll_offset())
+}
+
+fn tab_local_range(widths: impl Iterator<Item = f64>, ordinal: usize) -> Option<(f64, f64)> {
+    let mut widths = widths;
+    let start = widths.by_ref().take(ordinal).sum::<f64>();
+    Some((start, start + widths.next()?))
+}
+
 fn contained_minimum_size(
     config: &DockPresentationConfig,
     root_minimum: LogicalSize,
@@ -2604,9 +2660,6 @@ fn guide_placement(
 
 #[allow(clippy::too_many_arguments)]
 fn compile_inner_targets_and_guide(
-    workspace: &Workspace,
-    workspace_index: &WorkspaceIndex,
-    workspace_version: WorkspaceVersion,
     policy: &DockPolicySnapshot,
     config: &DockPresentationConfig,
     outer_guides: GuideEdgeGeometry,
@@ -2690,19 +2743,13 @@ fn compile_inner_targets_and_guide(
         metrics.hit_padding,
     )?;
     ensure_complete_guide_geometry(cluster, placement_bounds, &[center_geometry])?;
-    let center_id = DropTargetId::Center {
+    let center_location = DropTargetLocation::Center {
         surface,
         root,
         tabs,
     };
     let center_target = install_canonical_drop_target(
-        center_id,
-        DockTarget::Center(workspace_index.capture_tab_target(
-            workspace,
-            workspace_version,
-            root,
-            tabs,
-        )?),
+        center_location,
         tab_availability(policy),
         center_geometry,
         placement_bounds,
@@ -2760,23 +2807,16 @@ fn compile_inner_targets_and_guide(
     all.push(center_geometry);
     ensure_complete_guide_geometry(cluster, placement_bounds, &all)?;
     let mut edge_record = |edge| {
-        let id = DropTargetId::InnerEdge {
+        let location = DropTargetLocation::InnerEdge {
             surface,
             root,
             node: tabs,
             edge,
+            fraction,
         };
         let preview = edge_preview(node_bounds, edge, fraction)?;
         let target = install_canonical_drop_target(
-            id,
-            DockTarget::InnerEdge(workspace_index.capture_inner_edge_target(
-                workspace,
-                workspace_version,
-                root,
-                tabs,
-                edge,
-                fraction,
-            )?),
+            location,
             edge_availability(policy),
             geometry.get(edge),
             preview,
@@ -2804,9 +2844,6 @@ fn compile_inner_targets_and_guide(
 
 #[allow(clippy::too_many_arguments)]
 fn compile_outer_targets_and_guide(
-    workspace: &Workspace,
-    workspace_index: &WorkspaceIndex,
-    workspace_version: WorkspaceVersion,
     policy: &DockPolicySnapshot,
     geometry: GuideEdgeGeometry,
     surface: SurfaceId,
@@ -2818,22 +2855,16 @@ fn compile_outer_targets_and_guide(
     ready: &mut PresentationPlan,
 ) -> Result<DropGuideClusterRecord, SceneCompilationError> {
     let edge_record = |edge, ready: &mut PresentationPlan| {
-        let id = DropTargetId::OuterEdge {
+        let location = DropTargetLocation::OuterEdge {
             surface,
             root,
             node: root_node,
             edge,
+            fraction,
         };
         let preview = edge_preview(bounds, edge, fraction)?;
         let target = install_canonical_drop_target(
-            id,
-            DockTarget::OuterEdge(workspace_index.capture_outer_edge_target(
-                workspace,
-                workspace_version,
-                root,
-                edge,
-                fraction,
-            )?),
+            location,
             edge_availability(policy),
             geometry.get(edge),
             preview,
@@ -2857,9 +2888,6 @@ fn compile_outer_targets_and_guide(
 
 #[allow(clippy::too_many_arguments)]
 fn compile_outer_targets_without_guide(
-    workspace: &Workspace,
-    workspace_index: &WorkspaceIndex,
-    workspace_version: WorkspaceVersion,
     policy: &DockPolicySnapshot,
     config: &DockPresentationConfig,
     surface: SurfaceId,
@@ -2871,21 +2899,15 @@ fn compile_outer_targets_without_guide(
     ready: &mut PresentationPlan,
 ) -> Result<(), SceneCompilationError> {
     for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-        let id = DropTargetId::OuterEdge {
+        let location = DropTargetLocation::OuterEdge {
             surface,
             root,
             node: root_node,
             edge,
+            fraction,
         };
         install_canonical_drop_target_with_region(
-            id,
-            DockTarget::OuterEdge(workspace_index.capture_outer_edge_target(
-                workspace,
-                workspace_version,
-                root,
-                edge,
-                fraction,
-            )?),
+            location,
             edge_availability(policy),
             HitRegion::new(outer_edge_region(bounds, edge, config)?),
             edge_preview(bounds, edge, fraction)?,
@@ -2898,9 +2920,6 @@ fn compile_outer_targets_without_guide(
 
 #[allow(clippy::too_many_arguments)]
 fn compile_inner_targets_without_guide(
-    workspace: &Workspace,
-    workspace_index: &WorkspaceIndex,
-    workspace_version: WorkspaceVersion,
     policy: &DockPolicySnapshot,
     config: &DockPresentationConfig,
     surface: SurfaceId,
@@ -2918,19 +2937,13 @@ fn compile_inner_targets_without_guide(
     } else {
         node_bounds
     };
-    let center = DropTargetId::Center {
+    let center = DropTargetLocation::Center {
         surface,
         root,
         tabs,
     };
     install_canonical_drop_target_with_region(
         center,
-        DockTarget::Center(workspace_index.capture_tab_target(
-            workspace,
-            workspace_version,
-            root,
-            tabs,
-        )?),
         tab_availability(policy),
         HitRegion::new(pane_center_basin(placement_bounds, config)?),
         placement_bounds,
@@ -2943,23 +2956,15 @@ fn compile_inner_targets_without_guide(
     }
 
     for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-        let id = DropTargetId::InnerEdge {
+        let location = DropTargetLocation::InnerEdge {
             surface,
             root,
             node: tabs,
             edge,
-        };
-        let target = DockTarget::InnerEdge(workspace_index.capture_inner_edge_target(
-            workspace,
-            workspace_version,
-            root,
-            tabs,
-            edge,
             fraction,
-        )?);
+        };
         install_canonical_drop_target_with_region(
-            id,
-            target,
+            location,
             edge_availability(policy),
             HitRegion::new(pane_edge_region(placement_bounds, edge, config)?),
             edge_preview(node_bounds, edge, fraction)?,
@@ -2971,8 +2976,7 @@ fn compile_inner_targets_without_guide(
 }
 
 fn install_canonical_drop_target(
-    id: DropTargetId,
-    target: DockTarget,
+    location: DropTargetLocation,
     availability: DropTargetAvailability,
     geometry: GuideButtonGeometry,
     preview: LogicalRect,
@@ -2980,8 +2984,7 @@ fn install_canonical_drop_target(
     ready: &mut PresentationPlan,
 ) -> Arc<DropTargetRecord> {
     install_canonical_drop_target_with_region(
-        id,
-        target,
+        location,
         availability,
         HitRegion::new(geometry.hit),
         preview,
@@ -2991,8 +2994,7 @@ fn install_canonical_drop_target(
 }
 
 fn install_canonical_drop_target_with_region(
-    id: DropTargetId,
-    target: DockTarget,
+    location: DropTargetLocation,
     availability: DropTargetAvailability,
     region: HitRegion,
     preview: LogicalRect,
@@ -3000,8 +3002,7 @@ fn install_canonical_drop_target_with_region(
     ready: &mut PresentationPlan,
 ) -> Arc<DropTargetRecord> {
     let record = Arc::new(DropTargetRecord::new(
-        id,
-        target,
+        location,
         availability,
         region,
         layer,

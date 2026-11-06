@@ -1,5 +1,5 @@
 use super::*;
-use crate::drop_target::DropDestination;
+use crate::drop_target::DropTargetLocation;
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::graph::{Axis, ContainedFloating, RootRecord, SurfacePresentation};
 use crate::ids::{ItemId, WorkspaceEpoch, WorkspaceRevision};
@@ -364,19 +364,16 @@ fn scene_validation_rejects_an_extra_valid_target_outside_the_magnetic_catalog()
 
     for emit_guides in [false, true] {
         let mut plan = compile_ready_plan(&workspace, surface, bounds, emit_guides);
-        let target = workspace
-            .capture_inner_edge_target(root, tabs, Edge::Left, DockFraction::new(0.3).unwrap())
-            .unwrap();
         // This central root exposes outer edges, so this structurally valid
         // inner edge is absent from both the magnetic field and guide roster.
         plan.push_drop_target(Arc::new(DropTargetRecord::new(
-            DropTargetId::InnerEdge {
+            DropTargetLocation::InnerEdge {
                 surface,
                 root,
                 node: tabs,
                 edge: Edge::Left,
+                fraction: DockFraction::new(0.3).unwrap(),
             },
-            DockTarget::InnerEdge(target),
             DropTargetAvailability::Available,
             HitRegion::new(bounds),
             SceneLayerKey::surface_base(),
@@ -419,15 +416,25 @@ fn scene_validation_rejects_a_magnetic_edge_with_a_foreign_fraction() {
         .drop_target(target_id)
         .expect("compiled root must expose its outer-left target")
         .clone();
-    let DropDestination::Topology(DockTarget::OuterEdge(mut edge)) = target.destination().clone()
+    let DropTargetLocation::OuterEdge {
+        surface,
+        root,
+        node,
+        edge,
+        ..
+    } = target.location()
     else {
-        panic!("outer-left target must carry an outer-edge destination");
+        panic!("outer-left target must carry an outer-edge location");
     };
-    edge.fraction = DockFraction::new(0.9).expect("test fraction must be valid");
     assert!(
         plan.replace_drop_target_for_test(Arc::new(DropTargetRecord::new(
-            target_id,
-            DockTarget::OuterEdge(edge),
+            DropTargetLocation::OuterEdge {
+                surface,
+                root,
+                node,
+                edge,
+                fraction: DockFraction::new(0.9).expect("test fraction must be valid"),
+            },
             target.availability(),
             target.region(),
             target.layer(),
@@ -514,8 +521,12 @@ fn surface_program_keeps_root_chrome_pane_contained_and_guide_order_in_core() {
             crate::scene::SurfaceProgramBlock::RootBegin {
                 root,
                 presentation,
-                title_item,
-            } => Some((*root, *presentation, *title_item)),
+                title_tabs,
+            } => Some((
+                *root,
+                *presentation,
+                (*title_tabs).and_then(|tabs| plan.selected_in_tabs(tabs)),
+            )),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1652,6 +1663,115 @@ fn fixed_width_overflow_fixture(
 }
 
 #[test]
+fn fractional_origin_selection_reveal_matches_validated_full_compilation() {
+    for (origin, tab_width, changes_scroll) in [(100.1, 97.1, true), (0.2, 80.3, false)] {
+        let surface = SurfaceId::new(891);
+        let root = RootId::new(892);
+        let items = [ItemId::new(893), ItemId::new(894), ItemId::new(895)];
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs(items));
+        builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder.build().unwrap();
+        let policy = policy_snapshot();
+        let config = DockPresentationConfig::builder()
+            .tab_min_width(tab_width)
+            .tab_max_width(tab_width)
+            .build()
+            .unwrap();
+        let chrome = config.tab_group_grip_extent() + 2.0 * config.tab_bar_height();
+        let bounds = LogicalRect::new(origin, 30.0, chrome + 2.0 * tab_width, 180.0).unwrap();
+        let compile = |workspace: &Workspace| {
+            let plan =
+                compile_ready_plan_with_config(workspace, surface, bounds, true, &policy, &config)
+                    .unwrap();
+            PresentationPlanValidator::new(workspace, &policy)
+                .unwrap()
+                .validate_and_canonicalize(plan)
+                .unwrap()
+        };
+        let original = compile(&workspace);
+        let old_bar = &original.tab_bar_records()[0];
+        assert_eq!(old_bar.scroll_offset(), 0.0);
+        assert!(old_bar.maximum_scroll_offset() > 0.0);
+        assert_eq!(original.tab_strip_control_records().len(), 3);
+        assert_ne!(
+            old_bar.members()[1].allocated_width(),
+            old_bar.members()[1].full_bounds().width(),
+            "translated rectangles must actually lose local allocation precision"
+        );
+
+        let source = workspace.capture_item_source(root, tabs, items[1]).unwrap();
+        let mut changed = workspace.clone();
+        crate::transaction::WorkspaceTransaction::from_commands([
+            crate::command::WorkspaceCommand::Select { source },
+        ])
+        .apply(&mut changed, &policy)
+        .unwrap();
+        let current = compile(&changed);
+        let new_bar = &current.tab_bar_records()[0];
+        let requirements = derive_scene_requirement_draft(
+            authority_domain(),
+            &changed,
+            version(),
+            PresentationConfigRevision::new(7),
+            &policy,
+            RequirementRevision::new(9),
+            &surface_revisions([surface]),
+        )
+        .unwrap();
+        let requirement = requirements
+            .surface(surface)
+            .unwrap()
+            .tab_bar(*old_bar.id())
+            .unwrap();
+        let retain = selection_geometry_unchanged(
+            &original,
+            &config,
+            requirement,
+            Some(items[1]),
+            &TabStripStateStore::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            new_bar.scroll_offset() != old_bar.scroll_offset(),
+            changes_scroll
+        );
+        assert_eq!(
+            retain, !changes_scroll,
+            "origin={origin}, width={tab_width}"
+        );
+        assert!(
+            original
+                .layout_facts()
+                .unwrap()
+                .measurements()
+                .same_values(current.layout_facts().unwrap().measurements())
+        );
+        assert!(
+            current
+                .tab_records()
+                .iter()
+                .any(|tab| tab.id().item == items[1] && current.tab_selected(tab))
+        );
+        if changes_scroll {
+            assert_ne!(old_bar.members(), new_bar.members());
+            assert_ne!(
+                original.tab_strip_control_records(),
+                current.tab_strip_control_records()
+            );
+        } else {
+            assert_eq!(old_bar.members(), new_bar.members());
+            assert_eq!(
+                original.tab_strip_control_records(),
+                current.tab_strip_control_records()
+            );
+            assert_eq!(original.tab_records(), current.tab_records());
+        }
+    }
+}
+
+#[test]
 fn partially_visible_tabs_keep_body_paint_and_hits_when_the_close_button_is_clipped() {
     // Cover both a fully offscreen close button and a partially clipped one.
     for visible_width in [200.0, 380.0] {
@@ -1682,11 +1802,14 @@ fn partially_visible_tabs_keep_body_paint_and_hits_when_the_close_button_is_clip
             .iter()
             .find(|tab| *tab.id() == first.tab())
             .expect("the complete selected tab should be emitted");
-        assert!(first_record.selected());
+        assert!(plan.tab_selected(first_record));
         assert_eq!(first_record.visible_bounds(), first.full_bounds());
         assert!(first_record.close_visual_bounds().is_some());
         assert!(first_record.close_bounds().is_some());
-        assert_eq!(plan.pane_records()[0].selected(), Some(first.tab().item));
+        assert_eq!(
+            plan.pane_selected(&plan.pane_records()[0]),
+            Some(first.tab().item)
+        );
 
         let tab = plan
             .tab_records()
@@ -1705,7 +1828,7 @@ fn partially_visible_tabs_keep_body_paint_and_hits_when_the_close_button_is_clip
         assert_eq!(visible.max().x(), viewport.max().x());
         assert_eq!(tab.drag_hit().rect(), visible);
         assert!(rect_contains(visible, tab.text_bounds()));
-        assert!(!tab.selected());
+        assert!(!plan.tab_selected(tab));
         assert_eq!(tab.close_visual_bounds(), None);
         assert_eq!(tab.close_bounds(), None);
         assert_eq!(bar.hidden_items(), &[hidden.tab().item]);

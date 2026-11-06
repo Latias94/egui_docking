@@ -1,7 +1,6 @@
 //! Semantic admission of receivers from the output still visible to the host.
 
 use super::*;
-use crate::command::DockTarget;
 use crate::graph::SplitWeight;
 use crate::ids::NodeId;
 
@@ -79,21 +78,7 @@ impl DockEngine {
         if !self.presented_root_owner_is_current(plan, root) {
             return false;
         }
-        let frozen = plan.drop_targets().iter().find_map(|record| {
-            let crate::drop_target::DropDestination::Topology(target) = record.destination() else {
-                return None;
-            };
-            let fingerprint = match target {
-                DockTarget::Center(target) | DockTarget::TabGap { target, .. } => {
-                    target.fingerprint()
-                }
-                DockTarget::InnerEdge(target) | DockTarget::OuterEdge(target) => {
-                    target.fingerprint()
-                }
-            };
-            (fingerprint.root() == root).then_some(fingerprint)
-        });
-        frozen.is_some_and(|frozen| {
+        plan.command_basis(root).is_some_and(|frozen| {
             self.workspace
                 .root_fingerprint(root)
                 .is_ok_and(|current| frozen.presentation_topology_eq(&current))
@@ -183,7 +168,7 @@ impl DockEngine {
                         .find(|record| record.id() == pane)
                         .is_some_and(|record| {
                             matches!(self.workspace.node(pane.tabs),
-                            Some(Node::Tabs { selected, .. }) if *selected == record.selected())
+                            Some(Node::Tabs { selected, .. }) if *selected == plan.pane_selected(record))
                         })
             }
             PresentationHitRegionKind::SplitterHandle(splitter) => {

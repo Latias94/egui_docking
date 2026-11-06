@@ -133,7 +133,7 @@ fn shared_resize_proof_does_not_hide_a_later_gap_or_foreign_array_defect() {
 
     for defect in 0..3 {
         let mut plan = original.clone();
-        for (index, record) in plan.splitter_records.iter_mut().enumerate() {
+        for (index, record) in plan.facts_mut().splitter_records.iter_mut().enumerate() {
             let mut axis = record.axis();
             let mut gap_weights = Arc::clone(&weights);
             let mut gap_extents = Arc::clone(&extents);
@@ -184,19 +184,19 @@ fn duplicate_validation_keeps_the_smallest_identity_and_record_class_priority() 
     let expected = low.id().min(high.id());
     let bounds = original.bounds();
     let mut plan = PresentationPlan::new(SURFACE, bounds);
-    plan.pane_records = vec![high, high, low, low];
+    plan.facts_mut().pane_records = vec![high, high, low, low];
     let minimum = ContainedMinimumMeasurement::new(
         FloatingPresentationId::new(0),
         LogicalSize::new(0.0, 0.0).unwrap(),
     );
-    plan.contained_minimums = vec![minimum, minimum];
+    plan.facts_mut().contained_minimums = vec![minimum, minimum];
 
     for _ in 0..2 {
         assert!(matches!(
             validate_semantic_uniqueness(&plan),
             Err(SceneBuildError::DuplicatePane { id }) if id == expected
         ));
-        plan.pane_records.reverse();
+        plan.facts_mut().pane_records.reverse();
     }
 }
 
@@ -220,13 +220,16 @@ fn semantic_row_orders_restore_all_records_and_linked_slots_after_permutation() 
     let (engine, original) = compiled_split_with_tabs(4, 4);
     let mut plan = original.clone();
     for offset in 0..7 {
-        plan.pane_records.reverse();
-        plan.tab_bar_records
-            .rotate_left(offset % original.tab_bar_records.len());
-        plan.tab_records.rotate_right(offset);
-        plan.splitter_gap_records.reverse();
-        plan.splitter_records
-            .rotate_left(offset % original.splitter_records.len());
+        let facts = plan.facts_mut();
+        facts.pane_records.reverse();
+        facts
+            .tab_bar_records
+            .rotate_left(offset % original.tab_bar_records().len());
+        facts.tab_records.rotate_right(offset);
+        facts.splitter_gap_records.reverse();
+        facts
+            .splitter_records
+            .rotate_left(offset % original.splitter_records().len());
         plan = revalidate(&engine, plan).unwrap();
         assert_eq!(plan, original);
     }
@@ -236,32 +239,38 @@ fn semantic_row_orders_restore_all_records_and_linked_slots_after_permutation() 
 fn tab_directory_preserves_input_error_order_with_multiple_invalid_visible_records() {
     let (engine, original) = compiled_split_with_tabs(4, 4);
     let first_bar = *original.tab_bar_records()[0].id();
-    let mutate_selection = |record: &TabRecord| {
+    let invalid_text_geometry = |record: &TabRecord| {
+        let text = record.text_bounds();
         TabRecord::new(
             *record.id(),
             record.full_bounds(),
             record.visible_bounds(),
-            record.text_bounds(),
+            LogicalRect::new(
+                record.visible_bounds().max().x() + 1.0,
+                text.y(),
+                text.width(),
+                text.height(),
+            )
+            .unwrap(),
             record.drag_hit(),
             record.close_visual_bounds(),
             record.close_bounds(),
-            !record.selected(),
             record.ordinal(),
             record.layer(),
         )
     };
     let mut plan = original.clone();
-    for record in &mut plan.tab_records {
+    for record in &mut plan.facts_mut().tab_records {
         if record.id().tabs == first_bar.tabs {
-            *record = mutate_selection(record);
+            *record = invalid_text_geometry(record);
         }
     }
     for reverse in [false, true] {
         if reverse {
-            plan.tab_records.reverse();
+            plan.facts_mut().tab_records.reverse();
         }
         let expected = *plan
-            .tab_records
+            .tab_records()
             .iter()
             .find(|record| record.id().tabs == first_bar.tabs)
             .unwrap()
@@ -278,36 +287,41 @@ fn semantic_record_duplicates_keep_every_class_in_the_original_priority() {
     let (_, original) = compiled_split_with_tabs(4, 4);
     for class in 0..5 {
         let mut plan = original.clone();
+        let facts = plan.facts_mut();
         let expected = match class {
             0 => SceneBuildError::DuplicatePane {
-                id: plan.pane_records[0].id(),
+                id: facts.pane_records[0].id(),
             },
             1 => SceneBuildError::DuplicateTabBar {
-                id: *plan.tab_bar_records[0].id(),
+                id: *facts.tab_bar_records[0].id(),
             },
             2 => SceneBuildError::DuplicateTab {
-                id: *plan.tab_records[0].id(),
+                id: *facts.tab_records[0].id(),
             },
             3 => SceneBuildError::DuplicateSplitterGap {
-                id: plan.splitter_gap_records[0].id(),
+                id: facts.splitter_gap_records[0].id(),
             },
             _ => SceneBuildError::DuplicateSplitter {
-                id: *plan.splitter_records[0].id(),
+                id: *facts.splitter_records[0].id(),
             },
         };
         if class == 0 {
-            plan.pane_records.push(plan.pane_records[0]);
+            facts.pane_records.push(facts.pane_records[0]);
         }
         if class <= 1 {
-            plan.tab_bar_records.push(plan.tab_bar_records[0].clone());
+            facts.tab_bar_records.push(facts.tab_bar_records[0].clone());
         }
         if class <= 2 {
-            plan.tab_records.push(plan.tab_records[0].clone());
+            facts.tab_records.push(facts.tab_records[0].clone());
         }
         if class <= 3 {
-            plan.splitter_gap_records.push(plan.splitter_gap_records[0]);
+            facts
+                .splitter_gap_records
+                .push(facts.splitter_gap_records[0]);
         }
-        plan.splitter_records.push(plan.splitter_records[0].clone());
+        facts
+            .splitter_records
+            .push(facts.splitter_records[0].clone());
         assert_eq!(validate_semantic_uniqueness(&plan).err(), Some(expected));
     }
 }

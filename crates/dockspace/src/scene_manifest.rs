@@ -6,15 +6,20 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+use crate::error::CommandError;
 use crate::geometry::{LogicalRect, LogicalSize};
+use crate::graph::{Node, Workspace};
 use crate::ids::{EngineAuthorityDomainId, ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
-use crate::policy::{CloseCapability, TabBarInteraction, TabBarPolicy};
+use crate::policy::{
+    CloseCapability, DockPolicySnapshot, DockTabBarPolicyRequest, TabBarInteraction, TabBarPolicy,
+};
 pub use crate::policy_impl::PolicyRevision;
 use crate::presentation_config::PresentationConfigRevision;
 use crate::scene::{TabBarSceneId, TabSceneId};
+use crate::scene_compiler::SceneRequirementDerivationError;
 use crate::tab_strip::{PopupPlaneRequirement, TabStripStateKey};
 use crate::transition::WorkspaceVersion;
-use crate::workspace::WorkspaceIndex;
+use crate::workspace::{RootPresentationOwner, WorkspaceIndex};
 
 macro_rules! monotonic_revision {
     ($name:ident, $description:literal) => {
@@ -658,10 +663,10 @@ pub struct SurfaceRequirements {
     ticket: SurfaceMeasurementTicket,
     bounds: SurfaceBoundsKey,
     popup_plane_bounds: Option<PopupPlaneBoundsKey>,
-    pane_minimums: BTreeSet<PaneMinimumKey>,
-    tab_intrinsics: BTreeSet<TabIntrinsicKey>,
-    tab_strips: BTreeSet<TabStripKey>,
-    tab_bars: BTreeMap<TabBarSceneId, TabBarRequirement>,
+    pane_minimums: Arc<BTreeSet<PaneMinimumKey>>,
+    tab_intrinsics: Arc<BTreeSet<TabIntrinsicKey>>,
+    tab_strips: Arc<BTreeSet<TabStripKey>>,
+    tab_bars: Arc<BTreeMap<TabBarSceneId, TabBarRequirement>>,
 }
 
 /// Frozen presentation policy for one semantic tabs leaf.
@@ -862,6 +867,105 @@ pub struct SceneRequirementManifest {
 }
 
 impl SceneRequirementManifest {
+    /// Retains structural questions after one owner-checked canonical Select.
+    ///
+    /// The caller owns topology, configuration and lifecycle eligibility. This
+    /// method checks the selected leaf's actual policy and close capabilities,
+    /// then rebinds its semantic index and ticket without deriving inventories.
+    pub(crate) fn after_selection(
+        &self,
+        workspace: &Workspace,
+        version: WorkspaceVersion,
+        policy: &DockPolicySnapshot,
+        root: RootId,
+        tabs: NodeId,
+    ) -> Result<Option<(SurfaceId, Self)>, SceneRequirementDerivationError> {
+        if self.workspace.epoch() != version.epoch()
+            || self.policy != policy.revision()
+            || self.popup.owner().is_some()
+        {
+            return Ok(None);
+        }
+        let owner = self
+            .workspace_index
+            .at_version(self.workspace)
+            .and_then(|index| index.root_owner(root))
+            .ok_or(SceneRequirementDerivationError::WorkspaceIndex {
+                source: CommandError::MissingRoot { root },
+            })?;
+        let RootPresentationOwner::Main { surface } = owner else {
+            return Ok(None);
+        };
+        if !workspace.surface(surface).is_some_and(|presentation| {
+            presentation.main_root == Some(root) && presentation.contained.is_empty()
+        }) {
+            return Ok(None);
+        }
+        let requirements = self.surface(surface).ok_or(
+            SceneRequirementDerivationError::MissingSurfaceRequirementRevision { surface },
+        )?;
+        let bar = TabBarSceneId { root, tabs };
+        let previous = requirements.tab_bar(bar).ok_or(
+            SceneRequirementDerivationError::TabBarTargetCaptureFailed {
+                surface,
+                root,
+                tabs,
+            },
+        )?;
+        let Some(Node::Tabs { items, .. }) = workspace.node(tabs) else {
+            return Err(SceneRequirementDerivationError::TabBarTargetCaptureFailed {
+                surface,
+                root,
+                tabs,
+            });
+        };
+        let central = workspace
+            .root(root)
+            .ok_or(SceneRequirementDerivationError::MissingRoot { surface, root })?
+            .central
+            == Some(tabs);
+        let rule = workspace
+            .pane_local_target_rule(root, tabs, central)
+            .map_err(|source| SceneRequirementDerivationError::WorkspaceIndex { source })?;
+        let effective_policy =
+            policy.tab_bar_policy(DockTabBarPolicyRequest::new(surface, Some(rule)));
+        if previous.policy() != effective_policy
+            || previous.close_capabilities().len() != items.len()
+            || items.iter().any(|&item| {
+                previous.close_capability(item) != Some(policy.pane_close_capability(item))
+            })
+        {
+            return Ok(None);
+        }
+        let revision = self
+            .revision
+            .checked_next()
+            .ok_or(SceneRequirementDerivationError::RequirementRevisionExhausted)?;
+        let workspace_index = Arc::new(
+            self.workspace_index
+                .after_selection(workspace, version, root, tabs)
+                .map_err(|source| SceneRequirementDerivationError::WorkspaceIndex { source })?,
+        );
+        let mut surfaces = self.surfaces.as_ref().clone();
+        surfaces.insert(
+            surface,
+            requirements.reticket(SurfaceRequirementRevision::new(revision.get())),
+        );
+        Ok(Some((
+            surface,
+            Self {
+                authority_domain: self.authority_domain,
+                workspace: version,
+                workspace_index,
+                config: self.config,
+                policy: self.policy,
+                revision,
+                popup: self.popup,
+                surfaces: Arc::new(surfaces),
+            },
+        )))
+    }
+
     pub(crate) fn with_popup(mut self, popup: PopupPlaneRequirement) -> Self {
         if self.popup == popup {
             return self;
@@ -953,6 +1057,11 @@ impl SceneRequirementManifest {
 }
 
 impl SurfaceRequirements {
+    /// Reissues semantic authority while sharing the complete question roster.
+    pub(crate) fn reticket(&self, revision: SurfaceRequirementRevision) -> Self {
+        self.clone().with_surface_requirement(revision)
+    }
+
     pub(crate) fn with_surface_requirement(mut self, revision: SurfaceRequirementRevision) -> Self {
         self.ticket.surface_requirement = revision;
         self
@@ -1000,10 +1109,10 @@ impl SurfaceRequirements {
             ticket,
             bounds: SurfaceBoundsKey::new(surface),
             popup_plane_bounds: None,
-            pane_minimums,
-            tab_intrinsics,
-            tab_strips,
-            tab_bars,
+            pane_minimums: Arc::new(pane_minimums),
+            tab_intrinsics: Arc::new(tab_intrinsics),
+            tab_strips: Arc::new(tab_strips),
+            tab_bars: Arc::new(tab_bars),
         })
     }
 
@@ -1116,6 +1225,18 @@ pub struct SurfaceMeasurements {
 }
 
 impl SurfaceMeasurements {
+    /// Compares every answer and key independently of its request ticket.
+    ///
+    /// Ticket authority is checked by the caller before using these values to
+    /// retain geometry. Unavailable answers participate in the comparison.
+    pub(crate) fn same_values(&self, other: &Self) -> bool {
+        self.bounds == other.bounds
+            && self.popup_plane_bounds == other.popup_plane_bounds
+            && self.pane_minimums == other.pane_minimums
+            && self.tab_intrinsics == other.tab_intrinsics
+            && self.tab_strips == other.tab_strips
+    }
+
     pub(crate) fn measured_tab_intrinsic(&self, key: TabIntrinsicKey) -> Option<TabIntrinsic> {
         self.tab_intrinsics
             .get(&key)
@@ -2030,6 +2151,137 @@ mod tests {
         );
         assert_eq!(original.surface(ticket.surface()).unwrap().ticket(), ticket);
         assert_eq!(active.surface(ticket.surface()).unwrap().ticket(), ticket);
+    }
+
+    #[test]
+    fn selection_retickets_only_its_surface_and_rejects_changed_effective_policy() {
+        use crate::graph::{RootRecord, SurfacePresentation};
+        use crate::policy::{DockPolicy, DockTargetRule, DockTargetRuleKey};
+
+        let root = RootId::new(1);
+        let other_root = RootId::new(2);
+        let surface = SurfaceId::new(1);
+        let other_surface = SurfaceId::new(2);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));
+        let other = builder.insert_node(Node::tabs([ItemId::new(3)]));
+        builder.set_root(root, RootRecord::new(tabs));
+        builder.set_root(other_root, RootRecord::new(other));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        builder.set_surface(other_surface, SurfacePresentation::with_main(other_root));
+        let workspace = builder.build().unwrap();
+        let derive = |policy: &DockPolicySnapshot| {
+            crate::scene_compiler::derive_scene_requirement_draft(
+                authority_domain(),
+                &workspace,
+                version(4, 5),
+                PresentationConfigRevision::new(6),
+                policy,
+                RequirementRevision::new(9),
+                &BTreeMap::from([
+                    (surface, SurfaceRequirementRevision::new(8)),
+                    (other_surface, SurfaceRequirementRevision::new(7)),
+                ]),
+            )
+            .unwrap()
+            .finalize(PopupPlaneRequirement::default())
+            .unwrap()
+        };
+        let policy = DockPolicySnapshot::default();
+        let original = derive(&policy);
+        let mut changed = workspace.clone();
+        let Some(Node::Tabs { selected, .. }) = changed.nodes.get_mut(tabs) else {
+            panic!("fixture is a tabs leaf");
+        };
+        *selected = Some(ItemId::new(2));
+        changed
+            .tab_mru
+            .insert(tabs, vec![ItemId::new(2), ItemId::new(1)]);
+        let (affected, rebound) = original
+            .after_selection(&changed, version(4, 6), &policy, root, tabs)
+            .unwrap()
+            .unwrap();
+        assert_eq!(affected, surface);
+        assert_eq!(rebound.workspace(), version(4, 6));
+        assert_eq!(rebound.workspace_index().version(), version(4, 6));
+        assert_eq!(rebound.revision(), RequirementRevision::new(10));
+        assert_eq!(
+            rebound
+                .surface(surface)
+                .unwrap()
+                .ticket()
+                .surface_requirement(),
+            SurfaceRequirementRevision::new(10),
+        );
+        assert_eq!(
+            original.surface(other_surface).unwrap().ticket(),
+            rebound.surface(other_surface).unwrap().ticket(),
+        );
+        let old = original.surface(surface).unwrap();
+        let new = rebound.surface(surface).unwrap();
+        assert_eq!(new.pane_minimums().count(), 2);
+        assert!(Arc::ptr_eq(&old.pane_minimums, &new.pane_minimums));
+        assert!(Arc::ptr_eq(&old.tab_intrinsics, &new.tab_intrinsics));
+        assert!(Arc::ptr_eq(&old.tab_strips, &new.tab_strips));
+        assert!(Arc::ptr_eq(&old.tab_bars, &new.tab_bars));
+        assert_eq!(original.workspace(), version(4, 5));
+
+        let mut target_rule = DockTargetRule::new();
+        target_rule.set_tab_bar(TabBarPolicy::new(
+            TabBarVisibility::Hidden,
+            TabBarInteraction::Enabled,
+        ));
+        let mut selective_policy = DockPolicy::new();
+        selective_policy.set_target_rule(DockTargetRuleKey::Item(ItemId::new(2)), target_rule);
+        let selective_policy = selective_policy.snapshot(policy.revision());
+        let selective = derive(&selective_policy);
+        assert!(
+            selective
+                .after_selection(&changed, version(4, 6), &selective_policy, root, tabs)
+                .unwrap()
+                .is_none()
+        );
+        let owner = TabStripStateKey::new(surface, TabBarSceneId { root, tabs });
+        assert!(
+            original
+                .with_popup(active_popup(owner))
+                .after_selection(&changed, version(4, 6), &policy, root, tabs)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn measurement_value_comparison_ignores_only_the_ticket() {
+        let requirements = requirements();
+        let original =
+            SurfaceMeasurements::unavailable(&requirements, MeasurementUnavailableReason::Deferred);
+        let mut reticketed = original.clone();
+        reticketed.ticket.surface_requirement = SurfaceRequirementRevision::new(99);
+        assert!(original.same_values(&reticketed));
+        assert_ne!(original, reticketed);
+
+        let mut changed = reticketed.clone();
+        changed.bounds = None;
+        assert!(!original.same_values(&changed));
+        let mut changed = reticketed.clone();
+        changed.popup_plane_bounds = Some((
+            PopupPlaneBoundsKey::new(requirements.ticket().surface()),
+            Measurement::Unavailable(MeasurementUnavailableReason::Deferred),
+        ));
+        assert!(!original.same_values(&changed));
+        let mut changed = reticketed.clone();
+        Arc::make_mut(&mut changed.pane_minimums).insert(
+            requirements.pane_minimums().next().unwrap(),
+            Measurement::Unavailable(MeasurementUnavailableReason::ContentUnavailable),
+        );
+        assert!(!original.same_values(&changed));
+        let mut changed = reticketed.clone();
+        Arc::make_mut(&mut changed.tab_intrinsics).clear();
+        assert!(!original.same_values(&changed));
+        let mut changed = reticketed;
+        Arc::make_mut(&mut changed.tab_strips).clear();
+        assert!(!original.same_values(&changed));
     }
 
     #[test]

@@ -4295,7 +4295,9 @@ fn journal_contained_release_commits_the_release_edge_preview_immediately() {
         .plan()
         .pane_records()
         .iter()
-        .find(|pane| pane.id().root == ROOT && pane.selected() == Some(ItemId::new(1)))
+        .find(|pane| {
+            pane.id().root == ROOT && projection.plan().pane_selected(pane) == Some(ItemId::new(1))
+        })
         .expect("the dragged group has one source pane")
         .bounds();
     let first_target = point_without_hover_receiver(projection, press);
@@ -6021,7 +6023,7 @@ fn presented_semantic_receiver_navigates_tabs_through_the_checked_command_path()
         .plan()
         .tab_records()
         .iter()
-        .find(|tab| tab.selected())
+        .find(|tab| projection.plan().tab_selected(tab))
         .map(|tab| *tab.id())
         .expect("one tab is selected");
     let event = SemanticReceiverEvent::new(
@@ -6158,7 +6160,7 @@ fn repeated_semantic_navigation_uses_one_frozen_output_and_advances_logical_focu
         .plan()
         .tab_records()
         .iter()
-        .find(|tab| tab.selected())
+        .find(|tab| projection.plan().tab_selected(tab))
         .map(|tab| *tab.id())
         .expect("one tab is selected");
     let event = SemanticReceiverEvent::new(
@@ -6265,7 +6267,7 @@ fn semantic_receiver_rejects_a_delivery_from_another_native_incarnation() {
         .plan()
         .tab_records()
         .iter()
-        .find(|tab| tab.selected())
+        .find(|tab| projection.plan().tab_selected(tab))
         .map(|tab| *tab.id())
         .expect("one tab is selected");
 

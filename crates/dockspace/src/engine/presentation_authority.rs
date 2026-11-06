@@ -31,11 +31,22 @@ pub(super) struct PresentationAuthorityState {
     pub(super) scene: SurfaceSceneSet,
     pub(super) presentation: PresentationLedger,
     pub(super) last_presentation_output_serial: PresentationOutputSerial,
+    pub(super) selection_rebind: Option<SelectionRebind>,
+}
+
+/// A canonical Select preserves structural inventories; geometry still needs current input checks.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct SelectionRebind {
+    pub(super) surface: SurfaceId,
+    pub(super) bar: crate::scene::TabBarSceneId,
+    pub(super) version: WorkspaceVersion,
+    pub(super) coordinates: SurfaceCoordinateCapture,
+    pub(super) plan: Arc<PresentationPlan>,
 }
 
 impl PartialEq for PresentationAuthorityState {
     fn eq(&self, other: &Self) -> bool {
-        // Cache provenance affects only index reuse, not semantic authority.
+        // Reuse preparation and index provenance are not published semantic authority.
         let Self {
             allocation_issuer,
             presentation_config,
@@ -48,6 +59,7 @@ impl PartialEq for PresentationAuthorityState {
             scene,
             presentation,
             last_presentation_output_serial,
+            selection_rebind: _,
         } = self;
         let Self {
             allocation_issuer: other_allocation_issuer,
@@ -61,6 +73,7 @@ impl PartialEq for PresentationAuthorityState {
             scene: other_scene,
             presentation: other_presentation,
             last_presentation_output_serial: other_last_presentation_output_serial,
+            selection_rebind: _,
         } = other;
         allocation_issuer == other_allocation_issuer
             && presentation_config == other_presentation_config
@@ -101,6 +114,7 @@ impl PresentationAuthorityState {
             scene,
             presentation,
             last_presentation_output_serial: PresentationOutputSerial::default(),
+            selection_rebind: None,
         }
     }
 
@@ -175,6 +189,7 @@ pub(super) enum PresentationRequirementFailure {
 
 impl DockEngine {
     pub(super) fn advance_revision(&mut self, input: InputSequence) -> Result<(), EngineError> {
+        self.presentation_authority.selection_rebind = None;
         let revision = self
             .version
             .revision()
@@ -186,11 +201,133 @@ impl DockEngine {
         Ok(())
     }
 
+    pub(super) fn advance_selection_revision(
+        &mut self,
+        input: InputSequence,
+        source: &crate::command::ItemSource,
+    ) -> Result<(), EngineError> {
+        self.presentation_authority.selection_rebind = None;
+        let revision = self
+            .version
+            .revision()
+            .checked_next()
+            .ok_or(EngineError::WorkspaceRevisionExhausted { input })?;
+        self.version = WorkspaceVersion::new(self.version.epoch(), revision);
+        self.reconcile_close_scopes();
+        let eligible = self.viewport.native_create_sagas().next().is_none()
+            && self.surface_recovery.is_empty()
+            && self.bound_surface_recoveries.is_empty()
+            && self.presentation_requirements().config()
+                == self.presentation_authority.presentation_config_revision
+            && self.presentation_requirements().popup()
+                == self
+                    .presentation_authority
+                    .tab_strip_states
+                    .popup_requirement();
+        if eligible {
+            let update = self
+                .presentation_requirements()
+                .after_selection(
+                    &self.workspace,
+                    self.version,
+                    &self.policy,
+                    source.root(),
+                    source.tabs(),
+                )
+                .map_err(|source| {
+                    Self::input_requirement_failure(
+                        input,
+                        PresentationRequirementFailure::Invariant(source.to_string()),
+                    )
+                })?;
+            if let Some((surface, requirements)) = update {
+                let snapshot = self
+                    .presentation_authority
+                    .surface_semantic_snapshots
+                    .get(&surface);
+                let basis = requirements
+                    .workspace_index()
+                    .root_fingerprint(source.root());
+                if snapshot.is_some_and(|snapshot| {
+                    snapshot.main.is_some() && snapshot.contained.is_empty()
+                }) && basis.is_some()
+                {
+                    let previous = self
+                        .scene()
+                        .surface(surface)
+                        .and_then(SurfaceScene::ready)
+                        .and_then(|ready| {
+                            ready.paint_fallback().filter(|fallback| {
+                                fallback.output_ticket() == ready.output_ticket()
+                            })
+                        })
+                        .filter(|previous| {
+                            previous.plan().contained_projection().is_none()
+                                && previous.plan().resize_projection().is_empty()
+                        })
+                        .map(|previous| SelectionRebind {
+                            surface,
+                            bar: crate::scene::TabBarSceneId {
+                                root: source.root(),
+                                tabs: source.tabs(),
+                            },
+                            version: self.version,
+                            coordinates: previous.coordinate_capture(),
+                            plan: Arc::clone(previous.shared_plan()),
+                        });
+                    let basis = basis.cloned();
+                    self.presentation_authority
+                        .surface_semantic_snapshots
+                        .get_mut(&surface)
+                        .expect("the selected surface snapshot was checked")
+                        .main = basis;
+                    self.presentation_authority
+                        .surface_requirement_revisions
+                        .insert(
+                            surface,
+                            requirements
+                                .surface(surface)
+                                .expect("the selected surface is retained")
+                                .ticket()
+                                .surface_requirement(),
+                        );
+                    self.presentation_authority.presentation_requirements = requirements;
+                    self.presentation_authority.workspace_index_source =
+                        Arc::downgrade(self.workspace.as_arc());
+                    self.presentation_authority
+                        .scene
+                        .reconcile_manifest(&self.presentation_authority.presentation_requirements)
+                        .map_err(|source| {
+                            Self::input_requirement_failure(
+                                input,
+                                PresentationRequirementFailure::Scene(source),
+                            )
+                        })?;
+                    self.presentation_authority.selection_rebind = previous;
+                    return Ok(());
+                }
+            }
+        }
+        self.rebuild_presentation_requirements(input)
+    }
+
     pub(super) fn advance_revision_caused(
         &mut self,
         cause: ReductionCause,
     ) -> Result<(), EngineError> {
         self.advance_revision_caused_with_influence(cause, None)
+    }
+
+    pub(super) fn advance_selection_revision_caused(
+        &mut self,
+        cause: ReductionCause,
+        source: &crate::command::ItemSource,
+    ) -> Result<(), EngineError> {
+        self.advance_selection_revision(self.last_input, source)
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: source.to_string(),
+            })
     }
 
     pub(super) fn advance_revision_caused_with_tab_strip_delta(
@@ -206,6 +343,7 @@ impl DockEngine {
         cause: ReductionCause,
         influence: Option<&TabStripInfluenceDomain>,
     ) -> Result<(), EngineError> {
+        self.presentation_authority.selection_rebind = None;
         let revision = self.version.revision().checked_next().ok_or_else(|| {
             EngineError::PointerInteractionInvariant {
                 cause,
@@ -388,6 +526,7 @@ impl DockEngine {
             return Ok(());
         }
 
+        self.presentation_authority.selection_rebind = None;
         let requirement_revision = self
             .presentation_authority
             .presentation_requirements
@@ -1216,15 +1355,6 @@ impl DockEngine {
                         },
                     });
                 }
-                let selected_by_pane = plan
-                    .pane_records()
-                    .iter()
-                    .map(|pane| {
-                        #[cfg(test)]
-                        crate::drop_resolver::structural_work::record_selection_pane_visit();
-                        (pane.id(), pane.selected())
-                    })
-                    .collect::<BTreeMap<crate::scene::PaneSceneId, Option<ItemId>>>();
                 let resolved_tab_offsets = plan
                     .tab_bar_records()
                     .iter()
@@ -1232,13 +1362,7 @@ impl DockEngine {
                         #[cfg(test)]
                         crate::drop_resolver::structural_work::record_selection_lookup();
                         let id = *record.id();
-                        let selected = selected_by_pane
-                            .get(&crate::scene::PaneSceneId {
-                                root: id.root,
-                                tabs: id.tabs,
-                            })
-                            .copied()
-                            .flatten();
+                        let selected = plan.selected_in_tabs(id.tabs);
                         (id, record.scroll_offset(), selected)
                     })
                     .collect::<Vec<_>>();
@@ -1258,6 +1382,14 @@ impl DockEngine {
                     .adopt_resolved_scroll_offsets(surface, resolved_tab_offsets)
                     .map_err(|source| Self::contribution_invariant(cause, source.to_string()))?;
                 self.presentation_authority.last_presentation_output_serial = output_serial;
+                if self
+                    .presentation_authority
+                    .selection_rebind
+                    .as_ref()
+                    .is_some_and(|rebind| rebind.surface == surface)
+                {
+                    self.presentation_authority.selection_rebind = None;
+                }
                 Ok(SurfaceContributionOutcome::Ready {
                     surface,
                     stamp,

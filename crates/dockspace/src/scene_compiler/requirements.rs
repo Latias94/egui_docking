@@ -224,6 +224,9 @@ fn derive_root_requirements(
 /// Failure to derive an exact semantic measurement inventory.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub(crate) enum SceneRequirementDerivationError {
+    /// The manifest cannot issue a new semantic requirement revision.
+    #[error("aggregate requirement revision is exhausted")]
+    RequirementRevisionExhausted,
     /// A caller attempted to reuse an index outside its exact workspace revision.
     #[error("workspace index version {actual:?} does not match {expected:?}")]
     WorkspaceIndexVersionMismatch {

@@ -6,6 +6,7 @@
 //! incorrectly erase a real presented control.
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use crate::presentation_hit::PresentationHitRegionKind;
 use crate::presentation_observation::SurfacePresentationOutputTicket;
@@ -18,10 +19,17 @@ use crate::semantic_input::{SemanticAccessibilityAction, SemanticKey, SemanticRe
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationSemanticManifest {
     output: SurfacePresentationOutputTicket,
-    receivers: Box<[PresentationHitRegionKind]>,
+    receivers: Arc<[PresentationHitRegionKind]>,
 }
 
 impl PresentationSemanticManifest {
+    pub(crate) fn rebind_output(&self, output: SurfacePresentationOutputTicket) -> Self {
+        Self {
+            output,
+            receivers: Arc::clone(&self.receivers),
+        }
+    }
+
     pub(crate) fn compile(
         output: SurfacePresentationOutputTicket,
         plan: &PresentationPlan,
@@ -103,7 +111,7 @@ impl PresentationSemanticManifest {
         receivers.dedup();
         Ok(Self {
             output,
-            receivers: receivers.into_boxed_slice(),
+            receivers: receivers.into(),
         })
     }
 

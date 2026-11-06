@@ -1,0 +1,3 @@
+condition,samples,p50_ns,p95_ns,max_ns
+baseline,192,1550583,1959125,3455916
+candidate,192,1523542,1871458,2310291

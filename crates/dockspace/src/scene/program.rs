@@ -29,7 +29,7 @@ pub(crate) enum SurfaceProgramBlock {
     RootBegin {
         root: RootId,
         presentation: SurfaceProgramRootPresentation,
-        title_item: Option<ItemId>,
+        title_tabs: Option<NodeId>,
     },
     RootOperation(SurfaceProgramRootOperation),
     RootEnd {
@@ -166,7 +166,7 @@ record_rows!(
 struct LinkedSurfaceProgramRoot {
     root: RootId,
     contained: Option<ContainedRow>,
-    title_item: Option<ItemId>,
+    title_tabs: Option<NodeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,7 +247,7 @@ pub(crate) struct SurfaceProgram {
 struct SurfaceProgramRootDraft {
     root: RootId,
     presentation: SurfaceProgramRootPresentation,
-    title_item: Option<ItemId>,
+    title_tabs: Option<NodeId>,
     operations: Vec<SurfaceProgramRootOperation>,
 }
 
@@ -275,7 +275,7 @@ impl SurfaceProgram {
                 SurfaceProgramBlock::RootBegin {
                     root,
                     presentation,
-                    title_item,
+                    title_tabs,
                 } => {
                     if active_root.is_some() || phase != SurfaceProgramPhase::Roots {
                         return Err(invalid());
@@ -283,7 +283,8 @@ impl SurfaceProgram {
                     let contained = match presentation {
                         SurfaceProgramRootPresentation::Main => None,
                         SurfaceProgramRootPresentation::Contained(floating) => {
-                            plan.contained_records
+                            plan.facts
+                                .contained_records
                                 .get(contained_count)
                                 .filter(|record| {
                                     record.floating() == floating && record.root() == root
@@ -297,7 +298,7 @@ impl SurfaceProgram {
                     let root = LinkedSurfaceProgramRoot {
                         root,
                         contained,
-                        title_item,
+                        title_tabs,
                     };
                     active_root = Some(root);
                     SurfaceProgramInstruction::RootBegin(root)
@@ -328,6 +329,7 @@ impl SurfaceProgram {
                         return Err(invalid());
                     }
                     let target = if plan
+                        .facts
                         .surface_background
                         .as_ref()
                         .is_some_and(|record| record.id() == id)
@@ -335,6 +337,7 @@ impl SurfaceProgram {
                         LinkedSurfaceProgramDropTarget::Background
                     } else {
                         let index = plan
+                            .facts
                             .drop_targets
                             .binary_search_by_key(&id, |record| record.id())
                             .map_err(|_| invalid())?;
@@ -351,6 +354,7 @@ impl SurfaceProgram {
                     }
                     phase = SurfaceProgramPhase::Guides;
                     let index = plan
+                        .facts
                         .drop_guide_clusters
                         .binary_search_by_key(&id, DropGuideClusterRecord::id)
                         .map_err(|_| invalid())?;
@@ -382,6 +386,7 @@ impl SurfaceProgram {
                     }
                     phase = SurfaceProgramPhase::PopupBackdrops;
                     let index = plan
+                        .facts
                         .tab_list_menu_backdrop_records
                         .iter()
                         .position(|record| record.session() == session)
@@ -399,6 +404,7 @@ impl SurfaceProgram {
                     }
                     phase = SurfaceProgramPhase::PopupMenus;
                     let index = plan
+                        .facts
                         .tab_list_menu_records
                         .binary_search_by_key(&session, TabListMenuRecord::session)
                         .map_err(|_| invalid())?;
@@ -428,11 +434,20 @@ impl SurfaceProgram {
         }
         if active_root.is_some()
             || phase != SurfaceProgramPhase::End
-            || contained_count != plan.contained_records.len()
+            || contained_count != plan.facts.contained_records.len()
         {
             return Err(invalid());
         }
         self.tape = SurfaceProgramTape::Linked(instructions.into_boxed_slice());
+        // Construction recipes are consumed by the linked tape, not retained with every output.
+        self.root_drafts = Vec::new();
+        self.root_indices = std::collections::BTreeMap::new();
+        self.deferred_popup_backdrops = Vec::new();
+        self.deferred_popup_menus = Vec::new();
+        self.deferred_drop_targets = Vec::new();
+        self.deferred_guides = Vec::new();
+        self.deferred_guide_targets = Vec::new();
+        self.deferred_surface_background = None;
         Ok(())
     }
 
@@ -454,7 +469,7 @@ impl SurfaceProgram {
         self.root_drafts.push(SurfaceProgramRootDraft {
             root,
             presentation,
-            title_item: None,
+            title_tabs: None,
             operations: Vec::new(),
         });
         self.root_indices.insert(root, index);
@@ -465,13 +480,13 @@ impl SurfaceProgram {
     fn push_root_operation(
         &mut self,
         operation: SurfaceProgramRootOperation,
-        title_item: Option<ItemId>,
+        title_tabs: Option<NodeId>,
     ) -> Result<(), SurfaceProgramBuildError> {
         let index = self
             .active_root
             .ok_or(SurfaceProgramBuildError::RootNotOpen)?;
-        if self.root_drafts[index].title_item.is_none() {
-            self.root_drafts[index].title_item = title_item;
+        if self.root_drafts[index].title_tabs.is_none() {
+            self.root_drafts[index].title_tabs = title_tabs;
         }
         self.root_drafts[index].operations.push(operation);
         Ok(())
@@ -605,7 +620,7 @@ impl SurfaceProgram {
             blocks.push(SurfaceProgramBlock::RootBegin {
                 root: root.root,
                 presentation: root.presentation,
-                title_item: root.title_item,
+                title_tabs: root.title_tabs,
             });
             blocks.extend(
                 root.operations
@@ -672,14 +687,18 @@ impl PresentationPlan {
         root: RootId,
         presentation: SurfaceProgramRootPresentation,
     ) -> Result<(), SurfaceProgramBuildError> {
-        self.surface_program.begin_root(root, presentation)
+        self.facts_mut()
+            .surface_program
+            .begin_root(root, presentation)
     }
 
     pub(crate) fn push_surface_program_root_operation(
         &mut self,
         operation: SurfaceProgramRootOperation,
     ) -> Result<(), SurfaceProgramBuildError> {
-        self.surface_program.push_root_operation(operation, None)
+        self.facts_mut()
+            .surface_program
+            .push_root_operation(operation, None)
     }
 
     pub(crate) fn push_surface_program_pane_operation(
@@ -687,8 +706,12 @@ impl PresentationPlan {
         id: PaneSceneId,
         selected: Option<ItemId>,
     ) -> Result<(), SurfaceProgramBuildError> {
-        self.surface_program
-            .push_root_operation(SurfaceProgramRootOperation::Pane(id), selected)
+        self.facts_mut().surface_program.push_root_operation(
+            SurfaceProgramRootOperation::Pane(id),
+            selected.map(|_| id.tabs),
+        )?;
+        Arc::make_mut(&mut self.selection).insert(id.tabs, selected);
+        Ok(())
     }
 
     pub(crate) fn push_surface_program_derived_root_operation(
@@ -696,7 +719,8 @@ impl PresentationPlan {
         root: RootId,
         operation: SurfaceProgramRootOperation,
     ) -> Result<(), SurfaceProgramBuildError> {
-        self.surface_program
+        self.facts_mut()
+            .surface_program
             .push_derived_root_operation(root, operation)
     }
 
@@ -704,21 +728,24 @@ impl PresentationPlan {
         &mut self,
         root: RootId,
     ) -> Result<(), SurfaceProgramBuildError> {
-        self.surface_program.end_root(root)
+        self.facts_mut().surface_program.end_root(root)
     }
 
     pub(crate) fn finish_surface_program(&mut self) -> Result<(), SurfaceProgramBuildError> {
-        self.surface_program.finish()
+        self.facts_mut().surface_program.finish()
     }
 
     /// Consumes the construction identities after canonical record ordering is final.
     pub(crate) fn link_surface_program(&mut self) -> Result<(), SceneBuildError> {
-        if matches!(self.surface_program.tape, SurfaceProgramTape::Linked(_)) {
+        if matches!(
+            self.facts.surface_program.tape,
+            SurfaceProgramTape::Linked(_)
+        ) {
             return Ok(());
         }
-        let mut program = std::mem::take(&mut self.surface_program);
+        let mut program = std::mem::take(&mut self.facts_mut().surface_program);
         program.link(self)?;
-        self.surface_program = program;
+        self.facts_mut().surface_program = program;
         Ok(())
     }
 
@@ -730,49 +757,55 @@ impl PresentationPlan {
         Some(match operation {
             SurfaceProgramRootOperation::Pane(id) if id.root == root.root => {
                 LinkedSurfaceProgramOperation::Pane(PaneRow(
-                    self.pane_records
+                    self.facts
+                        .pane_records
                         .binary_search_by_key(&id, PaneRecord::id)
                         .ok()?,
                 ))
             }
             SurfaceProgramRootOperation::TabBar(id) if id.root == root.root => {
                 LinkedSurfaceProgramOperation::TabBar(TabBarRow(
-                    self.tab_bar_records
+                    self.facts
+                        .tab_bar_records
                         .binary_search_by_key(&id, |record| *record.id())
                         .ok()?,
                 ))
             }
             SurfaceProgramRootOperation::Tab(id) if id.root == root.root => {
                 LinkedSurfaceProgramOperation::Tab(TabRow(
-                    self.tab_records
+                    self.facts
+                        .tab_records
                         .binary_search_by_key(&id, |record| *record.id())
                         .ok()?,
                 ))
             }
             SurfaceProgramRootOperation::Splitter(id) if id.root == root.root => {
                 LinkedSurfaceProgramOperation::Splitter(SplitterRow(
-                    self.splitter_records
+                    self.facts
+                        .splitter_records
                         .binary_search_by_key(&id, |record| *record.id())
                         .ok()?,
                 ))
             }
             SurfaceProgramRootOperation::SplitterJunction(id) if id.root() == root.root => {
                 LinkedSurfaceProgramOperation::SplitterJunction(SplitterJunctionRow(
-                    self.splitter_junction_records
+                    self.facts
+                        .splitter_junction_records
                         .binary_search_by_key(&id, SplitterJunctionRecord::id)
                         .ok()?,
                 ))
             }
             SurfaceProgramRootOperation::TabStripControl(id) if id.bar().root == root.root => {
                 LinkedSurfaceProgramOperation::TabStripControl(TabStripControlRow(
-                    self.tab_strip_control_records
+                    self.facts
+                        .tab_strip_control_records
                         .binary_search_by_key(&id, |record| record.id())
                         .ok()?,
                 ))
             }
             SurfaceProgramRootOperation::ContainedControls(floating) => {
                 let row = root.contained?;
-                if self.contained_records.get(row.0)?.floating() != floating {
+                if self.facts.contained_records.get(row.0)?.floating() != floating {
                     return None;
                 }
                 LinkedSurfaceProgramOperation::ContainedControls(row)
@@ -781,7 +814,8 @@ impl PresentationPlan {
                 if expected == root.root =>
             {
                 LinkedSurfaceProgramOperation::PresentationMenuAnchor(PresentationMenuAnchorRow(
-                    self.presentation_menu_anchor_records
+                    self.facts
+                        .presentation_menu_anchor_records
                         .binary_search_by_key(&expected, |record| record.root())
                         .ok()?,
                 ))
@@ -794,7 +828,7 @@ impl PresentationPlan {
         &'plan self,
         mut visitor: impl FnMut(ResolvedSurfaceProgramStep<'plan>) -> Result<(), E>,
     ) -> Result<(), SurfaceProgramVisitError<E>> {
-        let SurfaceProgramTape::Linked(instructions) = &self.surface_program.tape else {
+        let SurfaceProgramTape::Linked(instructions) = &self.facts.surface_program.tape else {
             return Err(SurfaceProgramVisitError::InvalidProgram);
         };
         let invalid = || SurfaceProgramVisitError::InvalidProgram;
@@ -804,12 +838,12 @@ impl PresentationPlan {
                 SurfaceProgramInstruction::RootBegin(root) => {
                     let contained = root
                         .contained
-                        .map(|row| self.contained_records.get(row.0).ok_or_else(invalid))
+                        .map(|row| self.facts.contained_records.get(row.0).ok_or_else(invalid))
                         .transpose()?;
                     let root = ResolvedSurfaceProgramRoot {
                         root: root.root,
                         contained,
-                        title_item: root.title_item,
+                        title_item: root.title_tabs.and_then(|tabs| self.selected_in_tabs(tabs)),
                     };
                     active_root = Some(root);
                     ResolvedSurfaceProgramStep::RootBegin(root)
@@ -830,29 +864,36 @@ impl PresentationPlan {
                 }
                 SurfaceProgramInstruction::PopupBackdrop(row) => {
                     ResolvedSurfaceProgramStep::PopupBackdrop(
-                        self.tab_list_menu_backdrop_records
+                        self.facts
+                            .tab_list_menu_backdrop_records
                             .get(row.0)
                             .ok_or_else(invalid)?,
                     )
                 }
                 SurfaceProgramInstruction::PopupMenu(row) => ResolvedSurfaceProgramStep::PopupMenu(
-                    self.tab_list_menu_records.get(row.0).ok_or_else(invalid)?,
+                    self.facts
+                        .tab_list_menu_records
+                        .get(row.0)
+                        .ok_or_else(invalid)?,
                 ),
                 SurfaceProgramInstruction::DragPreview => ResolvedSurfaceProgramStep::DragPreview,
                 SurfaceProgramInstruction::DropTarget(target) => {
                     let record = match target {
                         LinkedSurfaceProgramDropTarget::Background => {
-                            self.surface_background.as_ref()
+                            self.facts.surface_background.as_ref()
                         }
                         LinkedSurfaceProgramDropTarget::Record(row) => {
-                            self.drop_targets.get(row.0).map(AsRef::as_ref)
+                            self.facts.drop_targets.get(row.0).map(AsRef::as_ref)
                         }
                     }
                     .ok_or_else(invalid)?;
                     ResolvedSurfaceProgramStep::DropTarget(record)
                 }
                 SurfaceProgramInstruction::DropGuide(row) => ResolvedSurfaceProgramStep::DropGuide(
-                    self.drop_guide_clusters.get(row.0).ok_or_else(invalid)?,
+                    self.facts
+                        .drop_guide_clusters
+                        .get(row.0)
+                        .ok_or_else(invalid)?,
                 ),
                 SurfaceProgramInstruction::ContainedTransformPreview => {
                     ResolvedSurfaceProgramStep::ContainedTransformPreview
@@ -876,35 +917,35 @@ impl PresentationPlan {
     ) -> Option<ResolvedSurfaceProgramOperation<'_>> {
         Some(match operation {
             LinkedSurfaceProgramOperation::Pane(row) => {
-                ResolvedSurfaceProgramOperation::Pane(self.pane_records.get(row.0)?)
+                ResolvedSurfaceProgramOperation::Pane(self.facts.pane_records.get(row.0)?)
             }
             LinkedSurfaceProgramOperation::TabBar(row) => {
-                ResolvedSurfaceProgramOperation::TabBar(self.tab_bar_records.get(row.0)?)
+                ResolvedSurfaceProgramOperation::TabBar(self.facts.tab_bar_records.get(row.0)?)
             }
             LinkedSurfaceProgramOperation::Tab(row) => {
-                ResolvedSurfaceProgramOperation::Tab(self.tab_records.get(row.0)?)
+                ResolvedSurfaceProgramOperation::Tab(self.facts.tab_records.get(row.0)?)
             }
             LinkedSurfaceProgramOperation::Splitter(row) => {
-                ResolvedSurfaceProgramOperation::Splitter(self.splitter_records.get(row.0)?)
+                ResolvedSurfaceProgramOperation::Splitter(self.facts.splitter_records.get(row.0)?)
             }
             LinkedSurfaceProgramOperation::SplitterJunction(row) => {
                 ResolvedSurfaceProgramOperation::SplitterJunction(
-                    self.splitter_junction_records.get(row.0)?,
+                    self.facts.splitter_junction_records.get(row.0)?,
                 )
             }
             LinkedSurfaceProgramOperation::TabStripControl(row) => {
                 ResolvedSurfaceProgramOperation::TabStripControl(
-                    self.tab_strip_control_records.get(row.0)?,
+                    self.facts.tab_strip_control_records.get(row.0)?,
                 )
             }
             LinkedSurfaceProgramOperation::ContainedControls(row) => {
                 ResolvedSurfaceProgramOperation::ContainedControls(
-                    self.contained_records.get(row.0)?,
+                    self.facts.contained_records.get(row.0)?,
                 )
             }
             LinkedSurfaceProgramOperation::PresentationMenuAnchor(row) => {
                 ResolvedSurfaceProgramOperation::PresentationMenuAnchor(
-                    self.presentation_menu_anchor_records.get(row.0)?,
+                    self.facts.presentation_menu_anchor_records.get(row.0)?,
                 )
             }
         })
@@ -913,7 +954,7 @@ impl PresentationPlan {
     pub(crate) fn surface_program_menu_open_bars(
         &self,
     ) -> impl Iterator<Item = TabBarSceneId> + '_ {
-        let instructions = match &self.surface_program.tape {
+        let instructions = match &self.facts.surface_program.tape {
             SurfaceProgramTape::Linked(instructions) => instructions.as_ref(),
             SurfaceProgramTape::Draft(_) => &[],
         };
@@ -921,6 +962,7 @@ impl PresentationPlan {
             .iter()
             .filter_map(|instruction| match instruction {
                 SurfaceProgramInstruction::PopupMenu(row) => self
+                    .facts
                     .tab_list_menu_records
                     .get(row.0)
                     .map(TabListMenuRecord::bar),
@@ -941,7 +983,7 @@ impl PresentationPlan {
         let Some(index) = self.surface_program().blocks().iter().position(predicate) else {
             return false;
         };
-        match &mut self.surface_program.tape {
+        match &mut self.facts_mut().surface_program.tape {
             SurfaceProgramTape::Draft(blocks) => {
                 blocks.remove(index);
             }
@@ -994,7 +1036,7 @@ pub(crate) struct SurfaceProgramInspection<'a> {
 #[cfg(test)]
 impl SurfaceProgramInspection<'_> {
     pub(crate) fn blocks(&self) -> Vec<SurfaceProgramBlock> {
-        let instructions = match &self.plan.surface_program.tape {
+        let instructions = match &self.plan.facts.surface_program.tape {
             SurfaceProgramTape::Draft(blocks) => return blocks.clone(),
             SurfaceProgramTape::Linked(instructions) => instructions,
         };
@@ -1007,11 +1049,11 @@ impl SurfaceProgramInspection<'_> {
                         SurfaceProgramRootPresentation::Main,
                         |row| {
                             SurfaceProgramRootPresentation::Contained(
-                                self.plan.contained_records[row.0].floating(),
+                                self.plan.facts.contained_records[row.0].floating(),
                             )
                         },
                     ),
-                    title_item: root.title_item,
+                    title_tabs: root.title_tabs,
                 },
                 SurfaceProgramInstruction::RootOperation(operation) => {
                     let operation = self
@@ -1048,28 +1090,29 @@ impl SurfaceProgramInspection<'_> {
                 SurfaceProgramInstruction::RootEnd(root) => SurfaceProgramBlock::RootEnd { root },
                 SurfaceProgramInstruction::PopupBackdrop(row) => {
                     SurfaceProgramBlock::PopupBackdrop(
-                        self.plan.tab_list_menu_backdrop_records[row.0].session(),
+                        self.plan.facts.tab_list_menu_backdrop_records[row.0].session(),
                     )
                 }
-                SurfaceProgramInstruction::PopupMenu(row) => {
-                    SurfaceProgramBlock::PopupMenu(self.plan.tab_list_menu_records[row.0].session())
-                }
+                SurfaceProgramInstruction::PopupMenu(row) => SurfaceProgramBlock::PopupMenu(
+                    self.plan.facts.tab_list_menu_records[row.0].session(),
+                ),
                 SurfaceProgramInstruction::DragPreview => SurfaceProgramBlock::DragPreview,
                 SurfaceProgramInstruction::DropTarget(target) => {
                     SurfaceProgramBlock::DropTarget(match target {
                         LinkedSurfaceProgramDropTarget::Background => self
                             .plan
+                            .facts
                             .surface_background
                             .as_ref()
                             .expect("linked test inspection must retain its background record")
                             .id(),
                         LinkedSurfaceProgramDropTarget::Record(row) => {
-                            self.plan.drop_targets[row.0].id()
+                            self.plan.facts.drop_targets[row.0].id()
                         }
                     })
                 }
                 SurfaceProgramInstruction::DropGuide(row) => {
-                    SurfaceProgramBlock::DropGuide(self.plan.drop_guide_clusters[row.0].id())
+                    SurfaceProgramBlock::DropGuide(self.plan.facts.drop_guide_clusters[row.0].id())
                 }
                 SurfaceProgramInstruction::ContainedTransformPreview => {
                     SurfaceProgramBlock::ContainedTransformPreview

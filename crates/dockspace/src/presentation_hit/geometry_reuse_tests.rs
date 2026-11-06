@@ -92,7 +92,10 @@ impl Fixture {
             .unwrap();
         let root = RootId::new(1);
         let mut builder = Workspace::builder();
-        let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));
+        let tabs = builder.insert_node(Node::tabs_with_selection(
+            [ItemId::new(1), ItemId::new(2)],
+            Some(self.selected),
+        ));
         builder.set_root(root, RootRecord::new(tabs));
         builder.set_surface(ticket().surface(), SurfacePresentation::with_main(root));
         let workspace = builder.build().unwrap();
@@ -122,7 +125,6 @@ impl Fixture {
                 pane,
                 bounds,
                 bounds,
-                Some(self.selected),
                 SceneLayerKey::surface_base(),
             ));
             plan.push_surface_program_pane_operation(pane, Some(self.selected))

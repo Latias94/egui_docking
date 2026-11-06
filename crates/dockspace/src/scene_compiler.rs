@@ -7,13 +7,13 @@ use std::{cell::Cell, thread_local};
 
 use thiserror::Error;
 
-use crate::command::{DockFraction, DockTarget, Edge};
+use crate::command::{DockFraction, Edge};
 use crate::drop_guide::{
     DropGuideClusterId, DropGuideClusterRecord, DropGuideEdgeSet, DropGuideTargetRecord,
 };
 use crate::drop_target::{
-    DropOcclusionRecord, DropTargetAvailability, DropTargetId, DropTargetRecord,
-    DropTargetUnavailable, DropVisual, SceneLayerKey, SurfaceBackground,
+    DropOcclusionRecord, DropTargetAvailability, DropTargetId, DropTargetLocation,
+    DropTargetRecord, DropTargetUnavailable, DropVisual, SceneLayerKey, SurfaceBackground,
 };
 use crate::error::CommandError;
 use crate::geometry::{GeometryError, LogicalPoint, LogicalRect, LogicalSize};
@@ -63,7 +63,7 @@ pub(crate) use requirements::{
     SceneRequirementDerivationError, derive_scene_requirement_draft,
     derive_scene_requirement_draft_with_index,
 };
-pub(crate) use surface::{CompiledSurfacePlan, compile_surface_plan};
+pub(crate) use surface::{CompiledSurfacePlan, compile_surface_plan, selection_geometry_unchanged};
 pub use surface::{PresentationCompilationError, SceneCompilationError};
 
 #[cfg(test)]

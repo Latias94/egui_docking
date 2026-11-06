@@ -1,7 +1,7 @@
 use super::*;
 use crate::command::{DockFraction, WorkspaceCommand};
 use crate::drop_guide::{DropGuideEdgeSet, DropGuideTargetRecord};
-use crate::drop_target::DropVisual;
+use crate::drop_target::{DropTargetLocation, DropVisual};
 use crate::graph::{RootRecord, SurfacePresentation};
 use crate::hit_region::HitRegion;
 use crate::policy::DockPolicy;
@@ -42,35 +42,21 @@ fn fixture(overlap: bool) -> Fixture {
         (80.0, 120.0),
     ];
     let targets = std::array::from_fn(|index| {
-        let (id, target) = if index == 0 {
-            (
-                DropTargetId::Center {
-                    surface: SURFACE,
-                    root: ROOT,
-                    tabs,
-                },
-                DockTarget::Center(workspace.capture_tab_target(ROOT, tabs).unwrap()),
-            )
+        let location = if index == 0 {
+            DropTargetLocation::Center {
+                surface: SURFACE,
+                root: ROOT,
+                tabs,
+            }
         } else {
             let edge = edges[index - 1];
-            (
-                DropTargetId::InnerEdge {
-                    surface: SURFACE,
-                    root: ROOT,
-                    node: tabs,
-                    edge,
-                },
-                DockTarget::InnerEdge(
-                    workspace
-                        .capture_inner_edge_target(
-                            ROOT,
-                            tabs,
-                            edge,
-                            DockFraction::new(0.3).unwrap(),
-                        )
-                        .unwrap(),
-                ),
-            )
+            DropTargetLocation::InnerEdge {
+                surface: SURFACE,
+                root: ROOT,
+                node: tabs,
+                edge,
+                fraction: DockFraction::new(0.3).unwrap(),
+            }
         };
         let (x, y) = if overlap {
             placements[0]
@@ -79,8 +65,7 @@ fn fixture(overlap: bool) -> Fixture {
         };
         let hit = rect(x, y, 20.0, 20.0);
         Arc::new(DropTargetRecord::new(
-            id,
-            target,
+            location,
             DropTargetAvailability::Available,
             HitRegion::new(hit),
             SceneLayerKey::surface_base(),
@@ -137,6 +122,7 @@ fn slot_rejections_precede_earlier_pairs_with_overlapping_hits() {
 
     let mut missing = plan(&fixture, guides(&fixture.targets));
     missing
+        .facts_mut()
         .drop_targets
         .retain(|target| target.id() != bottom_id);
     let mut foreign_guides = guides(&fixture.targets);
@@ -202,7 +188,7 @@ fn overlapping_pairs_keep_canonical_slot_order_across_catalog_orders() {
                 second: DropGuideSlot::Edge(Edge::Left),
             })
         );
-        plan.drop_targets.reverse();
+        plan.facts_mut().drop_targets.reverse();
     }
 }
 
@@ -221,7 +207,7 @@ fn canonicalization_retains_unchanged_owners_and_guide_snapshots() {
     let mut current = old.as_ref().clone();
 
     for _ in 0..2 {
-        current.drop_targets.reverse();
+        current.facts_mut().drop_targets.reverse();
         current = validate(&fixture.workspace, &policy, current).unwrap();
         assert_eq!(current.drop_targets(), old.drop_targets());
         assert_eq!(current.drop_guide_clusters(), old.drop_guide_clusters());
@@ -247,7 +233,7 @@ fn canonicalization_retains_unchanged_owners_and_guide_snapshots() {
 }
 
 #[test]
-fn canonical_rebinding_preserves_old_owners_and_stale_before_policy() {
+fn canonical_rebinding_preserves_old_owners_and_binds_current_selection() {
     let mut fixture = fixture(false);
     let policy = DockPolicySnapshot::default();
     let old = Arc::new(
@@ -267,8 +253,8 @@ fn canonical_rebinding_preserves_old_owners_and_stale_before_policy() {
         .capture_item_source(ROOT, fixture.tabs, SECOND)
         .unwrap();
 
-    for stale in [false, true] {
-        if stale {
+    for select in [false, true] {
+        if select {
             WorkspaceTransaction::from_commands([WorkspaceCommand::Select {
                 source: stale_source.clone(),
             }])
@@ -276,14 +262,14 @@ fn canonical_rebinding_preserves_old_owners_and_stale_before_policy() {
             .unwrap();
         }
         let current = validate(&fixture.workspace, &disabled, old.as_ref().clone()).unwrap();
+        assert_eq!(
+            current.command_basis(ROOT),
+            Some(&fixture.workspace.root_fingerprint(ROOT).unwrap())
+        );
         for target in current.drop_targets() {
             assert_eq!(
                 target.availability(),
-                DropTargetAvailability::Unavailable(if stale {
-                    DropTargetUnavailable::Stale
-                } else {
-                    DropTargetUnavailable::PolicyDisabled
-                })
+                DropTargetAvailability::Unavailable(DropTargetUnavailable::PolicyDisabled)
             );
             let old_target = old
                 .drop_targets()

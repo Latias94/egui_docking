@@ -187,7 +187,7 @@ fn shared_hit_geometry_keeps_new_output_and_rejects_an_old_receiver_receipt() {
         PointerReceiverProbeReceipt, PointerReceiverReceiptBatch,
         PointerReceiverReceiptValidationError, PresentedPointerReceiverObservation,
     };
-    use crate::scene::{SurfaceProgramRootOperation, SurfaceProgramRootPresentation};
+    use crate::scene::SurfaceProgramRootPresentation;
 
     fn plan(ticket: SurfaceMeasurementTicket, selected: u64) -> PresentationPlan {
         let bounds = LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap();
@@ -197,20 +197,28 @@ fn shared_hit_geometry_keeps_new_output_and_rejects_an_old_receiver_receipt() {
             bounds,
             None,
         );
-        let pane = PaneSceneId {
-            root: RootId::new(1),
-            tabs: NodeId::default(),
-        };
+        let root = RootId::new(1);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs_with_selection(
+            [ItemId::new(1), ItemId::new(2)],
+            Some(ItemId::new(selected)),
+        ));
+        builder.set_root(root, crate::graph::RootRecord::new(tabs));
+        builder.set_surface(
+            ticket.surface(),
+            crate::graph::SurfacePresentation::with_main(root),
+        );
+        builder.build().unwrap();
+        let pane = PaneSceneId { root, tabs };
         plan.push_pane_record(PaneRecord::new(
             pane,
             bounds,
             bounds,
-            Some(ItemId::new(selected)),
             SceneLayerKey::surface_base(),
         ));
         plan.begin_surface_program_root(pane.root, SurfaceProgramRootPresentation::Main)
             .unwrap();
-        plan.push_surface_program_root_operation(SurfaceProgramRootOperation::Pane(pane))
+        plan.push_surface_program_pane_operation(pane, Some(ItemId::new(selected)))
             .unwrap();
         plan.end_surface_program_root(pane.root).unwrap();
         plan.finish_surface_program().unwrap();

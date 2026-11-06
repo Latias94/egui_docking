@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::command::Edge;
+use crate::drop_target::DropTargetLocation;
 use crate::target_field::{pane_center_basin, root_edge_band};
 use crate::workspace::WorkspaceIndexView;
 
@@ -123,8 +124,9 @@ impl<'a> PresentationPlanValidator<'a> {
     /// Validates arbitrary plans, including deliberately malformed test facts.
     pub(crate) fn validate_and_canonicalize(
         &self,
-        ready: PresentationPlan,
+        mut ready: PresentationPlan,
     ) -> Result<PresentationPlan, SceneBuildError> {
+        self.bind_command_bases(&mut ready);
         let (record_order, drop_target_index) = self.begin_validation(&ready)?;
         if ready.measurement_ticket().is_some() {
             validate_ready_semantics(
@@ -155,8 +157,8 @@ impl<'a> PresentationPlanValidator<'a> {
         let (ready, validator) = compiled.into_finalization()?;
         let (record_order, drop_target_index) = validator.begin_validation(&ready)?;
         validate_contained_records(&ready, validator.workspace, &validator.workspace_index)?;
-        for (id, record) in record_order.panes.iter(&ready.pane_records) {
-            if !rect_contains(ready.bounds, record.bounds())
+        for (id, record) in record_order.panes.iter(&ready.facts.pane_records) {
+            if !rect_contains(ready.facts.bounds, record.bounds())
                 || !rect_contains(record.bounds(), record.content_bounds())
             {
                 return Err(SceneBuildError::InvalidPaneRecord {
@@ -186,6 +188,28 @@ impl<'a> PresentationPlanValidator<'a> {
         validator.finish_validation(ready, record_order, target_order)
     }
 
+    fn bind_command_bases(&self, ready: &mut PresentationPlan) {
+        ready.bind_workspace_selection(self.workspace);
+        ready.command_basis.clear();
+        let Some(presentation) = self.workspace.surface(ready.surface) else {
+            return;
+        };
+        let roots =
+            presentation
+                .main_root
+                .into_iter()
+                .chain(presentation.contained.iter().filter_map(|floating| {
+                    self.workspace
+                        .contained_floating(*floating)
+                        .map(|record| record.root)
+                }));
+        for root in roots {
+            if let Some(basis) = self.workspace_index.root_fingerprint(root) {
+                ready.bind_command_basis(root, basis.clone());
+            }
+        }
+    }
+
     fn begin_validation<'plan>(
         &self,
         ready: &'plan PresentationPlan,
@@ -209,7 +233,7 @@ impl<'a> PresentationPlanValidator<'a> {
         }
         let (record_order, drop_target_index) = validate_semantic_uniqueness(ready)?;
         validate_popup_plane(ready)?;
-        if !rect_has_area(ready.bounds) {
+        if !rect_has_area(ready.facts.bounds) {
             return Err(SceneBuildError::EmptyReadySurfaceBounds { surface });
         }
         validate_surface_background(ready, self.workspace, &self.workspace_index)?;
@@ -223,6 +247,7 @@ impl<'a> PresentationPlanValidator<'a> {
     ) -> Result<MagneticTargetCoverage<'catalog, 'plan>, SceneBuildError> {
         let surface = ready.surface;
         let published_occlusions: HashSet<_> = ready
+            .facts
             .drop_occlusions
             .iter()
             .map(|occlusion| occlusion.floating())
@@ -232,7 +257,7 @@ impl<'a> PresentationPlanValidator<'a> {
                 return Err(SceneBuildError::MissingDropOcclusion { surface, floating });
             }
         }
-        for occlusion in &ready.drop_occlusions {
+        for occlusion in &ready.facts.drop_occlusions {
             let floating = occlusion.floating();
             if !self
                 .workspace_index
@@ -269,11 +294,11 @@ impl<'a> PresentationPlanValidator<'a> {
                 });
             }
         }
-        for target in &ready.drop_targets {
+        for target in &ready.facts.drop_targets {
             validate_drop_target(ready, target, self.workspace, &self.workspace_index)?;
         }
         let mut target_coverage = MagneticTargetCoverage::new(drop_target_index);
-        for cluster in &ready.drop_guide_clusters {
+        for cluster in &ready.facts.drop_guide_clusters {
             validate_drop_guide_cluster(
                 ready,
                 &mut target_coverage,
@@ -292,14 +317,7 @@ impl<'a> PresentationPlanValidator<'a> {
         target_order: DropTargetOrder,
     ) -> Result<PresentationPlan, SceneBuildError> {
         validate_contained_minimums(&ready, &self.workspace_index)?;
-        canonicalize_ready(
-            &mut ready,
-            self.workspace,
-            &self.workspace_index,
-            self.policy,
-            record_order,
-            target_order,
-        );
+        canonicalize_ready(&mut ready, self.policy, record_order, target_order);
         if ready.measurement_ticket().is_some() {
             ready.link_surface_program()?;
         }
@@ -316,12 +334,12 @@ fn validate_compiled_target_coverage(
     };
     // Zero content or unavailable guide geometry can omit a field/cluster.
     // Check the actual emitted coverage, without deriving their recipe again.
-    for field in ready.magnetic_target_field.roots() {
+    for field in ready.facts.magnetic_target_field.roots() {
         for id in field.edges().targets() {
             coverage.get(&id).ok_or_else(&invalid)?;
         }
     }
-    for field in ready.magnetic_target_field.panes() {
+    for field in ready.facts.magnetic_target_field.panes() {
         for id in std::iter::once(field.center_target()).chain(field.edges().targets()) {
             coverage.get(&id).ok_or_else(&invalid)?;
         }
@@ -342,7 +360,7 @@ fn validate_magnetic_target_field(
         surface: ready.surface,
     };
     let Some(layout) = ready.layout_facts() else {
-        return if ready.magnetic_target_field.is_empty() {
+        return if ready.facts.magnetic_target_field.is_empty() {
             Ok(())
         } else {
             Err(invalid())
@@ -378,7 +396,7 @@ fn validate_magnetic_target_field(
     }
 
     let mut roots = BTreeMap::new();
-    for field in ready.magnetic_target_field.roots() {
+    for field in ready.facts.magnetic_target_field.roots() {
         if roots.insert(field.root(), field).is_some() {
             return Err(invalid());
         }
@@ -434,13 +452,14 @@ fn validate_magnetic_target_field(
     }
 
     let expected_panes = ready
+        .facts
         .pane_records
         .iter()
         .filter(|pane| rect_has_area(pane.content_bounds()))
         .map(|pane| (pane.id(), pane))
         .collect::<BTreeMap<_, _>>();
     let mut panes = BTreeMap::new();
-    for field in ready.magnetic_target_field.panes() {
+    for field in ready.facts.magnetic_target_field.panes() {
         let id = PaneSceneId {
             root: field.root(),
             tabs: field.tabs(),
@@ -523,32 +542,26 @@ fn magnetic_targets_are_canonical(
         target.surface() == ready.surface
             && target_coverage.get(&target).is_some_and(|record| {
                 record.layer() == layer
-                    && match record.destination() {
-                        DropDestination::Topology(DockTarget::Center(_)) => {
-                            target.kind() == DropTargetKind::Center
+                    && match record.location() {
+                        DropTargetLocation::Center { .. } => true,
+                        DropTargetLocation::InnerEdge { fraction, .. }
+                        | DropTargetLocation::OuterEdge { fraction, .. } => {
+                            fraction.get().to_bits() == expected_fraction.to_bits()
                         }
-                        DropDestination::Topology(
-                            DockTarget::InnerEdge(edge) | DockTarget::OuterEdge(edge),
-                        ) => {
-                            matches!(
-                                target.kind(),
-                                DropTargetKind::InnerEdge | DropTargetKind::OuterEdge
-                            ) && edge.fraction().get().to_bits() == expected_fraction.to_bits()
-                        }
-                        DropDestination::Topology(DockTarget::TabGap { .. })
-                        | DropDestination::SurfaceBackground(_) => false,
+                        DropTargetLocation::TabGap { .. }
+                        | DropTargetLocation::SurfaceBackground { .. } => false,
                     }
             })
     })
 }
 
 fn validate_popup_plane(ready: &PresentationPlan) -> Result<(), SceneBuildError> {
-    let backdrops = &ready.tab_list_menu_backdrop_records;
-    match ready.popup.visual_for_surface(ready.surface) {
+    let backdrops = &ready.facts.tab_list_menu_backdrop_records;
+    match ready.facts.popup.visual_for_surface(ready.surface) {
         None => {
-            if ready.popup_plane_bounds.is_some()
+            if ready.facts.popup_plane_bounds.is_some()
                 || !backdrops.is_empty()
-                || !ready.tab_list_menu_records.is_empty()
+                || !ready.facts.tab_list_menu_records.is_empty()
             {
                 return Err(SceneBuildError::PopupPlaneRecordSetMismatch {
                     surface: ready.surface,
@@ -560,7 +573,7 @@ fn validate_popup_plane(ready: &PresentationPlan) -> Result<(), SceneBuildError>
             session,
             owner,
         }) => {
-            let Some(popup_plane_bounds) = ready.popup_plane_bounds else {
+            let Some(popup_plane_bounds) = ready.facts.popup_plane_bounds else {
                 return Err(SceneBuildError::PopupPlaneRecordSetMismatch {
                     surface: ready.surface,
                 });
@@ -575,9 +588,9 @@ fn validate_popup_plane(ready: &PresentationPlan) -> Result<(), SceneBuildError>
                     surface: ready.surface,
                 });
             }
-            if ready.tab_list_menu_records.len() != 1
-                || ready.tab_list_menu_records[0].session() != session
-                || ready.tab_list_menu_records[0].bar() != owner.bar()
+            if ready.facts.tab_list_menu_records.len() != 1
+                || ready.facts.tab_list_menu_records[0].session() != session
+                || ready.facts.tab_list_menu_records[0].bar() != owner.bar()
             {
                 return Err(SceneBuildError::PopupPlaneRecordSetMismatch {
                     surface: ready.surface,
@@ -603,19 +616,38 @@ fn validate_semantic_uniqueness(
     }
 
     let record_order = SemanticRecordOrder {
-        panes: RecordOrder::new(ready.pane_records.iter().map(PaneRecord::id))
+        panes: RecordOrder::new(ready.facts.pane_records.iter().map(PaneRecord::id))
             .map_err(|id| SceneBuildError::DuplicatePane { id })?,
-        bars: RecordOrder::new(ready.tab_bar_records.iter().map(|record| *record.id()))
-            .map_err(|id| SceneBuildError::DuplicateTabBar { id })?,
-        tabs: RecordOrder::new(ready.tab_records.iter().map(|record| *record.id()))
+        bars: RecordOrder::new(
+            ready
+                .facts
+                .tab_bar_records
+                .iter()
+                .map(|record| *record.id()),
+        )
+        .map_err(|id| SceneBuildError::DuplicateTabBar { id })?,
+        tabs: RecordOrder::new(ready.facts.tab_records.iter().map(|record| *record.id()))
             .map_err(|id| SceneBuildError::DuplicateTab { id })?,
-        gaps: RecordOrder::new(ready.splitter_gap_records.iter().map(SplitterGapRecord::id))
-            .map_err(|id| SceneBuildError::DuplicateSplitterGap { id })?,
-        splitters: RecordOrder::new(ready.splitter_records.iter().map(|record| *record.id()))
-            .map_err(|id| SceneBuildError::DuplicateSplitter { id })?,
+        gaps: RecordOrder::new(
+            ready
+                .facts
+                .splitter_gap_records
+                .iter()
+                .map(SplitterGapRecord::id),
+        )
+        .map_err(|id| SceneBuildError::DuplicateSplitterGap { id })?,
+        splitters: RecordOrder::new(
+            ready
+                .facts
+                .splitter_records
+                .iter()
+                .map(|record| *record.id()),
+        )
+        .map_err(|id| SceneBuildError::DuplicateSplitter { id })?,
     };
     if let Some(id) = stable_duplicate(
         ready
+            .facts
             .splitter_junction_records
             .iter()
             .map(SplitterJunctionRecord::id),
@@ -624,6 +656,7 @@ fn validate_semantic_uniqueness(
     }
     if let Some(floating) = stable_duplicate(
         ready
+            .facts
             .contained_records
             .iter()
             .map(ContainedRecord::floating),
@@ -632,6 +665,7 @@ fn validate_semantic_uniqueness(
     }
     if let Some(root) = stable_duplicate(
         ready
+            .facts
             .presentation_menu_anchor_records
             .iter()
             .map(|record| record.root()),
@@ -640,29 +674,38 @@ fn validate_semantic_uniqueness(
     }
     if let Some(floating) = stable_duplicate(
         ready
+            .facts
             .contained_minimums
             .iter()
             .map(|measurement| measurement.floating()),
     ) {
         return Err(SceneBuildError::DuplicateContainedMinimumMeasurement { floating });
     }
-    if let Some(floating) =
-        stable_duplicate(ready.drop_occlusions.iter().map(|record| record.floating()))
-    {
+    if let Some(floating) = stable_duplicate(
+        ready
+            .facts
+            .drop_occlusions
+            .iter()
+            .map(|record| record.floating()),
+    ) {
         return Err(SceneBuildError::DuplicateDropOcclusion { floating });
     }
     if let Some(id) = stable_duplicate(
         ready
+            .facts
             .drop_guide_clusters
             .iter()
             .map(DropGuideClusterRecord::id),
     ) {
         return Err(SceneBuildError::DuplicateDropGuideCluster { id });
     }
-    let target_catalog =
-        DropTargetCatalog::new(&ready.drop_targets, ready.surface_background.as_ref())
-            .map_err(|id| SceneBuildError::DuplicateDropTarget { id })?;
+    let target_catalog = DropTargetCatalog::new(
+        &ready.facts.drop_targets,
+        ready.facts.surface_background.as_ref(),
+    )
+    .map_err(|id| SceneBuildError::DuplicateDropTarget { id })?;
     let guide_targets = ready
+        .facts
         .drop_guide_clusters
         .iter()
         .flat_map(|cluster| cluster.targets().map(|(_, guide_target)| guide_target.id()));
@@ -678,11 +721,13 @@ fn validate_contained_minimums(
 ) -> Result<(), SceneBuildError> {
     let surface = ready.surface;
     let published: HashSet<_> = ready
+        .facts
         .contained_minimums
         .iter()
         .map(|measurement| measurement.floating())
         .collect();
     if let Some(floating) = ready
+        .facts
         .contained_minimums
         .iter()
         .map(|measurement| measurement.floating())
@@ -705,7 +750,7 @@ fn validate_surface_background(
     workspace_index: &SceneWorkspaceIndex,
 ) -> Result<(), SceneBuildError> {
     let Some(presentation) = workspace.surface(ready.surface) else {
-        if let Some(background) = &ready.surface_background {
+        if let Some(background) = &ready.facts.surface_background {
             return Err(SceneBuildError::UnexpectedSurfaceBackground {
                 surface: ready.surface,
                 target: background.id(),
@@ -714,7 +759,7 @@ fn validate_surface_background(
         return Ok(());
     };
 
-    match (presentation.main_root, &ready.surface_background) {
+    match (presentation.main_root, &ready.facts.surface_background) {
         (None, None) => {
             return Err(SceneBuildError::MissingSurfaceBackground {
                 surface: ready.surface,
@@ -730,20 +775,17 @@ fn validate_surface_background(
         (None, Some(_)) => {}
     }
 
-    let background =
-        ready
-            .surface_background
-            .as_ref()
-            .ok_or(SceneBuildError::MissingSurfaceBackground {
-                surface: ready.surface,
-            })?;
+    let background = ready.facts.surface_background.as_ref().ok_or(
+        SceneBuildError::MissingSurfaceBackground {
+            surface: ready.surface,
+        },
+    )?;
     if background.id().surface() != ready.surface
-        || !background.semantics_match()
         || background.availability() != DropTargetAvailability::Available
         || !matches!(
-            background.destination(),
-            DropDestination::SurfaceBackground(destination)
-                if destination.surface() == ready.surface
+            background.location(),
+            DropTargetLocation::SurfaceBackground { surface }
+                if surface == ready.surface
         )
     {
         return Err(SceneBuildError::InvalidSurfaceBackgroundRecord {
@@ -762,7 +804,7 @@ fn validate_surface_background(
         });
     }
     if !rect_has_area(background.region().rect())
-        || !rect_contains(ready.bounds, background.region().rect())
+        || !rect_contains(ready.facts.bounds, background.region().rect())
     {
         return Err(SceneBuildError::InvalidSurfaceBackgroundHitRegion {
             surface: ready.surface,
@@ -804,7 +846,7 @@ fn validate_contained_records(
         .flat_map(|presentation| presentation.contained.iter().copied().enumerate())
         .filter_map(|(ordinal, floating)| {
             let indexed = workspace_index.contained_records().get(&floating)?;
-            rects_overlap_with_area(ready.bounds, indexed.rect).then_some((
+            rects_overlap_with_area(ready.facts.bounds, indexed.rect).then_some((
                 floating,
                 ordinal,
                 indexed.root,
@@ -813,12 +855,13 @@ fn validate_contained_records(
             ))
         })
         .collect::<Vec<_>>();
-    if ready.contained_records.len() != expected.len() {
+    if ready.facts.contained_records.len() != expected.len() {
         return Err(SceneBuildError::ContainedRecordSetMismatch {
             surface: ready.surface,
         });
     }
     let minimums = ready
+        .facts
         .contained_minimums
         .iter()
         .map(|measurement| (measurement.floating(), measurement.minimum_size()))
@@ -834,7 +877,7 @@ fn validate_contained_records(
         ContainedResizeDirection::West,
     ];
     for (record, (floating, ordinal, root, durable, layer)) in
-        ready.contained_records.iter().zip(expected)
+        ready.facts.contained_records.iter().zip(expected)
     {
         let valid_identity = record.floating() == floating
             && record.ordinal() == ordinal
@@ -842,7 +885,7 @@ fn validate_contained_records(
             && record.layer() == layer
             && minimums.get(&floating).copied() == Some(record.minimum_size());
         let valid_partition =
-            rect_is_exact_intersection(record.outer_bounds(), ready.bounds, durable)
+            rect_is_exact_intersection(record.outer_bounds(), ready.facts.bounds, durable)
                 && rect_has_area(record.outer_bounds())
                 && rect_contains(record.outer_bounds(), record.inner_bounds())
                 && rect_contains(record.inner_bounds(), record.title_bounds())
@@ -894,7 +937,7 @@ fn validate_presentation_menu_anchors(
     {
         expected.insert(root, None);
     }
-    expected.extend(ready.contained_records.iter().map(|record| {
+    expected.extend(ready.facts.contained_records.iter().map(|record| {
         (
             record.root(),
             Some(PresentationMenuAnchorHost::ContainedTitle(
@@ -903,12 +946,12 @@ fn validate_presentation_menu_anchors(
         )
     }));
 
-    if ready.presentation_menu_anchor_records.len() != expected.len() {
+    if ready.facts.presentation_menu_anchor_records.len() != expected.len() {
         return Err(SceneBuildError::PresentationMenuAnchorRecordSetMismatch {
             surface: ready.surface,
         });
     }
-    for anchor in &ready.presentation_menu_anchor_records {
+    for anchor in &ready.facts.presentation_menu_anchor_records {
         let root = anchor.root();
         let Some(expected_host) = expected.get(&root).copied() else {
             return Err(SceneBuildError::InvalidPresentationMenuAnchor {
@@ -924,6 +967,7 @@ fn validate_presentation_menu_anchors(
         }
         let valid = match anchor.host() {
             PresentationMenuAnchorHost::TabBar(bar_id) => ready
+                .facts
                 .tab_bar_records
                 .iter()
                 .find(|bar| *bar.id() == bar_id)
@@ -947,6 +991,7 @@ fn validate_presentation_menu_anchors(
                                     })
                                 })
                                 && ready
+                                    .facts
                                     .tab_strip_control_records
                                     .iter()
                                     .filter(|control| control.id().bar() == bar_id)
@@ -958,6 +1003,7 @@ fn validate_presentation_menu_anchors(
                     }
                 }),
             PresentationMenuAnchorHost::ContainedTitle(floating) => ready
+                .facts
                 .contained_records
                 .iter()
                 .find(|contained| contained.floating() == floating)
@@ -1006,6 +1052,7 @@ fn canonical_presentation_menu_tab_bar(
         })?;
     let is_compiled = |tabs| {
         ready
+            .facts
             .tab_bar_records
             .iter()
             .any(|bar| *bar.id() == TabBarSceneId { root, tabs })
@@ -1061,6 +1108,7 @@ fn expected_pane_records(
     }
     roots.extend(
         ready
+            .facts
             .contained_records
             .iter()
             .filter(|record| rect_has_area(record.content_bounds()))
@@ -1116,14 +1164,14 @@ fn validate_pane_and_tab_records(
         });
     }
     for (id, (selected, layer)) in expected_panes {
-        let Some(record) = panes.get(&ready.pane_records, *id) else {
+        let Some(record) = panes.get(&ready.facts.pane_records, *id) else {
             return Err(SceneBuildError::PaneRecordSetMismatch {
                 surface: ready.surface,
             });
         };
-        if record.selected() != *selected
+        if ready.pane_selected(record) != *selected
             || record.layer() != *layer
-            || !rect_contains(ready.bounds, record.bounds())
+            || !rect_contains(ready.facts.bounds, record.bounds())
             || !rect_contains(record.bounds(), record.content_bounds())
         {
             return Err(SceneBuildError::InvalidPaneRecord {
@@ -1150,12 +1198,14 @@ fn validate_tab_records(
     let pane_policy = |pane: &PaneRecord| {
         policy.tab_bar_policy(DockTabBarPolicyRequest::new(
             ready.surface,
-            pane.selected().map(crate::policy::DockTargetRuleKey::Item),
+            ready
+                .pane_selected(pane)
+                .map(crate::policy::DockTargetRuleKey::Item),
         ))
     };
     let bars = &record_order.bars;
     let mut controls_by_bar = BTreeMap::<TabBarSceneId, BTreeMap<TabStripControlId, _>>::new();
-    for control in &ready.tab_strip_control_records {
+    for control in &ready.facts.tab_strip_control_records {
         let bar = control.id().bar();
         if controls_by_bar
             .entry(bar)
@@ -1170,7 +1220,7 @@ fn validate_tab_records(
         }
     }
     let mut menus_by_bar = BTreeMap::new();
-    for menu in &ready.tab_list_menu_records {
+    for menu in &ready.facts.tab_list_menu_records {
         if menus_by_bar.insert(menu.bar(), menu).is_some() {
             return Err(SceneBuildError::InvalidTabBarRecord {
                 surface: ready.surface,
@@ -1178,14 +1228,14 @@ fn validate_tab_records(
             });
         }
     }
-    if ready.tab_list_menu_records.len() > 1 {
-        let id = ready.tab_list_menu_records[0].bar();
+    if ready.facts.tab_list_menu_records.len() > 1 {
+        let id = ready.facts.tab_list_menu_records[0].bar();
         return Err(SceneBuildError::InvalidTabBarRecord {
             surface: ready.surface,
             id,
         });
     }
-    let bar_exists = |id: &TabBarSceneId| bars.get(&ready.tab_bar_records, *id).is_some();
+    let bar_exists = |id: &TabBarSceneId| bars.get(&ready.facts.tab_bar_records, *id).is_some();
     if controls_by_bar.keys().any(|id| !bar_exists(id))
         || menus_by_bar.keys().any(|id| !bar_exists(id))
     {
@@ -1201,7 +1251,7 @@ fn validate_tab_records(
         });
     }
     let expected_bars = panes
-        .iter(&ready.pane_records)
+        .iter(&ready.facts.pane_records)
         .filter(|(_, pane)| {
             rect_has_area(pane.bounds())
                 && pane_policy(pane).visibility() == TabBarVisibility::Visible
@@ -1212,7 +1262,7 @@ fn validate_tab_records(
             surface: ready.surface,
         });
     }
-    for (id, pane) in panes.iter(&ready.pane_records) {
+    for (id, pane) in panes.iter(&ready.facts.pane_records) {
         let bar_id = TabBarSceneId {
             root: id.root,
             tabs: id.tabs,
@@ -1228,7 +1278,7 @@ fn validate_tab_records(
             }
             continue;
         }
-        let Some(bar) = bars.get(&ready.tab_bar_records, bar_id) else {
+        let Some(bar) = bars.get(&ready.facts.tab_bar_records, bar_id) else {
             return Err(SceneBuildError::TabBarRecordSetMismatch {
                 surface: ready.surface,
             });
@@ -1262,7 +1312,7 @@ fn validate_tab_records(
             surface: ready.surface,
         });
     }
-    for (bar_id, bar) in bars.iter(&ready.tab_bar_records) {
+    for (bar_id, bar) in bars.iter(&ready.facts.tab_bar_records) {
         let Some(Node::Tabs { items, selected }) = workspace.node(bar_id.tabs) else {
             return Err(SceneBuildError::InvalidTabBarRecord {
                 surface: ready.surface,
@@ -1330,7 +1380,7 @@ fn validate_tab_records(
             visible
                 .binary_search_by_key(&item, |(id, _)| id.item)
                 .ok()
-                .map(|row| &ready.tab_records[visible[row].1])
+                .map(|row| &ready.facts.tab_records[visible[row].1])
         };
         let expected_hidden = items
             .iter()
@@ -1393,7 +1443,7 @@ fn validate_tab_records(
         )?;
         let mut invalid_tab: Option<(usize, TabSceneId)> = None;
         for &(_, row) in visible {
-            let record = &ready.tab_records[row];
+            let record = &ready.facts.tab_records[row];
             let id = *record.id();
             let ordinal_matches = items.get(record.ordinal()).copied() == Some(id.item);
             let close_allowed = policy.pane_close_capability(id.item).allows_close();
@@ -1432,7 +1482,7 @@ fn validate_tab_records(
             if id.root != bar_id.root
                 || id.tabs != bar_id.tabs
                 || !ordinal_matches
-                || record.selected() != (*selected == Some(id.item))
+                || ready.tab_selected(record) != (*selected == Some(id.item))
                 || record.layer() != bar.layer()
                 || !geometry_matches
                 || !workspace_index.semantic_node_exists(ready.surface, id.root, id.tabs)
@@ -1527,7 +1577,7 @@ fn validate_tab_strip_controls_and_menu(
     let Some(menu) = menu else {
         return Ok(());
     };
-    let Some(popup_plane_bounds) = ready.popup_plane_bounds else {
+    let Some(popup_plane_bounds) = ready.facts.popup_plane_bounds else {
         return Err(SceneBuildError::InvalidTabBarRecord {
             surface: ready.surface,
             id,
@@ -1639,6 +1689,7 @@ fn validate_splitter_record_sets(
     let splitters = &record_order.splitters;
     let splitter_gaps = &record_order.gaps;
     let compiled_roots = ready
+        .facts
         .pane_records
         .iter()
         .map(|pane| pane.id().root)
@@ -1688,12 +1739,11 @@ fn validate_splitter_record_sets(
             surface: ready.surface,
         });
     }
-    let rendered_splitters =
-        splitter_gaps
-            .iter(&ready.splitter_gap_records)
-            .filter_map(|(id, record)| {
-                (record.presentation() == SplitterGapPresentation::Rendered).then_some(id)
-            });
+    let rendered_splitters = splitter_gaps
+        .iter(&ready.facts.splitter_gap_records)
+        .filter_map(|(id, record)| {
+            (record.presentation() == SplitterGapPresentation::Rendered).then_some(id)
+        });
     if !splitters
         .entries()
         .iter()
@@ -1716,7 +1766,7 @@ fn validate_splitter_geometry(
 ) -> Result<(), SceneBuildError> {
     let splitters = &record_order.splitters;
     let mut validated_resize_arrays: Option<&SplitterRecord> = None;
-    for (id, record) in splitters.iter(&ready.splitter_records) {
+    for (id, record) in splitters.iter(&ready.facts.splitter_records) {
         let Some(Node::Split { axis, children, .. }) = workspace.node(id.split) else {
             return Err(SceneBuildError::InvalidSplitterRecord {
                 surface: ready.surface,
@@ -1738,10 +1788,10 @@ fn validate_splitter_geometry(
             || !arrays_valid
             || !rect_has_area(record.draw_bounds())
             || !rect_has_area(record.hit().rect())
-            || !rect_contains(ready.bounds, record.hit().rect())
+            || !rect_contains(ready.facts.bounds, record.hit().rect())
             || !rect_contains(record.hit().rect(), record.draw_bounds())
-            || !rect_contains(ready.bounds, record.before_bounds())
-            || !rect_contains(ready.bounds, record.after_bounds())
+            || !rect_contains(ready.facts.bounds, record.before_bounds())
+            || !rect_contains(ready.facts.bounds, record.after_bounds())
             || !record.before_minimum_extent().is_finite()
             || record.before_minimum_extent() < 0.0
             || !record.after_minimum_extent().is_finite()
@@ -1771,7 +1821,7 @@ fn validate_splitter_geometry(
                 && region_has_authoritative_area(
                     record.hit().rect(),
                     record.layer(),
-                    &ready.drop_occlusions,
+                    &ready.facts.drop_occlusions,
                 ))
         {
             return Err(SceneBuildError::InvalidSplitterRecord {
@@ -1792,7 +1842,7 @@ fn validate_splitter_junction_records(
     let splitters = &record_order.splitters;
     let expected_junctions = derive_splitter_junction_candidates(
         splitters
-            .iter(&ready.splitter_records)
+            .iter(&ready.facts.splitter_records)
             .map(|(_, record)| record),
     )
     .map_err(|source| SceneBuildError::InvalidSplitterJunctionGeometry {
@@ -1801,16 +1851,16 @@ fn validate_splitter_junction_records(
     })?
     .into_iter()
     .filter(|candidate| {
-        region_has_authoritative_area(candidate.hit, candidate.layer, &ready.drop_occlusions)
+        region_has_authoritative_area(candidate.hit, candidate.layer, &ready.facts.drop_occlusions)
     })
     .map(|candidate| (candidate.id(), candidate))
     .collect::<BTreeMap<_, _>>();
-    if ready.splitter_junction_records.len() != expected_junctions.len() {
+    if ready.facts.splitter_junction_records.len() != expected_junctions.len() {
         return Err(SceneBuildError::SplitterJunctionRecordSetMismatch {
             surface: ready.surface,
         });
     }
-    for junction in &ready.splitter_junction_records {
+    for junction in &ready.facts.splitter_junction_records {
         let Some(expected) = expected_junctions.get(&junction.id()).copied() else {
             return Err(SceneBuildError::InvalidSplitterJunctionRecord {
                 surface: ready.surface,
@@ -1819,7 +1869,7 @@ fn validate_splitter_junction_records(
         };
         let expected_operable = expected.id().splitters().into_iter().all(|splitter| {
             splitters
-                .get(&ready.splitter_records, splitter)
+                .get(&ready.facts.splitter_records, splitter)
                 .is_some_and(|record| record.operable())
         });
         if junction.layer() != expected.layer
@@ -1884,49 +1934,46 @@ fn validate_semantic_layer(
 
 fn canonicalize_ready(
     ready: &mut PresentationPlan,
-    workspace: &Workspace,
-    workspace_index: &SceneWorkspaceIndex,
     policy: &DockPolicySnapshot,
     record_order: SemanticRecordOrder,
     target_order: DropTargetOrder,
 ) {
-    record_order.panes.apply(&mut ready.pane_records);
-    record_order.tabs.apply(&mut ready.tab_records);
-    record_order.bars.apply(&mut ready.tab_bar_records);
-    ready
+    let facts = ready.facts_mut();
+    record_order.panes.apply(&mut facts.pane_records);
+    record_order.tabs.apply(&mut facts.tab_records);
+    record_order.bars.apply(&mut facts.tab_bar_records);
+    facts
         .tab_strip_control_records
         .sort_unstable_by_key(|record| record.id());
-    ready
+    facts
         .tab_list_menu_records
         .sort_unstable_by_key(TabListMenuRecord::session);
-    record_order.gaps.apply(&mut ready.splitter_gap_records);
-    record_order.splitters.apply(&mut ready.splitter_records);
-    ready
+    record_order.gaps.apply(&mut facts.splitter_gap_records);
+    record_order.splitters.apply(&mut facts.splitter_records);
+    facts
         .splitter_junction_records
         .sort_unstable_by_key(SplitterJunctionRecord::id);
-    ready
+    facts
         .contained_records
         .sort_unstable_by_key(|record| record.ordinal());
-    ready
+    facts
         .presentation_menu_anchor_records
         .sort_unstable_by_key(|record| record.root());
-    ready
+    facts
         .contained_minimums
         .sort_unstable_by_key(|measurement| measurement.floating());
-    ready
+    facts
         .drop_occlusions
         .sort_unstable_by_key(|occlusion| occlusion.floating());
-    ready
+    facts
         .drop_guide_clusters
         .sort_unstable_by_key(DropGuideClusterRecord::id);
-    target_order.apply(&mut ready.drop_targets);
-    ready.magnetic_target_field.canonicalize();
+    target_order.apply(&mut facts.drop_targets);
+    facts.magnetic_target_field.canonicalize();
 
-    let surface = ready.surface;
     let mut availability_changed = false;
-    for target in &mut ready.drop_targets {
-        let availability =
-            canonical_drop_target_availability(target, workspace, workspace_index, surface, policy);
+    for target in &mut facts.drop_targets {
+        let availability = canonical_drop_target_availability(target, policy);
         if target.availability() != availability {
             Arc::make_mut(target).set_availability(availability);
             availability_changed = true;
@@ -1934,8 +1981,8 @@ fn canonicalize_ready(
     }
     // Sorting retains each Arc; validated guides already share unchanged targets.
     if availability_changed {
-        let canonical_targets = &ready.drop_targets;
-        for cluster in &mut ready.drop_guide_clusters {
+        let canonical_targets = &facts.drop_targets;
+        for cluster in &mut facts.drop_guide_clusters {
             cluster.for_each_target_mut(|guide| {
                 let index = canonical_targets
                     .binary_search_by_key(&guide.id(), |target| target.id())
@@ -1948,18 +1995,10 @@ fn canonicalize_ready(
 
 fn canonical_drop_target_availability(
     target: &DropTargetRecord,
-    workspace: &Workspace,
-    workspace_index: &SceneWorkspaceIndex,
-    surface: SurfaceId,
     policy: &DockPolicySnapshot,
 ) -> DropTargetAvailability {
     if !target.availability().is_available() {
         return target.availability();
-    }
-    if !target_reference_is_current(workspace, workspace_index, target)
-        || !target_structure_is_valid(workspace, workspace_index, surface, target)
-    {
-        return DropTargetAvailability::Unavailable(DropTargetUnavailable::Stale);
     }
     let allowed = match target.id().kind() {
         DropTargetKind::TabGap | DropTargetKind::Center => policy.allows_tab_merge(),
@@ -2052,7 +2091,7 @@ fn validate_drop_guide_activation(
             cluster: cluster_id,
         });
     }
-    if !rect_contains(ready.bounds, activation) {
+    if !rect_contains(ready.facts.bounds, activation) {
         return Err(SceneBuildError::DropGuideActivationOutsideSurface {
             surface: ready.surface,
             cluster: cluster_id,
@@ -2110,7 +2149,7 @@ fn validate_drop_guide_target(
             target: target_id,
         });
     }
-    if !rect_contains(ready.bounds, hit) {
+    if !rect_contains(ready.facts.bounds, hit) {
         return Err(SceneBuildError::DropGuideHitRegionOutsideSurface {
             surface: ready.surface,
             cluster: cluster_id,
@@ -2226,14 +2265,19 @@ fn validate_drop_target(
     workspace: &Workspace,
     workspace_index: &SceneWorkspaceIndex,
 ) -> Result<(), SceneBuildError> {
-    if matches!(target.destination(), DropDestination::SurfaceBackground(_)) {
+    if matches!(
+        target.location(),
+        DropTargetLocation::SurfaceBackground { .. }
+    ) {
         return Err(SceneBuildError::SurfaceBackgroundInTopologyTargets {
             surface: ready.surface,
         });
     }
     validate_drop_visual(ready, target)?;
-    let root =
-        target_root(target.destination()).ok_or(SceneBuildError::TargetSemanticMismatch {
+    let root = target
+        .location()
+        .root()
+        .ok_or(SceneBuildError::TargetSemanticMismatch {
             surface: ready.surface,
             target: target.id(),
         })?;
@@ -2253,9 +2297,7 @@ fn validate_drop_target(
         });
     }
     if target.id().surface() != ready.surface
-        || !target.semantics_match()
-        || (target_reference_is_current(workspace, workspace_index, target)
-            && !target_structure_is_valid(workspace, workspace_index, ready.surface, target))
+        || !target_structure_is_valid(workspace, workspace_index, ready.surface, target)
     {
         return Err(SceneBuildError::TargetSemanticMismatch {
             surface: ready.surface,
@@ -2363,60 +2405,33 @@ fn rect_is_exact_intersection(
         && actual.max().y() == max_y
 }
 
-fn target_reference_is_current(
-    workspace: &Workspace,
-    workspace_index: &SceneWorkspaceIndex,
-    record: &DropTargetRecord,
-) -> bool {
-    match record.destination() {
-        DropDestination::Topology(
-            DockTarget::Center(target) | DockTarget::TabGap { target, .. },
-        ) => {
-            workspace_index.fingerprint_is_current(target.root(), target.fingerprint())
-                && workspace_index.contains_node(target.root(), target.tabs())
-                && matches!(workspace.node(target.tabs()), Some(Node::Tabs { .. }))
-        }
-        DropDestination::Topology(
-            DockTarget::InnerEdge(target) | DockTarget::OuterEdge(target),
-        ) => {
-            workspace_index.fingerprint_is_current(target.root(), target.fingerprint())
-                && workspace_index.contains_node(target.root(), target.node())
-        }
-        DropDestination::SurfaceBackground(_) => true,
-    }
-}
-
 fn target_structure_is_valid(
     workspace: &Workspace,
     workspace_index: &SceneWorkspaceIndex,
     surface: SurfaceId,
     record: &DropTargetRecord,
 ) -> bool {
-    let Some(root) = target_root(record.destination()) else {
+    let Some(root) = record.location().root() else {
         return false;
     };
     if !workspace_index.root_belongs_to_surface(surface, root) {
         return false;
     }
-    match (record.id(), record.destination()) {
-        (
-            DropTargetId::TabGap { .. },
-            DropDestination::Topology(DockTarget::TabGap { target, index }),
-        ) => matches!(
-            workspace.node(target.tabs()),
-            Some(Node::Tabs { items, .. }) if *index <= items.len()
-        ),
-        (
-            DropTargetId::OuterEdge { root, node, .. },
-            DropDestination::Topology(DockTarget::OuterEdge(_)),
-        ) => workspace_index.root_node(root) == Some(node),
-        (
-            DropTargetId::InnerEdge { .. },
-            DropDestination::Topology(DockTarget::InnerEdge(target)),
-        ) => {
-            matches!(workspace.node(target.node()), Some(Node::Tabs { .. }))
+    match record.location() {
+        DropTargetLocation::TabGap { tabs, index, .. } => {
+            workspace_index.contains_node(root, tabs)
+                && matches!(workspace.node(tabs), Some(Node::Tabs { items, .. }) if index <= items.len())
         }
-        _ => true,
+        DropTargetLocation::Center { tabs, .. } => {
+            workspace_index.contains_node(root, tabs)
+                && matches!(workspace.node(tabs), Some(Node::Tabs { .. }))
+        }
+        DropTargetLocation::InnerEdge { node, .. } => {
+            workspace_index.contains_node(root, node)
+                && matches!(workspace.node(node), Some(Node::Tabs { .. }))
+        }
+        DropTargetLocation::OuterEdge { node, .. } => workspace_index.root_node(root) == Some(node),
+        DropTargetLocation::SurfaceBackground { .. } => false,
     }
 }
 
@@ -2431,8 +2446,8 @@ fn validate_drop_visual(
             target: target.id(),
         });
     }
-    let bounds_min = ready.bounds.min();
-    let bounds_max = ready.bounds.max();
+    let bounds_min = ready.facts.bounds.min();
+    let bounds_max = ready.facts.bounds.max();
     let visual_min = visual.min();
     let visual_max = visual.max();
     if visual_min.x() < bounds_min.x()
@@ -2446,18 +2461,6 @@ fn validate_drop_visual(
         });
     }
     Ok(())
-}
-
-fn target_root(target: &DropDestination) -> Option<RootId> {
-    match target {
-        DropDestination::Topology(
-            DockTarget::Center(target) | DockTarget::TabGap { target, .. },
-        ) => Some(target.root()),
-        DropDestination::Topology(
-            DockTarget::InnerEdge(target) | DockTarget::OuterEdge(target),
-        ) => Some(target.root()),
-        DropDestination::SurfaceBackground(_) => None,
-    }
 }
 
 struct IndexedRoot {
@@ -2633,16 +2636,13 @@ impl<'a> SceneWorkspaceIndex<'a> {
         self.root_belongs_to_surface(surface, root) && self.contains_node(root, node)
     }
 
-    fn fingerprint_is_current(&self, root: RootId, expected: &NodeFingerprint) -> bool {
+    fn root_fingerprint(&self, root: RootId) -> Option<&NodeFingerprint> {
         match self {
             Self::Complete(index) => index
                 .roots
                 .get(&root)
-                .and_then(|record| record.fingerprint.as_ref())
-                .is_some_and(|current| current == expected),
-            Self::SharedSurface(index) => {
-                index.workspace_index.fingerprint_is_current(root, expected)
-            }
+                .and_then(|record| record.fingerprint.as_ref()),
+            Self::SharedSurface(index) => index.workspace_index.root_fingerprint(root),
         }
     }
 

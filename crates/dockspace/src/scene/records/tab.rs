@@ -36,13 +36,12 @@ pub struct PaneSceneId {
     pub tabs: NodeId,
 }
 
-/// Core-compiled tabs-leaf and selected-pane geometry.
+/// Core-compiled tabs-leaf geometry; selection belongs to its current plan binding.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaneRecord {
     id: PaneSceneId,
     bounds: LogicalRect,
     content_bounds: LogicalRect,
-    selected: Option<ItemId>,
     layer: SceneLayerKey,
 }
 
@@ -51,14 +50,12 @@ impl PaneRecord {
         id: PaneSceneId,
         bounds: LogicalRect,
         content_bounds: LogicalRect,
-        selected: Option<ItemId>,
         layer: SceneLayerKey,
     ) -> Self {
         Self {
             id,
             bounds,
             content_bounds,
-            selected,
             layer,
         }
     }
@@ -81,12 +78,6 @@ impl PaneRecord {
         self.content_bounds
     }
 
-    /// Returns the final core-selected item for this leaf.
-    #[must_use]
-    pub const fn selected(&self) -> Option<ItemId> {
-        self.selected
-    }
-
     /// Returns the roster-derived semantic layer.
     #[must_use]
     pub const fn layer(&self) -> SceneLayerKey {
@@ -94,7 +85,7 @@ impl PaneRecord {
     }
 }
 
-/// Core-compiled geometry and state for one visible tab.
+/// Core-compiled geometry for one visible tab.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabRecord {
     id: TabSceneId,
@@ -104,7 +95,6 @@ pub struct TabRecord {
     drag_hit: HitRegion,
     close_visual_bounds: Option<LogicalRect>,
     close_bounds: Option<LogicalRect>,
-    selected: bool,
     ordinal: usize,
     layer: SceneLayerKey,
 }
@@ -119,7 +109,6 @@ impl TabRecord {
         drag_hit: HitRegion,
         close_visual_bounds: Option<LogicalRect>,
         close_bounds: Option<LogicalRect>,
-        selected: bool,
         ordinal: usize,
         layer: SceneLayerKey,
     ) -> Self {
@@ -131,7 +120,6 @@ impl TabRecord {
             drag_hit,
             close_visual_bounds,
             close_bounds,
-            selected,
             ordinal,
             layer,
         }
@@ -177,12 +165,6 @@ impl TabRecord {
     #[must_use]
     pub const fn close_bounds(&self) -> Option<LogicalRect> {
         self.close_bounds
-    }
-
-    /// Returns whether this item is selected in its tabs node.
-    #[must_use]
-    pub const fn selected(&self) -> bool {
-        self.selected
     }
 
     /// Returns the stable pre-removal item ordinal.
@@ -480,6 +462,7 @@ pub enum TabStripMemberVisibility {
 pub struct TabStripMemberRecord {
     tab: TabSceneId,
     ordinal: usize,
+    allocated_width: f64,
     full_bounds: LogicalRect,
     visibility: TabStripMemberVisibility,
 }
@@ -488,12 +471,14 @@ impl TabStripMemberRecord {
     pub(crate) const fn new(
         tab: TabSceneId,
         ordinal: usize,
+        allocated_width: f64,
         full_bounds: LogicalRect,
         visibility: TabStripMemberVisibility,
     ) -> Self {
         Self {
             tab,
             ordinal,
+            allocated_width,
             full_bounds,
             visibility,
         }
@@ -507,6 +492,11 @@ impl TabStripMemberRecord {
     #[must_use]
     pub const fn ordinal(self) -> usize {
         self.ordinal
+    }
+
+    /// Keeps local allocation precision independent of translated rectangle rounding.
+    pub(crate) const fn allocated_width(self) -> f64 {
+        self.allocated_width
     }
 
     /// Returns the exact unclipped rectangle allocated to this member.

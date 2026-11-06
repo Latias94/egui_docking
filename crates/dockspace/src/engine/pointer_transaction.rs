@@ -783,7 +783,7 @@ impl DockEngine {
                 plan.pane_records()
                     .iter()
                     .find(|record| record.id() == pane)
-                    .and_then(crate::scene::PaneRecord::selected),
+                    .and_then(|record| plan.pane_selected(record)),
             ),
             PresentationHitRegionKind::ContainedFrameBlocker(floating) => {
                 (plan.contained_record(floating), None)
@@ -3909,7 +3909,11 @@ impl DockEngine {
             self.publish_workspace(publication);
             self.reconcile_viewport_focus_authority();
             if changed {
-                self.advance_revision_caused(cause)?;
+                if let [WorkspaceCommand::Select { source }] = commands.as_slice() {
+                    self.advance_selection_revision_caused(cause, source)?;
+                } else {
+                    self.advance_revision_caused(cause)?;
+                }
                 candidate_events.extend(outcomes.into_iter().map(|outcome| {
                     WorkspaceEvent::new_caused(
                         cause,

@@ -5,7 +5,7 @@ use super::resolve_unguided_drop;
 use dockspace::command::{DockFraction, DockTarget, Edge, MovePayload, WorkspaceCommand};
 use dockspace::drop_resolver::{DropRejectionReason, DropResolution, DropSurfaceUnavailable};
 use dockspace::drop_target::{
-    DropDestination, DropOcclusionRecord, DropTargetAvailability, DropTargetId, DropTargetRecord,
+    DropOcclusionRecord, DropTargetAvailability, DropTargetLocation, DropTargetRecord,
     DropTargetUnavailable, DropVisual, SceneLayerKey, SurfaceBackground,
 };
 use dockspace::engine::{DockEngine, PreparedSurfacePaintCandidate};
@@ -185,72 +185,35 @@ fn target_record(
     layer: u64,
 ) -> DropTargetRecord {
     let fraction = DockFraction::new(0.35).expect("valid fraction");
-    let (id, target) = match spec {
-        TargetSpec::TabGap => (
-            DropTargetId::TabGap {
-                surface: TARGET_SURFACE,
-                root: TARGET_ROOT,
-                tabs: fixture.target_tabs_a,
-                index: 1,
-            },
-            DockTarget::TabGap {
-                target: fixture
-                    .workspace
-                    .capture_tab_target(TARGET_ROOT, fixture.target_tabs_a)
-                    .expect("tab target is valid"),
-                index: 1,
-            },
-        ),
-        TargetSpec::Center => (
-            DropTargetId::Center {
-                surface: TARGET_SURFACE,
-                root: TARGET_ROOT,
-                tabs: fixture.target_tabs_a,
-            },
-            DockTarget::Center(
-                fixture
-                    .workspace
-                    .capture_tab_target(TARGET_ROOT, fixture.target_tabs_a)
-                    .expect("center target is valid"),
-            ),
-        ),
-        TargetSpec::InnerEdge => (
-            DropTargetId::InnerEdge {
-                surface: TARGET_SURFACE,
-                root: TARGET_ROOT,
-                node: fixture.target_tabs_a,
-                edge: Edge::Left,
-            },
-            DockTarget::InnerEdge(
-                fixture
-                    .workspace
-                    .capture_inner_edge_target(
-                        TARGET_ROOT,
-                        fixture.target_tabs_a,
-                        Edge::Left,
-                        fraction,
-                    )
-                    .expect("inner edge target is valid"),
-            ),
-        ),
-        TargetSpec::OuterEdge => (
-            DropTargetId::OuterEdge {
-                surface: TARGET_SURFACE,
-                root: TARGET_ROOT,
-                node: fixture.target_root_node,
-                edge: Edge::Right,
-            },
-            DockTarget::OuterEdge(
-                fixture
-                    .workspace
-                    .capture_outer_edge_target(TARGET_ROOT, Edge::Right, fraction)
-                    .expect("outer edge target is valid"),
-            ),
-        ),
+    let location = match spec {
+        TargetSpec::TabGap => DropTargetLocation::TabGap {
+            surface: TARGET_SURFACE,
+            root: TARGET_ROOT,
+            tabs: fixture.target_tabs_a,
+            index: 1,
+        },
+        TargetSpec::Center => DropTargetLocation::Center {
+            surface: TARGET_SURFACE,
+            root: TARGET_ROOT,
+            tabs: fixture.target_tabs_a,
+        },
+        TargetSpec::InnerEdge => DropTargetLocation::InnerEdge {
+            surface: TARGET_SURFACE,
+            root: TARGET_ROOT,
+            node: fixture.target_tabs_a,
+            edge: Edge::Left,
+            fraction,
+        },
+        TargetSpec::OuterEdge => DropTargetLocation::OuterEdge {
+            surface: TARGET_SURFACE,
+            root: TARGET_ROOT,
+            node: fixture.target_root_node,
+            edge: Edge::Right,
+            fraction,
+        },
     };
     DropTargetRecord::new(
-        id,
-        target,
+        location,
         availability,
         HitRegion::new(region),
         SceneLayerKey::new(layer),
@@ -259,23 +222,17 @@ fn target_record(
 }
 
 fn center_record(
-    fixture: &Fixture,
+    _fixture: &Fixture,
     tabs: NodeId,
     region: LogicalRect,
     layer: u64,
 ) -> DropTargetRecord {
     DropTargetRecord::new(
-        DropTargetId::Center {
+        DropTargetLocation::Center {
             surface: TARGET_SURFACE,
             root: TARGET_ROOT,
             tabs,
         },
-        DockTarget::Center(
-            fixture
-                .workspace
-                .capture_tab_target(TARGET_ROOT, tabs)
-                .expect("center target is valid"),
-        ),
         DropTargetAvailability::Available,
         HitRegion::new(region),
         SceneLayerKey::new(layer),
@@ -290,18 +247,13 @@ fn floating_outer_edge_record(
 ) -> DropTargetRecord {
     let fraction = DockFraction::new(0.35).expect("valid fraction");
     DropTargetRecord::new(
-        DropTargetId::OuterEdge {
+        DropTargetLocation::OuterEdge {
             surface: TARGET_SURFACE,
             root: FLOATING_ROOT,
             node: fixture.floating_tabs,
             edge: Edge::Right,
+            fraction,
         },
-        DockTarget::OuterEdge(
-            fixture
-                .workspace
-                .capture_outer_edge_target(FLOATING_ROOT, Edge::Right, fraction)
-                .expect("floating edge target is valid"),
-        ),
         DropTargetAvailability::Available,
         HitRegion::new(region),
         SceneLayerKey::new(layer),
@@ -311,17 +263,11 @@ fn floating_outer_edge_record(
 
 fn floating_center_record(fixture: &Fixture, region: LogicalRect, layer: u64) -> DropTargetRecord {
     DropTargetRecord::new(
-        DropTargetId::Center {
+        DropTargetLocation::Center {
             surface: TARGET_SURFACE,
             root: FLOATING_ROOT,
             tabs: fixture.floating_tabs,
         },
-        DockTarget::Center(
-            fixture
-                .workspace
-                .capture_tab_target(FLOATING_ROOT, fixture.floating_tabs)
-                .expect("floating center target is valid"),
-        ),
         DropTargetAvailability::Available,
         HitRegion::new(region),
         SceneLayerKey::new(layer),
@@ -338,15 +284,6 @@ fn floating_minimum() -> ContainedMinimumMeasurement {
         FLOATING,
         LogicalSize::new(0.0, 0.0).expect("contained minimum must be valid"),
     )
-}
-
-fn topology_destination(record: &DropTargetRecord) -> DockTarget {
-    match record.destination() {
-        DropDestination::Topology(target) => target.clone(),
-        DropDestination::SurfaceBackground(_) => {
-            panic!("test expected a topology destination")
-        }
-    }
 }
 
 fn bind_measurement_ticket(
@@ -930,8 +867,7 @@ fn zero_area_target_has_no_geometric_hit() {
         1,
     );
     let zero_hit = DropTargetRecord::new(
-        target.id(),
-        topology_destination(&target),
+        target.location(),
         target.availability(),
         HitRegion::new(rect(40.0, 10.0, 0.0, 80.0)),
         target.layer(),
@@ -1285,7 +1221,7 @@ fn split_subtree_into_tabs_is_an_expected_prevalidation_rejection() {
 }
 
 #[test]
-fn stale_target_is_retained_as_explicitly_unavailable() {
+fn retained_target_location_binds_current_selection_when_sealed() {
     let mut fixture = fixture();
     let policy = DockPolicySnapshot::default();
     let old_target = target_record(
@@ -1303,7 +1239,7 @@ fn stale_target_is_retained_as_explicitly_unavailable() {
         source: select,
     }])
     .apply(&mut fixture.workspace, &policy)
-    .expect("selection changes target fingerprint");
+    .expect("selection changes the plan's command basis");
 
     let scene = seal_scene(&fixture, &policy, [old_target]);
     let ready = scene
@@ -1311,7 +1247,35 @@ fn stale_target_is_retained_as_explicitly_unavailable() {
         .expect("painted target surface must be interaction-ready");
     assert_eq!(
         ready.plan().drop_targets()[0].availability(),
-        DropTargetAvailability::Unavailable(DropTargetUnavailable::Stale)
+        DropTargetAvailability::Available
+    );
+    assert_eq!(
+        ready.plan().command_basis(TARGET_ROOT),
+        Some(&fixture.workspace.root_fingerprint(TARGET_ROOT).unwrap())
+    );
+    let DropResolution::Resolved(resolved) = resolve(
+        &scene,
+        &fixture,
+        &policy,
+        payload(&fixture, PayloadSpec::Item),
+        point(10.0, 10.0),
+    ) else {
+        panic!("retained location must resolve against the current plan binding");
+    };
+    let WorkspaceCommand::Move {
+        target: DockTarget::Center(target),
+        ..
+    } = resolved.command()
+    else {
+        panic!("center location must resolve to the same structural command");
+    };
+    assert_eq!(
+        target.rule(),
+        dockspace::policy::DockTargetRuleKey::Item(ItemId::new(11))
+    );
+    assert_eq!(
+        Some(target.fingerprint()),
+        ready.plan().command_basis(TARGET_ROOT)
     );
 }
 
@@ -1398,7 +1362,7 @@ fn every_target_insertion_permutation_seals_and_resolves_identically() {
 }
 
 #[test]
-fn malformed_semantic_facts_and_target_id_mismatches_fail_seal() {
+fn malformed_occlusions_and_foreign_target_nodes_fail_seal() {
     let fixture = fixture();
     let policy = DockPolicySnapshot::default();
     let bounds = rect(0.0, 0.0, 100.0, 100.0);
@@ -1413,20 +1377,12 @@ fn malformed_semantic_facts_and_target_id_mismatches_fail_seal() {
         matches!(error, SceneBuildError::InvalidDropOcclusion { .. })
     });
 
-    let edge = target_record(
-        &fixture,
-        TargetSpec::InnerEdge,
-        DropTargetAvailability::Available,
-        bounds,
-        0,
-    );
     let mismatched = DropTargetRecord::new(
-        DropTargetId::Center {
+        DropTargetLocation::Center {
             surface: TARGET_SURFACE,
             root: TARGET_ROOT,
-            tabs: fixture.target_tabs_a,
+            tabs: fixture.source_tabs,
         },
-        topology_destination(&edge),
         DropTargetAvailability::Available,
         HitRegion::new(bounds),
         SceneLayerKey::new(1),
@@ -1444,23 +1400,15 @@ fn invalid_inner_edges_and_unpaintable_visuals_fail_seal() {
     let fixture = fixture();
     let policy = DockPolicySnapshot::default();
     let bounds = rect(0.0, 0.0, 100.0, 100.0);
-    let split_edge = fixture
-        .workspace
-        .capture_outer_edge_target(
-            TARGET_ROOT,
-            Edge::Left,
-            DockFraction::new(0.35).expect("valid fraction"),
-        )
-        .expect("split edge reference is current");
     let mut invalid_inner_edge = PresentationPlan::new(TARGET_SURFACE, bounds);
     invalid_inner_edge.push_drop_target(Arc::new(DropTargetRecord::new(
-        DropTargetId::InnerEdge {
+        DropTargetLocation::InnerEdge {
             surface: TARGET_SURFACE,
             root: TARGET_ROOT,
             node: fixture.target_root_node,
             edge: Edge::Left,
+            fraction: DockFraction::new(0.35).expect("valid fraction"),
         },
-        DockTarget::InnerEdge(split_edge),
         DropTargetAvailability::Available,
         HitRegion::new(bounds),
         SceneLayerKey::new(1),
@@ -1473,8 +1421,7 @@ fn invalid_inner_edges_and_unpaintable_visuals_fail_seal() {
     let center = center_record(&fixture, fixture.target_tabs_a, bounds, 1);
     let mut empty_visual = PresentationPlan::new(TARGET_SURFACE, bounds);
     empty_visual.push_drop_target(Arc::new(DropTargetRecord::new(
-        center.id(),
-        topology_destination(&center),
+        center.location(),
         center.availability(),
         center.region(),
         center.layer(),
@@ -1486,8 +1433,7 @@ fn invalid_inner_edges_and_unpaintable_visuals_fail_seal() {
 
     let mut outside_visual = PresentationPlan::new(TARGET_SURFACE, bounds);
     outside_visual.push_drop_target(Arc::new(DropTargetRecord::new(
-        center.id(),
-        topology_destination(&center),
+        center.location(),
         center.availability(),
         center.region(),
         center.layer(),
@@ -1512,14 +1458,12 @@ fn duplicate_semantic_ids_are_rejected_before_install() {
         duplicate_id,
         bounds,
         bounds,
-        Some(ItemId::new(10)),
         SceneLayerKey::new(1),
     ));
     ready.push_pane_record(PaneRecord::new(
         duplicate_id,
         bounds,
         bounds,
-        Some(ItemId::new(10)),
         SceneLayerKey::new(1),
     ));
     assert_scene_error(

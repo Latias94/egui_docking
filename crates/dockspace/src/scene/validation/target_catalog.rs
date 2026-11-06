@@ -126,10 +126,10 @@ mod tests {
         PresentationPlanValidator, SceneWorkspaceIndex, validate_drop_target,
         validate_semantic_uniqueness,
     };
-    use crate::command::{DockFraction, DockTarget, Edge};
+    use crate::command::{DockFraction, Edge};
     use crate::drop_guide::{DropGuideClusterRecord, DropGuideEdgeSet, DropGuideTargetRecord};
     use crate::drop_target::{
-        DropDestination, DropTargetAvailability, DropVisual, SceneLayerKey, SurfaceBackground,
+        DropTargetAvailability, DropTargetLocation, DropVisual, SceneLayerKey, SurfaceBackground,
     };
     use crate::geometry::LogicalRect;
     use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
@@ -151,51 +151,29 @@ mod tests {
         builder.set_root(ROOT, RootRecord::new(tabs));
         builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
         let workspace = builder.build().unwrap();
-        let tab_target = workspace.capture_tab_target(ROOT, tabs).unwrap();
-        let center = (
-            DropTargetId::Center {
-                surface: SURFACE,
-                root: ROOT,
-                tabs,
-            },
-            DockTarget::Center(tab_target.clone()),
-        );
-        let edge = (
-            DropTargetId::InnerEdge {
-                surface: SURFACE,
-                root: ROOT,
-                node: tabs,
-                edge: Edge::Left,
-            },
-            DockTarget::InnerEdge(
-                workspace
-                    .capture_inner_edge_target(
-                        ROOT,
-                        tabs,
-                        Edge::Left,
-                        DockFraction::new(0.3).unwrap(),
-                    )
-                    .unwrap(),
-            ),
-        );
-        let gap = (
-            DropTargetId::TabGap {
-                surface: SURFACE,
-                root: ROOT,
-                tabs,
-                index: 0,
-            },
-            DockTarget::TabGap {
-                target: tab_target,
-                index: 0,
-            },
-        );
+        let center = DropTargetLocation::Center {
+            surface: SURFACE,
+            root: ROOT,
+            tabs,
+        };
+        let edge = DropTargetLocation::InnerEdge {
+            surface: SURFACE,
+            root: ROOT,
+            node: tabs,
+            edge: Edge::Left,
+            fraction: DockFraction::new(0.3).unwrap(),
+        };
+        let gap = DropTargetLocation::TabGap {
+            surface: SURFACE,
+            root: ROOT,
+            tabs,
+            index: 0,
+        };
         let targets = [center, edge, gap]
             .into_iter()
-            .map(|(id, destination)| {
+            .map(|location| {
                 Arc::new(DropTargetRecord::new(
-                    id,
-                    destination,
+                    location,
                     DropTargetAvailability::Available,
                     HitRegion::new(bounds()),
                     SceneLayerKey::surface_base(),
@@ -364,12 +342,8 @@ mod tests {
             let mut plan = PresentationPlan::new(SURFACE, bounds());
             for index in order {
                 let owner = &owners[index];
-                let DropDestination::Topology(destination) = owner.destination() else {
-                    unreachable!();
-                };
                 plan.push_drop_target(Arc::new(DropTargetRecord::new(
-                    owner.id(),
-                    destination.clone(),
+                    owner.location(),
                     owner.availability(),
                     owner.region(),
                     owner.layer(),
@@ -418,10 +392,9 @@ mod tests {
             PaneSceneId { root: ROOT, tabs },
             bounds(),
             bounds(),
-            Some(ItemId::new(1)),
             SceneLayerKey::surface_base(),
         );
-        plan.pane_records = vec![pane, pane];
+        plan.facts_mut().pane_records = vec![pane, pane];
         assert_eq!(
             validate(&workspace, plan),
             Err(SceneBuildError::DuplicatePane { id: pane.id() })

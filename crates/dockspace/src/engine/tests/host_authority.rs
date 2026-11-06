@@ -951,6 +951,567 @@ fn surface_local_scroll_batch_refreshes_only_the_changed_surface() {
 }
 
 #[test]
+fn changed_tab_press_and_release_retain_measured_and_presented_surface_facts() {
+    retained_changed_tab_press(false);
+}
+
+#[test]
+fn retained_changed_tab_press_starts_its_post_selection_payload_after_threshold() {
+    retained_changed_tab_press(true);
+}
+
+fn retained_changed_tab_press(activate_drag: bool) {
+    use crate::pointer_receiver::{PointerReceiverHoverHit, PointerReceiverHoverHitDisposition};
+    use crate::presentation_observation::HostPresentationOutput;
+    use crate::scene::{ResolvedSurfaceProgramOperation, ResolvedSurfaceProgramStep};
+    use crate::scene_compiler::{reset_surface_compilation_count, surface_compilation_count};
+
+    fn observe_output(
+        engine: &DockEngine,
+        host: PresentationHostLease,
+        output: HostPresentationOutput,
+    ) -> CoreHostFrame {
+        let mut prelude = engine
+            .begin_host_frame(host)
+            .expect("observation frame begins");
+        prelude
+            .submit_presentation_observation(HostPresentationObservation::Batch(vec![
+                HostPresentationObservationEntry::new(
+                    output.stream(),
+                    HostPresentationStreamObservation::Captured {
+                        generation: HostPresentationCaptureGeneration::new(
+                            output.key().ordinal_for_test(),
+                        ),
+                        progress: HostPresentationProgress::Retired {
+                            settled_through: output.key(),
+                            presented: Authority::Known(Some(output.key())),
+                        },
+                    },
+                ),
+            ]))
+            .expect("the actual output is observed Presented");
+        prelude.seal(engine).expect("observed output frame seals")
+    }
+
+    let first = ItemId::new(1);
+    let second = ItemId::new(2);
+    let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap();
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([first, second]));
+    builder.set_root(SOURCE_ROOT, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(SOURCE_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
+    let mut engine = DockEngine::new(
+        builder.build().expect("two-tab workspace validates"),
+        DockPolicy::default(),
+    )
+    .expect("two-tab engine initializes");
+    let host = engine.create_presentation_host().expect("host mints");
+    publish_surface_projection(&mut engine, host, SOURCE_SURFACE, bounds);
+    let original = engine
+        .scene()
+        .ready_candidate(SOURCE_SURFACE)
+        .unwrap()
+        .clone();
+    let version = engine.version();
+    let projection = engine.interaction_projection(SOURCE_SURFACE).unwrap();
+    let tab_region = projection
+        .hit_manifest()
+        .regions()
+        .iter()
+        .find(|region| {
+            matches!(region.id().kind(), PresentationHitRegionKind::TabBody(tab)
+                if tab.item == second)
+        })
+        .expect("the unselected second tab has a real receiver")
+        .id();
+    let point = region_center(projection.hit_manifest().region(tab_region).unwrap());
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        )
+        .expect("surface pointer provider mints");
+    let mut output = None;
+
+    for (previous, kind) in [
+        (0, PointerEdgeKind::ButtonPressed(PointerButton::Primary)),
+        (1, PointerEdgeKind::ButtonReleased(PointerButton::Primary)),
+    ] {
+        reset_surface_compilation_count();
+        let before = engine.version();
+        let previous_ticket = engine
+            .scene()
+            .ready_candidate(SOURCE_SURFACE)
+            .unwrap()
+            .output_ticket();
+        let mut frame = match output {
+            Some(output) => observe_output(&engine, host, output),
+            None => begin_test_host_frame(&engine, host),
+        };
+        frame
+            .submit_surface_pointer_journal(
+                &provider,
+                local_pointer_journal(previous, [(kind, point)]),
+            )
+            .expect("the physical pointer edge stages");
+        let candidate = frame.pointer_receiver_candidates().unwrap().candidates()[0].clone();
+        let observation = if previous == 0 {
+            let projection = frame.view().interaction_projection(SOURCE_SURFACE).unwrap();
+            assert_eq!(projection.output_ticket(), original.output_ticket());
+            assert_eq!(
+                projection
+                    .plan()
+                    .pane_selected(&projection.plan().pane_records()[0]),
+                Some(first)
+            );
+            let delivery = PointerReceiverDelivery::new(
+                projection,
+                PointerReceiverDeliveryDisposition::Dock(tab_region),
+            )
+            .expect("the press hits the previously presented second-tab receiver");
+            PointerReceiverObservation::Presented(
+                PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
+                    delivery,
+                )])
+                .expect("the press answers its delivery probe"),
+            )
+        } else {
+            PointerReceiverObservation::NotApplicable
+        };
+        frame
+            .submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+                    .expect("the edge receipt batch is exact"),
+            )
+            .expect("the edge reduces through its real receiver receipt");
+        assert_eq!(
+            frame.view().workspace().tab_mru(tabs),
+            Some([second, first].as_slice())
+        );
+        if previous == 0 {
+            let view = frame.view();
+            let InteractionStatus::Armed { session } = view.interaction().status() else {
+                panic!("selecting the inactive tab must arm its drag");
+            };
+            let armed = view.interaction().armed_drag(session).unwrap();
+            assert_eq!(armed.source_validated_at, view.version());
+            assert_eq!(
+                armed.payload,
+                crate::command::MovePayload::Item(
+                    view.workspace()
+                        .capture_item_source(SOURCE_ROOT, tabs, second)
+                        .unwrap(),
+                ),
+                "the armed payload uses the post-selection command source",
+            );
+            assert_eq!(
+                armed
+                    .source_layout_facts
+                    .as_ref()
+                    .unwrap()
+                    .measurements()
+                    .ticket(),
+                original.plan().measurement_ticket().unwrap(),
+                "the press keeps the old output's source geometry provenance",
+            );
+        } else {
+            assert_eq!(frame.view().interaction().status(), InteractionStatus::Idle);
+        }
+
+        let token = frame
+            .view()
+            .begin_surface_contribution(SOURCE_SURFACE)
+            .unwrap();
+        if previous == 0 {
+            assert_ne!(Some(token.ticket()), original.plan().measurement_ticket());
+        }
+        let measurements = surface_measurements(frame.candidate_engine(), SOURCE_SURFACE, bounds);
+        let contribution = frame
+            .view()
+            .prepare_surface_contribution(token, measurements)
+            .unwrap();
+        assert_eq!(
+            surface_compilation_count(),
+            0,
+            "edge {previous} must retain measured facts"
+        );
+        frame.compile_surface_contribution(contribution).unwrap();
+        let current = frame
+            .view()
+            .scene()
+            .ready_candidate(SOURCE_SURFACE)
+            .unwrap();
+        assert!(current.plan().shares_facts(original.plan()));
+        assert_eq!(
+            current.hit_manifest().regions().as_ptr(),
+            original.hit_manifest().regions().as_ptr()
+        );
+        assert_eq!(
+            current.semantic_manifest().receivers().as_ptr(),
+            original.semantic_manifest().receivers().as_ptr()
+        );
+        assert!(std::ptr::eq(
+            current.paint_program().unwrap(),
+            original.paint_program().unwrap()
+        ));
+        assert_ne!(current.output_ticket(), original.output_ticket());
+        if previous == 1 {
+            assert_eq!(current.output_ticket(), previous_ticket);
+        }
+        assert_eq!(current.hit_manifest().output(), current.output_ticket());
+        assert_eq!(
+            current.semantic_manifest().output(),
+            current.output_ticket()
+        );
+        assert_eq!(
+            original
+                .plan()
+                .pane_selected(&original.plan().pane_records()[0]),
+            Some(first)
+        );
+
+        let mut recorded = Vec::new();
+        let mut painted_panes = Vec::new();
+        let mut painted_tabs = Vec::new();
+        current
+            .plan()
+            .visit_surface_program(|step| {
+                recorded.push(format!("{step:?}"));
+                match step {
+                    ResolvedSurfaceProgramStep::RootBegin(root) => {
+                        assert_eq!(root.title_item(), Some(second))
+                    }
+                    ResolvedSurfaceProgramStep::Operation { operation, .. } => match operation {
+                        ResolvedSurfaceProgramOperation::Pane(pane) => {
+                            painted_panes.push(current.plan().pane_selected(pane))
+                        }
+                        ResolvedSurfaceProgramOperation::Tab(tab) => {
+                            painted_tabs.push((tab.id().item, current.plan().tab_selected(tab)))
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+                Ok::<(), ()>(())
+            })
+            .expect("the complete surface program records before paint confirmation");
+        assert_eq!(painted_panes, [Some(second)]);
+        assert_eq!(painted_tabs, [(first, false), (second, true)]);
+        assert!(!recorded.is_empty());
+        let obligations = frame.issue_presentation_obligations().unwrap();
+        assert_eq!(obligations.len(), 1);
+        let token = frame
+            .view()
+            .begin_surface_contribution(SOURCE_SURFACE)
+            .unwrap();
+        let interaction = frame
+            .view()
+            .presentation_interaction(SOURCE_SURFACE)
+            .unwrap();
+        frame
+            .record_painted_surface_contribution(
+                obligations.into_iter().next().unwrap(),
+                token,
+                interaction,
+            )
+            .unwrap();
+        assert!(matches!(
+            &frame.surface_contributions().next().unwrap().state,
+            PreparedSurfaceContributionState::Retained { .. }
+        ));
+        let transition = frame
+            .finish(&mut engine)
+            .expect("the measured painted edge frame commits");
+        let outcomes = transition.reduced_pointer_edges()[0].interaction_outcomes();
+        if previous == 0 {
+            assert!(matches!(outcomes, [InteractionOutcome::DragArmed { .. }]));
+            assert!(matches!(
+                engine.interaction().status(),
+                InteractionStatus::Armed { .. }
+            ));
+        } else {
+            assert!(matches!(
+                outcomes,
+                [InteractionOutcome::Cancelled {
+                    reason: InteractionCancelReason::ReleasedBeforeDrag,
+                    ..
+                }]
+            ));
+            assert_eq!(engine.version(), before);
+        }
+        assert_eq!(transition.presentation_emissions().len(), 1);
+        output = Some(transition.presentation_emissions()[0].output());
+        assert_eq!(
+            provider.committed_through(),
+            PointerEdgeSequence::new(previous + 1)
+        );
+        assert_eq!(
+            surface_compilation_count(),
+            0,
+            "edge {previous} must never compile a full scene"
+        );
+        assert!(
+            engine
+                .scene()
+                .ready_candidate(SOURCE_SURFACE)
+                .unwrap()
+                .plan()
+                .shares_facts(original.plan())
+        );
+        assert_ne!(engine.version(), version);
+        if activate_drag {
+            break;
+        }
+    }
+
+    let output = output.unwrap();
+    if activate_drag {
+        let mut movement = observe_output(&engine, host, output);
+        let threshold = movement
+            .view()
+            .presentation_config()
+            .pointer_drag_start_distance();
+        let moved = LogicalPoint::new(point.x() + threshold + 24.0, point.y()).unwrap();
+        movement
+            .submit_surface_pointer_journal(
+                &provider,
+                local_pointer_journal(1, [(PointerEdgeKind::Moved, moved)]),
+            )
+            .unwrap();
+        let candidate = movement.pointer_receiver_candidates().unwrap().candidates()[0].clone();
+        let projection = movement
+            .view()
+            .interaction_projection(SOURCE_SURFACE)
+            .unwrap();
+        let hit = projection
+            .hit_manifest()
+            .resolve_exclusive(
+                crate::presentation_hit::PresentationPointerLane::HoverDrop,
+                moved,
+            )
+            .unwrap()
+            .map_or(PointerReceiverHoverHitDisposition::NoReceiver, |region| {
+                PointerReceiverHoverHitDisposition::Dock(region.id())
+            });
+        let hover = PointerReceiverHoverHit::new(projection, moved, hit).unwrap();
+        movement
+            .submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new([candidate.receipt(
+                    PointerReceiverObservation::Presented(
+                        PresentedPointerReceiverObservation::new([
+                            PointerReceiverProbeReceipt::HoverHit(hover),
+                        ])
+                        .unwrap(),
+                    ),
+                )])
+                .unwrap(),
+            )
+            .unwrap();
+        let expected = crate::command::MovePayload::Item(
+            movement
+                .view()
+                .workspace()
+                .capture_item_source(SOURCE_ROOT, tabs, second)
+                .unwrap(),
+        );
+        assert!(matches!(
+            movement.view().interaction().status(),
+            InteractionStatus::Dragging { .. }
+        ));
+        assert_eq!(
+            movement
+                .view()
+                .interaction()
+                .active_drag_view()
+                .unwrap()
+                .payload(),
+            &expected
+        );
+        complete_host_frame_with_explicit_surface_roster(&engine, &mut movement);
+        let transition = movement.finish(&mut engine).unwrap();
+        assert!(
+            transition.reduced_pointer_edges()[0]
+                .interaction_outcomes()
+                .iter()
+                .any(|outcome| matches!(outcome, InteractionOutcome::DragBegan { .. }))
+        );
+        assert_eq!(
+            engine.interaction().active_drag_view().unwrap().payload(),
+            &expected
+        );
+        assert_eq!(
+            engine.workspace().tab_mru(tabs),
+            Some([second, first].as_slice())
+        );
+        assert_eq!(provider.committed_through(), PointerEdgeSequence::new(2));
+        return;
+    }
+    let mut observed = observe_output(&engine, host, output);
+    observed
+        .submit_surface_pointer_journal(&provider, local_pointer_journal(2, []))
+        .expect("the observation frame reports the live provider's unchanged watermark");
+    observed
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new()).unwrap(),
+        )
+        .expect("the empty journal has no receiver probes");
+    complete_host_frame_with_explicit_surface_roster(&engine, &mut observed);
+    let transition = observed
+        .finish(&mut engine)
+        .expect("the release output is observed");
+    assert!(
+        transition
+            .presentation_observations()
+            .iter()
+            .any(|outcome| matches!(
+                outcome,
+                crate::presentation_observation::HostPresentationObservationOutcome::Retired {
+                    promotion_eligible: true,
+                    ..
+                }
+            ))
+    );
+    let presented = engine.interaction_projection(SOURCE_SURFACE).unwrap();
+    assert_eq!(
+        presented
+            .plan()
+            .pane_selected(&presented.plan().pane_records()[0]),
+        Some(second)
+    );
+    assert_eq!(
+        engine.workspace().tab_mru(tabs),
+        Some([second, first].as_slice())
+    );
+    assert_eq!(surface_compilation_count(), 0);
+}
+
+#[test]
+fn retained_selection_encoding_restart_rejects_old_receipt_and_drops_atomically() {
+    use crate::runtime::{
+        DockspaceHostFrame, DockspaceRuntimeErrorKind, DockspaceSession,
+        SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePresentationResult,
+        SurfaceProgramExecutionReceipt, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    };
+    use crate::scene_compiler::{reset_surface_compilation_count, surface_compilation_count};
+
+    fn encode(
+        frame: &mut DockspaceHostFrame<'_>,
+        selected: ItemId,
+    ) -> SurfaceProgramExecutionReceipt {
+        let mut records = Vec::new();
+        let mut panes = Vec::new();
+        let receipt = frame
+            .paint_plan(SOURCE_SURFACE)
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|step| {
+                records.push(format!("{step:?}"));
+                if let SurfacePaintProgramStep::Operation {
+                    operation: SurfacePaintProgramOperation::Pane(pane),
+                    ..
+                } = step
+                {
+                    panes.push(pane.selected());
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert!(!records.is_empty());
+        assert_eq!(panes, [Some(selected)]);
+        receipt
+    }
+
+    let first = ItemId::new(1);
+    let second = ItemId::new(2);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([first, second]));
+    builder.set_root(SOURCE_ROOT, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(SOURCE_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
+    let mut session =
+        DockspaceSession::from_workspace_for_test(builder.build().unwrap(), DockPolicy::default())
+            .unwrap();
+    let metrics = UniformSurfaceMetrics::new(
+        LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+        LogicalSize::new(0.0, 0.0).unwrap(),
+        56.0,
+    )
+    .unwrap();
+    let mut initial = session.begin_host_frame().unwrap();
+    initial.measure_surface(SOURCE_SURFACE, metrics).unwrap();
+    let receipt = encode(&mut initial, first);
+    initial.confirm_surface_painted(receipt).unwrap();
+    let mut report = initial.commit().unwrap();
+    let output = report.take_painted_outputs().pop().unwrap();
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let mut observed = session.begin_host_frame().unwrap();
+    observed
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    observed.commit().unwrap();
+    let before = session.version();
+
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.select_item_current(second).unwrap();
+    frame.begin_encoding_pass().unwrap();
+    reset_surface_compilation_count();
+    frame.measure_surface(SOURCE_SURFACE, metrics).unwrap();
+    assert_eq!(
+        surface_compilation_count(),
+        0,
+        "the first pass consumes the retained rebind"
+    );
+    let plan = frame.paint_plan(SOURCE_SURFACE).unwrap().unwrap();
+    let discarded_semantics = plan.semantic_output();
+    let discarded_receiver = plan.tab_receiver(second).unwrap();
+    let discarded_receipt = encode(&mut frame, second);
+
+    frame.restart_encoding_pass().unwrap();
+    frame.measure_surface(SOURCE_SURFACE, metrics).unwrap();
+    assert_eq!(
+        surface_compilation_count(),
+        0,
+        "restart restores the consumed rebind preparation"
+    );
+    let plan = frame.paint_plan(SOURCE_SURFACE).unwrap().unwrap();
+    let replacement_receiver = plan.tab_receiver(second).unwrap();
+    assert_ne!(plan.semantic_output(), discarded_semantics);
+    let replacement_receipt = encode(&mut frame, second);
+    assert_eq!(
+        frame
+            .confirm_surface_painted(discarded_receipt)
+            .unwrap_err()
+            .kind(),
+        DockspaceRuntimeErrorKind::HostProtocol,
+        "identical retained geometry cannot validate a discarded pass receipt",
+    );
+    frame.confirm_surface_painted(replacement_receipt).unwrap();
+    drop(frame);
+
+    assert_eq!(session.version(), before);
+    assert!(session.view().item(first).unwrap().is_selected());
+    assert_eq!(
+        session.workspace().tab_mru(tabs),
+        Some([first, second].as_slice())
+    );
+    assert!(
+        session
+            .bind_presented_receiver(&discarded_receiver)
+            .is_none()
+    );
+    assert!(
+        session
+            .bind_presented_receiver(&replacement_receiver)
+            .is_none()
+    );
+    assert_eq!(surface_compilation_count(), 0);
+}
+
+#[test]
 fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));

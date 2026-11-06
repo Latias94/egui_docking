@@ -219,7 +219,7 @@ pub(super) fn resolve<'frame>(
                 projected_root_bounds: projection,
                 source_is_projected: projection.is_some(),
                 item: None,
-                ghost_item: pane.selected(),
+                ghost_item: plan.pane_selected(pane),
                 source: DragDecorationSource::TabGroup(pane.id()),
             })
         }
@@ -440,7 +440,7 @@ fn subtree_ghost_item(plan: &PresentationPlan, source: &NodeSource) -> Option<It
             let id = record.id();
             id.root == source.root() && tabs.contains(&id.tabs)
         })
-        .and_then(|record| record.selected())
+        .and_then(|record| plan.pane_selected(record))
 }
 
 fn subtree_bounds(plan: &PresentationPlan, source: &NodeSource) -> Option<LogicalRect> {

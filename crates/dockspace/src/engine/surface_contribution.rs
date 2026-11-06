@@ -343,6 +343,61 @@ impl DockEngine {
                 },
             });
         }
+        if let Some(rebind) = self.presentation_authority.selection_rebind.as_ref()
+            && rebind.surface == surface
+            && rebind.version == self.version
+            && rebind.coordinates == token.coordinates
+            && resize_overrides.is_empty()
+            && contained_projection.is_none()
+            && native_projection.is_none()
+            && matches!(
+                self.interaction.status(),
+                InteractionStatus::Idle
+                    | InteractionStatus::Pressed { .. }
+                    | InteractionStatus::Armed { .. }
+            )
+            && matches!(self.scene().surface(surface), Some(SurfaceScene::Stale(stale))
+                if stale.paint_fallback().plan().shares_facts(&rebind.plan))
+            && let Some(layout) = rebind.plan.layout_facts()
+            && layout.config() == &self.presentation_authority.presentation_config
+            && layout.measurements().same_values(&measurements)
+            && let Some(requirement) = self
+                .presentation_requirements()
+                .surface(surface)
+                .and_then(|requirements| requirements.tab_bar(rebind.bar))
+            && let Some(Node::Tabs { selected, .. }) = self.workspace.node(rebind.bar.tabs)
+            && crate::scene_compiler::selection_geometry_unchanged(
+                &rebind.plan,
+                &self.presentation_authority.presentation_config,
+                requirement,
+                *selected,
+                &self.presentation_authority.tab_strip_states,
+            )
+            .map_err(|error| {
+                SurfaceContributionPrepareError::Compilation(PresentationCompilationError::Scene(
+                    error,
+                ))
+            })?
+            && let Some(basis) = self
+                .presentation_requirements()
+                .workspace_index()
+                .root_fingerprint(rebind.bar.root)
+            && let Some(plan) = rebind.plan.rebind_selection(
+                token.ticket(),
+                rebind.bar,
+                *selected,
+                basis.clone(),
+                measurements.clone(),
+            )
+        {
+            return Ok(PreparedSurfaceContribution {
+                token,
+                policy_revision,
+                state: PreparedSurfaceContributionState::Ready {
+                    plan: Arc::new(plan),
+                },
+            });
+        }
         let compiled = if let Some(stamp) = native_projection {
             let projection = self
                 .native_first_live_projection(stamp.saga)

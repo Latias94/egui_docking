@@ -332,7 +332,7 @@ impl SurfacePaintPlan<'_> {
             .tab_records()
             .iter()
             .find(|record| {
-                record.selected()
+                self.plan.tab_selected(record)
                     && record.id().root == current.id().root
                     && record.id().tabs == current.id().tabs
             })

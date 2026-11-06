@@ -3398,7 +3398,11 @@ impl DockEngine {
         self.publish_workspace(staged.publication);
         self.reconcile_viewport_focus_authority();
         if staged.changed {
-            self.advance_revision_caused(cause)?;
+            if let WorkspaceCommand::Select { source } = command {
+                self.advance_selection_revision_caused(cause, source)?;
+            } else {
+                self.advance_revision_caused(cause)?;
+            }
             events.push(WorkspaceEvent::new_caused(
                 cause,
                 self.version,
@@ -5841,7 +5845,11 @@ impl DockEngine {
         self.publish_workspace(candidate.ok_or(EngineError::MissingCommandOutcome { input })?);
         self.reconcile_viewport_focus_authority();
         if changed {
-            self.advance_revision(input)?;
+            if let WorkspaceCommand::Select { source } = command {
+                self.advance_selection_revision(input, source)?;
+            } else {
+                self.advance_revision(input)?;
+            }
             if !matches!(
                 command,
                 WorkspaceCommand::AttachEmptySurface { .. }
