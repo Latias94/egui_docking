@@ -94,6 +94,24 @@ impl RootStructure {
         root: RootId,
         placements: &mut SparseSecondaryMap<NodeId, NodePlacement>,
     ) -> Result<Self, CommandError> {
+        Self::build_rows(storage, root, |node, parent| {
+            placements.insert(node, NodePlacement { root, parent });
+        })
+    }
+
+    /// The checked Item writer has already repaired actual placements.
+    pub(super) fn build_after_item_move(
+        storage: &WorkspaceData,
+        root: RootId,
+    ) -> Result<Self, CommandError> {
+        Self::build_rows(storage, root, |_, _| {})
+    }
+
+    fn build_rows(
+        storage: &WorkspaceData,
+        root: RootId,
+        mut on_node: impl FnMut(NodeId, Option<ParentLink>),
+    ) -> Result<Self, CommandError> {
         let record = storage
             .roots
             .get(&root)
@@ -123,7 +141,7 @@ impl RootStructure {
                         id: node,
                         kind: RootNodeKind::Tabs,
                     });
-                    placements.insert(node, NodePlacement { root, parent });
+                    on_node(node, parent);
                     if let Some(slot) = child_slot {
                         structure.children[slot] = row;
                     }

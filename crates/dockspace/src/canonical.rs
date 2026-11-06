@@ -325,13 +325,13 @@ pub(super) fn finish_item_move(
     for split in output_splits {
         workspace.refresh_child_placements(split);
     }
-    // Only the final local rosters, including outer flattening, may be projected.
+    // Placements are final; only structural rows remain to be rebuilt.
     workspace
-        .complete_root_structure(source_root)
+        .complete_item_move_structure(source_root)
         .map_err(CanonicalizationError::AuthorityCompletion)?;
     if target_root != source_root {
         workspace
-            .complete_root_structure(target_root)
+            .complete_item_move_structure(target_root)
             .map_err(CanonicalizationError::AuthorityCompletion)?;
     }
     Ok(())

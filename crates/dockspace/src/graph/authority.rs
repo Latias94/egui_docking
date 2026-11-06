@@ -150,6 +150,22 @@ impl Workspace {
         Ok(())
     }
 
+    /// The checked Item writer has repaired placements before completing rows.
+    pub(super) fn complete_item_move_structure(
+        &mut self,
+        root: RootId,
+    ) -> Result<(), crate::error::CommandError> {
+        let Some(owner) = self.authority.roots.get_mut(&root) else {
+            return Ok(());
+        };
+        if matches!(&owner.structure, RootStructureState::Editing) {
+            owner.structure = RootStructureState::Ready(Arc::new(
+                RootStructure::build_after_item_move(&self.storage, root)?,
+            ));
+        }
+        Ok(())
+    }
+
     /// A terminal full normalizer may finish all roots it has just visited.
     pub(super) fn complete_root_structures(&mut self) -> Result<(), crate::error::CommandError> {
         let storage = &self.storage;
