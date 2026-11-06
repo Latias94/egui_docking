@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
+use slotmap::SecondaryMap;
 use thiserror::Error;
 
 use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, Workspace, is_exact_tab_mru};
@@ -384,6 +385,12 @@ enum Mark {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct Visit {
+    mark: Mark,
+    owner: Option<RootId>,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum Frame {
     Enter {
         node: NodeId,
@@ -397,8 +404,7 @@ enum Frame {
 struct Validator<'workspace> {
     workspace: &'workspace Workspace,
     errors: Vec<WorkspaceValidationError>,
-    marks: HashMap<NodeId, Mark>,
-    owners: HashMap<NodeId, Option<RootId>>,
+    visits: SecondaryMap<NodeId, Visit>,
     items: HashMap<ItemId, NodeId>,
     central_nodes: HashSet<NodeId>,
 }
@@ -408,8 +414,7 @@ impl<'workspace> Validator<'workspace> {
         Self {
             workspace,
             errors: Vec::new(),
-            marks: HashMap::new(),
-            owners: HashMap::new(),
+            visits: SecondaryMap::new(),
             items: HashMap::new(),
             central_nodes: workspace
                 .roots
@@ -435,7 +440,7 @@ impl<'workspace> Validator<'workspace> {
             .workspace
             .nodes
             .keys()
-            .filter(|node| !self.marks.contains_key(node))
+            .filter(|node| !self.visits.contains_key(*node))
             .collect();
         self.errors.extend(
             orphans
@@ -462,7 +467,7 @@ impl<'workspace> Validator<'workspace> {
             .copied()
             .filter(|node| !has_orphan_parent.contains(node))
         {
-            if !self.marks.contains_key(&orphan) {
+            if !self.visits.contains_key(orphan) {
                 self.walk(orphan, None);
             }
         }
@@ -470,7 +475,7 @@ impl<'workspace> Validator<'workspace> {
         // Components without a zero-in-degree node contain a cycle. Start one
         // deterministic traversal per still-unvisited component to report it.
         for orphan in orphans {
-            if !self.marks.contains_key(&orphan) {
+            if !self.visits.contains_key(orphan) {
                 self.walk(orphan, None);
             }
         }
@@ -494,7 +499,9 @@ impl<'workspace> Validator<'workspace> {
         while let Some(frame) = stack.pop() {
             match frame {
                 Frame::Exit(node) => {
-                    self.marks.insert(node, Mark::Done);
+                    if let Some(visit) = self.visits.get_mut(node) {
+                        visit.mark = Mark::Done;
+                    }
                 }
                 Frame::Enter {
                     node,
@@ -514,16 +521,22 @@ impl<'workspace> Validator<'workspace> {
         parent_axis: Option<Axis>,
         owner: Option<RootId>,
     ) {
-        match self.marks.get(&node_id).copied() {
-            Some(Mark::Visiting) => {
+        match self.visits.get(node_id).copied() {
+            Some(Visit {
+                mark: Mark::Visiting,
+                ..
+            }) => {
                 self.errors
                     .push(WorkspaceValidationError::Cycle { node: node_id });
                 return;
             }
-            Some(Mark::Done) => {
+            Some(Visit {
+                mark: Mark::Done,
+                owner: first_root,
+            }) => {
                 self.errors.push(WorkspaceValidationError::SharedNode {
                     node: node_id,
-                    first_root: self.owners.get(&node_id).copied().flatten(),
+                    first_root,
                     second_root: owner,
                 });
                 return;
@@ -542,8 +555,13 @@ impl<'workspace> Validator<'workspace> {
             return;
         };
 
-        self.marks.insert(node_id, Mark::Visiting);
-        self.owners.insert(node_id, owner);
+        self.visits.insert(
+            node_id,
+            Visit {
+                mark: Mark::Visiting,
+                owner,
+            },
+        );
         stack.push(Frame::Exit(node_id));
 
         match node {
@@ -706,7 +724,7 @@ impl<'workspace> Validator<'workspace> {
                     });
                 continue;
             };
-            if self.owners.get(&central).copied().flatten() != Some(root_id) {
+            if self.visits.get(central).and_then(|visit| visit.owner) != Some(root_id) {
                 self.errors
                     .push(WorkspaceValidationError::CentralNotReachable {
                         root: root_id,

@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
+use slotmap::SecondaryMap;
 use thiserror::Error;
 
 use crate::graph::{
@@ -221,8 +222,9 @@ fn canonicalize_validated_draft(workspace: &mut Workspace) -> Result<(), Canonic
         .map(|(root, record)| (*root, record.node))
         .collect();
 
+    let mut rewritten = SecondaryMap::with_capacity(workspace.nodes.capacity());
     for (root, node) in roots {
-        let next = rewrite_subtree(workspace, node, &protected_central)?
+        let next = rewrite_subtree(workspace, node, &protected_central, &mut rewritten)?
             .ok_or(CanonicalizationError::EmptyRoot { root })?;
         if let Some(record) = workspace.roots.get_mut(&root) {
             record.node = next;
@@ -230,8 +232,12 @@ fn canonicalize_validated_draft(workspace: &mut Workspace) -> Result<(), Canonic
     }
 
     let reachable = reachable_from_roots(workspace)?;
-    workspace.nodes.retain(|node, _| reachable.contains(&node));
-    workspace.tab_mru.retain(|node, _| reachable.contains(node));
+    workspace
+        .nodes
+        .retain(|node, _| reachable.contains_key(node));
+    workspace
+        .tab_mru
+        .retain(|node, _| reachable.contains_key(*node));
 
     let candidate_items = workspace.item_multiset();
     if candidate_items != original_items {
@@ -267,9 +273,9 @@ fn rewrite_subtree(
     workspace: &mut Workspace,
     node_id: NodeId,
     protected_central: &HashSet<NodeId>,
+    results: &mut SecondaryMap<NodeId, Option<NodeId>>,
 ) -> Result<Option<NodeId>, CanonicalizationError> {
     let mut stack = vec![(node_id, false)];
-    let mut results = HashMap::<NodeId, Option<NodeId>>::new();
 
     while let Some((current_id, exiting)) = stack.pop() {
         let current =
@@ -297,13 +303,14 @@ fn rewrite_subtree(
                     Some(current_id)
                 }
             }
-            Node::Split { .. } => rewrite_split(workspace, current_id, &results)?,
+            Node::Split { .. } => rewrite_split(workspace, current_id, results)?,
         };
         results.insert(current_id, result);
     }
 
     results
-        .remove(&node_id)
+        .get(node_id)
+        .copied()
         .ok_or(CanonicalizationError::MissingChild {
             owner: None,
             child: node_id,
@@ -313,7 +320,7 @@ fn rewrite_subtree(
 fn rewrite_split(
     workspace: &mut Workspace,
     node_id: NodeId,
-    results: &HashMap<NodeId, Option<NodeId>>,
+    results: &SecondaryMap<NodeId, Option<NodeId>>,
 ) -> Result<Option<NodeId>, CanonicalizationError> {
     let Some(Node::Split {
         axis,
@@ -333,7 +340,7 @@ fn rewrite_split(
     for &child in children {
         let child_result =
             results
-                .get(&child)
+                .get(child)
                 .copied()
                 .ok_or(CanonicalizationError::MissingChild {
                     owner: Some(node_id),
@@ -361,7 +368,7 @@ fn rewrite_split(
 
     let mut flattened = Vec::with_capacity(retained_children);
     for (&child, &weight) in children.iter().zip(weights) {
-        let Some(child) = results.get(&child).copied().flatten() else {
+        let Some(child) = results.get(child).copied().flatten() else {
             continue;
         };
         let parent_weight = weight.get();
@@ -421,8 +428,10 @@ fn validate_rewrite_input(workspace: &Workspace) -> Result<(), CanonicalizationE
     validate_roots(workspace, &parents)
 }
 
-fn validate_nodes(workspace: &Workspace) -> Result<HashMap<NodeId, NodeId>, CanonicalizationError> {
-    let mut parents = HashMap::<NodeId, NodeId>::new();
+fn validate_nodes(
+    workspace: &Workspace,
+) -> Result<SecondaryMap<NodeId, NodeId>, CanonicalizationError> {
+    let mut parents = SecondaryMap::<NodeId, NodeId>::new();
     let mut item_owners = BTreeMap::<ItemId, NodeId>::new();
 
     for (node_id, node) in &workspace.nodes {
@@ -511,7 +520,7 @@ fn validate_nodes(workspace: &Workspace) -> Result<HashMap<NodeId, NodeId>, Cano
 
 fn validate_roots(
     workspace: &Workspace,
-    parents: &HashMap<NodeId, NodeId>,
+    parents: &SecondaryMap<NodeId, NodeId>,
 ) -> Result<(), CanonicalizationError> {
     let mut root_nodes = HashMap::<NodeId, RootId>::new();
     for (root, record) in &workspace.roots {
@@ -521,7 +530,7 @@ fn validate_roots(
                 child: record.node,
             });
         }
-        if parents.contains_key(&record.node) {
+        if parents.contains_key(record.node) {
             return Err(CanonicalizationError::RootHasParent {
                 root: *root,
                 node: record.node,
@@ -563,14 +572,14 @@ fn validate_roots(
 }
 
 fn validate_acyclic(workspace: &Workspace) -> Result<(), CanonicalizationError> {
-    let mut in_degree: HashMap<NodeId, usize> =
+    let mut in_degree: SecondaryMap<NodeId, usize> =
         workspace.nodes.keys().map(|node| (node, 0)).collect();
     for node in workspace.nodes.values() {
         if let Node::Split { children, .. } = node {
             for child in children {
                 let degree =
                     in_degree
-                        .get_mut(child)
+                        .get_mut(*child)
                         .ok_or(CanonicalizationError::MissingChild {
                             owner: None,
                             child: *child,
@@ -582,7 +591,7 @@ fn validate_acyclic(workspace: &Workspace) -> Result<(), CanonicalizationError> 
 
     let mut ready: VecDeque<NodeId> = in_degree
         .iter()
-        .filter_map(|(node, degree)| (*degree == 0).then_some(*node))
+        .filter_map(|(node, degree)| (*degree == 0).then_some(node))
         .collect();
     let mut visited = 0_usize;
     while let Some(node_id) = ready.pop_front() {
@@ -591,7 +600,7 @@ fn validate_acyclic(workspace: &Workspace) -> Result<(), CanonicalizationError> 
             for child in children {
                 let degree =
                     in_degree
-                        .get_mut(child)
+                        .get_mut(*child)
                         .ok_or(CanonicalizationError::MissingChild {
                             owner: Some(node_id),
                             child: *child,
@@ -616,17 +625,36 @@ fn validate_acyclic(workspace: &Workspace) -> Result<(), CanonicalizationError> 
     let node = workspace
         .nodes
         .keys()
-        .find(|node| in_degree.get(node).is_some_and(|degree| *degree > 0))
+        .find(|node| in_degree.get(*node).is_some_and(|degree| *degree > 0))
         .ok_or(CanonicalizationError::TraversalInvariant {
             stage: "cycle reporting",
         })?;
     Err(CanonicalizationError::Cycle { node })
 }
 
-fn reachable_from_roots(workspace: &Workspace) -> Result<HashSet<NodeId>, CanonicalizationError> {
-    let mut reachable = HashSet::new();
+fn reachable_from_roots(
+    workspace: &Workspace,
+) -> Result<SecondaryMap<NodeId, ()>, CanonicalizationError> {
+    let mut reachable = SecondaryMap::with_capacity(workspace.nodes.capacity());
+    let mut stack = Vec::new();
     for record in workspace.roots.values() {
-        collect_reachable(workspace, record.node, &mut reachable)?;
+        stack.push(record.node);
+        while let Some(node) = stack.pop() {
+            if reachable.contains_key(node) {
+                continue;
+            }
+            let current = workspace
+                .nodes
+                .get(node)
+                .ok_or(CanonicalizationError::MissingChild {
+                    owner: None,
+                    child: node,
+                })?;
+            reachable.insert(node, ());
+            if let Node::Split { children, .. } = current {
+                stack.extend(children.iter().rev().copied());
+            }
+        }
     }
     Ok(reachable)
 }
