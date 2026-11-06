@@ -225,6 +225,31 @@ fn close(actual: f64, expected: f64) {
 }
 
 #[test]
+fn frontier_rejects_a_reordered_live_tree_with_equal_child_extents() {
+    let (mut fixture, [_, _, c, d, inner, _, outer]) = nested(0);
+    assert_eq!(
+        fixture.projection.node_rects[&c].width(),
+        fixture.projection.node_rects[&d].width()
+    );
+    let mut replacement = fixture.workspace.node(inner).unwrap().clone();
+    let Node::Split { children, .. } = &mut replacement else {
+        unreachable!();
+    };
+    children.swap(0, 1);
+    let mut builder = fixture.workspace.clone().into_builder();
+    builder.replace_node(inner, replacement).unwrap();
+    fixture.workspace = builder.build().unwrap();
+    assert!(
+        prepare_resize_axis_groups(
+            &fixture.workspace,
+            &fixture.plan,
+            vec![fixture.handle(outer, 0)],
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn nested_touching_frontier_uses_descendant_limits_and_keeps_the_far_side_fixed() {
     for central in 0..=2 {
         let (fixture, [a, b, c, d, inner, across, outer]) = nested(central);

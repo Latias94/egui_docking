@@ -52,6 +52,22 @@ impl<T> NodeMap<T> {
         }
     }
 
+    /// Visits stored entries in left-to-right depth-first first-visit order.
+    ///
+    /// Every complete generational identity appears once. This borrows only
+    /// the owned projection and allocates no traversal state. Consumers joining
+    /// a live tree must compare each yielded identity with the expected node;
+    /// iteration does not authorize that tree's commands or current contents.
+    pub fn iter_preorder(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&NodeId, &T)> + ExactSizeIterator + FusedIterator {
+        self.topology
+            .nodes
+            .iter()
+            .zip(&self.values)
+            .map(|(node, value)| (&node.id, value))
+    }
+
     /// Visits node identities in ascending order.
     pub fn keys(&self) -> impl DoubleEndedIterator<Item = &NodeId> + ExactSizeIterator {
         self.iter().map(|(node, _)| node)

@@ -1,0 +1,80 @@
+{
+  "normal_counters_enabled": true,
+  "checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "started_utc": "2026-11-06T19:51:44.070397+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T19:51:45.658780+00:00"
+    },
+    {
+      "name": "targeted",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-E",
+        "test(layout) | test(splitter_geometry) | test(preorder_export) | test(weight_sum_witness)",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T19:51:45.669806+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T19:52:16.183682+00:00"
+    },
+    {
+      "name": "workspace",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T19:52:16.245516+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T19:53:34.313531+00:00"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "--",
+        "-A",
+        "warnings",
+        "-D",
+        "clippy::correctness",
+        "-D",
+        "clippy::suspicious"
+      ],
+      "started_utc": "2026-11-06T19:53:34.334004+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T19:53:52.034236+00:00"
+    }
+  ],
+  "sources_match_formal_receipt": true,
+  "work_probe": "Not rerun: preorder output iteration leaves command/clone work unchanged."
+}

@@ -144,6 +144,11 @@ fn dense_projection_keeps_identity_order_and_owned_old_outputs() {
     .project(bounds, &[])
     .unwrap();
     let retained = reference::capture(&first);
+    let retained_preorder = first
+        .node_rects
+        .iter_preorder()
+        .map(|(&node, &rect)| (node, rect))
+        .collect::<Vec<_>>();
     let expected_keys = retained.node_rects.keys().copied().collect::<Vec<_>>();
     assert_eq!(
         first.node_rects.keys().copied().collect::<Vec<_>>(),
@@ -181,6 +186,14 @@ fn dense_projection_keeps_identity_order_and_owned_old_outputs() {
     drop(index);
     drop(workspace);
     assert_eq!(reference::capture(&first), retained);
+    assert_eq!(
+        first
+            .node_rects
+            .iter_preorder()
+            .map(|(&node, &rect)| (node, rect))
+            .collect::<Vec<_>>(),
+        retained_preorder
+    );
     assert_eq!(first.node_rects.values().len(), first.node_rects.len());
     assert_eq!(first.splits.values().len(), first.splits.len());
 }
@@ -326,6 +339,32 @@ fn sparse_recycled_tree_keeps_ordered_identity_and_cold_warm_oracle_results() {
         .unwrap()
     );
     assert_eq!(cold.node_rects.keys().copied().collect::<Vec<_>>(), ordered);
+    let frozen = reference::capture(&cold);
+    let mut nodes = cold.node_rects.iter_preorder();
+    assert_eq!(nodes.len(), preorder.len());
+    assert_eq!(nodes.size_hint(), (preorder.len(), Some(preorder.len())));
+    for (index, expected) in preorder.iter().enumerate() {
+        let (node, rect) = nodes.next().unwrap();
+        assert_eq!(node, expected);
+        assert_eq!(rect, &frozen.node_rects[expected]);
+        assert_eq!(nodes.len(), preorder.len() - index - 1);
+    }
+    assert!(nodes.next().is_none());
+    assert!(nodes.next_back().is_none());
+    assert!(nodes.next().is_none());
+    let mut mixed = cold.node_constraints.iter_preorder();
+    assert_eq!(
+        mixed.next(),
+        Some((&root_node, &frozen.node_constraints[&root_node]))
+    );
+    assert_eq!(
+        mixed.next_back(),
+        Some((&kept[0], &frozen.node_constraints[&kept[0]]))
+    );
+    assert_eq!(
+        mixed.map(|(&node, _)| node).collect::<Vec<_>>(),
+        preorder[1..preorder.len() - 1]
+    );
     assert_eq!(cold.node_constraints.len(), preorder.len());
     assert_eq!(cold.splits.len(), 2);
     assert!(!cold.node_rects.contains_key(&kept[2]));

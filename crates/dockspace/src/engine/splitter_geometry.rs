@@ -118,16 +118,20 @@ pub(super) fn prepare_resize_axis_groups(
                 if projection.node_rects.get(&root_node) != Some(&root_facts.bounds()) {
                     return None;
                 }
+                let mut projected_nodes = projection.node_rects.iter_preorder();
                 let mut pending = vec![(root_node, [0.0, 0.0], false)];
                 let mut visited = BTreeSet::new();
                 while let Some((node, outer_edges, check_extent)) = pending.pop() {
                     if !visited.insert(node) {
                         return None;
                     }
+                    let (&projected_node, &rect) = projected_nodes.next()?;
+                    if projected_node != node {
+                        return None;
+                    }
                     let incident = incidents.get(&(root, node));
                     let affected = outer_edges != [0.0, 0.0] || incident.is_some();
                     if affected || check_extent {
-                        let rect = *projection.node_rects.get(&node)?;
                         let constraints = *projection.node_constraints.get(&node)?;
                         intersect_extent_interval(
                             &mut group.common_delta,
@@ -169,7 +173,7 @@ pub(super) fn prepare_resize_axis_groups(
                     }
                     if affected {
                         let split = projection.splits.get(&node)?;
-                        let bounds = *projection.node_rects.get(&node)?;
+                        let bounds = rect;
                         validate_split_projection(
                             projection,
                             &split,
@@ -220,6 +224,9 @@ pub(super) fn prepare_resize_axis_groups(
                         };
                         pending.push((child, child_edges, affected));
                     }
+                }
+                if projected_nodes.next().is_some() {
+                    return None;
                 }
             }
             if found_incidents != incidents.len()

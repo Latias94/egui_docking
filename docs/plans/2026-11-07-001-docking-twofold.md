@@ -123,3 +123,11 @@ its production patch and restore the exact leaf source; retain
 evidence that remaining architecture choices are exhausted. Continue sequential
 complete-output reads, prepared-report ownership, payload sharing, exact cold
 effects and fewer fresh layout buffers.
+
+The sequential complete-output checkpoint passes 78 focused and 2,226 workspace
+tests. Complete paired comparisons improve all but one median against the leaf
+baseline, with 15.06–30.89% improvement at 1,024 panes. Eight of 42 group/cells
+now pass 2x (the large resize/edge cells), while the total large-workload ratio
+is 1.74–2.96x. Every small-pane cell still exceeds 2x. Five p95 and nine max
+cells regress. Keep [the complete results](../performance/2026-11-07-export-reader.md)
+and continue prepared-report, payload sharing and layout allocation/structure.

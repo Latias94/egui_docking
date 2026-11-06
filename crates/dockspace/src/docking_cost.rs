@@ -274,15 +274,23 @@ fn append_header(
     words.extend([u64::try_from(item_count).unwrap(), selected]);
 }
 
-fn append_node(
+fn append_node<'layout>(
     workspace: &Workspace,
     projection: &RootProjection,
+    nodes: &mut impl Iterator<Item = (&'layout NodeId, &'layout LogicalRect)>,
     node: NodeId,
     path: u64,
     words: &mut Vec<u64>,
 ) {
-    let rect = projection.layout.node_rects[&node];
-    let (kind, items, selected) = match workspace.node(node).unwrap() {
+    let (&projected_node, &rect) = nodes
+        .next()
+        .expect("projection must contain every DFS node");
+    assert_eq!(
+        projected_node, node,
+        "projection must match the actual DFS tree"
+    );
+    let record = workspace.node(node).unwrap();
+    let (kind, items, selected) = match record {
         Node::Tabs { items, selected } => (0, items.as_slice(), selected.map_or(0, ItemId::get)),
         Node::Split { axis, children, .. } => {
             assert_eq!(children.len(), 2, "primary matrix requires binary topology");
@@ -302,11 +310,12 @@ fn append_node(
         selected,
     );
     words.extend(items.iter().map(|item| item.get()));
-    if let Node::Split { children, .. } = workspace.node(node).unwrap() {
+    if let Node::Split { children, .. } = record {
         for (child, &node) in children.iter().enumerate() {
             append_node(
                 workspace,
                 projection,
+                nodes,
                 node,
                 path.checked_mul(2).unwrap() + u64::try_from(child).unwrap(),
                 words,
@@ -318,15 +327,94 @@ fn append_node(
 fn export_state(workspace: &Workspace, projections: &[RootProjection], panes: usize) -> Vec<u64> {
     let mut words = Vec::with_capacity(panes * 32 + projections.len() * 16);
     for projection in projections {
+        let mut nodes = projection.layout.node_rects.iter_preorder();
         append_node(
             workspace,
             projection,
+            &mut nodes,
             workspace.root(projection.root).unwrap().node,
             1,
             &mut words,
         );
+        assert!(
+            nodes.next().is_none(),
+            "projection must contain only this root"
+        );
     }
     words
+}
+
+#[test]
+fn preorder_export_matches_the_keyed_export_for_all_primary_commands() {
+    fn append_keyed(
+        workspace: &Workspace,
+        projection: &RootProjection,
+        node: NodeId,
+        path: u64,
+        words: &mut Vec<u64>,
+    ) {
+        let rect = projection.layout.node_rects[&node];
+        let (kind, items, selected) = match workspace.node(node).unwrap() {
+            Node::Tabs { items, selected } => {
+                (0, items.as_slice(), selected.map_or(0, ItemId::get))
+            }
+            Node::Split { axis, children, .. } => {
+                assert_eq!(children.len(), 2);
+                (if *axis == Axis::Horizontal { 1 } else { 2 }, &[][..], 0)
+            }
+        };
+        append_header(
+            words,
+            [projection.ordinal, path, kind],
+            [
+                integral_word(rect.x()),
+                integral_word(rect.y()),
+                integral_word(rect.width()),
+                integral_word(rect.height()),
+            ],
+            items.len(),
+            selected,
+        );
+        words.extend(items.iter().map(|item| item.get()));
+        if let Node::Split { children, .. } = workspace.node(node).unwrap() {
+            for (child, &node) in children.iter().enumerate() {
+                append_keyed(
+                    workspace,
+                    projection,
+                    node,
+                    path.checked_mul(2).unwrap() + u64::try_from(child).unwrap(),
+                    words,
+                );
+            }
+        }
+    }
+
+    for views in [1, 4] {
+        for case in Case::ALL {
+            if case == Case::CrossViewMove && views == 1 {
+                continue;
+            }
+            let mut fixture = fixture(16, views, WIDTHS[0]);
+            let request = capture_request(&fixture, case, views, WIDTHS[1]);
+            let _ = apply_request(&mut fixture, request);
+            let projections = project_all_roots(&fixture);
+            let mut expected = Vec::new();
+            for projection in &projections {
+                append_keyed(
+                    &fixture.workspace,
+                    projection,
+                    fixture.workspace.root(projection.root).unwrap().node,
+                    1,
+                    &mut expected,
+                );
+            }
+            assert_eq!(export_state(&fixture.workspace, &projections, 16), expected);
+            assert_eq!(
+                expected,
+                expected_state(16, views, integral_word(fixture.bounds.width()), case)
+            );
+        }
+    }
 }
 
 struct PhaseTimes {
