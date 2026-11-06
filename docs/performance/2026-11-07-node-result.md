@@ -79,3 +79,6 @@ the original reviewed patch, its exact composition record and the thirteen
 changed control/candidate file pairs. All 455 inputs were read back and compared
 with their original bytes. The unchanged original control remains explicitly
 bound to `0b8ab8e`, independent of later documentation or native CI commits.
+[Independent evidence review](2026-11-07-node-result/evidence-review.md)
+reproduces all comparison rows, checks archived source pairs against immutable
+commits and verifies complete vectors, raw samples and retained negative cases.

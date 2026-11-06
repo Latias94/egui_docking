@@ -36,7 +36,12 @@ Baselines:
 The public revisions above are historical publication baselines. Current
 tracked native Git pins select egui `f94ee58b3914de7ad71dab36919b329ef36b4035`
 and Winit `2664589f0bd6fd03b2a5490f23bcd692853e63dd`; egui's internal Winit
-dependency and the integration lockfile agree. Earlier locked/offline qualification
+dependency and the integration lockfile agree. The latest inspection-only change
+passes local plugin and native compile/driver-unit qualification; its current
+Linux physical result is tracked in the
+[inspection record](../performance/2026-11-07-viewport-inspection.md).
+The following clean-checkout qualification describes the earlier published egui
+revision `56e3db49` and the same Winit revision. Earlier locked/offline qualification
 used locally seeded Git objects without path overrides. Both exact revisions
 are now published and fetched successfully from GitHub in empty repositories.
 The three CI refs agree, Winit's ignored source-test lockfile is generated
