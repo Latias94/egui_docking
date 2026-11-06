@@ -1,0 +1,80 @@
+{
+  "normal_counters_enabled": true,
+  "checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "started_utc": "2026-11-06T19:44:08.215447+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T19:44:09.749600+00:00"
+    },
+    {
+      "name": "targeted",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "dockspace",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "-j1",
+        "-E",
+        "test(layout) | test(splitter_geometry) | test(weight_sum_witness)",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T19:44:09.760674+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T19:44:30.180692+00:00"
+    },
+    {
+      "name": "workspace",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "-j1",
+        "--no-fail-fast"
+      ],
+      "started_utc": "2026-11-06T19:44:30.237272+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T19:45:30.326128+00:00"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "--",
+        "-A",
+        "warnings",
+        "-D",
+        "clippy::correctness",
+        "-D",
+        "clippy::suspicious"
+      ],
+      "started_utc": "2026-11-06T19:45:30.377948+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T19:45:47.521638+00:00"
+    }
+  ],
+  "sources_match_formal_receipt": true,
+  "work_probe": "Not rerun: solver-only arithmetic reuse leaves command/clone work unchanged."
+}

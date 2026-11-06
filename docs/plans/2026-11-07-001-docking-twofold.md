@@ -114,3 +114,12 @@ Fix `5089b4f` moves registration after both root loops. The original public
 return-to-origin test fails first, then the complete 292/335-test no-feature and
 persistence-feature host suites pass. The corrected head's Workspace, host,
 Windows and macOS jobs pass; remaining jobs still require their final result.
+
+The solver-aggregate experiment passes its exact numeric/error tests and full
+workspace, but 14/42 medians regress and only 8/21 cells improve in both groups.
+The 1,024-pane effect is -1.08% to +3.10%, without a stable material gain. Reject
+its production patch and restore the exact leaf source; retain
+[the full experiment](../performance/2026-11-07-solver-aggregate.md). This is not
+evidence that remaining architecture choices are exhausted. Continue sequential
+complete-output reads, prepared-report ownership, payload sharing, exact cold
+effects and fewer fresh layout buffers.
