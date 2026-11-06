@@ -64,6 +64,72 @@ fn input(time: f64, events: Vec<Event>) -> RawInput {
     }
 }
 
+#[test]
+fn measured_titles_are_painted_from_the_same_pass_and_refresh_next_pass() {
+    struct ChangingTitles(std::cell::Cell<u32>);
+
+    impl PaneView for ChangingTitles {
+        fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+            let revision = self.0.get() + 1;
+            self.0.set(revision);
+            Some(format!("Title {}:{revision}", item.get()).into())
+        }
+
+        fn ui(&mut self, _: ItemId, _: &mut Ui) {}
+    }
+
+    for owned in [true, false] {
+        let context = Context::default();
+        context.enable_accesskit();
+        context.options_mut(|options| options.max_passes = NonZeroUsize::new(1).unwrap());
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
+        )])
+        .unwrap();
+        let mut dockspace = Dockspace::builder(("pass-title-snapshot", owned), layout)
+            .build()
+            .unwrap();
+        let mut panes = ChangingTitles(std::cell::Cell::new(0));
+        for pass in 0..2 {
+            let raw = input(f64::from(pass), Vec::new());
+            let output = if owned {
+                dockspace
+                    .run_single_surface(&context, raw, SURFACE, &mut panes)
+                    .unwrap()
+                    .0
+            } else {
+                crate::run_ui(&context, raw, |ui| {
+                    dockspace
+                        .show_single_surface(SURFACE, ui, &mut panes)
+                        .unwrap();
+                })
+            };
+            let (output, receipt) = output.into_parts();
+            let labels = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == Role::Tab)
+                .map(|(_, node)| node.label().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                labels,
+                [
+                    format!("Title 1:{}", pass * 2 + 1),
+                    format!("Title 2:{}", pass * 2 + 2),
+                ],
+                "measurement and painting must use one title snapshot per pass, owned={owned}"
+            );
+            output.drop_without_applying_deltas();
+            receipt.report(SurfacePresentationResult::Presented);
+        }
+    }
+}
+
 fn press(position: Pos2) -> Vec<Event> {
     vec![
         Event::PointerMoved(position),
@@ -157,6 +223,73 @@ fn presented_tabs(id: &'static str) -> (Context, Dockspace, RunPanes, Pos2) {
     assert!(!dockspace.measurement_deferred);
     panes.calls.clear();
     (context, dockspace, panes, position)
+}
+
+#[test]
+fn keyboard_navigation_focuses_the_target_tab_before_its_queued_selection() {
+    let (context, mut dockspace, mut panes, position) = presented_tabs("on-demand-tab-focus");
+    for (time, events) in [
+        (1.0, press(position)),
+        (
+            1.1,
+            vec![Event::PointerButton {
+                pos: position,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ),
+    ] {
+        let (output, _) = dockspace
+            .run_single_surface(&context, input(time, events), SURFACE, &mut panes)
+            .unwrap();
+        let (output, receipt) = output.into_parts();
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert!(dockspace.view().item(SECOND).unwrap().is_selected());
+    let before = context.memory(egui::Memory::focused).unwrap();
+    let (output, _) = dockspace
+        .run_single_surface(
+            &context,
+            input(
+                1.2,
+                vec![Event::Key {
+                    key: egui::Key::ArrowLeft,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ),
+            SURFACE,
+            &mut panes,
+        )
+        .unwrap();
+    let (output, receipt) = output.into_parts();
+    let target = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::Tab && node.label() == Some("First"))
+        .unwrap()
+        .0;
+    let focused = context.memory(egui::Memory::focused).unwrap();
+    assert_ne!(focused, before);
+    assert_eq!(focused.value(), target.0);
+    output.drop_without_applying_deltas();
+    receipt.report(SurfacePresentationResult::Presented);
+
+    let (output, _) = dockspace
+        .run_single_surface(&context, input(1.3, Vec::new()), SURFACE, &mut panes)
+        .unwrap();
+    let (output, receipt) = output.into_parts();
+    output.drop_without_applying_deltas();
+    receipt.report(SurfacePresentationResult::Presented);
+    assert!(dockspace.view().item(FIRST).unwrap().is_selected());
 }
 
 struct LateDiscard {

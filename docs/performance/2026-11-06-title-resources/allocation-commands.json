@@ -1,0 +1,138 @@
+[
+  {
+    "condition": "baseline",
+    "step": "lock",
+    "command": [
+      "cargo",
+      "generate-lockfile",
+      "--manifest-path",
+      "/private/tmp/dockspace-refresh-20261106-3803549/allocation-baseline/Cargo.toml",
+      "--offline"
+    ],
+    "started_utc": "2026-11-06T08:43:33.057314+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:43:33.211304+00:00"
+  },
+  {
+    "condition": "baseline",
+    "step": "build",
+    "command": [
+      "cargo",
+      "build",
+      "--manifest-path",
+      "/private/tmp/dockspace-refresh-20261106-3803549/allocation-baseline/Cargo.toml",
+      "--profile",
+      "production",
+      "--locked",
+      "--offline",
+      "--target-dir",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-workspace/target",
+      "--message-format=json-render-diagnostics"
+    ],
+    "started_utc": "2026-11-06T08:43:33.211559+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:45:56.187129+00:00"
+  },
+  {
+    "condition": "candidate",
+    "step": "lock",
+    "command": [
+      "cargo",
+      "generate-lockfile",
+      "--manifest-path",
+      "/private/tmp/dockspace-refresh-20261106-3803549/allocation-candidate/Cargo.toml",
+      "--offline"
+    ],
+    "started_utc": "2026-11-06T08:45:56.192982+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:45:56.349790+00:00"
+  },
+  {
+    "condition": "candidate",
+    "step": "build",
+    "command": [
+      "cargo",
+      "build",
+      "--manifest-path",
+      "/private/tmp/dockspace-refresh-20261106-3803549/allocation-candidate/Cargo.toml",
+      "--profile",
+      "production",
+      "--locked",
+      "--offline",
+      "--target-dir",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-workspace/target",
+      "--message-format=json-render-diagnostics"
+    ],
+    "started_utc": "2026-11-06T08:45:56.350038+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:47:31.650808+00:00"
+  },
+  {
+    "run": 1,
+    "condition": "baseline",
+    "command": [
+      "/private/tmp/dockspace-refresh-20261106-3803549/allocation-baseline-bin",
+      "--samples",
+      "6",
+      "--warmup",
+      "2",
+      "--panes",
+      "16,128,1024"
+    ],
+    "binary_sha256": "66c88c127027880f089b47e8000009f4f1933ed9e8423f961bcc4cba028566f4",
+    "started_utc": "2026-11-06T08:47:31.668581+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:47:51.764790+00:00"
+  },
+  {
+    "run": 2,
+    "condition": "candidate",
+    "command": [
+      "/private/tmp/dockspace-refresh-20261106-3803549/allocation-candidate-bin",
+      "--samples",
+      "6",
+      "--warmup",
+      "2",
+      "--panes",
+      "16,128,1024"
+    ],
+    "binary_sha256": "7fe051be0ffba6188f3d7f04d6073c82c17674af9b23ac14d3817cbf9c6f2101",
+    "started_utc": "2026-11-06T08:47:51.769170+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:48:09.746575+00:00"
+  },
+  {
+    "run": 3,
+    "condition": "candidate",
+    "command": [
+      "/private/tmp/dockspace-refresh-20261106-3803549/allocation-candidate-bin",
+      "--samples",
+      "6",
+      "--warmup",
+      "2",
+      "--panes",
+      "16,128,1024"
+    ],
+    "binary_sha256": "7fe051be0ffba6188f3d7f04d6073c82c17674af9b23ac14d3817cbf9c6f2101",
+    "started_utc": "2026-11-06T08:48:09.751576+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:48:27.743429+00:00"
+  },
+  {
+    "run": 4,
+    "condition": "baseline",
+    "command": [
+      "/private/tmp/dockspace-refresh-20261106-3803549/allocation-baseline-bin",
+      "--samples",
+      "6",
+      "--warmup",
+      "2",
+      "--panes",
+      "16,128,1024"
+    ],
+    "binary_sha256": "66c88c127027880f089b47e8000009f4f1933ed9e8423f961bcc4cba028566f4",
+    "started_utc": "2026-11-06T08:48:27.747993+00:00",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:48:47.848776+00:00"
+  }
+]

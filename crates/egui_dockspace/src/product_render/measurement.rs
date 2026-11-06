@@ -1,6 +1,7 @@
 //! Egui-owned measurement facts for one renderer-neutral host frame.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::OnceCell;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use dockspace::geometry::LogicalSize;
@@ -29,49 +30,59 @@ pub(crate) struct TabPaintResource {
 
 #[derive(Default)]
 pub(crate) struct PaintResources {
-    tab_visuals: BTreeMap<ItemId, DockspaceVisualId>,
-    items: BTreeMap<ItemId, TabPaintResource>,
+    tab_visuals: OnceCell<HashMap<ItemId, DockspaceVisualId>>,
+    items: HashMap<ItemId, TabPaintResource>,
     missing: BTreeSet<ItemId>,
 }
 
 impl PaintResources {
-    pub(crate) fn from_plan(
+    pub(crate) fn prepare_for_plan(
+        &mut self,
         plan: dockspace::runtime::SurfacePaintPlan<'_>,
         ui: &Ui,
         panes: &dyn PaneView,
         style: &DockStyle,
-    ) -> Result<Self, DockspaceRuntimeError> {
-        let mut resources = Self::default();
-        plan.visit_tab_resources(|visual, item| {
-            resources.insert_tab(visual, item, ui, panes, style);
+    ) -> Result<(), DockspaceRuntimeError> {
+        plan.visit_tab_resources(|_, item| {
+            self.get_or_shape(item, ui, panes, style);
         })?;
-        Ok(resources)
+        Ok(())
     }
 
-    fn insert_tab(
+    fn get_or_shape(
         &mut self,
-        visual: DockspaceVisualId,
         item: ItemId,
         ui: &Ui,
         panes: &dyn PaneView,
         style: &DockStyle,
-    ) {
-        if let std::collections::btree_map::Entry::Vacant(entry) = self.items.entry(item) {
+    ) -> &TabPaintResource {
+        self.items.entry(item).or_insert_with(|| {
             let resource = shape_tab(ui, panes, style, item);
             if resource.missing {
                 self.missing.insert(item);
             }
-            entry.insert(resource);
-        }
-        // The focus map must point at the visible tab widget, never at a
-        // popup row or a drag ghost which happens to reuse the same item.
-        if visual.kind() == dockspace::runtime::DockspaceVisualKind::Tab {
-            self.tab_visuals.entry(item).or_insert(visual);
-        }
+            resource
+        })
     }
 
-    pub(crate) fn tab_visual(&self, item: ItemId) -> Option<DockspaceVisualId> {
-        self.tab_visuals.get(&item).copied()
+    pub(crate) fn tab_visual(
+        &self,
+        plan: dockspace::runtime::SurfacePaintPlan<'_>,
+        item: ItemId,
+    ) -> Option<DockspaceVisualId> {
+        if self.tab_visuals.get().is_none() {
+            // Ordinary paint does not query this map. Navigation and diagnostics
+            // materialize it once from this call's exact program, in program order.
+            let mut visuals = HashMap::new();
+            plan.visit_tab_resources(|visual, item| {
+                if visual.kind() == dockspace::runtime::DockspaceVisualKind::Tab {
+                    visuals.entry(item).or_insert(visual);
+                }
+            })
+            .ok()?;
+            let _ = self.tab_visuals.set(visuals);
+        }
+        self.tab_visuals.get()?.get(&item).copied()
     }
 
     pub(crate) fn missing_items(&self) -> impl Iterator<Item = ItemId> + '_ {
@@ -91,6 +102,7 @@ pub(crate) fn measure_surface(
     popup_rect: egui::Rect,
     panes: &dyn PaneView,
     style: &DockStyle,
+    mut resources: Option<&mut PaintResources>,
 ) -> Result<BTreeSet<ItemId>, DockspaceError> {
     let dock_bounds =
         logical_rect(dock_rect).map_err(|()| DockspaceErrorSource::InvalidMeasurement {
@@ -117,7 +129,7 @@ pub(crate) fn measure_surface(
         )
         .max(0),
     ) + popup_stroke;
-    let mut row_heights = BTreeMap::<DockspaceVisualId, f64>::new();
+    let mut row_heights = HashMap::<DockspaceVisualId, f64>::new();
     let mut missing = BTreeSet::new();
     let mut adapter_error = None;
 
@@ -131,6 +143,7 @@ pub(crate) fn measure_surface(
                 dock_bounds,
                 popup_bounds,
                 &mut row_heights,
+                resources.as_deref_mut(),
                 &mut missing,
                 horizontal_padding,
                 vertical_padding,
@@ -163,7 +176,8 @@ fn resolve_measurement(
     style: &DockStyle,
     dock_bounds: dockspace::geometry::LogicalRect,
     popup_bounds: dockspace::geometry::LogicalRect,
-    row_heights: &mut BTreeMap<DockspaceVisualId, f64>,
+    row_heights: &mut HashMap<DockspaceVisualId, f64>,
+    resources: Option<&mut PaintResources>,
     missing: &mut BTreeSet<ItemId>,
     horizontal_padding: f32,
     vertical_padding: f32,
@@ -192,7 +206,14 @@ fn resolve_measurement(
             bar,
             item,
         } => {
-            let resource = shape_tab(ui, panes, style, item);
+            let uncached;
+            let resource = if let Some(resources) = resources {
+                resources.get_or_shape(item, ui, panes, style)
+            } else {
+                // Independent native measurement has no same-pass paint owner.
+                uncached = shape_tab(ui, panes, style, item);
+                &uncached
+            };
             if resource.missing {
                 missing.insert(item);
             }

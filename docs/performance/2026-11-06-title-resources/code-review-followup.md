@@ -1,0 +1,7 @@
+**未发现阻断问题。** 本次仅复核这次调整及其直接调用关系；审查前后，8 个 Rust 文件的 SHA-256 均与 [state.json](/tmp/dockspace-refresh-20261106-3803549/state.json) 一致。
+
+- **Native 独立测量恢复了逐项创建、逐项释放的生命周期。** `None` 分支局部调用 `shape_tab`，读取尺寸和缺失状态后释放资源，不填充 `PaintResources`；返回的缺失项集合独立保留。Native 绘制仍传入新的默认资源集合，没有引入测量与绘制之间的隐式复用。见 [measurement.rs:208](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_render/measurement.rs:208)、[native_support.rs:340](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/native_support.rs:340)、[native_support.rs:405](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/native_support.rs:405)。
+- **两条 single-surface 路径的所有权转移成立。** 每个 pass 创建本地资源，测量临时借用，随后按值移入绘制；跳过测量时由绘制补齐资源。没有绘制计划或错误提前返回时，资源随局部作用域释放。测量与绘制沿用同一 `Ui`、panes 和样式，未发现新增的样式或生命周期不一致。见 [product_owned_run.rs:398](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_owned_run.rs:398)、[product_dockspace.rs:872](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_dockspace.rs:872)。
+- **缺失项回传及绘制补项保持完整。** 两种测量模式均记录缺失项；两条 owner 都在决定是否绘制之前合并测量结果，因此仅测量的缺失项不会丢失。绘制准备仍补齐未测量的项，焦点映射仍由绘制 program 填充。见 [measurement.rs:216](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_render/measurement.rs:216)、[measurement.rs:38](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_render/measurement.rs:38)。
+
+本次仅作静态审查，未修改文件、运行 Cargo／测试／基准或启动代理；该结论不替代最终源码的完整门禁结果。

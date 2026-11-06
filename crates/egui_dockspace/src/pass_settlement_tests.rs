@@ -108,6 +108,7 @@ fn stage_surface(
         plan,
         &mut SettlementPane,
         &DockStyle::default(),
+        product_render::PaintResources::default(),
         PointerActionAuthority::LocalResponses {
             local_actions: true,
             presentation_settlement: true,

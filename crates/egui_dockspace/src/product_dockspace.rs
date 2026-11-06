@@ -869,6 +869,7 @@ impl Dockspace {
                 SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured) => (true, false),
                 SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity) => (false, true),
             };
+            let mut resources = product_render::PaintResources::default();
             if measure {
                 missing.extend(product_render::measure_surface(
                     &mut frame,
@@ -878,6 +879,7 @@ impl Dockspace {
                     popup_rect,
                     panes,
                     &self.style,
+                    Some(&mut resources),
                 )?);
             }
             self.ui_actions
@@ -902,6 +904,7 @@ impl Dockspace {
                     plan,
                     panes,
                     &self.style,
+                    resources,
                     if presentation_settlement_available {
                         product_render::PointerActionAuthority::HostJournal
                     } else {

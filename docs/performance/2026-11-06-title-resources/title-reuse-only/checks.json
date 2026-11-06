@@ -1,0 +1,228 @@
+[
+  {
+    "check": "adapter-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "egui_dockspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:21:29.009720+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:21:37.762406+00:00"
+  },
+  {
+    "check": "workspace-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:21:37.762764+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:22:14.461601+00:00"
+  },
+  {
+    "check": "host-default",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:22:14.462042+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:22:36.786221+00:00"
+  },
+  {
+    "check": "host-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:22:36.786482+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:22:59.929970+00:00"
+  },
+  {
+    "check": "native-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:22:59.930279+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:23:48.894592+00:00"
+  },
+  {
+    "check": "clippy-workspace",
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started_utc": "2026-11-06T08:23:48.895184+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:23:51.800127+00:00"
+  },
+  {
+    "check": "clippy-native",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started_utc": "2026-11-06T08:23:51.800414+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:24:07.385481+00:00"
+  },
+  {
+    "check": "doctests",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--all-features",
+      "--doc",
+      "--locked",
+      "--offline"
+    ],
+    "started_utc": "2026-11-06T08:24:07.385986+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:24:09.905413+00:00"
+  },
+  {
+    "check": "fmt-workspace",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "started_utc": "2026-11-06T08:24:09.906241+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:24:11.514049+00:00"
+  },
+  {
+    "check": "dependency-boundary",
+    "command": [
+      "python3",
+      "scripts/check_core_dependencies.py"
+    ],
+    "started_utc": "2026-11-06T08:24:11.514340+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:24:11.617684+00:00"
+  },
+  {
+    "check": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "started_utc": "2026-11-06T08:24:11.617960+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:24:11.639898+00:00"
+  },
+  {
+    "check": "product-build",
+    "command": [
+      "cargo",
+      "build",
+      "--manifest-path",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-product-harness/Cargo.toml",
+      "--profile",
+      "production",
+      "--locked",
+      "--offline",
+      "--example",
+      "product_cost",
+      "--message-format=json-render-diagnostics"
+    ],
+    "started_utc": "2026-11-06T08:24:11.640185+00:00",
+    "source_snapshot_sha256": "09850692f20d0f65808da8343ad69e763c8b8984a5ea9849406f32e92d32610f",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:25:04.228886+00:00"
+  }
+]

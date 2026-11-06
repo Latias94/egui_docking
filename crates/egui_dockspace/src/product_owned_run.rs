@@ -396,6 +396,7 @@ impl Dockspace {
                             }
                         };
                         let mut missing = BTreeSet::new();
+                        let mut resources = product_render::PaintResources::default();
                         if measure {
                             missing.extend(product_render::measure_surface(
                                 &mut frame,
@@ -405,6 +406,7 @@ impl Dockspace {
                                 ui.ctx().input(egui::InputState::content_rect).round_ui(),
                                 panes,
                                 &self.style,
+                                Some(&mut resources),
                             )?);
                         }
                         self.ui_actions.stage_touch_menu(
@@ -434,6 +436,7 @@ impl Dockspace {
                                         plan,
                                         panes,
                                         &self.style,
+                                        resources,
                                         product_render::PointerActionAuthority::HostJournal,
                                         #[cfg(feature = "native-render-support")]
                                         None,

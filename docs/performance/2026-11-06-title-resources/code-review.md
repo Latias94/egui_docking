@@ -1,0 +1,11 @@
+**未发现可操作的阻断问题。** 在当前两条 single-surface owner 的受控调用链内，私有、调用内的资源所有权转移是成立的，不需要新增运行时证明或缓存机制。
+
+审查范围为 `state.json` 指定的 8 个 Rust 路径相对 `3803549e35bbed875728d491bf1da44a3c4149d3` 的当前差异，以及必要调用点；审查前后文件哈希均与该快照一致。
+
+- **资源生命周期与样式一致性成立。** 测量每次创建新的 `PaintResources`，按 `ItemId` 保留首次得到的标题字符串和 `Arc<Galley>`；绘制准备只补齐不存在的项，随后渲染器借用同一集合。资源不借用 `Ui` 或 pane，也未存入跨 pass 状态。两条 owner 在测量与绘制之间没有替换 `Ui`、`DockStyle` 或 panes；中间的 touch-menu staging 只登记请求。见 [measurement.rs:67](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_render/measurement.rs:67)、[product_render/mod.rs:361](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_render/mod.rs:361)。
+- **跳过测量、补项与缺失项回传正确。** 两条 owner 跳过测量时均传入 `Default`，由当前 paint program 获取当前资源；正常测量时，均在可能不绘制的分支之前收集测量缺失项，因此仅测量、未绘制的缺失项仍进入响应。program 遍历也包含 popup rows 和 drag ghost，可补齐未测量的项。见 [product_owned_run.rs:398](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_owned_run.rs:398)、[product_dockspace.rs:872](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_dockspace.rs:872)、[paint.rs:1480](/Users/frankorz/codes/rust/egui_docking/crates/dockspace/src/runtime/paint.rs:1480)。
+- **焦点映射和 native 边界保持合理。** 测量仅填充 item 资源；`tab_visuals` 仍由绘制 program 的资源遍历填充，没有把所有测量项加入焦点映射。native 公开测量接口取出缺失集合并释放其余资源，公开绘制接口独立传入 `Default`，没有引入隐式复用。见 [measurement.rs:38](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_render/measurement.rs:38)、[native_support.rs:340](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/native_support.rs:340)、[native_support.rs:396](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/native_support.rs:396)。
+
+实质限制：新增回归通过变化的 getter 和 AccessKit 标签检查两条 owner 的同轮标题与下一轮刷新，但设置了 `max_passes = 1`，未直接验证同一 run 内的 discarded-pass 重试，也未直接断言 Galley 复用或覆盖 ghost／popup／仅测量缺失项组合。见 [product_owned_run_tests.rs:68](/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_owned_run_tests.rs:68)。
+
+本次仅作静态审查，未修改文件、运行 Cargo／测试／基准或启动代理。性能验证仍待完成，不能由调用次数减少推断实际收益。

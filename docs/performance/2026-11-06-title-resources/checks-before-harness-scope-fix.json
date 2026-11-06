@@ -1,0 +1,127 @@
+[
+  {
+    "check": "adapter-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "egui_dockspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:13:37.874051+00:00",
+    "source_snapshot_sha256": "7850649e374e12233ee2dcc69722e3e6c307d9bfa3f63c2c31323d598c817789",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:13:41.166866+00:00"
+  },
+  {
+    "check": "workspace-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:13:41.167311+00:00",
+    "source_snapshot_sha256": "7850649e374e12233ee2dcc69722e3e6c307d9bfa3f63c2c31323d598c817789",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:14:22.567928+00:00"
+  },
+  {
+    "check": "host-default",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:14:22.568276+00:00",
+    "source_snapshot_sha256": "7850649e374e12233ee2dcc69722e3e6c307d9bfa3f63c2c31323d598c817789",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:14:44.590350+00:00"
+  },
+  {
+    "check": "host-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:14:44.590641+00:00",
+    "source_snapshot_sha256": "7850649e374e12233ee2dcc69722e3e6c307d9bfa3f63c2c31323d598c817789",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:15:07.614787+00:00"
+  },
+  {
+    "check": "native-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:15:07.615108+00:00",
+    "source_snapshot_sha256": "7850649e374e12233ee2dcc69722e3e6c307d9bfa3f63c2c31323d598c817789",
+    "returncode": 0,
+    "finished_utc": "2026-11-06T08:15:57.585265+00:00"
+  },
+  {
+    "check": "fork-product-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-product-harness/Cargo.toml",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--offline",
+      "-j",
+      "1",
+      "--no-fail-fast"
+    ],
+    "started_utc": "2026-11-06T08:15:57.585723+00:00",
+    "source_snapshot_sha256": "7850649e374e12233ee2dcc69722e3e6c307d9bfa3f63c2c31323d598c817789",
+    "returncode": 4,
+    "finished_utc": "2026-11-06T08:17:16.773885+00:00"
+  }
+]

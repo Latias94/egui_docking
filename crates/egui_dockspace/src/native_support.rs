@@ -343,6 +343,7 @@ pub fn paint_surface(
         plan,
         panes,
         style,
+        product_render::PaintResources::default(),
         product_render::PointerActionAuthority::ExternalJournal,
         Some(scroll_registrar),
     )
@@ -401,7 +402,9 @@ pub fn measure_surface(
     panes: &dyn PaneView,
     style: &DockStyle,
 ) -> Result<BTreeSet<ItemId>, DockspaceError> {
-    product_render::measure_surface(frame, surface, ui, dock_rect, popup_rect, panes, style)
+    product_render::measure_surface(
+        frame, surface, ui, dock_rect, popup_rect, panes, style, None,
+    )
 }
 
 /// Explicitly settles every surface not painted by the native host callback.

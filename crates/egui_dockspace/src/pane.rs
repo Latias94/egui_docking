@@ -24,6 +24,8 @@ pub trait PaneView {
     ///
     /// Returning `None` reports that the application registry has no entry for
     /// the item. The adapter can then render a recoverable missing-pane state.
+    /// The single-surface owners retain each measured title and its text layout
+    /// for painting in that same pass. A later pass reads the title again.
     fn title(&self, item: ItemId) -> Option<WidgetText>;
 
     /// Renders the application content associated with `item`.

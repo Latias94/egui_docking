@@ -202,7 +202,7 @@ fn publish_native_tab_strip_diagnostics(
             TabStripMemberVisibility::PartiallyVisible => "partially-visible",
             TabStripMemberVisibility::Hidden => continue,
         };
-        if context.resources.tab_visual(member.item()) != Some(member.visual_id()) {
+        if context.resources.tab_visual(context.plan, member.item()) != Some(member.visual_id()) {
             continue;
         }
         let Some(resource) = context.resources.item(member.item()) else {
@@ -500,7 +500,7 @@ fn capture_tab_actions(
                 .ui
                 .memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
             if let Some(target) = action.tab_focus_target()
-                && let Some(target_visual) = context.resources.tab_visual(target)
+                && let Some(target_visual) = context.resources.tab_visual(context.plan, target)
             {
                 context.ui.memory_mut(|memory| {
                     memory.request_focus(tab_id_for_visual(

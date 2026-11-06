@@ -36,8 +36,7 @@ use crate::pass_settlement::PendingPaneFocusObservation;
 use crate::response::{DockspaceCapability, DockspaceUnavailableReason};
 use crate::style::{DockStyle, ResolvedDockVisuals};
 
-use measurement::PaintResources;
-pub(crate) use measurement::measure_surface;
+pub(crate) use measurement::{PaintResources, measure_surface};
 
 /// One action captured from a stable egui widget and response source.
 ///
@@ -365,13 +364,14 @@ pub(crate) fn paint_surface(
     plan: SurfacePaintPlan<'_>,
     panes: &mut dyn PaneView,
     style: &DockStyle,
+    mut resources: PaintResources,
     pointer_authority: PointerActionAuthority,
     #[cfg(feature = "native-render-support")] scroll_registrar: Option<
         &mut dyn FnMut(&Ui, egui::Rect, Id) -> (Id, egui::LayerId),
     >,
 ) -> Result<ProductPaintOutput, DockspaceRuntimeError> {
     let visuals = style.resolved_visuals(ui.visuals());
-    let resources = PaintResources::from_plan(plan, ui, panes, style)?;
+    resources.prepare_for_plan(plan, ui, panes, style)?;
     let pane_focus_request = plan.pane_focus_request();
     let mut pane_focus_target_requested = false;
     let mut pane_focus_target = None;
