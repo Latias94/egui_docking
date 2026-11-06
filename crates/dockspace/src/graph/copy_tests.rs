@@ -46,10 +46,8 @@ fn a_workspace_fork_copies_all_live_handles_without_copying_payloads() {
     let copies = structural_work::snapshot().workspace_storage;
     assert_eq!(copies.node_store_forks, 1);
     assert_eq!(copies.node_handle_clones, workspace.nodes().count());
-    assert_eq!(copies.mru_store_forks, 1);
-    assert_eq!(copies.mru_handle_clones, tabs.len());
     assert_eq!(copies.node_payload_clones, 0);
-    assert_eq!(copies.mru_payload_clones, 0);
+    assert_eq!(copies.mru_item_copies, 0);
     for (node, value) in workspace.nodes() {
         assert!(std::ptr::eq(value, fork.node(node).unwrap()));
     }
@@ -63,7 +61,7 @@ fn a_workspace_fork_copies_all_live_handles_without_copying_payloads() {
 }
 
 #[test]
-fn center_move_detaches_only_two_node_and_mru_payloads_and_unique_followup_copies_none() {
+fn center_move_copies_only_two_complete_tabs_payloads_and_unique_followup_copies_none() {
     let (workspace, tabs) = fixture();
     let old = workspace
         .capture_item_source(A, tabs[0], ItemId::new(2))
@@ -88,12 +86,10 @@ fn center_move_detaches_only_two_node_and_mru_payloads_and_unique_followup_copie
     );
     assert_eq!(copies.node_store_forks, 1);
     assert_eq!(copies.node_handle_clones, workspace.nodes().count());
-    assert_eq!(copies.mru_handle_clones, tabs.len());
     assert_eq!(copies.node_payload_clones, 2);
     assert_eq!(copies.tab_item_copies, 4);
     assert_eq!(copies.split_child_copies, 0);
     assert_eq!(copies.split_weight_copies, 0);
-    assert_eq!(copies.mru_payload_clones, 2);
     assert_eq!(copies.mru_item_copies, 4);
     for untouched in [tabs[1], tabs[3], workspace.root(A).unwrap().node] {
         assert!(std::ptr::eq(
@@ -133,9 +129,8 @@ fn center_move_detaches_only_two_node_and_mru_payloads_and_unique_followup_copie
     .unwrap();
     let copies = structural_work::snapshot().workspace_storage;
     assert_eq!(copies.node_store_forks, 0);
-    assert_eq!(copies.mru_store_forks, 0);
     assert_eq!(copies.node_payload_clones, 0);
-    assert_eq!(copies.mru_payload_clones, 0);
+    assert_eq!(copies.mru_item_copies, 0);
     assert_eq!(
         workspace.tab_mru(tabs[2]).unwrap(),
         [ItemId::new(3), ItemId::new(4)]
@@ -151,20 +146,16 @@ fn raw_builder_writes_copy_shared_values_and_leave_the_issued_workspace_untouche
     let old = workspace.capture_node_source(A, tabs[0]).unwrap();
     let mut builder = workspace.clone().into_builder();
     structural_work::reset();
-    let Node::Tabs { selected, .. } = builder.draft_mut().nodes.get_mut(tabs[0]).unwrap() else {
+    let Node::Tabs { selected, mru, .. } = builder.draft_mut().nodes.get_mut(tabs[0]).unwrap()
+    else {
         unreachable!()
     };
     *selected = Some(ItemId::new(2));
-    builder
-        .draft_mut()
-        .tab_mru
-        .get_mut(&tabs[0])
-        .unwrap()
-        .swap(0, 1);
+    mru.swap(0, 1);
     let changed = builder.build().unwrap();
     let copies = structural_work::snapshot().workspace_storage;
     assert_eq!(copies.node_payload_clones, 1);
-    assert_eq!(copies.mru_payload_clones, 1);
+    assert_eq!(copies.mru_item_copies, 2);
     assert_eq!(
         workspace.tab_mru(tabs[0]).unwrap(),
         [ItemId::new(1), ItemId::new(2)]
@@ -198,7 +189,7 @@ fn canonical_noop_and_retirement_filters_do_not_detach_retained_payloads() {
     );
     let copies = structural_work::snapshot().workspace_storage;
     assert_eq!(copies.node_payload_clones, 0);
-    assert_eq!(copies.mru_payload_clones, 0);
+    assert_eq!(copies.mru_item_copies, 0);
     for (node, value) in workspace.nodes() {
         assert!(std::ptr::eq(value, candidate.node(node).unwrap()));
     }
@@ -206,11 +197,10 @@ fn canonical_noop_and_retirement_filters_do_not_detach_retained_payloads() {
     let mut raw = candidate.into_builder();
     structural_work::reset();
     raw.draft_mut().nodes.retain(|_, _| true);
-    raw.draft_mut().tab_mru.retain(|_, _| true);
     drop(raw.draft_mut().remove_runtime_node(tabs[0]).unwrap());
     let copies = structural_work::snapshot().workspace_storage;
     assert_eq!(copies.node_payload_clones, 0);
-    assert_eq!(copies.mru_payload_clones, 0);
+    assert_eq!(copies.mru_item_copies, 0);
     assert!(workspace.node(tabs[0]).is_some());
     workspace.validate().unwrap();
 }
@@ -225,6 +215,7 @@ fn replacing_a_shared_builder_node_preserves_its_owned_return_and_other_payloads
         .unwrap();
     let copies = structural_work::snapshot().workspace_storage;
     assert_eq!(copies.node_payload_clones, 1);
+    assert_eq!(copies.mru_item_copies, 2);
     assert_eq!(&previous, workspace.node(tabs[0]).unwrap());
     let changed = builder.build().unwrap();
     assert!(std::ptr::eq(
@@ -239,6 +230,74 @@ fn replacing_a_shared_builder_node_preserves_its_owned_return_and_other_payloads
         changed.tab_mru(tabs[0]).unwrap(),
         [ItemId::new(9), ItemId::new(10)]
     );
+}
+
+#[test]
+fn a_complete_tabs_replacement_keeps_explicit_history_and_returns_the_previous_history() {
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::Tabs {
+        items: vec![ItemId::new(1), ItemId::new(2), ItemId::new(3)],
+        selected: Some(ItemId::new(2)),
+        mru: vec![ItemId::new(2), ItemId::new(3), ItemId::new(1)],
+    });
+    builder.set_root(A, RootRecord::new(tabs));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(A));
+    let original = builder.build().unwrap();
+    let mut draft = original.clone().into_builder();
+    let previous = draft
+        .replace_node(
+            tabs,
+            Node::Tabs {
+                items: vec![ItemId::new(4), ItemId::new(5), ItemId::new(6)],
+                selected: Some(ItemId::new(5)),
+                mru: vec![ItemId::new(5), ItemId::new(6), ItemId::new(4)],
+            },
+        )
+        .unwrap();
+    assert_eq!(&previous, original.node(tabs).unwrap());
+    assert_eq!(
+        draft.draft().tab_mru(tabs),
+        Some([ItemId::new(5), ItemId::new(6), ItemId::new(4)].as_slice())
+    );
+    draft
+        .set_tab_mru(tabs, [ItemId::new(5), ItemId::new(4), ItemId::new(6)])
+        .unwrap();
+    let changed = draft.build().unwrap();
+    assert_eq!(
+        changed.tab_mru(tabs),
+        Some([ItemId::new(5), ItemId::new(4), ItemId::new(6)].as_slice())
+    );
+    assert_eq!(
+        original.tab_mru(tabs),
+        Some([ItemId::new(2), ItemId::new(3), ItemId::new(1)].as_slice())
+    );
+}
+
+#[test]
+fn visual_reorder_copies_owned_history_without_changing_its_order() {
+    let (mut workspace, tabs) = fixture();
+    let original = workspace.clone();
+    let source = workspace
+        .capture_item_source(A, tabs[0], ItemId::new(2))
+        .unwrap();
+    structural_work::reset();
+    let report = WorkspaceTransaction::from_commands([WorkspaceCommand::Reorder {
+        source,
+        insertion_index: 0,
+    }])
+    .apply(&mut workspace, &DockPolicySnapshot::default())
+    .unwrap();
+    assert!(report.changed());
+    let copies = structural_work::snapshot().workspace_storage;
+    assert_eq!(copies.node_payload_clones, 1);
+    assert_eq!(copies.tab_item_copies, 2);
+    assert_eq!(copies.mru_item_copies, 2);
+    assert_eq!(workspace.tab_mru(tabs[0]), original.tab_mru(tabs[0]));
+    assert!(
+        matches!(workspace.node(tabs[0]), Some(Node::Tabs { items, .. }) if items == &[ItemId::new(2), ItemId::new(1)])
+    );
+    original.validate().unwrap();
+    workspace.validate().unwrap();
 }
 
 #[test]

@@ -384,7 +384,9 @@ pub(crate) fn prepare_content_close(
             let root = source.root();
             let item = source.item();
             let successor = match candidate.node(source.tabs()) {
-                Some(Node::Tabs { items, selected }) if *selected == Some(item) => items
+                Some(Node::Tabs {
+                    items, selected, ..
+                }) if *selected == Some(item) => items
                     .iter()
                     .position(|entry| *entry == item)
                     .and_then(|index| items.get(index + 1).or_else(|| items[..index].last()))
@@ -1680,12 +1682,21 @@ fn select_tabs_item(
             role: ReferenceRole::Source,
             node: tabs,
         })?;
-    let Node::Tabs { selected, .. } = node else {
+    let Node::Tabs { selected, mru, .. } = node else {
         return Err(CommandError::NodeIsNotTabs { node: tabs });
     };
     let changed = *selected != Some(item);
     *selected = Some(item);
-    promote_tab_mru(workspace, tabs, item)?;
+    let index =
+        mru.iter()
+            .position(|candidate| *candidate == item)
+            .ok_or(CommandError::Invariant {
+                stage: "locate selected item in tabs MRU",
+            })?;
+    if index != 0 {
+        mru.remove(index);
+        mru.insert(0, item);
+    }
     Ok(changed)
 }
 
@@ -3043,20 +3054,7 @@ fn detach_payload(
             let source_root = source.root();
             let items = workspace.collect_items_in_subtree(node);
             let (selected, mru, is_tabs) = match workspace.storage.nodes.get(node) {
-                Some(Node::Tabs { selected, .. }) => (
-                    *selected,
-                    Some(
-                        workspace
-                            .storage
-                            .tab_mru
-                            .get(&node)
-                            .ok_or(CommandError::Invariant {
-                                stage: "detach tabs MRU",
-                            })?
-                            .clone(),
-                    ),
-                    true,
-                ),
+                Some(Node::Tabs { selected, mru, .. }) => (*selected, Some(mru.clone()), true),
                 Some(Node::Split { .. }) => (None, None, false),
                 None => {
                     return Err(CommandError::MissingNode {
@@ -3224,20 +3222,14 @@ fn merge_payload_into_tabs(
             let Node::Tabs {
                 items: source_items,
                 selected: source_selected,
+                mru: source_mru,
             } = source
             else {
                 return Err(CommandError::NodeIsNotTabs { node });
             };
             source_items.clear();
             *source_selected = None;
-            workspace
-                .storage
-                .tab_mru
-                .get_mut(&node)
-                .ok_or(CommandError::Invariant {
-                    stage: "clear merged source tabs MRU",
-                })?
-                .clear();
+            source_mru.clear();
             (items, selected, mru)
         }
     };
@@ -3260,7 +3252,12 @@ fn insert_items(
             role: ReferenceRole::Target,
             node: tabs,
         })?;
-    let Node::Tabs { items, selected } = node else {
+    let Node::Tabs {
+        items,
+        selected,
+        mru: target_mru,
+    } = node
+    else {
         return Err(CommandError::NodeIsNotTabs { node: tabs });
     };
     if index > items.len() {
@@ -3275,13 +3272,6 @@ fn insert_items(
     if let Some(item) = selected_item {
         *selected = Some(item);
     }
-    let target_mru = workspace
-        .storage
-        .tab_mru
-        .get_mut(&tabs)
-        .ok_or(CommandError::Invariant {
-            stage: "merge into target tabs MRU",
-        })?;
     if target_was_empty && let Some(source_mru) = source_mru {
         *target_mru = source_mru.to_vec();
     } else {
@@ -3553,7 +3543,12 @@ fn remove_item(workspace: &mut Workspace, tabs: NodeId, item: ItemId) -> Result<
             role: ReferenceRole::Source,
             node: tabs,
         })?;
-    let Node::Tabs { items, selected } = node else {
+    let Node::Tabs {
+        items,
+        selected,
+        mru,
+    } = node
+    else {
         return Err(CommandError::NodeIsNotTabs { node: tabs });
     };
     let index = items
@@ -3562,13 +3557,6 @@ fn remove_item(workspace: &mut Workspace, tabs: NodeId, item: ItemId) -> Result<
         .ok_or(CommandError::ItemNotInTabs { tabs, item })?;
     items.remove(index);
     let was_selected = *selected == Some(item);
-    let mru = workspace
-        .storage
-        .tab_mru
-        .get_mut(&tabs)
-        .ok_or(CommandError::Invariant {
-            stage: "remove item from tabs MRU",
-        })?;
     let mru_index =
         mru.iter()
             .position(|candidate| *candidate == item)
@@ -3578,31 +3566,6 @@ fn remove_item(workspace: &mut Workspace, tabs: NodeId, item: ItemId) -> Result<
     mru.remove(mru_index);
     if was_selected {
         *selected = mru.first().copied();
-    }
-    Ok(())
-}
-
-fn promote_tab_mru(
-    workspace: &mut Workspace,
-    tabs: NodeId,
-    item: ItemId,
-) -> Result<(), CommandError> {
-    let mru = workspace
-        .storage
-        .tab_mru
-        .get_mut(&tabs)
-        .ok_or(CommandError::Invariant {
-            stage: "select tabs MRU",
-        })?;
-    let index =
-        mru.iter()
-            .position(|candidate| *candidate == item)
-            .ok_or(CommandError::Invariant {
-                stage: "locate selected item in tabs MRU",
-            })?;
-    if index != 0 {
-        mru.remove(index);
-        mru.insert(0, item);
     }
     Ok(())
 }

@@ -116,16 +116,8 @@ fn stale_wrong_root_missing_and_recycled_sources_keep_general_rejections() {
         .nodes
         .remove(retired_source.tabs())
         .unwrap();
-    let mru = replacement
-        .workspace
-        .tab_mru
-        .get(&retired_source.tabs())
-        .unwrap()
-        .clone();
-    replacement.workspace.tab_mru.remove(&retired_source.tabs());
     let recycled = replacement.workspace.nodes.insert((*tabs).clone());
     assert_ne!(recycled, retired_source.tabs());
-    replacement.workspace.tab_mru.insert(recycled, mru);
     let root = replacement.draft().root(MAIN).unwrap().node;
     let Node::Split { children, .. } = replacement.workspace.nodes.get_mut(root).unwrap() else {
         unreachable!()
@@ -176,7 +168,7 @@ fn raw_corruption_must_cross_builder_checks_before_snapshot_ownership() {
         .unwrap()
         .tabs();
     let mut builder = original.as_ref().clone().into_builder();
-    builder.draft_mut().tab_mru.remove(&other);
+    builder.set_tab_mru(other, []).unwrap();
     assert!(builder.build().is_err());
 }
 

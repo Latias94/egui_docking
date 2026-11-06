@@ -1109,7 +1109,6 @@ pub(crate) mod structural_work {
         pub(crate) fn capture_data(workspace: &crate::graph::WorkspaceData) -> Self {
             let mut volume = Self {
                 nodes: workspace.nodes.len(),
-                tab_mru_items: workspace.tab_mru.values().map(Vec::len).sum(),
                 roots: workspace.roots.len(),
                 surfaces: workspace.surfaces.len(),
                 contained_records: workspace.contained_floatings.len(),
@@ -1122,7 +1121,10 @@ pub(crate) mod structural_work {
             };
             for node in workspace.nodes.values() {
                 match node {
-                    Node::Tabs { items, .. } => volume.tab_items += items.len(),
+                    Node::Tabs { items, mru, .. } => {
+                        volume.tab_items += items.len();
+                        volume.tab_mru_items += mru.len();
+                    }
                     Node::Split { children, .. } => {
                         volume.split_child_edges += children.len();
                     }
@@ -1208,20 +1210,17 @@ pub(crate) mod structural_work {
     /// Actual shared-store operations, separate from legacy logical inventory.
     ///
     /// Node Clone counts every concrete Node value copy after reset, including
-    /// make_mut and owned Builder returns. MRU clones count shared-store payload
-    /// detachment, not unrelated domain Vec copies. Slot/map allocations, vacant
+    /// make_mut and owned Builder returns. Tabs copies include both their item
+    /// and MRU elements. Unrelated domain Vec copies, allocator events, vacant
     /// slot extent and placement-directory copying are not measured here.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct WorkspaceStorageWork {
         pub(crate) node_store_forks: usize,
         pub(crate) node_handle_clones: usize,
-        pub(crate) mru_store_forks: usize,
-        pub(crate) mru_handle_clones: usize,
         pub(crate) node_payload_clones: usize,
         pub(crate) tab_item_copies: usize,
         pub(crate) split_child_copies: usize,
         pub(crate) split_weight_copies: usize,
-        pub(crate) mru_payload_clones: usize,
         pub(crate) mru_item_copies: usize,
     }
 
@@ -1229,7 +1228,7 @@ pub(crate) mod structural_work {
     /// transaction/authority dependencies.
     ///
     /// Legacy Workspace inventory uses explicit core call sites. The separate
-    /// workspace_storage counters run at the concrete store/Node/MRU Clone
+    /// workspace_storage counters run at the concrete store/Node Clone
     /// implementations, so fixture copies after reset also appear there.
     /// Arbitrary Vec clones and allocator events are not intercepted.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1304,19 +1303,15 @@ pub(crate) mod structural_work {
         });
     }
 
-    pub(crate) fn record_mru_store_clone(handles: usize) {
-        update(|work| {
-            work.workspace_storage.mru_store_forks += 1;
-            work.workspace_storage.mru_handle_clones += handles;
-        });
-    }
-
     pub(crate) fn record_node_payload_clone(node: &Node) {
         update(|work| {
             let copies = &mut work.workspace_storage;
             copies.node_payload_clones += 1;
             match node {
-                Node::Tabs { items, .. } => copies.tab_item_copies += items.len(),
+                Node::Tabs { items, mru, .. } => {
+                    copies.tab_item_copies += items.len();
+                    copies.mru_item_copies += mru.len();
+                }
                 Node::Split {
                     children, weights, ..
                 } => {
@@ -1324,13 +1319,6 @@ pub(crate) mod structural_work {
                     copies.split_weight_copies += weights.len();
                 }
             }
-        });
-    }
-
-    pub(crate) fn record_mru_payload_clone(items: usize) {
-        update(|work| {
-            work.workspace_storage.mru_payload_clones += 1;
-            work.workspace_storage.mru_item_copies += items;
         });
     }
 

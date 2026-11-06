@@ -479,9 +479,6 @@ fn canonicalize_validated_draft(
         }
         live
     });
-    workspace
-        .tab_mru
-        .retain(|node, _| reachable.contains_key(*node));
 
     let candidate_items = workspace.item_multiset();
     if candidate_items != original_items {
@@ -725,7 +722,11 @@ fn validate_nodes(
 
     for (node_id, node) in workspace.nodes.iter() {
         match node {
-            Node::Tabs { items, selected } => {
+            Node::Tabs {
+                items,
+                selected,
+                mru,
+            } => {
                 let selection_is_valid = if items.is_empty() {
                     selected.is_none()
                 } else {
@@ -737,11 +738,7 @@ fn validate_nodes(
                         selected: *selected,
                     });
                 }
-                if !is_exact_tab_mru(
-                    items,
-                    *selected,
-                    workspace.tab_mru.get(&node_id).map(Vec::as_slice),
-                ) {
+                if !is_exact_tab_mru(items, *selected, mru) {
                     return Err(CanonicalizationError::InvalidTabMru { node: node_id });
                 }
 
@@ -773,14 +770,6 @@ fn validate_nodes(
                 }
             }
         }
-    }
-
-    if let Some((&node, _)) = workspace
-        .tab_mru
-        .iter()
-        .find(|(node, _)| !matches!(workspace.nodes.get(**node), Some(Node::Tabs { .. })))
-    {
-        return Err(CanonicalizationError::InvalidTabMru { node });
     }
 
     Ok(parents)
@@ -1057,10 +1046,8 @@ mod tests {
     #[test]
     fn invalid_input_is_rejected_before_rewriting_or_atomic_cloning() {
         let (mut builder, leaf, _) = singleton_draft();
-        *builder.draft_mut().nodes.get_mut(leaf).unwrap() = Node::Tabs {
-            items: vec![ItemId::new(1)],
-            selected: Some(ItemId::new(2)),
-        };
+        *builder.draft_mut().nodes.get_mut(leaf).unwrap() =
+            Node::tabs_with_selection([ItemId::new(1)], Some(ItemId::new(2)));
         let original = builder.draft().clone();
         let error = CanonicalizationError::InvalidSelection {
             node: leaf,

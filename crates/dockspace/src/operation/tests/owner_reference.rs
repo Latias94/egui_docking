@@ -921,3 +921,57 @@ fn runtime_projection_rejects_an_unfinished_body_and_owns_the_completed_one() {
     drop(workspace);
     assert_eq!(projection, expected);
 }
+
+#[test]
+fn staged_selection_roundtrip_publishes_history_only_change() {
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([1, 2, 3].map(ItemId::new)));
+    builder.set_root(A, RootRecord::new(tabs));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(A));
+    let mut workspace = builder.build().unwrap();
+    let original = workspace.clone();
+    let stale = workspace
+        .capture_item_source(A, tabs, ItemId::new(1))
+        .unwrap();
+    let report = WorkspaceTransaction::apply_with(&mut workspace, &default_policy(), |stage| {
+        for item in [3, 1] {
+            stage.push(|current| {
+                Ok(WorkspaceCommand::Select {
+                    source: current.capture_item_source(A, tabs, ItemId::new(item))?,
+                })
+            })?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(report.changed());
+    assert!(matches!(
+        report.outcomes(),
+        [
+            CommandOutcome::Selected { changed: true, .. },
+            CommandOutcome::Selected { changed: true, .. }
+        ]
+    ));
+    let Node::Tabs {
+        items, selected, ..
+    } = workspace.node(tabs).unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(items, &[1, 2, 3].map(ItemId::new));
+    assert_eq!(*selected, Some(ItemId::new(1)));
+    assert_eq!(
+        workspace.tab_mru(tabs),
+        Some([1, 3, 2].map(ItemId::new).as_slice())
+    );
+    assert_eq!(
+        original.tab_mru(tabs),
+        Some([1, 2, 3].map(ItemId::new).as_slice())
+    );
+    assert_ne!(workspace, original);
+    assert!(matches!(
+        workspace.verify_reference(A, tabs, stale.reference(), ReferenceRole::Source),
+        Err(CommandError::StaleNode { .. })
+    ));
+    assert_actual_placement(&workspace);
+}

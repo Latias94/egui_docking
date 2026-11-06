@@ -4,7 +4,9 @@ Replace `LayoutProjection::node_rects` and `node_constraints` with one
 `nodes: NodeMap<NodeResult>`. Each record owns its complete `rect` and
 `constraints`. Existing generic lookup, sorted iteration and preorder iteration
 remain implemented once. A caller reads `projection.nodes[&node].rect` or
-`projection.nodes[&node].constraints`. This is an intentional public API change.
+`projection.nodes[&node].constraints`. This changes the raw implementation
+interface. The layout module is private in the delivered non-test crate; the
+model/runtime facade remains the external integration boundary.
 
 The private map reserves its final capacity and records the complete value at
 the existing first Enter rectangle write. Raw completed-subtree revisits

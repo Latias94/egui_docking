@@ -9,18 +9,11 @@ use crate::canonical::CanonicalizationError;
 use crate::geometry::LogicalRect;
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::validation::WorkspaceValidationErrors;
-use shared_storage::{NodeStore, TabMruStore};
+use shared_storage::NodeStore;
 
 pub(crate) const NORMALIZED_WEIGHT_TOLERANCE: f64 = 1.0e-5;
 
-pub(crate) fn is_exact_tab_mru(
-    items: &[ItemId],
-    selected: Option<ItemId>,
-    mru: Option<&[ItemId]>,
-) -> bool {
-    let Some(mru) = mru else {
-        return false;
-    };
+pub(crate) fn is_exact_tab_mru(items: &[ItemId], selected: Option<ItemId>, mru: &[ItemId]) -> bool {
     if mru.len() != items.len() || mru.first().copied() != selected {
         return false;
     }
@@ -182,6 +175,8 @@ pub enum Node {
         items: Vec<ItemId>,
         /// Active item, or `None` for a permitted empty central leaf.
         selected: Option<ItemId>,
+        /// Complete most-recent-first permutation, with the selected item first.
+        mru: Vec<ItemId>,
     },
     /// Ordered N-ary split children.
     Split {
@@ -199,9 +194,14 @@ impl Clone for Node {
         #[cfg(test)]
         crate::drop_resolver::structural_work::record_node_payload_clone(self);
         match self {
-            Self::Tabs { items, selected } => Self::Tabs {
+            Self::Tabs {
+                items,
+                selected,
+                mru,
+            } => Self::Tabs {
                 items: items.clone(),
                 selected: *selected,
+                mru: mru.clone(),
             },
             Self::Split {
                 axis,
@@ -221,7 +221,12 @@ impl Node {
     pub fn tabs(items: impl IntoIterator<Item = ItemId>) -> Self {
         let items: Vec<ItemId> = items.into_iter().collect();
         let selected = items.first().copied();
-        Self::Tabs { items, selected }
+        let mru = initial_tab_mru(&items, selected);
+        Self::Tabs {
+            items,
+            selected,
+            mru,
+        }
     }
 
     /// Creates a tabs node with an explicit selection.
@@ -231,9 +236,12 @@ impl Node {
         items: impl IntoIterator<Item = ItemId>,
         selected: Option<ItemId>,
     ) -> Self {
+        let items = items.into_iter().collect::<Vec<_>>();
+        let mru = initial_tab_mru(&items, selected);
         Self::Tabs {
-            items: items.into_iter().collect(),
+            items,
             selected,
+            mru,
         }
     }
 
@@ -387,7 +395,6 @@ impl ContainedFloating {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WorkspaceData {
     pub(crate) nodes: NodeStore,
-    pub(crate) tab_mru: TabMruStore,
     pub(crate) roots: BTreeMap<RootId, RootRecord>,
     pub(crate) surfaces: BTreeMap<SurfaceId, SurfacePresentation>,
     pub(crate) contained_floatings: BTreeMap<FloatingPresentationId, ContainedFloating>,
@@ -398,7 +405,6 @@ impl PartialEq for WorkspaceData {
         self.roots == other.roots
             && self.surfaces == other.surfaces
             && self.contained_floatings == other.contained_floatings
-            && self.tab_mru == other.tab_mru
             && self.nodes.len() == other.nodes.len()
             && self
                 .nodes
@@ -521,10 +527,10 @@ impl WorkspaceData {
     /// item here, with its selected item first. `None` means `tabs` is absent
     /// or is not a tabs node.
     pub fn tab_mru(&self, tabs: NodeId) -> Option<&[ItemId]> {
-        if !matches!(self.nodes.get(tabs), Some(Node::Tabs { .. })) {
-            return None;
+        match self.nodes.get(tabs)? {
+            Node::Tabs { mru, .. } => Some(mru),
+            Node::Split { .. } => None,
         }
-        self.tab_mru.get(&tabs).map(Vec::as_slice)
     }
 
     /// Returns a root record by stable identity.
@@ -586,18 +592,11 @@ impl WorkspaceData {
     }
 
     pub(crate) fn insert_runtime_node(&mut self, node: Node) -> NodeId {
-        let initial_mru = initial_tab_mru(&node);
-        let id = self.nodes.insert(node);
-        if let Some(mru) = initial_mru {
-            self.tab_mru.insert(id, mru);
-        }
-        id
+        self.nodes.insert(node)
     }
 
     pub(crate) fn remove_runtime_node(&mut self, id: NodeId) -> Option<Arc<Node>> {
-        let node = self.nodes.remove(id)?;
-        self.tab_mru.remove(&id);
-        Some(node)
+        self.nodes.remove(id)
     }
 
     pub(crate) fn validate_candidate(&self) -> Result<(), WorkspaceValidationErrors> {
@@ -634,23 +633,17 @@ impl WorkspaceBuilder {
         self.workspace.insert_runtime_node(node)
     }
 
-    /// Replaces an existing node in the draft.
+    /// Replaces an existing node in the draft, including its complete tab history.
     ///
     /// # Errors
     ///
     /// Returns [`WorkspaceBuildError::MissingNode`] for a stale or absent runtime identity.
     pub fn replace_node(&mut self, id: NodeId, node: Node) -> Result<Node, WorkspaceBuildError> {
-        let initial_mru = initial_tab_mru(&node);
         let previous = self
             .workspace
             .nodes
             .replace(id, node)
             .ok_or(WorkspaceBuildError::MissingNode { node: id })?;
-        if let Some(mru) = initial_mru {
-            self.workspace.tab_mru.insert(id, mru);
-        } else {
-            self.workspace.tab_mru.remove(&id);
-        }
         Ok(Arc::unwrap_or_clone(previous))
     }
 
@@ -669,15 +662,15 @@ impl WorkspaceBuilder {
         tabs: NodeId,
         mru: impl IntoIterator<Item = ItemId>,
     ) -> Result<(), WorkspaceBuildError> {
-        match self.workspace.nodes.get(tabs) {
-            Some(Node::Tabs { .. }) => {}
-            Some(Node::Split { .. }) => {
-                return Err(WorkspaceBuildError::NodeIsNotTabs { node: tabs });
-            }
-            None => return Err(WorkspaceBuildError::MissingNode { node: tabs }),
-        }
-        let mru = mru.into_iter().collect();
-        self.workspace.tab_mru.insert(tabs, mru);
+        let node = self
+            .workspace
+            .nodes
+            .get_mut(tabs)
+            .ok_or(WorkspaceBuildError::MissingNode { node: tabs })?;
+        let Node::Tabs { mru: history, .. } = node else {
+            return Err(WorkspaceBuildError::NodeIsNotTabs { node: tabs });
+        };
+        *history = mru.into_iter().collect();
         Ok(())
     }
 
@@ -766,21 +759,13 @@ pub enum WorkspaceBuildError {
     },
 }
 
-fn initial_tab_mru(node: &Node) -> Option<Vec<ItemId>> {
-    let Node::Tabs { items, selected } = node else {
-        return None;
-    };
+fn initial_tab_mru(items: &[ItemId], selected: Option<ItemId>) -> Vec<ItemId> {
     let mut mru = Vec::with_capacity(items.len());
     if let Some(selected) = selected.filter(|selected| items.contains(selected)) {
         mru.push(selected);
     }
-    mru.extend(
-        items
-            .iter()
-            .copied()
-            .filter(|item| Some(*item) != *selected),
-    );
-    Some(mru)
+    mru.extend(items.iter().copied().filter(|item| Some(*item) != selected));
+    mru
 }
 
 #[cfg(test)]
@@ -812,12 +797,11 @@ mod tests {
         ];
         for &(items, selected, mru, expected) in cases {
             assert_eq!(
-                is_exact_tab_mru(items, selected, Some(mru)),
+                is_exact_tab_mru(items, selected, mru),
                 expected,
                 "items={items:?}, selected={selected:?}, mru={mru:?}"
             );
         }
-        assert!(!is_exact_tab_mru(&[], None, None));
     }
 }
 

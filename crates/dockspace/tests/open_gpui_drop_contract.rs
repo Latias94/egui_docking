@@ -223,7 +223,9 @@ fn submit_move(fixture: &mut Fixture, edge: Edge) {
 }
 
 fn tabs_state(workspace: &Workspace, tabs: NodeId) -> (Vec<ItemId>, Option<ItemId>, Vec<ItemId>) {
-    let Node::Tabs { items, selected } = workspace
+    let Node::Tabs {
+        items, selected, ..
+    } = workspace
         .node(tabs)
         .expect("expected tabs node must remain present")
     else {

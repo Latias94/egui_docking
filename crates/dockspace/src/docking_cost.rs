@@ -291,7 +291,9 @@ fn append_node<'layout>(
     );
     let record = workspace.node(node).unwrap();
     let (kind, items, selected) = match record {
-        Node::Tabs { items, selected } => (0, items.as_slice(), selected.map_or(0, ItemId::get)),
+        Node::Tabs {
+            items, selected, ..
+        } => (0, items.as_slice(), selected.map_or(0, ItemId::get)),
         Node::Split { axis, children, .. } => {
             assert_eq!(children.len(), 2, "primary matrix requires binary topology");
             (if *axis == Axis::Horizontal { 1 } else { 2 }, &[][..], 0)
@@ -359,9 +361,9 @@ fn preorder_export_matches_the_keyed_export_for_all_primary_commands() {
     ) {
         let rect = projection.layout.nodes[&node].rect;
         let (kind, items, selected) = match workspace.node(node).unwrap() {
-            Node::Tabs { items, selected } => {
-                (0, items.as_slice(), selected.map_or(0, ItemId::get))
-            }
+            Node::Tabs {
+                items, selected, ..
+            } => (0, items.as_slice(), selected.map_or(0, ItemId::get)),
             Node::Split { axis, children, .. } => {
                 assert_eq!(children.len(), 2);
                 (if *axis == Axis::Horizontal { 1 } else { 2 }, &[][..], 0)
@@ -603,7 +605,9 @@ fn validate(
     for (node, record) in fixture.workspace.nodes() {
         counts.nodes += 1;
         match record {
-            Node::Tabs { items, selected } => {
+            Node::Tabs {
+                items, selected, ..
+            } => {
                 counts.leaves += 1;
                 counts.items += items.len();
                 let selected = selected.unwrap();
@@ -837,8 +841,9 @@ fn docking_work() {
         std::env::var_os("DOCKSPACE_DOCK_COST_OUT").expect("runner supplies the counter CSV path");
     let mut output = BufWriter::new(std::fs::File::create_new(output).unwrap());
     // Existing cloned_* columns are logical inventory. Appended columns count
-    // concrete shared-store forks and payload clones within the same sample.
-    writeln!(output, "panes,views,case,fingerprint_builds,fingerprint_node_visits,item_multiset_scans,item_multiset_item_visits,transaction_candidates,cloned_nodes,cloned_tab_items,node_store_forks,node_handle_clones,mru_store_forks,mru_handle_clones,node_payload_clones,tab_item_copies,split_child_copies,split_weight_copies,mru_payload_clones,mru_item_copies,completed_root_structures,root_structure_rows,root_structure_split_handles").unwrap();
+    // concrete node-store forks, payload element copies and completed root bodies.
+    // Tabs payload copies include their owned MRU elements; no separate MRU store remains.
+    writeln!(output, "panes,views,case,fingerprint_builds,fingerprint_node_visits,item_multiset_scans,item_multiset_item_visits,transaction_candidates,cloned_nodes,cloned_tab_items,node_store_forks,node_handle_clones,node_payload_clones,tab_item_copies,split_child_copies,split_weight_copies,mru_item_copies,completed_root_structures,root_structure_rows,root_structure_split_handles").unwrap();
     for panes in panes {
         for &views in &views {
             for &case in &cases {
@@ -864,7 +869,7 @@ fn docking_work() {
                 let storage = work.workspace_storage;
                 writeln!(
                     output,
-                    "{panes},{views},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                    "{panes},{views},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                     case.name(),
                     work.root_fingerprint_builds,
                     work.root_fingerprint_node_visits,
@@ -875,13 +880,10 @@ fn docking_work() {
                     clones.volume.tab_items,
                     storage.node_store_forks,
                     storage.node_handle_clones,
-                    storage.mru_store_forks,
-                    storage.mru_handle_clones,
                     storage.node_payload_clones,
                     storage.tab_item_copies,
                     storage.split_child_copies,
                     storage.split_weight_copies,
-                    storage.mru_payload_clones,
                     storage.mru_item_copies,
                     work.completed_root_structures,
                     work.root_structure_rows,

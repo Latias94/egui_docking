@@ -131,7 +131,7 @@ fn empty_tabs_singletons_and_same_axis_wrappers_are_removed_without_rebinding_ce
     assert_eq!(root.central, Some(central));
     assert!(matches!(
         workspace.node(central),
-        Some(Node::Tabs { items, selected }) if items.is_empty() && selected.is_none()
+        Some(Node::Tabs { items, selected, .. }) if items.is_empty() && selected.is_none()
     ));
     assert!(workspace.node(empty_non_central).is_none());
     assert!(workspace.node(singleton).is_none());

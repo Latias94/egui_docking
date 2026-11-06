@@ -66,7 +66,7 @@ fn attach_creates_an_empty_central_without_changing_existing_topology_or_items()
     assert_eq!(root.central, Some(root.node));
     assert!(matches!(
         workspace.node(root.node),
-        Some(Node::Tabs { items, selected: None }) if items.is_empty()
+        Some(Node::Tabs { items, selected: None, .. }) if items.is_empty()
     ));
     assert_eq!(workspace.tab_mru(root.node), Some(&[][..]));
     assert_eq!(workspace.item_multiset(), before.item_multiset());

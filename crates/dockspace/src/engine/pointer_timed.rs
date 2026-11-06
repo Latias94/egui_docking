@@ -469,7 +469,7 @@ impl DockEngine {
         }
         matches!(
             self.workspace.node(tab.tabs),
-            Some(Node::Tabs { items, selected })
+            Some(Node::Tabs { items, selected, .. })
                 if items.contains(&tab.item) && *selected != Some(tab.item)
         )
         .then_some((tab, authority, point))

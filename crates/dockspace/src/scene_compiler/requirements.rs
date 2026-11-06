@@ -148,7 +148,9 @@ fn derive_root_requirements(
                 root,
                 node,
             })? {
-            Node::Tabs { items, selected } => {
+            Node::Tabs {
+                items, selected, ..
+            } => {
                 if items.is_empty() {
                     debug_assert!(selected.is_none());
                     pane_minimums.insert(PaneMinimumKey::new(root, node, None));

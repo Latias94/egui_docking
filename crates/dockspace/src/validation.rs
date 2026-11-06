@@ -78,12 +78,6 @@ pub enum WorkspaceValidationError {
         /// Invalid selected item, or `None` when a populated node has no selection.
         selected: Option<ItemId>,
     },
-    /// A tabs node has no durable MRU permutation.
-    #[error("tabs node {tabs:?} has no MRU permutation")]
-    MissingTabMru {
-        /// Tabs node without history.
-        tabs: NodeId,
-    },
     /// A tabs MRU permutation has a different length from its visual item order.
     #[error("tabs node {tabs:?} has {items} items but {mru} MRU entries")]
     TabMruLengthMismatch {
@@ -129,12 +123,6 @@ pub enum WorkspaceValidationError {
         selected: Option<ItemId>,
         /// First MRU entry.
         most_recent: Option<ItemId>,
-    },
-    /// Durable MRU state is attached to a missing node or split node.
-    #[error("MRU state is attached to non-tabs node {node:?}")]
-    UnexpectedTabMru {
-        /// Missing or non-tabs runtime node identity.
-        node: NodeId,
     },
     /// An item occurs more than once in the workspace forest.
     #[error(
@@ -489,13 +477,6 @@ impl<'workspace> Validator<'workspace> {
                 self.walk(orphan, None);
             }
         }
-
-        for &node in self.workspace.tab_mru.keys() {
-            if !matches!(self.workspace.nodes.get(node), Some(Node::Tabs { .. })) {
-                self.errors
-                    .push(WorkspaceValidationError::UnexpectedTabMru { node });
-            }
-        }
     }
 
     fn walk(&mut self, root: NodeId, owner: Option<RootId>) {
@@ -575,7 +556,11 @@ impl<'workspace> Validator<'workspace> {
         stack.push(Frame::Exit(node_id));
 
         match node {
-            Node::Tabs { items, selected } => self.validate_tabs(node_id, items, *selected),
+            Node::Tabs {
+                items,
+                selected,
+                mru,
+            } => self.validate_tabs(node_id, items, *selected, mru),
             Node::Split {
                 axis,
                 children,
@@ -601,7 +586,13 @@ impl<'workspace> Validator<'workspace> {
         }
     }
 
-    fn validate_tabs(&mut self, tabs: NodeId, items: &[ItemId], selected: Option<ItemId>) {
+    fn validate_tabs(
+        &mut self,
+        tabs: NodeId,
+        items: &[ItemId],
+        selected: Option<ItemId>,
+        mru: &[ItemId],
+    ) {
         if items.is_empty() {
             if !self.central_nodes.contains(&tabs) {
                 self.errors
@@ -616,7 +607,7 @@ impl<'workspace> Validator<'workspace> {
                 .push(WorkspaceValidationError::InvalidSelection { tabs, selected });
         }
 
-        self.validate_tab_mru(tabs, items, selected);
+        self.validate_tab_mru(tabs, items, selected, mru);
 
         for item in items {
             if let Some(first_tabs) = self.items.insert(*item, tabs) {
@@ -629,13 +620,14 @@ impl<'workspace> Validator<'workspace> {
         }
     }
 
-    fn validate_tab_mru(&mut self, tabs: NodeId, items: &[ItemId], selected: Option<ItemId>) {
-        let Some(mru) = self.workspace.tab_mru.get(&tabs) else {
-            self.errors
-                .push(WorkspaceValidationError::MissingTabMru { tabs });
-            return;
-        };
-        if items.len() <= 2 && is_exact_tab_mru(items, selected, Some(mru)) {
+    fn validate_tab_mru(
+        &mut self,
+        tabs: NodeId,
+        items: &[ItemId],
+        selected: Option<ItemId>,
+        mru: &[ItemId],
+    ) {
+        if items.len() <= 2 && is_exact_tab_mru(items, selected, mru) {
             return;
         }
         if mru.len() != items.len() {
@@ -948,10 +940,7 @@ mod tests {
         let item = ItemId::new(1);
         let selected = Some(ItemId::new(2));
         let foreign = ItemId::new(3);
-        let first = builder.insert_node(Node::Tabs {
-            items: vec![item],
-            selected,
-        });
+        let first = builder.insert_node(Node::tabs_with_selection([item], selected));
         builder
             .set_tab_mru(first, [foreign, foreign])
             .expect("malformed MRU is accepted in drafts");
@@ -1038,10 +1027,8 @@ mod tests {
         ];
         for &(items, selected, mru, valid) in cases {
             let mut builder = Workspace::builder();
-            let tabs = builder.insert_node(Node::Tabs {
-                items: items.to_vec(),
-                selected,
-            });
+            let tabs =
+                builder.insert_node(Node::tabs_with_selection(items.iter().copied(), selected));
             builder.set_tab_mru(tabs, mru.iter().copied()).unwrap();
             let root = RootId::new(1);
             builder.set_root(root, RootRecord::new(tabs).with_central(tabs));

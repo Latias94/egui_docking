@@ -475,7 +475,7 @@ fn closing_last_central_item_preserves_the_empty_central_leaf() {
     );
     assert!(matches!(
         workspace.node(central),
-        Some(Node::Tabs { items, selected }) if items.is_empty() && selected.is_none()
+        Some(Node::Tabs { items, selected, .. }) if items.is_empty() && selected.is_none()
     ));
 }
 

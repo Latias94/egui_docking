@@ -190,8 +190,7 @@ fn json_round_trip_preserves_the_complete_workspace_contract() {
         restored.node(central),
         Some(Node::Tabs {
             items,
-            selected: Some(selected),
-        }) if items == &[ItemId::new(1), ItemId::new(2)] && *selected == ItemId::new(2)
+            selected: Some(selected), .. }) if items == &[ItemId::new(1), ItemId::new(2)] && *selected == ItemId::new(2)
     ));
     assert_eq!(
         restored.tab_mru(central),

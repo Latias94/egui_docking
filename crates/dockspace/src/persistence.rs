@@ -310,12 +310,6 @@ pub enum SnapshotCaptureError {
         /// Runtime identity absent from the capture index.
         node: NodeId,
     },
-    /// A validated runtime tabs node unexpectedly had no durable MRU state.
-    #[error("runtime tabs node {node:?} has no MRU permutation")]
-    MissingRuntimeTabMru {
-        /// Tabs node without history.
-        node: NodeId,
-    },
 }
 
 /// Failure to restore a workspace snapshot.
@@ -407,7 +401,7 @@ impl WorkspaceSnapshot {
         let node_ids = capture_node_ids(workspace)?;
         let nodes = workspace
             .nodes()
-            .map(|(id, node)| capture_node(workspace, id, node, &node_ids))
+            .map(|(id, node)| capture_node(id, node, &node_ids))
             .collect::<Result<Vec<_>, _>>()?;
         let roots = workspace
             .roots()
@@ -575,21 +569,19 @@ fn captured_id(node_ids: &HashMap<NodeId, u64>, node: NodeId) -> Result<u64, Sna
 }
 
 fn capture_node(
-    workspace: &Workspace,
     id: NodeId,
     node: &Node,
     node_ids: &HashMap<NodeId, u64>,
 ) -> Result<SnapshotNodeRecord, SnapshotCaptureError> {
     let node = match node {
-        Node::Tabs { items, selected } => SnapshotNode::Tabs {
+        Node::Tabs {
+            items,
+            selected,
+            mru,
+        } => SnapshotNode::Tabs {
             items: items.iter().map(|item| item.get()).collect(),
             selected: selected.map(ItemId::get),
-            mru: workspace
-                .tab_mru(id)
-                .ok_or(SnapshotCaptureError::MissingRuntimeTabMru { node: id })?
-                .iter()
-                .map(|item| item.get())
-                .collect(),
+            mru: mru.iter().map(|item| item.get()).collect(),
         },
         Node::Split {
             axis,
@@ -744,11 +736,6 @@ fn populate_runtime_nodes(
         builder
             .replace_node(runtime, node)
             .map_err(SnapshotRestoreError::Assembly)?;
-        if let SnapshotNode::Tabs { mru, .. } = &record.node {
-            builder
-                .set_tab_mru(runtime, mru.iter().copied().map(ItemId::new))
-                .map_err(SnapshotRestoreError::Assembly)?;
-        }
     }
     Ok(())
 }
@@ -759,11 +746,14 @@ fn restore_node(
 ) -> Result<Node, SnapshotRestoreError> {
     match &record.node {
         SnapshotNode::Tabs {
-            items, selected, ..
-        } => Ok(Node::tabs_with_selection(
-            items.iter().copied().map(ItemId::new),
-            selected.map(ItemId::new),
-        )),
+            items,
+            selected,
+            mru,
+        } => Ok(Node::Tabs {
+            items: items.iter().copied().map(ItemId::new).collect(),
+            selected: selected.map(ItemId::new),
+            mru: mru.iter().copied().map(ItemId::new).collect(),
+        }),
         SnapshotNode::Split {
             axis,
             children,

@@ -138,13 +138,14 @@ pub(crate) fn project_future_tab_gap_visual(
             root: target.root(),
             node: target.tabs(),
         })?;
-    let Node::Tabs { items, selected } =
-        candidate
-            .node(target.tabs())
-            .ok_or(FutureLayoutProjectionError::MissingNode {
-                root: target.root(),
-                node: target.tabs(),
-            })?
+    let Node::Tabs {
+        items, selected, ..
+    } = candidate
+        .node(target.tabs())
+        .ok_or(FutureLayoutProjectionError::MissingNode {
+            root: target.root(),
+            node: target.tabs(),
+        })?
     else {
         return Err(FutureLayoutProjectionError::TargetIsNotTabs {
             root: target.root(),

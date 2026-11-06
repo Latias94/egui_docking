@@ -79,7 +79,10 @@ impl<'a> DockspaceView<'a> {
     #[must_use]
     pub fn item(self, item: ItemId) -> Option<DockspaceItemView<'a>> {
         let (root, tabs, tab_index) = self.workspace.locate_item_by_id(item)?;
-        let Node::Tabs { items, selected } = self.workspace.node(tabs)? else {
+        let Node::Tabs {
+            items, selected, ..
+        } = self.workspace.node(tabs)?
+        else {
             return None;
         };
         let (surface, contained) = match self.workspace.presentation_for_root(root)? {
@@ -363,7 +366,9 @@ impl<'a> DockspaceNodeView<'a> {
     #[must_use]
     pub fn tabs(self) -> Option<DockspaceTabsView<'a>> {
         match self.workspace.node(self.node) {
-            Some(Node::Tabs { items, selected }) => Some(DockspaceTabsView {
+            Some(Node::Tabs {
+                items, selected, ..
+            }) => Some(DockspaceTabsView {
                 items,
                 selected: *selected,
                 central: self.is_central(),

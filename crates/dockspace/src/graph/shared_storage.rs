@@ -1,12 +1,11 @@
 //! Shared canonical payloads behind the graph owner's existing value access.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use slotmap::SlotMap;
 
 use super::Node;
-use crate::ids::{ItemId, NodeId};
+use crate::ids::NodeId;
 
 /// The allocator is independently cloned; only immutable node payloads share.
 #[derive(Debug, Default)]
@@ -78,68 +77,5 @@ impl NodeStore {
 
     pub(crate) fn contains_key(&self, node: NodeId) -> bool {
         self.slots.contains_key(node)
-    }
-}
-
-/// One normative MRU Vec; the newtype counts actual Arc::make_mut copies.
-#[derive(Debug, PartialEq, Eq)]
-struct TabMru(Vec<ItemId>);
-
-impl Clone for TabMru {
-    fn clone(&self) -> Self {
-        #[cfg(test)]
-        crate::drop_resolver::structural_work::record_mru_payload_clone(self.0.len());
-        Self(self.0.clone())
-    }
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct TabMruStore {
-    entries: BTreeMap<NodeId, Arc<TabMru>>,
-}
-
-impl Clone for TabMruStore {
-    fn clone(&self) -> Self {
-        #[cfg(test)]
-        crate::drop_resolver::structural_work::record_mru_store_clone(self.entries.len());
-        Self {
-            entries: self.entries.clone(),
-        }
-    }
-}
-
-impl TabMruStore {
-    pub(crate) fn get(&self, tabs: &NodeId) -> Option<&Vec<ItemId>> {
-        self.entries.get(tabs).map(|mru| &mru.0)
-    }
-
-    pub(crate) fn get_mut(&mut self, tabs: &NodeId) -> Option<&mut Vec<ItemId>> {
-        self.entries
-            .get_mut(tabs)
-            .map(|mru| &mut Arc::make_mut(mru).0)
-    }
-
-    pub(crate) fn insert(&mut self, tabs: NodeId, mru: Vec<ItemId>) {
-        self.entries.insert(tabs, Arc::new(TabMru(mru)));
-    }
-
-    pub(crate) fn remove(&mut self, tabs: &NodeId) -> Option<()> {
-        self.entries.remove(tabs).map(|_| ())
-    }
-
-    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&NodeId, &Vec<ItemId>) -> bool) {
-        self.entries.retain(|tabs, mru| keep(tabs, &mru.0));
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&NodeId, &Vec<ItemId>)> {
-        self.entries.iter().map(|(tabs, mru)| (tabs, &mru.0))
-    }
-
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &NodeId> {
-        self.entries.keys()
-    }
-
-    pub(crate) fn values(&self) -> impl Iterator<Item = &Vec<ItemId>> {
-        self.entries.values().map(|mru| &mru.0)
     }
 }

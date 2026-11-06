@@ -1313,7 +1313,10 @@ fn validate_tab_records(
         });
     }
     for (bar_id, bar) in bars.iter(&ready.facts.tab_bar_records) {
-        let Some(Node::Tabs { items, selected }) = workspace.node(bar_id.tabs) else {
+        let Some(Node::Tabs {
+            items, selected, ..
+        }) = workspace.node(bar_id.tabs)
+        else {
             return Err(SceneBuildError::InvalidTabBarRecord {
                 surface: ready.surface,
                 id: bar_id,

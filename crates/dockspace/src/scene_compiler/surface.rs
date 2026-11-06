@@ -846,7 +846,9 @@ fn compile_root(
                 root,
                 node: *node,
             })? {
-            Node::Tabs { items, selected } => {
+            Node::Tabs {
+                items, selected, ..
+            } => {
                 let depth = *node_depths
                     .get(node)
                     .ok_or(SceneCompilationError::MissingNode {

@@ -176,8 +176,8 @@ impl WorkspaceIndex {
                 node: tabs,
             });
         }
-        let selected = match workspace.node(tabs) {
-            Some(Node::Tabs { selected, .. }) => *selected,
+        let (selected, mru) = match workspace.node(tabs) {
+            Some(Node::Tabs { selected, mru, .. }) => (*selected, mru.as_slice()),
             Some(Node::Split { .. }) => {
                 return Err(CommandError::NodeIsNotTabs { node: tabs });
             }
@@ -188,9 +188,6 @@ impl WorkspaceIndex {
                 });
             }
         };
-        let mru = workspace.tab_mru(tabs).ok_or(CommandError::Invariant {
-            stage: "rebind selected tabs MRU fingerprint",
-        })?;
         let mut roots = self.roots.clone();
         let updated = roots
             .get_mut(&root)
@@ -835,7 +832,11 @@ impl Workspace {
             #[cfg(test)]
             crate::drop_resolver::structural_work::record_root_fingerprint_node_visit();
             let snapshot = match node {
-                Node::Tabs { items, selected } => {
+                Node::Tabs {
+                    items,
+                    selected,
+                    mru,
+                } => {
                     item_count =
                         item_count
                             .checked_add(items.len())
@@ -845,15 +846,7 @@ impl Workspace {
                     FingerprintNode::Tabs {
                         items: Arc::from(items.as_slice()),
                         selected: *selected,
-                        mru: Arc::from(
-                            self.storage()
-                                .tab_mru
-                                .get(&id)
-                                .ok_or(CommandError::Invariant {
-                                    stage: "capture tabs MRU fingerprint",
-                                })?
-                                .as_slice(),
-                        ),
+                        mru: Arc::from(mru.as_slice()),
                     }
                 }
                 Node::Split {
@@ -1035,6 +1028,7 @@ fn pane_local_target_rule(
         Some(Node::Tabs {
             items,
             selected: None,
+            ..
         }) if central && items.is_empty() => Ok(DockTargetRuleKey::Root(root)),
         Some(Node::Tabs { selected: None, .. }) => Err(CommandError::TargetTabsUnselected { tabs }),
         Some(Node::Split { .. }) => Err(CommandError::NodeIsNotTabs { node: tabs }),
@@ -1337,10 +1331,7 @@ mod tests {
         let root = RootId::new(1);
         let surface = SurfaceId::new(1);
         let mut builder = WorkspaceBuilder::new();
-        let tabs = builder.insert_node(Node::Tabs {
-            items: vec![ItemId::new(1)],
-            selected: None,
-        });
+        let tabs = builder.insert_node(Node::tabs_with_selection([ItemId::new(1)], None));
         builder.set_root(root, RootRecord::new(tabs));
         builder.set_surface(surface, SurfacePresentation::with_main(root));
         let fraction = DockFraction::new(0.5).expect("test fraction is valid");
