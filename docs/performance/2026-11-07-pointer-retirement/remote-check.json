@@ -1,0 +1,10 @@
+{
+  "head_sha": "1c7169618e90834f1f9b007a59254c46aee8ed35",
+  "run_id": 42308166838,
+  "all_six_jobs_success": true,
+  "native_log_bytes": 1006660,
+  "native_log_sha256": "cbda97db85392b15cfe0d33222dd2765c83ed5cb7f452a575d1f8dfa278daf19",
+  "physical_center_merge_retired_and_quiescent": true,
+  "recorded_utc": "2026-11-06T23:27:19.149308+00:00",
+  "scope": "verified repair checkpoint; subsequent performance heads still need fresh CI"
+}

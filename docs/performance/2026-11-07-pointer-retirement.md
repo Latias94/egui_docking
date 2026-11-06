@@ -76,3 +76,23 @@ The fix author additionally performs a
 against immutable `1c71696`, confirming all source pairs, archive members and
 RED/GREEN receipts. This is labeled as an author check; the independent source
 review remains the separate admission report and final test supplement.
+
+## Fresh remote verification
+
+[CI 42308166838](https://github.com/Latias94/egui_docking/actions/runs/42308166838)
+completes successfully for exact pushed head
+`1c7169618e90834f1f9b007a59254c46aee8ed35`; all six jobs pass.
+The native job passes actual output/backpressure, physical smoke unit tests,
+programmatic Glow and the physical X11/XTest docking smoke. The original Root
+survives; Center merge reaches `Retired, quiescent: true`, verifies removal of
+the actual X11 child and viewport inventory, and completes the guide-control
+scenario. It crosses the precise retirement-quiescence stage that previously
+failed, with the original physical assertions and timeouts intact.
+
+The [remote receipt](2026-11-07-pointer-retirement/remote-ci-success.json),
+[check](2026-11-07-pointer-retirement/remote-check.json) and
+[complete native log](2026-11-07-pointer-retirement/remote-native-success.log.xz)
+are preserved separately from the original 60-input local evidence archive.
+This verifies the repair checkpoint and physical behavior; it does not identify
+the unlogged individual failing callback of the older run. Subsequent
+performance commits still require their own fresh pushed-head CI.

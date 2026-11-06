@@ -235,3 +235,18 @@ bounded ownership benefit and not a uniform performance winner. ImGui has
 [all negatives and the independent evidence review](../performance/2026-11-07-placement-sharing.md).
 Continue the reviewed Item-frontier placement-completion and fresh-layout
 storage candidates; this is not a stopping point.
+
+Item-frontier completion passes the full ordinary gates and removes actual
+duplicate placement installation. Its complete pairings improve 24/42 p50
+group/cells, with 17 regressions and one tie. Large single-view edges improve
+12.72–12.75%, four-view edges 3.07–7.37%. All 128/1024-pane cells meet 2x in
+both groups, while all fourteen 16-pane cells still exceed it: 28/42 overall.
+Preserve [the complete evidence and independent review](../performance/2026-11-07-item-frontier.md).
+The separate row-capacity candidate is under ordinary qualification; do not
+mix it into these results.
+
+Fresh pushed-head CI `42308166838` passes all six jobs at exact `1c71696`,
+including actual output/backpressure and physical X11/XTest guide-control
+docking. It crosses retirement quiescence, verifies child-window destruction
+and viewport removal, and reaches successful completion. The native repair
+checkpoint is verified; subsequent performance heads still need fresh CI.
