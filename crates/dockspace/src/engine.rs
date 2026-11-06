@@ -2349,28 +2349,23 @@ impl DockEngine {
             return false;
         }
 
-        let mut root_sources = BTreeMap::new();
         resize
             .axis_groups
             .iter()
             .flat_map(|group| group.sources())
             .all(|source| {
-                let (frozen, current) = root_sources.entry(source.root()).or_insert_with(|| {
-                    let current = self
-                        .workspace
-                        .root_fingerprint(source.root())
-                        .is_ok_and(|current| current == *source.fingerprint())
-                        && matches!(
-                            self.workspace.presentation_for_root(source.root()),
-                            Some(crate::RootPresentationOwner::Main { surface })
-                                | Some(crate::RootPresentationOwner::Contained { surface, .. })
-                                if surface == resize.surface
-                        );
-                    (source.fingerprint().clone(), current)
-                });
-                *current
-                    && (Arc::ptr_eq(&frozen.0, &source.fingerprint().0)
-                        || &*frozen == source.fingerprint())
+                self.workspace
+                    .verify_reference(
+                        source.root(),
+                        source.node(),
+                        source.reference(),
+                        crate::error::ReferenceRole::Source,
+                    )
+                    .is_ok()
+                    && matches!(self.workspace.presentation_for_root(source.root()),
+                    Some(crate::RootPresentationOwner::Main { surface })
+                    | Some(crate::RootPresentationOwner::Contained { surface, .. })
+                    if surface == resize.surface)
             })
     }
 
@@ -4991,7 +4986,7 @@ impl DockEngine {
     ) -> Result<(), crate::error::CommandError> {
         use crate::error::ReferenceRole;
 
-        let verify = |root, node, expected: &NodeFingerprint| match index {
+        let verify = |root, node, expected: &crate::command::RootReference| match index {
             Some(index) => index.verify_reference(
                 &self.workspace,
                 self.version,
@@ -5006,7 +5001,7 @@ impl DockEngine {
         };
         match payload {
             MovePayload::Item(source) => {
-                verify(source.root(), source.tabs(), source.fingerprint())?;
+                verify(source.root(), source.tabs(), source.reference())?;
                 if let Some(index) = index {
                     index.capture_item_source(
                         &self.workspace,
@@ -5024,7 +5019,7 @@ impl DockEngine {
                 }
             }
             MovePayload::Tabs(source) => {
-                verify(source.root(), source.node(), source.fingerprint())?;
+                verify(source.root(), source.node(), source.reference())?;
                 match self.workspace.node(source.node()) {
                     Some(crate::graph::Node::Tabs { items, .. }) if !items.is_empty() => {}
                     Some(crate::graph::Node::Tabs { .. }) => {
@@ -5046,7 +5041,7 @@ impl DockEngine {
                 }
             }
             MovePayload::Subtree(source) => {
-                verify(source.root(), source.node(), source.fingerprint())?;
+                verify(source.root(), source.node(), source.reference())?;
                 if self
                     .workspace
                     .collect_items_in_subtree(source.node())
@@ -5070,7 +5065,7 @@ impl DockEngine {
         self.workspace.verify_reference(
             source.root(),
             source.node(),
-            source.fingerprint(),
+            source.reference(),
             ReferenceRole::Source,
         )
     }
@@ -6104,7 +6099,7 @@ mod drag_source_index_tests {
             )
             .unwrap();
         assert_eq!(item, indexed);
-        assert!(!Arc::ptr_eq(&item.fingerprint.0, &indexed.fingerprint.0));
+        assert_eq!(item.reference(), indexed.reference());
         let node = engine
             .workspace
             .capture_node_source(fixture.root, fixture.tabs)
@@ -6143,7 +6138,7 @@ mod drag_source_index_tests {
                 ..item.clone()
             }),
             MovePayload::Item(crate::command::ItemSource {
-                fingerprint: singleton.fingerprint,
+                reference: singleton.reference,
                 ..item.clone()
             }),
             MovePayload::Item(crate::command::ItemSource {
@@ -6249,7 +6244,10 @@ mod drag_source_index_tests {
                 CommandError::StaleNode { .. }
             ))
         ));
-        assert!(crate::drop_resolver::structural_work::snapshot().root_fingerprint_builds > 0);
+        assert_eq!(
+            crate::drop_resolver::structural_work::snapshot().root_fingerprint_builds,
+            0
+        );
         assert_eq!(prepare(engine, &payload), prepare_live(engine, &payload));
 
         let current = MovePayload::Item(
@@ -6309,7 +6307,10 @@ mod drag_source_index_tests {
             );
             crate::drop_resolver::structural_work::reset();
             prepare(engine, &payload).unwrap();
-            assert!(crate::drop_resolver::structural_work::snapshot().root_fingerprint_builds > 0);
+            assert_eq!(
+                crate::drop_resolver::structural_work::snapshot().root_fingerprint_builds,
+                0
+            );
             assert_eq!(prepare(engine, &payload), prepare_live(engine, &payload));
         }
     }

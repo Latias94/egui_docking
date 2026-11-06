@@ -335,6 +335,9 @@ pub(crate) fn prepare_content_close(
     }
 
     let mut candidate = clone_workspace_draft(workspace);
+    let before = candidate
+        .begin_cold_completion()
+        .map_err(close_command_error)?;
     let outcome = match prepared {
         PreparedContentClose::Item {
             source,
@@ -431,6 +434,9 @@ pub(crate) fn prepare_content_close(
             actual: actual_after,
         });
     }
+    candidate
+        .finish_cold_roots(before)
+        .map_err(close_command_error)?;
     Ok(PreparedContentCloseCommit { candidate, outcome })
 }
 
@@ -647,6 +653,9 @@ fn prepare_transaction_inner(
         )?;
         if let CommandOutcome::Moved { changed, .. } = &mut applied.outcome {
             *changed = candidate != *workspace;
+            if !*changed {
+                candidate.retain_original_issuance(workspace);
+            }
         }
         return Ok(PreparedTransaction {
             candidate,
@@ -660,42 +669,127 @@ fn prepare_general_candidate(
     workspace: &Workspace,
     authority: TransactionAuthority<'_>,
     commands: &[WorkspaceCommand],
-    mut candidate: Workspace,
+    candidate: Workspace,
 ) -> Result<PreparedTransaction, TransactionError> {
-    // Typed command deltas own the staged item roster. Reconcile the graph once,
-    // after canonicalization, so multi-command transactions stay linear in items.
-    let mut item_ledger = workspace.item_multiset();
-    let mut outcomes = Vec::with_capacity(commands.len());
+    let mut stage = TransactionDraft::new(workspace, authority, candidate);
+    for command in commands {
+        stage.push_command(command)?;
+    }
+    stage.finish(workspace)
+}
 
-    for (index, command) in commands.iter().enumerate() {
-        validate_declared_open_item(&item_ledger, command)
-            .map_err(|source| TransactionError::Command { index, source })?;
-        let (applied, _) = apply_command(&mut candidate, authority, command)
-            .map_err(|source| TransactionError::Command { index, source })?;
-        apply_item_delta(&mut item_ledger, applied.delta)
-            .map_err(|source| TransactionError::Command { index, source })?;
-        outcomes.push(applied.outcome);
+pub(crate) fn prepare_transaction_with(
+    workspace: &Workspace,
+    policy: &DockPolicySnapshot,
+    edit: impl FnOnce(
+        &mut crate::transaction::WorkspaceTransactionStage<'_>,
+    ) -> Result<(), TransactionError>,
+) -> Result<PreparedTransaction, TransactionError> {
+    let mut stage = crate::transaction::WorkspaceTransactionStage::new(TransactionDraft::new(
+        workspace,
+        TransactionAuthority::Policy(policy),
+        clone_workspace_draft(workspace),
+    ));
+    edit(&mut stage)?;
+    stage.finish(workspace)
+}
+
+/// One concrete candidate, executor, item ledger and terminal failure.
+/// Frozen vectors and incremental capture both pass through push_command.
+pub(crate) struct TransactionDraft<'policy> {
+    candidate: Workspace,
+    authority: TransactionAuthority<'policy>,
+    item_ledger: BTreeMap<ItemId, usize>,
+    outcomes: Vec<CommandOutcome>,
+    failure: Option<TransactionError>,
+}
+
+impl<'policy> TransactionDraft<'policy> {
+    fn new(
+        workspace: &Workspace,
+        authority: TransactionAuthority<'policy>,
+        candidate: Workspace,
+    ) -> Self {
+        Self {
+            candidate,
+            authority,
+            item_ledger: workspace.item_multiset(),
+            outcomes: Vec::new(),
+            failure: None,
+        }
     }
 
-    prune_vacant_surfaces(&mut candidate);
-    canonicalize_draft(&mut candidate)?;
-    if commands.len() == 1
-        && let Some(CommandOutcome::Moved { changed, .. }) = outcomes.first_mut()
-    {
-        *changed = candidate != *workspace;
-    }
-    let actual_items = candidate.item_multiset();
-    if actual_items != item_ledger {
-        return Err(TransactionError::ItemReconciliation {
-            expected: item_ledger,
-            actual: actual_items,
-        });
+    pub(crate) fn capture_and_push(
+        &mut self,
+        capture: impl FnOnce(
+            crate::transaction::TransactionCapture<'_>,
+        ) -> Result<WorkspaceCommand, CommandError>,
+    ) -> Result<(), TransactionError> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        let command = match capture(crate::transaction::TransactionCapture::new(&self.candidate)) {
+            Ok(command) => command,
+            Err(source) => {
+                let error = TransactionError::Command {
+                    index: self.outcomes.len(),
+                    source,
+                };
+                self.failure = Some(error.clone());
+                return Err(error);
+            }
+        };
+        self.push_command(&command)
     }
 
-    Ok(PreparedTransaction {
-        candidate,
-        outcomes,
-    })
+    fn push_command(&mut self, command: &WorkspaceCommand) -> Result<(), TransactionError> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        let index = self.outcomes.len();
+        let result = (|| {
+            validate_declared_open_item(&self.item_ledger, command)?;
+            let (applied, _) = apply_command(&mut self.candidate, self.authority, command)?;
+            apply_item_delta(&mut self.item_ledger, applied.delta)?;
+            self.outcomes.push(applied.outcome);
+            Ok(())
+        })()
+        .map_err(|source| TransactionError::Command { index, source });
+        if let Err(error) = &result {
+            self.failure = Some(error.clone());
+        }
+        result
+    }
+
+    pub(crate) fn finish(
+        mut self,
+        workspace: &Workspace,
+    ) -> Result<PreparedTransaction, TransactionError> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        prune_vacant_surfaces(&mut self.candidate);
+        canonicalize_draft(&mut self.candidate)?;
+        if self.outcomes.len() == 1
+            && let Some(CommandOutcome::Moved { changed, .. }) = self.outcomes.first_mut()
+        {
+            *changed = self.candidate != *workspace;
+            if !*changed {
+                self.candidate.retain_original_issuance(workspace);
+            }
+        }
+        let actual_items = self.candidate.item_multiset();
+        if actual_items != self.item_ledger {
+            return Err(TransactionError::ItemReconciliation {
+                expected: self.item_ledger,
+                actual: actual_items,
+            });
+        }
+        Ok(PreparedTransaction {
+            candidate: self.candidate,
+            outcomes: self.outcomes,
+        })
+    }
 }
 
 /// Applies a follow-up command to an already discardable transaction draft.
@@ -1067,48 +1161,8 @@ fn check_move(
     payload: &MovePayload,
     target: &DockTarget,
 ) -> Result<(), CommandError> {
-    let (root, node) = match payload {
-        MovePayload::Item(source) => (source.root(), source.tabs()),
-        MovePayload::Tabs(source) | MovePayload::Subtree(source) => (source.root(), source.node()),
-    };
-    let mut index =
-        WorkspaceIndex::for_command_reference(workspace, root, node, ReferenceRole::Source)?;
-    validate_move_payload_with(
-        workspace,
-        ReferenceAuthority::Indexed {
-            version: index.version(),
-            index: &index,
-        },
-        payload,
-    )?;
-    if let DockTarget::InnerEdge(edge) | DockTarget::OuterEdge(edge) = target {
-        let requested = if matches!(target, DockTarget::InnerEdge(_)) {
-            EdgeTargetScope::Inner
-        } else {
-            EdgeTargetScope::Outer
-        };
-        if edge.scope() != requested {
-            return Err(CommandError::EdgeTargetScopeMismatch {
-                node: edge.node(),
-                captured: edge.scope(),
-                requested,
-            });
-        }
-    }
-    index.include_command_reference(
-        workspace,
-        target_root(target),
-        target_node(target),
-        ReferenceRole::Target,
-    )?;
-    validate_target_with(
-        workspace,
-        ReferenceAuthority::Indexed {
-            version: index.version(),
-            index: &index,
-        },
-        target,
-    )?;
+    validate_move_payload(workspace, payload)?;
+    validate_target(workspace, target)?;
     validate_move_target_semantics(workspace, payload, target)?;
     if let Some(policy) = policy {
         DropCommandEligibility::new_validated(workspace, policy, payload)?
@@ -1463,7 +1517,47 @@ fn apply_command(
             authorize_workspace_command(workspace, policy, command)?;
         }
     }
-    let applied = match command {
+    let cold = match command {
+        // These writers complete their exact graph changes directly. Removing
+        // a root also retires its owner and unroots its actual members.
+        WorkspaceCommand::Select { .. }
+        | WorkspaceCommand::Reorder { .. }
+        | WorkspaceCommand::ResizeSplits { .. }
+        | WorkspaceCommand::Move {
+            payload: MovePayload::Item(_),
+            ..
+        }
+        | WorkspaceCommand::RemoveEmptyRoot { .. }
+        | WorkspaceCommand::RetireEmptySurface { .. }
+        // Rectangles and peer roster order are separate preconditions. They
+        // leave exact root graph/presentation-carrier authority unchanged.
+        | WorkspaceCommand::UpdateContainedRect { .. }
+        | WorkspaceCommand::UpdateContainedPresentation { .. }
+        | WorkspaceCommand::RaiseContained { .. } => None,
+        WorkspaceCommand::Move { payload, target } => {
+            Some(workspace.begin_cold_roots([payload_root(payload), target_root(target)])?)
+        }
+        WorkspaceCommand::Open { target, .. } => {
+            Some(workspace.begin_cold_roots([target_root(target)])?)
+        }
+        WorkspaceCommand::AttachEmptySurface { root, .. } => {
+            Some(workspace.begin_cold_roots([*root])?)
+        }
+        WorkspaceCommand::CreateSurfaceRoot { root, content, .. }
+        | WorkspaceCommand::CreateContainedRoot { root, content, .. }
+        | WorkspaceCommand::InstallMainRoot { root, content, .. } => {
+            let donor = match content {
+                RootContent::OpenItem(_) => None,
+                RootContent::Move(payload) => Some(payload_root(payload)),
+            };
+            Some(workspace.begin_cold_roots(std::iter::once(*root).chain(donor))?)
+        }
+        WorkspaceCommand::RehomeRoot { source, .. }
+        | WorkspaceCommand::PromoteContained { source, .. } => {
+            Some(workspace.begin_cold_roots([source.root()])?)
+        }
+    };
+    let result = match command {
         WorkspaceCommand::Select { source } => select(workspace, source),
         WorkspaceCommand::Reorder {
             source,
@@ -1475,7 +1569,11 @@ fn apply_command(
                 TransactionAuthority::Policy(policy) => Some(policy),
                 TransactionAuthority::SurfaceRecovery => None,
             };
-            return move_payload(workspace, policy, payload, target);
+            let result = move_payload(workspace, policy, payload, target)?;
+            if let Some(before) = cold {
+                workspace.finish_cold_roots(before)?;
+            }
+            return Ok(result);
         }
         WorkspaceCommand::ResizeSplits { splits } => resize_splits(workspace, splits),
         WorkspaceCommand::AttachEmptySurface { surface, root } => {
@@ -1540,7 +1638,11 @@ fn apply_command(
         } => raise_contained(workspace, source, *floating, expected_roster),
         WorkspaceCommand::RemoveEmptyRoot { source } => remove_empty_root(workspace, source),
     };
-    applied.map(|applied| (applied, None))
+    let applied = result?;
+    if let Some(before) = cold {
+        workspace.finish_cold_roots(before)?;
+    }
+    Ok((applied, None))
 }
 
 fn select(workspace: &mut Workspace, source: &ItemSource) -> Result<AppliedCommand, CommandError> {
@@ -1561,6 +1663,9 @@ fn select(workspace: &mut Workspace, source: &ItemSource) -> Result<AppliedComma
     let changed = *selected != Some(item);
     *selected = Some(item);
     promote_tab_mru(workspace, tabs, item)?;
+    if changed {
+        workspace.complete_selection_change(source.root(), tabs)?;
+    }
     Ok(AppliedCommand {
         outcome: CommandOutcome::Selected {
             item,
@@ -1580,6 +1685,9 @@ fn reorder(
     let tabs = source.tabs();
     let item = source.item();
     let (from, to, changed) = reorder_item(workspace, tabs, item, insertion_index)?;
+    if changed {
+        workspace.complete_root_change(source.root())?;
+    }
     Ok(AppliedCommand {
         outcome: CommandOutcome::Reordered {
             item,
@@ -1623,6 +1731,9 @@ fn move_payload(
     if let MovePayload::Item(source) = payload
         && let Some(changed) = move_item_within_same_tabs(workspace, source, target)?
     {
+        if changed {
+            workspace.complete_root_change(source.root())?;
+        }
         return Ok((
             AppliedCommand {
                 outcome: CommandOutcome::Moved {
@@ -1682,6 +1793,12 @@ fn move_payload(
     let items = detached.items();
     let target_root = target_root(target);
     let inserted_split = insert_payload(workspace, detached, target)?;
+    if matches!(payload, MovePayload::Item(_)) {
+        workspace.complete_root_change(source_root)?;
+        if target_root != source_root {
+            workspace.complete_root_change(target_root)?;
+        }
+    }
     Ok((
         AppliedCommand {
             outcome: CommandOutcome::Moved {
@@ -1804,51 +1921,11 @@ fn validate_split_resizes_structure(
         return Err(CommandError::EmptySplitResizeBatch);
     }
     let mut seen = std::collections::BTreeSet::new();
-    // A touching frontier shares one frozen root. Verify that snapshot once,
-    // then check every additional source against its exact proof and members.
-    let mut roots = BTreeMap::<_, (&crate::command::NodeFingerprint, BTreeSet<_>)>::new();
     let mut validated = Vec::with_capacity(splits.len());
     for resize in splits {
         let split = resize.split();
         let weights = resize.weights();
-        if let Some((expected, members)) = roots.get(&split.root()) {
-            if !workspace.storage.nodes.contains_key(split.node()) {
-                return Err(CommandError::MissingNode {
-                    role: ReferenceRole::Source,
-                    node: split.node(),
-                });
-            }
-            if !members.contains(&split.node()) {
-                return Err(CommandError::NodeOutsideRoot {
-                    role: ReferenceRole::Source,
-                    root: split.root(),
-                    node: split.node(),
-                });
-            }
-            if *expected != split.fingerprint() {
-                return Err(CommandError::StaleNode {
-                    role: ReferenceRole::Source,
-                    node: split.node(),
-                    expected: split.fingerprint().clone(),
-                    actual: (*expected).clone(),
-                });
-            }
-        } else {
-            validate_node_source(workspace, split)?;
-            roots.insert(
-                split.root(),
-                (
-                    split.fingerprint(),
-                    split
-                        .fingerprint()
-                        .0
-                        .nodes
-                        .iter()
-                        .map(|node| node.id)
-                        .collect(),
-                ),
-            );
-        }
+        validate_node_source(workspace, split)?;
         let node_id = split.node();
         if !seen.insert(node_id) {
             return Err(CommandError::DuplicateSplitResize { split: node_id });
@@ -1903,6 +1980,14 @@ fn resize_splits(
             }
         };
         current.clone_from_slice(resize.weights());
+    }
+    let changed_roots = splits
+        .iter()
+        .zip(&validated)
+        .filter_map(|(resize, (_, changed))| changed.then_some(resize.split().root()))
+        .collect::<BTreeSet<_>>();
+    for root in changed_roots {
+        workspace.complete_root_change(root)?;
     }
     Ok(AppliedCommand {
         outcome: CommandOutcome::SplitsResized {
@@ -2563,7 +2648,7 @@ impl ReferenceAuthority<'_> {
         workspace: &Workspace,
         root: RootId,
         node: NodeId,
-        expected: &crate::command::NodeFingerprint,
+        expected: &crate::command::RootReference,
         role: ReferenceRole,
     ) -> Result<(), CommandError> {
         match self {
@@ -2644,7 +2729,7 @@ fn validate_item_source_with(
         workspace,
         source.root(),
         source.tabs(),
-        source.fingerprint(),
+        source.reference(),
         ReferenceRole::Source,
     )?;
     match workspace.storage.nodes.get(source.tabs()) {
@@ -2676,7 +2761,7 @@ fn validate_node_source_with(
         workspace,
         source.root(),
         source.node(),
-        source.fingerprint(),
+        source.reference(),
         ReferenceRole::Source,
     )
 }
@@ -2780,7 +2865,7 @@ fn validate_edge_target(
         workspace,
         target.root(),
         target.node(),
-        target.fingerprint(),
+        target.reference(),
         ReferenceRole::Target,
     )?;
     let actual = match requested {
@@ -2806,7 +2891,7 @@ fn validate_tab_target(
         workspace,
         target.root(),
         target.tabs(),
-        target.fingerprint(),
+        target.reference(),
         ReferenceRole::Target,
     )?;
     let actual = references.capture_tab_target(workspace, target.root(), target.tabs())?;
@@ -3011,7 +3096,16 @@ fn remove_split_child(
     else {
         return Err(CommandError::NodeIsNotSplit { node: parent });
     };
-    remove_split_child_from_roster(children, weights, index)
+    let removed = children
+        .get(index)
+        .copied()
+        .ok_or(CommandError::Invariant {
+            stage: "detach indexed split child",
+        })?;
+    remove_split_child_from_roster(children, weights, index)?;
+    workspace.unroot_subtree(removed);
+    workspace.refresh_child_placements(parent);
+    Ok(())
 }
 
 fn remove_split_child_from_roster(
@@ -3174,6 +3268,7 @@ fn insert_payload_at_edge(
         DetachedPayload::Item { item, .. } => workspace.insert_runtime_node(Node::tabs([*item])),
         DetachedPayload::Node { node, .. } => *node,
     };
+    workspace.assign_subtree(target.root(), payload_node, None);
     let (axis, before) = edge_axis_and_order(target.edge());
     if let Some(parent) = workspace.parent_link(target.root(), target.node()) {
         let parent_axis = match workspace.storage.nodes.get(parent.parent) {
@@ -3232,7 +3327,9 @@ fn split_existing_branch(
     else {
         return Err(CommandError::NodeIsNotSplit { node: parent });
     };
-    split_existing_branch_roster(children, weights, target, payload, before, fraction, axis)
+    split_existing_branch_roster(children, weights, target, payload, before, fraction, axis)?;
+    workspace.refresh_child_placements(parent);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3288,12 +3385,13 @@ fn wrap_target_branch(
     } else {
         (vec![target, payload], vec![target_weight, payload_weight])
     };
+    let previous_parent = workspace.parent_link(root, target);
     let wrapper = workspace.insert_runtime_node(Node::Split {
         axis,
         children,
         weights,
     });
-    if let Some(parent) = workspace.parent_link(root, target) {
+    if let Some(parent) = previous_parent {
         let node =
             workspace
                 .storage
@@ -3329,6 +3427,8 @@ fn wrap_target_branch(
         }
         record.node = wrapper;
     }
+    workspace.place_node(root, wrapper, previous_parent);
+    workspace.refresh_child_placements(wrapper);
     Ok(wrapper)
 }
 
@@ -3489,11 +3589,14 @@ fn remove_root_and_presentation(
             stage: "locate root presentation owner",
         })?;
     detach_root_presentation(workspace, root, presentation)?;
-    workspace
+    let record = workspace
         .storage
         .roots
         .remove(&root)
-        .ok_or(CommandError::MissingRoot { root })
+        .ok_or(CommandError::MissingRoot { root })?;
+    workspace.unroot_subtree(record.node);
+    workspace.complete_root_change(root)?;
+    Ok(record)
 }
 
 fn remove_subtree_nodes(workspace: &mut Workspace, root: NodeId) -> Result<(), CommandError> {
@@ -3802,6 +3905,7 @@ mod tests {
     mod local_item_move;
     mod local_selection;
     mod logical_surfaces;
+    mod owner_reference;
     mod split_resize;
 
     use super::*;
@@ -4043,21 +4147,17 @@ mod tests {
 
     fn append_item_to_root(workspace: &mut Workspace, root: RootId, item: ItemId) {
         let node = workspace.root(root).expect("test root must exist").node;
-        let Node::Tabs { items, .. } = workspace
-            .storage
-            .nodes
-            .get_mut(node)
-            .expect("test root node must exist")
-        else {
-            panic!("test root must be a tabs node");
-        };
-        items.push(item);
-        workspace
-            .storage
-            .tab_mru
-            .get_mut(&node)
-            .expect("test tabs MRU must exist")
-            .push(item);
+        let target = DockTarget::Center(
+            workspace
+                .capture_tab_target(root, node)
+                .expect("test root must be a current tabs target"),
+        );
+        crate::transaction::WorkspaceTransaction::from_commands([WorkspaceCommand::Open {
+            item,
+            target,
+        }])
+        .apply(workspace, &default_policy())
+        .expect("checked Open must append the test item and complete its owner");
     }
 
     #[test]

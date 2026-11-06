@@ -30,7 +30,7 @@ fn a_resize_frontier_validates_each_root_once_without_lending_its_source_proof()
                 NodeSource {
                     root: MAIN,
                     node,
-                    fingerprint: original.fingerprint().clone(),
+                    reference: original.reference().clone(),
                 },
                 SplitWeight::normalize([0.4, 0.6]).unwrap(),
             )
@@ -41,13 +41,13 @@ fn a_resize_frontier_validates_each_root_once_without_lending_its_source_proof()
     assert_eq!(validated.len(), SPLITS);
     assert!(validated.iter().all(|(_, changed)| *changed));
     let work = crate::drop_resolver::structural_work::snapshot();
-    assert_eq!(work.root_fingerprint_builds, 1);
-    assert_eq!(work.root_fingerprint_node_visits, SPLITS * 2 + 1);
+    assert_eq!(work.root_fingerprint_builds, 0);
+    assert_eq!(work.root_fingerprint_node_visits, 0);
 
     let foreign_source = NodeSource {
         root: MAIN,
         node: foreign,
-        fingerprint: original.fingerprint().clone(),
+        reference: original.reference().clone(),
     };
     let foreign_batch = [
         splits[0].clone(),
@@ -62,6 +62,7 @@ fn a_resize_frontier_validates_each_root_once_without_lending_its_source_proof()
         unreachable!();
     };
     *weights = SplitWeight::normalize([0.3, 0.7]).unwrap();
+    workspace.complete_root_change(MAIN).unwrap();
     let current = workspace.capture_node_source(MAIN, subtree).unwrap();
     let stale_batch = [
         SplitResize::new(current, SplitWeight::normalize([0.4, 0.6]).unwrap()),

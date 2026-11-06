@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::canonical::CanonicalizationError;
-use crate::command::{EdgeTargetScope, NodeFingerprint};
+use crate::command::{EdgeTargetScope, RootReference};
 use crate::geometry::LogicalRect;
 use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
@@ -38,12 +38,12 @@ pub enum CommandError {
         node: NodeId,
     },
     /// A frozen reference no longer describes the same subtree.
-    #[error("{role:?} node {node:?} is stale: expected fingerprint {expected:?}, got {actual:?}")]
+    #[error("{role:?} node {node:?} is stale: expected owner {expected:?}, got {actual:?}")]
     StaleNode {
         role: ReferenceRole,
         node: NodeId,
-        expected: NodeFingerprint,
-        actual: NodeFingerprint,
+        expected: RootReference,
+        actual: RootReference,
     },
     /// A command expected a tabs leaf.
     #[error("node {node:?} is not a tabs leaf")]

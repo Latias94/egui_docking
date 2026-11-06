@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::geometry::LogicalRect;
+pub use crate::graph::RootReference;
 use crate::graph::{Axis, SplitWeight};
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::policy::DockTargetRuleKey;
@@ -165,7 +166,7 @@ pub struct ItemSource {
     pub(crate) root: RootId,
     pub(crate) tabs: NodeId,
     pub(crate) item: ItemId,
-    pub(crate) fingerprint: NodeFingerprint,
+    pub(crate) reference: RootReference,
 }
 
 impl ItemSource {
@@ -184,9 +185,9 @@ impl ItemSource {
         self.item
     }
 
-    /// Returns the source subtree fingerprint.
-    pub const fn fingerprint(&self) -> &NodeFingerprint {
-        &self.fingerprint
+    /// Returns the exact root-owner reference.
+    pub const fn reference(&self) -> &RootReference {
+        &self.reference
     }
 }
 
@@ -195,7 +196,7 @@ impl ItemSource {
 pub struct NodeSource {
     pub(crate) root: RootId,
     pub(crate) node: NodeId,
-    pub(crate) fingerprint: NodeFingerprint,
+    pub(crate) reference: RootReference,
 }
 
 /// One exact split-weight replacement inside an atomic resize batch.
@@ -238,9 +239,9 @@ impl NodeSource {
         self.node
     }
 
-    /// Returns the source subtree fingerprint.
-    pub const fn fingerprint(&self) -> &NodeFingerprint {
-        &self.fingerprint
+    /// Returns the exact root-owner reference.
+    pub const fn reference(&self) -> &RootReference {
+        &self.reference
     }
 }
 
@@ -337,7 +338,7 @@ impl SurfaceRosterSource {
 pub struct TabTarget {
     pub(crate) root: RootId,
     pub(crate) tabs: NodeId,
-    pub(crate) fingerprint: NodeFingerprint,
+    pub(crate) reference: RootReference,
     pub(crate) surface: SurfaceId,
     pub(crate) central: bool,
     pub(crate) rule: DockTargetRuleKey,
@@ -354,9 +355,9 @@ impl TabTarget {
         self.tabs
     }
 
-    /// Returns the target subtree fingerprint.
-    pub const fn fingerprint(&self) -> &NodeFingerprint {
-        &self.fingerprint
+    /// Returns the exact root-owner reference.
+    pub const fn reference(&self) -> &RootReference {
+        &self.reference
     }
 
     /// Returns the logical surface that owned this target when it was captured.
@@ -435,7 +436,7 @@ pub enum EdgeTargetScope {
 pub struct EdgeTarget {
     pub(crate) root: RootId,
     pub(crate) node: NodeId,
-    pub(crate) fingerprint: NodeFingerprint,
+    pub(crate) reference: RootReference,
     pub(crate) edge: Edge,
     pub(crate) fraction: DockFraction,
     pub(crate) surface: SurfaceId,
@@ -455,9 +456,9 @@ impl EdgeTarget {
         self.node
     }
 
-    /// Returns the target subtree fingerprint.
-    pub const fn fingerprint(&self) -> &NodeFingerprint {
-        &self.fingerprint
+    /// Returns the exact root-owner reference.
+    pub const fn reference(&self) -> &RootReference {
+        &self.reference
     }
 
     /// Returns the insertion side.

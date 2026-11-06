@@ -288,7 +288,7 @@ fn same_tabs_noop_move_still_checks_tab_gap_policy() {
 }
 
 #[test]
-fn one_move_derives_only_its_distinct_current_roots() {
+fn one_move_uses_current_owner_refs_without_building_root_fingerprints() {
     for view in [0, 1] {
         for kind in 0..4 {
             let mut fixture = fixture();
@@ -301,10 +301,9 @@ fn one_move_derives_only_its_distinct_current_roots() {
                 .apply(&mut fixture.workspace, &DockPolicySnapshot::default())
                 .unwrap();
             let work = structural_work::snapshot();
-            let distinct_roots = if view == 0 { 1 } else { 2 };
             assert!(report.changed());
-            assert_eq!(work.root_fingerprint_builds, distinct_roots);
-            assert_eq!(work.root_fingerprint_node_visits, distinct_roots * 3);
+            assert_eq!(work.root_fingerprint_builds, 0);
+            assert_eq!(work.root_fingerprint_node_visits, 0);
             fixture.workspace.validate().unwrap();
         }
     }

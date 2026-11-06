@@ -1,16 +1,16 @@
 //! Deterministic, renderer-neutral layout projection.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::command::{NodeFingerprint, NodeSource};
+use crate::command::NodeSource;
 use crate::error::{CommandError, ReferenceRole};
 use crate::geometry::{Constraints, GeometryError, LogicalRect, LogicalSize};
-use crate::graph::{
-    Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight, Workspace, WorkspaceData,
-};
+#[cfg(test)]
+use crate::graph::WorkspaceData;
+use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight, Workspace};
 use crate::ids::{NodeId, RootId};
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
@@ -149,8 +149,8 @@ pub enum LayoutMetricsError {
 /// Transient split weights applied to one exact frozen split source.
 ///
 /// Construction does not inspect a workspace. [`project_root_with_overrides`]
-/// validates the source fingerprint and complete weight collection against the
-/// workspace being projected before using the override.
+/// validates the exact source owner reference and complete weight collection
+/// against the workspace being projected before using the override.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplitWeightOverride<'state> {
     source: &'state NodeSource,
@@ -463,7 +463,7 @@ pub fn project_root(
 /// Projects a root while applying explicit, validated transient split weights.
 ///
 /// Each override must name a current split in `root` through a complete
-/// [`NodeSource`] fingerprint. Overrides affect only this projection and never
+/// [`NodeSource`] owner reference. Overrides affect only this projection and never
 /// mutate durable [`Workspace`] state. Splits without an override keep their
 /// durable weights.
 ///
@@ -634,7 +634,7 @@ fn project_draft(
     metrics: LayoutMetrics,
 ) -> Result<LayoutProjection, LayoutError> {
     let (topology, measurements) =
-        RootLayoutTopology::compile(draft.draft(), root, leaves, metrics)?;
+        RootLayoutTopology::compile_draft(draft.draft(), root, leaves, metrics)?;
     project_measurements(
         Arc::new(topology),
         measurements,
@@ -652,11 +652,6 @@ fn validate_split_weight_overrides(
     index: Option<(&WorkspaceIndex, WorkspaceVersion)>,
 ) -> Result<BTreeMap<NodeId, Vec<f64>>, LayoutError> {
     let mut validated = BTreeMap::new();
-    // These identities skip only a repeated exact comparison of one immutable
-    // fingerprint. Every source still proves node existence and root membership.
-    let mut verified_fingerprints = HashSet::new();
-    let mut root_fingerprint: Option<NodeFingerprint> = None;
-
     for weight_override in overrides {
         let source = weight_override.source;
         if source.root() != root {
@@ -665,11 +660,20 @@ fn validate_split_weight_overrides(
                 override_root: source.root(),
             });
         }
-        let fingerprint_identity = Arc::as_ptr(&source.fingerprint().0);
-        let verified = verified_fingerprints.contains(&fingerprint_identity);
-        verify_split_override_source(workspace, source, index, verified, &mut root_fingerprint)
-            .map_err(|source| LayoutError::InvalidSplitWeightOverrideSource { source })?;
-        verified_fingerprints.insert(fingerprint_identity);
+        let role = ReferenceRole::Source;
+        if let Some((index, version)) = index {
+            index.verify_reference(
+                workspace,
+                version,
+                source.root(),
+                source.node(),
+                source.reference(),
+                role,
+            )
+        } else {
+            workspace.verify_reference(source.root(), source.node(), source.reference(), role)
+        }
+        .map_err(|source| LayoutError::InvalidSplitWeightOverrideSource { source })?;
 
         if validated.contains_key(&source.node()) {
             return Err(LayoutError::DuplicateSplitWeightOverride {
@@ -705,61 +709,6 @@ fn validate_split_weight_overrides(
     }
 
     Ok(validated)
-}
-
-fn verify_split_override_source(
-    workspace: &Workspace,
-    source: &NodeSource,
-    index: Option<(&WorkspaceIndex, WorkspaceVersion)>,
-    fingerprint_verified: bool,
-    root_fingerprint: &mut Option<NodeFingerprint>,
-) -> Result<(), CommandError> {
-    let role = ReferenceRole::Source;
-    let root = source.root();
-    let node = source.node();
-    if let Some((index, version)) = index {
-        let view = index.at_version(version).ok_or(CommandError::Invariant {
-            stage: "use workspace index for a different revision",
-        })?;
-        if view.root_node(root).is_none() {
-            return Err(CommandError::MissingRoot { root });
-        }
-        if workspace.node(node).is_none() {
-            return Err(CommandError::MissingNode { role, node });
-        }
-        if !view.root_contains_node(root, node) {
-            return Err(CommandError::NodeOutsideRoot { role, root, node });
-        }
-        if !fingerprint_verified {
-            index.verify_reference(workspace, version, root, node, source.fingerprint(), role)?;
-        }
-        return Ok(());
-    }
-
-    if workspace.root(root).is_none() {
-        return Err(CommandError::MissingRoot { root });
-    }
-    if workspace.node(node).is_none() {
-        return Err(CommandError::MissingNode { role, node });
-    }
-    if !workspace.root_contains_node(root, node) {
-        return Err(CommandError::NodeOutsideRoot { role, root, node });
-    }
-    if !fingerprint_verified {
-        let actual = match root_fingerprint {
-            Some(fingerprint) => fingerprint,
-            None => root_fingerprint.insert(workspace.root_fingerprint(root)?),
-        };
-        if &*actual != source.fingerprint() {
-            return Err(CommandError::StaleNode {
-                role,
-                node,
-                expected: source.fingerprint().clone(),
-                actual: actual.clone(),
-            });
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -799,8 +748,7 @@ fn measure_root<'workspace>(
     leaves: LeafMeasurements<'_>,
     metrics: LayoutMetrics,
 ) -> Result<RootMeasurement<'workspace>, LayoutError> {
-    let (topology, measurements) =
-        RootLayoutTopology::compile(workspace.storage(), root, leaves, metrics)?;
+    let (topology, measurements) = RootLayoutTopology::compile(workspace, root, leaves, metrics)?;
     Ok(RootMeasurement {
         workspace,
         root,

@@ -109,7 +109,7 @@ fn rejected_by_both_paths(
 }
 
 #[test]
-fn override_batches_build_one_root_proof_and_indexed_projection_builds_none() {
+fn override_batches_verify_owner_references_without_building_fingerprints() {
     for leaf_count in [4, 32, 128] {
         let fixture = fixture(leaf_count);
         let prototype = fixture
@@ -122,7 +122,7 @@ fn override_batches_build_one_root_proof_and_indexed_projection_builds_none() {
             .map(|node| NodeSource {
                 root: fixture.root,
                 node: *node,
-                fingerprint: prototype.fingerprint().clone(),
+                reference: prototype.reference().clone(),
             })
             .collect::<Vec<_>>();
         let weights = SplitWeight::normalize([0.4, 0.6]).unwrap();
@@ -145,8 +145,8 @@ fn override_batches_build_one_root_proof_and_indexed_projection_builds_none() {
         )
         .unwrap();
         let work = crate::drop_resolver::structural_work::snapshot();
-        assert_eq!(work.root_fingerprint_builds, 1);
-        assert_eq!(work.root_fingerprint_node_visits, leaf_count * 2 - 1);
+        assert_eq!(work.root_fingerprint_builds, 0);
+        assert_eq!(work.root_fingerprint_node_visits, 0);
 
         crate::drop_resolver::structural_work::reset();
         let indexed = measure_root_minimums(
@@ -161,14 +161,14 @@ fn override_batches_build_one_root_proof_and_indexed_projection_builds_none() {
         assert_eq!(
             crate::drop_resolver::structural_work::snapshot().root_fingerprint_builds,
             0,
-            "the compiler's existing index must cover every source in one root"
+            "owner verification must not rebuild geometry fingerprints"
         );
         assert_eq!(public, indexed);
     }
 }
 
 #[test]
-fn distinct_equal_fingerprints_remain_valid_and_stale_duplicates_fail_before_duplicate_checks() {
+fn shared_owner_references_remain_valid_and_stale_duplicates_fail_before_duplicate_checks() {
     let mut fixture = fixture(8);
     let node = fixture.splits[0];
     let stale = fixture
@@ -191,10 +191,7 @@ fn distinct_equal_fingerprints_remain_valid_and_stale_duplicates_fail_before_dup
         .workspace
         .capture_node_source(fixture.root, fixture.splits[1])
         .unwrap();
-    assert!(!Arc::ptr_eq(
-        &current.fingerprint().0,
-        &other.fingerprint().0
-    ));
+    assert_eq!(current.reference(), other.reference());
     let weights = SplitWeight::normalize([0.4, 0.6]).unwrap();
     let distinct = [
         SplitWeightOverride::new(&current, &weights),
@@ -230,7 +227,7 @@ fn distinct_equal_fingerprints_remain_valid_and_stale_duplicates_fail_before_dup
 }
 
 #[test]
-fn verified_fingerprints_never_authorize_missing_or_foreign_nodes() {
+fn shared_owner_references_never_authorize_missing_or_foreign_nodes() {
     let fixture = fixture(4);
     let current = fixture
         .workspace
@@ -241,7 +238,7 @@ fn verified_fingerprints_never_authorize_missing_or_foreign_nodes() {
         let foreign = NodeSource {
             root: fixture.root,
             node,
-            fingerprint: current.fingerprint().clone(),
+            reference: current.reference().clone(),
         };
         for error in rejected_by_both_paths(
             &fixture,

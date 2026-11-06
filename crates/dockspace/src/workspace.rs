@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use crate::command::{
     ContainedRosterSource, DockFraction, Edge, EdgeTarget, EdgeTargetScope, FingerprintNode,
     FingerprintPresentation, ItemSource, MovePayload, NodeFingerprint, NodeFingerprintRecord,
-    NodeSource, RootFingerprintData, SurfaceRosterSource, TabTarget,
+    NodeSource, RootFingerprintData, RootReference, SurfaceRosterSource, TabTarget,
 };
 use crate::error::{CommandError, ReferenceRole};
 use crate::graph::{Node, Workspace};
@@ -61,6 +61,7 @@ struct WorkspaceRootIndex {
     members: Arc<HashSet<NodeId>>,
     item_count: usize,
     fingerprint: NodeFingerprint,
+    reference: RootReference,
     layout_topology: OnceLock<Arc<RootLayoutTopology>>,
 }
 
@@ -79,51 +80,6 @@ impl PartialEq for WorkspaceRootIndex {
 impl Eq for WorkspaceRootIndex {}
 
 impl WorkspaceIndex {
-    /// Derives only the current root needed by one private command preparation.
-    /// The operation owner must discard this index before mutating its candidate.
-    pub(crate) fn for_command_reference(
-        workspace: &Workspace,
-        root: RootId,
-        node: NodeId,
-        role: ReferenceRole,
-    ) -> Result<Self, CommandError> {
-        let mut index = Self {
-            version: WorkspaceVersion::initial(),
-            roots: BTreeMap::new(),
-        };
-        index.include_command_reference(workspace, root, node, role)?;
-        Ok(index)
-    }
-
-    /// Extends the same unchanged candidate's command-local facts on demand.
-    pub(crate) fn include_command_reference(
-        &mut self,
-        workspace: &Workspace,
-        root: RootId,
-        node: NodeId,
-        role: ReferenceRole,
-    ) -> Result<(), CommandError> {
-        if !workspace.storage().roots.contains_key(&root) {
-            return Err(CommandError::MissingRoot { root });
-        }
-        if !workspace.storage().nodes.contains_key(node) {
-            return Err(CommandError::MissingNode { role, node });
-        }
-        if let std::collections::btree_map::Entry::Vacant(entry) = self.roots.entry(root) {
-            if !workspace.root_contains_node(root, node) {
-                return Err(CommandError::NodeOutsideRoot { role, root, node });
-            }
-            let owner = workspace
-                .presentation_for_root(root)
-                .ok_or(CommandError::Invariant {
-                    stage: "capture root presentation owner",
-                })?;
-            entry.insert(workspace.build_root_index(root, owner)?);
-        }
-        self.capture_reference(workspace, self.version, root, node, role)?;
-        Ok(())
-    }
-
     pub(crate) fn build(
         workspace: &Workspace,
         version: WorkspaceVersion,
@@ -218,6 +174,21 @@ impl WorkspaceIndex {
                 stage: "rebind selection within the same workspace epoch",
             });
         }
+        if workspace.roots().count() != self.roots.len() {
+            return Err(CommandError::Invariant {
+                stage: "rebind selection with the same root roster",
+            });
+        }
+        for (&other_root, other) in &self.roots {
+            if other_root != root {
+                workspace.verify_reference(
+                    other_root,
+                    other.root_node,
+                    &other.reference,
+                    ReferenceRole::Source,
+                )?;
+            }
+        }
         let indexed = self
             .roots
             .get(&root)
@@ -248,6 +219,18 @@ impl WorkspaceIndex {
         let updated = roots
             .get_mut(&root)
             .ok_or(CommandError::MissingRoot { root })?;
+        let current = workspace
+            .root_reference(root)
+            .ok_or(CommandError::MissingRoot { root })?;
+        if current != &updated.reference && !current.follows_selection(&updated.reference, tabs) {
+            return Err(CommandError::StaleNode {
+                role: ReferenceRole::Source,
+                node: tabs,
+                expected: updated.reference.clone(),
+                actual: current.clone(),
+            });
+        }
+        updated.reference = current.clone();
         let fingerprint = Arc::make_mut(&mut updated.fingerprint.0);
         let record = fingerprint
             .nodes
@@ -326,12 +309,16 @@ impl WorkspaceIndex {
             .roots
             .get(&root)
             .ok_or(CommandError::MissingRoot { root })?;
+        if workspace.root(root).is_none() {
+            return Err(CommandError::MissingRoot { root });
+        }
         if !workspace.storage().nodes.contains_key(node) {
             return Err(CommandError::MissingNode { role, node });
         }
-        if !indexed.members.contains(&node) {
+        if !workspace.root_contains_node(root, node) {
             return Err(CommandError::NodeOutsideRoot { role, root, node });
         }
+        workspace.verify_reference(root, node, &indexed.reference, role)?;
         Ok(indexed)
     }
 
@@ -341,20 +328,11 @@ impl WorkspaceIndex {
         version: WorkspaceVersion,
         root: RootId,
         node: NodeId,
-        expected: &NodeFingerprint,
+        expected: &RootReference,
         role: ReferenceRole,
     ) -> Result<(), CommandError> {
-        let indexed = self.capture_reference(workspace, version, root, node, role)?;
-        if indexed.fingerprint == *expected {
-            Ok(())
-        } else {
-            Err(CommandError::StaleNode {
-                role,
-                node,
-                expected: expected.clone(),
-                actual: indexed.fingerprint.clone(),
-            })
-        }
+        self.capture_reference(workspace, version, root, node, role)?;
+        workspace.verify_reference(root, node, expected, role)
     }
 
     pub(crate) fn capture_item_source(
@@ -372,7 +350,7 @@ impl WorkspaceIndex {
                 root,
                 tabs,
                 item,
-                fingerprint: indexed.fingerprint.clone(),
+                reference: indexed.reference.clone(),
             }),
             Some(Node::Tabs { .. }) => Err(CommandError::ItemNotInTabs { tabs, item }),
             Some(Node::Split { .. }) => Err(CommandError::NodeIsNotTabs { node: tabs }),
@@ -389,22 +367,15 @@ impl WorkspaceIndex {
         version: WorkspaceVersion,
         payload: &MovePayload,
     ) -> Result<Option<NodeSource>, CommandError> {
-        let (root, node, fingerprint) = match payload {
-            MovePayload::Item(source) => (source.root(), source.tabs(), source.fingerprint()),
+        let (root, node, reference) = match payload {
+            MovePayload::Item(source) => (source.root(), source.tabs(), source.reference()),
             MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
-                (source.root(), source.node(), source.fingerprint())
+                (source.root(), source.node(), source.reference())
             }
         };
         let indexed =
             self.capture_reference(workspace, version, root, node, ReferenceRole::Source)?;
-        if indexed.fingerprint != *fingerprint {
-            return Err(CommandError::StaleNode {
-                role: ReferenceRole::Source,
-                node,
-                expected: fingerprint.clone(),
-                actual: indexed.fingerprint.clone(),
-            });
-        }
+        workspace.verify_reference(root, node, reference, ReferenceRole::Source)?;
 
         let removes_complete_root = match payload {
             MovePayload::Item(source) => {
@@ -429,7 +400,7 @@ impl WorkspaceIndex {
         Ok(removes_complete_root.then(|| NodeSource {
             root,
             node: indexed.root_node,
-            fingerprint: indexed.fingerprint.clone(),
+            reference: indexed.reference.clone(),
         }))
     }
 
@@ -447,7 +418,7 @@ impl WorkspaceIndex {
         Ok(TabTarget {
             root,
             tabs,
-            fingerprint: indexed.fingerprint.clone(),
+            reference: indexed.reference.clone(),
             surface: indexed.owner.surface(),
             central,
             rule,
@@ -470,7 +441,7 @@ impl WorkspaceIndex {
         Ok(EdgeTarget {
             root,
             node: tabs,
-            fingerprint: indexed.fingerprint.clone(),
+            reference: indexed.reference.clone(),
             edge,
             fraction,
             surface: indexed.owner.surface(),
@@ -493,13 +464,16 @@ impl WorkspaceIndex {
             .roots
             .get(&root)
             .ok_or(CommandError::MissingRoot { root })?;
-        if workspace.root(root).is_none() {
-            return Err(CommandError::MissingRoot { root });
-        }
+        workspace.verify_reference(
+            root,
+            indexed.root_node,
+            &indexed.reference,
+            ReferenceRole::Target,
+        )?;
         Ok(EdgeTarget {
             root,
             node: indexed.root_node,
-            fingerprint: indexed.fingerprint.clone(),
+            reference: indexed.reference.clone(),
             edge,
             fraction,
             surface: indexed.owner.surface(),
@@ -610,13 +584,13 @@ impl Workspace {
         tabs: NodeId,
         item: ItemId,
     ) -> Result<ItemSource, CommandError> {
-        let fingerprint = self.capture_reference(root, tabs, ReferenceRole::Source)?;
+        let reference = self.capture_reference(root, tabs, ReferenceRole::Source)?;
         match self.storage().nodes.get(tabs) {
             Some(Node::Tabs { items, .. }) if items.contains(&item) => Ok(ItemSource {
                 root,
                 tabs,
                 item,
-                fingerprint,
+                reference,
             }),
             Some(Node::Tabs { .. }) => Err(CommandError::ItemNotInTabs { tabs, item }),
             Some(Node::Split { .. }) => Err(CommandError::NodeIsNotTabs { node: tabs }),
@@ -659,10 +633,7 @@ impl Workspace {
                         .map(|index| (tabs, index)),
                     Node::Split { .. } => None,
                 })?;
-        let root =
-            self.storage().roots.iter().find_map(|(root, record)| {
-                self.subtree_contains(record.node, tabs).then_some(*root)
-            })?;
+        let root = self.node_root(tabs)?;
         Some((root, tabs, tab_index))
     }
 
@@ -680,7 +651,7 @@ impl Workspace {
         Ok(NodeSource {
             root,
             node,
-            fingerprint: self.capture_reference(root, node, ReferenceRole::Source)?,
+            reference: self.capture_reference(root, node, ReferenceRole::Source)?,
         })
     }
 
@@ -695,13 +666,13 @@ impl Workspace {
         root: RootId,
         tabs: NodeId,
     ) -> Result<TabTarget, CommandError> {
-        let fingerprint = self.capture_reference(root, tabs, ReferenceRole::Target)?;
+        let reference = self.capture_reference(root, tabs, ReferenceRole::Target)?;
         let (surface, central) = self.target_owner_facts(root, tabs)?;
         let rule = self.pane_local_target_rule(root, tabs, central)?;
         Ok(TabTarget {
             root,
             tabs,
-            fingerprint,
+            reference,
             surface,
             central,
             rule,
@@ -722,13 +693,13 @@ impl Workspace {
         edge: Edge,
         fraction: DockFraction,
     ) -> Result<EdgeTarget, CommandError> {
-        let fingerprint = self.capture_reference(root, tabs, ReferenceRole::Target)?;
+        let reference = self.capture_reference(root, tabs, ReferenceRole::Target)?;
         let (surface, central) = self.target_owner_facts(root, tabs)?;
         let rule = self.pane_local_target_rule(root, tabs, central)?;
         Ok(EdgeTarget {
             root,
             node: tabs,
-            fingerprint,
+            reference,
             edge,
             fraction,
             surface,
@@ -759,12 +730,12 @@ impl Workspace {
             .get(&root)
             .ok_or(CommandError::MissingRoot { root })?
             .node;
-        let fingerprint = self.capture_reference(root, node, ReferenceRole::Target)?;
+        let reference = self.capture_reference(root, node, ReferenceRole::Target)?;
         let (surface, central) = self.target_owner_facts(root, node)?;
         Ok(EdgeTarget {
             root,
             node,
-            fingerprint,
+            reference,
             edge,
             fraction,
             surface,
@@ -811,7 +782,7 @@ impl Workspace {
         &self,
         root: RootId,
         node: NodeId,
-        expected: &NodeFingerprint,
+        expected: &RootReference,
         role: ReferenceRole,
     ) -> Result<(), CommandError> {
         let actual = self.capture_reference(root, node, role)?;
@@ -832,22 +803,26 @@ impl Workspace {
         root: RootId,
         node: NodeId,
         role: ReferenceRole,
-    ) -> Result<NodeFingerprint, CommandError> {
+    ) -> Result<RootReference, CommandError> {
         if !self.storage().roots.contains_key(&root) {
             return Err(CommandError::MissingRoot { root });
         }
         if !self.storage().nodes.contains_key(node) {
             return Err(CommandError::MissingNode { role, node });
         }
-        if !self.root_contains_node(root, node) {
+        if self.node_root(node) != Some(root) {
             return Err(CommandError::NodeOutsideRoot { role, root, node });
         }
-        self.root_fingerprint(root)
+        self.root_reference(root)
+            .cloned()
+            .ok_or(CommandError::Invariant {
+                stage: "capture issued root reference",
+            })
     }
 
     pub(crate) fn root_fingerprint(&self, root: RootId) -> Result<NodeFingerprint, CommandError> {
         let owner = self
-            .presentation_for_root(root)
+            .presentation_in_storage(root)
             .ok_or(CommandError::Invariant {
                 stage: "capture root presentation owner",
             })?;
@@ -949,15 +924,18 @@ impl Workspace {
             members: Arc::new(visited),
             item_count,
             fingerprint,
+            reference: self
+                .root_reference(root)
+                .cloned()
+                .ok_or(CommandError::Invariant {
+                    stage: "index issued root reference",
+                })?,
             layout_topology: OnceLock::new(),
         })
     }
 
     pub(crate) fn root_contains_node(&self, root: RootId, needle: NodeId) -> bool {
-        let Some(record) = self.storage().roots.get(&root) else {
-            return false;
-        };
-        self.subtree_contains(record.node, needle)
+        self.root(root).is_some() && self.node_root(needle) == Some(root)
     }
 
     pub(crate) fn subtree_contains(&self, root: NodeId, needle: NodeId) -> bool {
@@ -978,51 +956,29 @@ impl Workspace {
     }
 
     pub(crate) fn parent_link(&self, root: RootId, needle: NodeId) -> Option<ParentLink> {
-        let root_node = self.storage().roots.get(&root)?.node;
-        if root_node == needle {
-            return None;
-        }
-        let mut stack = vec![root_node];
-        let mut visited = HashSet::new();
-        while let Some(node_id) = stack.pop() {
-            if !visited.insert(node_id) {
-                continue;
-            }
-            if let Some(Node::Split { children, .. }) = self.storage().nodes.get(node_id) {
-                for (index, child) in children.iter().copied().enumerate() {
-                    if child == needle {
-                        return Some(ParentLink {
-                            parent: node_id,
-                            index,
-                        });
-                    }
-                }
-                stack.extend(children.iter().rev().copied());
-            }
-        }
-        None
+        let placement = self.placement(needle)?;
+        (placement.root == root)
+            .then_some(placement.parent)
+            .flatten()
     }
 
-    /// Finds one current ancestor path for a graph-owned local repair.
+    /// Follows current actual placement without another DFS.
     pub(crate) fn path_to_node(&self, root: RootId, needle: NodeId) -> Option<Vec<NodeId>> {
         let root_node = self.root(root)?.node;
         let mut path = Vec::new();
-        let mut pending = vec![(root_node, false)];
-        while let Some((node, exiting)) = pending.pop() {
-            if exiting {
-                path.pop();
-                continue;
+        let mut node = needle;
+        loop {
+            let placement = self.placement(node)?;
+            if placement.root != root || path.len() > self.storage().nodes.len() {
+                return None;
             }
             path.push(node);
-            if node == needle {
+            if node == root_node {
+                path.reverse();
                 return Some(path);
             }
-            pending.push((node, true));
-            if let Some(Node::Split { children, .. }) = self.node(node) {
-                pending.extend(children.iter().rev().copied().map(|child| (child, false)));
-            }
+            node = placement.parent?.parent;
         }
-        None
     }
 
     pub(crate) fn subtree_has_items(&self, root: NodeId) -> bool {
@@ -1070,6 +1026,10 @@ impl Workspace {
     /// root is absent or the workspace has not passed validation.
     #[must_use]
     pub fn presentation_for_root(&self, root: RootId) -> Option<RootPresentationOwner> {
+        self.owned_presentation(root)
+    }
+
+    pub(crate) fn presentation_in_storage(&self, root: RootId) -> Option<RootPresentationOwner> {
         for (surface_id, surface) in &self.storage().surfaces {
             if surface.main_root == Some(root) {
                 return Some(RootPresentationOwner::Main {
@@ -1186,7 +1146,7 @@ mod tests {
             changed.verify_reference(
                 root,
                 left,
-                &old_target.fingerprint,
+                &old_target.reference,
                 ReferenceRole::Target,
             ),
             Err(CommandError::StaleNode { node, .. }) if node == left
@@ -1197,7 +1157,7 @@ mod tests {
         let next_target = next_index
             .capture_tab_target(&changed, next_version, root, left)
             .expect("replacement target should capture");
-        assert_ne!(old_target.fingerprint, next_target.fingerprint);
+        assert_ne!(old_target.reference, next_target.reference);
     }
 
     #[test]
@@ -1230,7 +1190,7 @@ mod tests {
             changed.verify_reference(
                 root,
                 left,
-                &old_target.fingerprint,
+                &old_target.reference,
                 ReferenceRole::Target,
             ),
             Err(CommandError::StaleNode { node, .. }) if node == left

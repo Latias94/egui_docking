@@ -1680,12 +1680,12 @@ fn payload_focus_fixture() -> PayloadFocusFixture {
     let wrong_fingerprint = workspace
         .capture_node_source(TARGET_ROOT, target_tabs)
         .expect("target source must be current")
-        .fingerprint()
+        .reference()
         .clone();
     let MovePayload::Item(stale_source) = &mut stale_item_payload else {
         unreachable!("fixture creates an item payload");
     };
-    stale_source.fingerprint = wrong_fingerprint;
+    stale_source.reference = wrong_fingerprint;
 
     let engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine must be valid");
     let binding = ViewportBinding::new(

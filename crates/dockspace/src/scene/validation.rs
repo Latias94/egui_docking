@@ -2547,10 +2547,7 @@ impl<'a> SceneWorkspaceIndex<'a> {
                     stack.extend(children.iter().copied());
                 }
             }
-            let fingerprint = workspace
-                .capture_node_source(root, record.node)
-                .ok()
-                .map(|source| source.fingerprint().clone());
+            let fingerprint = workspace.root_fingerprint(root).ok();
             roots.insert(
                 root,
                 IndexedRoot {

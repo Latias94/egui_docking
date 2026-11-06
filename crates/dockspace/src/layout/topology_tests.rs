@@ -229,6 +229,122 @@ fn sparse_arena_projection_rejects_retired_generations() {
 }
 
 #[test]
+fn sparse_recycled_tree_keeps_ordered_identity_and_cold_warm_oracle_results() {
+    let mut builder = Workspace::builder();
+    let original = (1..=512)
+        .map(|item| builder.insert_node(Node::tabs([ItemId::new(item)])))
+        .collect::<Vec<_>>();
+    let kept = [original[0], original[17], original[500]];
+    let retired = original
+        .into_iter()
+        .filter(|node| !kept.contains(node))
+        .collect::<Vec<_>>();
+    for &node in &retired {
+        builder.draft_mut().remove_runtime_node(node).unwrap();
+    }
+    let recycled = [1001, 1002].map(|item| builder.insert_node(Node::tabs([ItemId::new(item)])));
+    let nested = builder
+        .insert_node(Node::split(Axis::Vertical, [kept[1], recycled[0]], [0.375, 0.625]).unwrap());
+    let root_node = builder.insert_node(
+        Node::split(
+            Axis::Horizontal,
+            [recycled[1], nested, kept[0]],
+            [0.2, 0.5, 0.3],
+        )
+        .unwrap(),
+    );
+    builder.set_root(ROOT, RootRecord::new(root_node).with_central(kept[0]));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+    let other_root = RootId::new(2);
+    builder.set_root(other_root, RootRecord::new(kept[2]));
+    builder.set_surface(
+        SurfaceId::new(2),
+        SurfacePresentation::with_main(other_root),
+    );
+    let workspace = builder.build().unwrap();
+    let preorder = [
+        root_node,
+        recycled[1],
+        nested,
+        kept[1],
+        recycled[0],
+        kept[0],
+    ];
+    let mut ordered = preorder.to_vec();
+    ordered.sort();
+    assert_ne!(preorder.as_slice(), ordered.as_slice());
+    let leaves = [kept[1], recycled[0], kept[0], recycled[1], kept[2]];
+    let constraints = leaves
+        .into_iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let minimum = f64::from(u32::try_from(index + 1).unwrap());
+            (
+                node,
+                Constraints::new(
+                    LogicalSize::new(minimum, minimum * 0.5).unwrap(),
+                    LogicalSize::new(512.0 + minimum, 256.0 + minimum).unwrap(),
+                )
+                .unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let metrics = LayoutMetrics::new(3.5).unwrap();
+    let bounds = LogicalRect::new(-31.25, 18.5, 400.0, 200.0).unwrap();
+    let cold = project_root(&workspace, ROOT, bounds, &constraints, metrics).unwrap();
+    assert_eq!(
+        reference::capture(&cold),
+        reference::project(
+            &workspace,
+            ROOT,
+            bounds,
+            LeafMeasurements::Constraints(&constraints),
+            metrics,
+            &[],
+        )
+        .unwrap()
+    );
+    assert_eq!(cold.node_rects.keys().copied().collect::<Vec<_>>(), ordered);
+    assert_eq!(cold.node_constraints.len(), preorder.len());
+    assert_eq!(cold.splits.len(), 2);
+    assert!(!cold.node_rects.contains_key(&kept[2]));
+    for stale in retired {
+        assert!(!cold.node_rects.contains_key(&stale));
+    }
+    let minimums = constraints
+        .iter()
+        .map(|(&node, constraint)| (node, constraint.min()))
+        .collect::<BTreeMap<_, _>>();
+    let expected = reference::project(
+        &workspace,
+        ROOT,
+        bounds,
+        LeafMeasurements::Minimums(&minimums),
+        metrics,
+        &[],
+    )
+    .unwrap();
+    let version = WorkspaceVersion::initial();
+    let index = WorkspaceIndex::build(&workspace, version).unwrap();
+    let mut previous = None;
+    for _ in 0..2 {
+        let measured =
+            measure_root_minimums_with_index(&workspace, ROOT, &minimums, metrics, &index, version)
+                .unwrap();
+        if let Some(previous) = &previous {
+            assert!(Arc::ptr_eq(previous, &measured.topology));
+        }
+        previous = Some(Arc::clone(&measured.topology));
+        let projection = measured.project(bounds, &[]).unwrap();
+        assert_eq!(reference::capture(&projection), expected);
+        assert_eq!(
+            projection.node_rects.keys().copied().collect::<Vec<_>>(),
+            ordered
+        );
+    }
+}
+
+#[test]
 fn projects_ten_thousand_nested_splits_without_call_stack_growth() {
     const DEPTH: usize = 10_000;
 
@@ -363,7 +479,7 @@ fn refreshed_index_reuses_layout_without_reusing_semantic_authority() {
             next_version,
             ROOT,
             leaves[0],
-            old_target.fingerprint(),
+            old_target.reference(),
             crate::error::ReferenceRole::Target
         ),
         Err(crate::error::CommandError::StaleNode { .. })

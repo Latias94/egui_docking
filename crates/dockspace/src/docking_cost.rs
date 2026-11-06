@@ -13,10 +13,8 @@ use crate::geometry::{Constraints, LogicalRect, LogicalSize};
 use crate::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace, WorkspaceBuilder};
 use crate::ids::{ItemId, NodeId, RootId, SurfaceId};
 use crate::layout::{LayoutMetrics, LayoutProjection, project_root};
-use crate::model::WorkspaceVersion;
 use crate::policy::DockPolicySnapshot;
 use crate::transaction::{TransactionReport, WorkspaceTransaction};
-use crate::workspace::WorkspaceIndex;
 
 const WIDTHS: [u64; 2] = [16_380, 16_444];
 const HEIGHT: u64 = 16_380;
@@ -141,13 +139,11 @@ fn capture_request(fixture: &Fixture, case: Case, views: usize, width: u64) -> R
         return Request::Resize(bounds(width));
     }
     let workspace = &fixture.workspace;
-    let version = WorkspaceVersion::initial();
-    let index = WorkspaceIndex::build(workspace, version).unwrap();
     let (source_tabs, _) = extreme_leaf(workspace, SOURCE_ROOT, false);
     let target_root = case.target_root(views);
     let (target_tabs, parent_axis) = extreme_leaf(workspace, target_root, true);
-    let source = index
-        .capture_item_source(workspace, version, SOURCE_ROOT, source_tabs, MOVED_ITEM)
+    let source = workspace
+        .capture_item_source(SOURCE_ROOT, source_tabs, MOVED_ITEM)
         .unwrap();
     let target = if case == Case::EdgeSplit {
         let edge = match parent_axis {
@@ -155,10 +151,8 @@ fn capture_request(fixture: &Fixture, case: Case, views: usize, width: u64) -> R
             Axis::Horizontal => Edge::Top,
         };
         DockTarget::InnerEdge(
-            index
+            workspace
                 .capture_inner_edge_target(
-                    workspace,
-                    version,
                     target_root,
                     target_tabs,
                     edge,
@@ -168,8 +162,8 @@ fn capture_request(fixture: &Fixture, case: Case, views: usize, width: u64) -> R
         )
     } else {
         DockTarget::Center(
-            index
-                .capture_tab_target(workspace, version, target_root, target_tabs)
+            workspace
+                .capture_tab_target(target_root, target_tabs)
                 .unwrap(),
         )
     };

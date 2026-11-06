@@ -3755,7 +3755,7 @@ impl DockEngine {
                         root: source.root,
                         tabs: source.tabs,
                         item: source.item,
-                        fingerprint: prepared.source_node.fingerprint.clone(),
+                        reference: prepared.source_node.reference.clone(),
                     }))
                 }
                 Some(Node::Tabs { .. }) => Err(CommandError::ItemNotInTabs {

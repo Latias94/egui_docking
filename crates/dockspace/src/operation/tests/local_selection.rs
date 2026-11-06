@@ -205,7 +205,40 @@ fn mixed_and_multi_command_batches_preserve_general_atomicity() {
         let actual = snapshot
             .prepare_transaction(&policy, &commands)
             .map(|prepared| prepared.into_parts(&snapshot));
-        assert_eq!(actual, expected);
+        match (actual, expected) {
+            (
+                Err(TransactionError::Command {
+                    index: actual_index,
+                    source:
+                        CommandError::StaleNode {
+                            role: actual_role,
+                            node: actual_node,
+                            expected: actual_expected,
+                            actual: actual_current,
+                        },
+                }),
+                Err(TransactionError::Command {
+                    index: expected_index,
+                    source:
+                        CommandError::StaleNode {
+                            role: expected_role,
+                            node: expected_node,
+                            expected: expected_expected,
+                            actual: expected_current,
+                        },
+                }),
+            ) => {
+                assert_eq!(
+                    (actual_index, actual_role, actual_node),
+                    (expected_index, expected_role, expected_node)
+                );
+                assert_eq!(actual_expected, expected_expected);
+                assert_eq!(actual_current.root(), expected_current.root());
+                assert_ne!(actual_expected, actual_current);
+                assert_ne!(expected_expected, expected_current);
+            }
+            (actual, expected) => assert_eq!(actual, expected),
+        }
         assert!(structural_work::snapshot().item_multiset_scans > 0);
         assert_eq!(snapshot, original);
     }

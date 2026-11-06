@@ -3,9 +3,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::command::{
-    FingerprintNode, FingerprintPresentation, MovePayload, NodeFingerprint, NodeSource,
-};
+use crate::command::{FingerprintNode, MovePayload, NodeFingerprint, NodeSource};
 use crate::geometry::LogicalRect;
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::interaction::{ActiveDragView, DragPhase, DragSessionId};
@@ -176,8 +174,14 @@ pub(super) fn resolve<'frame>(
         return None;
     }
     let payload = drag.payload();
-    let source_surface = source_surface(payload);
-    let plan = scenes.surface(source_surface)?.ready()?.candidate().plan();
+    let root = match payload {
+        MovePayload::Item(source) => source.root(),
+        MovePayload::Tabs(source) | MovePayload::Subtree(source) => source.root(),
+    };
+    let (source_surface, plan) = scenes.surfaces().find_map(|(surface, scene)| {
+        let plan = scene.ready()?.candidate().plan();
+        plan.command_basis(root).map(|_| (*surface, plan))
+    })?;
     match payload {
         MovePayload::Item(source) => {
             let bar = plan.tab_bar_records().iter().find(|record| {
@@ -208,7 +212,7 @@ pub(super) fn resolve<'frame>(
                 let id = record.id();
                 id.root == source.root() && id.tabs == source.node()
             })?;
-            let projection = (source.node() == source.fingerprint().0.root_node)
+            let projection = (source.node() == plan.command_basis(source.root())?.0.root_node)
                 .then(|| source_projection(plan, source_surface, source.root(), drag.session()))
                 .flatten();
             Some(DockspaceDragDecoration {
@@ -233,17 +237,6 @@ pub(super) fn resolve<'frame>(
     }
 }
 
-fn source_surface(payload: &MovePayload) -> SurfaceId {
-    let fingerprint = match payload {
-        MovePayload::Item(source) => source.fingerprint(),
-        MovePayload::Tabs(source) | MovePayload::Subtree(source) => source.fingerprint(),
-    };
-    match fingerprint.0.presentation {
-        FingerprintPresentation::Main { surface }
-        | FingerprintPresentation::Contained { surface, .. } => surface,
-    }
-}
-
 fn source_projection(
     plan: &PresentationPlan,
     surface: SurfaceId,
@@ -262,17 +255,17 @@ fn source_projection(
 }
 
 fn resolve_subtree<'frame>(
-    plan: &PresentationPlan,
+    plan: &'frame PresentationPlan,
     source_surface: SurfaceId,
     source: &'frame NodeSource,
     session: DragSessionId,
     pointer_projection: Option<LogicalRect>,
 ) -> Option<DockspaceDragDecoration<'frame>> {
-    let complete_root = source.node() == source.fingerprint().0.root_node;
+    let complete_root = source.node() == plan.command_basis(source.root())?.0.root_node;
     let source_identity = DragDecorationSource::Subtree {
         root: source.root(),
         node: source.node(),
-        fingerprint: source.fingerprint(),
+        fingerprint: plan.command_basis(source.root())?,
         complete_root,
     };
     let ghost_item = subtree_ghost_item(plan, source);
@@ -433,7 +426,7 @@ fn subtree_contains_node(fingerprint: &NodeFingerprint, source: NodeId, target: 
 }
 
 fn subtree_ghost_item(plan: &PresentationPlan, source: &NodeSource) -> Option<ItemId> {
-    let tabs = subtree_tabs(source.fingerprint(), source.node())?;
+    let tabs = subtree_tabs(plan.command_basis(source.root())?, source.node())?;
     plan.pane_records()
         .iter()
         .find(|record| {
@@ -444,7 +437,7 @@ fn subtree_ghost_item(plan: &PresentationPlan, source: &NodeSource) -> Option<It
 }
 
 fn subtree_bounds(plan: &PresentationPlan, source: &NodeSource) -> Option<LogicalRect> {
-    let tabs = subtree_tabs(source.fingerprint(), source.node())?;
+    let tabs = subtree_tabs(plan.command_basis(source.root())?, source.node())?;
     let mut panes = tabs.into_iter().map(|tabs| {
         plan.pane_records()
             .iter()

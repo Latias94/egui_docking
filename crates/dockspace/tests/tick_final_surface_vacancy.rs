@@ -37,7 +37,6 @@ use dockspace::pointer_receiver::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::transaction::WorkspaceTransaction;
 use dockspace::transition::{InputOutcome, WorkspaceVersion};
 use dockspace::viewport::{
     CloseObservationGeneration, CoordinateObservationGeneration, InputObservationGeneration,
@@ -789,36 +788,6 @@ fn start_pending_native_create(fixture: &mut NativeVacancyFixture) -> NativeCrea
     request
 }
 
-fn native_vacate_command(
-    fixture: &NativeVacancyFixture,
-    request: NativeCreateRequest,
-) -> WorkspaceCommand {
-    let create = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .expect("native saga remains queryable")
-        .prepared()
-        .command()
-        .clone();
-    let mut future = fixture.engine.workspace().clone();
-    WorkspaceTransaction::from_commands([create.clone()])
-        .apply(&mut future, fixture.engine.policy_snapshot())
-        .expect("native create command produces the staged workspace");
-    let root = future.root(NATIVE_ROOT).expect("staged native root exists");
-    WorkspaceCommand::RehomeRoot {
-        source: future
-            .capture_node_source(NATIVE_ROOT, root.node)
-            .expect("staged native root is capturable"),
-        target: RootPresentationTarget::Contained {
-            surface: TARGET_SURFACE,
-            floating: NATIVE_DESTINATION_FLOATING,
-            rect: rect(80.0, 80.0, 320.0, 240.0),
-            position: ContainedPosition::Front,
-        },
-    }
-}
-
 #[test]
 fn same_tick_close_then_repopulate_preserves_the_existing_surface_binding() {
     let mut builder = Workspace::builder();
@@ -1111,7 +1080,6 @@ fn pending_native_reservation_is_not_settled_as_an_admitted_vacancy() {
 fn same_tick_native_first_live_admission_then_vacancy_releases_the_child() {
     let mut fixture = NativeVacancyFixture::new();
     let request = start_pending_native_create(&mut fixture);
-    let vacate = native_vacate_command(&fixture, request);
     fixture.publish_snapshot(Some((request, WindowPresentationState::Hidden)));
     let pre_show = fixture
         .engine
@@ -1210,6 +1178,21 @@ fn same_tick_native_first_live_admission_then_vacancy_releases_the_child() {
         support::TestInputStream::resume(&fixture.engine, NATIVE_COMMAND_SOURCE);
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
     let expected = frame.view().version();
+    let workspace = frame.view().workspace();
+    let root = workspace
+        .root(NATIVE_ROOT)
+        .expect("first-live settlement installed the actual native root");
+    let vacate = WorkspaceCommand::RehomeRoot {
+        source: workspace
+            .capture_node_source(NATIVE_ROOT, root.node)
+            .expect("the actual admitted native root is capturable"),
+        target: RootPresentationTarget::Contained {
+            surface: TARGET_SURFACE,
+            floating: NATIVE_DESTINATION_FLOATING,
+            rect: rect(80.0, 80.0, 320.0, 240.0),
+            position: ContainedPosition::Front,
+        },
+    };
     semantic_writer
         .append(
             &mut frame,

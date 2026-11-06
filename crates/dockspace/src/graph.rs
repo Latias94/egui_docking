@@ -388,6 +388,7 @@ impl PartialEq for WorkspaceData {
 #[derive(Debug, Clone, Default)]
 pub struct Workspace {
     storage: WorkspaceData,
+    authority: authority::WorkspaceAuthority,
 }
 
 impl PartialEq for Workspace {
@@ -475,6 +476,7 @@ impl Workspace {
     }
 
     fn remove_runtime_node(&mut self, id: NodeId) -> Option<Node> {
+        self.forget_placement(id);
         self.storage.remove_runtime_node(id)
     }
 }
@@ -797,7 +799,9 @@ mod tests {
     }
 }
 
+mod authority;
 #[path = "canonical.rs"]
 pub(crate) mod canonical;
 #[path = "operation.rs"]
 pub(crate) mod operation;
+pub use authority::RootReference;

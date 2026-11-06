@@ -161,6 +161,9 @@ pub enum CanonicalizationError {
     /// The rewritten candidate does not satisfy the strict workspace contract.
     #[error("canonical workspace failed strict validation: {0}")]
     InvalidOutput(#[source] WorkspaceValidationErrors),
+    /// Graph ownership could not be completed for a canonical candidate.
+    #[error("canonical root authority could not be completed: {0}")]
+    AuthorityCompletion(#[source] crate::error::CommandError),
     /// An internal iterative traversal invariant was violated.
     #[error("canonicalization traversal invariant failed during {stage}")]
     TraversalInvariant {
@@ -188,7 +191,13 @@ pub fn canonicalize_workspace(
     validate_rewrite_input(workspace.storage())?;
 
     let mut candidate = clone_workspace_draft(workspace);
+    let before = candidate
+        .begin_cold_completion()
+        .map_err(CanonicalizationError::AuthorityCompletion)?;
     canonicalize_validated_draft(&mut candidate.storage)?;
+    candidate
+        .finish_cold_roots(before)
+        .map_err(CanonicalizationError::AuthorityCompletion)?;
 
     let report = CanonicalizationReport {
         changed: candidate != *workspace,
@@ -208,14 +217,20 @@ pub fn canonicalize_workspace(
 /// may be partially rewritten and must be discarded rather than published.
 /// On success it has passed the complete workspace validator.
 pub(super) fn canonicalize_draft(workspace: &mut Workspace) -> Result<(), CanonicalizationError> {
-    canonicalize_data(&mut workspace.storage)
+    let before = workspace
+        .begin_cold_completion()
+        .map_err(CanonicalizationError::AuthorityCompletion)?;
+    canonicalize_data(&mut workspace.storage)?;
+    workspace
+        .finish_cold_roots(before)
+        .map_err(CanonicalizationError::AuthorityCompletion)
 }
 
 pub(super) fn build_workspace(
     mut storage: WorkspaceData,
 ) -> Result<Workspace, CanonicalizationError> {
     canonicalize_data(&mut storage)?;
-    Ok(Workspace { storage })
+    Workspace::issue_storage(storage).map_err(CanonicalizationError::AuthorityCompletion)
 }
 
 /// Finishes the structural changes made by one checked Item move.
@@ -287,7 +302,7 @@ pub(super) fn finish_item_move(
     }
     // A later ancestor can retire an earlier output. Check the final live
     // frontier after every rewrite, preserving canonical errors before output errors.
-    if output_splits.into_iter().any(|split| {
+    if output_splits.iter().copied().any(|split| {
         matches!(workspace.node(split), Some(Node::Split { children, weights, .. })
             if children.len() < 2 || validate_split_weights(split, children, weights).is_err())
     }) {
@@ -298,6 +313,21 @@ pub(super) fn finish_item_move(
         return Err(CanonicalizationError::TraversalInvariant {
             stage: "diagnose rewritten split weights",
         });
+    }
+    // The normalizer edits raw arena records. Publish only its changed direct
+    // rosters and retired nodes; unrelated branches retain their placements.
+    for (node, _) in &results {
+        if workspace.node(node).is_none() {
+            workspace.forget_placement(node);
+        }
+    }
+    for root in [Some(source_root), outer_root].into_iter().flatten() {
+        if let Some(record) = workspace.root(root).copied() {
+            workspace.place_node(root, record.node, None);
+        }
+    }
+    for split in output_splits {
+        workspace.refresh_child_placements(split);
     }
     Ok(())
 }

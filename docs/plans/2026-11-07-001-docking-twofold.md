@@ -79,3 +79,21 @@ because of Rust code.
 The combined local-mutation/dense-output checkpoint passes 2,035 production core and 2,211 workspace tests, focused numeric/deep regressions, integration, lint and docs gates. Both complete paired comparisons preserve all state vectors. At 1,024 panes Center is 61.66–65.93% faster than ea4161e, but still 7.95–10.20x ImGui; resize remains 4.21–4.64x. No applicable cell meets 2x. Continue with runtime structural compilation, root-reference ownership and candidate copy attribution; this is not a stopping point. See [the complete evidence](../performance/2026-11-07-sealed-layout.md).
 
 The macOS allocation retry and expanded coverage commit aa3c99b both passed all six CI jobs. Preserve those checks and require fresh CI for subsequent runtime heads.
+
+## Qualified owner-reference checkpoint
+
+Exact root issuance, normative sparse placement, actual-candidate transaction
+capture and linear sealed-runtime compilation pass 2,047 production core and
+2,223 workspace tests plus the ordinary integration/lint/docs gates. Complete
+paired comparisons preserve every state vector. Against `91f42ce`, all p50
+cells improve 13.20–69.37%; one p95 and seven max cells regress. At 1,024 panes,
+the complete operation remains 2.39–4.25x ImGui, and no group/cell reaches 2x.
+The cold recovery scale test also remains about 1.8x slower than `91f42ce`.
+This is another verified improvement, not a stopping point. See
+[the evidence](../performance/2026-11-07-owner-reference.md).
+
+Next measure fresh DFS leaf input independently, then solver aggregate reuse,
+prepared-report equality sealing and complete-output traversal. Continue actual
+candidate-copy and cold mutation-effect ownership work after attribution. Keep
+all timed leaf materialization, complete owned export, strict numeric/error
+behavior, staged atomicity and current-reference semantics.

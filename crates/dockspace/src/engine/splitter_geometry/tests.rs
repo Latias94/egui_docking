@@ -242,7 +242,7 @@ fn nested_touching_frontier_uses_descendant_limits_and_keeps_the_far_side_fixed(
         assert!(
             sources
                 .iter()
-                .all(|source| Arc::ptr_eq(&sources[0].fingerprint().0, &source.fingerprint().0))
+                .all(|source| sources[0].reference() == source.reference())
         );
         for (requested, effective) in [(1e6, 49.5), (-1e6, -10.0), (18.0, 18.0)] {
             let updates = resize_axis_group_updates(&groups, [requested, 0.0]).unwrap();

@@ -21,7 +21,6 @@ use dockspace::policy::{
     PolicyRuleScope,
 };
 use dockspace::surface_recovery::{ConvertedMainRecovery, SurfaceRecoveryTarget};
-use dockspace::transaction::WorkspaceTransaction;
 use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{
     CloseObservationGeneration, CoordinateObservationGeneration, PresentationObservationGeneration,
@@ -521,23 +520,26 @@ fn child_vacate_then_repopulate_in_one_tick_preserves_obligation_for_later_destr
             position: ContainedPosition::Front,
         },
     };
-    let mut staged = engine.workspace().clone();
-    WorkspaceTransaction::from_commands([vacate.clone()])
-        .apply(&mut staged, engine.policy_snapshot())
-        .expect("vacated Child topology stages");
-    let repopulate_source = staged
-        .capture_node_source(CHILD_ROOT, child_node)
-        .expect("post-vacancy Child source is exact");
     let before = engine.version();
-    let transition = support::submit_inputs(
-        &mut engine,
-        &mut presentation_host,
-        INPUT_SOURCE,
-        [
+    let mut semantic_writer = support::TestInputStream::resume(&engine, INPUT_SOURCE);
+    let mut frame = presentation_host.begin(&engine);
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand {
                 expected: before,
                 command: vacate,
             },
+        )
+        .expect("Child vacancy belongs to the semantic host-frame phase");
+    let repopulate_source = frame
+        .view()
+        .workspace()
+        .capture_node_source(CHILD_ROOT, child_node)
+        .expect("post-vacancy Child source is exact");
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand {
                 expected: before,
                 command: WorkspaceCommand::RehomeRoot {
@@ -547,9 +549,10 @@ fn child_vacate_then_repopulate_in_one_tick_preserves_obligation_for_later_destr
                     },
                 },
             },
-        ],
-    )
-    .expect("same-tick Child vacancy and repopulation reduce atomically");
+        )
+        .expect("Child repopulation belongs to the same semantic host-frame phase");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let transition = presentation_host.finish(frame, &mut engine);
     assert!(
         transition
             .reduced_inputs()
@@ -626,24 +629,26 @@ fn root_vacate_then_repopulate_in_one_tick_preserves_the_exact_anchor() {
             position: ContainedPosition::Front,
         },
     };
-    let mut staged = engine.workspace().clone();
-    WorkspaceTransaction::from_commands([vacate.clone()])
-        .apply(&mut staged, engine.policy_snapshot())
-        .expect("vacated Root topology stages");
-    let repopulate_source = staged
-        .capture_node_source(HOST_ROOT, host_node)
-        .expect("post-vacancy Root source is exact");
     let before = engine.version();
-
-    let transition = support::submit_inputs(
-        &mut engine,
-        &mut presentation_host,
-        INPUT_SOURCE,
-        [
+    let mut semantic_writer = support::TestInputStream::resume(&engine, INPUT_SOURCE);
+    let mut frame = presentation_host.begin(&engine);
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand {
                 expected: before,
                 command: vacate,
             },
+        )
+        .expect("Root vacancy belongs to the semantic host-frame phase");
+    let repopulate_source = frame
+        .view()
+        .workspace()
+        .capture_node_source(HOST_ROOT, host_node)
+        .expect("post-vacancy Root source is exact");
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand {
                 expected: before,
                 command: WorkspaceCommand::RehomeRoot {
@@ -653,9 +658,10 @@ fn root_vacate_then_repopulate_in_one_tick_preserves_the_exact_anchor() {
                     },
                 },
             },
-        ],
-    )
-    .expect("same-tick Root vacancy and repopulation reduce atomically");
+        )
+        .expect("Root repopulation belongs to the same semantic host-frame phase");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let transition = presentation_host.finish(frame, &mut engine);
     assert!(
         transition
             .reduced_inputs()

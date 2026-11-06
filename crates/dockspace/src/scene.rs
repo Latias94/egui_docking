@@ -479,18 +479,23 @@ impl PresentationPlan {
         overrides: &[crate::layout::SplitWeightOverride<'_>],
     ) {
         let surface = self.surface;
-        self.facts_mut().resize_projection = overrides
+        let projection = overrides
             .iter()
-            .filter(|entry| match entry.source().fingerprint().0.presentation {
-                crate::command::FingerprintPresentation::Main { surface: owner }
-                | crate::command::FingerprintPresentation::Contained { surface: owner, .. } => {
-                    owner == surface
-                }
+            .filter(|entry| {
+                self.command_basis(entry.source().root())
+                    .is_some_and(|basis| match basis.0.presentation {
+                        crate::command::FingerprintPresentation::Main { surface: owner }
+                        | crate::command::FingerprintPresentation::Contained {
+                            surface: owner,
+                            ..
+                        } => owner == surface,
+                    })
             })
             .map(|entry| {
                 crate::command::SplitResize::new(entry.source().clone(), entry.weights().to_vec())
             })
             .collect();
+        self.facts_mut().resize_projection = projection;
     }
 
     pub(crate) fn resize_projection(&self) -> &[crate::command::SplitResize] {

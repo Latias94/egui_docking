@@ -1048,17 +1048,13 @@ fn rebind_topology_target(
     if rebound.surface() != location.surface() {
         return Err(TargetRebindError::Stale);
     }
-    if !frozen.presentation_structure_eq(dock_target_fingerprint(&rebound)) {
+    let current = workspace_index
+        .root_fingerprint(frozen.root())
+        .ok_or(TargetRebindError::Stale)?;
+    if !frozen.presentation_structure_eq(current) {
         return Err(TargetRebindError::Stale);
     }
     Ok(rebound)
-}
-
-fn dock_target_fingerprint(target: &DockTarget) -> &crate::command::NodeFingerprint {
-    match target {
-        DockTarget::Center(target) | DockTarget::TabGap { target, .. } => target.fingerprint(),
-        DockTarget::InnerEdge(target) | DockTarget::OuterEdge(target) => target.fingerprint(),
-    }
 }
 
 fn classify_command_error(error: CommandError) -> Result<PreparedDropTarget, DropResolutionError> {
@@ -2613,9 +2609,9 @@ mod tests {
         assert_eq!(work.transaction_prepares, 1);
         assert_eq!(work.transaction_commands, 1);
         assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
-        // The winning move derives its three-node source and singleton target once.
-        assert_eq!(work.root_fingerprint_builds, 2);
-        assert_eq!(work.root_fingerprint_node_visits, 4);
+        // The winning command uses actual root issuance and builds no value proof.
+        assert_eq!(work.root_fingerprint_builds, 0);
+        assert_eq!(work.root_fingerprint_node_visits, 0);
     }
 
     #[test]
@@ -2812,7 +2808,12 @@ mod tests {
                 .expect("scale workload source must be current"),
         );
         let source_root_nodes = match &payload {
-            MovePayload::Item(source) => source.fingerprint().0.nodes.len(),
+            MovePayload::Item(source) => workspace
+                .root_fingerprint(source.root())
+                .unwrap()
+                .0
+                .nodes
+                .len(),
             MovePayload::Tabs(_) | MovePayload::Subtree(_) => {
                 unreachable!("the scale workload always moves one item")
             }
@@ -2872,7 +2873,13 @@ mod tests {
             LogicalPoint::new(10.0, 10.0).expect("workload point must be finite"),
         )
         .expect("scale workload must not expose an invariant");
-        assert!(matches!(query.resolution(), DropResolution::Resolved(_)));
+        let DropResolution::Resolved(resolved) = query.resolution() else {
+            panic!("scale workload must resolve its background target");
+        };
+        assert!(matches!(
+            resolved.command(),
+            WorkspaceCommand::InstallMainRoot { .. }
+        ));
 
         let work = resolution_work();
         assert_eq!(work.drop_targets_assessed, 1);
@@ -2888,8 +2895,21 @@ mod tests {
         assert_eq!(clone_volume.surfaces, spec.surfaces);
         assert_eq!(clone_volume.contained_records, 1);
         assert_eq!(clone_volume.contained_roster_entries, 1);
-        assert!(work.root_fingerprint_builds > 0);
-        assert!(work.root_fingerprint_node_visits >= workload.source_root_nodes);
+        // Cold InstallMainRoot snapshots its donor before/after plus birth (3),
+        // then full canonical completion snapshots all R+1 roots twice.
+        assert_eq!(work.root_fingerprint_builds, 2 * spec.surfaces + 5);
+        // Removing this fixture's first singleton leaf collapses its binary
+        // parent. The new root adds one leaf, so canonical volume is V-1.
+        assert_eq!(
+            resolved.mutation.candidate.nodes().count(),
+            clone_volume.nodes - 1
+        );
+        // Donor before/after: 2S. Pre-normalization forest: V+1.
+        // Post-normalization forest: V-1. Birth: 1. Total: 2S+2V+1.
+        assert_eq!(
+            work.root_fingerprint_node_visits,
+            2 * workload.source_root_nodes + 2 * clone_volume.nodes + 1
+        );
 
         ResolutionWorkBaseline {
             spec,
@@ -2940,47 +2960,43 @@ mod tests {
             [
                 ResolutionWorkBaseline {
                     spec: specs[0],
-                    root_fingerprint_builds: 2,
-                    root_fingerprint_node_visits: 62,
+                    root_fingerprint_builds: 7,
+                    root_fingerprint_node_visits: 125,
                     source_root_nodes: 31,
                     transaction_clone_nodes: 31,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[1],
-                    root_fingerprint_builds: 2,
-                    root_fingerprint_node_visits: 62,
+                    root_fingerprint_builds: 21,
+                    root_fingerprint_node_visits: 559,
                     source_root_nodes: 31,
                     transaction_clone_nodes: 248,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[2],
-                    root_fingerprint_builds: 2,
-                    root_fingerprint_node_visits: 452,
+                    root_fingerprint_builds: 21,
+                    root_fingerprint_node_visits: 947,
                     source_root_nodes: 226,
                     transaction_clone_nodes: 247,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[3],
-                    root_fingerprint_builds: 2,
-                    root_fingerprint_node_visits: 126,
+                    root_fingerprint_builds: 69,
+                    root_fingerprint_node_visits: 4_159,
                     source_root_nodes: 63,
                     transaction_clone_nodes: 2_016,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[4],
-                    root_fingerprint_builds: 2,
-                    root_fingerprint_node_visits: 3_844,
+                    root_fingerprint_builds: 69,
+                    root_fingerprint_node_visits: 7_875,
                     source_root_nodes: 1_922,
                     transaction_clone_nodes: 2_015,
                 },
             ]
         );
-        assert!(
-            baselines[2].root_fingerprint_node_visits > baselines[1].root_fingerprint_node_visits
-        );
-        assert!(
-            baselines[4].root_fingerprint_node_visits > baselines[3].root_fingerprint_node_visits
-        );
+        assert!(baselines[2].source_root_nodes > baselines[1].source_root_nodes);
+        assert!(baselines[4].source_root_nodes > baselines[3].source_root_nodes);
         assert!(baselines[3].transaction_clone_nodes > baselines[1].transaction_clone_nodes);
     }
 

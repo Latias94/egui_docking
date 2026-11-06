@@ -1274,8 +1274,8 @@ fn retained_target_location_binds_current_selection_when_sealed() {
         dockspace::policy::DockTargetRuleKey::Item(ItemId::new(11))
     );
     assert_eq!(
-        Some(target.fingerprint()),
-        ready.plan().command_basis(TARGET_ROOT)
+        Some(target.reference()),
+        fixture.workspace.root_reference(TARGET_ROOT)
     );
 }
 

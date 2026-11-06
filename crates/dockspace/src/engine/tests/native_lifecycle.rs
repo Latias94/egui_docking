@@ -242,8 +242,11 @@ fn engine_presented_drop_reuses_the_requirement_workspace_index() {
     assert_eq!(work.drop_targets_assessed, 1);
     assert_eq!(work.geometric_winners, 1);
     assert_eq!(work.transaction_prepares, 1);
-    assert_eq!(work.root_fingerprint_builds, 2);
-    assert_eq!(work.root_fingerprint_node_visits, 2);
+    // InstallMainRoot classifies donor before/after and new-root birth (3),
+    // then canonical completion snapshots all three singleton roots twice (6).
+    // The current requirement index contributes no rebuild to these 9 values.
+    assert_eq!(work.root_fingerprint_builds, 9);
+    assert_eq!(work.root_fingerprint_node_visits, 9);
 }
 
 struct DurableRectFixture {
@@ -1941,25 +1944,6 @@ fn tick_final_vacancy_suppresses_focus_for_a_newly_visible_native_binding() {
     let mut fixture = background_fixture(policy);
     let reserved_root = RootId::new(94);
     let request = install_pending_native_root_reservation(&mut fixture, reserved_root);
-    let prepared = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .expect("pending native create must retain its prepared command")
-        .prepared()
-        .clone();
-    let mut after_native_commit = fixture.engine.workspace().clone();
-    WorkspaceTransaction::from_commands([prepared.command().clone()])
-        .apply(&mut after_native_commit, fixture.engine.policy_snapshot())
-        .expect("prepared native command must remain applicable");
-    let source = after_native_commit
-        .root(reserved_root)
-        .and_then(|root| {
-            after_native_commit
-                .capture_node_source(reserved_root, root.node)
-                .ok()
-        })
-        .expect("prepared native root must remain rehomeable");
     let expected_after_native_commit = WorkspaceVersion::new(
         fixture.engine.version().epoch(),
         fixture
@@ -2062,6 +2046,17 @@ fn tick_final_vacancy_suppresses_focus_for_a_newly_visible_native_binding() {
         .seal(&fixture.engine)
         .expect("first-live proof must transfer before semantic input");
     assert_eq!(first_live_output.surface(), NATIVE_SURFACE);
+    assert_eq!(frame.view().version(), expected_after_native_commit);
+    let root = frame
+        .view()
+        .workspace()
+        .root(reserved_root)
+        .expect("first-live settlement installed the actual native root");
+    let source = frame
+        .view()
+        .workspace()
+        .capture_node_source(reserved_root, root.node)
+        .expect("the actual admitted native root remains rehomeable");
     let mut semantic_writer = TestInputStream::resume(&fixture.engine, COMMAND_SOURCE);
     semantic_writer
         .append(

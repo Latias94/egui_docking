@@ -139,11 +139,14 @@ fn local_item_moves_match_complete_normalization_and_exact_mru() {
                             assert_eq!(work.canonical_full_passes, 0);
                             assert_eq!(work.workspace_full_validations, 0);
                             assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
+                            assert_eq!(work.root_fingerprint_builds, 0);
+                            assert_eq!(work.root_fingerprint_node_visits, 0);
                             assert_eq!(
                                 actual, expected,
                                 "axis={axis:?} last={last} central={central} selected={selected} destination={destination} kind={kind}"
                             );
                             if let Ok((candidate, _)) = actual {
+                                super::owner_reference::assert_actual_placement(&candidate);
                                 candidate.validate().unwrap();
                                 assert_eq!(
                                     candidate.item_multiset(),

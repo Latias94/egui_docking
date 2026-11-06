@@ -47,17 +47,18 @@ pub(super) fn prepare_resize_axis_groups(
         }
         match roots.entry(id.root) {
             std::collections::btree_map::Entry::Vacant(entry) => {
-                if workspace
-                    .root_fingerprint(id.root)
-                    .ok()?
-                    .ne(source.fingerprint())
-                {
-                    return None;
-                }
+                workspace
+                    .verify_reference(
+                        id.root,
+                        id.split,
+                        source.reference(),
+                        crate::error::ReferenceRole::Source,
+                    )
+                    .ok()?;
                 entry.insert(source.clone());
             }
             std::collections::btree_map::Entry::Occupied(entry) => {
-                if entry.get().fingerprint() != source.fingerprint() {
+                if entry.get().reference() != source.reference() {
                     return None;
                 }
             }
@@ -198,7 +199,7 @@ pub(super) fn prepare_resize_axis_groups(
                             source: NodeSource {
                                 root,
                                 node,
-                                fingerprint: prototype.fingerprint().clone(),
+                                reference: prototype.reference().clone(),
                             },
                             axis: *split_axis,
                             bounds,
