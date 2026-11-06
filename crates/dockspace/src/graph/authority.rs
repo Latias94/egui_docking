@@ -63,7 +63,7 @@ impl fmt::Debug for RootReference {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NodePlacement {
     pub(crate) root: RootId,
     pub(crate) parent: Option<ParentLink>,
@@ -85,14 +85,14 @@ enum RootStructureState {
 #[derive(Debug, Clone)]
 pub(super) struct WorkspaceAuthority {
     roots: BTreeMap<RootId, RootOwner>,
-    placements: SparseSecondaryMap<NodeId, NodePlacement>,
+    placements: Arc<SparseSecondaryMap<NodeId, NodePlacement>>,
 }
 
 impl Default for WorkspaceAuthority {
     fn default() -> Self {
         Self {
             roots: BTreeMap::new(),
-            placements: SparseSecondaryMap::new(),
+            placements: Arc::new(SparseSecondaryMap::new()),
         }
     }
 }
@@ -144,7 +144,7 @@ impl Workspace {
             owner.structure = RootStructureState::Ready(Arc::new(RootStructure::build(
                 &self.storage,
                 root,
-                &mut self.authority.placements,
+                Arc::make_mut(&mut self.authority.placements),
             )?));
         }
         Ok(())
@@ -159,7 +159,7 @@ impl Workspace {
                 owner.structure = RootStructureState::Ready(Arc::new(RootStructure::build(
                     storage,
                     root,
-                    &mut authority.placements,
+                    Arc::make_mut(&mut authority.placements),
                 )?));
             }
         }
@@ -242,14 +242,17 @@ impl Workspace {
     }
 
     pub(super) fn forget_placement(&mut self, node: NodeId) {
-        self.authority.placements.remove(node);
+        if self.authority.placements.contains_key(node) {
+            Arc::make_mut(&mut self.authority.placements).remove(node);
+        }
     }
 
     pub(super) fn place_node(&mut self, root: RootId, node: NodeId, parent: Option<ParentLink>) {
         if self.storage.nodes.contains_key(node) {
-            self.authority
-                .placements
-                .insert(node, NodePlacement { root, parent });
+            let placement = NodePlacement { root, parent };
+            if self.authority.placements.get(node) != Some(&placement) {
+                Arc::make_mut(&mut self.authority.placements).insert(node, placement);
+            }
         }
     }
 
@@ -369,7 +372,7 @@ impl Workspace {
         let structure = Arc::new(RootStructure::build(
             &self.storage,
             root,
-            &mut self.authority.placements,
+            Arc::make_mut(&mut self.authority.placements),
         )?);
         self.authority.roots.insert(
             root,
@@ -407,5 +410,117 @@ impl Workspace {
                 owner.reference.clone_from(&previous.reference);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::{
+        DockFraction, DockTarget, Edge, MovePayload, RootPresentationTarget, WorkspaceCommand,
+    };
+    use crate::error::{CommandError, ReferenceRole};
+    use crate::graph::{Axis, RootRecord, SurfacePresentation};
+    use crate::ids::{ItemId, SurfaceId};
+    use crate::policy::{DockPolicy, PolicyRevision};
+    use crate::transaction::WorkspaceTransaction;
+
+    #[test]
+    fn semantic_edits_share_placements_and_discarded_structure_edits_detach_them() {
+        let root = RootId::new(1);
+        let mut builder = Workspace::builder();
+        let tabs =
+            [[1, 2], [3, 4]].map(|items| builder.insert_node(Node::tabs(items.map(ItemId::new))));
+        let split = builder.insert_node(Node::equal_split(Axis::Horizontal, tabs).unwrap());
+        builder.set_root(root, RootRecord::new(split));
+        builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
+        let mut workspace = builder.build().unwrap();
+        let original = workspace.clone();
+        let placements = Arc::clone(&original.authority.placements);
+        let frozen = original.capture_node_source(root, split).unwrap();
+        let mut policy = DockPolicy::default();
+        policy.set_allow_native_surfaces(true);
+        let policy = policy.snapshot(PolicyRevision::default());
+        let apply_shared = |workspace: &mut Workspace, command| {
+            let report = WorkspaceTransaction::from_commands([command])
+                .apply(workspace, &policy)
+                .unwrap();
+            assert!(report.changed());
+            assert!(Arc::ptr_eq(&placements, &workspace.authority.placements));
+        };
+
+        let command = WorkspaceCommand::Select {
+            source: workspace
+                .capture_item_source(root, tabs[0], ItemId::new(2))
+                .unwrap(),
+        };
+        apply_shared(&mut workspace, command);
+        let command = WorkspaceCommand::Move {
+            payload: MovePayload::Item(
+                workspace
+                    .capture_item_source(root, tabs[0], ItemId::new(2))
+                    .unwrap(),
+            ),
+            target: DockTarget::Center(workspace.capture_tab_target(root, tabs[1]).unwrap()),
+        };
+        apply_shared(&mut workspace, command);
+        let command = WorkspaceCommand::RehomeRoot {
+            source: workspace.capture_node_source(root, split).unwrap(),
+            target: RootPresentationTarget::NewSurface {
+                surface: SurfaceId::new(2),
+            },
+        };
+        apply_shared(&mut workspace, command);
+        original
+            .verify_reference(root, split, frozen.reference(), ReferenceRole::Source)
+            .unwrap();
+        assert!(matches!(
+            workspace.verify_reference(root, split, frozen.reference(), ReferenceRole::Source),
+            Err(CommandError::StaleNode { .. })
+        ));
+        assert_eq!(
+            original.tab_mru(tabs[0]),
+            Some([ItemId::new(1), ItemId::new(2)].as_slice())
+        );
+
+        let before = workspace.clone();
+        let command = WorkspaceCommand::Move {
+            payload: MovePayload::Item(
+                workspace
+                    .capture_item_source(root, tabs[1], ItemId::new(3))
+                    .unwrap(),
+            ),
+            target: DockTarget::InnerEdge(
+                workspace
+                    .capture_inner_edge_target(
+                        root,
+                        tabs[0],
+                        Edge::Top,
+                        DockFraction::new(0.5).unwrap(),
+                    )
+                    .unwrap(),
+            ),
+        };
+        let prepared =
+            crate::operation::prepare_transaction(&workspace, &policy, &[command]).unwrap();
+        assert!(!Arc::ptr_eq(
+            &placements,
+            &prepared.candidate().authority.placements
+        ));
+        assert_ne!(
+            prepared.candidate().parent_link(root, tabs[0]),
+            workspace.parent_link(root, tabs[0])
+        );
+        assert!(Arc::ptr_eq(&placements, &workspace.authority.placements));
+        drop(prepared);
+        assert_eq!(workspace, before);
+        assert_eq!(
+            workspace.parent_link(root, tabs[0]),
+            Some(ParentLink {
+                parent: split,
+                index: 0
+            })
+        );
+        assert!(Arc::ptr_eq(&placements, &original.authority.placements));
     }
 }

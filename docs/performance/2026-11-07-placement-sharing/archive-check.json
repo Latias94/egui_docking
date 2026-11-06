@@ -1,0 +1,9 @@
+{
+  "regular_input_files": 436,
+  "raw_rows": 16128,
+  "complete_vectors": 336,
+  "all_members_roundtrip_equal": true,
+  "actual_control_commit": "865409041a33cfb13442d5ea16f2035cf5feff0a",
+  "actual_changed_sources": 1,
+  "archive_bytes": 355508
+}
