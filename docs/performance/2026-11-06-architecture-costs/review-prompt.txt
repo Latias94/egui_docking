@@ -1,0 +1,8 @@
+请只读审查 /Users/frankorz/codes/rust/egui_docking 当前未提交的核心改动和架构性能诊断。用户的目标是 renderer-neutral docking abstraction，允许必要架构重构，但本轮仅在调查中实现一个可证伪的最小所有权改动。
+
+1. git diff -- crates/dockspace/src/scene_manifest.rs：SceneRequirementManifest 的 frozen surface inventory 从 BTreeMap 改 Arc<BTreeMap>；Draft::finalize Arc::new；with_popup COW；新增共享和旧popup隔离回归。查看所有构造/变更/克隆入口，核验版本/authority/PartialEq/Drop/native投影/历史输出行为是否保持。字段并非公开API。不要把 ptr-eq 用作未验证缓存。
+2. docs/performance/2026-11-06-architecture-root-causes.md：逐条核验根因链和反例，尤其 selection -> complete transaction -> fingerprints/requirements -> full affected-surface compilation，scene validation是否只是重复集合重建而非数值solver重跑。不要把有意的异步/native能力当无法优化借口，也不要误称所有工作都不必要。
+3. 只读 /tmp/dockspace-architecture-20261106-0a1dcf8/environment.json, candidate-manifest/environment.json, allocation-comparison.json, verification.json, headless.csv, candidate-manifest/headless.csv, frozen-timing/process-summaries.csv 和 frozen-timing/environment.json。验证分配差异及四进程中位数区间。明确原frame_cost只输出各进程summary不输出逐样本，不能pretend复算p50。确认报告没有产品性能或语言优劣的无依据归因。
+4. 已串行通过 manifest regression red(100)/green0、workspace allfeatures alltargets2146/1ignored、host292/335、Clippy correctness/suspicious、fmt。无需运行。
+
+不要编辑文件，不要运行Cargo/benchmark/profiling/network，不要再派发代理，不要读取用户CI/reviews或旧repo-ref/egui改动。优先审查上述有限范围，不做全库铺开。输出中文：PASS或具体P1/P2/P3问题（文件:行号+证据+建议）；区分已证实机制和建议。特别指出任何必须修改的证据陈述。最终答复由 -o 保存。

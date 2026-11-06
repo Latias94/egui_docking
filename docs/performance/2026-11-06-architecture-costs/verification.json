@@ -1,0 +1,21 @@
+{
+  "base_commit": "0a1dcf89727a84f5b58ca852fe2162ff9b3f3713",
+  "baseline_and_candidate_summary_rows_each": 180,
+  "counter_comparison_rows": 90,
+  "exact_workload_and_output_state_columns_match": true,
+  "only_source_difference": "crates/dockspace/src/scene_manifest.rs",
+  "frozen_timing_processes": 8,
+  "frozen_timing_process_summaries": 240,
+  "individual_timing_samples": "Not exposed by existing frame_cost; only each process p50/p95/max archived. No medians are pooled.",
+  "checks_passed": 8,
+  "binary_hashes_verified": true,
+  "candidate_sources_verified": 363,
+  "native_tests_passed": 556,
+  "workspace_tests_passed": 2146,
+  "host_default_tests_passed": 292,
+  "host_serde_tests_passed": 335,
+  "original_product_workload_unchanged": true,
+  "protected_user_files_verified": 49,
+  "checked_utc": "2026-11-06T01:32:19.946426+00:00",
+  "independent_review": "Core/data PASS; P2 wording corrected, see review-closure.json."
+}

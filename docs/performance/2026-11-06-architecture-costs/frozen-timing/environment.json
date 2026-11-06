@@ -1,0 +1,185 @@
+{
+  "scope": "Timing-only complete existing headless workload, no active DHAT; two ABBA groups. Original harness exposes per-process p50/p95/max, not individual timings. No pooling of medians.",
+  "samples_per_process_case": 48,
+  "warmup": 6,
+  "in_flight": 1,
+  "panes": [
+    16,
+    128,
+    1024
+  ],
+  "runs": [
+    {
+      "group": 1,
+      "run": 1,
+      "condition": "baseline",
+      "command": [
+        "/tmp/dockspace-architecture-20261106-0a1dcf8/frame_cost",
+        "--timing-only",
+        "--samples",
+        "48",
+        "--warmup",
+        "6",
+        "--in-flight",
+        "1",
+        "--panes",
+        "16,128,1024"
+      ],
+      "binary_sha256": "56ea2c34e8760fb2f70ec7503c5872ef6e32f8d644550b26328bf281e891a9f9",
+      "started_utc": "2026-11-06T01:25:31.996860+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T01:25:38.906103+00:00"
+    },
+    {
+      "group": 1,
+      "run": 2,
+      "condition": "shared-manifest",
+      "command": [
+        "/tmp/dockspace-architecture-20261106-0a1dcf8/candidate-manifest/frame_cost",
+        "--timing-only",
+        "--samples",
+        "48",
+        "--warmup",
+        "6",
+        "--in-flight",
+        "1",
+        "--panes",
+        "16,128,1024"
+      ],
+      "binary_sha256": "5922cb18cfddfc9dca37c08fd91ba587ed3f4eb9fdb9ca8fa2d4f65637d3e760",
+      "started_utc": "2026-11-06T01:25:38.908970+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T01:25:45.706532+00:00"
+    },
+    {
+      "group": 1,
+      "run": 3,
+      "condition": "shared-manifest",
+      "command": [
+        "/tmp/dockspace-architecture-20261106-0a1dcf8/candidate-manifest/frame_cost",
+        "--timing-only",
+        "--samples",
+        "48",
+        "--warmup",
+        "6",
+        "--in-flight",
+        "1",
+        "--panes",
+        "16,128,1024"
+      ],
+      "binary_sha256": "5922cb18cfddfc9dca37c08fd91ba587ed3f4eb9fdb9ca8fa2d4f65637d3e760",
+      "started_utc": "2026-11-06T01:25:45.709298+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T01:25:52.571616+00:00"
+    },
+    {
+      "group": 1,
+      "run": 4,
+      "condition": "baseline",
+      "command": [
+        "/tmp/dockspace-architecture-20261106-0a1dcf8/frame_cost",
+        "--timing-only",
+        "--samples",
+        "48",
+        "--warmup",
+        "6",
+        "--in-flight",
+        "1",
+        "--panes",
+        "16,128,1024"
+      ],
+      "binary_sha256": "56ea2c34e8760fb2f70ec7503c5872ef6e32f8d644550b26328bf281e891a9f9",
+      "started_utc": "2026-11-06T01:25:52.574493+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T01:25:59.511370+00:00"
+    },
+    {
+      "group": 2,
+      "run": 1,
+      "condition": "baseline",
+      "command": [
+        "/tmp/dockspace-architecture-20261106-0a1dcf8/frame_cost",
+        "--timing-only",
+        "--samples",
+        "48",
+        "--warmup",
+        "6",
+        "--in-flight",
+        "1",
+        "--panes",
+        "16,128,1024"
+      ],
+      "binary_sha256": "56ea2c34e8760fb2f70ec7503c5872ef6e32f8d644550b26328bf281e891a9f9",
+      "started_utc": "2026-11-06T01:25:59.514772+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T01:26:06.362641+00:00"
+    },
+    {
+      "group": 2,
+      "run": 2,
+      "condition": "shared-manifest",
+      "command": [
+        "/tmp/dockspace-architecture-20261106-0a1dcf8/candidate-manifest/frame_cost",
+        "--timing-only",
+        "--samples",
+        "48",
+        "--warmup",
+        "6",
+        "--in-flight",
+        "1",
+        "--panes",
+        "16,128,1024"
+      ],
+      "binary_sha256": "5922cb18cfddfc9dca37c08fd91ba587ed3f4eb9fdb9ca8fa2d4f65637d3e760",
+      "started_utc": "2026-11-06T01:26:06.365494+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T01:26:13.243488+00:00"
+    },
+    {
+      "group": 2,
+      "run": 3,
+      "condition": "shared-manifest",
+      "command": [
+        "/tmp/dockspace-architecture-20261106-0a1dcf8/candidate-manifest/frame_cost",
+        "--timing-only",
+        "--samples",
+        "48",
+        "--warmup",
+        "6",
+        "--in-flight",
+        "1",
+        "--panes",
+        "16,128,1024"
+      ],
+      "binary_sha256": "5922cb18cfddfc9dca37c08fd91ba587ed3f4eb9fdb9ca8fa2d4f65637d3e760",
+      "started_utc": "2026-11-06T01:26:13.246235+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T01:26:20.210754+00:00"
+    },
+    {
+      "group": 2,
+      "run": 4,
+      "condition": "baseline",
+      "command": [
+        "/tmp/dockspace-architecture-20261106-0a1dcf8/frame_cost",
+        "--timing-only",
+        "--samples",
+        "48",
+        "--warmup",
+        "6",
+        "--in-flight",
+        "1",
+        "--panes",
+        "16,128,1024"
+      ],
+      "binary_sha256": "56ea2c34e8760fb2f70ec7503c5872ef6e32f8d644550b26328bf281e891a9f9",
+      "started_utc": "2026-11-06T01:26:20.215311+00:00",
+      "returncode": 0,
+      "finished_utc": "2026-11-06T01:26:27.292201+00:00"
+    }
+  ],
+  "finished_utc": "2026-11-06T01:26:27.293442+00:00",
+  "results_sha256": {
+    "process-summaries.csv": "3896558947b5745103d9fe6bc9dac23ed1cfcbd7da1c7c328d66a15898d0b827"
+  }
+}

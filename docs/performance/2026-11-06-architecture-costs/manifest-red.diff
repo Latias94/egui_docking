@@ -1,0 +1,44 @@
+diff --git a/crates/dockspace/src/scene_manifest.rs b/crates/dockspace/src/scene_manifest.rs
+index feadd69..7f2f91a 100644
+--- a/crates/dockspace/src/scene_manifest.rs
++++ b/crates/dockspace/src/scene_manifest.rs
+@@ -1987,6 +1987,39 @@ mod tests {
+         .expect("fixture manifest should be coherent")
+     }
+ 
++    #[test]
++    fn cloned_manifests_share_frozen_requirements_and_isolate_popup_rewrites() {
++        let requirements = active_requirements(TabBarInteraction::Enabled);
++        let ticket = requirements.ticket();
++        let owner = TabStripStateKey::new(
++            ticket.surface(),
++            requirements.tab_strips().next().unwrap().bar(),
++        );
++        let original = manifest_with_popup(requirements, PopupPlaneRequirement::default()).unwrap();
++        let retained = original.clone();
++        assert!(
++            std::ptr::eq(
++                original.surface(ticket.surface()).unwrap(),
++                retained.surface(ticket.surface()).unwrap(),
++            ),
++            "rollback candidates must share the same frozen requirement inventory"
++        );
++
++        let active = retained.with_popup(active_popup(owner));
++        assert_eq!(original.popup(), PopupPlaneRequirement::default());
++        assert_eq!(
++            original.surface(ticket.surface()).unwrap().popup_plane_bounds(),
++            None
++        );
++        assert_eq!(active.popup(), active_popup(owner));
++        assert_eq!(
++            active.surface(ticket.surface()).unwrap().popup_plane_bounds(),
++            Some(PopupPlaneBoundsKey::new(ticket.surface()))
++        );
++        assert_eq!(original.surface(ticket.surface()).unwrap().ticket(), ticket);
++        assert_eq!(active.surface(ticket.surface()).unwrap().ticket(), ticket);
++    }
++
+     #[test]
+     fn final_manifest_rejects_orphan_popup_surface_and_tab_bar() {
+         let requirements = active_requirements(TabBarInteraction::Enabled);

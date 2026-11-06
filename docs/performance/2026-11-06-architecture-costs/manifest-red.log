@@ -1,0 +1,40 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+warning: method `presentation_identity_frontier` is never used
+   --> crates/dockspace/src/engine/host_frame.rs:543:25
+    |
+526 | impl<'frame> HostFrameView<'frame> {
+    | ---------------------------------- method in this implementation
+...
+543 |     pub(crate) const fn presentation_identity_frontier(&self) -> PresentationIdentityFrontier {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dockspace` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 42.34s
+────────────
+ Nextest run ID 23e08df1-6086-4ffa-9056-c4518163e3af with nextest profile: default
+    Starting 1 test across 1 binary (1905 tests skipped)
+        FAIL [   0.008s] (1/1) dockspace scene_manifest::tests::cloned_manifests_share_frozen_requirements_and_isolate_popup_rewrites
+  stdout ───
+
+    running 1 test
+    test scene_manifest::tests::cloned_manifests_share_frozen_requirements_and_isolate_popup_rewrites ... FAILED
+
+    failures:
+
+    failures:
+        scene_manifest::tests::cloned_manifests_share_frozen_requirements_and_isolate_popup_rewrites
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1905 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'scene_manifest::tests::cloned_manifests_share_frozen_requirements_and_isolate_popup_rewrites' (75098650) panicked at crates/dockspace/src/scene_manifest.rs:2000:9:
+    rollback candidates must share the same frozen requirement inventory
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.012s] 1 test run: 0 passed, 1 failed, 1905 skipped
+        FAIL [   0.008s] (1/1) dockspace scene_manifest::tests::cloned_manifests_share_frozen_requirements_and_isolate_popup_rewrites
+error: test run failed

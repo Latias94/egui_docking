@@ -1,0 +1,812 @@
+[
+  {
+    "panes": 16,
+    "scenario": "idle",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 32416,
+    "candidate_p50": 36625,
+    "reduction_percent": -12.9843
+  },
+  {
+    "panes": 16,
+    "scenario": "idle",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 20916,
+    "candidate_p50": 23000,
+    "reduction_percent": -9.9637
+  },
+  {
+    "panes": 16,
+    "scenario": "idle",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 223,
+    "candidate_p50": 190,
+    "reduction_percent": 14.7982
+  },
+  {
+    "panes": 16,
+    "scenario": "idle",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 389840,
+    "candidate_p50": 379032,
+    "reduction_percent": 2.7724
+  },
+  {
+    "panes": 16,
+    "scenario": "idle",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 191,
+    "candidate_p50": 158,
+    "reduction_percent": 17.2775
+  },
+  {
+    "panes": 16,
+    "scenario": "idle",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 104736,
+    "candidate_p50": 93928,
+    "reduction_percent": 10.3193
+  },
+  {
+    "panes": 16,
+    "scenario": "select",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 168667,
+    "candidate_p50": 164542,
+    "reduction_percent": 2.4456
+  },
+  {
+    "panes": 16,
+    "scenario": "select",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 28041,
+    "candidate_p50": 26709,
+    "reduction_percent": 4.7502
+  },
+  {
+    "panes": 16,
+    "scenario": "select",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 2326,
+    "candidate_p50": 2294,
+    "reduction_percent": 1.3758
+  },
+  {
+    "panes": 16,
+    "scenario": "select",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 962704,
+    "candidate_p50": 951936,
+    "reduction_percent": 1.1185
+  },
+  {
+    "panes": 16,
+    "scenario": "select",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 199,
+    "candidate_p50": 166,
+    "reduction_percent": 16.5829
+  },
+  {
+    "panes": 16,
+    "scenario": "select",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 105896,
+    "candidate_p50": 95088,
+    "reduction_percent": 10.2062
+  },
+  {
+    "panes": 16,
+    "scenario": "drag",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 151291,
+    "candidate_p50": 151292,
+    "reduction_percent": -0.0007
+  },
+  {
+    "panes": 16,
+    "scenario": "drag",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 40000,
+    "candidate_p50": 38875,
+    "reduction_percent": 2.8125
+  },
+  {
+    "panes": 16,
+    "scenario": "drag",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 1854,
+    "candidate_p50": 1821,
+    "reduction_percent": 1.7799
+  },
+  {
+    "panes": 16,
+    "scenario": "drag",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 1317836,
+    "candidate_p50": 1307028,
+    "reduction_percent": 0.8201
+  },
+  {
+    "panes": 16,
+    "scenario": "drag",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 631,
+    "candidate_p50": 598,
+    "reduction_percent": 5.2298
+  },
+  {
+    "panes": 16,
+    "scenario": "drag",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 153172,
+    "candidate_p50": 142364,
+    "reduction_percent": 7.0561
+  },
+  {
+    "panes": 16,
+    "scenario": "measurement_change",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 124458,
+    "candidate_p50": 131875,
+    "reduction_percent": -5.9594
+  },
+  {
+    "panes": 16,
+    "scenario": "measurement_change",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 24167,
+    "candidate_p50": 23584,
+    "reduction_percent": 2.4124
+  },
+  {
+    "panes": 16,
+    "scenario": "measurement_change",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 1396,
+    "candidate_p50": 1363,
+    "reduction_percent": 2.3639
+  },
+  {
+    "panes": 16,
+    "scenario": "measurement_change",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 1259788,
+    "candidate_p50": 1248980,
+    "reduction_percent": 0.8579
+  },
+  {
+    "panes": 16,
+    "scenario": "measurement_change",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 199,
+    "candidate_p50": 166,
+    "reduction_percent": 16.5829
+  },
+  {
+    "panes": 16,
+    "scenario": "measurement_change",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 105896,
+    "candidate_p50": 95088,
+    "reduction_percent": 10.2062
+  },
+  {
+    "panes": 16,
+    "scenario": "outputs_in_flight",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 164583,
+    "candidate_p50": 164375,
+    "reduction_percent": 0.1264
+  },
+  {
+    "panes": 16,
+    "scenario": "outputs_in_flight",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 32000,
+    "candidate_p50": 30250,
+    "reduction_percent": 5.4688
+  },
+  {
+    "panes": 16,
+    "scenario": "outputs_in_flight",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 2345,
+    "candidate_p50": 2313,
+    "reduction_percent": 1.3646
+  },
+  {
+    "panes": 16,
+    "scenario": "outputs_in_flight",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 965776,
+    "candidate_p50": 955008,
+    "reduction_percent": 1.115
+  },
+  {
+    "panes": 16,
+    "scenario": "outputs_in_flight",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 199,
+    "candidate_p50": 166,
+    "reduction_percent": 16.5829
+  },
+  {
+    "panes": 16,
+    "scenario": "outputs_in_flight",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 105928,
+    "candidate_p50": 95120,
+    "reduction_percent": 10.2032
+  },
+  {
+    "panes": 128,
+    "scenario": "idle",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 196084,
+    "candidate_p50": 185541,
+    "reduction_percent": 5.3768
+  },
+  {
+    "panes": 128,
+    "scenario": "idle",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 84417,
+    "candidate_p50": 73666,
+    "reduction_percent": 12.7356
+  },
+  {
+    "panes": 128,
+    "scenario": "idle",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 742,
+    "candidate_p50": 487,
+    "reduction_percent": 34.3666
+  },
+  {
+    "panes": 128,
+    "scenario": "idle",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 2368360,
+    "candidate_p50": 2298432,
+    "reduction_percent": 2.9526
+  },
+  {
+    "panes": 128,
+    "scenario": "idle",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 606,
+    "candidate_p50": 351,
+    "reduction_percent": 42.0792
+  },
+  {
+    "panes": 128,
+    "scenario": "idle",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 213792,
+    "candidate_p50": 143864,
+    "reduction_percent": 32.7084
+  },
+  {
+    "panes": 128,
+    "scenario": "select",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 1438292,
+    "candidate_p50": 1449500,
+    "reduction_percent": -0.7793
+  },
+  {
+    "panes": 128,
+    "scenario": "select",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 114541,
+    "candidate_p50": 109167,
+    "reduction_percent": 4.6918
+  },
+  {
+    "panes": 128,
+    "scenario": "select",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 15071,
+    "candidate_p50": 14817,
+    "reduction_percent": 1.6854
+  },
+  {
+    "panes": 128,
+    "scenario": "select",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 6888312,
+    "candidate_p50": 6818424,
+    "reduction_percent": 1.0146
+  },
+  {
+    "panes": 128,
+    "scenario": "select",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 614,
+    "candidate_p50": 359,
+    "reduction_percent": 41.5309
+  },
+  {
+    "panes": 128,
+    "scenario": "select",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 214952,
+    "candidate_p50": 145024,
+    "reduction_percent": 32.5319
+  },
+  {
+    "panes": 128,
+    "scenario": "drag",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 1372542,
+    "candidate_p50": 1420875,
+    "reduction_percent": -3.5214
+  },
+  {
+    "panes": 128,
+    "scenario": "drag",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 191000,
+    "candidate_p50": 187334,
+    "reduction_percent": 1.9194
+  },
+  {
+    "panes": 128,
+    "scenario": "drag",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 10871,
+    "candidate_p50": 10616,
+    "reduction_percent": 2.3457
+  },
+  {
+    "panes": 128,
+    "scenario": "drag",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 9904836,
+    "candidate_p50": 9834908,
+    "reduction_percent": 0.706
+  },
+  {
+    "panes": 128,
+    "scenario": "drag",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 2960,
+    "candidate_p50": 2705,
+    "reduction_percent": 8.6149
+  },
+  {
+    "panes": 128,
+    "scenario": "drag",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 435292,
+    "candidate_p50": 365364,
+    "reduction_percent": 16.0646
+  },
+  {
+    "panes": 128,
+    "scenario": "measurement_change",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 1238625,
+    "candidate_p50": 1340833,
+    "reduction_percent": -8.2517
+  },
+  {
+    "panes": 128,
+    "scenario": "measurement_change",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 108542,
+    "candidate_p50": 122750,
+    "reduction_percent": -13.0899
+  },
+  {
+    "panes": 128,
+    "scenario": "measurement_change",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 8947,
+    "candidate_p50": 8692,
+    "reduction_percent": 2.8501
+  },
+  {
+    "panes": 128,
+    "scenario": "measurement_change",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 9730668,
+    "candidate_p50": 9660740,
+    "reduction_percent": 0.7186
+  },
+  {
+    "panes": 128,
+    "scenario": "measurement_change",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 614,
+    "candidate_p50": 359,
+    "reduction_percent": 41.5309
+  },
+  {
+    "panes": 128,
+    "scenario": "measurement_change",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 214952,
+    "candidate_p50": 145024,
+    "reduction_percent": 32.5319
+  },
+  {
+    "panes": 128,
+    "scenario": "outputs_in_flight",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 1825000,
+    "candidate_p50": 1408416,
+    "reduction_percent": 22.8265
+  },
+  {
+    "panes": 128,
+    "scenario": "outputs_in_flight",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 232416,
+    "candidate_p50": 139791,
+    "reduction_percent": 39.8531
+  },
+  {
+    "panes": 128,
+    "scenario": "outputs_in_flight",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 15090,
+    "candidate_p50": 14836,
+    "reduction_percent": 1.6832
+  },
+  {
+    "panes": 128,
+    "scenario": "outputs_in_flight",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 6891384,
+    "candidate_p50": 6821496,
+    "reduction_percent": 1.0141
+  },
+  {
+    "panes": 128,
+    "scenario": "outputs_in_flight",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 614,
+    "candidate_p50": 359,
+    "reduction_percent": 41.5309
+  },
+  {
+    "panes": 128,
+    "scenario": "outputs_in_flight",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 214984,
+    "candidate_p50": 145056,
+    "reduction_percent": 32.5271
+  },
+  {
+    "panes": 1024,
+    "scenario": "idle",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 1970625,
+    "candidate_p50": 1888875,
+    "reduction_percent": 4.1484
+  },
+  {
+    "panes": 1024,
+    "scenario": "idle",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 586291,
+    "candidate_p50": 511041,
+    "reduction_percent": 12.8349
+  },
+  {
+    "panes": 1024,
+    "scenario": "idle",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 4840,
+    "candidate_p50": 2793,
+    "reduction_percent": 42.2934
+  },
+  {
+    "panes": 1024,
+    "scenario": "idle",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 18299336,
+    "candidate_p50": 17747440,
+    "reduction_percent": 3.0159
+  },
+  {
+    "panes": 1024,
+    "scenario": "idle",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 3871,
+    "candidate_p50": 1824,
+    "reduction_percent": 52.8804
+  },
+  {
+    "panes": 1024,
+    "scenario": "idle",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 1138032,
+    "candidate_p50": 586136,
+    "reduction_percent": 48.4956
+  },
+  {
+    "panes": 1024,
+    "scenario": "select",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 14205792,
+    "candidate_p50": 13989250,
+    "reduction_percent": 1.5243
+  },
+  {
+    "panes": 1024,
+    "scenario": "select",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 1045292,
+    "candidate_p50": 977167,
+    "reduction_percent": 6.5173
+  },
+  {
+    "panes": 1024,
+    "scenario": "select",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 116451,
+    "candidate_p50": 114405,
+    "reduction_percent": 1.757
+  },
+  {
+    "panes": 1024,
+    "scenario": "select",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 54928016,
+    "candidate_p50": 54376160,
+    "reduction_percent": 1.0047
+  },
+  {
+    "panes": 1024,
+    "scenario": "select",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 3879,
+    "candidate_p50": 1832,
+    "reduction_percent": 52.7713
+  },
+  {
+    "panes": 1024,
+    "scenario": "select",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 1139192,
+    "candidate_p50": 587296,
+    "reduction_percent": 48.4463
+  },
+  {
+    "panes": 1024,
+    "scenario": "drag",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 14614583,
+    "candidate_p50": 14669958,
+    "reduction_percent": -0.3789
+  },
+  {
+    "panes": 1024,
+    "scenario": "drag",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 1757125,
+    "candidate_p50": 1669375,
+    "reduction_percent": 4.994
+  },
+  {
+    "panes": 1024,
+    "scenario": "drag",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 77825,
+    "candidate_p50": 75778,
+    "reduction_percent": 2.6303
+  },
+  {
+    "panes": 1024,
+    "scenario": "drag",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 77762204,
+    "candidate_p50": 77210308,
+    "reduction_percent": 0.7097
+  },
+  {
+    "panes": 1024,
+    "scenario": "drag",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 18294,
+    "candidate_p50": 16247,
+    "reduction_percent": 11.1895
+  },
+  {
+    "panes": 1024,
+    "scenario": "drag",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 2556532,
+    "candidate_p50": 2004636,
+    "reduction_percent": 21.5877
+  },
+  {
+    "panes": 1024,
+    "scenario": "measurement_change",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 13225041,
+    "candidate_p50": 13061458,
+    "reduction_percent": 1.2369
+  },
+  {
+    "panes": 1024,
+    "scenario": "measurement_change",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 1109958,
+    "candidate_p50": 1043875,
+    "reduction_percent": 5.9536
+  },
+  {
+    "panes": 1024,
+    "scenario": "measurement_change",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 69903,
+    "candidate_p50": 67856,
+    "reduction_percent": 2.9283
+  },
+  {
+    "panes": 1024,
+    "scenario": "measurement_change",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 77026484,
+    "candidate_p50": 76474588,
+    "reduction_percent": 0.7165
+  },
+  {
+    "panes": 1024,
+    "scenario": "measurement_change",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 3879,
+    "candidate_p50": 1832,
+    "reduction_percent": 52.7713
+  },
+  {
+    "panes": 1024,
+    "scenario": "measurement_change",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 1139192,
+    "candidate_p50": 587296,
+    "reduction_percent": 48.4463
+  },
+  {
+    "panes": 1024,
+    "scenario": "outputs_in_flight",
+    "phase": "update",
+    "metric": "time_ns",
+    "baseline_p50": 14406916,
+    "candidate_p50": 14157875,
+    "reduction_percent": 1.7286
+  },
+  {
+    "panes": 1024,
+    "scenario": "outputs_in_flight",
+    "phase": "settlement",
+    "metric": "time_ns",
+    "baseline_p50": 1521375,
+    "candidate_p50": 1558125,
+    "reduction_percent": -2.4156
+  },
+  {
+    "panes": 1024,
+    "scenario": "outputs_in_flight",
+    "phase": "update",
+    "metric": "allocation_events",
+    "baseline_p50": 116470,
+    "candidate_p50": 114424,
+    "reduction_percent": 1.7567
+  },
+  {
+    "panes": 1024,
+    "scenario": "outputs_in_flight",
+    "phase": "update",
+    "metric": "requested_bytes",
+    "baseline_p50": 54931088,
+    "candidate_p50": 54379232,
+    "reduction_percent": 1.0046
+  },
+  {
+    "panes": 1024,
+    "scenario": "outputs_in_flight",
+    "phase": "settlement",
+    "metric": "allocation_events",
+    "baseline_p50": 3879,
+    "candidate_p50": 1832,
+    "reduction_percent": 52.7713
+  },
+  {
+    "panes": 1024,
+    "scenario": "outputs_in_flight",
+    "phase": "settlement",
+    "metric": "requested_bytes",
+    "baseline_p50": 1139224,
+    "candidate_p50": 587328,
+    "reduction_percent": 48.4449
+  }
+]
