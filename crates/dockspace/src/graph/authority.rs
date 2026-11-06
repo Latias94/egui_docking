@@ -79,7 +79,8 @@ struct RootOwner {
 #[derive(Debug, Clone)]
 enum RootStructureState {
     Ready(Arc<RootStructure>),
-    Editing,
+    // A node count is only an allocation hint; zero means no previous body.
+    Editing { previous_nodes: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -102,13 +103,16 @@ impl Workspace {
     pub(crate) fn root_structure(&self, root: RootId) -> Option<&Arc<RootStructure>> {
         match &self.authority.roots.get(&root)?.structure {
             RootStructureState::Ready(structure) => Some(structure),
-            RootStructureState::Editing => None,
+            RootStructureState::Editing { .. } => None,
         }
     }
 
     pub(super) fn begin_root_edit(&mut self, root: RootId) {
-        if let Some(owner) = self.authority.roots.get_mut(&root) {
-            owner.structure = RootStructureState::Editing;
+        if let Some(owner) = self.authority.roots.get_mut(&root)
+            && let RootStructureState::Ready(structure) = &owner.structure
+        {
+            let previous_nodes = structure.nodes.len();
+            owner.structure = RootStructureState::Editing { previous_nodes };
         }
     }
 
@@ -118,9 +122,12 @@ impl Workspace {
             .roots
             .iter_mut()
             .filter_map(|(&root, owner)| {
-                match std::mem::replace(&mut owner.structure, RootStructureState::Editing) {
+                match std::mem::replace(
+                    &mut owner.structure,
+                    RootStructureState::Editing { previous_nodes: 0 },
+                ) {
                     RootStructureState::Ready(structure) => Some((root, structure)),
-                    RootStructureState::Editing => None,
+                    RootStructureState::Editing { .. } => None,
                 }
             })
             .collect()
@@ -140,7 +147,7 @@ impl Workspace {
         let Some(owner) = self.authority.roots.get_mut(&root) else {
             return Ok(());
         };
-        if matches!(&owner.structure, RootStructureState::Editing) {
+        if matches!(&owner.structure, RootStructureState::Editing { .. }) {
             owner.structure = RootStructureState::Ready(Arc::new(RootStructure::build(
                 &self.storage,
                 root,
@@ -158,9 +165,9 @@ impl Workspace {
         let Some(owner) = self.authority.roots.get_mut(&root) else {
             return Ok(());
         };
-        if matches!(&owner.structure, RootStructureState::Editing) {
+        if let RootStructureState::Editing { previous_nodes } = &owner.structure {
             owner.structure = RootStructureState::Ready(Arc::new(
-                RootStructure::build_after_item_move(&self.storage, root)?,
+                RootStructure::build_after_item_move(&self.storage, root, *previous_nodes)?,
             ));
         }
         Ok(())
@@ -171,7 +178,7 @@ impl Workspace {
         let storage = &self.storage;
         let authority = &mut self.authority;
         for (&root, owner) in &mut authority.roots {
-            if matches!(&owner.structure, RootStructureState::Editing) {
+            if matches!(&owner.structure, RootStructureState::Editing { .. }) {
                 owner.structure = RootStructureState::Ready(Arc::new(RootStructure::build(
                     storage,
                     root,
@@ -344,7 +351,7 @@ impl Workspace {
                     RootOwner {
                         reference: RootReference::fresh(root),
                         presentation,
-                        structure: RootStructureState::Editing,
+                        structure: RootStructureState::Editing { previous_nodes: 0 },
                     },
                 );
             }

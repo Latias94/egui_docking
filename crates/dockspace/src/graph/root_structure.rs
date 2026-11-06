@@ -94,7 +94,7 @@ impl RootStructure {
         root: RootId,
         placements: &mut SparseSecondaryMap<NodeId, NodePlacement>,
     ) -> Result<Self, CommandError> {
-        Self::build_rows(storage, root, |node, parent| {
+        Self::build_rows(storage, root, 0, |node, parent| {
             placements.insert(node, NodePlacement { root, parent });
         })
     }
@@ -103,13 +103,21 @@ impl RootStructure {
     pub(super) fn build_after_item_move(
         storage: &WorkspaceData,
         root: RootId,
+        previous_nodes: usize,
     ) -> Result<Self, CommandError> {
-        Self::build_rows(storage, root, |_, _| {})
+        // One Item move can add a tabs node and one split wrapper to a root.
+        let node_capacity_hint = if previous_nodes == 0 {
+            0
+        } else {
+            previous_nodes.saturating_add(2)
+        };
+        Self::build_rows(storage, root, node_capacity_hint, |_, _| {})
     }
 
     fn build_rows(
         storage: &WorkspaceData,
         root: RootId,
+        node_capacity_hint: usize,
         mut on_node: impl FnMut(NodeId, Option<ParentLink>),
     ) -> Result<Self, CommandError> {
         let record = storage
@@ -137,6 +145,20 @@ impl RootStructure {
                             node,
                         })?;
                     let row = structure.nodes.len();
+                    if row == 0 && node_capacity_hint != 0 {
+                        let capacity = match value.as_ref() {
+                            Node::Tabs { .. } => 1,
+                            Node::Split { .. } => {
+                                let edges = node_capacity_hint.saturating_sub(1);
+                                structure.children.reserve(edges);
+                                structure.split_rows.reserve(edges / 2);
+                                node_capacity_hint
+                            }
+                        };
+                        structure.nodes.reserve(capacity);
+                        structure.postorder.reserve(capacity);
+                        structure.ordered_rows.reserve(capacity);
+                    }
                     structure.nodes.push(RootNode {
                         id: node,
                         kind: RootNodeKind::Tabs,
