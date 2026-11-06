@@ -262,19 +262,12 @@ jobs:
           --package egui --lib --locked --test-threads=1
           -E 'test(completed_pass_hit_authority) | test(elastic_scroll_authority) | test(nested_scroll_authority)'
 
-      - name: Run pinned eframe host-seam tests
+      - name: Run pinned eframe native framework tests
         run: >-
           cargo test --manifest-path .ci/egui-fork/Cargo.toml
           -p eframe --lib --no-default-features
-          --features glow,native-host-seam,x11,wayland
-          native::host_seam::tests --locked -j1
-
-      - name: Run pinned eframe deferred-clear tests
-        run: >-
-          cargo test --manifest-path .ci/egui-fork/Cargo.toml
-          -p eframe --lib --no-default-features
-          --features glow,native-host-seam,x11,wayland
-          native::glow_integration::tests --locked -j1
+          --features glow,wgpu,native-host-seam,x11,wayland
+          --locked -j1
 
       - name: Check pinned eframe WGPU host seam
         run: >-
@@ -508,7 +501,7 @@ jobs:
             cat "$log"
           }
 
-          for scenario in recover-close retain-close; do
+          for scenario in recover-close retain-close cancel-close; do
             timeout --kill-after=5s 45s xvfb-run -a \
               --server-args="-screen 0 1280x1024x24" \
               bash -euo pipefail -c \
