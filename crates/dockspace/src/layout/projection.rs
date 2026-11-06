@@ -6,7 +6,7 @@ use std::ops::Index;
 use std::slice;
 use std::sync::Arc;
 
-use super::{Axis, Constraints, LayoutNodeKind, LogicalRect, NodeId, RootLayoutTopology};
+use super::{Axis, Constraints, LogicalRect, NodeId, RootNodeKind, RootStructure};
 
 /// Immutable node values with deterministic identity-ordered iteration.
 ///
@@ -14,12 +14,12 @@ use super::{Axis, Constraints, LayoutNodeKind, LogicalRect, NodeId, RootLayoutTo
 /// workspace arena's slot count. Lookup compares the complete generational ID.
 #[derive(Clone)]
 pub struct NodeMap<T> {
-    topology: Arc<RootLayoutTopology>,
+    topology: Arc<RootStructure>,
     pub(super) values: Vec<T>,
 }
 
 impl<T> NodeMap<T> {
-    pub(super) fn new(topology: Arc<RootLayoutTopology>, values: Vec<T>) -> Self {
+    pub(super) fn new(topology: Arc<RootStructure>, values: Vec<T>) -> Self {
         debug_assert_eq!(topology.nodes.len(), values.len());
         Self { topology, values }
     }
@@ -175,7 +175,7 @@ struct SplitOutcome {
 /// Complete split outcomes backed by root-local flat arrays.
 #[derive(Clone)]
 pub struct SplitMap {
-    topology: Arc<RootLayoutTopology>,
+    topology: Arc<RootStructure>,
     outcomes: Vec<SplitOutcome>,
     pub(super) splitter_rects: Vec<LogicalRect>,
     pub(super) child_minimum_extents: Vec<f64>,
@@ -184,7 +184,7 @@ pub struct SplitMap {
 }
 
 impl SplitMap {
-    pub(super) fn new(topology: Arc<RootLayoutTopology>, bounds: LogicalRect) -> Self {
+    pub(super) fn new(topology: Arc<RootStructure>, bounds: LogicalRect) -> Self {
         Self {
             outcomes: vec![SplitOutcome::default(); topology.split_rows.len()],
             splitter_rects: vec![bounds; topology.splitter_count],
@@ -250,8 +250,8 @@ impl SplitMap {
     }
 
     fn at_row(&self, row: usize) -> Option<SplitProjection<'_>> {
-        let LayoutNodeKind::Split {
-            axis,
+        let RootNodeKind::Split {
+            payload,
             children,
             split,
             splitters,
@@ -262,7 +262,7 @@ impl SplitMap {
         };
         let outcome = self.outcomes[*split];
         Some(SplitProjection {
-            axis: *axis,
+            axis: payload.axis(),
             splitter_rects: &self.splitter_rects[splitters.clone()],
             child_minimum_extents: &self.child_minimum_extents[children.clone()],
             child_maximum_extents: &self.child_maximum_extents[children.clone()],

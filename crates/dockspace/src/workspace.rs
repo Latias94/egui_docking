@@ -1,7 +1,7 @@
 //! Checked workspace queries used to capture mutation preconditions.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use crate::command::{
     ContainedRosterSource, DockFraction, Edge, EdgeTarget, EdgeTargetScope, FingerprintNode,
@@ -11,7 +11,6 @@ use crate::command::{
 use crate::error::{CommandError, ReferenceRole};
 use crate::graph::{Node, Workspace};
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
-use crate::layout::RootLayoutTopology;
 use crate::policy::DockTargetRuleKey;
 use crate::transition::WorkspaceVersion;
 
@@ -46,7 +45,7 @@ pub enum RootPresentationOwner {
 ///
 /// Scene compilation shares this index across every target captured from the
 /// same requirement manifest. Every new revision derives fresh semantic facts;
-/// only independently matched layout acceleration rows may cross revisions.
+/// the graph owner separately retains its actual immutable root structures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceIndex {
     version: WorkspaceVersion,
@@ -62,12 +61,10 @@ struct WorkspaceRootIndex {
     item_count: usize,
     fingerprint: NodeFingerprint,
     reference: RootReference,
-    layout_topology: OnceLock<Arc<RootLayoutTopology>>,
 }
 
 impl PartialEq for WorkspaceRootIndex {
     fn eq(&self, other: &Self) -> bool {
-        // Filling a layout acceleration table cannot change indexed authority.
         self.root_node == other.root_node
             && self.central == other.central
             && self.owner == other.owner
@@ -136,31 +133,10 @@ impl WorkspaceIndex {
         Ok(Self { version, roots })
     }
 
-    pub(crate) fn build_reusing_layout(
-        workspace: &Workspace,
-        version: WorkspaceVersion,
-        previous: &Self,
-    ) -> Result<Self, CommandError> {
-        let mut index = Self::build(workspace, version)?;
-        for (&root, record) in &mut index.roots {
-            if let Some(topology) = previous
-                .roots
-                .get(&root)
-                .and_then(|record| record.layout_topology.get())
-                .filter(|topology| topology.matches(workspace, root))
-            {
-                // Selection, MRU and measurement answers are not topology.
-                // The new index keeps its freshly captured full fingerprint.
-                record.layout_topology = OnceLock::from(Arc::clone(topology));
-            }
-        }
-        Ok(index)
-    }
-
     /// Rebinds canonical selection semantics without deriving topology again.
     ///
     /// The owner must have applied exactly one topology-preserving Select to
-    /// this index's workspace. Membership and layout acceleration stay shared;
+    /// this index's workspace. Membership stays shared;
     /// only the selected root's semantic snapshot receives a new value.
     pub(crate) fn after_selection(
         &self,
@@ -269,17 +245,6 @@ impl WorkspaceIndex {
 
     pub(crate) fn root_fingerprint(&self, root: RootId) -> Option<&NodeFingerprint> {
         self.roots.get(&root).map(|record| &record.fingerprint)
-    }
-
-    pub(crate) fn layout_topology_slot(
-        &self,
-        root: RootId,
-        version: WorkspaceVersion,
-    ) -> Option<&OnceLock<Arc<RootLayoutTopology>>> {
-        if self.version != version {
-            return None;
-        }
-        self.roots.get(&root).map(|record| &record.layout_topology)
     }
 
     pub(crate) fn at_version(&self, version: WorkspaceVersion) -> Option<WorkspaceIndexView<'_>> {
@@ -930,7 +895,6 @@ impl Workspace {
                 .ok_or(CommandError::Invariant {
                     stage: "index issued root reference",
                 })?,
-            layout_topology: OnceLock::new(),
         })
     }
 
@@ -1243,7 +1207,8 @@ mod tests {
         );
         let mut workspace = builder.build().unwrap();
         let index = WorkspaceIndex::build(&workspace, index_version(1)).unwrap();
-        crate::layout::measure_root_minimums_with_index(
+        let body = std::sync::Arc::clone(workspace.root_structure(root).unwrap());
+        crate::layout::measure_root_minimums(
             &workspace,
             root,
             &std::collections::BTreeMap::from([(
@@ -1251,8 +1216,6 @@ mod tests {
                 crate::geometry::LogicalSize::new(4.0, 3.0).unwrap(),
             )]),
             crate::layout::LayoutMetrics::new(1.0).unwrap(),
-            &index,
-            index_version(1),
         )
         .unwrap();
         let source = workspace
@@ -1279,8 +1242,8 @@ mod tests {
             &rebound.roots[&root].members,
         ));
         assert!(std::sync::Arc::ptr_eq(
-            index.roots[&root].layout_topology.get().unwrap(),
-            rebound.roots[&root].layout_topology.get().unwrap(),
+            &body,
+            workspace.root_structure(root).unwrap(),
         ));
         assert!(std::sync::Arc::ptr_eq(
             &index.root_fingerprint(other_root).unwrap().0,

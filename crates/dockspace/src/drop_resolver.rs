@@ -1244,6 +1244,11 @@ pub(crate) mod structural_work {
         pub(crate) selection_pane_visits: usize,
         pub(crate) selection_lookups: usize,
         pub(crate) canonical_full_passes: usize,
+        // Successful body construction only; failed partial builds and allocator
+        // events are excluded. Rows and shared split handles are actual outputs.
+        pub(crate) completed_root_structures: usize,
+        pub(crate) root_structure_rows: usize,
+        pub(crate) root_structure_split_handles: usize,
         pub(crate) workspace_full_validations: usize,
         pub(crate) item_multiset_scans: usize,
         pub(crate) item_multiset_item_visits: usize,
@@ -1282,6 +1287,14 @@ pub(crate) mod structural_work {
         snapshot.presentation_hit_lookup_comparisons =
             PRESENTATION_HIT_LOOKUP_COMPARISONS.with(Cell::get);
         snapshot
+    }
+
+    pub(crate) fn record_root_structure_completed(rows: usize, split_handles: usize) {
+        update(|work| {
+            work.completed_root_structures += 1;
+            work.root_structure_rows += rows;
+            work.root_structure_split_handles += split_handles;
+        });
     }
 
     pub(crate) fn record_node_store_clone(handles: usize) {

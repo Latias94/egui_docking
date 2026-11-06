@@ -25,6 +25,10 @@ impl Clone for NodeStore {
 }
 
 impl NodeStore {
+    pub(crate) fn shared(&self, node: NodeId) -> Option<&Arc<Node>> {
+        self.slots.get(node)
+    }
+
     pub(crate) fn get(&self, node: NodeId) -> Option<&Node> {
         self.slots.get(node).map(Arc::as_ref)
     }

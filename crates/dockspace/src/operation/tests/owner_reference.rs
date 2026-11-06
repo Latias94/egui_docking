@@ -3,6 +3,7 @@
 use super::*;
 use crate::canonical::{CanonicalizationError, canonicalize_workspace};
 use crate::drop_resolver::structural_work;
+use crate::graph::root_structure::RootNodeKind;
 use crate::transaction::WorkspaceTransaction;
 use crate::validation::WorkspaceValidationError;
 use crate::workspace::ParentLink;
@@ -58,6 +59,47 @@ pub(super) fn assert_actual_placement(workspace: &Workspace) {
             workspace.presentation_for_root(root),
             workspace.presentation_in_storage(root)
         );
+        let structure = workspace
+            .root_structure(root)
+            .expect("completed root owns its structure");
+        assert_eq!(structure.nodes[0].id, record.node);
+        assert_eq!(
+            structure.nodes.len(),
+            expected.values().filter(|entry| entry.0 == root).count()
+        );
+        assert_eq!(structure.postorder.len(), structure.nodes.len());
+        for (row, value) in structure.nodes.iter().enumerate() {
+            assert_eq!(structure.row(&value.id), Some(row));
+            match (&value.kind, workspace.node(value.id).unwrap()) {
+                (RootNodeKind::Tabs, Node::Tabs { .. }) => {}
+                (
+                    RootNodeKind::Split {
+                        payload,
+                        children,
+                        splitters,
+                        ..
+                    },
+                    Node::Split {
+                        children: actual, ..
+                    },
+                ) => {
+                    assert!(
+                        payload.shares_payload(workspace.storage().nodes.shared(value.id).unwrap())
+                    );
+                    assert_eq!(payload.children(), actual);
+                    assert_eq!(children.len(), actual.len());
+                    assert_eq!(splitters.len(), actual.len().saturating_sub(1));
+                    assert_eq!(
+                        structure.children[children.clone()]
+                            .iter()
+                            .map(|&child| structure.nodes[child].id)
+                            .collect::<Vec<_>>(),
+                        *actual,
+                    );
+                }
+                _ => panic!("owner rows must use the current node kind"),
+            }
+        }
     }
     for (node, _) in workspace.nodes() {
         assert_eq!(
@@ -378,6 +420,8 @@ fn same_version_index_rejects_changed_and_foreign_issuers_and_retains_unrelated_
 #[test]
 fn common_capture_select_and_item_move_build_no_full_root_proofs() {
     let (mut workspace, tabs) = fixture();
+    let source_body = Arc::clone(workspace.root_structure(A).unwrap());
+    let target_body = Arc::clone(workspace.root_structure(B).unwrap());
     structural_work::reset();
     let source = workspace
         .capture_item_source(A, tabs[0], ItemId::new(2))
@@ -385,6 +429,10 @@ fn common_capture_select_and_item_move_build_no_full_root_proofs() {
     WorkspaceTransaction::from_commands([WorkspaceCommand::Select { source }])
         .apply(&mut workspace, &default_policy())
         .unwrap();
+    assert!(Arc::ptr_eq(
+        &source_body,
+        workspace.root_structure(A).unwrap()
+    ));
     let movement = WorkspaceCommand::Move {
         payload: MovePayload::Item(
             workspace
@@ -400,6 +448,14 @@ fn common_capture_select_and_item_move_build_no_full_root_proofs() {
     WorkspaceTransaction::from_commands([movement])
         .apply(&mut workspace, &default_policy())
         .unwrap();
+    assert!(Arc::ptr_eq(
+        &source_body,
+        workspace.root_structure(A).unwrap()
+    ));
+    assert!(!Arc::ptr_eq(
+        &target_body,
+        workspace.root_structure(B).unwrap()
+    ));
     let work = structural_work::snapshot();
     assert_eq!(work.root_fingerprint_builds, 0);
     assert_eq!(work.root_fingerprint_node_visits, 0);
@@ -513,6 +569,7 @@ fn retained_selection_rebind_rejects_an_unrelated_intervening_root_edit() {
 fn selection_and_resize_change_exact_refs_at_distinct_geometry_boundaries() {
     let (mut workspace, tabs) = fixture();
     let split = workspace.root(A).unwrap().node;
+    let initial_body = Arc::clone(workspace.root_structure(A).unwrap());
     let before = workspace.root_fingerprint(A).unwrap();
     let old = workspace.capture_node_source(A, split).unwrap();
     let unaffected = workspace.capture_node_source(C, tabs[3]).unwrap();
@@ -522,6 +579,10 @@ fn selection_and_resize_change_exact_refs_at_distinct_geometry_boundaries() {
     WorkspaceTransaction::from_commands([WorkspaceCommand::Select { source }])
         .apply(&mut workspace, &default_policy())
         .unwrap();
+    assert!(Arc::ptr_eq(
+        &initial_body,
+        workspace.root_structure(A).unwrap()
+    ));
     let selected = workspace.root_fingerprint(A).unwrap();
     assert_ne!(before, selected);
     assert!(before.presentation_structure_eq(&selected));
@@ -539,6 +600,12 @@ fn selection_and_resize_change_exact_refs_at_distinct_geometry_boundaries() {
     WorkspaceTransaction::from_commands([command.clone()])
         .apply(&mut workspace, &default_policy())
         .unwrap();
+    assert!(!Arc::ptr_eq(
+        &initial_body,
+        workspace.root_structure(A).unwrap()
+    ));
+    let resized_body = Arc::clone(workspace.root_structure(A).unwrap());
+    let resized_payload = Arc::clone(workspace.storage().nodes.shared(split).unwrap());
     let resized = workspace.root_fingerprint(A).unwrap();
     assert!(!selected.presentation_structure_eq(&resized));
     assert!(selected.presentation_topology_eq(&resized));
@@ -554,6 +621,14 @@ fn selection_and_resize_change_exact_refs_at_distinct_geometry_boundaries() {
     .apply(&mut workspace, &default_policy())
     .unwrap();
     assert!(!report.changed());
+    assert!(Arc::ptr_eq(
+        &resized_body,
+        workspace.root_structure(A).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &resized_payload,
+        workspace.storage().nodes.shared(split).unwrap()
+    ));
     workspace
         .verify_reference(A, split, current.reference(), ReferenceRole::Source)
         .unwrap();
@@ -780,4 +855,69 @@ fn initial_issuance_preserves_empty_workspace_and_builder_presentation_errors() 
         };
         assert_eq!(actual, expected, "presentation corruption {corruption}");
     }
+}
+
+#[test]
+fn nonempty_center_move_shares_both_actual_root_structures() {
+    let (mut workspace, tabs) = fixture();
+    let source_body = Arc::clone(workspace.root_structure(A).unwrap());
+    let target_body = Arc::clone(workspace.root_structure(B).unwrap());
+    let command = WorkspaceCommand::Move {
+        payload: MovePayload::Item(
+            workspace
+                .capture_item_source(A, tabs[0], ItemId::new(2))
+                .unwrap(),
+        ),
+        target: DockTarget::Center(workspace.capture_tab_target(B, tabs[2]).unwrap()),
+    };
+    WorkspaceTransaction::from_commands([command])
+        .apply(&mut workspace, &default_policy())
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &source_body,
+        workspace.root_structure(A).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &target_body,
+        workspace.root_structure(B).unwrap()
+    ));
+    assert_actual_placement(&workspace);
+}
+
+#[test]
+fn runtime_projection_rejects_an_unfinished_body_and_owns_the_completed_one() {
+    let (workspace, _) = fixture();
+    let metrics = crate::layout::LayoutMetrics::new(1.0).unwrap();
+    let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap();
+    let leaf = crate::geometry::Constraints::new(
+        crate::geometry::LogicalSize::new(1.0, 2.0).unwrap(),
+        crate::geometry::LogicalSize::new(1000.0, 1000.0).unwrap(),
+    )
+    .unwrap();
+    let expected =
+        crate::layout::project_root(&workspace, A, bounds, |_| Some(leaf), metrics).unwrap();
+    let mut candidate = workspace.clone();
+    candidate.begin_root_edit(A);
+    let mut queried = false;
+    assert_eq!(
+        crate::layout::project_root(
+            &candidate,
+            A,
+            bounds,
+            |_| {
+                queried = true;
+                None
+            },
+            metrics
+        ),
+        Err(crate::layout::LayoutError::UnfinishedRoot { root: A })
+    );
+    assert!(!queried);
+    candidate.complete_root_structure(A).unwrap();
+    assert_actual_placement(&candidate);
+    let projection =
+        crate::layout::project_root(&candidate, A, bounds, |_| Some(leaf), metrics).unwrap();
+    drop(candidate);
+    drop(workspace);
+    assert_eq!(projection, expected);
 }

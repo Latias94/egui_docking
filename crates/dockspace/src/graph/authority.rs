@@ -6,6 +6,7 @@ use std::sync::{Arc, Weak};
 
 use slotmap::SparseSecondaryMap;
 
+use super::root_structure::RootStructure;
 use super::{Node, Workspace, WorkspaceData};
 use crate::ids::{NodeId, RootId};
 use crate::workspace::{ParentLink, RootPresentationOwner};
@@ -72,6 +73,13 @@ pub(crate) struct NodePlacement {
 struct RootOwner {
     reference: RootReference,
     presentation: RootPresentationOwner,
+    structure: RootStructureState,
+}
+
+#[derive(Debug, Clone)]
+enum RootStructureState {
+    Ready(Arc<RootStructure>),
+    Editing,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +98,74 @@ impl Default for WorkspaceAuthority {
 }
 
 impl Workspace {
+    /// Borrows the current owned body; unfinished private edits have no read view.
+    pub(crate) fn root_structure(&self, root: RootId) -> Option<&Arc<RootStructure>> {
+        match &self.authority.roots.get(&root)?.structure {
+            RootStructureState::Ready(structure) => Some(structure),
+            RootStructureState::Editing => None,
+        }
+    }
+
+    pub(super) fn begin_root_edit(&mut self, root: RootId) {
+        if let Some(owner) = self.authority.roots.get_mut(&root) {
+            owner.structure = RootStructureState::Editing;
+        }
+    }
+
+    /// A raw normalizer owns all graph writes until its actual effects return.
+    pub(super) fn take_root_structures(&mut self) -> Vec<(RootId, Arc<RootStructure>)> {
+        self.authority
+            .roots
+            .iter_mut()
+            .filter_map(|(&root, owner)| {
+                match std::mem::replace(&mut owner.structure, RootStructureState::Editing) {
+                    RootStructureState::Ready(structure) => Some((root, structure)),
+                    RootStructureState::Editing => None,
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn restore_root_structure(&mut self, root: RootId, structure: Arc<RootStructure>) {
+        if let Some(owner) = self.authority.roots.get_mut(&root) {
+            owner.structure = RootStructureState::Ready(structure);
+        }
+    }
+
+    /// Completes one actual writer-owned root without scanning peer owners.
+    pub(super) fn complete_root_structure(
+        &mut self,
+        root: RootId,
+    ) -> Result<(), crate::error::CommandError> {
+        let Some(owner) = self.authority.roots.get_mut(&root) else {
+            return Ok(());
+        };
+        if matches!(&owner.structure, RootStructureState::Editing) {
+            owner.structure = RootStructureState::Ready(Arc::new(RootStructure::build(
+                &self.storage,
+                root,
+                &mut self.authority.placements,
+            )?));
+        }
+        Ok(())
+    }
+
+    /// A terminal full normalizer may finish all roots it has just visited.
+    pub(super) fn complete_root_structures(&mut self) -> Result<(), crate::error::CommandError> {
+        let storage = &self.storage;
+        let authority = &mut self.authority;
+        for (&root, owner) in &mut authority.roots {
+            if matches!(&owner.structure, RootStructureState::Editing) {
+                owner.structure = RootStructureState::Ready(Arc::new(RootStructure::build(
+                    storage,
+                    root,
+                    &mut authority.placements,
+                )?));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn issue_storage(
         storage: WorkspaceData,
     ) -> Result<Self, crate::error::CommandError> {
@@ -238,13 +314,22 @@ impl Workspace {
                 stage: "complete root presentation authority",
             })?;
         self.place_node(root, record.node, None);
-        self.authority.roots.insert(
-            root,
-            RootOwner {
-                reference: RootReference::fresh(root),
-                presentation,
-            },
-        );
+        match self.authority.roots.get_mut(&root) {
+            Some(owner) => {
+                owner.reference = RootReference::fresh(root);
+                owner.presentation = presentation;
+            }
+            None => {
+                self.authority.roots.insert(
+                    root,
+                    RootOwner {
+                        reference: RootReference::fresh(root),
+                        presentation,
+                        structure: RootStructureState::Editing,
+                    },
+                );
+            }
+        }
         Ok(())
     }
 
@@ -272,23 +357,26 @@ impl Workspace {
         root: RootId,
         presentation: RootPresentationOwner,
     ) -> Result<(), crate::error::CommandError> {
-        let record = self
-            .storage
+        self.storage
             .roots
             .get(&root)
-            .copied()
             .ok_or(crate::error::CommandError::MissingRoot { root })?;
         if self.authority.roots.contains_key(&root) {
             return Err(crate::error::CommandError::Invariant {
                 stage: "complete fresh root birth",
             });
         }
-        self.assign_subtree(root, record.node, None);
+        let structure = Arc::new(RootStructure::build(
+            &self.storage,
+            root,
+            &mut self.authority.placements,
+        )?);
         self.authority.roots.insert(
             root,
             RootOwner {
                 reference: RootReference::fresh(root),
                 presentation,
+                structure: RootStructureState::Ready(structure),
             },
         );
         Ok(())
@@ -314,6 +402,10 @@ impl Workspace {
     }
 
     pub(super) fn retain_original_issuance(&mut self, original: &Self) {
-        self.authority.roots.clone_from(&original.authority.roots);
+        for (&root, owner) in &mut self.authority.roots {
+            if let Some(previous) = original.authority.roots.get(&root) {
+                owner.reference.clone_from(&previous.reference);
+            }
+        }
     }
 }

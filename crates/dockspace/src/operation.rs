@@ -680,6 +680,7 @@ fn prepare_transaction_inner(
             &mut candidate,
             source.root(),
             source.tabs(),
+            target_root(target),
             match target {
                 DockTarget::OuterEdge(edge) => Some(edge.root()),
                 _ => None,
@@ -785,6 +786,16 @@ impl<'policy> TransactionDraft<'policy> {
             validate_declared_open_item(&self.item_ledger, command)?;
             let (applied, _) = apply_command(&mut self.candidate, self.authority, command)?;
             apply_item_delta(&mut self.item_ledger, applied.delta)?;
+            // Only Move can leave a source/target body for this prefix to finish.
+            // Other writers complete their concrete birth/open/resize scope directly.
+            if let WorkspaceCommand::Move { payload, target } = command {
+                let source = payload_root(payload);
+                let target = target_root(target);
+                self.candidate.complete_root_structure(source)?;
+                if target != source {
+                    self.candidate.complete_root_structure(target)?;
+                }
+            }
             self.outcomes.push(applied.outcome);
             Ok(())
         })()
@@ -1715,6 +1726,7 @@ fn open(
     };
     let _ = insert_payload(workspace, payload, target)?;
     workspace.complete_root_change(root)?;
+    workspace.complete_root_structure(root)?;
     Ok(AppliedCommand {
         outcome: CommandOutcome::Opened { item, root },
         delta: ItemDelta::Open(item),
@@ -1971,7 +1983,11 @@ fn resize_splits(
     splits: &[SplitResize],
 ) -> Result<AppliedCommand, CommandError> {
     let validated = validate_split_resizes_structure(workspace, splits)?;
-    for resize in splits {
+    for (resize, (_, changed)) in splits.iter().zip(&validated) {
+        if !changed {
+            continue;
+        }
+        workspace.begin_root_edit(resize.split().root());
         let current = match workspace.storage.nodes.get_mut(resize.split().node()) {
             Some(Node::Split { weights, .. }) => weights,
             _ => {
@@ -1989,6 +2005,7 @@ fn resize_splits(
         .collect::<BTreeSet<_>>();
     for root in changed_roots {
         workspace.complete_root_change(root)?;
+        workspace.complete_root_structure(root)?;
     }
     Ok(AppliedCommand {
         outcome: CommandOutcome::SplitsResized {
@@ -2994,6 +3011,7 @@ fn detach_root_content(
             // RootContent::Move always removes actual content from its donor.
             // This completion precedes the next command's capture/check.
             workspace.complete_root_change(detached.source_root())?;
+            workspace.complete_root_structure(detached.source_root())?;
             match detached {
                 DetachedPayload::Item { item, .. } => {
                     let node = workspace.insert_runtime_node(Node::tabs([item]));
@@ -3100,6 +3118,9 @@ fn remove_split_child(
     parent: NodeId,
     index: usize,
 ) -> Result<(), CommandError> {
+    if let Some(root) = workspace.node_root(parent) {
+        workspace.begin_root_edit(root);
+    }
     let node = workspace
         .storage
         .nodes
@@ -3282,6 +3303,7 @@ fn insert_payload_at_edge(
     payload: &DetachedPayload,
     target: &EdgeTarget,
 ) -> Result<NodeId, CommandError> {
+    workspace.begin_root_edit(target.root());
     let payload_node = match payload {
         DetachedPayload::Item { item, .. } => workspace.insert_runtime_node(Node::tabs([*item])),
         DetachedPayload::Node { node, .. } => *node,

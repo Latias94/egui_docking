@@ -317,6 +317,7 @@ const fn layout_error_kind(error: &LayoutError) -> DockspaceRuntimeErrorKind {
         | LayoutError::NonFiniteSplitterExtent { .. }
         | LayoutError::Geometry(_) => DockspaceRuntimeErrorKind::InvalidConfiguration,
         LayoutError::LengthMismatch { .. }
+        | LayoutError::UnfinishedRoot { .. }
         | LayoutError::CentralIndexOutOfBounds { .. }
         | LayoutError::MissingRoot { .. }
         | LayoutError::MissingNode { .. }

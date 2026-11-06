@@ -562,19 +562,16 @@ impl DockEngine {
             self.presentation_requirements().shared_workspace_index()
         } else {
             Arc::new(
-                crate::workspace::WorkspaceIndex::build_reusing_layout(
-                    &self.workspace,
-                    self.version,
-                    self.presentation_requirements().workspace_index(),
-                )
-                .map_err(|source| {
-                    PresentationRequirementFailure::Invariant(
+                crate::workspace::WorkspaceIndex::build(&self.workspace, self.version).map_err(
+                    |source| {
+                        PresentationRequirementFailure::Invariant(
                         crate::scene_compiler::SceneRequirementDerivationError::WorkspaceIndex {
                             source,
                         }
                         .to_string(),
                     )
-                })?,
+                    },
+                )?,
             )
         };
         let mut draft = derive_scene_requirement_draft_with_index(

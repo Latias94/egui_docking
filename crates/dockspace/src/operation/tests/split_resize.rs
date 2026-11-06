@@ -58,11 +58,13 @@ fn a_resize_frontier_validates_each_root_once_without_lending_its_source_proof()
         Err(CommandError::NodeOutsideRoot { root: MAIN, node, .. }) if node == foreign
     ));
 
+    workspace.begin_root_edit(MAIN);
     let Some(Node::Split { weights, .. }) = workspace.storage.nodes.get_mut(subtree) else {
         unreachable!();
     };
     *weights = SplitWeight::normalize([0.3, 0.7]).unwrap();
     workspace.complete_root_change(MAIN).unwrap();
+    workspace.complete_root_structure(MAIN).unwrap();
     let current = workspace.capture_node_source(MAIN, subtree).unwrap();
     let stale_batch = [
         SplitResize::new(current, SplitWeight::normalize([0.4, 0.6]).unwrap()),

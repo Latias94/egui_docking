@@ -7,7 +7,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
+use crate::graph::root_structure::RootStructure;
 use slotmap::SecondaryMap;
+use std::sync::Arc;
 use thiserror::Error;
 
 use crate::graph::{
@@ -191,8 +193,9 @@ pub fn canonicalize_workspace(
     validate_rewrite_input(workspace.storage())?;
 
     let mut candidate = clone_workspace_draft(workspace);
+    let structures = candidate.take_root_structures();
     let effects = canonicalize_validated_draft(&mut candidate.storage)?;
-    complete_runtime_rewrite(&mut candidate, effects)?;
+    complete_runtime_rewrite(&mut candidate, effects, structures)?;
 
     let report = CanonicalizationReport {
         changed: candidate != *workspace,
@@ -212,8 +215,9 @@ pub fn canonicalize_workspace(
 /// may be partially rewritten and must be discarded rather than published.
 /// On success it has passed the complete workspace validator.
 pub(super) fn canonicalize_draft(workspace: &mut Workspace) -> Result<(), CanonicalizationError> {
+    let structures = workspace.take_root_structures();
     let effects = canonicalize_data(&mut workspace.storage)?;
-    complete_runtime_rewrite(workspace, effects)
+    complete_runtime_rewrite(workspace, effects, structures)
 }
 
 pub(super) fn build_workspace(
@@ -228,6 +232,7 @@ pub(super) fn finish_item_move(
     workspace: &mut Workspace,
     source_root: RootId,
     source: NodeId,
+    target_root: RootId,
     outer_root: Option<RootId>,
     inserted_split: Option<NodeId>,
 ) -> Result<(), CanonicalizationError> {
@@ -263,6 +268,7 @@ pub(super) fn finish_item_move(
                         stage: "locate emptied source path",
                     },
                 )?;
+                workspace.begin_root_edit(source_root);
                 let storage = &mut workspace.storage;
                 results.insert(source, None);
                 storage.remove_runtime_node(source);
@@ -319,6 +325,15 @@ pub(super) fn finish_item_move(
     for split in output_splits {
         workspace.refresh_child_placements(split);
     }
+    // Only the final local rosters, including outer flattening, may be projected.
+    workspace
+        .complete_root_structure(source_root)
+        .map_err(CanonicalizationError::AuthorityCompletion)?;
+    if target_root != source_root {
+        workspace
+            .complete_root_structure(target_root)
+            .map_err(CanonicalizationError::AuthorityCompletion)?;
+    }
     Ok(())
 }
 
@@ -336,6 +351,7 @@ fn finish_item_target_root(
             matches!(workspace.node(child), Some(Node::Split { axis: child_axis, .. }) if child_axis == axis)
         })
     {
+        workspace.begin_root_edit(target_root);
         rewrite_local_split(&mut workspace.storage, record.node, results, output_splits)?;
     }
     Ok(())
@@ -387,25 +403,34 @@ struct CanonicalEffects {
 fn complete_runtime_rewrite(
     workspace: &mut Workspace,
     effects: CanonicalEffects,
+    previous: Vec<(RootId, Arc<RootStructure>)>,
 ) -> Result<(), CanonicalizationError> {
+    // Only actual unchanged payloads may recover their previous immutable body.
+    // Roots already being edited were not captured in this list and must rebuild.
+    // Actual changed roots retain the normalizer's ascending root order.
+    for (root, structure) in previous {
+        if effects.changed_roots.binary_search(&root).is_err() {
+            workspace.restore_root_structure(root, structure);
+        }
+    }
     for node in effects.retired_nodes {
         workspace.forget_placement(node);
     }
     for root in effects.changed_roots {
-        let node = workspace
+        workspace
             .root(root)
             .ok_or(CanonicalizationError::TraversalInvariant {
                 stage: "complete rewritten root placement",
-            })?
-            .node;
-        workspace.assign_subtree(root, node, None);
+            })?;
         // Canonical rewriting changes no presentation carrier. The concrete
         // command writer already completed carrier ownership at its prefix.
         workspace
             .complete_root_change(root)
             .map_err(CanonicalizationError::AuthorityCompletion)?;
     }
-    Ok(())
+    workspace
+        .complete_root_structures()
+        .map_err(CanonicalizationError::AuthorityCompletion)
 }
 
 fn canonicalize_data(

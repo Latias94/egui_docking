@@ -842,7 +842,7 @@ fn docking_work() {
     let mut output = BufWriter::new(std::fs::File::create_new(output).unwrap());
     // Existing cloned_* columns are logical inventory. Appended columns count
     // concrete shared-store forks and payload clones within the same sample.
-    writeln!(output, "panes,views,case,fingerprint_builds,fingerprint_node_visits,item_multiset_scans,item_multiset_item_visits,transaction_candidates,cloned_nodes,cloned_tab_items,node_store_forks,node_handle_clones,mru_store_forks,mru_handle_clones,node_payload_clones,tab_item_copies,split_child_copies,split_weight_copies,mru_payload_clones,mru_item_copies").unwrap();
+    writeln!(output, "panes,views,case,fingerprint_builds,fingerprint_node_visits,item_multiset_scans,item_multiset_item_visits,transaction_candidates,cloned_nodes,cloned_tab_items,node_store_forks,node_handle_clones,mru_store_forks,mru_handle_clones,node_payload_clones,tab_item_copies,split_child_copies,split_weight_copies,mru_payload_clones,mru_item_copies,completed_root_structures,root_structure_rows,root_structure_split_handles").unwrap();
     for panes in panes {
         for &views in &views {
             for &case in &cases {
@@ -868,7 +868,7 @@ fn docking_work() {
                 let storage = work.workspace_storage;
                 writeln!(
                     output,
-                    "{panes},{views},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                    "{panes},{views},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                     case.name(),
                     work.root_fingerprint_builds,
                     work.root_fingerprint_node_visits,
@@ -886,7 +886,10 @@ fn docking_work() {
                     storage.split_child_copies,
                     storage.split_weight_copies,
                     storage.mru_payload_clones,
-                    storage.mru_item_copies
+                    storage.mru_item_copies,
+                    work.completed_root_structures,
+                    work.root_structure_rows,
+                    work.root_structure_split_handles
                 )
                 .unwrap();
             }

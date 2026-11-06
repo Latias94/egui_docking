@@ -19,8 +19,7 @@ mod projection;
 pub use projection::{LayoutProjection, NodeIter, NodeMap, SplitIter, SplitMap, SplitProjection};
 
 mod topology;
-use topology::LayoutNodeKind;
-pub(crate) use topology::RootLayoutTopology;
+use crate::graph::root_structure::{RootNodeKind, RootStructure};
 
 /// Minimum and maximum extent accepted by one child on a split axis.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -284,6 +283,9 @@ pub enum LayoutError {
         /// Accumulated override weight.
         sum: f64,
     },
+    /// A private graph edit has not installed its current immutable root body.
+    #[error("root {root} has an unfinished structural edit")]
+    UnfinishedRoot { root: RootId },
     /// Validated geometry could not be constructed for the projection.
     #[error(transparent)]
     Geometry(#[from] GeometryError),
@@ -450,9 +452,10 @@ fn solve_validated_axis_into(
 ///
 /// # Errors
 ///
-/// Returns an error when the root or a reachable node is missing, a leaf has no
-/// explicit constraints, topology is cyclic or malformed, central metadata is
-/// unreachable, constraint composition is impossible, or axis allocation fails.
+/// Returns an error when the root is missing, a private structural edit is
+/// unfinished, a leaf has no explicit constraints, constraint composition is
+/// impossible, or axis allocation fails. Workspace completion owns structural
+/// validation before this call can borrow the root body.
 pub fn project_root(
     workspace: &Workspace,
     root: RootId,
@@ -488,15 +491,23 @@ pub fn project_root_with_overrides(
         .ok_or(LayoutError::MissingRoot { root })?;
     let weight_overrides =
         validate_split_weight_overrides(workspace, root, weight_overrides, None)?;
-    let (topology, measurements) = RootLayoutTopology::compile(
-        workspace,
+    let record = *workspace
+        .root(root)
+        .ok_or(LayoutError::MissingRoot { root })?;
+    let topology = Arc::clone(
+        workspace
+            .root_structure(root)
+            .ok_or(LayoutError::UnfinishedRoot { root })?,
+    );
+    let measurements = topology.measure_with_reader(
         root,
+        record.central,
         &mut |node| read_leaf(node).ok_or(LayoutError::MissingLeafConstraints { node }),
         metrics,
         false,
     )?;
     project_measurements(
-        Arc::new(topology),
+        topology,
         measurements,
         bounds,
         metrics,
@@ -526,7 +537,7 @@ pub(crate) struct RootMeasurement<'workspace> {
     root: RootId,
     metrics: LayoutMetrics,
     minimum: LogicalSize,
-    topology: Arc<RootLayoutTopology>,
+    topology: Arc<RootStructure>,
     measurements: Vec<SubtreeMeasurement>,
     minimums_only: bool,
 }
@@ -579,7 +590,7 @@ impl RootMeasurement<'_> {
 }
 
 fn project_measurements(
-    topology: Arc<RootLayoutTopology>,
+    topology: Arc<RootStructure>,
     mut measurements: Vec<SubtreeMeasurement>,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
@@ -595,8 +606,10 @@ fn project_measurements(
         let mut child_values = Vec::new();
         for &row in &topology.postorder {
             let maximum = match &topology.nodes[row].kind {
-                LayoutNodeKind::Tabs => leaf_maximum,
-                LayoutNodeKind::Split { axis, children, .. } => {
+                RootNodeKind::Tabs => leaf_maximum,
+                RootNodeKind::Split {
+                    payload, children, ..
+                } => {
                     child_values.clear();
                     child_values.extend(
                         topology.children[children.clone()]
@@ -604,7 +617,7 @@ fn project_measurements(
                             .map(|&row| measurements[row]),
                     );
                     compose_maximum(
-                        *axis,
+                        payload.axis(),
                         &child_values,
                         total_splitter_extent(topology.nodes[row].id, children.len(), metrics)?,
                     )?
@@ -645,7 +658,7 @@ fn project_draft(
     metrics: LayoutMetrics,
 ) -> Result<LayoutProjection, LayoutError> {
     let (topology, measurements) =
-        RootLayoutTopology::compile_draft(draft.draft(), root, leaves, metrics)?;
+        RootStructure::compile_draft(draft.draft(), root, leaves, metrics)?;
     project_measurements(
         Arc::new(topology),
         measurements,
@@ -760,9 +773,17 @@ fn measure_root<'workspace>(
     metrics: LayoutMetrics,
 ) -> Result<RootMeasurement<'workspace>, LayoutError> {
     let minimums_only = matches!(leaves, LeafMeasurements::Minimums(_));
-    let (topology, measurements) = RootLayoutTopology::compile(
-        workspace,
+    let record = *workspace
+        .root(root)
+        .ok_or(LayoutError::MissingRoot { root })?;
+    let topology = Arc::clone(
+        workspace
+            .root_structure(root)
+            .ok_or(LayoutError::UnfinishedRoot { root })?,
+    );
+    let measurements = topology.measure_with_reader(
         root,
+        record.central,
         &mut |node| leaves.get(node),
         metrics,
         minimums_only,
@@ -772,43 +793,10 @@ fn measure_root<'workspace>(
         root,
         metrics,
         minimum: measurements[0].constraints.min(),
-        topology: Arc::new(topology),
+        topology,
         measurements,
         minimums_only,
     })
-}
-
-/// Reuse only exact structural rows; metrics and constraint answers remain live.
-pub(crate) fn measure_root_minimums_with_index<'workspace>(
-    workspace: &'workspace Workspace,
-    root: RootId,
-    leaf_minimums: &BTreeMap<NodeId, LogicalSize>,
-    metrics: LayoutMetrics,
-    index: &WorkspaceIndex,
-    version: WorkspaceVersion,
-) -> Result<RootMeasurement<'workspace>, LayoutError> {
-    let slot = index.layout_topology_slot(root, version);
-    let leaves = LeafMeasurements::Minimums(leaf_minimums);
-    if let Some(topology) = slot.and_then(std::sync::OnceLock::get)
-        && topology.matches(workspace, root)
-    {
-        let measurements = topology.measure(leaves, metrics)?;
-        return Ok(RootMeasurement {
-            workspace,
-            root,
-            metrics,
-            minimum: measurements[0].constraints.min(),
-            topology: Arc::clone(topology),
-            measurements,
-            minimums_only: true,
-        });
-    }
-    let measured = measure_root(workspace, root, leaves, metrics)?;
-    if let Some(slot) = slot {
-        // A stale same-version hint never replaces the first checked topology.
-        let _ = slot.set(Arc::clone(&measured.topology));
-    }
-    Ok(measured)
 }
 
 fn compose_constraints(
@@ -937,7 +925,7 @@ struct ProjectionScratch {
 }
 
 fn project_subtree(
-    topology: &RootLayoutTopology,
+    topology: &RootStructure,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
     measurements: &[SubtreeMeasurement],
@@ -972,7 +960,7 @@ fn project_subtree(
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_split_projection<'layout>(
-    topology: &'layout RootLayoutTopology,
+    topology: &'layout RootStructure,
     row: usize,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
@@ -984,16 +972,16 @@ fn prepare_split_projection<'layout>(
     let node = &topology.nodes[row];
     let node_id = node.id;
     projection.node_rects.values[row] = bounds;
-    let LayoutNodeKind::Split {
-        axis,
+    let RootNodeKind::Split {
+        payload,
         children: child_range,
-        weights,
         split,
         splitters,
     } = &node.kind
     else {
         return Ok(None);
     };
+    let axis = payload.axis();
     let children = &topology.children[child_range.clone()];
     scratch.constraints.clear();
     scratch.constraints.extend(children.iter().map(|&row| {
@@ -1023,9 +1011,10 @@ fn prepare_split_projection<'layout>(
     } else {
         scratch.weights.clear();
         scratch.weights.extend(
-            topology.weight_bits[weights.clone()]
+            payload
+                .weights()
                 .iter()
-                .map(|&bits| f64::from(f32::from_bits(bits))),
+                .map(|weight| f64::from(weight.get())),
         );
         &scratch.weights
     };
@@ -1055,7 +1044,7 @@ fn prepare_split_projection<'layout>(
     };
     Ok(Some(SplitProjectionState {
         node_id,
-        axis: *axis,
+        axis,
         children,
         child_start: child_range.start,
         splitter_start: splitters.start,

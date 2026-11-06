@@ -828,5 +828,6 @@ pub(crate) mod canonical;
 mod copy_tests;
 #[path = "operation.rs"]
 pub(crate) mod operation;
+pub(crate) mod root_structure;
 mod shared_storage;
 pub use authority::RootReference;
