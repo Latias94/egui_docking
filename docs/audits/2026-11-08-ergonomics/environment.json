@@ -1,0 +1,23 @@
+{
+  "container_image": "egui-dockspace-x11:rust-1.95-xdotool",
+  "container_image_id": "sha256:7392e81cf4c69d5cb4cb7405c1c1c4d731f60c4a734e199d05098a625befc046",
+  "cpu_limit_cores": 1.0,
+  "memory_limit_bytes": 4294967296,
+  "kernel": "Linux 354e85cb1d95 6.12.76-linuxkit #1 SMP Thu Jun 25 13:45:40 UTC 2026 aarch64 GNU/Linux",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
+  "build_profile": {
+    "name": "production",
+    "inherits": "release",
+    "lto": "thin",
+    "codegen-units": 1
+  },
+  "binary_sha256": "7c68e20d609c04a34f24db390d19330a86cd61e1dab1c0a68e89c3738d88e553",
+  "runtime_environment": {
+    "LIBGL_ALWAYS_SOFTWARE": "1",
+    "LP_NUM_THREADS": "1",
+    "WINIT_UNIX_BACKEND": "x11",
+    "WINIT_X11_SCALE_FACTOR": "1"
+  },
+  "observed_adapter_window": "egui-host-exercise: adapter=AdapterInfo { name: \"llvmpipe (LLVM 15.0.6, 128 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 22.3.6\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }; physical_size=PhysicalSize { width: 1280, height: 820 }; scale=1; present_mode=AutoVsync; format=Rgba8Unorm",
+  "csv_sha256": "19a98516abac2d1d18becc7ca380cf7ad34cb92e7e1814ced29277ce8c4239d3"
+}

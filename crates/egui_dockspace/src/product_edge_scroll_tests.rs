@@ -19,8 +19,9 @@ impl PaneView for OverflowPanes {
         })
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
         ui.label(format!("Content {}", item.get()));
+        crate::PaneResponse::default()
     }
 }
 

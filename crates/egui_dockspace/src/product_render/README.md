@@ -128,11 +128,10 @@ Scroll receiver registration remains behind `native-render-support`, including
 
 ### Explicit pane content contract
 
-`PaneView::docking_content_widgets(item)` is an object-safe, application-owned
-declaration seam with an empty default. The adapter reads it immediately after
-that item's `PaneView::ui` callback, while the child UI is still alive. The
-application must refresh its per-item IDs for each callback and declare only
-ordinary content widgets actually registered during that callback. An undeclared
+`PaneView::ui` returns a `PaneResponse`, an application-owned declaration of
+ordinary content registered during that callback. The adapter reads its IDs
+immediately, while the child UI is still alive. No separate declaration getter
+or per-item ID cache is retained. An empty response declares nothing. An undeclared
 or rejected widget remains an unknown blocker; the adapter never walks the widget
 tree to discover content ownership.
 

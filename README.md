@@ -422,8 +422,10 @@ python3 scripts/run_egui_fork_harness.py
 
 To run the supported official-crates.io tier in a real window, use the small
 caller-owned `egui-winit`/`egui-wgpu` host. It calls
-`egui_dockspace::run_ui` around the complete frame, so tab drag, magnetic dock,
-and contained-window movement have terminal-output settlement without any fork:
+`Dockspace::run_single_surface_with_ui` around the complete frame, so application
+toolbars, tab drag, magnetic dock, and contained-window movement share the same
+atomic update and terminal-output settlement without any fork. Its Restore
+layout button reopens closed panes while keeping their application data:
 
 ```text
 cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked -j1

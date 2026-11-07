@@ -61,6 +61,9 @@ The demo contains eight application-owned items: Editor/Preview, Outline,
 Inspector, Console/History and Profiler/Assets. Its normal interactive mode
 uses editable text, an actual scrolling Console and illustrative profiler
 bars. The Inspector is a contained window. No game engine is required.
+The application toolbar is composed inside the same atomic owned run. Close
+controls allow these sample panes to close while retaining their application
+data; **Restore layout** reopens all items without clearing document edits.
 
 Run a bounded exercise through the same real WGPU host, using a new output
 path:
@@ -94,7 +97,7 @@ thresholds.
 
 | CSV field | Measurement boundary |
 | --- | --- |
-| `update_ns` | Complete public `run_single_surface`, including input, measurement, encoding and publication |
+| `update_ns` | Complete composed editor update through `run_single_surface_with_ui`, including the toolbar, input, measurement, encoding and publication |
 | `tessellate_ns` | All output shapes converted to CPU meshes |
 | `paint_present_ns` | Existing WGPU surface acquisition, texture/buffer upload, encoding, submission and `queue.present` CPU calls |
 | `ui_to_present_ns` | Public update through presentation-receipt reporting, including platform output and host work between the component windows; excludes OS event delivery, input extraction and driver preparation |
@@ -110,10 +113,12 @@ Use a fixed build/window/DPI and preserve every raw row when comparing runs;
 report p50/p95/maximum independently rather than summing phase medians.
 
 The same journey has a headless semantic test, with a test-owned presentation
-acknowledgement and zero timing placeholders. It is not GPU/OS evidence:
+acknowledgement and zero timing placeholders. The demo tests also exercise
+close approval, retained document edits, and recovery through the actual
+Restore button after both roots close. They are not GPU/OS evidence:
 
 ```text
-cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --target-dir target --locked -j1 -E 'test(complete_egui_input_journey)'
+cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --target-dir target --locked -j1
 ```
 
 The existing native eight-pane editor and its X11 drivers remain the separate
@@ -126,7 +131,7 @@ includes every raw row, environment details and failed attempts.
 
 The caller-owned tier qualifies docking input against the exact accepted output
 and its completed egui pass. Applications explicitly declare ordinary pane
-widgets through `PaneView::docking_content_widgets`; this does not make those
+widgets through the `PaneResponse` returned by `PaneView::ui`; this does not make those
 widgets docking drag handles or replace their normal input handling. Undeclared
 interactive widgets remain blockers. Composite widgets may require more than
 one registration; a visual rectangle or a container ID alone is not proof that

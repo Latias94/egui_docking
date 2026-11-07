@@ -189,15 +189,16 @@ impl PaneView for ExamplePanes {
         self.panes.get(&item).map(|pane| pane.title.into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
         let Some(pane) = self.panes.get_mut(&item) else {
-            return;
+            return egui_dockspace::PaneResponse::default();
         };
-        ui.add(
+        let response = ui.add(
             egui::TextEdit::multiline(&mut pane.text)
                 .code_editor()
                 .desired_width(f32::INFINITY),
         );
+        egui_dockspace::PaneResponse::from(&response)
     }
 }
 

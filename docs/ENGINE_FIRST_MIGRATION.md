@@ -130,7 +130,30 @@ the application owns the complete run. The adapter holds one private candidate
 across actual egui repeat passes and validates the terminal output after hooks
 before publication. It returns a `DockspaceOutput` plus `DockspaceResponse`.
 The renderer reports the complete output's actual terminal result through
-`DockspaceOutputReceipt`. The official caller-owned demo uses this entry point.
+`DockspaceOutputReceipt`. Use `run_single_surface_with_ui` when an application
+needs toolbars, sidebars or status panels around the docking area. Its callback
+runs once per actual pass before measurement; docking uses the remaining Ui.
+The official caller-owned editor uses this composed entry point.
+
+`PaneView::ui` now returns `PaneResponse`. Replace the removed
+`docking_content_widgets` callback and persistent per-item ID list with
+`PaneResponse::from(&response)` for a single ordinary control, or combine
+`with_content` / `with_content_ids` for composite content. An empty response
+preserves the old undeclared-content behavior. The adapter still checks each
+registration against the current pass, pane layer, enablement and bounds;
+the application remains responsible for declaring only ordinary owned content.
+`focus_target` and `focus_state` remain separate because native focus sampling
+also happens before pane rendering.
+
+Native construction now rejects a renderer style whose geometry or interaction
+timing disagrees with the existing session. Create a matched configuration with
+`DockStyle::presentation_config()` when initializing the session. This conversion
+uses defaults for core-only settings; it must not overwrite a custom existing
+session to make a mismatch disappear. The comparison checks only the style's
+represented fields, so custom core drag thresholds, magnetic targeting and
+scroll line extents remain independent, as do egui colors and ghost offset.
+Style values are compared after exact `f32` to `f64` promotion; an unrepresentable
+core geometry value is rejected rather than rounded silently.
 
 `show_single_surface` is the limited callback integration. It publishes each
 accepted call independently and cannot roll it back after an enclosing run or

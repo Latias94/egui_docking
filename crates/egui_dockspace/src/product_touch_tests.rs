@@ -519,7 +519,7 @@ fn touch_content_scrolling_keeps_the_pane_scroll_owner_without_arming_docking() 
         fn title(&self, _: ItemId) -> Option<egui::WidgetText> {
             Some("Scrollable pane".into())
         }
-        fn ui(&mut self, _: ItemId, ui: &mut Ui) {
+        fn ui(&mut self, _: ItemId, ui: &mut Ui) -> crate::PaneResponse {
             let result = egui::ScrollArea::vertical()
                 .id_salt("touch-content-scroll")
                 // Register the content drag owner before the first touch.
@@ -532,6 +532,7 @@ fn touch_content_scrolling_keeps_the_pane_scroll_owner_without_arming_docking() 
                 });
             self.viewport = Some(result.inner_rect);
             self.offset = result.state.clamped_offset().y;
+            crate::PaneResponse::default()
         }
     }
     let context = Context::default();

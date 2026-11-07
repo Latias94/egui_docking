@@ -57,9 +57,17 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// root is accepted and retains the logical layout so the application can
     /// complete its normal shutdown.
     ///
+    /// The session owns presentation geometry and interaction timing. Every
+    /// setting represented by `style` must match it exactly; construction rejects
+    /// mismatches instead of replacing either configuration. For custom style
+    /// geometry, create the session with [`DockStyle::presentation_config`].
+    /// Core-only settings may differ from that conversion's defaults. Visual
+    /// overrides and the drag-ghost offset remain adapter-local.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the requested root surface is absent, native
+    /// Returns an error when the requested root surface is absent, the style is
+    /// invalid or differs from the session's represented settings, native
     /// enrollment fails, or the root registration cannot be queued.
     pub fn new(
         instance_id: Id,
@@ -115,7 +123,8 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     ///
     /// Returns configuration or enrollment failure before returning a host
     /// handler, including invalid core subprofile storage allowances or a profile
-    /// without a resource and close-request slot for the application root.
+    /// without a resource and close-request slot for the application root. Style
+    /// validation and configuration matching follow [`Self::new`].
     pub fn new_with_storage_limit(
         instance_id: Id,
         session: DockspaceSession,

@@ -33,13 +33,14 @@ impl PaneView for EditorPane {
         Some("Editor".into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
         if item == EDITOR {
             ui.add_sized(
                 vec2(200.0, 32.0),
                 TextEdit::singleline(&mut self.text).id(self.target),
             );
         }
+        crate::PaneResponse::default()
     }
 
     fn focus_target(&self, item: ItemId) -> Option<Id> {
@@ -84,7 +85,7 @@ fn run(context: &Context, input: RawInput, contents: impl FnMut(&mut Ui)) {
 
 fn focus_editor(context: &Context, pane: &mut EditorPane) {
     run(context, input(ViewportId::ROOT), |ui| {
-        pane.ui(EDITOR, ui);
+        assert!(pane.ui(EDITOR, ui).content_widgets().next().is_none());
         ui.memory_mut(|memory| memory.request_focus(pane.target));
     });
     assert!(context.memory(|memory| memory.has_focus(pane.target)));
@@ -123,7 +124,6 @@ fn registered_editor_is_sampled_without_declaring_pointer_content() {
                     widget.enabled && widget.visible && widget.sense.is_focusable()
                 })
         }));
-        assert!(pane.docking_content_widgets(EDITOR).is_empty());
         assert_eq!(
             sample(&context, &session, &pane, &[]),
             DockspaceHostFocus::Pane(EDITOR)

@@ -249,7 +249,21 @@ impl DockStyle {
         }
     }
 
-    pub(crate) fn presentation_config(
+    /// Converts the geometry and interaction settings represented by this style
+    /// into a validated core presentation configuration.
+    ///
+    /// Core settings not represented by [`DockStyle`], such as pointer drag
+    /// thresholds and magnetic targeting settings, retain their core defaults.
+    /// Use this conversion when creating a session; do not replace an existing
+    /// session's configuration with it to synchronize a native renderer.
+    /// Visual overrides and the drag-ghost offset remain adapter-local.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the represented geometry or interaction settings
+    /// violate core configuration constraints. Call [`Self::validate`] to also
+    /// validate adapter-only settings before rendering.
+    pub fn presentation_config(
         &self,
     ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
         DockPresentationConfig::builder()

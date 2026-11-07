@@ -24,7 +24,7 @@ impl PaneView for Registry {
         (item == self.item && self.text.is_some()).then(|| "Recovered document".into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
         assert_eq!(item, self.item);
         self.callbacks += 1;
         let text = self
@@ -32,6 +32,7 @@ impl PaneView for Registry {
             .as_mut()
             .expect("unavailable content must use the built-in placeholder");
         ui.add(egui::TextEdit::multiline(text).id(self.target));
+        egui_dockspace::PaneResponse::default()
     }
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {

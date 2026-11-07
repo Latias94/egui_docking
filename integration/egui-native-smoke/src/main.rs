@@ -831,13 +831,14 @@ impl PaneView for SmokePanes {
         self.panes.get(&item).map(|pane| pane.title.into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
         let Some(pane) = self.panes.get(&item) else {
             ui.label("Missing smoke pane");
-            return;
+            return egui_dockspace::PaneResponse::default();
         };
         ui.heading(pane.title);
         ui.label(pane.body);
+        egui_dockspace::PaneResponse::default()
     }
 }
 

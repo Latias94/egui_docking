@@ -1,0 +1,26 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-i",
+    "-e",
+    "LIBGL_ALWAYS_SOFTWARE=1",
+    "-e",
+    "LP_NUM_THREADS=1",
+    "-e",
+    "WINIT_UNIX_BACKEND=x11",
+    "-e",
+    "WINIT_X11_SCALE_FACTOR=1",
+    "354e85cb1d95",
+    "xvfb-run",
+    "-a",
+    "--server-args=-screen 0 1360x960x24 +extension RANDR",
+    "python3",
+    "-"
+  ],
+  "stdin_script": "capture_ui.py",
+  "started": "2026-11-07T17:40:56.944513+00:00",
+  "finished": "2026-11-07T17:41:07.622841+00:00",
+  "returncode": 0,
+  "scope": "finite visual inspection and same-window X11 input only; no timing or platform certification"
+}

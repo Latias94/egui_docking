@@ -31,9 +31,14 @@ impl PaneView for CountingPanes {
         Some("Output admission regression".into())
     }
 
-    fn ui(&mut self, _item: dockspace::model::ItemId, ui: &mut egui::Ui) {
+    fn ui(
+        &mut self,
+        _item: dockspace::model::ItemId,
+        ui: &mut egui::Ui,
+    ) -> egui_dockspace::PaneResponse {
         self.0.fetch_add(1, Ordering::SeqCst);
         ui.label("A real pane callback must resume after the terminal releases its slot.");
+        egui_dockspace::PaneResponse::default()
     }
 }
 

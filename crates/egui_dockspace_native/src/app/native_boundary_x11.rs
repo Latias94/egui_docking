@@ -53,8 +53,9 @@ impl PaneView for Panes {
         Some(format!("Item {item:?}").into())
     }
 
-    fn ui(&mut self, _item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, _item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
         ui.label("Real native boundary fixture");
+        egui_dockspace::PaneResponse::default()
     }
 }
 

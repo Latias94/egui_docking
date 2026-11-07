@@ -1728,7 +1728,6 @@ fn stationary_smoke_layout() -> DockspaceLayout {
 struct SmokePane {
     title: &'static str,
     text: String,
-    widgets: Vec<egui::Id>,
 }
 
 struct SmokePanes {
@@ -1755,7 +1754,6 @@ impl SmokePanes {
                     SmokePane {
                         title,
                         text: text.to_owned(),
-                        widgets: Vec::with_capacity(1),
                     },
                 )
             })
@@ -1769,10 +1767,10 @@ impl PaneView for SmokePanes {
         self.panes.get(&item).map(|pane| pane.title.into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
         let Some(pane) = self.panes.get_mut(&item) else {
             ui.label("Missing smoke pane");
-            return;
+            return egui_dockspace::PaneResponse::default();
         };
         if item == MAIN_ITEM || item == ANCHOR_ITEM {
             publish_root_pane_content_diagnostic(ui);
@@ -1786,14 +1784,7 @@ impl PaneView for SmokePanes {
                 .id(egui::Id::unique(("physical-smoke-content", item.get())))
                 .desired_width(f32::INFINITY),
         );
-        pane.widgets.clear();
-        pane.widgets.push(response.id);
-    }
-
-    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
-        self.panes
-            .get(&item)
-            .map_or(&[], |pane| pane.widgets.as_slice())
+        egui_dockspace::PaneResponse::from(&response)
     }
 }
 

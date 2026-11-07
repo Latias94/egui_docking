@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole,
+    DockPresentationConfig, DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole,
     DockspaceSemanticOutput, DockspaceVisualId, NativeReceiverQuery, PreparedPaneFocusObservation,
     PresentedDockReceiver, PresentedDockspaceSurface, SurfaceProgramExecutionReceipt,
     SurfaceUnavailableReason,
@@ -23,6 +23,132 @@ use crate::style::DockStyle;
 
 pub use crate::product_focus::{retain_presented_pane_focus, sample_host_focus};
 pub use crate::product_render::EguiSurfaceAction;
+
+/// Validates a native renderer style and returns its first mismatched core field.
+///
+/// Only fields represented by the style are compared. Core-only settings and
+/// adapter-only visuals remain independently owned; neither input is changed.
+///
+/// # Errors
+///
+/// Returns the original style or presentation configuration failure in the
+/// adapter error's source chain.
+#[doc(hidden)]
+#[allow(
+    clippy::float_cmp,
+    clippy::too_many_lines,
+    reason = "one field list checks exact agreement with the existing style conversion"
+)]
+pub fn style_presentation_mismatch(
+    style: &DockStyle,
+    accepted: &DockPresentationConfig,
+) -> Result<Option<&'static str>, DockspaceError> {
+    style.validate().map_err(DockspaceError::from_detail)?;
+    let mapped = style
+        .presentation_config()
+        .map_err(DockspaceError::from_detail)?;
+    Ok([
+        (
+            "hover_selection_delay",
+            mapped.hover_selection_delay() != accepted.hover_selection_delay(),
+        ),
+        (
+            "touch_long_press_delay",
+            mapped.touch_long_press_delay() != accepted.touch_long_press_delay(),
+        ),
+        (
+            "touch_press_slop_distance",
+            mapped.touch_press_slop_distance() != accepted.touch_press_slop_distance(),
+        ),
+        (
+            "touch_resize_hit_extent",
+            mapped.touch_resize_hit_extent() != accepted.touch_resize_hit_extent(),
+        ),
+        (
+            "tab_bar_height",
+            mapped.tab_bar_height() != accepted.tab_bar_height(),
+        ),
+        (
+            "tab_strip_edge_scroll_band",
+            mapped.tab_strip_edge_scroll_band() != accepted.tab_strip_edge_scroll_band(),
+        ),
+        (
+            "tab_strip_edge_scroll_interval",
+            mapped.tab_strip_edge_scroll_interval() != accepted.tab_strip_edge_scroll_interval(),
+        ),
+        (
+            "tab_group_grip_extent",
+            mapped.tab_group_grip_extent() != accepted.tab_group_grip_extent(),
+        ),
+        (
+            "tab_horizontal_padding",
+            mapped.tab_horizontal_padding() != accepted.tab_horizontal_padding(),
+        ),
+        (
+            "tab_min_width",
+            mapped.tab_min_width() != accepted.tab_min_width(),
+        ),
+        (
+            "tab_max_width",
+            mapped.tab_max_width() != accepted.tab_max_width(),
+        ),
+        (
+            "tab_close_size",
+            mapped.tab_close_extent() != accepted.tab_close_extent(),
+        ),
+        (
+            "splitter_thickness",
+            mapped.splitter_thickness() != accepted.splitter_thickness(),
+        ),
+        (
+            "splitter_hit_extent",
+            mapped.splitter_hit_extent() != accepted.splitter_hit_extent(),
+        ),
+        (
+            "splitter_keyboard_step",
+            mapped.splitter_keyboard_step() != accepted.splitter_keyboard_step(),
+        ),
+        (
+            "drop_guide_extent",
+            mapped.guide_extent() != accepted.guide_extent(),
+        ),
+        ("drop_guide_gap", mapped.guide_gap() != accepted.guide_gap()),
+        (
+            "drop_guide_hit_padding",
+            mapped.guide_hit_padding() != accepted.guide_hit_padding(),
+        ),
+        (
+            "drop_guide_outer_inset",
+            mapped.guide_outer_inset() != accepted.guide_outer_inset(),
+        ),
+        (
+            "dock_fraction",
+            mapped.dock_fraction() != accepted.dock_fraction(),
+        ),
+        (
+            "floating_title_height",
+            mapped.floating_title_height() != accepted.floating_title_height(),
+        ),
+        (
+            "floating_border_width",
+            mapped.floating_border_width() != accepted.floating_border_width(),
+        ),
+        (
+            "floating_resize_extent",
+            mapped.floating_resize_extent() != accepted.floating_resize_extent(),
+        ),
+        (
+            "minimum_pane_size",
+            mapped.minimum_pane_size() != accepted.minimum_pane_size(),
+        ),
+        (
+            "minimum_floating_size",
+            mapped.minimum_floating_size() != accepted.minimum_floating_size(),
+        ),
+    ]
+    .into_iter()
+    .find_map(|(field, mismatch)| mismatch.then_some(field)))
+}
 
 /// Result of painting one surface against a core-owned host frame.
 #[derive(Debug)]

@@ -227,12 +227,39 @@ impl Dockspace {
     /// Chrome actions produced during UI encoding enter a bounded queue for the
     /// next run. The returned response describes this run's single publication.
     /// Renderer submission and actual presentation remain the caller's job.
+    /// Use [`Self::run_single_surface_with_ui`] to compose application panels
+    /// around the docking surface within the same owned run.
     pub fn run_single_surface(
         &mut self,
         context: &Context,
         input: RawInput,
         surface: SurfaceId,
         panes: &mut dyn PaneView,
+    ) -> Result<(DockspaceOutput, DockspaceResponse), DockspaceError> {
+        self.run_single_surface_with_ui(context, input, surface, panes, |_| {})
+    }
+
+    /// Owns a complete egui run with application UI before the docking surface.
+    ///
+    /// `before_docking` runs once per actual egui pass, before docking
+    /// measurement and painting. It may use [`egui::Panel::top`],
+    /// [`egui::Panel::bottom`], or [`egui::Panel::left`] on the supplied UI;
+    /// docking uses its remaining available rectangle.
+    ///
+    /// Publication and renderer settlement follow [`Self::run_single_surface`].
+    /// Repeated passes invoke both the composition callback and pane UI again.
+    /// Their external application state and side effects are not rolled back if
+    /// the final output is rejected. Record panel command intents outside the
+    /// callback, account for repeated passes, and apply them only after this
+    /// function returns successfully. Do not nest another egui run or re-enter
+    /// Dockspace from the callback.
+    pub fn run_single_surface_with_ui(
+        &mut self,
+        context: &Context,
+        input: RawInput,
+        surface: SurfaceId,
+        panes: &mut dyn PaneView,
+        mut before_docking: impl FnMut(&mut Ui),
     ) -> Result<(DockspaceOutput, DockspaceResponse), DockspaceError> {
         let surfaces = self
             .session
@@ -272,6 +299,7 @@ impl Dockspace {
             if error.is_some() {
                 return;
             }
+            before_docking(ui);
             let result = ui
                 .scope_builder(
                     UiBuilder::new()

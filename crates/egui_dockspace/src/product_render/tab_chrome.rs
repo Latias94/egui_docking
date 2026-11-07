@@ -51,6 +51,14 @@ fn paint_control_records(
                 .then(|| context.plan.receiver_for_tab_strip_control(control))
                 .flatten(),
         );
+        let response = response.on_hover_text(match control.kind() {
+            TabStripControlKind::ScrollBackward => "Show earlier tabs",
+            TabStripControlKind::ScrollForward => "Show later tabs",
+            TabStripControlKind::TabListMenu if control.menu_open() => {
+                "Close the list of open tabs"
+            }
+            TabStripControlKind::TabListMenu => "Show all open tabs",
+        });
         let paint_omitted = context.source_gap_active(paint);
         if !paint_omitted {
             paint_control(context, control, bounds, &response, enabled);
@@ -99,15 +107,15 @@ fn paint_control(
             let half = bounds.width().min(bounds.height()) * 0.18;
             context.ui.painter().line_segment(
                 [
-                    center + vec2(direction * half, -half),
-                    center + vec2(-direction * half, 0.0),
+                    center + vec2(-direction * half, -half),
+                    center + vec2(direction * half, 0.0),
                 ],
                 Stroke::new(1.5, color),
             );
             context.ui.painter().line_segment(
                 [
-                    center + vec2(-direction * half, 0.0),
-                    center + vec2(direction * half, half),
+                    center + vec2(direction * half, 0.0),
+                    center + vec2(-direction * half, half),
                 ],
                 Stroke::new(1.5, color),
             );
@@ -622,7 +630,105 @@ fn capture_menu_keyboard(
 #[cfg(test)]
 mod tests {
     use super::scrollbar_target_offset;
-    use egui::{Rect, pos2};
+    use crate::{
+        DockStyle, Dockspace, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+        DockspaceSurfaceLayout, ItemId, PaneResponse, PaneView, RootId, SurfaceId,
+    };
+    use egui::accesskit::Role;
+    use egui::{Context, RawInput, Rect, Shape, Ui, WidgetText, pos2, vec2};
+
+    struct OverflowPanes;
+
+    impl PaneView for OverflowPanes {
+        fn title(&self, _item: ItemId) -> Option<WidgetText> {
+            Some("An overflowing tab".into())
+        }
+
+        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) -> PaneResponse {
+            PaneResponse::default()
+        }
+    }
+
+    #[test]
+    fn overflow_scroll_chevrons_point_toward_the_tabs_they_reveal() {
+        let context = Context::default();
+        context.enable_accesskit();
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SurfaceId::new(1),
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::tabs((1..=4).map(ItemId::new)),
+            ),
+        )])
+        .unwrap();
+        let mut dockspace = Dockspace::builder("overflow-chevron-direction", layout)
+            .style(DockStyle {
+                tab_min_width: 220.0,
+                tab_max_width: 220.0,
+                ..DockStyle::default()
+            })
+            .build()
+            .unwrap();
+        let mut panes = OverflowPanes;
+        for pass in 0..2 {
+            let mut output = context.run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(640.0, 480.0))),
+                    ..Default::default()
+                },
+                |ui| {
+                    dockspace
+                        .show_single_surface(SurfaceId::new(1), ui, &mut panes)
+                        .unwrap();
+                },
+            );
+            if pass == 0 {
+                output.textures_delta.clear();
+                continue;
+            }
+            let tree = output.platform_output.accesskit_update.as_ref().unwrap();
+            for (label, direction) in [("Scroll tabs backward", -1.0), ("Scroll tabs forward", 1.0)]
+            {
+                let bounds = tree
+                    .nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        (node.role() == Role::Button && node.label() == Some(label))
+                            .then(|| node.bounds().unwrap())
+                    })
+                    .expect("overflow buttons remain visible even at the end of the strip");
+                let arms = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        Shape::LineSegment { points, .. }
+                            if points.iter().all(|point| {
+                                (bounds.x0..=bounds.x1).contains(&f64::from(point.x))
+                                    && (bounds.y0..=bounds.y1).contains(&f64::from(point.y))
+                            }) =>
+                        {
+                            Some(points)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(arms.len(), 2, "the {label} icon is one chevron");
+                let middle = (bounds.y0 + bounds.y1) * 0.5;
+                for points in arms {
+                    let (tip, tail) = if (f64::from(points[0].y) - middle).abs() < 0.01 {
+                        (points[0], points[1])
+                    } else {
+                        (points[1], points[0])
+                    };
+                    assert!(
+                        (tip.x - tail.x) * direction > 0.0,
+                        "{label} must point toward its scroll direction",
+                    );
+                }
+            }
+            output.textures_delta.clear();
+        }
+    }
 
     #[test]
     fn scrollbar_target_preserves_the_pointer_grab_offset_and_clamps_to_track() {

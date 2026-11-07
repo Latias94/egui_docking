@@ -68,22 +68,38 @@ pub(crate) fn paint_background(
 
     if !paint_omitted {
         let label = title_label(context, root);
-        let title_text_bounds =
-            egui_rect(contained.title_drag_bounds()).map_or(title, |drag| drag.intersect(title));
-        let title_content_bounds = inset_title_rect(title_text_bounds, visuals.title_margin);
-        context.ui.painter_at(title_content_bounds).text(
-            title_content_bounds.center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            egui::TextStyle::Heading.resolve(context.ui.style()),
-            visuals.title_text_color,
+        let drag = egui_rect(contained.title_drag_bounds()).unwrap_or(title);
+        let title_text_bounds = egui::Rect::from_min_max(
+            egui::pos2((drag.left() + 20.0).min(drag.right()), title.top()),
+            egui::pos2(drag.right(), title.bottom()),
         );
+        let title_content_bounds = inset_title_rect(title_text_bounds, visuals.title_margin);
+        if title_content_bounds.is_positive() {
+            let galley = egui::WidgetText::from(label).into_galley(
+                context.ui,
+                Some(egui::TextWrapMode::Truncate),
+                title_content_bounds.width(),
+                egui::TextStyle::Button,
+            );
+            let position = title_content_bounds.center() - galley.size() * 0.5;
+            context.ui.painter_at(title_content_bounds).galley(
+                position,
+                galley,
+                visuals.title_text_color,
+            );
+        }
     }
 }
 
 fn inset_title_rect(rect: egui::Rect, margin: egui::Margin) -> egui::Rect {
-    let min = (rect.min + margin.left_top()).min(rect.max);
-    let max = (rect.max - margin.right_bottom()).max(min);
+    let min = egui::pos2(
+        (rect.left() + f32::from(margin.left)).min(rect.right()),
+        rect.top(),
+    );
+    let max = egui::pos2(
+        (rect.right() - f32::from(margin.right)).max(min.x),
+        rect.bottom(),
+    );
     egui::Rect::from_min_max(min, max)
 }
 
@@ -121,16 +137,12 @@ pub(crate) fn paint_controls(
         let description = if enabled {
             "Drag to move floating window"
         } else if core_enabled {
-            "Moving requires a host-owned terminal egui run"
+            "Dragging floating windows is unavailable in this host"
         } else {
             "Floating window movement is unavailable"
         };
-        let response = if enabled {
-            response.on_hover_text(description)
-        } else {
-            response
-        };
         let label = title_label(context, root);
+        let response = response.on_hover_text(format!("{label}\n{description}"));
         context.ui.ctx().accesskit_node_builder(id, |node| {
             node.set_role(Role::TitleBar);
             node.set_bounds(accesskit_bounds(title));
@@ -181,6 +193,7 @@ pub(crate) fn paint_controls(
                 .flatten(),
         );
         let label = title_label(context, root);
+        let response = response.on_hover_text(format!("Close all panes in {label}"));
         context.ui.ctx().accesskit_node_builder(id, |node| {
             node.set_role(Role::Button);
             node.set_bounds(accesskit_bounds(close));
@@ -429,6 +442,101 @@ const fn resize_cursor(direction: ContainedResizeDirection) -> CursorIcon {
         }
         ContainedResizeDirection::SouthEast | ContainedResizeDirection::NorthWest => {
             CursorIcon::ResizeNwSe
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        Dockspace, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+        DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect, PaneResponse,
+        PaneView, RootId, SurfaceId,
+    };
+    use egui::{Context, RawInput, Rect, Shape, Ui, WidgetText, pos2, vec2};
+
+    struct TitlePanes;
+
+    impl PaneView for TitlePanes {
+        fn title(&self, item: ItemId) -> Option<WidgetText> {
+            Some(if item == ItemId::new(1) {
+                "Editor".into()
+            } else {
+                "Inspector".into()
+            })
+        }
+
+        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) -> PaneResponse {
+            PaneResponse::default()
+        }
+    }
+
+    #[test]
+    fn floating_title_glyphs_fit_without_using_vertical_window_margins() {
+        for vertical_margin in [6, 24] {
+            let context = Context::default();
+            context.global_style_mut(|style| {
+                style.spacing.window_margin = egui::Margin::symmetric(8, vertical_margin);
+            });
+            let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                SurfaceId::new(1),
+                DockspaceRootLayout::new(
+                    RootId::new(1),
+                    DockspaceNode::central_tabs([ItemId::new(1)]),
+                ),
+            )
+            .with_contained(DockspaceContainedLayout::new(
+                FloatingPresentationId::new(1),
+                DockspaceRootLayout::new(RootId::new(2), DockspaceNode::tabs([ItemId::new(2)])),
+                LogicalRect::new(160.0, 100.0, 320.0, 240.0).unwrap(),
+            ))])
+            .unwrap();
+            let mut dockspace = Dockspace::builder("title-glyph-clip", layout)
+                .build()
+                .unwrap();
+            let mut panes = TitlePanes;
+            for pass in 0..2 {
+                let mut output = context.run_ui(
+                    RawInput {
+                        screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(640.0, 480.0))),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        dockspace
+                            .show_single_surface(SurfaceId::new(1), ui, &mut panes)
+                            .unwrap();
+                    },
+                );
+                if pass == 0 {
+                    output.textures_delta.clear();
+                    continue;
+                }
+                let (clip, text) = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        Shape::Text(text) if text.galley.job.text == "Inspector" => {
+                            Some((shape.clip_rect, text))
+                        }
+                        _ => None,
+                    })
+                    .min_by(|(_, a), (_, b)| a.pos.y.total_cmp(&b.pos.y))
+                    .expect("the actual floating title was painted");
+                assert!(
+                    clip.contains_rect(text.visual_bounding_rect()),
+                    "vertical window margin {vertical_margin} must not clip title glyphs",
+                );
+                assert!(clip.top() >= 100.0 && clip.bottom() < 140.0);
+                assert!(
+                    clip.left() > 180.0,
+                    "title text leaves the grip gutter clear"
+                );
+                assert!(
+                    clip.right() < 450.0,
+                    "title text leaves trailing controls clear"
+                );
+                output.textures_delta.clear();
+            }
         }
     }
 }

@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 
 use egui::{Context, FullOutput, ViewportId};
 use egui_dockspace::{
-    Dockspace, DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
+    CloseDecision, CloseItemDecisionState, Dockspace, DockspaceAxis, DockspaceContainedLayout,
+    DockspaceError, DockspaceLayout, DockspaceNode, DockspaceOutput, DockspaceResponse,
     DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
-    PaneView, RootId, SurfaceId, SurfacePresentationResult,
+    PaneResponse, PaneView, RootId, SurfaceId, SurfacePresentationResult,
 };
 use egui_wgpu::wgpu;
 use winit::application::ApplicationHandler;
@@ -315,21 +316,24 @@ impl OfficialDemoHost {
             exercise.prepare(&mut input, &self.panes)?;
         }
         let frame_started = Instant::now();
-        let (output, _) =
-            match self
-                .dockspace
-                .run_single_surface(&self.context, input, SURFACE, &mut self.panes)
-            {
-                Ok(published) => published,
-                Err(error) => {
-                    if self.exercise.is_some() {
-                        return Err(format!("exercise update rejected: {error}"));
-                    }
-                    window.set_title(&format!("Dockspace update rejected: {error}"));
-                    window.request_redraw();
-                    return Ok(false);
+        let mut restore_layout = false;
+        let (output, response) = match run_editor(
+            &mut self.dockspace,
+            &self.context,
+            input,
+            &mut self.panes,
+            &mut restore_layout,
+        ) {
+            Ok(published) => published,
+            Err(error) => {
+                if self.exercise.is_some() {
+                    return Err(format!("exercise update rejected: {error}"));
                 }
-            };
+                window.set_title(&format!("Dockspace update rejected: {error}"));
+                window.request_redraw();
+                return Ok(false);
+            }
+        };
         let update_ns = frame_started.elapsed().as_nanos();
         let (output, receipt) = output.into_parts();
 
@@ -365,6 +369,11 @@ impl OfficialDemoHost {
         let paint_present_ns = paint_started.elapsed().as_nanos();
         receipt.report(presentation);
         let ui_to_present_ns = frame_started.elapsed().as_nanos();
+        if apply_editor_commands(&mut self.dockspace, response.as_ref(), restore_layout)
+            .map_err(|error| format!("editor command failed: {error}"))?
+        {
+            window.request_redraw();
+        }
         if let Some(exercise) = &mut self.exercise {
             exercise.observe(observations.as_ref());
             if presentation == SurfacePresentationResult::Dropped && exercise.first_drop() {
@@ -400,6 +409,81 @@ impl OfficialDemoHost {
         }
         Ok(false)
     }
+}
+
+fn editor_toolbar(ui: &mut egui::Ui, restore_layout: &mut bool) {
+    egui::Panel::top("editor-toolbar").show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Dockspace Editor");
+            ui.separator();
+            *restore_layout |= ui
+                .button("Restore layout")
+                .on_hover_text(
+                    "Reopen all panes and restore their arrangement. Keep document edits.",
+                )
+                .clicked();
+            ui.separator();
+            ui.weak("Drag tabs to arrange · Shift skips magnetic snapping");
+        });
+    });
+}
+
+fn run_editor(
+    dockspace: &mut Dockspace,
+    context: &Context,
+    input: egui::RawInput,
+    panes: &mut DemoPanes,
+    restore_layout: &mut bool,
+) -> Result<(DockspaceOutput, Option<DockspaceResponse>), DockspaceError> {
+    if dockspace.view().surfaces().next().is_none() {
+        let output = egui_dockspace::run_ui(context, input, |ui| {
+            editor_toolbar(ui, restore_layout);
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    "All panes are closed. Restore layout to reopen them and keep your edits.",
+                );
+            });
+        });
+        return Ok((output, None));
+    }
+    dockspace
+        .run_single_surface_with_ui(context, input, SURFACE, panes, |ui| {
+            editor_toolbar(ui, restore_layout);
+        })
+        .map(|(output, response)| (output, Some(response)))
+}
+
+fn apply_editor_commands(
+    dockspace: &mut Dockspace,
+    response: Option<&DockspaceResponse>,
+    restore_layout: bool,
+) -> Result<bool, DockspaceError> {
+    if restore_layout {
+        return dockspace
+            .reset_layout(demo_layout())
+            .map(|mutation| mutation.workspace_changed());
+    }
+    let mut changed = false;
+    // This example allows closing sample panes while retaining their application data.
+    // Production applications can veto or defer the same requests for unsaved work.
+    for request in response
+        .into_iter()
+        .flat_map(DockspaceResponse::close_request_events)
+    {
+        if request.reused() {
+            continue;
+        }
+        let plan = request.plan();
+        for item in plan.items() {
+            if item.state() == CloseItemDecisionState::Pending {
+                changed |= dockspace
+                    .resolve_close(plan.request(), item.token(), CloseDecision::Allow)?
+                    .mutation()
+                    .workspace_changed();
+            }
+        }
+    }
+    Ok(changed)
 }
 
 impl ApplicationHandler<UserEvent> for OfficialDemoHost {
@@ -560,7 +644,6 @@ fn demo_layout() -> DockspaceLayout {
 struct DemoPane {
     title: &'static str,
     text: String,
-    widgets: Vec<egui::Id>,
     content: Option<egui::Rect>,
     editor: Option<egui::Rect>,
     scroll_offset: f32,
@@ -619,7 +702,6 @@ impl DemoPanes {
                     DemoPane {
                         title,
                         text: text.to_owned(),
-                        widgets: Vec::new(),
                         content: None,
                         editor: None,
                         scroll_offset: 0.0,
@@ -637,11 +719,10 @@ impl PaneView for DemoPanes {
         self.panes.get(&item).map(|pane| pane.title.into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> PaneResponse {
         let Some(pane) = self.panes.get_mut(&item) else {
-            return;
+            return PaneResponse::default();
         };
-        pane.widgets.clear();
         pane.content = Some(ui.available_rect_before_wrap());
         pane.editor = None;
         if item == CONSOLE {
@@ -649,25 +730,28 @@ impl PaneView for DemoPanes {
                 .id_salt("official-editor-console")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    pane.widgets.push(ui.unique_id());
+                    let mut content = PaneResponse::default().with_content_ids([ui.unique_id()]);
                     for line in 0..128 {
-                        pane.widgets
-                            .push(ui.monospace(format!("[{line:03}] Scene updated")).id);
+                        content = content
+                            .with_content(&ui.monospace(format!("[{line:03}] Scene updated")));
                     }
+                    content
                 });
             pane.scroll_offset = log.state.clamped_offset().y;
             pane.scroll_bounds = Some(log.inner_rect);
-            for id in [log.id.with("area"), log.id.with(1_usize)] {
-                if ui.ctx().viewport(|v| v.this_pass.widgets.get(id).is_some()) {
-                    pane.widgets.push(id);
-                }
-            }
+            let controls = [log.id.with("area"), log.id.with(1_usize)]
+                .into_iter()
+                .filter(|id| {
+                    ui.ctx()
+                        .viewport(|v| v.this_pass.widgets.get(*id).is_some())
+                });
+            log.inner.with_content_ids(controls)
         } else if item == PROFILER {
-            pane.widgets.push(ui.label(&pane.text).id);
+            let mut response = PaneResponse::from(&ui.label(&pane.text));
             for (name, value) in [("Simulation", 0.16), ("Rendering", 0.32), ("UI", 0.05)] {
-                pane.widgets
-                    .push(ui.add(egui::ProgressBar::new(value).text(name)).id);
+                response = response.with_content(&ui.add(egui::ProgressBar::new(value).text(name)));
             }
+            response
         } else {
             let response = ui.add_sized(
                 ui.available_size(),
@@ -676,11 +760,7 @@ impl PaneView for DemoPanes {
                     .desired_width(f32::INFINITY),
             );
             pane.editor = Some(response.rect);
-            pane.widgets.push(response.id);
+            PaneResponse::from(&response)
         }
-    }
-
-    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
-        self.panes.get(&item).map_or(&[], |pane| &pane.widgets)
     }
 }

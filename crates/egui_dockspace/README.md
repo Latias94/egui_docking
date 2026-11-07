@@ -25,6 +25,22 @@ assert!(dockspace.view().item(item).is_some());
 ```
 
 Provide a `PaneView` implementation to measure and paint application panes.
+Its `ui` callback returns a `PaneResponse` declaring ordinary content from that
+same call. A single content control needs no per-pane widget-ID bookkeeping:
+
+```rust,ignore
+fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> PaneResponse {
+    let document = self.documents.get_mut(&item).expect("registered document");
+    let editor = ui.text_edit_multiline(&mut document.text);
+    PaneResponse::from(&editor)
+}
+```
+
+Use `with_content` or `with_content_ids` for composite content. Only declare
+ordinary controls created during that callback; popups and foreign overlays
+remain docking blockers. Returning `PaneResponse::default()` declares no
+content. Focus targets remain separate application observations.
+
 When the integration owns the complete official-egui run, use
 `Dockspace::run_single_surface` to retain one private candidate until the
 terminal output and every output hook succeed:
@@ -41,6 +57,29 @@ let (full_output, receipt) = output.into_parts();
 let result = renderer.present(full_output); // Host-owned Presented or Dropped result.
 receipt.report(result);
 ```
+
+For application menus, toolbars, sidebars or status panels, use the same atomic
+path with a composition callback:
+
+```rust,ignore
+let mut restore = false;
+let (output, response) = dockspace.run_single_surface_with_ui(
+    &context, raw_input, surface, panes, |ui| {
+        egui::Panel::top("toolbar").show(ui, |ui| {
+            restore |= ui.button("Restore layout").clicked();
+        });
+    },
+)?;
+// Docking occupies the remaining Ui. Apply application commands after success.
+if restore {
+    dockspace.reset_layout(default_layout())?;
+}
+```
+
+The composition callback runs once per actual egui pass, like pane UI. Repeated
+passes may invoke it again; application-side mutations are not rolled back by
+a rejected final output. Collect command intents and apply them after success.
+The original `run_single_surface` delegates to this same driver with no panels.
 
 Pane callbacks run once per actual egui pass. Repeated passes re-encode the
 same accepted input candidate; only the intact terminal pass publishes. A failed
@@ -200,6 +239,12 @@ let dockspace = Dockspace::builder("my-dockspace", layout)
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+For the experimental native host, create the session with the same
+`style.presentation_config()?` before passing both objects to `NativeDockspaceApp`.
+Native construction rejects mismatched geometry/timing instead of displaying a
+style whose core hit regions use different metrics. Colors and ghost offset stay
+adapter-local; custom core-only configuration remains authoritative.
+
 ## Features
 
 Run the bounded editor layout example with:
@@ -236,7 +281,7 @@ content is an application decision through the ordinary close workflow.
   adapter; it is not a public multiview runtime.
 
 Native multi-viewport support is intentionally not claimed by this crate. The
-fork-backed `egui_dockspace_native` workspace has one bounded real-window
-lifecycle smoke, but remains unpublished until its fork revision is remotely
-reproducible and its CI, platform capability, and physical cross-window input
-gates pass.
+fork-backed `egui_dockspace_native` crate remains unpublished. Its published
+fork revisions and finite native/X11 qualifications are described in the
+[platform support matrix](../../docs/PLATFORM_SUPPORT.md); those claims do not
+extend the portable adapter's own host contract.

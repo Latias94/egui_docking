@@ -114,7 +114,7 @@ impl PaneView for Panes {
         Some(format!("Pane {}", item.get()).into())
     }
 
-    fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, _item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
         if self.allocate_texture && self.texture.is_none() {
             self.texture = Some(ui.ctx().load_texture(
                 "owned-run-audit-texture",
@@ -127,6 +127,7 @@ impl PaneView for Panes {
         } else {
             ui.label("Audit pane");
         }
+        egui_dockspace::PaneResponse::default()
     }
 }
 

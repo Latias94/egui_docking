@@ -480,6 +480,12 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }) {
             return Err(NativeHostProtocolError::NativeOwnerStorageConfiguration.into());
         }
+        if let Some(field) = egui_dockspace::native_support::style_presentation_mismatch(
+            &style,
+            session.presentation_config(),
+        )? {
+            return Err(NativeHostProtocolError::StylePresentationMismatch { field }.into());
+        }
         let mut coordinator = match storage {
             Some(limit) => NativeCoordinator::new_with_combined_storage_limit(
                 session,
@@ -1605,7 +1611,9 @@ mod tests {
         DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
         DockspaceSurfaceLayout, ItemId, RootId,
     };
-    use dockspace::runtime::{SurfacePresentationResult, SurfaceUnavailableReason};
+    use dockspace::runtime::{
+        DockPresentationConfig, SurfacePresentationResult, SurfaceUnavailableReason,
+    };
     use eframe::egui::{Ui, WidgetText};
 
     use super::*;
@@ -1619,7 +1627,9 @@ mod tests {
             Some("Pane".into())
         }
 
-        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
+        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) -> egui_dockspace::PaneResponse {
+            egui_dockspace::PaneResponse::default()
+        }
     }
 
     fn test_session() -> dockspace::runtime::DockspaceSession {
@@ -1649,6 +1659,124 @@ mod tests {
             NativeWindowClosePolicy::Cancel,
         )
         .expect("the native runtime test state initializes")
+    }
+
+    #[test]
+    fn native_construction_preserves_matching_style_and_core_only_settings() {
+        let delay = std::time::Duration::from_millis(600);
+        let config = DockPresentationConfig::builder()
+            .tab_bar_height(36.0)
+            .touch_long_press_delay(delay)
+            .tab_strip_scroll_line_extent(22.0)
+            .pointer_drag_start_distance(9.0)
+            .magnetic_center_fraction(0.6)
+            .magnetic_outer_band_fraction(0.18)
+            .magnetic_outer_band_range(30.0, 80.0)
+            .target_release_hysteresis(7.0)
+            .build()
+            .unwrap();
+        let mut session = test_session();
+        {
+            let mut frame = session.begin_host_frame().unwrap();
+            frame.replace_presentation_config(config.clone()).unwrap();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            frame.commit().unwrap();
+        }
+        let before = session.version();
+        let mut style = DockStyle {
+            tab_bar_height: 36.0,
+            touch_long_press_delay: delay,
+            ghost_offset: egui::vec2(7.0, 9.0),
+            ..DockStyle::default()
+        };
+        style.visuals.tab_active_fill = Some(egui::Color32::RED);
+        let state = NativeRuntimeState::new(
+            Id::unique("native-matching-presentation-config"),
+            session,
+            SURFACE,
+            TestPanes,
+            style.clone(),
+            NativeWindowClosePolicy::Cancel,
+        )
+        .expect("core-only configuration and adapter visuals must remain independently owned");
+        assert_eq!(state.coordinator.session().presentation_config(), &config);
+        assert_eq!(state.coordinator.session().version(), before);
+        assert_eq!(state.style, style);
+    }
+
+    #[test]
+    fn native_construction_rejects_style_geometry_and_timing_mismatches() {
+        for (field, style) in [
+            (
+                "tab_bar_height",
+                DockStyle {
+                    tab_bar_height: 36.0,
+                    ..DockStyle::default()
+                },
+            ),
+            (
+                "touch_long_press_delay",
+                DockStyle {
+                    touch_long_press_delay: std::time::Duration::from_millis(600),
+                    ..DockStyle::default()
+                },
+            ),
+        ] {
+            let error = NativeRuntimeState::new(
+                Id::unique(("native-style-mismatch", field)),
+                test_session(),
+                SURFACE,
+                TestPanes,
+                style,
+                NativeWindowClosePolicy::Cancel,
+            )
+            .err()
+            .expect("a valid style must not silently disagree with its session");
+            assert_eq!(error.kind(), NativeRuntimeErrorKind::InvalidConfiguration);
+            assert_eq!(
+                error
+                    .source()
+                    .and_then(|source| source.downcast_ref::<NativeHostProtocolError>())
+                    .copied(),
+                Some(NativeHostProtocolError::StylePresentationMismatch { field })
+            );
+            assert!(error.source().unwrap().to_string().contains(field));
+        }
+    }
+
+    #[test]
+    fn native_construction_keeps_invalid_style_source() {
+        let error = NativeRuntimeState::new(
+            Id::unique("native-invalid-renderer-style"),
+            test_session(),
+            SURFACE,
+            TestPanes,
+            DockStyle {
+                ghost_offset: egui::vec2(f32::NAN, 12.0),
+                ..DockStyle::default()
+            },
+            NativeWindowClosePolicy::Cancel,
+        )
+        .err()
+        .expect("adapter-only style fields still require validation");
+        assert_eq!(error.kind(), NativeRuntimeErrorKind::InvalidConfiguration);
+        let mut source = error.source();
+        let mut style_error = None;
+        while let Some(current) = source {
+            if let Some(original) = current.downcast_ref::<egui_dockspace::DockStyleError>() {
+                style_error = Some(original);
+                break;
+            }
+            source = current.source();
+        }
+        assert_eq!(
+            style_error,
+            Some(&egui_dockspace::DockStyleError::NonFinite {
+                field: "ghost_offset.x",
+            })
+        );
     }
 
     #[test]

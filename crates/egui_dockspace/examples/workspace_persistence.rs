@@ -328,9 +328,9 @@ impl PaneView for PersistencePanes {
         self.items.get(&item).map(|pane| pane.title.into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
         let Some(pane) = self.items.get_mut(&item) else {
-            return;
+            return egui_dockspace::PaneResponse::default();
         };
         if pane.canvas {
             let (response, painter) =
@@ -368,6 +368,7 @@ impl PaneView for PersistencePanes {
                     }
                 });
         }
+        egui_dockspace::PaneResponse::default()
     }
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {

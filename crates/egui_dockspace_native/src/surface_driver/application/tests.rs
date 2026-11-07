@@ -32,7 +32,9 @@ impl PaneView for Panes {
         Some("Application pane".into())
     }
 
-    fn ui(&mut self, _item: ItemId, _ui: &mut egui::Ui) {}
+    fn ui(&mut self, _item: ItemId, _ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
+        egui_dockspace::PaneResponse::default()
+    }
 }
 
 fn state() -> NativeRuntimeState<Panes> {

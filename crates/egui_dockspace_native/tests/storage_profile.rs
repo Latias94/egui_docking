@@ -23,7 +23,9 @@ impl PaneView for Panes {
         Some("Storage profile".into())
     }
 
-    fn ui(&mut self, _item: ItemId, _ui: &mut egui::Ui) {}
+    fn ui(&mut self, _item: ItemId, _ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
+        egui_dockspace::PaneResponse::default()
+    }
 }
 
 fn session() -> DockspaceSession {

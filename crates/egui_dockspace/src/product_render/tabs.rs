@@ -100,7 +100,7 @@ pub(crate) fn paint_pane(
                 *context.pane_focus_target_requested = true;
                 *context.pane_focus_target = Some(target);
             }
-            context.panes.ui(item, child_ui);
+            let pane_response = context.panes.ui(item, child_ui);
             if let Some(target) = context.panes.focus_target(item)
                 && child_ui.ctx().viewport(|viewport| {
                     viewport
@@ -124,7 +124,7 @@ pub(crate) fn paint_pane(
                 && pane_rect.is_finite()
                 && pane_rect.is_positive()
             {
-                for &widget_id in context.panes.docking_content_widgets(item) {
+                for widget_id in pane_response.content_widgets() {
                     let Some(widget) = child_ui
                         .ctx()
                         .viewport(|viewport| viewport.this_pass.widgets.get(widget_id).copied())
@@ -349,6 +349,7 @@ pub(crate) fn paint_tab(
         },
         receiver,
     );
+    let response = response.on_hover_text(resource.title.as_str());
     let source_gap = context.source_gap_active(paint);
     if operable && preview_gestures_available && (response.hovered() || source_gap) {
         context.ui.ctx().set_cursor_icon(if source_gap {
@@ -549,6 +550,7 @@ fn paint_close(
         },
         enabled.then_some(receiver).flatten(),
     );
+    let response = response.on_hover_text(format!("Close {title}"));
     let visuals = *context.ui.style().interact(&response);
     if paint_icon && (tab_emphasized || RenderContext::response_emphasized(&response)) {
         let paint_rect = rect.expand(visuals.expansion);

@@ -37,7 +37,7 @@ impl PaneView for SmokePanes {
         }
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
         if matches!(item, ITEM | SECOND_ITEM) {
             self.paint_count += 1;
             let target = self.focus_id(item);
@@ -45,6 +45,7 @@ impl PaneView for SmokePanes {
             let _ = ui.interact(rect, target, egui::Sense::click_and_drag());
             ui.label("Rendered through the public egui_dockspace facade");
         }
+        egui_dockspace::PaneResponse::default()
     }
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
@@ -1060,8 +1061,9 @@ fn recoverable_error_after_claim_abandons_the_exact_terminal_pass() {
             self.0.title(item)
         }
 
-        fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+        fn ui(&mut self, item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
             self.0.ui(item, ui);
+            egui_dockspace::PaneResponse::default()
         }
 
         fn minimum_size(&self, _item: ItemId) -> egui::Vec2 {

@@ -28,8 +28,9 @@ impl PaneView for Panes {
         Some(if item == FIRST { "First" } else { "Second" }.into())
     }
 
-    fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, _item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
         ui.label("Mixed pointer input");
+        crate::PaneResponse::default()
     }
 }
 

@@ -31,7 +31,7 @@ mod x11 {
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::DockspaceSession;
     use eframe::egui;
-    use egui_dockspace::{DockStyle, PaneView};
+    use egui_dockspace::{DockStyle, PaneResponse, PaneView};
     use egui_dockspace_native::NativeDockspaceApp;
     use winit::platform::x11::EventLoopBuilderExtX11 as _;
 
@@ -55,7 +55,6 @@ mod x11 {
     struct Panes {
         callbacks: usize,
         content: [Option<egui::Rect>; 2],
-        widgets: [Vec<egui::Id>; 2],
     }
 
     impl PaneView for Panes {
@@ -63,13 +62,11 @@ mod x11 {
             Some(["First", "Second"][item_index(item)].into())
         }
 
-        fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
+        fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> PaneResponse {
             let index = item_index(item);
             let response = ui.allocate_rect(ui.max_rect(), egui::Sense::hover());
             self.callbacks += 1;
             self.content[index] = Some(response.rect);
-            self.widgets[index].clear();
-            self.widgets[index].push(response.id);
             ui.painter().rect_filled(
                 response.rect,
                 0.0,
@@ -85,10 +82,7 @@ mod x11 {
                 egui::FontId::proportional(20.0),
                 egui::Color32::WHITE,
             );
-        }
-
-        fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
-            &self.widgets[item_index(item)]
+            PaneResponse::from(&response)
         }
     }
 

@@ -39,9 +39,10 @@ impl PaneView for CountingPanes {
         Some("Owned native update".into())
     }
 
-    fn ui(&mut self, _item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, _item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
         self.0.fetch_add(1, Ordering::SeqCst);
         ui.label("Each actual pass paints this pane exactly once.");
+        egui_dockspace::PaneResponse::default()
     }
 }
 

@@ -40,8 +40,9 @@ impl PaneView for Panes {
         Some(format!("Pane {}", item.get()).into())
     }
 
-    fn ui(&mut self, _item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, _item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
         ui.label("The candidate owns this actual pane paint.");
+        egui_dockspace::PaneResponse::default()
     }
 }
 

@@ -18,7 +18,6 @@ const ACTIVE_GUIDE: egui::Color32 = egui::Color32::from_rgb(39, 169, 177);
 #[derive(Default)]
 struct CanvasPanes {
     content: Option<Rect>,
-    widgets: Vec<Id>,
 }
 
 impl PaneView for CanvasPanes {
@@ -33,20 +32,17 @@ impl PaneView for CanvasPanes {
         )
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
         if item == TARGET {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::drag());
             self.content = Some(response.interact_rect);
-            self.widgets = vec![response.id];
             ui.painter()
                 .rect_filled(rect, 0.0, egui::Color32::DARK_GRAY);
+            egui_dockspace::PaneResponse::from(&response)
         } else {
             ui.label("Application source content");
+            egui_dockspace::PaneResponse::default()
         }
-    }
-
-    fn docking_content_widgets(&self, item: ItemId) -> &[Id] {
-        if item == TARGET { &self.widgets } else { &[] }
     }
 }
 

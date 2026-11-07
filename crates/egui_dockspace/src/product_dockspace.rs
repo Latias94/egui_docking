@@ -60,6 +60,22 @@ impl Dockspace {
         DockspaceBuilder::new(id_salt, layout)
     }
 
+    fn from_session(id: Id, session: DockspaceSession, style: DockStyle) -> Self {
+        Self {
+            id,
+            session,
+            style,
+            pass_settlement: ProductPassSettlement::default(),
+            presentation_settlement_was_available: false,
+            measurement_deferred: false,
+            pending_focus: Vec::new(),
+            pointer: crate::product_pointer::ProductPointer::default(),
+            ui_actions: owned_run::UiActionQueue::default(),
+            #[cfg(test)]
+            drop_target_observations: Vec::new(),
+        }
+    }
+
     pub(crate) fn from_layout_parts(
         id: Id,
         layout: DockspaceLayout,
@@ -72,19 +88,7 @@ impl Dockspace {
         let session =
             DockspaceSession::from_layout_with_presentation_config(layout, policy, presentation)
                 .map_err(DockspaceError::from_detail)?;
-        Ok(Self {
-            id,
-            session,
-            style,
-            pass_settlement: ProductPassSettlement::default(),
-            presentation_settlement_was_available: false,
-            measurement_deferred: false,
-            pending_focus: Vec::new(),
-            pointer: crate::product_pointer::ProductPointer::default(),
-            ui_actions: owned_run::UiActionQueue::default(),
-            #[cfg(test)]
-            drop_target_observations: Vec::new(),
-        })
+        Ok(Self::from_session(id, session, style))
     }
 
     #[cfg(feature = "serde")]
@@ -105,19 +109,7 @@ impl Dockspace {
             bootstrap,
         )
         .map_err(DockspaceError::from_detail)?;
-        Ok(Self {
-            id,
-            session,
-            style,
-            pass_settlement: ProductPassSettlement::default(),
-            presentation_settlement_was_available: false,
-            measurement_deferred: false,
-            pending_focus: Vec::new(),
-            pointer: crate::product_pointer::ProductPointer::default(),
-            ui_actions: owned_run::UiActionQueue::default(),
-            #[cfg(test)]
-            drop_target_observations: Vec::new(),
-        })
+        Ok(Self::from_session(id, session, style))
     }
 
     /// Strictly restores one complete product document into a new egui facade.
@@ -149,19 +141,11 @@ impl Dockspace {
             recognize_external_item,
         )
         .map_err(DockspaceError::from_detail)?;
-        Ok(Self {
-            id: Id::unique(("egui_dockspace", id_salt)),
+        Ok(Self::from_session(
+            Id::unique(("egui_dockspace", id_salt)),
             session,
             style,
-            pass_settlement: ProductPassSettlement::default(),
-            presentation_settlement_was_available: false,
-            measurement_deferred: false,
-            pending_focus: Vec::new(),
-            pointer: crate::product_pointer::ProductPointer::default(),
-            ui_actions: owned_run::UiActionQueue::default(),
-            #[cfg(test)]
-            drop_target_observations: Vec::new(),
-        })
+        ))
     }
 
     /// Returns the stable egui identity used to scope adapter widgets.

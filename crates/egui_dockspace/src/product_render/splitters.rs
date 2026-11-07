@@ -37,6 +37,13 @@ pub(crate) fn paint_splitter(
         .then(|| context.plan.receiver_for_splitter(splitter))
         .flatten();
     let response = context.interact_receiver(hit, id, sense, receiver);
+    let response = response.on_hover_text(if drag_enabled {
+        "Drag to resize panes. Use Tab to focus, then arrow keys for precise adjustment."
+    } else if enabled {
+        "Use Tab to focus, then arrow keys to resize panes. Drag resizing is unavailable in this host."
+    } else {
+        "Pane resizing is unavailable."
+    });
     configure_accessibility(context.ui, &response, splitter, enabled);
     let focused = enabled && response.has_focus();
     let emphasized = focused || (drag_enabled && response.hovered());

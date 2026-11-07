@@ -25,7 +25,7 @@ use egui_dockspace::{
     DockspaceCloseRequestRejection, DockspaceCloseRequestStatus, DockspaceContainedLayout,
     DockspaceLayout, DockspaceNode, DockspaceNodeView, DockspaceRootLayout, DockspaceSurfaceLayout,
     DockspaceUnavailableReason, FloatingPresentationId, ItemId, LogicalRect, PaneFocusState,
-    PaneView, RootId, SurfaceId, SurfacePresentationResult, run_ui,
+    PaneResponse, PaneView, RootId, SurfaceId, SurfacePresentationResult, run_ui,
 };
 use egui_kittest::{Harness, kittest::Queryable as _};
 use std::cell::Cell;
@@ -415,8 +415,9 @@ impl PaneView for Panes {
         }
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse {
         ui.label(format!("Pane {}", item.get()));
+        PaneResponse::default()
     }
 }
 
@@ -425,7 +426,7 @@ impl PaneView for ProjectionPanes {
         Panes.title(item)
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse {
         let bounds = ui.available_rect_before_wrap();
         // The semantic marker measures the real callback UI, never the expected test rect.
         let marker = ui.interact(
@@ -455,14 +456,7 @@ impl PaneView for ProjectionPanes {
             button_hit_rect: button.interact_rect,
             opacity: ui.opacity(),
         });
-    }
-
-    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
-        self.callbacks
-            .iter()
-            .rev()
-            .find(|callback| callback.item == item)
-            .map_or(&[], |callback| &callback.ids[2..])
+        PaneResponse::from(&label).with_content(&button)
     }
 }
 
@@ -471,11 +465,11 @@ impl PaneView for MagneticPanes {
         Panes.title(item)
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse {
         if item == FIRST {
             self.target_rect.set(Some(ui.available_rect_before_wrap()));
         }
-        Panes.ui(item, ui);
+        Panes.ui(item, ui)
     }
 }
 
@@ -489,7 +483,7 @@ impl PaneView for TextPanes {
         }
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse {
         let bounds = ui.available_rect_before_wrap();
         self.pane_rects
             .entry(item)
@@ -498,7 +492,7 @@ impl PaneView for TextPanes {
         self.content_widgets.entry(item).or_default().clear();
         self.responses.remove(&item);
         let Some(text) = self.texts.get_mut(&item) else {
-            return;
+            return PaneResponse::default();
         };
         let response = match self.widget {
             PaneContentWidget::Button => ui.add_sized(bounds.size(), egui::Button::new(&*text)),
@@ -526,7 +520,7 @@ impl PaneView for TextPanes {
                     .insert(item, scroll.state.clamped_offset().y);
                 // egui registers its background drag response after the first layout pass.
                 let Some(response) = ui.ctx().read_response(scroll.id.with("area")) else {
-                    return;
+                    return PaneResponse::default();
                 };
                 response
             }
@@ -543,12 +537,12 @@ impl PaneView for TextPanes {
         if response.dragged() {
             self.dragged.insert(item);
         }
+        let mut content = PaneResponse::default();
         if self.register_content {
-            let widgets = self.content_widgets.entry(item).or_default();
-            widgets.push(response.id);
+            content = content.with_content(&response);
             if self.overlapping_blocker {
                 // A repeated declaration cannot consume another widget's equal rectangle.
-                widgets.push(response.id);
+                content = content.with_content(&response);
             }
         }
         if self.overlapping_blocker {
@@ -558,13 +552,12 @@ impl PaneView for TextPanes {
                 egui::Sense::click_and_drag(),
             );
         }
-        self.responses.insert(item, response);
-    }
-
-    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
         self.content_widgets
-            .get(&item)
-            .map_or(&[], |widgets| widgets.as_slice())
+            .entry(item)
+            .or_default()
+            .extend(content.content_widgets());
+        self.responses.insert(item, response);
+        content
     }
 }
 
@@ -573,7 +566,7 @@ impl PaneView for FocusPanes {
         Panes.title(item)
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse {
         let pane_rect = ui.available_rect_before_wrap();
         self.pane_rect.set(Some(pane_rect));
         if item == SECOND {
@@ -589,6 +582,11 @@ impl PaneView for FocusPanes {
             }
         }
         ui.label(format!("Pane {}", item.get()));
+        if item == SECOND && self.docking_content {
+            PaneResponse::default().with_content_ids(self.content_widgets.iter().copied())
+        } else {
+            PaneResponse::default()
+        }
     }
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
@@ -596,14 +594,6 @@ impl PaneView for FocusPanes {
             return None;
         }
         self.expose_target.then_some(self.target)
-    }
-
-    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
-        if item == SECOND && self.docking_content {
-            &self.content_widgets
-        } else {
-            &[]
-        }
     }
 
     fn focus_state(&self, item: ItemId, context: &Context) -> PaneFocusState {
@@ -5415,7 +5405,7 @@ fn ordinary_content_widgets_accept_the_complete_magnetic_docking_matrix() {
                 pane_rect.contains_rect(widget_rect),
                 "{widget:?}: pane={pane_rect:?}, widget={widget_rect:?}"
             );
-            assert!(panes.docking_content_widgets(FIRST).contains(&response.id));
+            assert!(panes.content_widgets[&FIRST].contains(&response.id));
             let target = normalized_pane_point(widget_rect, case);
             for delta in [-4.0, -3.0, 0.0, 3.0] {
                 assert!(
@@ -5583,7 +5573,7 @@ fn unknown_content_and_overlapping_undeclared_widgets_block_docking_hover() {
                 let target = normalized_pane_point(response.interact_rect, case);
                 assert!(response.enabled() && response.interact_rect.contains(target));
                 assert_eq!(
-                    panes.docking_content_widgets(FIRST).len(),
+                    panes.content_widgets[&FIRST].len(),
                     if registered { 2 } else { 0 }
                 );
                 if overlapping {
@@ -5592,7 +5582,7 @@ fn unknown_content_and_overlapping_undeclared_widgets_block_docking_hover() {
                         .expect("the overlapping blocker registered a real response");
                     assert!(blocker.enabled() && blocker.sense.interactive());
                     assert_eq!(blocker.interact_rect, response.interact_rect);
-                    assert!(!panes.docking_content_widgets(FIRST).contains(&blocker.id));
+                    assert!(!panes.content_widgets[&FIRST].contains(&blocker.id));
                 }
                 let before = product_magnetic_snapshot(&dockspace);
                 let drop_fill = dockspace

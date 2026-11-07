@@ -669,8 +669,9 @@ mod tests {
             Some(format!("Pane {}", item.get()).into())
         }
 
-        fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
+        fn ui(&mut self, _item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
             ui.allocate_rect(ui.max_rect(), Sense::hover());
+            egui_dockspace::PaneResponse::default()
         }
     }
 
@@ -681,7 +682,9 @@ mod tests {
             Some(format!("Pane {}", item.get()).into())
         }
 
-        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
+        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) -> egui_dockspace::PaneResponse {
+            egui_dockspace::PaneResponse::default()
+        }
     }
 
     #[test]
@@ -1635,7 +1638,6 @@ mod tests {
     struct HoverContentPanes {
         declared: bool,
         interactive_declared: Option<bool>,
-        widgets: Vec<Id>,
     }
 
     impl PaneView for HoverContentPanes {
@@ -1643,10 +1645,10 @@ mod tests {
             Some(format!("Pane {}", item.get()).into())
         }
 
-        fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
-            self.widgets.clear();
+        fn ui(&mut self, _item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
+            let mut content = egui_dockspace::PaneResponse::default();
             let bounds = ui.max_rect();
-            let interactive = self.interactive_declared.map(|declared| {
+            let interactive = if let Some(declared) = self.interactive_declared {
                 let response = ui.interact(
                     bounds,
                     ui.make_persistent_id("hover-content-interactive"),
@@ -1655,10 +1657,12 @@ mod tests {
                 assert!(response.enabled());
                 assert!(response.sense.senses_click() && response.sense.senses_drag());
                 if declared {
-                    self.widgets.push(response.id);
+                    content = content.with_content(&response);
                 }
-                response
-            });
+                Some(response)
+            } else {
+                None
+            };
             let response = ui.allocate_rect(bounds, Sense::hover());
             assert!(response.enabled());
             assert!(!response.sense.interactive());
@@ -1670,12 +1674,9 @@ mod tests {
             ui.painter()
                 .rect_filled(response.rect, 0.0, egui::Color32::DARK_GRAY);
             if self.declared {
-                self.widgets.push(response.id);
+                content = content.with_content(&response);
             }
-        }
-
-        fn docking_content_widgets(&self, _item: ItemId) -> &[Id] {
-            &self.widgets
+            content
         }
     }
 

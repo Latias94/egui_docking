@@ -25,7 +25,9 @@ impl PaneView for TestPane {
         (item == ITEM).then(|| "Document".into())
     }
 
-    fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
+    fn ui(&mut self, _item: ItemId, _ui: &mut Ui) -> egui_dockspace::PaneResponse {
+        egui_dockspace::PaneResponse::default()
+    }
 }
 
 fn layout() -> DockspaceLayout {

@@ -1,7 +1,67 @@
 //! Application-owned pane rendering contract.
 
 use dockspace::model::ItemId;
-use egui::{Context, Id, Ui, Vec2, WidgetText};
+use egui::{Context, Id, Response, Ui, Vec2, WidgetText};
+
+/// Ordinary application-content registrations produced by one pane callback.
+///
+/// Return this value directly from [`PaneView::ui`]; no per-item ID cache or
+/// follow-up callback is required. An empty response declares no content, so
+/// unknown widgets continue to block docking hover.
+///
+/// ```
+/// # use egui_dockspace::PaneResponse;
+/// # fn editor(ui: &mut egui::Ui, text: &mut String) -> PaneResponse {
+/// let response = ui.text_edit_multiline(text);
+/// PaneResponse::from(&response)
+/// # }
+/// ```
+#[derive(Debug, Default)]
+pub struct PaneResponse {
+    first: Option<Id>,
+    additional: Vec<Id>,
+}
+
+impl PaneResponse {
+    /// Declares an ordinary content response created during this callback.
+    ///
+    /// Do not declare popup, modal, or foreign-overlay controls. The adapter
+    /// still checks current-pass registration, layer, enablement and bounds;
+    /// a declaration never changes a widget's ordinary egui input handling.
+    #[must_use]
+    pub fn with_content(self, response: &Response) -> Self {
+        self.with_content_ids([response.id])
+    }
+
+    /// Declares the exact IDs of additional ordinary content registrations.
+    ///
+    /// Use this for composite controls whose child responses are created inside
+    /// nested egui callbacks. Include only registrations from this pane's
+    /// current callback, including any scrolling controls and hover-only content.
+    #[must_use]
+    pub fn with_content_ids(mut self, ids: impl IntoIterator<Item = Id>) -> Self {
+        let mut ids = ids.into_iter();
+        if self.first.is_none() {
+            self.first = ids.next();
+        }
+        self.additional.extend(ids);
+        self
+    }
+
+    /// Returns the ordinary content IDs declared by this callback.
+    #[must_use]
+    pub fn content_widgets(&self) -> impl Iterator<Item = Id> + '_ {
+        self.first
+            .into_iter()
+            .chain(self.additional.iter().copied())
+    }
+}
+
+impl From<&Response> for PaneResponse {
+    fn from(response: &Response) -> Self {
+        Self::default().with_content(response)
+    }
+}
 
 /// Exact adapter observation of one application's pane focus target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,15 +107,12 @@ pub trait PaneView {
     /// source gap omits the pane's pixels during manipulation. Do not defer
     /// drawing beyond this callback. Application paint callbacks remain subject
     /// to the host renderer contract; shape comparison cannot inspect them.
-    fn ui(&mut self, item: ItemId, ui: &mut Ui);
-
-    /// Returns application-declared ordinary content widget IDs for `item`.
     ///
-    /// The adapter reads this list immediately after [`Self::ui`], while that
-    /// callback's child UI is still alive. Return only IDs actually registered
-    /// during that callback, refreshing the per-item list whenever it renders.
-    /// Accepted widgets allow docking hover to pass through and permit
-    /// containing-window activation; they retain their ordinary egui input.
+    /// Return ordinary content registrations from this callback through
+    /// [`PaneResponse`]. Accepted registrations allow docking hover to pass
+    /// through and permit containing-window activation while retaining their
+    /// ordinary egui input. The adapter reads the response while the child UI
+    /// is still alive; application state need not retain these IDs.
     ///
     /// The adapter accepts enabled responses on the child UI's layer, including
     /// explicitly declared hover-only labels and ordinary content containers.
@@ -67,10 +124,7 @@ pub trait PaneView {
     ///
     /// These are explicit host-application ownership facts, not an automatic
     /// widget-tree resolver or a general inference of platform hit eligibility.
-    /// The default declares nothing; unknown widgets remain docking blockers.
-    fn docking_content_widgets(&self, _item: ItemId) -> &[Id] {
-        &[]
-    }
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse;
 
     /// Returns the stable egui focus identity registered by `item`'s pane UI.
     ///
@@ -124,7 +178,9 @@ mod tests {
             (item != self.locked).then(|| "Pane".into())
         }
 
-        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
+        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) -> PaneResponse {
+            PaneResponse::default()
+        }
     }
 
     fn accepts_trait_object(_panes: &mut dyn PaneView) {}

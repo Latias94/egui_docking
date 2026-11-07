@@ -58,11 +58,12 @@ impl PaneView for MagneticPanes {
         }
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
         if item == FIRST {
             self.target_rect.set(Some(ui.available_rect_before_wrap()));
         }
         ui.label(format!("Pane {}", item.get()));
+        crate::PaneResponse::default()
     }
 }
 
@@ -727,7 +728,7 @@ fn pane_callback_cannot_authorize_deleted_chrome_or_cross_layer_pixels() {
             Some("Corrupting pane".into())
         }
 
-        fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
+        fn ui(&mut self, _item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
             if self.cross_layer {
                 ui.ctx()
                     .layer_painter(egui::LayerId::new(
@@ -752,6 +753,7 @@ fn pane_callback_cannot_authorize_deleted_chrome_or_cross_layer_pixels() {
             }
             self.writes += 1;
             ui.label("The pane still emits its own ordinary content");
+            crate::PaneResponse::default()
         }
     }
 

@@ -37,6 +37,7 @@ const OUTPUT_HOOK_PANIC: &str = "owned run output hook panicked after pane paint
 #[derive(Default)]
 struct RunPanes {
     calls: Vec<(ItemId, u64)>,
+    bounds: Vec<Rect>,
 }
 
 impl PaneView for RunPanes {
@@ -48,10 +49,12 @@ impl PaneView for RunPanes {
         }
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
         self.calls.push((item, ui.ctx().cumulative_pass_nr()));
+        self.bounds.push(ui.available_rect_before_wrap());
         ui.painter()
             .rect_filled(ui.available_rect_before_wrap().shrink(8.0), 0.0, PANE_COLOR);
+        crate::PaneResponse::default()
     }
 }
 
@@ -75,7 +78,9 @@ fn measured_titles_are_painted_from_the_same_pass_and_refresh_next_pass() {
             Some(format!("Title {}:{revision}", item.get()).into())
         }
 
-        fn ui(&mut self, _: ItemId, _: &mut Ui) {}
+        fn ui(&mut self, _: ItemId, _: &mut Ui) -> crate::PaneResponse {
+            crate::PaneResponse::default()
+        }
     }
 
     for owned in [true, false] {
@@ -226,6 +231,75 @@ fn presented_tabs(id: &'static str) -> (Context, Dockspace, RunPanes, Pos2) {
 }
 
 #[test]
+fn application_panels_leave_their_remaining_rectangle_for_docking_and_pane_content() {
+    let (context, mut dockspace, mut panes, _) = presented_tabs("owned-run-application-panels");
+    let before = dockspace.version();
+    panes.bounds.clear();
+    let mut panel_bounds = None;
+
+    let (output, response) = dockspace
+        .run_single_surface_with_ui(
+            &context,
+            input(1.0, Vec::new()),
+            SURFACE,
+            &mut panes,
+            |ui| {
+                let top = egui::Panel::top("owned-run-toolbar")
+                    .show(ui, |ui| {
+                        ui.set_min_height(36.0);
+                        ui.label("Application toolbar");
+                    })
+                    .response
+                    .rect;
+                let bottom = egui::Panel::bottom("owned-run-status")
+                    .show(ui, |ui| {
+                        ui.set_min_height(24.0);
+                        ui.label("Application status");
+                    })
+                    .response
+                    .rect;
+                panel_bounds = Some((top, bottom, ui.available_rect_before_wrap()));
+            },
+        )
+        .expect("application panels must coexist with exact owned docking output");
+    let (output, receipt) = output.into_parts();
+    let (top, bottom, docking) = panel_bounds.unwrap();
+    assert!(top.is_positive() && bottom.is_positive() && docking.is_positive());
+    assert!(docking.top() >= top.bottom());
+    assert!(docking.bottom() <= bottom.top());
+    let workspace = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .find_map(|(_, node)| {
+            (node.role() == Role::Pane && node.label() == Some("Dockspace workspace"))
+                .then(|| node.bounds().unwrap())
+        })
+        .expect("the core workspace exposes its actual compiled bounds");
+    assert_eq!(workspace.x0, f64::from(docking.left()));
+    assert_eq!(workspace.y0, f64::from(docking.top()));
+    assert_eq!(workspace.x1, f64::from(docking.right()));
+    assert_eq!(workspace.y1, f64::from(docking.bottom()));
+    assert_eq!(panes.calls.len(), 1);
+    assert_eq!(panes.bounds.len(), 1);
+    let pane = panes.bounds[0];
+    assert!(pane.is_positive() && docking.contains_rect(pane));
+    assert!(pane.top() >= top.bottom());
+    assert!(pane.bottom() <= bottom.top());
+    assert_eq!(dockspace.version(), before);
+    assert!(!response.mutation().workspace_changed());
+    assert_eq!(
+        response.presentation_settlement_capability(),
+        crate::DockspaceCapability::Supported
+    );
+    output.drop_without_applying_deltas();
+    receipt.report(SurfacePresentationResult::Presented);
+}
+
+#[test]
 fn keyboard_navigation_focuses_the_target_tab_before_its_queued_selection() {
     let (context, mut dockspace, mut panes, position) = presented_tabs("on-demand-tab-focus");
     for (time, events) in [
@@ -368,13 +442,25 @@ fn late_discards_paint_once_per_actual_pass_and_publish_one_selection_and_output
     context.add_plugin(LateDiscard { remaining: 2 });
     let before = dockspace.version();
     let first_pass = context.cumulative_pass_nr();
+    let mut composition_passes = Vec::new();
 
     let (output, response) = dockspace
-        .run_single_surface(&context, input(3.0, press(position)), SURFACE, &mut panes)
+        .run_single_surface_with_ui(
+            &context,
+            input(3.0, press(position)),
+            SURFACE,
+            &mut panes,
+            |ui| composition_passes.push(ui.ctx().cumulative_pass_nr()),
+        )
         .expect("discarded encoding must not consume the only output slot");
     let (output, receipt) = output.into_parts();
     assert_eq!(output.platform_output.num_completed_passes, 3);
     assert_eq!(context.cumulative_pass_nr(), first_pass + 3);
+    assert_eq!(
+        composition_passes,
+        [first_pass, first_pass + 1, first_pass + 2],
+        "application composition must run once in each actual pass"
+    );
     assert_eq!(
         panes.calls,
         [
@@ -528,8 +614,9 @@ fn real_ui_action_ingress_accepts_64_events_and_rejects_65_without_partial_publi
         fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
             Some(format!("Pane {}", item.get()).into())
         }
-        fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
+        fn ui(&mut self, _item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
             ui.label("Bounded action ingress");
+            crate::PaneResponse::default()
         }
     }
     for count in [64, 65] {
@@ -707,12 +794,23 @@ fn removing_real_pane_geometry_rejects_the_run_before_core_publication() {
     context.add_plugin(RemovePaneGeometry {
         removed: Arc::clone(&removed),
     });
+    let mut composition_calls = 0;
 
     let error = dockspace
-        .run_single_surface(&context, input(3.0, press(position)), SURFACE, &mut panes)
+        .run_single_surface_with_ui(
+            &context,
+            input(3.0, press(position)),
+            SURFACE,
+            &mut panes,
+            |_| composition_calls += 1,
+        )
         .err()
         .expect("an output hook cannot remove pane pixels and still publish selection");
     assert_eq!(error.kind(), DockspaceErrorKind::OperationConflict);
+    assert_eq!(
+        composition_calls, 1,
+        "rejecting docking output does not roll back external callback state"
+    );
     assert_eq!(removed.load(Ordering::Relaxed), 1);
     assert_eq!(
         panes.calls,

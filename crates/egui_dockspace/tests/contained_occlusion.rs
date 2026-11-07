@@ -22,7 +22,7 @@ impl PaneView for TestPanes {
         Some(format!("Pane {}", item.get()).into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
         if item == REAR_ITEM
             && ui
                 .put(rear_button_rect(), Button::new("Rear action"))
@@ -30,6 +30,7 @@ impl PaneView for TestPanes {
         {
             self.rear_clicks += 1;
         }
+        egui_dockspace::PaneResponse::default()
     }
 }
 

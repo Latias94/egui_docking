@@ -159,7 +159,7 @@ impl PaneView for Panes {
         self.titles.get(index).map(WidgetText::from)
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
         let bounds = ui.available_rect_before_wrap();
         let label = ui.label("Content").rect;
         let (square, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
@@ -174,6 +174,7 @@ impl PaneView for Panes {
             square,
             opacity: ui.opacity(),
         });
+        egui_dockspace::PaneResponse::default()
     }
 }
 

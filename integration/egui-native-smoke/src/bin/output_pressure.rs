@@ -674,7 +674,7 @@ impl PaneView for Panes {
         Some(if item == MAIN_ITEM { "Main" } else { "Child" }.into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
         ui.label(format!("Real output pressure pane {}", item.get()));
         if let Some(token) = eframe::current_native_output_token()
             && token.viewport_id() != ViewportId::ROOT
@@ -694,5 +694,6 @@ impl PaneView for Panes {
                 state.child_content_output = Some(token);
             }
         }
+        egui_dockspace::PaneResponse::default()
     }
 }

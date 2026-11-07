@@ -18,7 +18,7 @@ use eframe::egui::{
 use eframe::egui::{
     WidgetHitIdentity, WidgetScrollDelta, WidgetScrollHit, WidgetScrollHitChallenge,
 };
-use egui_dockspace::{DockStyle, PaneView, native_support};
+use egui_dockspace::{DockStyle, PaneResponse, PaneView, native_support};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -36,9 +36,10 @@ impl PaneView for Panes {
         }
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse {
         ui.allocate_rect(ui.max_rect(), Sense::hover());
         ui.label(format!("Pane {}", item.get()));
+        PaneResponse::default()
     }
 }
 
@@ -73,7 +74,7 @@ impl PaneView for ContentPanes {
             .then(|| format!("Content {}", item.get()).into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse {
         let pane = self.panes.get_mut(&item).expect("the rendered pane exists");
         pane.widgets.clear();
         pane.declared_widgets.clear();
@@ -90,16 +91,14 @@ impl PaneView for ContentPanes {
             .circle_filled(canvas_rect.center(), 8.0, Color32::LIGHT_BLUE);
         pane.widgets.extend([text, button, canvas]);
 
-        if self.declare_widgets {
-            pane.declared_widgets
-                .extend(pane.widgets.iter().map(|response| response.id));
-        }
-    }
-
-    fn docking_content_widgets(&self, item: ItemId) -> &[Id] {
-        self.panes
-            .get(&item)
-            .map_or(&[], |pane| pane.declared_widgets.as_slice())
+        let content = if self.declare_widgets {
+            PaneResponse::default()
+                .with_content_ids(pane.widgets.iter().map(|response| response.id))
+        } else {
+            PaneResponse::default()
+        };
+        pane.declared_widgets.extend(content.content_widgets());
+        content
     }
 }
 

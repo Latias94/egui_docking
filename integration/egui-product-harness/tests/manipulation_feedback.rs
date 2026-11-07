@@ -24,8 +24,9 @@ impl PaneView for Panes {
         )
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
         ui.label(format!("Pane {}", item.get()));
+        egui_dockspace::PaneResponse::default()
     }
 }
 

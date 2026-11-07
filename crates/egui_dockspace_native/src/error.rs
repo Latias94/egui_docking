@@ -34,6 +34,10 @@ pub(crate) enum NativeHostProtocolError {
     OutputBudgetUnavailable,
     #[error("native root surface {0} is absent from the product session")]
     RootSurfaceUnavailable(SurfaceId),
+    #[error(
+        "native renderer style field `{field}` differs from the session presentation configuration"
+    )]
+    StylePresentationMismatch { field: &'static str },
     #[error("core rejected native registration of root surface {0}")]
     RootRegistrationRejected(SurfaceId),
     #[error("the root eframe viewport could not bind the registered native surface")]
@@ -131,6 +135,7 @@ impl NativeHostProtocolError {
         match self {
             Self::OutputTokenUnavailable
             | Self::RootSurfaceUnavailable(_)
+            | Self::StylePresentationMismatch { .. }
             | Self::NativeOwnerStorageConfiguration => NativeRuntimeErrorKind::InvalidConfiguration,
             Self::MultipassLocalActionConflict
             | Self::NativeReportStorageUnavailable

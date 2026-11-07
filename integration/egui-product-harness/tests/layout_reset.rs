@@ -34,12 +34,13 @@ impl PaneView for Panes {
             .map(|_| format!("Document {}", item.get()).into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> egui_dockspace::PaneResponse {
         self.rendered.push(item);
         ui.add(
             egui::TextEdit::multiline(self.text.get_mut(&item).unwrap())
                 .id(egui::Id::unique(("default-pane", item.get()))),
         );
+        egui_dockspace::PaneResponse::default()
     }
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {

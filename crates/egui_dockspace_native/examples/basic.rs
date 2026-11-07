@@ -13,7 +13,7 @@ use dockspace::runtime::DockspaceSession;
 #[cfg(feature = "serde")]
 use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use eframe::egui;
-use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
+use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneResponse, PaneView};
 use egui_dockspace_native::{NativeActionStatus, NativeDockspaceApp};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -542,7 +542,6 @@ struct ExamplePane {
     text: String,
     loaded: bool,
     missing_painted: bool,
-    widgets: Vec<egui::Id>,
     zoom: f32,
     pan: egui::Vec2,
     input: Option<(egui::ViewportId, egui::Rect, bool, f32)>,
@@ -554,7 +553,6 @@ impl ExamplePane {
     fn set_loaded(&mut self, loaded: bool) {
         self.loaded = loaded;
         self.missing_painted = false;
-        self.widgets.clear();
         self.input = None;
         self.content = None;
         self.window_id = None;
@@ -585,7 +583,6 @@ impl ExamplePanes {
                 text: text.to_owned(),
                 loaded: true,
                 missing_painted: false,
-                widgets: Vec::with_capacity(3),
                 zoom: 1.0,
                 pan: egui::Vec2::ZERO,
                 input: None,
@@ -601,22 +598,18 @@ fn pane_focus_id(item: ItemId) -> egui::Id {
     egui::Id::unique(("native-editor-content", item.get()))
 }
 
-fn paint_canvas(pane: &mut ExamplePane, ui: &mut egui::Ui) {
+fn paint_canvas(pane: &mut ExamplePane, ui: &mut egui::Ui, content: PaneResponse) -> PaneResponse {
     let controls = ui.horizontal(|ui| {
         let reset = ui.button("Reset view");
-        pane.widgets.push(reset.id);
         if reset.clicked() {
             pane.pan = egui::Vec2::ZERO;
             pane.zoom = 1.0;
         }
         let zoom = ui.add(egui::Slider::new(&mut pane.zoom, 0.5..=2.0).text("Zoom"));
-        pane.widgets.push(zoom.id);
+        (reset, zoom)
     });
-    pane.widgets.push(controls.response.id);
     let (rect, background) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
-    pane.widgets.push(background.id);
     let response = ui.interact(rect, pane_focus_id(PREVIEW), egui::Sense::click_and_drag());
-    pane.widgets.push(response.id);
     if response.dragged() {
         pane.pan += response.drag_delta();
     }
@@ -650,6 +643,12 @@ fn paint_canvas(pane: &mut ExamplePane, ui: &mut egui::Ui) {
         egui::FontId::proportional(14.0),
         ui.visuals().text_color(),
     );
+    content
+        .with_content(&controls.inner.0)
+        .with_content(&controls.inner.1)
+        .with_content(&controls.response)
+        .with_content(&background)
+        .with_content(&response)
 }
 
 impl PaneView for ExamplePanes {
@@ -657,68 +656,68 @@ impl PaneView for ExamplePanes {
         self.panes.get(&item).map(|pane| pane.title.into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> PaneResponse {
         let Some(pane) = self.panes.get_mut(&item) else {
             ui.label("Missing pane");
-            return;
+            return PaneResponse::default();
         };
-        // Only widgets actually registered in this content callback qualify.
-        pane.widgets.clear();
         pane.input = None;
         pane.content = Some((ui.max_rect(), ui.ctx().pixels_per_point()));
         pane.window_id = None;
         pane.missing_painted = false;
         let heading = ui.heading(pane.title);
-        pane.widgets.push(heading.id);
+        let mut content = PaneResponse::from(&heading);
         if !pane.loaded {
             let placeholder = ui.label("Recoverable missing content — temporarily unloaded.");
-            pane.widgets.push(placeholder.id);
             pane.missing_painted = ui.is_rect_visible(placeholder.rect);
             let retained = ui.small(format!(
                 "{} · title and application data retained",
                 pane.key
             ));
-            pane.widgets.push(retained.id);
             let reload = ui.button("Reload content");
-            pane.widgets.push(reload.id);
             if reload.clicked() {
                 pane.set_loaded(true);
                 ui.ctx().request_repaint();
             }
-            return;
+            return content
+                .with_content(&placeholder)
+                .with_content(&retained)
+                .with_content(&reload);
         }
         if item == PREVIEW {
-            paint_canvas(pane, ui);
+            content = paint_canvas(pane, ui, content);
         } else if item == CONSOLE {
             let description = ui.label(&pane.text);
-            pane.widgets.push(description.id);
+            content = content.with_content(&description);
             let log = egui::ScrollArea::vertical()
                 .id_salt(("native-editor-log", item.get()))
                 .show(ui, |ui| {
-                    pane.widgets.push(ui.unique_id());
+                    let mut content = content.with_content_ids([ui.unique_id()]);
                     for line in 0..128 {
                         let entry = ui.monospace(format!("[{line:03}] Scene update completed"));
-                        pane.widgets.push(entry.id);
+                        content = content.with_content(&entry);
                     }
+                    content
                 });
+            content = log.inner;
             // Only declare scroll controls actually registered in this pass.
             for id in [log.id.with("area"), log.id.with(1_usize)] {
                 if ui
                     .ctx()
                     .viewport(|viewport| viewport.this_pass.widgets.get(id).is_some())
                 {
-                    pane.widgets.push(id);
+                    content = content.with_content_ids([id]);
                 }
             }
         } else if item == PROFILER {
             let description = ui.label(&pane.text);
-            pane.widgets.push(description.id);
+            content = content.with_content(&description);
             for (stage, milliseconds) in [("Simulation", 2.6), ("Rendering", 5.4), ("UI", 0.8)] {
                 let label = ui.label(format!("{stage}: {milliseconds:.1} ms"));
-                pane.widgets.push(label.id);
+                content = content.with_content(&label);
                 let progress = ui
                     .add(egui::ProgressBar::new(milliseconds / 16.67).desired_width(f32::INFINITY));
-                pane.widgets.push(progress.id);
+                content = content.with_content(&progress);
             }
         } else {
             let response = ui.add_sized(
@@ -728,7 +727,7 @@ impl PaneView for ExamplePanes {
                     .desired_width(f32::INFINITY)
                     .font(egui::TextStyle::Monospace),
             );
-            pane.widgets.push(response.id);
+            content = content.with_content(&response);
             pane.input = Some((
                 ui.ctx().viewport_id(),
                 response.rect,
@@ -738,12 +737,7 @@ impl PaneView for ExamplePanes {
             pane.window_id =
                 eframe::current_native_output_token().map(|token| u64::from(token.window_id()));
         }
-    }
-
-    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
-        self.panes
-            .get(&item)
-            .map_or(&[], |pane| pane.widgets.as_slice())
+        content
     }
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {

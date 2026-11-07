@@ -28,10 +28,11 @@ impl PaneView for Panes {
         Some(format!("Pane {}", item.get()).into())
     }
 
-    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
+    fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
         self.paints += 1;
         self.last_bounds = Some(ui.max_rect());
         ui.heading(format!("Visible pane {}", item.get()));
+        egui_dockspace::PaneResponse::default()
     }
 }
 

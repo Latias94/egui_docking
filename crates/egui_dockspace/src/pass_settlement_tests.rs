@@ -35,9 +35,10 @@ impl PaneView for SettlementPane {
         Some("Settlement lifecycle pane".into())
     }
 
-    fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
+    fn ui(&mut self, _item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
         ui.painter()
             .rect_filled(ui.available_rect_before_wrap().shrink(8.0), 0.0, PANE_COLOR);
+        crate::PaneResponse::default()
     }
 }
 

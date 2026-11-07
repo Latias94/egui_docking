@@ -15,15 +15,11 @@ use crate::style::DockStyle;
 /// Builder for one authoritative egui docking workspace.
 pub struct DockspaceBuilder {
     id: Id,
-    source: DockspaceBuilderSource,
+    layout: DockspaceLayout,
     policy: DockPolicy,
     style: DockStyle,
     #[cfg(feature = "serde")]
     document: Option<DockspaceDocumentBootstrap>,
-}
-
-enum DockspaceBuilderSource {
-    Layout(DockspaceLayout),
 }
 
 impl DockspaceBuilder {
@@ -31,7 +27,7 @@ impl DockspaceBuilder {
     pub fn new(id_salt: impl Hash + Debug, layout: DockspaceLayout) -> Self {
         Self {
             id: Id::unique(("egui_dockspace", id_salt)),
-            source: DockspaceBuilderSource::Layout(layout),
+            layout,
             policy: DockPolicy::default(),
             style: DockStyle::default(),
             #[cfg(feature = "serde")]
@@ -70,20 +66,16 @@ impl DockspaceBuilder {
     /// Returns [`DockspaceError`] when style or layout validation fails.
     pub fn build(self) -> Result<Dockspace, DockspaceError> {
         self.style.validate().map_err(DockspaceError::from_detail)?;
-        match self.source {
-            DockspaceBuilderSource::Layout(layout) => {
-                #[cfg(feature = "serde")]
-                if let Some(document) = self.document {
-                    return Dockspace::from_persistent_layout_parts(
-                        self.id,
-                        layout,
-                        self.policy,
-                        self.style,
-                        document,
-                    );
-                }
-                Dockspace::from_layout_parts(self.id, layout, self.policy, self.style)
-            }
+        #[cfg(feature = "serde")]
+        if let Some(document) = self.document {
+            return Dockspace::from_persistent_layout_parts(
+                self.id,
+                self.layout,
+                self.policy,
+                self.style,
+                document,
+            );
         }
+        Dockspace::from_layout_parts(self.id, self.layout, self.policy, self.style)
     }
 }

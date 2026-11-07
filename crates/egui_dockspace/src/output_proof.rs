@@ -1183,7 +1183,7 @@ mod tests {
                 Some("Pane".into())
             }
 
-            fn ui(&mut self, _item: crate::ItemId, ui: &mut egui::Ui) {
+            fn ui(&mut self, _item: crate::ItemId, ui: &mut egui::Ui) -> crate::PaneResponse {
                 self.0.lock().unwrap().child = Some(ui.unique_id());
                 ui.allocate_space(egui::vec2(20.0, 20.0));
                 let removed = ui.ctx().graphics_mut(|graphics| {
