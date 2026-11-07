@@ -278,3 +278,8 @@ remain available. The target is still 28/42. Compact frames, binary inputs and
 committed weight validation must be rebased onto the retained control before
 their independent measurements; these two rejected layouts are not stopping
 evidence that remaining justified directions are exhausted.
+
+Exact-head `e3c5171` CI run `42312915309` now passes all six jobs, including
+the physical X11/XTest docking and retirement checks. The retained runtime base
+is remotely green. Rejected slab/child-row experiments leave that runtime
+unchanged; the active compact-frame candidate remains local and unqualified.

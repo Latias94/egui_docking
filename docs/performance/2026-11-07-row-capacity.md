@@ -70,3 +70,9 @@ The [independent evidence review](2026-11-07-row-capacity/evidence-review.md)
 binds immutable candidate `e3c5171` to `3dd308c`, verifies every archived
 input/vector and recomputes the complete statistics. It finds no evidence or
 retention-judgment blocker and confirms the goal remains incomplete.
+
+Fresh [remote CI](https://github.com/Latias94/egui_docking/actions/runs/42312915309)
+at exact `e3c5171` passes all six jobs, including the physical X11/XTest docking
+smoke, retirement quiescence, child-window destruction and viewport removal.
+[The complete run and native log receipts](2026-11-07-row-capacity/remote-check.json)
+retain exact-head verification. Later retained runtime changes require fresh CI.
