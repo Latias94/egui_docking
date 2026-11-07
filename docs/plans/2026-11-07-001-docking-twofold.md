@@ -363,3 +363,10 @@ median improvements, 13 regressions and three ties, while p95 splits21/21 and
 max regresses25/42. Preserve [every negative result](../performance/2026-11-07-exact-assigned-total.md).
 The target remains28/42. Rebind the remaining axis, persistent-directory and
 binary-gather candidates to this actual retained parent before execution.
+
+The committed-axis/two-inline follow-up on retained packed/exact-total code
+passes all ordinary/work/vector gates but regresses all42complete medians,
+including every large cell by15.05–25.54%. Reject its exact three-path delta
+and preserve [the complete evidence](../performance/2026-11-07-axis-inline-packed.md).
+The retained exact-total result remains28/42; next qualify native motion
+receipts, then the independent persistent-directory and binary gather trials.
