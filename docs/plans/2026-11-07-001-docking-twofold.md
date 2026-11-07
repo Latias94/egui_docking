@@ -310,3 +310,11 @@ Retain the fresh shared owner and temporary scalar central route with
 The total is still 28/42; all small cells remain above 2x. Continue the
 committed/no-override weight-check boundary and reviewed command ownership
 combination before evaluating more invasive output/directory alternatives.
+
+The narrower committed-axis validation candidate passes all ordinary gates
+and complete work/vector equality, but 41/42 complete medians regress against
+the unified control, including every large cell by 11.75–24.47%. Reject and
+restore its exact two-source delta; preserve the [full evidence](../performance/2026-11-07-axis-inputs.md).
+Keep the original full validator and continue the reviewed command ownership
+combination. Rebase the complete parent-edge output candidate onto this
+retained checked parent; its source review alone is not executed evidence.
