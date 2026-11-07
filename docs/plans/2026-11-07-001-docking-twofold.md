@@ -378,3 +378,11 @@ five Cargo-resolved locks, and preserve[all evidence](../performance/2026-11-07-
 Retained exact-total performance remains28/42. Finish binary measurement
 gathering, then obtain source-matched small-operation diagnosis and independent
 continuation/stopping review. Native motion receipts await fresh Linux CI.
+
+Binary local measurement gathering with unchanged slice composers passes all
+ordinary/work/vector gates and improves35complete medians, regresses5and
+ties2. Retain the two-path delta with[all tails](../performance/2026-11-07-binary-measurement-gather.md).
+Small single-view resize now meets2x in both groups, moving the result from
+28/42to30/42. Twelve small conditions remain above2x. Next sample the exact
+retained binary's existing small resize/edge probe, then complete independent
+continuation/stopping review without claiming a language or architecture floor.

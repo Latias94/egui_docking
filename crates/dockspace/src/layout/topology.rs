@@ -159,17 +159,35 @@ impl RootStructure {
                 RootNodeKind::Split {
                     payload, children, ..
                 } => {
-                    child_values.clear();
-                    child_values.extend(self.children[children.clone()].iter().map(|&row| {
-                        SubtreeMeasurement {
-                            constraints: values[row].constraints,
-                            contains_central: false,
+                    let child_rows = &self.children[children.clone()];
+                    let binary_children;
+                    let child_measurements: &[SubtreeMeasurement] = match child_rows {
+                        [first, second] => {
+                            binary_children = [
+                                SubtreeMeasurement {
+                                    constraints: values[*first].constraints,
+                                    contains_central: false,
+                                },
+                                SubtreeMeasurement {
+                                    constraints: values[*second].constraints,
+                                    contains_central: false,
+                                },
+                            ];
+                            &binary_children
                         }
-                    }));
+                        _ => {
+                            child_values.clear();
+                            child_values.extend(child_rows.iter().map(|&row| SubtreeMeasurement {
+                                constraints: values[row].constraints,
+                                contains_central: false,
+                            }));
+                            &child_values
+                        }
+                    };
                     compose_constraints(
                         node.id,
                         payload.axis(),
-                        &child_values,
+                        child_measurements,
                         metrics,
                         minimums_only,
                     )?

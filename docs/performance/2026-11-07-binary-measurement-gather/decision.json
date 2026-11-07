@@ -1,0 +1,70 @@
+{
+  "utc": "2026-11-07T05:05:39.985542+00:00",
+  "decision": "retain binary local measurement records with original slice composers",
+  "actual_control_commit": "37e388fbc95705204a42e4f8788623873c6ea711",
+  "candidate_binary_sha256": "6d255458eac25cd9dcf629b88cfca6959c78db7ed2bb7ccf08fe2cba6332dcfd",
+  "runtime_patch_sha256": "bf40484c0df9eed1fbdb6d0ea02680b31af6f3d0d3ec819c81a9fdda31bd543b",
+  "reason": "35complete median improvements,5regressions,2ties; all large improve; smallsingleviewresize nowbothgroups<=2x;30of42; all adverse tails retained",
+  "statistics": {
+    "37e388fbc95705204a42e4f8788623873c6ea711": {
+      "p50": {
+        "improve": 35,
+        "regress": 5,
+        "ties": 2,
+        "reduction_range_percent": [
+          -4.128591874931198,
+          16.666666666666664
+        ]
+      },
+      "p95": {
+        "improve": 26,
+        "regress": 16,
+        "ties": 0,
+        "reduction_range_percent": [
+          -42.46509807332666,
+          67.94176408076514
+        ]
+      },
+      "max": {
+        "improve": 20,
+        "regress": 22,
+        "ties": 0,
+        "reduction_range_percent": [
+          -936.6759282647132,
+          97.35478016621202
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 3,
+        "regress": 39,
+        "ties": 0,
+        "reduction_range_percent": [
+          -246.55999999999997,
+          15.170605093819278
+        ]
+      },
+      "p95": {
+        "improve": 8,
+        "regress": 34,
+        "ties": 0,
+        "reduction_range_percent": [
+          -434.8377997179125,
+          18.52067203231631
+        ]
+      },
+      "max": {
+        "improve": 14,
+        "regress": 28,
+        "ties": 0,
+        "reduction_range_percent": [
+          -1770.2505219206682,
+          78.94736842105263
+        ]
+      }
+    }
+  },
+  "qualified_sources_still_match": true,
+  "within2x": 30
+}

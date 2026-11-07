@@ -621,16 +621,34 @@ fn project_measurements(
                 RootNodeKind::Split {
                     payload, children, ..
                 } => {
-                    child_values.clear();
-                    child_values.extend(topology.children[children.clone()].iter().map(|&row| {
-                        SubtreeMeasurement {
-                            constraints: values[row].constraints,
-                            contains_central: false,
+                    let child_rows = &topology.children[children.clone()];
+                    let binary_children;
+                    let child_measurements: &[SubtreeMeasurement] = match child_rows {
+                        [first, second] => {
+                            binary_children = [
+                                SubtreeMeasurement {
+                                    constraints: values[*first].constraints,
+                                    contains_central: false,
+                                },
+                                SubtreeMeasurement {
+                                    constraints: values[*second].constraints,
+                                    contains_central: false,
+                                },
+                            ];
+                            &binary_children
                         }
-                    }));
+                        _ => {
+                            child_values.clear();
+                            child_values.extend(child_rows.iter().map(|&row| SubtreeMeasurement {
+                                constraints: values[row].constraints,
+                                contains_central: false,
+                            }));
+                            &child_values
+                        }
+                    };
                     compose_maximum(
                         payload.axis(),
-                        &child_values,
+                        child_measurements,
                         total_splitter_extent(topology.nodes[row].id, children.len(), metrics)?,
                     )?
                 }
