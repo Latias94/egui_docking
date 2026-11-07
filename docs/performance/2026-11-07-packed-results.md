@@ -79,3 +79,9 @@ round-trips against the original bytes. The [decision](2026-11-07-packed-results
 binds the exact retention boundary. Fresh remote CI is still required; the
 earlier unified head currently has a separate physical drag-back failure under
 investigation, and its prior binary-input head was green.
+
+The [independent evidence review](2026-11-07-packed-results/independent-evidence-review.md)
+recomputes all observations, full vectors and statistics, verifies the eleven
+source-pair and corrected metadata bindings, and confirms the 33/5/4 p50
+result. It finds no evidence blocker and retains all representation costs,
+including the scene path not measured by the primary kernel.
