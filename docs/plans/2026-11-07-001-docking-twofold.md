@@ -349,3 +349,10 @@ every large cell. Reject its exact one-file delta and preserve the
 [complete failed experiment](../performance/2026-11-07-fused-continuation.md).
 The retained target remains 28/42. Continue the independently reviewed
 numeric, axis, persistent-directory and binary-measurement candidates.
+
+The standalone ordinary numeric inline hint passes all ordinary/work/vector
+gates, but the complete median mix is 18 improvements, 19 regressions and
+five ties, including eleven large regressions. Reject the exact one-line
+delta and preserve [the complete evidence](../performance/2026-11-07-numeric-inline.md).
+The retained result remains 28/42; continue actual redundant-total reuse and
+the remaining independently reviewed architecture candidates.
