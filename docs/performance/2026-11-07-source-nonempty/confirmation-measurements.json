@@ -1,0 +1,122 @@
+{
+  "utc": "2026-11-07T10:56:46.120092+00:00",
+  "comparison": "Independent additional full Rust confirmation; not replacement of initial or formal ImGui campaign",
+  "statistics": {
+    "all": {
+      "p50": {
+        "improve": 26,
+        "regress": 14,
+        "tie": 2,
+        "reduction_percent_range": [
+          -6.17632526293499,
+          19.259687680740313
+        ]
+      },
+      "p95": {
+        "improve": 26,
+        "regress": 14,
+        "tie": 2,
+        "reduction_percent_range": [
+          -108.78481787572696,
+          63.69777777777777
+        ]
+      },
+      "max": {
+        "improve": 24,
+        "regress": 15,
+        "tie": 3,
+        "reduction_percent_range": [
+          -610.9863237025631,
+          92.30086159310726
+        ]
+      }
+    },
+    "moves": {
+      "p50": {
+        "improve": 21,
+        "regress": 8,
+        "tie": 1,
+        "reduction_percent_range": [
+          -6.17632526293499,
+          19.259687680740313
+        ]
+      },
+      "p95": {
+        "improve": 22,
+        "regress": 7,
+        "tie": 1,
+        "reduction_percent_range": [
+          -108.78481787572696,
+          63.69777777777777
+        ]
+      },
+      "max": {
+        "improve": 18,
+        "regress": 10,
+        "tie": 2,
+        "reduction_percent_range": [
+          -212.94642857142856,
+          92.30086159310726
+        ]
+      }
+    },
+    "small_moves": {
+      "p50": {
+        "improve": 9,
+        "regress": 1,
+        "tie": 0,
+        "reduction_percent_range": [
+          -5.857445306986597,
+          19.259687680740313
+        ]
+      },
+      "p95": {
+        "improve": 7,
+        "regress": 2,
+        "tie": 1,
+        "reduction_percent_range": [
+          -24.68827930174564,
+          63.69777777777777
+        ]
+      },
+      "max": {
+        "improve": 4,
+        "regress": 5,
+        "tie": 1,
+        "reduction_percent_range": [
+          -56.68,
+          92.30086159310726
+        ]
+      }
+    },
+    "resize": {
+      "p50": {
+        "improve": 5,
+        "regress": 6,
+        "tie": 1,
+        "reduction_percent_range": [
+          -3.7048875053850017,
+          11.723163841807905
+        ]
+      },
+      "p95": {
+        "improve": 4,
+        "regress": 7,
+        "tie": 1,
+        "reduction_percent_range": [
+          -20.766805654428964,
+          11.385459533607678
+        ]
+      },
+      "max": {
+        "improve": 6,
+        "regress": 5,
+        "tie": 1,
+        "reduction_percent_range": [
+          -610.9863237025631,
+          84.72697129831106
+        ]
+      }
+    }
+  }
+}

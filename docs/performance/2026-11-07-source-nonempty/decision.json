@@ -1,0 +1,55 @@
+{
+  "utc": "2026-11-07T11:05:17.569945+00:00",
+  "decision": "reject_restore",
+  "actual_control": "c7508eec3ac44138305797691244ae9c180d7680",
+  "candidate_binary_sha256": "0ac7566065a4a7b23b88b2c7f0c690122d0ae6cd4e7227693f85f29b73e48317",
+  "reason": "Move improvement gates pass in both Rust pairings, but repeated material resize negatives do not satisfy predeclared protection. Confirmation group effects retained; no universal slowdown or compilercause claimed.",
+  "initial": {
+    "complete_p50": [
+      22,
+      19,
+      1
+    ],
+    "move_p50": [
+      21,
+      9,
+      0
+    ],
+    "small_move_p50": [
+      10,
+      0,
+      0
+    ],
+    "resize_p50": [
+      1,
+      10,
+      1
+    ]
+  },
+  "confirmation": {
+    "complete_p50": [
+      26,
+      14,
+      2
+    ],
+    "move_p50": [
+      21,
+      8,
+      1
+    ],
+    "small_move_p50": [
+      9,
+      1,
+      0
+    ],
+    "resize_p50": [
+      5,
+      6,
+      1
+    ]
+  },
+  "candidate_ImGui_inventory": 30,
+  "all_324_formal_sources_restored": true,
+  "no_runtime_or_test_delta_retained": true,
+  "independent_decision_review_sha256": "cd1f9dc18e1a3872b6dfe0166b092b604f388b77c4cbec79d529141a63cbbfaf"
+}

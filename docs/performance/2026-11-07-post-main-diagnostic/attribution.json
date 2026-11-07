@@ -1,0 +1,2408 @@
+{
+  "scope": "Inclusive named outermost subtrees; fixture ancestry excluded including one inlined-fixture return at docking_cost+1652 found by static callsite review. Inline/unresolved attribution remains unknown. No clock share, allocator share, exclusive instruction cost or lower bound.",
+  "cases": {
+    "16-4-resize": {
+      "worker_samples": 2904,
+      "phases": {
+        "timed_layout": {
+          "inclusive_samples": 169,
+          "outermost_roots": 8
+        },
+        "timed_candidate": {
+          "inclusive_samples": 0,
+          "outermost_roots": 0
+        }
+      },
+      "allocation_or_memory_paths": [
+        {
+          "inclusive_samples": 10,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 6564  [0x100e9d1ac]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 736  [0x18438d19c]"
+          ]
+        },
+        {
+          "inclusive_samples": 6,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100bb48ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100bb5310]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h0a9f5bcaa40dd297  (in diagnostic_docking_cost) + 60  [0x100fabb60]"
+          ]
+        },
+        {
+          "inclusive_samples": 5,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100bb48ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100bb5310]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 260  [0x100fad350]"
+          ]
+        },
+        {
+          "inclusive_samples": 4,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1932  [0x100bb4dfc]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 736  [0x18438d19c]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1632  [0x100e9be68]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 16,88,...  [0x184384a5c,0x184384aa4,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100bb48ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100bb5310]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 244,524,...  [0x184384b40,0x184384c58,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1932  [0x100bb4dfc]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 588,684,...  [0x18438d108,0x18438d168,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1000  [0x100bb4a58]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92,116,...  [0x18438b864,0x18438b87c,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1000  [0x100bb4a58]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 268,452,...  [0x184384b58,0x184384c10,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 6564  [0x100e9d1ac]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 332,448  [0x18438d008,0x18438d07c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1984  [0x100e9bfc8]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 404,524  [0x184384be0,0x184384c58]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1796  [0x100e9bf0c]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92,288  [0x18438b864,0x18438b928]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100bb48ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100bb5310]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 44,100  [0x18439051c,0x184390554]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100bb48ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100bb5310]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h0a9f5bcaa40dd297  (in diagnostic_docking_cost) + 60,72  [0x100fabb60,0x100fabb6c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1044  [0x100bb4a84]",
+            "__bzero  (in libsystem_platform.dylib) + 24  [0x184573a48]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 6564  [0x100e9d1ac]",
+            "xzm_malloc_zone_try_free_default_main  (in libsystem_malloc.dylib) + 0  [0x18438c410]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1632  [0x100e9be68]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92  [0x18438b864]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1632  [0x100e9be68]",
+            "DYLD-STUB$$malloc  (in diagnostic_docking_cost) + 4  [0x100ff561c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1632  [0x100e9be68]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 80  [0x184390540]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1984  [0x100e9bfc8]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 44  [0x18439051c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1796  [0x100e9bf0c]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 56  [0x184384a84]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100bb4ee4]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 1072  [0x18438d2ec]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100bb48ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100bb52ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100bb5310]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 0  [0x100fad24c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1932  [0x100bb4dfc]",
+            "_free  (in libsystem_malloc.dylib) + 64  [0x184391150]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1000  [0x100bb4a58]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 44  [0x18439051c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100bb0d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 120  [0x100bb46e8]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 672  [0x184384cec]"
+          ]
+        }
+      ]
+    },
+    "16-1-center_move": {
+      "worker_samples": 2925,
+      "phases": {
+        "timed_layout": {
+          "inclusive_samples": 142,
+          "outermost_roots": 6
+        },
+        "timed_candidate": {
+          "inclusive_samples": 100,
+          "outermost_roots": 7
+        }
+      },
+      "allocation_or_memory_paths": [
+        {
+          "inclusive_samples": 10,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hbd59d39312afa81d  (in diagnostic_docking_cost) + 88  [0x105b653d8]"
+          ]
+        },
+        {
+          "inclusive_samples": 9,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 228  [0x105b65330]"
+          ]
+        },
+        {
+          "inclusive_samples": 8,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h0a9f5bcaa40dd297  (in diagnostic_docking_cost) + 60  [0x105b63b60]"
+          ]
+        },
+        {
+          "inclusive_samples": 8,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 228  [0x105b65330]"
+          ]
+        },
+        {
+          "inclusive_samples": 8,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "_realloc  (in libsystem_malloc.dylib) + 456  [0x184391358]"
+          ]
+        },
+        {
+          "inclusive_samples": 8,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x184390b2c]"
+          ]
+        },
+        {
+          "inclusive_samples": 7,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "_realloc  (in libsystem_malloc.dylib) + 456  [0x184391358]"
+          ]
+        },
+        {
+          "inclusive_samples": 7,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hbd59d39312afa81d  (in diagnostic_docking_cost) + 88  [0x105b653d8]"
+          ]
+        },
+        {
+          "inclusive_samples": 7,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 228  [0x105b65330]"
+          ]
+        },
+        {
+          "inclusive_samples": 6,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1044  [0x10576ca84]",
+            "_platform_memset  (in libsystem_platform.dylib) + 140  [0x184573b1c]"
+          ]
+        },
+        {
+          "inclusive_samples": 6,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x184390b2c]"
+          ]
+        },
+        {
+          "inclusive_samples": 5,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 896  [0x184381390]"
+          ]
+        },
+        {
+          "inclusive_samples": 5,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "_realloc  (in libsystem_malloc.dylib) + 456  [0x184391358]"
+          ]
+        },
+        {
+          "inclusive_samples": 5,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x184390b2c]"
+          ]
+        },
+        {
+          "inclusive_samples": 4,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 24,92  [0x184381028,0x18438106c]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x10576cee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 6564  [0x105a551ac]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 736  [0x18438d19c]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h0a9f5bcaa40dd297  (in diagnostic_docking_cost) + 60,44  [0x105b63b60,0x105b63b50]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "_xzm_malloc  (in libsystem_malloc.dylib) + 0,108,...  [0x184383df4,0x184383e60,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2660  [0x1058eb680]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 184,256,...  [0x18438cf74,0x18438cfbc,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 896  [0x184381390]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 16,764  [0x184384a5c,0x184384d48]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1028  [0x184381414]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 196  [0x105ad43e8]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92  [0x18438b864]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 196  [0x105ad43e8]",
+            "DYLD-STUB$$memset  (in diagnostic_docking_cost) + 4  [0x105bad64c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 196  [0x105ad43e8]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 736  [0x18438d19c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 256,832  [0x184384b4c,0x184384d8c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "_realloc  (in libsystem_malloc.dylib) + 252  [0x18439128c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 460,580  [0x1843804d0,0x184380548]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 292  [0x1058e4598]",
+            "dockspace::graph::operation::remove_item::hc817e4c49e896824  (in diagnostic_docking_cost) + 56  [0x1058dfdf8]",
+            "dockspace::graph::shared_storage::NodeStore::get_mut::h953d9b6e96a803dd  (in diagnostic_docking_cost) + 164  [0x1058d7284]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92  [0x18438b864]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 292  [0x1058e4598]",
+            "dockspace::graph::operation::remove_item::hc817e4c49e896824  (in diagnostic_docking_cost) + 56  [0x1058dfdf8]",
+            "dockspace::graph::shared_storage::NodeStore::get_mut::h953d9b6e96a803dd  (in diagnostic_docking_cost) + 112  [0x1058d7250]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92,144  [0x18438b864,0x18438b898]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 896  [0x184381390]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 404,524  [0x184384be0,0x184384c58]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1028  [0x184381414]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 1560  [0x184388d18]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13752  [0x1058e3d04]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_root_change::h32150ceec103c5c0  (in diagnostic_docking_cost) + 816  [0x1058d9630]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 104,472  [0x184384ab4,0x184384c24]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x10576cee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 6564  [0x105a551ac]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 476  [0x18438d098]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x10576cee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1984  [0x105a53fc8]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 12  [0x1843904fc]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 1384  [0x184388c68]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x10576d310]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 600  [0x184388958]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x10576c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x10576d2ac]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h0a9f5bcaa40dd297  (in diagnostic_docking_cost) + 84  [0x105b63b78]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105768d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 120  [0x10576c6e8]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 16  [0x184384a5c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 196  [0x105ad43e8]",
+            "DYLD-STUB$$malloc  (in diagnostic_docking_cost) + 4  [0x105bad61c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 196  [0x105ad43e8]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 212  [0x18438cf90]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1028  [0x184381414]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 1560  [0x184388d18]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 180  [0x184390b4c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x105ad44dc]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 216  [0x105b65324]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 544  [0x105ad4544]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 736  [0x18438d19c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 544  [0x105ad4544]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 288  [0x18438cfdc]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 52  [0x105ad4358]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 524  [0x184384c58]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x1058e4654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 624  [0x105ad4594]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 120  [0x18438cf34]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 292  [0x1058e4598]",
+            "dockspace::graph::operation::remove_item::hc817e4c49e896824  (in diagnostic_docking_cost) + 56  [0x1058dfdf8]",
+            "dockspace::graph::shared_storage::NodeStore::get_mut::h953d9b6e96a803dd  (in diagnostic_docking_cost) + 164  [0x1058d7284]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 240  [0x184384b3c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x1058e3bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 292  [0x1058e4598]",
+            "dockspace::graph::operation::remove_item::hc817e4c49e896824  (in diagnostic_docking_cost) + 56  [0x1058dfdf8]",
+            "dockspace::graph::shared_storage::NodeStore::get_mut::h953d9b6e96a803dd  (in diagnostic_docking_cost) + 112  [0x1058d7250]",
+            "DYLD-STUB$$malloc  (in diagnostic_docking_cost) + 4  [0x105bad61c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1248  [0x1843814f0]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "_realloc  (in libsystem_malloc.dylib) + 252  [0x18439128c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 24  [0x18438031c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x1058e3ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2184  [0x1058e5488]",
+            "dockspace::graph::operation::merge_payload_into_tabs::hb0908aaee10a724c  (in diagnostic_docking_cost) + 108  [0x1058e9a54]",
+            "dockspace::graph::operation::insert_items::he45452b1ad7861dc  (in diagnostic_docking_cost) + 800  [0x1058e0270]",
+            "_realloc  (in libsystem_malloc.dylib) + 232  [0x184391278]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x1058eaf7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 1464  [0x1058e0d04]",
+            "dockspace::graph::operation::check_move::h9af6351a0d6679a6  (in diagnostic_docking_cost) + 596  [0x1058dfd50]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 200  [0x18438cf84]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 64  [0x1058eac5c]",
+            "dockspace::transaction::clone_workspace_draft::hb8412d56450b8f31  (in diagnostic_docking_cost) + 32  [0x1057677f8]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 764  [0x184384d48]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 64  [0x1058eac5c]",
+            "dockspace::transaction::clone_workspace_draft::hb8412d56450b8f31  (in diagnostic_docking_cost) + 60  [0x105767814]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 268  [0x18438b914]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 64  [0x1058eac5c]",
+            "dockspace::transaction::clone_workspace_draft::hb8412d56450b8f31  (in diagnostic_docking_cost) + 60  [0x105767814]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 0  [0x184384a4c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x105768b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2788  [0x1058eb700]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 244  [0x184384b40]"
+          ]
+        }
+      ]
+    },
+    "16-1-edge_split": {
+      "worker_samples": 2926,
+      "phases": {
+        "timed_layout": {
+          "inclusive_samples": 177,
+          "outermost_roots": 8
+        },
+        "timed_candidate": {
+          "inclusive_samples": 218,
+          "outermost_roots": 10
+        }
+      },
+      "allocation_or_memory_paths": [
+        {
+          "inclusive_samples": 30,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hbd59d39312afa81d  (in diagnostic_docking_cost) + 88  [0x1011953d8]"
+          ]
+        },
+        {
+          "inclusive_samples": 30,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 228  [0x101195330]"
+          ]
+        },
+        {
+          "inclusive_samples": 26,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "_realloc  (in libsystem_malloc.dylib) + 456  [0x184391358]"
+          ]
+        },
+        {
+          "inclusive_samples": 26,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x184390b2c]"
+          ]
+        },
+        {
+          "inclusive_samples": 20,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h0a9f5bcaa40dd297  (in diagnostic_docking_cost) + 60  [0x101193b60]"
+          ]
+        },
+        {
+          "inclusive_samples": 16,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1028  [0x184381414]"
+          ]
+        },
+        {
+          "inclusive_samples": 15,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 228  [0x101195330]"
+          ]
+        },
+        {
+          "inclusive_samples": 14,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_realloc  (in libsystem_malloc.dylib) + 456  [0x184391358]"
+          ]
+        },
+        {
+          "inclusive_samples": 13,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x184390b2c]"
+          ]
+        },
+        {
+          "inclusive_samples": 12,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 468  [0x100f14dd4]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::place_node::h3cb846ca6ac5be80  (in diagnostic_docking_cost) + 344  [0x100f08a78]",
+            "alloc::sync::Arc$LT$T$C$A$GT$::make_mut::h3dba24c1f395e7fb  (in diagnostic_docking_cost) + 584,604,...  [0x100c8f020,0x100c8f034,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 9,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 1384  [0x184388c68]"
+          ]
+        },
+        {
+          "inclusive_samples": 9,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h0a9f5bcaa40dd297  (in diagnostic_docking_cost) + 60  [0x101193b60]"
+          ]
+        },
+        {
+          "inclusive_samples": 9,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 228  [0x101195330]"
+          ]
+        },
+        {
+          "inclusive_samples": 8,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hbd59d39312afa81d  (in diagnostic_docking_cost) + 88  [0x1011953d8]"
+          ]
+        },
+        {
+          "inclusive_samples": 8,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 228  [0x101195330]"
+          ]
+        },
+        {
+          "inclusive_samples": 8,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_realloc  (in libsystem_malloc.dylib) + 456  [0x184391358]"
+          ]
+        },
+        {
+          "inclusive_samples": 8,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x184390b2c]"
+          ]
+        },
+        {
+          "inclusive_samples": 7,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 1560,252,...  [0x184388d18,0x1843887fc,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 7,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1028  [0x184381414]"
+          ]
+        },
+        {
+          "inclusive_samples": 6,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "_realloc  (in libsystem_malloc.dylib) + 456  [0x184391358]"
+          ]
+        },
+        {
+          "inclusive_samples": 6,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x184390b2c]"
+          ]
+        },
+        {
+          "inclusive_samples": 6,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2572  [0x100f1b628]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 736  [0x18438d19c]"
+          ]
+        },
+        {
+          "inclusive_samples": 5,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 928,84,...  [0x1843813b0,0x184381064,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 5,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 80,588,...  [0x184388750,0x18438894c,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 5,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1044  [0x100d9ca84]",
+            "_platform_memset  (in libsystem_platform.dylib) + 140  [0x184573b1c]"
+          ]
+        },
+        {
+          "inclusive_samples": 4,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h059bb1ac1d87caa7  (in diagnostic_docking_cost) + 60  [0x101193a28]"
+          ]
+        },
+        {
+          "inclusive_samples": 4,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 228  [0x101195330]"
+          ]
+        },
+        {
+          "inclusive_samples": 4,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 896  [0x100f0a390]",
+            "_platform_memset  (in libsystem_platform.dylib) + 180,188  [0x184573b44,0x184573b4c]"
+          ]
+        },
+        {
+          "inclusive_samples": 4,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 224,476,...  [0x1843810f0,0x1843811ec,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1028  [0x184381414]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 284,404,...  [0x18438881c,0x184388894,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2572  [0x100f1b628]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 684,120  [0x18438d168,0x18438cf34]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2660  [0x100f1b680]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 892,684  [0x18438d238,0x18438d168]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 44,52,...  [0x101195278,0x101195280,...]"
+          ]
+        },
+        {
+          "inclusive_samples": 3,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 896  [0x184381390]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 468  [0x100f14dd4]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::place_node::h3cb846ca6ac5be80  (in diagnostic_docking_cost) + 344  [0x100f08a78]",
+            "alloc::sync::Arc$LT$T$C$A$GT$::make_mut::h3dba24c1f395e7fb  (in diagnostic_docking_cost) + 84  [0x100c8ee2c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 468  [0x100f14dd4]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::place_node::h3cb846ca6ac5be80  (in diagnostic_docking_cost) + 344  [0x100f08a78]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92,288  [0x18438b864,0x18438b928]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 468  [0x100f14dd4]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::place_node::h3cb846ca6ac5be80  (in diagnostic_docking_cost) + 344  [0x100f08a78]",
+            "alloc::sync::Arc$LT$T$C$A$GT$::make_mut::h3dba24c1f395e7fb  (in diagnostic_docking_cost) + 208  [0x100c8eea8]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2420  [0x100f15574]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 392,504  [0x18438d044,0x18438d0b4]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "_realloc  (in libsystem_malloc.dylib) + 456  [0x184391358]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x184390b2c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 1484  [0x100f151cc]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92  [0x18438b864]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 512,524  [0x184381210,0x18438121c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "_realloc  (in libsystem_malloc.dylib) + 252  [0x18439128c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 132,164  [0x184380388,0x1843803a8]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 624  [0x101104594]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 736  [0x18438d19c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 292  [0x100f14598]",
+            "dockspace::graph::operation::remove_item::hc817e4c49e896824  (in diagnostic_docking_cost) + 56  [0x100f0fdf8]",
+            "dockspace::graph::shared_storage::NodeStore::get_mut::h953d9b6e96a803dd  (in diagnostic_docking_cost) + 164  [0x100f07284]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 88,252  [0x184384aa4,0x184384b48]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "default_zone_realloc  (in libsystem_malloc.dylib) + 32  [0x184354d18]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 996  [0x1843813f4]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "_realloc  (in libsystem_malloc.dylib) + 252  [0x18439128c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 92,496  [0x184380360,0x1843804f4]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1268  [0x100f0a504]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hbd59d39312afa81d  (in diagnostic_docking_cost) + 88  [0x1011953d8]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1268  [0x100f0a504]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 260  [0x101195350]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 1700  [0x100f1b2c0]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h6b099ca2c4139a43  (in diagnostic_docking_cost) + 60  [0x101194930]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100d9cee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1632  [0x101083e68]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 56,120  [0x184390528,0x184390568]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100d9cee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1632  [0x101083e68]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 88,268  [0x184384aa4,0x184384b58]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100d9cee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 6564  [0x1010851ac]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 736  [0x18438d19c]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 1384  [0x184388c68]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "default_zone_realloc  (in libsystem_malloc.dylib) + 4,32  [0x184354cfc,0x184354d18]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 284,904  [0x18438112c,0x184381398]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 260  [0x101195350]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 104,524  [0x184384ab4,0x184384c58]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 468  [0x100f14dd4]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::place_node::h3cb846ca6ac5be80  (in diagnostic_docking_cost) + 344  [0x100f08a78]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92  [0x18438b864]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 468  [0x100f14dd4]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::place_node::h3cb846ca6ac5be80  (in diagnostic_docking_cost) + 344  [0x100f08a78]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 656  [0x184384cdc]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 468  [0x100f14dd4]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::place_node::h3cb846ca6ac5be80  (in diagnostic_docking_cost) + 344  [0x100f08a78]",
+            "alloc::sync::Arc$LT$T$C$A$GT$::make_mut::h3dba24c1f395e7fb  (in diagnostic_docking_cost) + 480  [0x100c8efb8]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2420  [0x100f15574]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::refresh_child_placements::hb8afa1e0e0e490bb  (in diagnostic_docking_cost) + 212  [0x100f09fa8]",
+            "alloc::sync::Arc$LT$T$C$A$GT$::make_mut::h3dba24c1f395e7fb  (in diagnostic_docking_cost) + 372  [0x100c8ef4c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1028  [0x184381414]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 284  [0x18438881c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1164  [0x18438149c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "_realloc  (in libsystem_malloc.dylib) + 252  [0x18439128c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 548  [0x184380528]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "_realloc  (in libsystem_malloc.dylib) + 248  [0x184391288]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 432  [0x100f14db0]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 180  [0x100f07128]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h059bb1ac1d87caa7  (in diagnostic_docking_cost) + 80  [0x101193a3c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 1804  [0x100f1530c]",
+            "dockspace::graph::shared_storage::NodeStore::get_mut::h953d9b6e96a803dd  (in diagnostic_docking_cost) + 164  [0x100f07284]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 80  [0x184390540]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 1804  [0x100f1530c]",
+            "dockspace::graph::shared_storage::NodeStore::get_mut::h953d9b6e96a803dd  (in diagnostic_docking_cost) + 164  [0x100f07284]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 832  [0x184384d8c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 1804  [0x100f1530c]",
+            "dockspace::graph::shared_storage::NodeStore::get_mut::h953d9b6e96a803dd  (in diagnostic_docking_cost) + 112  [0x100f07250]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92  [0x18438b864]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 2404  [0x100f15564]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::place_node::h3cb846ca6ac5be80  (in diagnostic_docking_cost) + 344  [0x100f08a78]",
+            "alloc::sync::Arc$LT$T$C$A$GT$::make_mut::h3dba24c1f395e7fb  (in diagnostic_docking_cost) + 44  [0x100c8ee04]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 1484  [0x100f151cc]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 12  [0x1843904fc]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 388  [0x100f14d84]",
+            "dockspace::graph::initial_tab_mru::hd4654e9ba7f562b5  (in diagnostic_docking_cost) + 60  [0x100f074d4]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 656  [0x184384cdc]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13716  [0x100f13ce0]",
+            "dockspace::graph::operation::insert_payload::h464fc2046b01d73e  (in diagnostic_docking_cost) + 1768  [0x100f152e8]",
+            "dockspace::graph::shared_storage::NodeStore::insert::h9a015811267c9fbb  (in diagnostic_docking_cost) + 60  [0x100f070b0]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 144  [0x18438b898]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 196  [0x1011043e8]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 92  [0x18438b864]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 896  [0x184381390]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 472  [0x184384c24]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 480  [0x100f14654]",
+            "dockspace::workspace::_$LT$impl$u20$dockspace..graph..Workspace$GT$::subtree_has_items::hb2f46f7ca9ead971  (in diagnostic_docking_cost) + 440  [0x1011044dc]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hbd59d39312afa81d  (in diagnostic_docking_cost) + 88  [0x1011953d8]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 13424  [0x100f13bbc]",
+            "dockspace::graph::operation::detach_payload::h83d704547f9035d4  (in diagnostic_docking_cost) + 292  [0x100f14598]",
+            "dockspace::graph::operation::remove_item::hc817e4c49e896824  (in diagnostic_docking_cost) + 56  [0x100f0fdf8]",
+            "dockspace::graph::shared_storage::NodeStore::get_mut::h953d9b6e96a803dd  (in diagnostic_docking_cost) + 112  [0x100f07250]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 244  [0x184384b40]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 1464  [0x100f10d04]",
+            "dockspace::graph::operation::check_move::h9af6351a0d6679a6  (in diagnostic_docking_cost) + 596  [0x100f0fd50]",
+            "_free  (in libsystem_malloc.dylib) + 108  [0x18439117c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 1464  [0x100f10d04]",
+            "dockspace::graph::operation::check_move::h9af6351a0d6679a6  (in diagnostic_docking_cost) + 596  [0x100f0fd50]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 160  [0x18438cf5c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 864  [0x100f1af7c]",
+            "dockspace::graph::operation::apply_command::h92bab3ca19dce05d  (in diagnostic_docking_cost) + 1464  [0x100f10d04]",
+            "dockspace::graph::operation::check_move::h9af6351a0d6679a6  (in diagnostic_docking_cost) + 188  [0x100f0fbb8]",
+            "dockspace::graph::operation::move_payload_policy_facts_validated::he1de62e3cc0d28b0  (in diagnostic_docking_cost) + 316  [0x100f1fcc0]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 764  [0x184384d48]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "DYLD-STUB$$mach_absolute_time  (in libsystem_malloc.dylib) + 12  [0x1843a68ac]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "DYLD-STUB$$_platform_memmove  (in libsystem_malloc.dylib) + 12  [0x1843a65ac]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 896  [0x184381390]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "_xzm_malloc  (in libsystem_malloc.dylib) + 108  [0x184383e60]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1352  [0x100f0a558]",
+            "_realloc  (in libsystem_malloc.dylib) + 96  [0x1843911f0]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 896  [0x100f0a390]",
+            "DYLD-STUB$$bzero  (in diagnostic_docking_cost) + 4  [0x1011dd484]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1268  [0x100f0a504]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 120  [0x184390568]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1268  [0x100f0a504]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 472  [0x184384c24]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 632  [0x100f0a288]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hbd59d39312afa81d  (in diagnostic_docking_cost) + 88  [0x1011953d8]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 632  [0x100f0a288]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 260  [0x101195350]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 632  [0x100f0a288]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 640  [0x184384ccc]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1296  [0x100f0a520]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hbd59d39312afa81d  (in diagnostic_docking_cost) + 88  [0x1011953d8]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1296  [0x100f0a520]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 260  [0x101195350]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1296  [0x100f0a520]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 192  [0x18438b8c8]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1388  [0x100f0a57c]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::reserve::do_reserve_and_handle::hbd59d39312afa81d  (in diagnostic_docking_cost) + 88  [0x1011953d8]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1388  [0x100f0a57c]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 260  [0x101195350]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2592  [0x100f1b63c]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::complete_item_move_structure::h4b1521e7be6ad768  (in diagnostic_docking_cost) + 1388  [0x100f0a57c]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 216  [0x184384b24]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 64  [0x100f1ac5c]",
+            "dockspace::transaction::clone_workspace_draft::hb8412d56450b8f31  (in diagnostic_docking_cost) + 32  [0x100d977f8]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 92  [0x18439054c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 64  [0x100f1ac5c]",
+            "dockspace::transaction::clone_workspace_draft::hb8412d56450b8f31  (in diagnostic_docking_cost) + 32  [0x100d977f8]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 244  [0x184384b40]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2552  [0x100f1b614]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 184  [0x18438cf74]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2552  [0x100f1b614]",
+            "dockspace::graph::authority::_$LT$impl$u20$dockspace..graph..Workspace$GT$::refresh_child_placements::hb8afa1e0e0e490bb  (in diagnostic_docking_cost) + 152  [0x100f09f6c]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 404  [0x184384be0]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 1700  [0x100f1b2c0]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 260  [0x101195350]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 1700  [0x100f1b2c0]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 456  [0x184384c14]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 1700  [0x100f1b2c0]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 52  [0x101195280]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2788  [0x100f1b700]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 80  [0x184390540]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 1828  [0x100d98b94]",
+            "dockspace::graph::operation::prepare_transaction_inner::h27048024b464c88b  (in diagnostic_docking_cost) + 2788  [0x100f1b700]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 104  [0x184384ab4]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100d9cee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 6564  [0x1010851ac]",
+            "_free  (in libsystem_malloc.dylib) + 108  [0x18439117c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100d9cee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 6564  [0x1010851ac]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 392  [0x18438d044]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x100d9cee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 1984  [0x101083fc8]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 44  [0x18439051c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 896  [0x184381390]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 16  [0x184384a5c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 996  [0x1843813f4]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_malloc_zone_realloc  (in libsystem_malloc.dylib) + 100  [0x184390afc]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_realloc  (in libsystem_malloc.dylib) + 252  [0x18439128c]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 116  [0x184380378]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "<deduplicated_symbol>  (in libsystem_malloc.dylib) + 248  [0x18438b900]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 268  [0x184384b58]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::h619b67a4f0f3f863  (in diagnostic_docking_cost) + 296  [0x101195374]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_xzm_malloc  (in libsystem_malloc.dylib) + 108  [0x184383e60]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "xzm_malloc_zone_malloc_type_realloc  (in libsystem_malloc.dylib) + 1028  [0x184381414]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_xzm_free  (in libsystem_malloc.dylib) + 1152  [0x184388b80]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 572  [0x100d9c8ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 120  [0x100d9d2ac]",
+            "dockspace::docking_cost::collect_constraints::h5a3ccca2eeda95e1  (in diagnostic_docking_cost) + 220  [0x100d9d310]",
+            "_realloc  (in libsystem_malloc.dylib) + 96  [0x1843911f0]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1044  [0x100d9ca84]",
+            "DYLD-STUB$$bzero  (in diagnostic_docking_cost) + 4  [0x1011dd484]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 120  [0x100d9c6e8]",
+            "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 260  [0x184384b50]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1000  [0x100d9ca58]",
+            "_malloc_zone_malloc  (in libsystem_malloc.dylib) + 64  [0x184390530]"
+          ]
+        },
+        {
+          "inclusive_samples": 1,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x100d98d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 1932  [0x100d9cdfc]",
+            "_xzm_free_main  (in libsystem_malloc.dylib) + 736  [0x18438d19c]"
+          ]
+        }
+      ]
+    }
+  },
+  "review_correction": {
+    "excluded_case": "16-4-resize",
+    "excluded_samples": 1,
+    "excluded_outermost_subtrees": 1,
+    "reason": "docking_cost+1652 is a fixture return PC despite absent explicit fixture frame",
+    "all_saved_memory_paths_unchanged": true,
+    "timed_edge_pending_growth_unchanged": true,
+    "independent_review_sha256": "1eeed2937a1271ad3ef1ca620462ca982d1afff1663b142331ed8c43555b9310"
+  }
+}

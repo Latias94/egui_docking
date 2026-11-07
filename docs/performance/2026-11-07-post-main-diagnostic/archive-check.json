@@ -1,0 +1,7 @@
+{
+  "input_files": 37,
+  "all_members_roundtrip_equal": true,
+  "diagnostic_raw_rows": 1500000,
+  "diagnostic_raw_preserved_as_three_xz": true,
+  "formal_score": false
+}
