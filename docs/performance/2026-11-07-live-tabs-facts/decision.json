@@ -1,0 +1,34 @@
+{
+  "utc": "2026-11-07T13:08:37.390290+00:00",
+  "decision": "reject_restore",
+  "actual_control": "c7508eec3ac44138305797691244ae9c180d7680",
+  "candidate_binary_sha256": "903b610a46bd8e7a1f4250b3251f9aebe2af14e6e600285062e0f2de33081636",
+  "reason": "Initial affected and small-affected thresholds fail; no added confirmation or remaining ordinary gates warranted.",
+  "complete_p50": {
+    "improve": 10,
+    "regress": 30,
+    "ties": 2,
+    "reduction_range_percent": [
+      -10.404383713671361,
+      5.768343331795112
+    ]
+  },
+  "affected_p50": {
+    "affected": {
+      "improve": 4,
+      "regress": 12,
+      "ties": 2
+    },
+    "small_affected": {
+      "improve": 1,
+      "regress": 4,
+      "ties": 1
+    }
+  },
+  "ordinary_gates_passed": 3,
+  "full_twelve_gate_qualification": false,
+  "work_and_vectors_pass": true,
+  "all_324_sources_restored": true,
+  "retained_runtime": "0e441c8",
+  "retained_ImGui_inventory": 30
+}
