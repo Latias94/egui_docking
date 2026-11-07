@@ -52,3 +52,8 @@ round-trips against its original bytes. The
 [decision](2026-11-07-child-rows/decision.json) binds the exact frozen patch and
 verifies all three restored source identities. No rejected runtime change is
 retained; later candidates must use the retained gather-based composition.
+
+The [independent evidence review](2026-11-07-child-rows/evidence-review.md)
+recomputes every phase, verifies all complete vectors and immutable source/binary
+bindings, and corroborates rejection plus exact three-source restoration. It
+finds no evidence blocker and does not mark the overall objective complete.
