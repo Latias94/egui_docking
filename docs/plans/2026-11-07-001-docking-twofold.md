@@ -335,3 +335,10 @@ The target remains 28/42. Next measure the separately reviewed SmallVec
 continuation, fused control transitions and checked-axis compiler-boundary
 follow-up. A fresh unified-head physical drag-back CI failure is being traced
 on its immutable head; do not confuse its failure with unpushed output WIP.
+
+The standalone SmallVec16 continuation passes all ordinary/work/vector gates
+but regresses every complete p50 against packed results, by 2.52–33.01%.
+Reject its exact eight-source/configuration patch and preserve the
+[complete failed experiment](../performance/2026-11-07-smallvec-stack.md).
+The retained target remains 28/42. Rebase fused transitions onto the standard
+Vec and packed output parent; the SmallVec composition is not retained.
