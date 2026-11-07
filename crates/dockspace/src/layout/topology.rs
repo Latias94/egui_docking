@@ -140,47 +140,54 @@ impl RootStructure {
         read_leaf: &mut impl FnMut(NodeId) -> Result<Constraints, LayoutError>,
         metrics: LayoutMetrics,
         minimums_only: bool,
-    ) -> Result<Vec<SubtreeMeasurement>, LayoutError> {
+    ) -> Result<(Vec<NodeResult>, Option<usize>), LayoutError> {
         let zero = LogicalSize::new(0.0, 0.0)?;
-        let empty = SubtreeMeasurement {
+        let empty = NodeResult {
+            rect: LogicalRect::new(0.0, 0.0, 0.0, 0.0)?,
             constraints: Constraints::new(zero, zero)?,
-            contains_central: false,
         };
         let mut values = vec![empty; self.nodes.len()];
+        let mut central_leaf_row = None;
         let mut child_values = Vec::new();
         for &row in &self.postorder {
             let node = &self.nodes[row];
-            values[row] = match &node.kind {
-                RootNodeKind::Tabs => SubtreeMeasurement {
-                    constraints: read_leaf(node.id)?,
-                    contains_central: central == Some(node.id),
-                },
+            values[row].constraints = match &node.kind {
+                RootNodeKind::Tabs => {
+                    let constraints = read_leaf(node.id)?;
+                    if central == Some(node.id) {
+                        central_leaf_row = Some(row);
+                    }
+                    constraints
+                }
                 RootNodeKind::Split {
                     payload, children, ..
                 } => {
                     child_values.clear();
-                    child_values.extend(
-                        self.children[children.clone()]
-                            .iter()
-                            .map(|&row| values[row]),
-                    );
-                    SubtreeMeasurement {
-                        constraints: compose_constraints(
-                            node.id,
-                            payload.axis(),
-                            &child_values,
-                            metrics,
-                            minimums_only,
-                        )?,
-                        contains_central: child_values.iter().any(|child| child.contains_central),
-                    }
+                    child_values.extend(self.children[children.clone()].iter().map(|&row| {
+                        SubtreeMeasurement {
+                            constraints: values[row].constraints,
+                            contains_central: false,
+                        }
+                    }));
+                    compose_constraints(
+                        node.id,
+                        payload.axis(),
+                        &child_values,
+                        metrics,
+                        minimums_only,
+                    )?
                 }
             };
         }
-        self.check_central(root, central, &values)?;
-        Ok(values)
+        if let Some(central) = central
+            && central_leaf_row.is_none()
+        {
+            return Err(LayoutError::CentralNodeNotReachable { root, central });
+        }
+        Ok((values, central_leaf_row))
     }
 
+    #[cfg(test)]
     fn check_central(
         &self,
         root: RootId,

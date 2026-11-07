@@ -301,3 +301,12 @@ Retain this one-file change with the unchanged solver and
 The target remains 28/42, with small ratios now 2.12–4.20x in this campaign.
 Continue unified values, committed weight checks and the reviewed concrete
 command ownership deletions. Compact-frame CI `42318019349` is still running.
+
+Unified measurement/projection values pass all ordinary gates (2,072 production
+core, 2,248 workspace and 292/335 host tests) and complete work/vector equality.
+Against binary inputs, 39/42 complete medians improve, two regress and one ties.
+Retain the fresh shared owner and temporary scalar central route with
+[all adverse cases and initialization costs](../performance/2026-11-07-unified-values.md).
+The total is still 28/42; all small cells remain above 2x. Continue the
+committed/no-override weight-check boundary and reviewed command ownership
+combination before evaluating more invasive output/directory alternatives.

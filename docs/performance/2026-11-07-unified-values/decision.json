@@ -1,0 +1,67 @@
+{
+  "utc": "2026-11-07T00:54:18.766510+00:00",
+  "decision": "retain one fresh NodeResult owner for measurement and projection",
+  "actual_control_commit": "59a498086caee70ec9e3d2403711f16bfff6dc09",
+  "candidate_binary_sha256": "270bbd69fd9856dddb8ea22ba0a9ed7edfa74a0b3e09a0f3101dac89f9a9300f",
+  "reason": "39/42 complete p50 improve, two regress and one ties; one fresh owner and scalar central route preserve complete semantics",
+  "statistics": {
+    "59a498086caee70ec9e3d2403711f16bfff6dc09": {
+      "p50": {
+        "improve": 39,
+        "regress": 2,
+        "ties": 1,
+        "reduction_range_percent": [
+          -2.8806584362139898,
+          10.276923076923072
+        ]
+      },
+      "p95": {
+        "improve": 31,
+        "regress": 10,
+        "ties": 1,
+        "reduction_range_percent": [
+          -19.267532467532476,
+          22.82807200626141
+        ]
+      },
+      "max": {
+        "improve": 25,
+        "regress": 16,
+        "ties": 1,
+        "reduction_range_percent": [
+          -339.6154829908773,
+          88.38444729108582
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 2,
+        "regress": 40,
+        "ties": 0,
+        "reduction_range_percent": [
+          -294.14414414414415,
+          10.484756432309773
+        ]
+      },
+      "p95": {
+        "improve": 4,
+        "regress": 38,
+        "ties": 0,
+        "reduction_range_percent": [
+          -342.4746075715605,
+          12.25145525981608
+        ]
+      },
+      "max": {
+        "improve": 11,
+        "regress": 31,
+        "ties": 0,
+        "reduction_range_percent": [
+          -5201.857585139319,
+          89.26969696969697
+        ]
+      }
+    }
+  }
+}

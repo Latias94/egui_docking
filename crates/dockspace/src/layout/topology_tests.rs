@@ -928,6 +928,145 @@ fn minimum_measurement_errors_precede_override_validation_for_cold_and_warm_topo
 }
 
 #[test]
+fn central_ancestor_depths_keep_fresh_reader_order_and_delayed_minimum_projection() {
+    for depth in [0, 1, 4] {
+        let mut builder = Workspace::builder();
+        let central = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        let mut node = central;
+        let mut leaves = vec![central];
+        let mut ancestors = Vec::new();
+        for level in 0..depth {
+            let sibling = builder.insert_node(Node::tabs([ItemId::new(level + 2)]));
+            let (children, central_index) = if level % 2 == 0 {
+                leaves.insert(0, sibling);
+                ([sibling, node], 1)
+            } else {
+                leaves.push(sibling);
+                ([node, sibling], 0)
+            };
+            let axis = if level % 2 == 0 {
+                Axis::Horizontal
+            } else {
+                Axis::Vertical
+            };
+            node = builder.insert_node(Node::split(axis, children, [0.25, 0.75]).unwrap());
+            ancestors.push((node, central_index));
+        }
+        builder.set_root(ROOT, RootRecord::new(node).with_central(central));
+        builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+        let workspace = builder.build().unwrap();
+        let leaf = Constraints::new(
+            LogicalSize::new(1.0, 2.0).unwrap(),
+            LogicalSize::new(512.0, 512.0).unwrap(),
+        )
+        .unwrap();
+        let constraints = leaves
+            .iter()
+            .map(|&node| (node, leaf))
+            .collect::<BTreeMap<_, _>>();
+        let bounds = LogicalRect::new(3.0, 5.0, 240.0, 180.0).unwrap();
+        let metrics = LayoutMetrics::new(1.0).unwrap();
+        let mut reads = Vec::new();
+        let actual = project_root(
+            &workspace,
+            ROOT,
+            bounds,
+            |node| {
+                reads.push(node);
+                constraints.get(&node).copied()
+            },
+            metrics,
+        );
+        assert_eq!(reads, leaves);
+        assert_eq!(
+            reference::capture_result(&actual),
+            reference::project(
+                &workspace,
+                ROOT,
+                bounds,
+                LeafMeasurements::Constraints(&constraints),
+                metrics,
+                &[],
+            )
+        );
+        let projection = actual.unwrap();
+        for &(split, index) in &ancestors {
+            assert_eq!(
+                projection.splits.get(&split).unwrap().central_index,
+                Some(index)
+            );
+        }
+        let minimums = leaves
+            .iter()
+            .map(|&node| (node, leaf.min()))
+            .collect::<BTreeMap<_, _>>();
+        let measured = measure_root_minimums(&workspace, ROOT, &minimums, metrics).unwrap();
+        let projected = measured.project(bounds, &[]);
+        assert_eq!(
+            reference::capture_result(&projected),
+            reference::project(
+                &workspace,
+                ROOT,
+                bounds,
+                LeafMeasurements::Minimums(&minimums),
+                metrics,
+                &[],
+            )
+        );
+    }
+}
+
+#[test]
+fn raw_shared_central_subtree_keeps_membership_in_both_parent_branches() {
+    let mut builder = Workspace::builder();
+    let leaves = [1, 2, 3, 4].map(|item| builder.insert_node(Node::tabs([ItemId::new(item)])));
+    let first =
+        builder.insert_node(Node::equal_split(Axis::Vertical, [leaves[0], leaves[1]]).unwrap());
+    let second =
+        builder.insert_node(Node::equal_split(Axis::Vertical, [leaves[2], leaves[3]]).unwrap());
+    let root = builder.insert_node(Node::equal_split(Axis::Horizontal, [first, second]).unwrap());
+    builder.set_root(ROOT, RootRecord::new(root).with_central(leaves[0]));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+    let mut draft = builder.build().unwrap().into_builder();
+    let Node::Split { children, .. } = draft.draft_mut().nodes.get_mut(second).unwrap() else {
+        unreachable!()
+    };
+    children[0] = first;
+    let leaf = Constraints::new(
+        LogicalSize::new(1.0, 2.0).unwrap(),
+        LogicalSize::new(512.0, 512.0).unwrap(),
+    )
+    .unwrap();
+    let constraints = leaves
+        .map(|node| (node, leaf))
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let minimums = leaves
+        .map(|node| (node, leaf.min()))
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let bounds = LogicalRect::new(0.0, 0.0, 512.0, 512.0).unwrap();
+    let metrics = LayoutMetrics::new(1.0).unwrap();
+    for measurements in [
+        LeafMeasurements::Constraints(&constraints),
+        LeafMeasurements::Minimums(&minimums),
+    ] {
+        let actual = project_draft(&draft, ROOT, bounds, measurements, metrics);
+        assert_eq!(
+            reference::capture_result(&actual),
+            reference::project_draft(&draft, ROOT, bounds, measurements, metrics)
+        );
+        let projection = actual.unwrap();
+        for split in [root, first, second] {
+            assert_eq!(
+                projection.splits.get(&split).unwrap().central_index,
+                Some(0)
+            );
+        }
+    }
+}
+
+#[test]
 fn completed_subtree_reuse_keeps_active_cycle_and_leaf_error_order() {
     let mut builder = Workspace::builder();
     let leaves = [1, 2, 3, 4].map(|item| builder.insert_node(Node::tabs([ItemId::new(item)])));

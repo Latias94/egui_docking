@@ -28,20 +28,12 @@ pub struct NodeMap<T> {
 }
 
 impl<T> NodeMap<T> {
-    pub(super) fn with_capacity(topology: Arc<RootStructure>) -> Self {
-        let values = Vec::with_capacity(topology.nodes.len());
+    pub(super) fn from_values(topology: Arc<RootStructure>, values: Vec<T>) -> Self {
+        debug_assert_eq!(values.len(), topology.nodes.len());
         Self { topology, values }
     }
 
-    pub(super) fn record(&mut self, row: usize, value: T) {
-        if row == self.values.len() {
-            self.values.push(value);
-        } else {
-            self.values[row] = value;
-        }
-    }
-
-    /// Borrows a row already recorded by the current projection.
+    /// Borrows a measured row from this projection's owned buffer.
     pub(super) fn at_row(&self, row: usize) -> &T {
         &self.values[row]
     }
@@ -98,6 +90,12 @@ impl<T> NodeMap<T> {
     /// Visits values in ascending node identity order.
     pub fn values(&self) -> impl DoubleEndedIterator<Item = &T> + ExactSizeIterator {
         self.iter().map(|(_, value)| value)
+    }
+}
+
+impl NodeMap<NodeResult> {
+    pub(super) fn record_rect(&mut self, row: usize, rect: LogicalRect) {
+        self.values[row].rect = rect;
     }
 }
 

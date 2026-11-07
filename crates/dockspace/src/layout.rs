@@ -501,7 +501,7 @@ pub fn project_root_with_overrides(
             .root_structure(root)
             .ok_or(LayoutError::UnfinishedRoot { root })?,
     );
-    let measurements = topology.measure_with_reader(
+    let (values, central_leaf_row) = topology.measure_with_reader(
         root,
         record.central,
         &mut |node| read_leaf(node).ok_or(LayoutError::MissingLeafConstraints { node }),
@@ -510,7 +510,8 @@ pub fn project_root_with_overrides(
     )?;
     project_measurements(
         topology,
-        measurements,
+        values,
+        CentralRoute::tree(central_leaf_row),
         bounds,
         metrics,
         false,
@@ -540,7 +541,8 @@ pub(crate) struct RootMeasurement<'workspace> {
     metrics: LayoutMetrics,
     minimum: LogicalSize,
     topology: Arc<RootStructure>,
-    measurements: Vec<SubtreeMeasurement>,
+    values: Vec<NodeResult>,
+    central_leaf_row: Option<usize>,
     minimums_only: bool,
 }
 
@@ -582,7 +584,8 @@ impl RootMeasurement<'_> {
     ) -> Result<LayoutProjection, LayoutError> {
         project_measurements(
             self.topology,
-            self.measurements,
+            self.values,
+            CentralRoute::tree(self.central_leaf_row),
             bounds,
             self.metrics,
             self.minimums_only,
@@ -593,14 +596,15 @@ impl RootMeasurement<'_> {
 
 fn project_measurements(
     topology: Arc<RootStructure>,
-    mut measurements: Vec<SubtreeMeasurement>,
+    mut values: Vec<NodeResult>,
+    mut central: CentralRoute,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
     minimums_only: bool,
     weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
 ) -> Result<LayoutProjection, LayoutError> {
     if minimums_only {
-        let minimum = measurements[0].constraints.min();
+        let minimum = values[0].constraints.min();
         let leaf_maximum = LogicalSize::new(
             bounds.width().max(minimum.width()),
             bounds.height().max(minimum.height()),
@@ -613,11 +617,12 @@ fn project_measurements(
                     payload, children, ..
                 } => {
                     child_values.clear();
-                    child_values.extend(
-                        topology.children[children.clone()]
-                            .iter()
-                            .map(|&row| measurements[row]),
-                    );
+                    child_values.extend(topology.children[children.clone()].iter().map(|&row| {
+                        SubtreeMeasurement {
+                            constraints: values[row].constraints,
+                            contains_central: false,
+                        }
+                    }));
                     compose_maximum(
                         payload.axis(),
                         &child_values,
@@ -625,23 +630,22 @@ fn project_measurements(
                     )?
                 }
             };
-            let measurement = &mut measurements[row];
+            let measurement = &mut values[row];
             measurement.constraints = Constraints::new(measurement.constraints.min(), maximum)?;
         }
     }
     let mut projection = LayoutProjection {
-        nodes: NodeMap::with_capacity(Arc::clone(&topology)),
+        nodes: NodeMap::from_values(Arc::clone(&topology), values),
         splits: SplitMap::new(Arc::clone(&topology), bounds),
     };
     project_subtree(
         &topology,
         bounds,
         metrics,
-        &measurements,
+        &mut central,
         weight_overrides,
         &mut projection,
     )?;
-    debug_assert_eq!(projection.nodes.len(), topology.nodes.len());
     Ok(projection)
 }
 
@@ -655,9 +659,23 @@ fn project_draft(
 ) -> Result<LayoutProjection, LayoutError> {
     let (topology, measurements) =
         RootStructure::compile_draft(draft.draft(), root, leaves, metrics)?;
+    let central_rows = measurements
+        .iter()
+        .enumerate()
+        .filter_map(|(row, value)| value.contains_central.then_some(row))
+        .collect::<Vec<_>>();
+    let empty_rect = LogicalRect::new(0.0, 0.0, 0.0, 0.0)?;
+    let values = measurements
+        .into_iter()
+        .map(|value| NodeResult {
+            rect: empty_rect,
+            constraints: value.constraints,
+        })
+        .collect();
     project_measurements(
         Arc::new(topology),
-        measurements,
+        values,
+        CentralRoute::Raw(central_rows),
         bounds,
         metrics,
         matches!(leaves, LeafMeasurements::Minimums(_)),
@@ -777,7 +795,7 @@ fn measure_root<'workspace>(
             .root_structure(root)
             .ok_or(LayoutError::UnfinishedRoot { root })?,
     );
-    let measurements = topology.measure_with_reader(
+    let (values, central_leaf_row) = topology.measure_with_reader(
         root,
         record.central,
         &mut |node| leaves.get(node),
@@ -788,9 +806,10 @@ fn measure_root<'workspace>(
         workspace,
         root,
         metrics,
-        minimum: measurements[0].constraints.min(),
+        minimum: values[0].constraints.min(),
         topology,
-        measurements,
+        values,
+        central_leaf_row,
         minimums_only,
     })
 }
@@ -895,6 +914,25 @@ fn total_splitter_extent(
     }
 }
 
+enum CentralRoute {
+    Absent,
+    Tree {
+        leaf: usize,
+        next: usize,
+    },
+    #[cfg(test)]
+    Raw(Vec<usize>),
+}
+
+impl CentralRoute {
+    fn tree(leaf: Option<usize>) -> Self {
+        match leaf {
+            Some(leaf) => Self::Tree { leaf, next: 0 },
+            None => Self::Absent,
+        }
+    }
+}
+
 struct SplitProjectionState {
     row: usize,
     next_child: usize,
@@ -919,21 +957,29 @@ fn project_subtree(
     topology: &RootStructure,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
-    measurements: &[SubtreeMeasurement],
+    central: &mut CentralRoute,
     weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     projection: &mut LayoutProjection,
 ) -> Result<(), LayoutError> {
     let mut stack = vec![ProjectionFrame::Enter { row: 0, bounds }];
     let mut scratch = ProjectionScratch::default();
+    let mut visited_prefix = 0;
     while let Some(frame) = stack.pop() {
         match frame {
             ProjectionFrame::Enter { row, bounds } => {
+                assert!(
+                    row <= visited_prefix,
+                    "projection row skips its first-visit prefix"
+                );
+                if row == visited_prefix {
+                    visited_prefix += 1;
+                }
                 if let Some(state) = prepare_split_projection(
                     topology,
                     row,
                     bounds,
                     metrics,
-                    measurements,
+                    central,
                     weight_overrides,
                     projection,
                     &mut scratch,
@@ -946,6 +992,8 @@ fn project_subtree(
             }
         }
     }
+    #[cfg(debug_assertions)]
+    debug_assert_eq!(visited_prefix, topology.nodes.len());
     Ok(())
 }
 
@@ -955,20 +1003,14 @@ fn prepare_split_projection(
     row: usize,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
-    measurements: &[SubtreeMeasurement],
+    central: &mut CentralRoute,
     weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     projection: &mut LayoutProjection,
     scratch: &mut ProjectionScratch,
 ) -> Result<Option<SplitProjectionState>, LayoutError> {
     let node = &topology.nodes[row];
     let node_id = node.id;
-    projection.nodes.record(
-        row,
-        NodeResult {
-            rect: bounds,
-            constraints: measurements[row].constraints,
-        },
-    );
+    projection.nodes.record_rect(row, bounds);
     let RootNodeKind::Split {
         payload,
         children: child_range,
@@ -976,12 +1018,15 @@ fn prepare_split_projection(
         ..
     } = &node.kind
     else {
+        if matches!(central, CentralRoute::Tree { leaf, .. } if *leaf == row) {
+            *central = CentralRoute::Absent;
+        }
         return Ok(None);
     };
     let axis = payload.axis();
     let children = &topology.children[child_range.clone()];
     let axis_constraint = |&row: &usize| {
-        let constraints = measurements[row].constraints;
+        let constraints = projection.nodes.at_row(row).constraints;
         match axis {
             Axis::Horizontal => AxisConstraint {
                 min: constraints.min().width(),
@@ -1034,9 +1079,21 @@ fn prepare_split_projection(
             }
         }
     };
-    let central_index = children
-        .iter()
-        .position(|&row| measurements[row].contains_central);
+    let central_index = match central {
+        CentralRoute::Tree { leaf, next } if *next == row => {
+            // The frontier's subtree contains this leaf; child starts are preorder rows.
+            let index = children.iter().rposition(|&child| child <= *leaf);
+            if let Some(index) = index {
+                *next = children[index];
+            }
+            index
+        }
+        #[cfg(test)]
+        CentralRoute::Raw(rows) => children
+            .iter()
+            .position(|row| rows.binary_search(row).is_ok()),
+        _ => None,
+    };
     let extent = match axis {
         Axis::Horizontal => bounds.width(),
         Axis::Vertical => bounds.height(),
