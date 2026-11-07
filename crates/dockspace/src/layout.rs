@@ -985,7 +985,8 @@ fn project_subtree(
     weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     projection: &mut LayoutProjection,
 ) -> Result<(), LayoutError> {
-    let mut stack = vec![ProjectionFrame::Enter { row: 0, bounds }];
+    let mut stack = Vec::with_capacity(topology.nodes.len().min(8));
+    stack.push(ProjectionFrame::Enter { row: 0, bounds });
     let mut scratch = ProjectionScratch::default();
     let mut visited_prefix = 0;
     while let Some(frame) = stack.pop() {
