@@ -3,7 +3,7 @@
   "decision": "reject exact ordinary numerical inline hint",
   "actual_control_commit": "eb94cb242722962c9e0d88074d81cf462d784357",
   "candidate_binary_sha256": "56fb894c43f61e3dd70bdc7c38451a607a7c221592a813c5482f6c18678e2b14",
-  "reason": "mixed18improve/19regress/5ties;11of14large medians regress; small gains not stable across both groups; no threshold progress",
+  "reason": "mixed18improve/19regress/5ties;11of14large medians regress; single-view small directions vary across groups; four-view center/edge improve in both; no threshold progress",
   "runtime_patch_sha256": "89232b061e93e91a0f355c6f64b9ea4ae1b4a176dc90e1db155ad6a1f2fdf3f6",
   "statistics": {
     "eb94cb242722962c9e0d88074d81cf462d784357": {

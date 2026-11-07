@@ -47,3 +47,9 @@ only the frozen single-line delta restores the entire layout to `eb94cb2`.
 Continue the exact unchanged-assigned-total reuse, axis compiler-boundary,
 persistent-directory and binary-measurement candidates. This rejection is not
 a stopping decision.
+
+The [independent evidence review](2026-11-07-numeric-inline/evidence-review.md)
+reproduces every result and immutable source restoration. Small four-view
+center and edge improve in both groups; the single-view directions vary.
+Those favorable small cells remain explicit alongside the broad large-cell
+regression and unchanged target count.
