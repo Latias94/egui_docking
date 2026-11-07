@@ -69,3 +69,9 @@ The [independent evidence review](2026-11-07-binary-inputs/evidence-review.md)
 binds immutable `59a4980` to `dc689a6`, verifies every input and complete vector,
 and recomputes all five phases and comparison statistics. It supports the
 bounded retention decision and confirms the remaining target is incomplete.
+
+Fresh remote CI run `42319679465` at exact `59a4980` passes all six jobs,
+including actual native ownership/backpressure, editor lifecycle, and physical
+X11/XTest docking. The [complete run receipt](2026-11-07-binary-inputs/remote-check.json)
+and compressed all-job log retain exact-head verification. Later runtime
+changes still require fresh remote CI.
