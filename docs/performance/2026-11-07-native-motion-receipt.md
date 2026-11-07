@@ -48,3 +48,21 @@ The [final test-adaptation review](2026-11-07-native-motion-receipt/test-adaptat
 confirms only explicit test texture disposal after formatting. Production
 code and all assertions retain their reviewed bytes; final hashes match the
 executed qualification receipt.
+
+Fresh [CI run 42337299402](https://github.com/Latias94/egui_docking/actions/runs/42337299402)
+at exact implementation head c1ed518 now passes all six jobs, including the
+actual X11/XTest sequence. At Child threshold step 50, the consumed receipt
+records Move sequence 6 at (12,15) with primary down, followed by Gone sequence 7
+and latest_pos=None. A current-position-only barrier could not observe this
+state; the new receipt still proves the actual fresh UI motion. Subsequent
+route ACKs, exact Center input/preview, release, Center merge and quiescent
+retirement pass. The [run receipt](2026-11-07-native-motion-receipt/remote-run.json)
+and full compressed native log preserve the real observation. This records
+the demonstrated sequence on the repaired head; it does not invent missing
+raw-event/ACK order for either historical failed batch.
+
+The [independent remote review](2026-11-07-native-motion-receipt/remote-evidence-review.md)
+checks the exact fix-head source hashes, all six job conclusions, 63 Linux
+physical-binary unit tests and the complete real X11 trace, including route
+restore, DestroyNotify, viewport removal and quiescence. No further diagnostic
+framework is required by this finite successful profile.
