@@ -1,0 +1,40 @@
+{
+  "utc": "2026-11-07T13:10:44.799380+00:00",
+  "merged_main": "c7508eec3ac44138305797691244ae9c180d7680",
+  "retained_runtime": "0e441c8ddeb6f85b9b0e8237303b5def32e178ae",
+  "frozen_control_sha256": "3a885b09604d6552acb307d07e87d0ea40247b99866fcfcb8c37bb7d3bb8819b",
+  "all_324_formal_sources_match": true,
+  "source_receipt_sha256": "03a4404a1fa9ed1f38a8aad04e3cef4a64e4f984b0d9ff7bb55d758f6ea262f6",
+  "retained_inventory": {
+    "16": {
+      "within_twofold": 2,
+      "conditions": 14,
+      "ratio_p50_range": [
+        1.8111,
+        3.1244
+      ]
+    },
+    "128": {
+      "within_twofold": 14,
+      "conditions": 14,
+      "ratio_p50_range": [
+        1.2285,
+        1.4969
+      ]
+    },
+    "1024": {
+      "within_twofold": 14,
+      "conditions": 14,
+      "ratio_p50_range": [
+        0.8292,
+        1.1445
+      ]
+    }
+  },
+  "post_main_runtime_changes_retained": false,
+  "candidate_count": 9,
+  "all_candidates_rejected_and_restored": true,
+  "numerical_goal_achieved": false,
+  "no_lower_bound_claim": true,
+  "final_publication_and_exact_head_CI": "pending; merged-main receipt only qualifies c7508ee"
+}

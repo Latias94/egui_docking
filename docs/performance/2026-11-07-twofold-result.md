@@ -218,3 +218,17 @@ predeclared performance selection against this retained runtime. Checked-total
 reuse and explicit two-child initialization were rejected. All 324 formal inputs
 were restored; the result and runtime in this report remain unchanged. The
 follow-up does not establish a complete binary solver's performance limit.
+
+## Main merge and current-source continuation
+
+The qualified branch was subsequently fast-forwarded into main at `c7508ee`;
+that main head passes all six CI jobs. The user then authorized continued
+optimization. A new source-matched diagnostic and nine isolated treatments
+against the retained runtime find no candidate meeting its predeclared
+complete-operation rules. All runtime/test deltas are restored exactly, and
+all 324 formal inputs match the qualified control. The retained result in
+this report remains 30/42. The
+[post-merge report](2026-11-07-post-main-result.md) preserves the new location
+evidence, both additive confirmations, all negative results, independent
+continuation assessments and publication obligations. The older stopping
+reviews above describe their earlier checkpoint, not this later search.

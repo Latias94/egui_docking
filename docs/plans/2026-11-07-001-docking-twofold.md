@@ -421,3 +421,52 @@ runtime remains `0e441c8`, with no new oracle-test or production change. See
 the [follow-up evidence](../performance/2026-11-07-binary-solver-followup.md).
 This tests two numerical initialization hypotheses, not every possible binary
 water-filling algorithm or a theoretical limit.
+
+## Main merge and further current-source experiments
+
+Main was fast-forwarded to `c7508ee` without binding any worktree to main.
+Its fresh six-job CI run `42363449111` passes, including physical docking,
+drag-back/release, routing restoration and native window retirement. Further
+work continues on `optimize/docking-small-pane`; user authorization includes
+publishing the final reviewed result and continued architectural changes.
+
+A new diagnostic of retained runtime `0e441c8` locates surviving source-root
+existence checks, root-build stack growth, temporary placement rosters,
+generic binary arithmetic, clone-then-grow Tabs storage, release prefix
+bookkeeping and target recapture atomics. Nine isolated candidates are
+implemented and compared against the actual frozen retained control. The
+source-nonempty and equal-binary candidates receive additive confirmations;
+their original observations remain. All nine fail their declared selection
+or regression-protection rules and are rejected, with precise restoration
+of every modified source/test file. All 324 formal inputs match the control.
+
+The final six candidates use a predeclared early screen after three ordinary
+gates, work equality and complete vectors, reserving the remaining nine gates
+for a promising implementation before retention. They are not claimed to
+have full twelve-gate qualification. No runtime delta is retained in this
+continuation, and no favorable independent ImGui campaign replaces the
+retained 30/42 inventory. Both products' formal topology is binary; sixteen
+panes is a leaf count, not a sixteen-way split.
+
+After the seventh decision, independent review finds another concrete owner
+deletion and challenges the initial stop. Synchronous topology borrowing and
+scalar root issuance are separately implemented against the same retained
+control, preserving complete output and selection authority. Both fail their
+declared complete-operation gates and are restored. The latter also runs its
+new internal restoration witness separately from the original targeted set.
+These followups resolve the new evidence rather than treating the earlier
+candidate count as a stopping criterion.
+
+Both updated independent current-source challenges now support ending this
+runtime search. No new candidate is retained, the result is 30/42 with twelve
+small misses, and no lower bound or exhaustive search is claimed. The final
+report links their updated opinions and the intermediate challenge that led
+to the last two experiments. Commit the evidence, fast-forward the reviewed
+head to main without attaching main to a worktree, and verify all six jobs
+on that exact published head before marking the autonomous goal complete.
+
+See the [current-source diagnostic](../performance/2026-11-07-post-main-diagnostic.md)
+and [complete continuation report](../performance/2026-11-07-post-main-result.md)
+for per-treatment evidence, independent stopping challenges and the practical
+limits of the conclusion. A final publication head still requires its own
+six-job CI; the merged `c7508ee` receipt cannot qualify a later head.

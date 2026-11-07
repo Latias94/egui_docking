@@ -1,0 +1,28 @@
+{
+  "utc": "2026-11-07T13:45:14.213723+00:00",
+  "decision": "end_current_runtime_search_and_publish",
+  "retained_runtime": "0e441c8ddeb6f85b9b0e8237303b5def32e178ae",
+  "actual_control": "c7508eec3ac44138305797691244ae9c180d7680",
+  "retained_binary_sha256": "3a885b09604d6552acb307d07e87d0ea40247b99866fcfcb8c37bb7d3bb8819b",
+  "all_324_formal_inputs_restored": true,
+  "retained_result": {
+    "within_2x": 30,
+    "required": 42,
+    "small_misses": 12
+  },
+  "numerical_target_achieved": false,
+  "post_main_runtime_candidate_retained": false,
+  "stopping_reason": "All currently source-located bounded deletions resolved including two discovered in intermediate stopping review; no further bounded candidate supported sufficiently against metadata, caller and complete-output tradeoffs. Independent current-source challenges agree on practical stop.",
+  "not_claimed": [
+    "theoretical lower bound",
+    "optimality",
+    "all-cell success",
+    "untested alternatives empirically refuted",
+    "exclusive causal shares from inclusive samples"
+  ],
+  "stopping_reviews_sha256": {
+    "second": "780ea34cddb5df0d1ea3968639036437774037d0af4020ddd290c3ccd1828be2",
+    "first": "ebc928019e6f7efad6c9cd1177c5380f47c2c760ca86f53bb03f7bbe812f2989"
+  },
+  "publication": "Required next: fast-forward reviewed final commit to main without a main worktree, verify exact head six CI jobs including physical X11 lifetime and release; goal remains active until done."
+}
