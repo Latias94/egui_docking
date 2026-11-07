@@ -54,3 +54,8 @@ not interchangeable. The [decision](2026-11-07-axis-inline-packed/decision.json)
 verifies that reversing only the frozen three-path patch restores the full
 actual retained sources, including exact-total reuse. Continue the persistent
 directory and binary measurement-gather experiments separately.
+
+The [independent evidence review](2026-11-07-axis-inline-packed/evidence-review.md)
+reproduces all statistics, full vectors, ordinary/work qualification and
+the immutable three-path restoration. It separately binds the original author
+parent and actual measured exact-total parent; no retained hunk is erased.
