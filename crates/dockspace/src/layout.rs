@@ -422,7 +422,11 @@ fn solve_validated_axis_into(
         );
     }
 
-    let assigned = checked_sum(sizes.iter().copied(), "assigned size")?;
+    let assigned = if assigned == extent {
+        assigned
+    } else {
+        checked_sum(sizes.iter().copied(), "assigned size")?
+    };
     let tolerance = allocation_tolerance(extent, min_total, max_total);
     let overflow = if assigned > extent + tolerance {
         assigned - extent

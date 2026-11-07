@@ -1,0 +1,69 @@
+{
+  "utc": "2026-11-07T03:35:33.912282+00:00",
+  "decision": "retain bounded exact unchanged-total reuse with mixed results",
+  "actual_control_commit": "eb94cb242722962c9e0d88074d81cf462d784357",
+  "candidate_binary_sha256": "ccbc1be2fe9d0c14b63e8fbed845fda6332148786485c539b9166d6efdcca5f3",
+  "runtime_patch_sha256": "0924aee8257aacd3719dd35c8e2410943379f5515c16d50302acc0743db0bc5b",
+  "reason": "source removes unchanged exact-equality reduction;26complete median improvements,13regressions,3ties; small9/2/3; all tail regressions remain; target still28of42",
+  "statistics": {
+    "eb94cb242722962c9e0d88074d81cf462d784357": {
+      "p50": {
+        "improve": 26,
+        "regress": 13,
+        "ties": 3,
+        "reduction_range_percent": [
+          -1.9021739130434812,
+          8.320000000000006
+        ]
+      },
+      "p95": {
+        "improve": 21,
+        "regress": 21,
+        "ties": 0,
+        "reduction_range_percent": [
+          -25.573333333333338,
+          20.827163558241246
+        ]
+      },
+      "max": {
+        "improve": 17,
+        "regress": 25,
+        "ties": 0,
+        "reduction_range_percent": [
+          -373.1584479285276,
+          88.10087780409643
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 2,
+        "regress": 40,
+        "ties": 0,
+        "reduction_range_percent": [
+          -262.21889055472263,
+          12.855521668203417
+        ]
+      },
+      "p95": {
+        "improve": 4,
+        "regress": 38,
+        "ties": 0,
+        "reduction_range_percent": [
+          -315.1260504201681,
+          18.039556450992755
+        ]
+      },
+      "max": {
+        "improve": 8,
+        "regress": 34,
+        "ties": 0,
+        "reduction_range_percent": [
+          -773.9819788598163,
+          79.56365984532833
+        ]
+      }
+    }
+  },
+  "qualified_sources_still_match": true
+}

@@ -356,3 +356,10 @@ five ties, including eleven large regressions. Reject the exact one-line
 delta and preserve [the complete evidence](../performance/2026-11-07-numeric-inline.md).
 The retained result remains 28/42; continue actual redundant-total reuse and
 the remaining independently reviewed architecture candidates.
+
+Exact unchanged-assigned-total reuse passes all ordinary/work/vector gates.
+Retain the bounded one-hunk read reduction with mixed performance: 26 complete
+median improvements, 13 regressions and three ties, while p95 splits21/21 and
+max regresses25/42. Preserve [every negative result](../performance/2026-11-07-exact-assigned-total.md).
+The target remains28/42. Rebind the remaining axis, persistent-directory and
+binary-gather candidates to this actual retained parent before execution.
