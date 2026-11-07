@@ -632,10 +632,8 @@ fn projects_ten_thousand_nested_splits_without_call_stack_growth() {
     assert_eq!(projection.nodes[&subtree].rect, bounds);
     assert_eq!(projection.nodes[&central].constraints, leaf);
     for split in projection.splits.values() {
-        assert_eq!(split.child_minimum_extents.len(), 2);
-        assert_eq!(split.child_maximum_extents.len(), 2);
-        assert_eq!(split.child_extents.len(), 2);
-        assert_eq!(split.splitter_rects.len(), 1);
+        assert_eq!(split.children.len(), 2);
+        assert_eq!(split.splitter_rects().count(), 1);
     }
     drop(projection);
 }

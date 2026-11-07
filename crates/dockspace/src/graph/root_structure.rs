@@ -61,7 +61,6 @@ pub(crate) enum RootNodeKind {
         payload: SharedSplit,
         children: Range<usize>,
         split: usize,
-        splitters: Range<usize>,
     },
 }
 
@@ -74,7 +73,6 @@ pub(crate) struct RootStructure {
     pub(crate) postorder: Vec<usize>,
     pub(crate) ordered_rows: Vec<usize>,
     pub(crate) split_rows: Vec<usize>,
-    pub(crate) splitter_count: usize,
 }
 
 enum BuildFrame {
@@ -177,13 +175,10 @@ impl RootStructure {
                             let child_count = payload.children().len();
                             let start = structure.children.len();
                             structure.children.resize(start + child_count, 0);
-                            let first_splitter = structure.splitter_count;
-                            structure.splitter_count += child_count.saturating_sub(1);
                             structure.nodes[row].kind = RootNodeKind::Split {
                                 payload,
                                 children: start..structure.children.len(),
                                 split: structure.split_rows.len(),
-                                splitters: first_splitter..structure.splitter_count,
                             };
                             structure.split_rows.push(row);
                             pending.push(BuildFrame::Exit(row));

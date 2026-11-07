@@ -74,10 +74,7 @@ pub(super) fn assert_actual_placement(workspace: &Workspace) {
                 (RootNodeKind::Tabs, Node::Tabs { .. }) => {}
                 (
                     RootNodeKind::Split {
-                        payload,
-                        children,
-                        splitters,
-                        ..
+                        payload, children, ..
                     },
                     Node::Split {
                         children: actual, ..
@@ -88,7 +85,6 @@ pub(super) fn assert_actual_placement(workspace: &Workspace) {
                     );
                     assert_eq!(payload.children(), actual);
                     assert_eq!(children.len(), actual.len());
-                    assert_eq!(splitters.len(), actual.len().saturating_sub(1));
                     assert_eq!(
                         structure.children[children.clone()]
                             .iter()

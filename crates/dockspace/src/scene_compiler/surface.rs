@@ -1,6 +1,6 @@
 use super::*;
 use crate::graph::SplitWeight;
-use crate::layout::{NodeMap, NodeResult, RootMeasurement, measure_root_minimums};
+use crate::layout::{ChildProjection, NodeMap, NodeResult, RootMeasurement, measure_root_minimums};
 
 #[cfg(test)]
 #[path = "surface/junction_compile_tests.rs"]
@@ -887,20 +887,14 @@ fn compile_root(
                     .get(node)
                     .ok_or(SceneCompilationError::MissingSplitProjection { root, split: *node })?;
                 let hit_rects = splitter_hit_rects(
-                    split.splitter_rects,
+                    split.children,
                     *axis,
                     config.splitter_hit_extent(),
                     bounds,
                 )?;
                 let mut resize_facts = None;
                 let operable = policy.splitter_resize_is_allowed(*axis, surface);
-                for (index, (splitter, hit)) in split
-                    .splitter_rects
-                    .iter()
-                    .copied()
-                    .zip(hit_rects)
-                    .enumerate()
-                {
+                for (index, (splitter, hit)) in split.splitter_rects().zip(hit_rects).enumerate() {
                     let id = SplitterSceneId {
                         root,
                         split: *node,
@@ -935,37 +929,39 @@ fn compile_root(
                             node: children[index + 1],
                         })?;
                     let before_minimum_extent =
-                        split.child_minimum_extents.get(index).copied().ok_or(
+                        split.children.get(index).map(|child| child.minimum).ok_or(
                             SceneCompilationError::MissingSplitMinimum {
                                 root,
                                 split: *node,
                                 child: children[index],
                             },
                         )?;
-                    let after_minimum_extent =
-                        split.child_minimum_extents.get(index + 1).copied().ok_or(
-                            SceneCompilationError::MissingSplitMinimum {
-                                root,
-                                split: *node,
-                                child: children[index + 1],
-                            },
-                        )?;
+                    let after_minimum_extent = split
+                        .children
+                        .get(index + 1)
+                        .map(|child| child.minimum)
+                        .ok_or(SceneCompilationError::MissingSplitMinimum {
+                            root,
+                            split: *node,
+                            child: children[index + 1],
+                        })?;
                     let before_maximum_extent =
-                        split.child_maximum_extents.get(index).copied().ok_or(
+                        split.children.get(index).map(|child| child.maximum).ok_or(
                             SceneCompilationError::MissingSplitMaximum {
                                 root,
                                 split: *node,
                                 child: children[index],
                             },
                         )?;
-                    let after_maximum_extent =
-                        split.child_maximum_extents.get(index + 1).copied().ok_or(
-                            SceneCompilationError::MissingSplitMaximum {
-                                root,
-                                split: *node,
-                                child: children[index + 1],
-                            },
-                        )?;
+                    let after_maximum_extent = split
+                        .children
+                        .get(index + 1)
+                        .map(|child| child.maximum)
+                        .ok_or(SceneCompilationError::MissingSplitMaximum {
+                            root,
+                            split: *node,
+                            child: children[index + 1],
+                        })?;
                     let (child_extents, effective_weights) =
                         resize_facts.get_or_insert_with(|| {
                             let effective_weights = root_overrides
@@ -973,7 +969,11 @@ fn compile_root(
                                 .find(|override_| override_.source().node() == *node)
                                 .map_or(weights.as_slice(), |override_| override_.weights());
                             (
-                                Arc::<[f64]>::from(split.child_extents),
+                                split
+                                    .children
+                                    .iter()
+                                    .map(|child| child.extent)
+                                    .collect::<Arc<[f64]>>(),
                                 Arc::<[SplitWeight]>::from(effective_weights),
                             )
                         });
@@ -3231,14 +3231,15 @@ pub(super) fn edge_preview(
 }
 
 fn splitter_hit_rects(
-    splitters: &[LogicalRect],
+    children: &[ChildProjection],
     axis: crate::graph::Axis,
     extent: f64,
     bounds: LogicalRect,
 ) -> Result<Vec<LogicalRect>, GeometryError> {
-    splitters
+    children
         .iter()
         .enumerate()
+        .filter_map(|(index, child)| child.following_gap.as_ref().map(|gap| (index, gap)))
         .map(|(index, splitter)| {
             let center = match axis {
                 crate::graph::Axis::Horizontal => splitter.x() + splitter.width() * 0.5,
@@ -3256,11 +3257,13 @@ fn splitter_hit_rects(
                 crate::graph::Axis::Horizontal => bounds.max().x(),
                 crate::graph::Axis::Vertical => bounds.max().y(),
             };
-            let cell_min = index.checked_sub(1).map_or(axis_min, |previous| {
-                (coordinate(&splitters[previous]) + center) * 0.5
-            });
-            let cell_max = splitters
+            let cell_min = index
+                .checked_sub(1)
+                .and_then(|previous| children[previous].following_gap.as_ref())
+                .map_or(axis_min, |previous| (coordinate(previous) + center) * 0.5);
+            let cell_max = children
                 .get(index + 1)
+                .and_then(|child| child.following_gap.as_ref())
                 .map_or(axis_max, |next| (center + coordinate(next)) * 0.5);
             let hit_min = (center - extent * 0.5).max(cell_min);
             let hit_max = (center + extent * 0.5).min(cell_max).max(hit_min);

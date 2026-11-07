@@ -326,3 +326,12 @@ command cells. Keep all negative cells/tails in the [evidence](../performance/20
 The target remains 28/42. Continue the independently reviewed parent-edge
 result-storage experiment against this actual retained control, then the
 bounded continuation stack and source-motivated compiler-boundary follow-up.
+
+Materialized parent-edge projection results pass all ordinary gates and the
+complete work/vector matrix. Retain the representation with 33/42 complete
+p50 improvements, five regressions and four ties; all adverse tails and wider
+record/scratch/extent-copy costs remain in the [evidence](../performance/2026-11-07-packed-results.md).
+The target remains 28/42. Next measure the separately reviewed SmallVec
+continuation, fused control transitions and checked-axis compiler-boundary
+follow-up. A fresh unified-head physical drag-back CI failure is being traced
+on its immutable head; do not confuse its failure with unpushed output WIP.

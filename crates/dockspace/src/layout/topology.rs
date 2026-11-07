@@ -105,8 +105,6 @@ impl RootStructure {
                         )?,
                         contains_central: child_values.iter().any(|child| child.contains_central),
                     });
-                    let first_splitter = topology.splitter_count;
-                    topology.splitter_count += children.len().saturating_sub(1);
                     topology.nodes[row].kind = RootNodeKind::Split {
                         payload: SharedSplit::new(Arc::clone(
                             workspace
@@ -116,7 +114,6 @@ impl RootStructure {
                         )),
                         children: start..topology.children.len(),
                         split: topology.split_rows.len(),
-                        splitters: first_splitter..topology.splitter_count,
                     };
                     topology.split_rows.push(row);
                     topology.postorder.push(row);

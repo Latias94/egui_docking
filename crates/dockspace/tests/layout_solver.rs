@@ -349,7 +349,12 @@ fn projects_workspace_nodes_and_splitter_rectangles() {
     assert_projection_close(projection.nodes[&leaves[1]].rect.width(), 490.0);
     assert_projection_close(projection.nodes[&leaves[2]].rect.width(), 294.0);
     assert_projection_close(projection.nodes[&leaves[0]].rect.height(), 400.0);
-    let splitters = projection.splits.get(&split).unwrap().splitter_rects;
+    let splitters = projection
+        .splits
+        .get(&split)
+        .unwrap()
+        .splitter_rects()
+        .collect::<Vec<_>>();
     assert_eq!(splitters.len(), 2);
     assert_projection_close(splitters[0].x(), 296.0);
     assert_projection_close(splitters[0].width(), 10.0);
@@ -398,14 +403,29 @@ fn split_projection_exposes_ordered_direct_child_bounds_and_unallocated_extent()
     let projected_split = projection.splits.get(&split).unwrap();
 
     assert_eq!(
-        projected_split.child_minimum_extents,
+        projected_split
+            .children
+            .iter()
+            .map(|child| child.minimum)
+            .collect::<Vec<_>>(),
         vec![10.0, 20.0, 30.0]
     );
     assert_eq!(
-        projected_split.child_maximum_extents,
+        projected_split
+            .children
+            .iter()
+            .map(|child| child.maximum)
+            .collect::<Vec<_>>(),
         vec![100.0, 200.0, 300.0]
     );
-    assert_eq!(projected_split.child_extents, vec![100.0, 200.0, 300.0]);
+    assert_eq!(
+        projected_split
+            .children
+            .iter()
+            .map(|child| child.extent)
+            .collect::<Vec<_>>(),
+        vec![100.0, 200.0, 300.0]
+    );
     assert_eq!(projected_split.central_index, Some(1));
     assert_projection_close(projected_split.overflow, 0.0);
     assert_projection_close(projected_split.unallocated, 180.0);
@@ -454,7 +474,14 @@ fn split_projection_uses_each_direct_subtree_axis_maximum() {
     .expect("nested direct-child maxima should project");
 
     assert_eq!(
-        projection.splits.get(&outer).unwrap().child_maximum_extents,
+        projection
+            .splits
+            .get(&outer)
+            .unwrap()
+            .children
+            .iter()
+            .map(|child| child.maximum)
+            .collect::<Vec<_>>(),
         vec![80.0, 150.0],
         "a perpendicular subtree's axis maximum is the intersection of its children"
     );
@@ -463,7 +490,10 @@ fn split_projection_uses_each_direct_subtree_axis_maximum() {
             .splits
             .get(&nested)
             .unwrap()
-            .child_maximum_extents,
+            .children
+            .iter()
+            .map(|child| child.maximum)
+            .collect::<Vec<_>>(),
         vec![90.0, 110.0],
         "the nested split exposes maxima along its own axis"
     );
@@ -762,11 +792,11 @@ fn projection_uniformly_compresses_splitters_to_fit_collapsed_bounds() {
     .expect("collapsed renderer bounds still have a deterministic projection");
 
     let split = projection.splits.get(&split).expect("split is projected");
-    assert_eq!(split.splitter_rects.len(), 2);
-    assert_projection_close(split.splitter_rects[0].width(), 50.0);
-    assert_projection_close(split.splitter_rects[1].width(), 50.0);
-    assert_projection_close(split.splitter_rects[0].x(), 0.0);
-    assert_projection_close(split.splitter_rects[1].x(), 50.0);
+    assert_eq!(split.splitter_rects().count(), 2);
+    assert_projection_close(split.children[0].following_gap.unwrap().width(), 50.0);
+    assert_projection_close(split.children[1].following_gap.unwrap().width(), 50.0);
+    assert_projection_close(split.children[0].following_gap.unwrap().x(), 0.0);
+    assert_projection_close(split.children[1].following_gap.unwrap().x(), 50.0);
 }
 
 #[test]

@@ -104,7 +104,7 @@ impl Fixture {
             unreachable!();
         };
         let split = self.projection.splits.get(&node).unwrap();
-        let draw = split.splitter_rects[index];
+        let draw = split.children[index].following_gap.unwrap();
         let record = SplitterRecord::new(
             SplitterSceneId {
                 root: ROOT,
@@ -116,11 +116,15 @@ impl Fixture {
             *axis,
             self.projection.nodes[&children[index]].rect,
             self.projection.nodes[&children[index + 1]].rect,
-            split.child_minimum_extents[index],
-            split.child_minimum_extents[index + 1],
-            split.child_maximum_extents[index],
-            split.child_maximum_extents[index + 1],
-            split.child_extents.to_vec(),
+            split.children[index].minimum,
+            split.children[index + 1].minimum,
+            split.children[index].maximum,
+            split.children[index + 1].maximum,
+            split
+                .children
+                .iter()
+                .map(|child| child.extent)
+                .collect::<Vec<_>>(),
             split.central_index,
             weights.clone(),
             SceneLayerKey::surface_base(),
@@ -377,7 +381,15 @@ fn zero_effective_motion_preserves_constrained_split_intent_bitwise() {
     let (fixture, split) = constrained();
     let groups = fixture.groups(&[(split, 0)]);
     assert_eq!(
-        fixture.projection.splits.get(&split).unwrap().child_extents,
+        fixture
+            .projection
+            .splits
+            .get(&split)
+            .unwrap()
+            .children
+            .iter()
+            .map(|child| child.extent)
+            .collect::<Vec<_>>(),
         [200.0, 200.0]
     );
     for requested in [0.0, -48.0] {
@@ -481,7 +493,8 @@ fn fractional_origins_bounds_and_gap_thickness_keep_valid_geometry_available() {
                     thickness,
                 );
                 let initial = fixture.projection.splits.get(&split).unwrap();
-                rounded_gap |= rect_extent(initial.splitter_rects[0], axis) != thickness;
+                rounded_gap |=
+                    rect_extent(initial.children[0].following_gap.unwrap(), axis) != thickness;
                 let groups = fixture.groups(&[(split, 0)]);
                 let delta = match axis {
                     Axis::Horizontal => [17.125, 0.0],
@@ -491,11 +504,11 @@ fn fractional_origins_bounds_and_gap_thickness_keep_valid_geometry_available() {
                 let projected = fixture.project_updates(&updates);
                 close(
                     rect_extent(projected.nodes[&a].rect, axis),
-                    initial.child_extents[0] + 17.125,
+                    initial.children[0].extent + 17.125,
                 );
                 close(
                     rect_extent(projected.nodes[&b].rect, axis),
-                    initial.child_extents[1] - 17.125,
+                    initial.children[1].extent - 17.125,
                 );
             }
         }
@@ -552,7 +565,7 @@ fn small_far_central_keeps_nary_resize_available_on_both_axes() {
         );
         let initial = fixture.projection.splits.get(&split).unwrap();
         assert_eq!(initial.central_index, Some(2));
-        assert_eq!(initial.child_extents[2], 1e-6);
+        assert_eq!(initial.children[2].extent, 1e-6);
         let original_far = fixture.projection.nodes[&central].rect;
         let groups = fixture.groups(&[(split, 0)]);
         assert_eq!(groups.len(), 1);
@@ -612,13 +625,13 @@ fn small_far_central_keeps_nary_resize_available_on_both_axes() {
             );
             close(
                 rect_extent(projected.nodes[&a].rect, axis),
-                initial.child_extents[0] + delta,
+                initial.children[0].extent + delta,
             );
             close(
                 rect_extent(projected.nodes[&b].rect, axis),
-                initial.child_extents[1] - delta,
+                initial.children[1].extent - delta,
             );
-            assert_eq!(resized.child_extents[2], 1e-6);
+            assert_eq!(resized.children[2].extent, 1e-6);
             let far = projected.nodes[&central].rect;
             for (actual, expected) in [
                 (far.min().x(), original_far.min().x()),
@@ -823,7 +836,10 @@ fn large_origin_real_overflow_unallocated_and_compressed_gaps_remain_unavailable
             );
             let projected = fixture.projection.splits.get(&split).unwrap();
             if extent == 0.5 {
-                close(rect_extent(projected.splitter_rects[0], axis), 0.5);
+                close(
+                    rect_extent(projected.children[0].following_gap.unwrap(), axis),
+                    0.5,
+                );
             } else if minimum > 200.0 {
                 assert!(projected.overflow > 0.1);
             } else {

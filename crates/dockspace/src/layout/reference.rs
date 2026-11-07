@@ -56,10 +56,18 @@ pub(super) fn capture(projection: &super::LayoutProjection) -> LayoutProjection 
                     node,
                     SplitProjection {
                         axis: split.axis,
-                        splitter_rects: split.splitter_rects.to_vec(),
-                        child_minimum_extents: split.child_minimum_extents.to_vec(),
-                        child_maximum_extents: split.child_maximum_extents.to_vec(),
-                        child_extents: split.child_extents.to_vec(),
+                        splitter_rects: split.splitter_rects().collect(),
+                        child_minimum_extents: split
+                            .children
+                            .iter()
+                            .map(|child| child.minimum)
+                            .collect(),
+                        child_maximum_extents: split
+                            .children
+                            .iter()
+                            .map(|child| child.maximum)
+                            .collect(),
+                        child_extents: split.children.iter().map(|child| child.extent).collect(),
                         central_index: split.central_index,
                         overflow: split.overflow,
                         unallocated: split.unallocated,

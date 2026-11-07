@@ -17,7 +17,8 @@ use crate::workspace::WorkspaceIndex;
 
 mod projection;
 pub use projection::{
-    LayoutProjection, NodeIter, NodeMap, NodeResult, SplitIter, SplitMap, SplitProjection,
+    ChildProjection, LayoutProjection, NodeIter, NodeMap, NodeResult, SplitIter, SplitMap,
+    SplitProjection,
 };
 
 mod topology;
@@ -636,7 +637,7 @@ fn project_measurements(
     }
     let mut projection = LayoutProjection {
         nodes: NodeMap::from_values(Arc::clone(&topology), values),
-        splits: SplitMap::new(Arc::clone(&topology), bounds),
+        splits: SplitMap::new(Arc::clone(&topology)),
     };
     project_subtree(
         &topology,
@@ -950,6 +951,7 @@ enum ProjectionFrame {
 struct ProjectionScratch {
     constraints: Vec<AxisConstraint>,
     weights: Vec<f64>,
+    sizes: Vec<f64>,
     eligible: Vec<usize>,
 }
 
@@ -1052,14 +1054,13 @@ fn prepare_split_projection(
             &scratch.constraints
         }
     };
-    for ((minimum, maximum), constraint) in projection.splits.child_minimum_extents
-        [child_range.clone()]
-    .iter_mut()
-    .zip(&mut projection.splits.child_maximum_extents[child_range.clone()])
-    .zip(axis_constraints)
+    for (child, constraint) in projection.splits.children[child_range.clone()]
+        .iter_mut()
+        .zip(axis_constraints)
     {
-        *minimum = constraint.min();
-        *maximum = constraint.max();
+        child.minimum = constraint.min();
+        child.maximum = constraint.max();
+        child.following_gap = None;
     }
     let binary_weights;
     let axis_weights = if let Some(overrides) = weight_overrides.get(&node_id) {
@@ -1100,14 +1101,32 @@ fn prepare_split_projection(
     };
     let (splitter_extent, splitter_thickness) =
         projected_splitter_geometry(node_id, children.len(), extent, metrics)?;
+    let mut binary_sizes;
+    let sizes = match children {
+        [_, _] => {
+            binary_sizes = [0.0; 2];
+            binary_sizes.as_mut_slice()
+        }
+        _ => {
+            scratch.sizes.clear();
+            scratch.sizes.resize(children.len(), 0.0);
+            scratch.sizes.as_mut_slice()
+        }
+    };
     let solved = solve_axis_into(
         extent - splitter_extent,
         axis_weights,
         axis_constraints,
         central_index,
-        &mut projection.splits.child_extents[child_range.clone()],
+        sizes,
         &mut scratch.eligible,
     )?;
+    for (child, &extent) in projection.splits.children[child_range.clone()]
+        .iter_mut()
+        .zip(sizes.iter())
+    {
+        child.extent = extent;
+    }
     projection
         .splits
         .set_outcome(*split, central_index, solved.overflow, solved.unallocated);
@@ -1155,7 +1174,6 @@ fn advance_split_projection(
     let RootNodeKind::Split {
         payload,
         children: child_range,
-        splitters,
         ..
     } = &node.kind
     else {
@@ -1167,7 +1185,7 @@ fn advance_split_projection(
     if state.pending_child {
         state.pending_child = false;
         // Descendants cannot overwrite this acyclic parent's solved extent.
-        let size = projection.splits.child_extents[child_range.start + state.next_child - 1];
+        let size = projection.splits.children[child_range.start + state.next_child - 1].extent;
         state.cursor += size;
         if state.next_child < children.len() {
             let splitter = match axis {
@@ -1184,7 +1202,8 @@ fn advance_split_projection(
                     state.splitter_thickness,
                 )?,
             };
-            projection.splits.splitter_rects[splitters.start + state.next_child - 1] = splitter;
+            projection.splits.children[child_range.start + state.next_child - 1].following_gap =
+                Some(splitter);
             state.cursor += state.splitter_thickness;
         }
         stack.push(ProjectionFrame::ContinueSplit(state));
@@ -1204,7 +1223,7 @@ fn advance_split_projection(
                 children: children.len(),
                 weights: children.len(),
             })?;
-    let size = projection.splits.child_extents[child_range.start + state.next_child];
+    let size = projection.splits.children[child_range.start + state.next_child].extent;
     let child_bounds = match axis {
         Axis::Horizontal => LogicalRect::new(state.cursor, bounds.y(), size, bounds.height())?,
         Axis::Vertical => LogicalRect::new(bounds.x(), state.cursor, bounds.width(), size)?,

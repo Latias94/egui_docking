@@ -76,13 +76,17 @@ pub(super) fn prepare_resize_axis_groups(
         if *axis != record.axis()
             || split.axis != *axis
             || id.index >= children.len().checked_sub(1)?
-            || record.child_extents() != split.child_extents
+            || !record
+                .child_extents()
+                .iter()
+                .copied()
+                .eq(split.children.iter().map(|child| child.extent))
             || record.central_index() != split.central_index
             || record.weights() != weights.as_slice()
-            || record.before_minimum_extent() != *split.child_minimum_extents.get(id.index)?
-            || record.after_minimum_extent() != *split.child_minimum_extents.get(id.index + 1)?
-            || record.before_maximum_extent() != *split.child_maximum_extents.get(id.index)?
-            || record.after_maximum_extent() != *split.child_maximum_extents.get(id.index + 1)?
+            || record.before_minimum_extent() != split.children.get(id.index)?.minimum
+            || record.after_minimum_extent() != split.children.get(id.index + 1)?.minimum
+            || record.before_maximum_extent() != split.children.get(id.index)?.maximum
+            || record.after_maximum_extent() != split.children.get(id.index + 1)?.maximum
         {
             return None;
         }
@@ -212,9 +216,21 @@ pub(super) fn prepare_resize_axis_groups(
                             bounds,
                             constraints: result.constraints,
                             weights: weights.clone(),
-                            child_extents: split.child_extents.to_vec(),
-                            child_minimum_extents: split.child_minimum_extents.to_vec(),
-                            child_maximum_extents: split.child_maximum_extents.to_vec(),
+                            child_extents: split
+                                .children
+                                .iter()
+                                .map(|child| child.extent)
+                                .collect(),
+                            child_minimum_extents: split
+                                .children
+                                .iter()
+                                .map(|child| child.minimum)
+                                .collect(),
+                            child_maximum_extents: split
+                                .children
+                                .iter()
+                                .map(|child| child.maximum)
+                                .collect(),
                             child_coefficients: coefficients,
                             central_index: split.central_index,
                         });
@@ -353,16 +369,18 @@ fn validate_split_projection(
     if count < 2
         || split.axis != axis
         || count != weights.len()
-        || count != split.child_extents.len()
-        || count != split.child_minimum_extents.len()
-        || count != split.child_maximum_extents.len()
-        || split.splitter_rects.len() != count - 1
+        || count != split.children.len()
+        || split
+            .children
+            .iter()
+            .enumerate()
+            .any(|(index, child)| child.following_gap.is_some() != (index + 1 < count))
         || split.central_index.is_some_and(|central| central >= count)
     {
         return None;
     }
     let gaps = std::iter::repeat_n(thickness, count - 1).sum::<f64>();
-    let available = split.child_extents.iter().sum::<f64>();
+    let available = split.children.iter().map(|child| child.extent).sum::<f64>();
     let extent = rect_extent(bounds, axis);
     // Child allocation and rectangle max-minus-min may differ by a few ULPs.
     // Judge residuals at the bounds' coordinate scale, without relaxing gaps.
@@ -379,9 +397,9 @@ fn validate_split_projection(
         || split.unallocated < 0.0
         || split.unallocated > extent_tolerance
         || (available + gaps - extent).abs() > extent_tolerance
-        || split.splitter_rects.iter().any(|gap| {
-            (rect_extent(*gap, axis) - thickness).abs()
-                > rect_extent_tolerance(*gap, axis).max(tolerance(thickness, thickness))
+        || split.splitter_rects().any(|gap| {
+            (rect_extent(gap, axis) - thickness).abs()
+                > rect_extent_tolerance(gap, axis).max(tolerance(thickness, thickness))
         })
     {
         return None;
@@ -391,7 +409,7 @@ fn validate_split_projection(
         maximum: 0.0,
     };
     for (index, child) in children.iter().enumerate() {
-        let actual = split.child_extents[index];
+        let actual = split.children[index].extent;
         let child_bounds = projection.nodes.get(child)?.rect;
         let projected = rect_extent(child_bounds, axis);
         if actual <= 0.0
@@ -403,8 +421,8 @@ fn validate_split_projection(
         intersect_extent_interval(
             &mut fixed,
             actual,
-            split.child_minimum_extents[index],
-            split.child_maximum_extents[index],
+            split.children[index].minimum,
+            split.children[index].maximum,
             0.0,
             0.0,
         )?;
@@ -417,7 +435,7 @@ fn intersect_split_intervals(
     split: &SplitProjection<'_>,
     coefficients: &[f64],
 ) -> Option<()> {
-    let total = split.child_extents.iter().sum::<f64>();
+    let total = split.children.iter().map(|child| child.extent).sum::<f64>();
     let total_coefficient = coefficients.iter().sum::<f64>();
     intersect_extent_interval(
         interval,
@@ -427,13 +445,13 @@ fn intersect_split_intervals(
         total_coefficient,
         0.0,
     )?;
-    for (index, (&extent, &coefficient)) in split.child_extents.iter().zip(coefficients).enumerate()
-    {
+    for (child, &coefficient) in split.children.iter().zip(coefficients) {
+        let extent = child.extent;
         intersect_extent_interval(
             interval,
             extent,
-            split.child_minimum_extents[index],
-            split.child_maximum_extents[index],
+            child.minimum,
+            child.maximum,
             coefficient,
             0.0,
         )?;

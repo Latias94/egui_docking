@@ -162,27 +162,39 @@ impl<T> DoubleEndedIterator for NodeIter<'_, T> {
 impl<T> ExactSizeIterator for NodeIter<'_, T> {}
 impl<T> FusedIterator for NodeIter<'_, T> {}
 
+/// Materialized allocation and following gap for one parent-child edge.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ChildProjection {
+    /// Minimum projected extent along the parent split's axis.
+    pub minimum: f64,
+    /// Maximum projected extent along the parent split's axis.
+    pub maximum: f64,
+    /// Actual projected extent along the parent split's axis.
+    pub extent: f64,
+    /// Stored separator after this child; absent for the final child.
+    pub following_gap: Option<LogicalRect>,
+}
+
 /// Borrowed geometry and constraint outcomes for one split node.
-///
-/// Child and splitter slices refer to the projection's flat owned arrays.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplitProjection<'a> {
     /// Direction in which child rectangles were allocated.
     pub axis: Axis,
-    /// Logical rectangles reserved between adjacent children.
-    pub splitter_rects: &'a [LogicalRect],
-    /// Minimum projected extent for each direct child along this split's axis.
-    pub child_minimum_extents: &'a [f64],
-    /// Maximum projected extent for each direct child along this split's axis.
-    pub child_maximum_extents: &'a [f64],
-    /// Actual projected extent for each direct child along this split's axis.
-    pub child_extents: &'a [f64],
+    /// Complete stored results for each direct child in parent-edge order.
+    pub children: &'a [ChildProjection],
     /// Direct child which contains the root's declared central leaf, when any.
     pub central_index: Option<usize>,
     /// Extent by which child minima exceed the split bounds.
     pub overflow: f64,
     /// Extent left unused after every child reached its maximum.
     pub unallocated: f64,
+}
+
+impl<'a> SplitProjection<'a> {
+    /// Visits the already computed separators in child order.
+    pub fn splitter_rects(self) -> impl DoubleEndedIterator<Item = LogicalRect> + 'a {
+        self.children.iter().filter_map(|child| child.following_gap)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -197,20 +209,14 @@ struct SplitOutcome {
 pub struct SplitMap {
     topology: Arc<RootStructure>,
     outcomes: Vec<SplitOutcome>,
-    pub(super) splitter_rects: Vec<LogicalRect>,
-    pub(super) child_minimum_extents: Vec<f64>,
-    pub(super) child_maximum_extents: Vec<f64>,
-    pub(super) child_extents: Vec<f64>,
+    pub(super) children: Vec<ChildProjection>,
 }
 
 impl SplitMap {
-    pub(super) fn new(topology: Arc<RootStructure>, bounds: LogicalRect) -> Self {
+    pub(super) fn new(topology: Arc<RootStructure>) -> Self {
         Self {
             outcomes: vec![SplitOutcome::default(); topology.split_rows.len()],
-            splitter_rects: vec![bounds; topology.splitter_count],
-            child_minimum_extents: vec![0.0; topology.children.len()],
-            child_maximum_extents: vec![0.0; topology.children.len()],
-            child_extents: vec![0.0; topology.children.len()],
+            children: vec![ChildProjection::default(); topology.children.len()],
             topology,
         }
     }
@@ -274,8 +280,6 @@ impl SplitMap {
             payload,
             children,
             split,
-            splitters,
-            ..
         } = &self.topology.nodes[row].kind
         else {
             return None;
@@ -283,10 +287,7 @@ impl SplitMap {
         let outcome = self.outcomes[*split];
         Some(SplitProjection {
             axis: payload.axis(),
-            splitter_rects: &self.splitter_rects[splitters.clone()],
-            child_minimum_extents: &self.child_minimum_extents[children.clone()],
-            child_maximum_extents: &self.child_maximum_extents[children.clone()],
-            child_extents: &self.child_extents[children.clone()],
+            children: &self.children[children.clone()],
             central_index: outcome.central_index,
             overflow: outcome.overflow,
             unallocated: outcome.unallocated,
