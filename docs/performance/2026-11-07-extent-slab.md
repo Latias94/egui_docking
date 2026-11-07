@@ -49,3 +49,8 @@ members round-trip against their original bytes. The
 [decision](2026-11-07-extent-slab/decision.json) binds the measured runtime patch
 and verifies the exact two-source restoration. No rejected production code is
 retained.
+
+The [independent evidence review](2026-11-07-extent-slab/evidence-review.md)
+recomputes every phase and complete statistic, verifies all vectors and exact
+source/binary identities, and corroborates rejection plus the exact restoration.
+It finds no evidence blocker and leaves the overall target active.
