@@ -71,3 +71,8 @@ all checks/work, complete parent composition and independent source reviews.
 Every member round-trips against its original bytes. The
 [decision](2026-11-07-unified-values/decision.json) binds the exact candidate and
 retention boundary. Fresh remote CI is required for new runtime heads.
+
+The [independent evidence review](2026-11-07-unified-values/independent-evidence-review.md)
+recomputes all observations, complete vectors and source/qualification bindings.
+It confirms the exact 39/2/1 p50 distribution and incomplete target, including
+the worst adverse max observation and the source-only rejected draft boundary.
