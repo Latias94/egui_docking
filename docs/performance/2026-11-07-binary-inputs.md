@@ -64,3 +64,8 @@ ordinary checks/work and source reviews. Every member round-trips against its
 original bytes. The [decision](2026-11-07-binary-inputs/decision.json) preserves
 the retention boundary and all complete statistics. New runtime heads require
 fresh remote CI.
+
+The [independent evidence review](2026-11-07-binary-inputs/evidence-review.md)
+binds immutable `59a4980` to `dc689a6`, verifies every input and complete vector,
+and recomputes all five phases and comparison statistics. It supports the
+bounded retention decision and confirms the remaining target is incomplete.
