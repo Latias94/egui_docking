@@ -370,3 +370,11 @@ including every large cell by15.05–25.54%. Reject its exact three-path delta
 and preserve [the complete evidence](../performance/2026-11-07-axis-inline-packed.md).
 The retained exact-total result remains28/42; next qualify native motion
 receipts, then the independent persistent-directory and binary gather trials.
+
+The persistent NodeStore passes all ordinary gates, branch/churn regressions,
+explicitly adapted work and complete vectors, but all42complete medians
+regress67.75–151.02%. Reject its11-source/configuration delta, including the
+five Cargo-resolved locks, and preserve[all evidence](../performance/2026-11-07-persistent-store.md).
+Retained exact-total performance remains28/42. Finish binary measurement
+gathering, then obtain source-matched small-operation diagnosis and independent
+continuation/stopping review. Native motion receipts await fresh Linux CI.

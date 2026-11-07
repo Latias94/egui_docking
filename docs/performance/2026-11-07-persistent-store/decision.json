@@ -1,0 +1,82 @@
+{
+  "utc": "2026-11-07T04:39:31.465714+00:00",
+  "decision": "reject exact persistent NodeStore and all dependency closure edges",
+  "actual_control_commit": "37e388fbc95705204a42e4f8788623873c6ea711",
+  "candidate_binary_sha256": "0a48c0edeaad9185ab85efd0e2671247d72026c24a7aed37e31bd8b0a7758b45",
+  "runtime_patch_sha256": "cc61a7cd4eba27d2dcaa3ee6da7ba304ac76821c36ff1d9ebd4e6bd3c026d0ef",
+  "reason": "all42complete medians regress67.75-151.02%; no cell meets2x; resize also regresses; eliminated livehandlefork traversal doesnot offset newread/update/drop costs",
+  "statistics": {
+    "37e388fbc95705204a42e4f8788623873c6ea711": {
+      "p50": {
+        "improve": 0,
+        "regress": 42,
+        "ties": 0,
+        "reduction_range_percent": [
+          -151.0182511858115,
+          -67.75111834078893
+        ]
+      },
+      "p95": {
+        "improve": 1,
+        "regress": 41,
+        "ties": 0,
+        "reduction_range_percent": [
+          -245.52822680366012,
+          12.654545454545453
+        ]
+      },
+      "max": {
+        "improve": 7,
+        "regress": 35,
+        "ties": 0,
+        "reduction_range_percent": [
+          -537.674089228106,
+          76.99470550668507
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 0,
+        "regress": 42,
+        "ties": 0,
+        "reduction_range_percent": [
+          -580.0,
+          -102.67966439414921
+        ]
+      },
+      "p95": {
+        "improve": 0,
+        "regress": 42,
+        "ties": 0,
+        "reduction_range_percent": [
+          -668.1818181818181,
+          -27.1546066006064
+        ]
+      },
+      "max": {
+        "improve": 5,
+        "regress": 37,
+        "ties": 0,
+        "reduction_range_percent": [
+          -6032.686980609418,
+          53.494960389652505
+        ]
+      }
+    }
+  },
+  "restored_byte_equal_to_control": true,
+  "restored_source_hashes": {
+    "Cargo.toml": "03937455cf6bd2c7124d6c17efc374244324d4d6a64f8c15af430ad7c97d17b7",
+    "Cargo.lock": "f071e3de77e738f557823c49a042472c8bcf261bf168d0c3a792568d589a4210",
+    "crates/dockspace/Cargo.toml": "effacceb9d309c7351ba7e9504101716341ca874e085fea2572e3c79b9e17c03",
+    "crates/dockspace/src/docking_cost.rs": "01d8438fc79095aacae935170aff3ed7eb8b5e497aa368c9966889b789adf2d3",
+    "crates/dockspace/src/drop_resolver.rs": "f8b093f247417b4abe2a79dc13febb0549bf214066c4bc9dc0739a72e2579a7f",
+    "crates/dockspace/src/graph/copy_tests.rs": "fa5478d74b3e851fa74f26dfeb6d0f1bd2176b091ceca0bd3048697cc1be39c4",
+    "crates/dockspace/src/graph/shared_storage.rs": "18c6f75150643779acb9c71c30486634b19f7ccec5677e4cc64ce9043fcc532e",
+    "integration/dockspace-host-harness/Cargo.lock": "89bb8442e6ca290761f3c4d51e9680d98af6ce6d99175cdb5d08f330437ec614",
+    "integration/egui-fork-workspace/Cargo.lock": "0d32e3fc8e4ab1fa07592288da52f98e0d7fc27984b3f70d1c6fe574aabac6aa",
+    "integration/egui-product-harness/Cargo.lock": "4dbbe56bbe89c631b7abb46f9cfb73b7ffe5af922886632b05f83daef3b6497b",
+    "integration/egui-official-harness/Cargo.lock": "bb7442680415b3091429bd3207e78b5fff93bd7a28788adf81ee18ca2524bc65"
+  }
+}
