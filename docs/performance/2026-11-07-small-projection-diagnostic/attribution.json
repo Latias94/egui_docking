@@ -1,0 +1,88 @@
+{
+  "scope": "Inclusive samples of disjoint outermost named call subtrees. Excludes fixture ancestry. Inline/unresolved direct probe code and post-return drops are unclassified. No allocator-time fraction, operation clock fraction or lower bound.",
+  "cases": {
+    "16-4-resize": {
+      "worker_samples": 2905,
+      "phases": {
+        "timed_layout_with_fresh_leaf_input": {
+          "inclusive_samples": 193,
+          "outermost_roots": 8
+        },
+        "timed_candidate_preparation": {
+          "inclusive_samples": 0,
+          "outermost_roots": 0
+        }
+      },
+      "timed_projection_stack_growth_inclusive_samples": 25,
+      "growth_paths": [
+        {
+          "inclusive_samples": 25,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x105014d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x105018ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 4260  [0x1053008ac]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h370c7ae3627027d4  (in diagnostic_docking_cost) + 60  [0x105410178]"
+          ]
+        }
+      ]
+    },
+    "16-1-edge_split": {
+      "worker_samples": 2941,
+      "phases": {
+        "timed_layout_with_fresh_leaf_input": {
+          "inclusive_samples": 175,
+          "outermost_roots": 8
+        },
+        "timed_candidate_preparation": {
+          "inclusive_samples": 218,
+          "outermost_roots": 9
+        }
+      },
+      "timed_projection_stack_growth_inclusive_samples": 18,
+      "growth_paths": [
+        {
+          "inclusive_samples": 16,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x104e40d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x104e44ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 4260  [0x10512c8ac]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h370c7ae3627027d4  (in diagnostic_docking_cost) + 60  [0x10523c178]"
+          ]
+        },
+        {
+          "inclusive_samples": 2,
+          "path": [
+            "dockspace::docking_cost::docking_cost::h46a4697ff11da0d5  (in diagnostic_docking_cost) + 2272  [0x104e40d50]",
+            "dockspace::docking_cost::project_all_roots::hc0ef0bf93ab0167c  (in diagnostic_docking_cost) + 2164  [0x104e44ee4]",
+            "dockspace::layout::project_measurements::h97d9d197406e5d85  (in diagnostic_docking_cost) + 4260  [0x10512c8ac]",
+            "alloc::raw_vec::RawVec$LT$T$C$A$GT$::grow_one::h370c7ae3627027d4  (in diagnostic_docking_cost) + 0,4  [0x10523c13c,0x10523c140]"
+          ]
+        }
+      ]
+    }
+  },
+  "disassembly": [
+    {
+      "command": [
+        "xcrun",
+        "llvm-objdump",
+        "--disassemble-symbols=__ZN5alloc7raw_vec19RawVec$LT$T$C$A$GT$8grow_one17h370c7ae3627027d4E",
+        "/tmp/dockspace-imgui-twofold-20261107-ea4161e/current-long-profile/diagnostic_docking_cost"
+      ],
+      "returncode": 0,
+      "output": "grow-one-48byte.asm.txt"
+    },
+    {
+      "command": [
+        "xcrun",
+        "llvm-objdump",
+        "--disassemble",
+        "--start-address=0x100b3887c",
+        "--stop-address=0x100b388d4",
+        "/tmp/dockspace-imgui-twofold-20261107-ea4161e/current-long-profile/diagnostic_docking_cost"
+      ],
+      "returncode": 0,
+      "output": "project-stack-callsite.asm.txt"
+    }
+  ]
+}

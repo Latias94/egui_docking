@@ -60,3 +60,9 @@ bindings. The [decision](2026-11-07-binary-measurement-gather/decision.json)
 retains only this measured two-path delta. Obtain the bounded source-matched
 small resize/edge call-tree observation on this new frozen binary, then ask
 independent review whether a concrete further optimization is justified.
+
+An [independent evidence review](2026-11-07-binary-measurement-gather/independent-evidence-review.md)
+recomputed all statistics and checked all 451 inputs, twelve gates, work rows,
+16128 raw observations and 336 vectors. It found no blocking source or evidence
+binding issue. Its SHA-256 is
+`94ca9d5dc0246f7648e9ccfce3e3d4bff5e2bf6695afe6045ffa6d38b804f2b9`.

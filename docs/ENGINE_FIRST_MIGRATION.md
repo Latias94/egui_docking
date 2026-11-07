@@ -63,11 +63,34 @@ These opaque identity gaps are separate from committed input/producer watermarks
 Application pane callbacks run once per actual pass; errors do not automatically
 replay them. Core rollback cannot undo application side effects inside callbacks.
 
-Each explicit workspace command batch prepares one full mutable document copy
-and canonicalizes/validates it in place. Separate accepted semantic operations
-can each prepare their own atomic batch; this is not a promise of one graph copy
-for an arbitrary host update containing many independent mutations. Stable
-read-only updates share the immutable document.
+Each explicit workspace command batch prepares an independent candidate.
+The node directory is cloned, while unchanged node payloads, root structures and
+placement metadata share immutable ownership. Checked single-item moves repair
+their affected paths; general and staged batches retain their conservation and
+normalization checks. A late failure discards the entire candidate. Separate
+accepted semantic operations can each prepare their own atomic batch; there is
+no promise of one candidate for an arbitrary host update containing many
+independent mutations. Stable read-only updates share the immutable document.
+
+## Internal complete layout results
+
+This representation change concerns engine internals and in-crate test
+consumers. The production `layout` module is private; external hosts obtain
+their render work through the public host-frame and surface-plan contracts.
+
+`LayoutProjection::nodes` now owns each node's `NodeResult { rect, constraints }`;
+replace separate rectangle and constraint map reads with this single result.
+`LayoutProjection::splits` owns the complete split outcomes. These are immutable
+root-local result containers rather than mutable `BTreeMap` values. Use their
+`get` and `iter` methods; identity-ordered iteration remains deterministic.
+`nodes.iter_preorder()` supports allocation-free traversal of the owned result
+in depth-first order. When joining it to a live tree, compare the full yielded
+node identity with the expected node.
+
+Every projection still materializes fresh node and split values from the current
+leaf answers. Its output remains readable after the originating workspace is
+changed or dropped. Shared topology supplies storage and lookup information;
+it does not authorize commands against a later workspace.
 
 ## Output ownership and backpressure
 
