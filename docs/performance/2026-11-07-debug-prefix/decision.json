@@ -1,0 +1,15 @@
+{
+  "utc": "2026-11-07T12:54:17.785598+00:00",
+  "decision": "reject_restore",
+  "actual_control": "c7508eec3ac44138305797691244ae9c180d7680",
+  "candidate_binary_sha256": "a2d99eb603d2e1612020246473d2442517c093534ffb348d3b79718b0ab7be84",
+  "reason": "Completep50improvements14of42<28; no further confirmation/fullqualificationneeded",
+  "small_layout_improvements": 3,
+  "ordinary_gates_passed": 3,
+  "full_twelve_gate_qualification": false,
+  "work_and_vectors_pass": true,
+  "all_324_sources_restored": true,
+  "internal_release_prefix_guard_restored": true,
+  "retained_runtime": "0e441c8",
+  "retained_inventory": 30
+}
