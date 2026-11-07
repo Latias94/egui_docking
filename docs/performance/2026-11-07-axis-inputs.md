@@ -34,7 +34,8 @@ group 1, 16 panes, four views, cross-view move: 2,666 to 2,625 ns (+1.538%).
 All fourteen large group/cells regress by 11.75–24.47%. P95 has 38 regressions,
 range -41.17% to +41.91%; max has 28 regressions, range -636.33% to +88.64%.
 The [complete table](2026-11-07-axis-inputs/comparisons.csv) preserves every
-observation. The experiment establishes no exclusive compiler, locality,
+aggregate comparison; individual observations remain in archived raw CSVs.
+The experiment establishes no exclusive compiler, locality,
 branching or allocator cause for the regression.
 
 | Total panes | Complete p50 candidate / ImGui, both groups | At most 2x |
@@ -60,3 +61,8 @@ experiment archive. No rejected runtime or test overlay is retained.
 Continue command ownership and the independent complete parent-edge output
 experiment on the retained, fully checked parent. The target remains active;
 this is not an architectural lower bound or a stopping decision.
+
+The [independent evidence review](2026-11-07-axis-inputs/independent-evidence-review.md)
+recomputes all measurements and full vectors, checks the source and executable
+bindings, and verifies exact two-source restoration in immutable `34f7b5f`.
+It confirms rejection without an evidence or restoration blocker.
