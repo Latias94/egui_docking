@@ -1,0 +1,20 @@
+{
+  "utc": "2026-11-07T02:10:00.665383+00:00",
+  "head": "eb94cb242722962c9e0d88074d81cf462d784357",
+  "preexisting_changes": [
+    " M Cargo.lock",
+    " M Cargo.toml",
+    " M crates/dockspace/Cargo.toml",
+    " M crates/dockspace/src/layout.rs",
+    " M integration/dockspace-host-harness/Cargo.lock",
+    " M integration/egui-fork-workspace/Cargo.lock",
+    " M integration/egui-official-harness/Cargo.lock",
+    " M integration/egui-product-harness/Cargo.lock",
+    "?? docs/reviews/"
+  ],
+  "fix_owned_files": [
+    "integration/egui-native-smoke/src/bin/physical_x11/driver/scenario.rs"
+  ],
+  "scope": "failure-only diagnostic gap; product root cause unknown; preserve deadline/input/assertions/cleanup",
+  "original_source_sha256": "85454244bd86a09978066b3a9af4f34f5912c28a95b1d9bb46b19ccd2acc34c7"
+}

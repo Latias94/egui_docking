@@ -1,0 +1,14 @@
+{
+  "utc": "2026-11-07T02:15:27.041460+00:00",
+  "failed_head": "20fe10df0a97340858db3523da1b17deb5075d18",
+  "run_id": 42323715317,
+  "first_observed_failure": "child semantic threshold barrier",
+  "product_root_cause_confirmed": false,
+  "repair_scope": "failurecontextonly, noinput/deadline/assertion changes",
+  "original_source_sha256": "85454244bd86a09978066b3a9af4f34f5912c28a95b1d9bb46b19ccd2acc34c7",
+  "diagnostic_source_sha256": "aab11b5e61ffb5280f032a4b72764203a07735d3776b9df26b73c629859d6916",
+  "patch_sha256": "04c93b541157c377d461d3a52129742961da6b03f88e098713d038e906525171",
+  "format_check_passed": true,
+  "independent_source_review_passed": true,
+  "linux_compile_or_physical_smoke_locally_run": false
+}
