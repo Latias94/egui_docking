@@ -41,6 +41,11 @@ impl<T> NodeMap<T> {
         }
     }
 
+    /// Borrows a row already recorded by the current projection.
+    pub(super) fn at_row(&self, row: usize) -> &T {
+        &self.values[row]
+    }
+
     /// Returns the value for this exact node identity.
     pub fn get(&self, node: &NodeId) -> Option<&T> {
         self.topology.row(node).map(|row| &self.values[row])

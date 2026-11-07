@@ -1,0 +1,67 @@
+{
+  "utc": "2026-11-07T00:23:15.014698+00:00",
+  "decision": "retain compact continuation for measured large full-operation improvements",
+  "actual_control_commit": "e3c517195ddce2c7d1a6dbfd4328f152978968ec",
+  "candidate_binary_sha256": "7a707c2fe841cc5a7fb57027c36a1706099b087dfe1e4302499630af2e499001",
+  "reason": "35/42 complete p50 improve; all14 large group/cells improve in both groups;5regressions and2ties retained",
+  "statistics": {
+    "e3c517195ddce2c7d1a6dbfd4328f152978968ec": {
+      "p50": {
+        "improve": 35,
+        "regress": 5,
+        "ties": 2,
+        "reduction_range_percent": [
+          -4.405170139804793,
+          6.569221825429783
+        ]
+      },
+      "p95": {
+        "improve": 31,
+        "regress": 11,
+        "ties": 0,
+        "reduction_range_percent": [
+          -26.82504330611235,
+          24.954973821989523
+        ]
+      },
+      "max": {
+        "improve": 17,
+        "regress": 25,
+        "ties": 0,
+        "reduction_range_percent": [
+          -299.03889899909007,
+          84.5843797856049
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 2,
+        "regress": 40,
+        "ties": 0,
+        "reduction_range_percent": [
+          -349.7751124437781,
+          3.4488652207939396
+        ]
+      },
+      "p95": {
+        "improve": 1,
+        "regress": 41,
+        "ties": 0,
+        "reduction_range_percent": [
+          -377.86666666666673,
+          3.74099994965007
+        ]
+      },
+      "max": {
+        "improve": 7,
+        "regress": 35,
+        "ties": 0,
+        "reduction_range_percent": [
+          -3216.048034934498,
+          72.00339820821749
+        ]
+      }
+    }
+  }
+}

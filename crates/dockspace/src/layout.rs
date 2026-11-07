@@ -895,22 +895,17 @@ fn total_splitter_extent(
     }
 }
 
-struct SplitProjectionState<'layout> {
-    node_id: NodeId,
-    axis: Axis,
-    children: &'layout [usize],
-    child_start: usize,
-    splitter_start: usize,
+struct SplitProjectionState {
+    row: usize,
     next_child: usize,
-    pending_child_size: Option<f64>,
-    bounds: LogicalRect,
     cursor: f64,
     splitter_thickness: f64,
+    pending_child: bool,
 }
 
-enum ProjectionFrame<'layout> {
+enum ProjectionFrame {
     Enter { row: usize, bounds: LogicalRect },
-    ContinueSplit(SplitProjectionState<'layout>),
+    ContinueSplit(SplitProjectionState),
 }
 
 #[derive(Default)]
@@ -947,7 +942,7 @@ fn project_subtree(
                 }
             }
             ProjectionFrame::ContinueSplit(state) => {
-                advance_split_projection(state, &mut stack, projection)?
+                advance_split_projection(topology, state, &mut stack, projection)?
             }
         }
     }
@@ -955,8 +950,8 @@ fn project_subtree(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_split_projection<'layout>(
-    topology: &'layout RootStructure,
+fn prepare_split_projection(
+    topology: &RootStructure,
     row: usize,
     bounds: LogicalRect,
     metrics: LayoutMetrics,
@@ -964,7 +959,7 @@ fn prepare_split_projection<'layout>(
     weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     projection: &mut LayoutProjection,
     scratch: &mut ProjectionScratch,
-) -> Result<Option<SplitProjectionState<'layout>>, LayoutError> {
+) -> Result<Option<SplitProjectionState>, LayoutError> {
     let node = &topology.nodes[row];
     let node_id = node.id;
     projection.nodes.record(
@@ -978,7 +973,7 @@ fn prepare_split_projection<'layout>(
         payload,
         children: child_range,
         split,
-        splitters,
+        ..
     } = &node.kind
     else {
         return Ok(None);
@@ -1045,16 +1040,11 @@ fn prepare_split_projection<'layout>(
         Axis::Vertical => bounds.y(),
     };
     Ok(Some(SplitProjectionState {
-        node_id,
-        axis,
-        children,
-        child_start: child_range.start,
-        splitter_start: splitters.start,
+        row,
         next_child: 0,
-        pending_child_size: None,
-        bounds,
         cursor,
         splitter_thickness,
+        pending_child: false,
     }))
 }
 
@@ -1079,58 +1069,72 @@ fn projected_splitter_geometry(
     Ok((available, available / splitter_count))
 }
 
-fn advance_split_projection<'layout>(
-    mut state: SplitProjectionState<'layout>,
-    stack: &mut Vec<ProjectionFrame<'layout>>,
+fn advance_split_projection(
+    topology: &RootStructure,
+    mut state: SplitProjectionState,
+    stack: &mut Vec<ProjectionFrame>,
     projection: &mut LayoutProjection,
 ) -> Result<(), LayoutError> {
-    if let Some(size) = state.pending_child_size.take() {
+    let node = &topology.nodes[state.row];
+    let RootNodeKind::Split {
+        payload,
+        children: child_range,
+        splitters,
+        ..
+    } = &node.kind
+    else {
+        return Err(LayoutError::MissingNode { node: node.id });
+    };
+    let axis = payload.axis();
+    let children = &topology.children[child_range.clone()];
+    let bounds = projection.nodes.at_row(state.row).rect;
+    if state.pending_child {
+        state.pending_child = false;
+        // Descendants cannot overwrite this acyclic parent's solved extent.
+        let size = projection.splits.child_extents[child_range.start + state.next_child - 1];
         state.cursor += size;
-        if state.next_child < state.children.len() {
-            let splitter = match state.axis {
+        if state.next_child < children.len() {
+            let splitter = match axis {
                 Axis::Horizontal => LogicalRect::new(
                     state.cursor,
-                    state.bounds.y(),
+                    bounds.y(),
                     state.splitter_thickness,
-                    state.bounds.height(),
+                    bounds.height(),
                 )?,
                 Axis::Vertical => LogicalRect::new(
-                    state.bounds.x(),
+                    bounds.x(),
                     state.cursor,
-                    state.bounds.width(),
+                    bounds.width(),
                     state.splitter_thickness,
                 )?,
             };
-            projection.splits.splitter_rects[state.splitter_start + state.next_child - 1] =
-                splitter;
+            projection.splits.splitter_rects[splitters.start + state.next_child - 1] = splitter;
             state.cursor += state.splitter_thickness;
         }
         stack.push(ProjectionFrame::ContinueSplit(state));
         return Ok(());
     }
 
-    if state.next_child == state.children.len() {
+    if state.next_child == children.len() {
         return Ok(());
     }
 
-    let child = state.children.get(state.next_child).copied().ok_or(
-        LayoutError::SplitCardinalityMismatch {
-            node: state.node_id,
-            children: state.children.len(),
-            weights: state.children.len(),
-        },
-    )?;
-    let size = projection.splits.child_extents[state.child_start + state.next_child];
-    let child_bounds = match state.axis {
-        Axis::Horizontal => {
-            LogicalRect::new(state.cursor, state.bounds.y(), size, state.bounds.height())?
-        }
-        Axis::Vertical => {
-            LogicalRect::new(state.bounds.x(), state.cursor, state.bounds.width(), size)?
-        }
+    let child =
+        children
+            .get(state.next_child)
+            .copied()
+            .ok_or(LayoutError::SplitCardinalityMismatch {
+                node: node.id,
+                children: children.len(),
+                weights: children.len(),
+            })?;
+    let size = projection.splits.child_extents[child_range.start + state.next_child];
+    let child_bounds = match axis {
+        Axis::Horizontal => LogicalRect::new(state.cursor, bounds.y(), size, bounds.height())?,
+        Axis::Vertical => LogicalRect::new(bounds.x(), state.cursor, bounds.width(), size)?,
     };
     state.next_child += 1;
-    state.pending_child_size = Some(size);
+    state.pending_child = true;
     stack.push(ProjectionFrame::ContinueSplit(state));
     stack.push(ProjectionFrame::Enter {
         row: child,

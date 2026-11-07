@@ -208,6 +208,61 @@ fn dense_projection_keeps_identity_order_and_owned_old_outputs() {
 }
 
 #[test]
+fn descendant_geometry_error_precedes_parent_gap_geometry_error() {
+    for (height, component) in [(0.0, "x"), (f64::MAX * 0.5, "y")] {
+        let mut builder = Workspace::builder();
+        let leaves = [1, 2, 3].map(|item| builder.insert_node(Node::tabs([ItemId::new(item)])));
+        let nested =
+            builder.insert_node(Node::equal_split(Axis::Vertical, [leaves[0], leaves[1]]).unwrap());
+        let root =
+            builder.insert_node(Node::equal_split(Axis::Horizontal, [nested, leaves[2]]).unwrap());
+        builder.set_root(ROOT, RootRecord::new(root));
+        builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(ROOT));
+        let workspace = builder.build().unwrap();
+        let extent = f64::MAX * 0.2;
+        let first = LogicalSize::new(extent, height).unwrap();
+        let zero = LogicalSize::new(0.0, 0.0).unwrap();
+        let constraints = BTreeMap::from([
+            (leaves[0], Constraints::new(first, first).unwrap()),
+            (
+                leaves[1],
+                Constraints::new(zero, LogicalSize::new(extent, 0.0).unwrap()).unwrap(),
+            ),
+            (
+                leaves[2],
+                Constraints::new(zero, LogicalSize::new(0.0, f64::MAX * 0.75).unwrap()).unwrap(),
+            ),
+        ]);
+        let bounds = LogicalRect::new(f64::MAX * 0.75, f64::MAX * 0.75, extent, 0.0).unwrap();
+        let metrics = LayoutMetrics::new(extent).unwrap();
+        let expected = LayoutError::Geometry(GeometryError::NonFinite {
+            component,
+            value: f64::INFINITY,
+        });
+        // The root gap overflows x; a descendant's overflowing y must win first.
+        let actual = project_root(
+            &workspace,
+            ROOT,
+            bounds,
+            |node| constraints.get(&node).copied(),
+            metrics,
+        );
+        assert_eq!(actual, Err(expected.clone()));
+        assert_eq!(
+            reference::project(
+                &workspace,
+                ROOT,
+                bounds,
+                LeafMeasurements::Constraints(&constraints),
+                metrics,
+                &[],
+            ),
+            Err(expected)
+        );
+    }
+}
+
+#[test]
 fn sparse_arena_projection_rejects_retired_generations() {
     let mut draft = Workspace::builder();
     let retired = (1..=512)

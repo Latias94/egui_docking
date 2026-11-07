@@ -283,3 +283,12 @@ Exact-head `e3c5171` CI run `42312915309` now passes all six jobs, including
 the physical X11/XTest docking and retirement checks. The retained runtime base
 is remotely green. Rejected slab/child-row experiments leave that runtime
 unchanged; the active compact-frame candidate remains local and unqualified.
+
+Compact continuation now passes all ordinary gates (2,070 production core,
+2,246 workspace and 292/335 host tests) and preserves the entire work/vector
+matrix. It improves 35/42 complete p50 cells against e3, regresses five and ties
+two; all large cells improve 2.05–6.49%. Retain it with all adverse tails in
+[the complete evidence](../performance/2026-11-07-compact-frame.md). The target
+remains 28/42, with every small cell above 2x. Continue separate binary inputs,
+unified values, committed weight checks and metadata ownership. New runtime
+commits still require fresh remote CI.
