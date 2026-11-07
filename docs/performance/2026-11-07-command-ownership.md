@@ -38,8 +38,8 @@ in 21, with no ties; reductions range from -6.79% to +16.11%. Small cells
 split seven improvements/seven regressions at each of the three pane counts. The worst median regression is group 1, 16 panes, four views,
 cross-view move: 2,458 to 2,625 ns (-6.794%). The strongest improvement is
 group 2, 16 panes, one view, center move: 2,583 to 2,167 ns (+16.105%).
-Neither four-view edge nor cross-view move improves its complete p50 in both
-groups. The [full table](2026-11-07-command-ownership/comparisons.csv) retains
+At 16 panes, neither four-view edge nor cross-view move improves its complete
+p50 in both groups. The [full table](2026-11-07-command-ownership/comparisons.csv) retains
 every aggregate comparison; individual observations remain in the archive.
 
 P95 has 23 improvements, 18 regressions and one tie, with reductions from
@@ -74,3 +74,9 @@ plus its manifest, 16,128 raw observations, 336 complete vectors, exact source
 pairs, qualification/work, all original source packages and independent
 reviews. Every member round-trips against the original bytes. New runtime
 heads still require fresh remote CI.
+
+The [independent evidence review](2026-11-07-command-ownership/independent-evidence-review.md)
+recomputes every observation, complete vector and statistic, checks all source,
+binary, qualification and work bindings, and confirms the mixed 21/21 complete
+result. Medium four-view cross-view moves improve in both groups; the adverse
+four-view statement above applies specifically to 16 panes.
