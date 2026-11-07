@@ -395,7 +395,7 @@ impl ContainedFloating {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WorkspaceData {
     pub(crate) nodes: NodeStore,
-    pub(crate) roots: BTreeMap<RootId, RootRecord>,
+    pub(crate) roots: Arc<BTreeMap<RootId, RootRecord>>,
     pub(crate) surfaces: BTreeMap<SurfaceId, SurfacePresentation>,
     pub(crate) contained_floatings: BTreeMap<FloatingPresentationId, ContainedFloating>,
 }
@@ -676,7 +676,11 @@ impl WorkspaceBuilder {
 
     /// Inserts or replaces a stable root record.
     pub fn set_root(&mut self, id: RootId, root: RootRecord) -> Option<RootRecord> {
-        self.workspace.roots.insert(id, root)
+        let previous = self.workspace.roots.get(&id).copied();
+        if previous != Some(root) {
+            Arc::make_mut(&mut self.workspace.roots).insert(id, root);
+        }
+        previous
     }
 
     /// Inserts or replaces a logical surface presentation.

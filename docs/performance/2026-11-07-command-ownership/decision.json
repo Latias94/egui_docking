@@ -1,0 +1,70 @@
+{
+  "utc": "2026-11-07T01:37:09.383247+00:00",
+  "decision": "retain exact combined command ownership slice with mixed complete-operation results",
+  "actual_control_commit": "07f566ac8fbddfab819f46f613d55bc2069507dd",
+  "candidate_binary_sha256": "d188a009676e1a0a523cf93c665f7f95be1df559d3b76522da0fa4459da261b5",
+  "reason": "22/30 mutation p50 improve, six regress and two tie;21/42 complete p50 improve and21regress; accept bounded ownership simplification with all adverse complete cells visible",
+  "statistics": {
+    "07f566ac8fbddfab819f46f613d55bc2069507dd": {
+      "p50": {
+        "improve": 21,
+        "regress": 21,
+        "ties": 0,
+        "reduction_range_percent": [
+          -6.7941415785191195,
+          16.105303910181956
+        ]
+      },
+      "p95": {
+        "improve": 23,
+        "regress": 18,
+        "ties": 1,
+        "reduction_range_percent": [
+          -152.9287226534933,
+          65.68366985476443
+        ]
+      },
+      "max": {
+        "improve": 26,
+        "regress": 15,
+        "ties": 1,
+        "reduction_range_percent": [
+          -384.5243729294841,
+          89.9836853855401
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 2,
+        "regress": 40,
+        "ties": 0,
+        "reduction_range_percent": [
+          -306.56,
+          10.443468208092488
+        ]
+      },
+      "p95": {
+        "improve": 3,
+        "regress": 39,
+        "ties": 0,
+        "reduction_range_percent": [
+          -373.48484848484844,
+          13.969278059738045
+        ]
+      },
+      "max": {
+        "improve": 11,
+        "regress": 31,
+        "ties": 0,
+        "reduction_range_percent": [
+          -2900.750187546887,
+          79.41833534873236
+        ]
+      }
+    }
+  },
+  "per_slice_causal_attribution_supported": false,
+  "target_within2x_group_cells": 28,
+  "target_total_group_cells": 42
+}

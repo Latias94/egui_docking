@@ -1131,20 +1131,12 @@ impl<'a> DropCommandEligibility<'a> {
     }
 
     fn check_validated_target(&self, target: &DockTarget) -> Result<(), CommandError> {
-        let operation = if target_is_tabs(target) {
-            DockDropOperation::TabMerge
-        } else {
-            DockDropOperation::EdgeSplit
-        };
-        if matches!(target, DockTarget::TabGap { .. }) {
-            authorize_tab_bar(self.policy, target)?;
-        }
         let payload = if move_undocks_source(self.workspace, self.payload, target) {
             &self.undocked_facts
         } else {
             &self.retained_facts
         };
-        authorize_drop(self.policy, operation, payload, target)
+        authorize_move_target(self.policy, payload, target)
     }
 }
 
@@ -1216,8 +1208,12 @@ fn check_move(
     validate_target(workspace, target)?;
     validate_move_target_semantics(workspace, payload, target)?;
     if let Some(policy) = policy {
-        DropCommandEligibility::new_validated(workspace, policy, payload)?
-            .check_validated_target(target)?;
+        let facts = move_payload_policy_facts_validated(
+            workspace,
+            payload,
+            move_undocks_source(workspace, payload, target),
+        )?;
+        authorize_move_target(policy, &facts, target)?;
     }
     Ok(())
 }
@@ -1242,6 +1238,22 @@ fn authorize_tab_bar(policy: &DockPolicySnapshot, target: &DockTarget) -> Result
             Some(target.rule()),
         )),
     )
+}
+
+fn authorize_move_target(
+    policy: &DockPolicySnapshot,
+    payload: &DockPayloadPolicyFacts,
+    target: &DockTarget,
+) -> Result<(), CommandError> {
+    let operation = if target_is_tabs(target) {
+        DockDropOperation::TabMerge
+    } else {
+        DockDropOperation::EdgeSplit
+    };
+    if matches!(target, DockTarget::TabGap { .. }) {
+        authorize_tab_bar(policy, target)?;
+    }
+    authorize_drop(policy, operation, payload, target)
 }
 
 fn authorize_drop(
@@ -2037,9 +2049,7 @@ fn attach_empty_surface(
         return Err(CommandError::SurfaceIdCollision { surface });
     }
     let central = workspace.insert_runtime_node(Node::tabs([]));
-    workspace
-        .storage
-        .roots
+    Arc::make_mut(&mut workspace.storage.roots)
         .insert(root, RootRecord::new(central).with_central(central));
     workspace
         .storage
@@ -2106,10 +2116,7 @@ fn create_surface_root(
     }
     validate_root_content(workspace, content)?;
     let (node, central, items, delta) = detach_root_content(workspace, content)?;
-    workspace
-        .storage
-        .roots
-        .insert(root, RootRecord { node, central });
+    Arc::make_mut(&mut workspace.storage.roots).insert(root, RootRecord { node, central });
     workspace
         .storage
         .surfaces
@@ -2153,10 +2160,7 @@ fn create_contained_root(
         return Err(CommandError::MissingSurface { surface });
     }
     let insertion_index = contained_insertion_index(workspace, surface, floating, position)?;
-    workspace
-        .storage
-        .roots
-        .insert(root, RootRecord { node, central });
+    Arc::make_mut(&mut workspace.storage.roots).insert(root, RootRecord { node, central });
     workspace
         .storage
         .contained_floatings
@@ -2205,10 +2209,7 @@ fn install_main_root(
             root: existing,
         });
     }
-    workspace
-        .storage
-        .roots
-        .insert(root, RootRecord { node, central });
+    Arc::make_mut(&mut workspace.storage.roots).insert(root, RootRecord { node, central });
     presentation.main_root = Some(root);
     workspace.complete_root_birth(root, RootPresentationOwner::Main { surface })?;
     Ok(AppliedCommand {
@@ -3198,7 +3199,9 @@ fn merge_payload_into_tabs(
     index: usize,
 ) -> Result<(), CommandError> {
     let (items, selected, mru) = match payload {
-        DetachedPayload::Item { item, .. } => (vec![item], Some(item), None),
+        DetachedPayload::Item { item, .. } => {
+            return insert_items(workspace, target, index, &[item], Some(item), None);
+        }
         DetachedPayload::Node {
             node,
             items,
@@ -3295,10 +3298,16 @@ fn insert_payload_at_edge(
 ) -> Result<NodeId, CommandError> {
     workspace.begin_root_edit(target.root());
     let payload_node = match payload {
-        DetachedPayload::Item { item, .. } => workspace.insert_runtime_node(Node::tabs([*item])),
-        DetachedPayload::Node { node, .. } => *node,
+        DetachedPayload::Item { item, .. } => {
+            let node = workspace.insert_runtime_node(Node::tabs([*item]));
+            workspace.place_node(target.root(), node, None);
+            node
+        }
+        DetachedPayload::Node { node, .. } => {
+            workspace.assign_subtree(target.root(), *node, None);
+            *node
+        }
     };
-    workspace.assign_subtree(target.root(), payload_node, None);
     let (axis, before) = edge_axis_and_order(target.edge());
     if let Some(parent) = workspace.parent_link(target.root(), target.node()) {
         let parent_axis = match workspace.storage.nodes.get(parent.parent) {
@@ -3443,10 +3452,11 @@ fn wrap_target_branch(
             })?;
         *slot = wrapper;
     } else {
-        let record = workspace
+        let mut record = workspace
             .storage
             .roots
-            .get_mut(&root)
+            .get(&root)
+            .copied()
             .ok_or(CommandError::MissingRoot { root })?;
         if record.node != target {
             return Err(CommandError::NodeOutsideRoot {
@@ -3456,6 +3466,7 @@ fn wrap_target_branch(
             });
         }
         record.node = wrapper;
+        Arc::make_mut(&mut workspace.storage.roots).insert(root, record);
     }
     workspace.place_node(root, wrapper, previous_parent);
     workspace.refresh_child_placements(wrapper);
@@ -3592,9 +3603,7 @@ fn remove_root_and_presentation(
             stage: "locate root presentation owner",
         })?;
     detach_root_presentation(workspace, root, presentation)?;
-    let record = workspace
-        .storage
-        .roots
+    let record = Arc::make_mut(&mut workspace.storage.roots)
         .remove(&root)
         .ok_or(CommandError::MissingRoot { root })?;
     workspace.unroot_subtree(record.node);

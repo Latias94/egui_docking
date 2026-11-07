@@ -318,3 +318,11 @@ restore its exact two-source delta; preserve the [full evidence](../performance/
 Keep the original full validator and continue the reviewed command ownership
 combination. Rebase the complete parent-edge output candidate onto this
 retained checked parent; its source review alone is not executed evidence.
+
+Concrete command ownership passes every ordinary gate and complete work/vector
+equality. Retain the bounded ownership simplification with mixed complete
+medians: 21 improvements and 21 regressions, while mutation improves in 22/30
+command cells. Keep all negative cells/tails in the [evidence](../performance/2026-11-07-command-ownership.md).
+The target remains 28/42. Continue the independently reviewed parent-edge
+result-storage experiment against this actual retained control, then the
+bounded continuation stack and source-motivated compiler-boundary follow-up.

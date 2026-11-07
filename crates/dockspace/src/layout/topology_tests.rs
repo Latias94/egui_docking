@@ -806,7 +806,10 @@ fn same_version_edits_own_new_rows_and_keep_the_original_output_body() {
                 *weights = SplitWeight::normalize(std::iter::repeat_n(1.0, weights.len())).unwrap();
             }
             2 => {
-                changed.draft_mut().roots.get_mut(&ROOT).unwrap().central = Some(leaves[0]);
+                Arc::make_mut(&mut changed.draft_mut().roots)
+                    .get_mut(&ROOT)
+                    .unwrap()
+                    .central = Some(leaves[0]);
             }
             _ => {
                 let Node::Split { children, .. } =

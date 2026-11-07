@@ -747,15 +747,15 @@ impl Workspace {
         expected: &RootReference,
         role: ReferenceRole,
     ) -> Result<(), CommandError> {
-        let actual = self.capture_reference(root, node, role)?;
-        if actual == *expected {
+        let actual = self.checked_root_reference(root, node, role)?;
+        if actual == expected {
             Ok(())
         } else {
             Err(CommandError::StaleNode {
                 role,
                 node,
                 expected: expected.clone(),
-                actual,
+                actual: actual.clone(),
             })
         }
     }
@@ -766,6 +766,15 @@ impl Workspace {
         node: NodeId,
         role: ReferenceRole,
     ) -> Result<RootReference, CommandError> {
+        self.checked_root_reference(root, node, role).cloned()
+    }
+
+    fn checked_root_reference(
+        &self,
+        root: RootId,
+        node: NodeId,
+        role: ReferenceRole,
+    ) -> Result<&RootReference, CommandError> {
         if !self.storage().roots.contains_key(&root) {
             return Err(CommandError::MissingRoot { root });
         }
@@ -775,11 +784,9 @@ impl Workspace {
         if self.node_root(node) != Some(root) {
             return Err(CommandError::NodeOutsideRoot { role, root, node });
         }
-        self.root_reference(root)
-            .cloned()
-            .ok_or(CommandError::Invariant {
-                stage: "capture issued root reference",
-            })
+        self.root_reference(root).ok_or(CommandError::Invariant {
+            stage: "capture issued root reference",
+        })
     }
 
     pub(crate) fn root_fingerprint(&self, root: RootId) -> Result<NodeFingerprint, CommandError> {

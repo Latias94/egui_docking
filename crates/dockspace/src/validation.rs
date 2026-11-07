@@ -423,7 +423,7 @@ impl<'workspace> Validator<'workspace> {
     }
 
     fn validate_graph(&mut self) {
-        for (&root_id, record) in &self.workspace.roots {
+        for (&root_id, record) in self.workspace.roots.iter() {
             if self.workspace.nodes.get(record.node).is_none() {
                 self.errors.push(WorkspaceValidationError::MissingRootNode {
                     root: root_id,
@@ -714,7 +714,7 @@ impl<'workspace> Validator<'workspace> {
     }
 
     fn validate_central_regions(&mut self) {
-        for (&root_id, record) in &self.workspace.roots {
+        for (&root_id, record) in self.workspace.roots.iter() {
             let Some(central) = record.central else {
                 continue;
             };

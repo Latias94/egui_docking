@@ -2084,6 +2084,9 @@ fn validate_payload_items(payload: &DockPayloadPolicyFacts) -> Result<(), Policy
     if payload.items.is_empty() && payload.kind != DockPayloadKind::Root {
         return Err(PolicyRejection::EmptyPayload);
     }
+    if payload.items.len() == 1 {
+        return Ok(());
+    }
     let mut unique = BTreeSet::new();
     for item in &payload.items {
         if !unique.insert(*item) {

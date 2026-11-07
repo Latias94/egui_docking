@@ -1,7 +1,7 @@
 //! Candidate isolation and actual payload-copy work through the normal owner.
 
 use super::*;
-use crate::command::{DockTarget, MovePayload, WorkspaceCommand};
+use crate::command::{DockFraction, DockTarget, Edge, MovePayload, WorkspaceCommand};
 use crate::drop_resolver::structural_work;
 use crate::error::{CommandError, ReferenceRole};
 use crate::policy::DockPolicySnapshot;
@@ -36,6 +36,62 @@ fn movement(workspace: &Workspace, tabs: [NodeId; 4]) -> WorkspaceCommand {
         ),
         target: DockTarget::Center(workspace.capture_tab_target(B, tabs[2]).unwrap()),
     }
+}
+
+#[test]
+fn semantic_edits_share_root_records_and_discarded_root_wrapping_is_isolated() {
+    let (mut workspace, tabs) = fixture();
+    let original = workspace.clone();
+    let records = Arc::clone(&original.storage.roots);
+    let old_target = original.capture_node_source(B, tabs[2]).unwrap();
+    let policy = DockPolicySnapshot::default();
+    let apply_shared = |workspace: &mut Workspace, command| {
+        let report = WorkspaceTransaction::from_commands([command])
+            .apply(workspace, &policy)
+            .unwrap();
+        assert!(report.changed());
+        assert!(Arc::ptr_eq(&records, &workspace.storage.roots));
+    };
+    let command = WorkspaceCommand::Select {
+        source: workspace
+            .capture_item_source(A, tabs[0], ItemId::new(2))
+            .unwrap(),
+    };
+    apply_shared(&mut workspace, command);
+    let command = movement(&workspace, tabs);
+    apply_shared(&mut workspace, command);
+
+    let mut builder = workspace.clone().into_builder();
+    let record = *workspace.root(A).unwrap();
+    assert_eq!(builder.set_root(A, record), Some(record));
+    assert!(Arc::ptr_eq(&records, &builder.workspace.roots));
+    assert!(!builder.canonicalize().unwrap().changed);
+    assert!(Arc::ptr_eq(&records, &builder.workspace.roots));
+
+    let before = workspace.clone();
+    let command = WorkspaceCommand::Move {
+        payload: MovePayload::Item(
+            workspace
+                .capture_item_source(C, tabs[3], ItemId::new(7))
+                .unwrap(),
+        ),
+        target: DockTarget::OuterEdge(
+            workspace
+                .capture_outer_edge_target(B, Edge::Top, DockFraction::new(0.5).unwrap())
+                .unwrap(),
+        ),
+    };
+    let prepared = crate::operation::prepare_transaction(&workspace, &policy, &[command]).unwrap();
+    assert!(!Arc::ptr_eq(&records, &prepared.candidate().storage.roots));
+    assert_ne!(prepared.candidate().root(B).unwrap().node, tabs[2]);
+    assert_eq!(workspace.root(B).unwrap().node, tabs[2]);
+    original
+        .verify_reference(B, tabs[2], old_target.reference(), ReferenceRole::Source)
+        .unwrap();
+    assert!(Arc::ptr_eq(&records, &workspace.storage.roots));
+    drop(prepared);
+    assert_eq!(workspace, before);
+    assert!(Arc::ptr_eq(&records, &original.storage.roots));
 }
 
 #[test]

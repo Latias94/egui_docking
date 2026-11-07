@@ -280,13 +280,15 @@ pub(super) fn finish_item_move(
                     .copied()
                     .flatten()
                     .ok_or(CanonicalizationError::EmptyRoot { root: source_root })?;
-                storage
-                    .roots
-                    .get_mut(&source_root)
-                    .ok_or(CanonicalizationError::TraversalInvariant {
+                let mut current = storage.roots.get(&source_root).copied().ok_or(
+                    CanonicalizationError::TraversalInvariant {
                         stage: "publish repaired root",
-                    })?
-                    .node = next;
+                    },
+                )?;
+                if current.node != next {
+                    current.node = next;
+                    Arc::make_mut(&mut storage.roots).insert(source_root, current);
+                }
             }
         } else {
             workspace.remove_runtime_node(source);
@@ -466,8 +468,11 @@ fn canonicalize_validated_draft(
         if changed {
             effects.changed_roots.push(root);
         }
-        if let Some(record) = workspace.roots.get_mut(&root) {
+        if let Some(mut record) = workspace.roots.get(&root).copied()
+            && record.node != next
+        {
             record.node = next;
+            Arc::make_mut(&mut workspace.roots).insert(root, record);
         }
     }
 
@@ -780,7 +785,7 @@ fn validate_roots(
     parents: &SecondaryMap<NodeId, NodeId>,
 ) -> Result<(), CanonicalizationError> {
     let mut root_nodes = HashMap::<NodeId, RootId>::new();
-    for (root, record) in &workspace.roots {
+    for (root, record) in workspace.roots.iter() {
         if !workspace.nodes.contains_key(record.node) {
             return Err(CanonicalizationError::MissingChild {
                 owner: None,
