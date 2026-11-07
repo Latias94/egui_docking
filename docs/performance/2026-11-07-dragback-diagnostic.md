@@ -38,3 +38,13 @@ The [receipt](2026-11-07-dragback-diagnostic/check.json) binds old/new source
 hashes and the exact patch. The directory preserves the original failed run,
 complete failed-step log, source/trace reviews, rerun request and pre-edit scope.
 All semantic success requirements and time budgets remain unchanged.
+
+The unchanged-head rerun now [passes](https://github.com/Latias94/egui_docking/actions/runs/42323715317/attempts/2).
+Its native job finishes the actual editor, physical X11/XTest docking and
+retirement requirements, and all six jobs have successful conclusions.
+The [result receipt](2026-11-07-dragback-diagnostic/unchanged-rerun-result.json)
+and compressed native log preserve this observation. No code, timeout, pointer
+sequence or assertion was changed between these attempts. This establishes
+intermittency at the observed boundary, not the initiating product or host
+cause. The later diagnostic change and retained runtime head still require
+their own fresh CI; the earlier green head does not validate them.
