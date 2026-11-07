@@ -55,3 +55,9 @@ qualified hunk. Subsequent candidates must replay their own exact patch on
 this actual retained parent and compare to this frozen binary; copying their
 older complete layout file would erase this retained change. Continue the
 axis boundary, persistent directory and binary measurement gather separately.
+
+The [independent evidence review](2026-11-07-exact-assigned-total/evidence-review.md)
+reproduces the exact retained one-hunk source, all qualification/work/vector
+records and mixed statistics. Its appendixed parent preflight confirms that
+remaining patches can replay without erasing this hunk; it does not transfer
+qualification or predict a subsequent benefit.
