@@ -1,0 +1,70 @@
+{
+  "actual_control_commit": "c7508eec3ac44138305797691244ae9c180d7680",
+  "candidate_binary_sha256": "291bd6b54bd8a655ef041713f4fad71d0c11dbde6dc894fb828628419875e700",
+  "statistics": {
+    "c7508eec3ac44138305797691244ae9c180d7680": {
+      "p50": {
+        "improve": 8,
+        "regress": 30,
+        "ties": 4,
+        "reduction_range_percent": [
+          -13.824503311258285,
+          4.986016260162607
+        ]
+      },
+      "p95": {
+        "improve": 18,
+        "regress": 24,
+        "ties": 0,
+        "reduction_range_percent": [
+          -283.59511343804536,
+          15.474285714285719
+        ]
+      },
+      "max": {
+        "improve": 13,
+        "regress": 29,
+        "ties": 0,
+        "reduction_range_percent": [
+          -751.319849160096,
+          85.30919072742613
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 2,
+        "regress": 40,
+        "ties": 0,
+        "reduction_range_percent": [
+          -240.0,
+          11.76841669177463
+        ]
+      },
+      "p95": {
+        "improve": 6,
+        "regress": 36,
+        "ties": 0,
+        "reduction_range_percent": [
+          -554.1,
+          8.379389007784388
+        ]
+      },
+      "max": {
+        "improve": 13,
+        "regress": 29,
+        "ties": 0,
+        "reduction_range_percent": [
+          -2873.6131934032983,
+          85.77385826771653
+        ]
+      }
+    }
+  },
+  "within2x": 30,
+  "qualification": {
+    "ordinary_gates_passed": 3,
+    "all_twelve_passed": false,
+    "performance_screen_only": true
+  }
+}
