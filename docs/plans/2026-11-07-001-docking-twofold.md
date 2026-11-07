@@ -342,3 +342,10 @@ Reject its exact eight-source/configuration patch and preserve the
 [complete failed experiment](../performance/2026-11-07-smallvec-stack.md).
 The retained target remains 28/42. Rebase fused transitions onto the standard
 Vec and packed output parent; the SmallVec composition is not retained.
+
+The standalone fused standard-Vec transitions pass all ordinary/work/vector
+gates but regress 36/42 complete medians against packed results, including
+every large cell. Reject its exact one-file delta and preserve the
+[complete failed experiment](../performance/2026-11-07-fused-continuation.md).
+The retained target remains 28/42. Continue the independently reviewed
+numeric, axis, persistent-directory and binary-measurement candidates.

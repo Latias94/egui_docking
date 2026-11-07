@@ -1,0 +1,70 @@
+{
+  "utc": "2026-11-07T02:55:52.501837+00:00",
+  "decision": "reject exact fused continuation transitions",
+  "actual_control_commit": "eb94cb242722962c9e0d88074d81cf462d784357",
+  "candidate_binary_sha256": "09f7195d80c0266213485ced3221049be007aaf2af68037d476bbb106dd8b864",
+  "reason": "36/42 complete medians regress, all large cells regress, and small improvements are mixed; no stable complete benefit",
+  "runtime_patch_sha256": "2077ae5b8c26a6ae0847b6a82f6af94af51c71e994dadae629a3bb5b9bd49eb5",
+  "statistics": {
+    "eb94cb242722962c9e0d88074d81cf462d784357": {
+      "p50": {
+        "improve": 5,
+        "regress": 36,
+        "ties": 1,
+        "reduction_range_percent": [
+          -12.443778110944525,
+          3.3767290480065104
+        ]
+      },
+      "p95": {
+        "improve": 10,
+        "regress": 31,
+        "ties": 1,
+        "reduction_range_percent": [
+          -293.92727272727274,
+          57.85049011058011
+        ]
+      },
+      "max": {
+        "improve": 22,
+        "regress": 20,
+        "ties": 0,
+        "reduction_range_percent": [
+          -411.1617147401142,
+          80.47272727272727
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 2,
+        "regress": 40,
+        "ties": 0,
+        "reduction_range_percent": [
+          -293.28,
+          8.532288928232912
+        ]
+      },
+      "p95": {
+        "improve": 4,
+        "regress": 38,
+        "ties": 0,
+        "reduction_range_percent": [
+          -316.6666666666667,
+          19.407377454284045
+        ]
+      },
+      "max": {
+        "improve": 18,
+        "regress": 24,
+        "ties": 0,
+        "reduction_range_percent": [
+          -1895.2000000000003,
+          88.70492642354446
+        ]
+      }
+    }
+  },
+  "restored_byte_equal_to_control": true,
+  "restored_layout_sha256": "ee0bbdadf60b10a3787539e89cdee41411301c3c774e66d53c0146ad1567eaec"
+}
