@@ -21,7 +21,7 @@ Actual control is `eb94cb2`, binary
 `21888a3b2905da0edce33f68d4a7e3dbf68ba0e45d65f1d72df5d4d03f110435`.
 Against that control, complete p50 has five improvements, 36 regressions and
 one tie, ranging from -12.44% to +3.38%. Every large cell regresses, by
-4.18–7.90%. P95 has 31 regressions, range -293.93% to +57.85%; max has 20
+4.18–7.89%. P95 has 31 regressions, range -293.93% to +57.85%; max has 20
 regressions, range -411.16% to +80.47%. The
 [complete table](2026-11-07-fused-continuation/comparisons.csv) preserves all
 negative and favorable cells. Fewer control transitions do not establish a
@@ -49,3 +49,8 @@ byte for byte to `eb94cb2`. No SmallVec or other queued treatment is included.
 Continue the separately reviewed numeric hint, exact unchanged-total reuse,
 axis compiler-boundary, persistent directory and binary measurement gathering
 candidates on their actual retained controls. No stopping conclusion follows.
+
+The [independent evidence review](2026-11-07-fused-continuation/evidence-review.md)
+reproduces the complete statistics, qualification, work, vectors and immutable
+restoration. Every medium as well as large median regresses. The displayed
+large range now uses standard two-decimal rounding; exact data are unchanged.
