@@ -3,7 +3,7 @@
   "decision": "reject exact SmallVec16 projection continuation and dependency edges",
   "actual_control_commit": "eb94cb242722962c9e0d88074d81cf462d784357",
   "candidate_binary_sha256": "f507e879e7350dff66ee8e52dd226b19a63d7854cda68f67fcafb3977bda0b5a",
-  "reason": "all42 complete p50 regress including all largecells9.77-22.16%; stack owner removal doesnot earn a retained benefit",
+  "reason": "all42 complete p50 regress including all largecells9.77-22.17%; stack owner removal doesnot earn a retained benefit",
   "runtime_patch_sha256": "3cec7ddc9e03b7788b06a40141546106e3403f8fb9eabd44473118cbda0bf186",
   "statistics": {
     "eb94cb242722962c9e0d88074d81cf462d784357": {

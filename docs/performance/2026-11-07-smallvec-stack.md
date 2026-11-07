@@ -28,7 +28,7 @@ capture, checked mutation, fresh all-root leaf inputs/layout and fresh complete
 owned export.
 
 All 42 complete p50 group/cells regress against the retained control, by
-2.52–33.01%. All fourteen large group/cells regress by 9.77–22.16%. P95 has
+2.52–33.01%. All fourteen large group/cells regress by 9.77–22.17%. P95 has
 39 regressions, range -141.77% to +12.72%; max has 23 regressions, range
 -495.23% to +84.06%. The [full table](2026-11-07-smallvec-stack/comparisons.csv)
 preserves every aggregate comparison; the archive preserves each observation.
@@ -66,3 +66,8 @@ Continue the original standard-Vec continuation with only its redundant
 control-flow roundtrips removed, then the other independently reviewed
 numeric/storage alternatives. This failed container substitution is not a
 stopping decision.
+
+The [independent evidence review](2026-11-07-smallvec-stack/evidence-review.md)
+reproduces all recorded statistics, vector equivalence and immutable eight-path
+restoration. Its only correction is the displayed worst large-cell regression,
+rounded here to 22.17%; exact comparison data and the rejection are unchanged.
