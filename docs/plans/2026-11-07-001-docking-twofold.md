@@ -269,3 +269,12 @@ its exact runtime patch and restore the two immutable control sources. The
 [complete rejected experiment](../performance/2026-11-07-extent-slab.md) retains
 all raw observations and negatives. Continue the other layout candidates on the
 retained three-Vec base; no source-only candidate is yet qualified or measured.
+
+Direct child-row composition also passes all ordinary gates/work and preserves
+complete vectors, but 41/42 complete p50 cells regress and one ties. Reject its
+exact three-source delta and retain the original gather-based composition;
+[all observations and restoration identities](../performance/2026-11-07-child-rows.md)
+remain available. The target is still 28/42. Compact frames, binary inputs and
+committed weight validation must be rebased onto the retained control before
+their independent measurements; these two rejected layouts are not stopping
+evidence that remaining justified directions are exhausted.
