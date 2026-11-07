@@ -19,7 +19,7 @@ preserved. No hand-written transitive closure is used.
 All twelve ordinary gates pass, including the two new real candidate-branch/
 late-failure and sparse/dense allocator-churn regressions, existing independent
 layout/numeric oracles, MRU, ownership and 292/335 host suites. Work retains
-21 rows/20columns: nineteen columns equal actual control, while the old N-handle
+21 rows/20 columns: nineteen columns equal actual control, while the old N-handle
 fork field becomes exactly two explicit root-owner clones per fork. This does
 not count rpds internal path/Entry/payload handles or allocator COW. Six root
 bodies and2,926 rows remain. Both serial ABBA/BAAB campaigns preserve all vectors
@@ -56,3 +56,8 @@ original source package/review and exact measured-control pairs. The
 verifies complete 11-path restoration to 37e388f, including all five build locks.
 The retained native motion-receipt fix is outside this core treatment and is
 not reversed. Continue binary measurement gathering on the retained control.
+
+The [independent evidence review](2026-11-07-persistent-store/evidence-review.md)
+reproduces all recorded results, real dependency resolution and exact eleven-
+path restoration. It verifies the 19-column/explicit-owner work boundary and
+that the separately retained native fix is unchanged.
