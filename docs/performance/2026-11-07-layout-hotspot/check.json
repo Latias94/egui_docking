@@ -1,0 +1,18 @@
+{
+  "utc": "2026-11-07T01:45:11.692269+00:00",
+  "base_commit": "a2365aa",
+  "all_core_sources_byte_identical_except_three_visibility_tokens": true,
+  "all_recorded_root_sources_match_base_commit": true,
+  "scope": "one-view and four-view repeated 16-pane fresh layout Adapter and full projection disposal; no mutation/export and no complete-operation score",
+  "sample_totals": {
+    "1": 2945,
+    "4": 2887
+  },
+  "growth_calltree_samples": {
+    "1": 266,
+    "4": 217
+  },
+  "allocation_counts_or_time_share_established": false,
+  "regular_input_files": 22,
+  "all_members_roundtrip_equal": true
+}
