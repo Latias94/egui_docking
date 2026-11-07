@@ -1,0 +1,32 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "LIBGL_ALWAYS_SOFTWARE=1",
+    "-e",
+    "LP_NUM_THREADS=1",
+    "-e",
+    "WINIT_UNIX_BACKEND=x11",
+    "-e",
+    "WINIT_X11_SCALE_FACTOR=1",
+    "354e85cb1d95",
+    "xvfb-run",
+    "-a",
+    "--server-args=-screen 0 1280x1024x24 +extension RANDR",
+    "/native-target/production/official-caller-owned-demo",
+    "--exercise",
+    "/tmp/dockspace-egui-host-linux-single-worker.csv"
+  ],
+  "started": "2026-11-07T16:35:09.887568+00:00",
+  "finished": "2026-11-07T16:35:57.133169+00:00",
+  "returncode": 0,
+  "timed_out": false,
+  "base_commit": "b7df71e0dd9530f7480addc56bcd349ef8230a89",
+  "source_sha256": {
+    "integration/egui-official-harness/Cargo.toml": "e3cb03cab5cf6b234738d20f1907442b452a037eddfc8055a1654ae9b3df98ec",
+    "integration/egui-official-harness/Cargo.lock": "bb7442680415b3091429bd3207e78b5fff93bd7a28788adf81ee18ca2524bc65",
+    "integration/egui-official-harness/src/bin/official_caller_owned_demo.rs": "58033b120d976d04f7753eceb5a94e05a31d5fc09b85287b9f8dd807327ccfb3",
+    "integration/egui-official-harness/src/bin/official_caller_owned_demo/exercise.rs": "0c84a6c7fa9f4a62ce360a86255c35cfcee844d6e43e2d225fb84ef37f2107f2"
+  }
+}

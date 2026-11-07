@@ -1,0 +1,123 @@
+[
+  {
+    "name": "format",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/egui-official-harness/Cargo.toml",
+      "--all",
+      "--check"
+    ],
+    "started": "2026-11-07T16:37:12.757751+00:00",
+    "finished": "2026-11-07T16:37:14.607577+00:00",
+    "returncode": 0,
+    "required": true,
+    "status": "passed"
+  },
+  {
+    "name": "official-tests",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-official-harness/Cargo.toml",
+      "--features",
+      "demo",
+      "--all-targets",
+      "--target-dir",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-official-harness/target",
+      "--locked",
+      "--offline",
+      "-j1"
+    ],
+    "started": "2026-11-07T16:37:14.608027+00:00",
+    "finished": "2026-11-07T16:37:23.881411+00:00",
+    "returncode": 0,
+    "required": true,
+    "status": "passed"
+  },
+  {
+    "name": "official-doc-tests",
+    "command": [
+      "cargo",
+      "test",
+      "--manifest-path",
+      "integration/egui-official-harness/Cargo.toml",
+      "--features",
+      "demo",
+      "--doc",
+      "--target-dir",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-official-harness/target",
+      "--locked",
+      "--offline",
+      "-j1"
+    ],
+    "started": "2026-11-07T16:37:23.881778+00:00",
+    "finished": "2026-11-07T16:37:23.973308+00:00",
+    "returncode": 101,
+    "required": false,
+    "status": "not_applicable",
+    "reason": "This application harness has no library target; cargo test --doc is not applicable."
+  },
+  {
+    "name": "demo-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-official-harness/Cargo.toml",
+      "--features",
+      "demo",
+      "--all-targets",
+      "--target-dir",
+      "/Users/frankorz/codes/rust/egui_docking/integration/egui-official-harness/target",
+      "--locked",
+      "--offline",
+      "-j1",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started": "2026-11-07T16:38:11.483615+00:00",
+    "finished": "2026-11-07T16:38:49.383801+00:00",
+    "returncode": 0,
+    "required": true,
+    "status": "passed"
+  },
+  {
+    "name": "linux-journey-test",
+    "command": [
+      "docker",
+      "exec",
+      "-e",
+      "CARGO_BUILD_JOBS=1",
+      "354e85cb1d95",
+      "cargo",
+      "test",
+      "--manifest-path",
+      "integration/egui-official-harness/Cargo.toml",
+      "--features",
+      "demo",
+      "--bin",
+      "official-caller-owned-demo",
+      "--target-dir",
+      "/native-target",
+      "--locked",
+      "--offline",
+      "-j1",
+      "--",
+      "complete_egui_input_journey"
+    ],
+    "started": "2026-11-07T16:38:49.384469+00:00",
+    "finished": "2026-11-07T16:39:02.134903+00:00",
+    "returncode": 0,
+    "required": true,
+    "status": "passed"
+  }
+]

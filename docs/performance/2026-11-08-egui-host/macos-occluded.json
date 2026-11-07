@@ -1,0 +1,10 @@
+{
+  "command": [
+    "/Users/frankorz/codes/rust/egui_docking/integration/egui-official-harness/target/debug/official-caller-owned-demo",
+    "--exercise",
+    "/tmp/dockspace-egui-host-20261107/debug-native-4.csv"
+  ],
+  "started_utc": "2026-11-07T16:16:19.752955+00:00",
+  "returncode": 1,
+  "finished_utc": "2026-11-07T16:16:21.416664+00:00"
+}

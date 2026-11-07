@@ -55,6 +55,73 @@ GPU submission. Drag tab bodies to magnetic center/edge targets and drag the
 dotted contained title strip to move the complete floating window. It is a
 portable receipt-path demonstration, not native multiview evidence.
 
+## Continuous editor exercise
+
+The demo contains eight application-owned items: Editor/Preview, Outline,
+Inspector, Console/History and Profiler/Assets. Its normal interactive mode
+uses editable text, an actual scrolling Console and illustrative profiler
+bars. The Inspector is a contained window. No game engine is required.
+
+Run a bounded exercise through the same real WGPU host, using a new output
+path:
+
+```text
+cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --profile production --target-dir target --locked -j1 --bin official-caller-owned-demo -- --exercise /tmp/egui-host-frames.csv
+```
+
+The optional mode supplies ordinary egui input events at coordinates observed
+from the accepted editor output. It keeps the same Dockspace, content and
+renderer throughout six consecutive phases: painted idle, hover, text editing,
+Console scrolling, splitter dragging and a Preview-to-Outline tab drag.
+Each phase has eight warmup frames followed by 64 recorded frames. Setup,
+press/release and final validation frames are additional and unrecorded. The
+mode exits after success, fails on a rejected update or any dropped output
+after setup, and has a 640-frame/90-second bound. An existing CSV is never
+overwritten.
+The elapsed budget is checked between frames and cannot interrupt a blocked
+WGPU or OS call.
+Initial surface-acquisition drops are reported as Dropped through the normal
+receipt and retried only during setup, under the same total bound. Their count
+is logged; eight successful setup frames precede the first workload.
+
+Completion checks real text insertion with all original text retained, actual
+scroll offset, changed splitter geometry and a committed version, exact tab
+membership/selection, and survival of all eight application items. Idle,
+hover and content-only phases must preserve the docking version. Every presented
+exercise frame must produce actual mesh geometry. The CSV is written after
+successful final validation; it contains all 384 recorded frames without timing
+thresholds.
+
+| CSV field | Measurement boundary |
+| --- | --- |
+| `update_ns` | Complete public `run_single_surface`, including input, measurement, encoding and publication |
+| `tessellate_ns` | All output shapes converted to CPU meshes |
+| `paint_present_ns` | Existing WGPU surface acquisition, texture/buffer upload, encoding, submission and `queue.present` CPU calls |
+| `ui_to_present_ns` | Public update through presentation-receipt reporting, including platform output and host work between the component windows; excludes OS event delivery, input extraction and driver preparation |
+| `vertices`, `indices` | Counts from the actual complete meshes, inspected after timing |
+
+Surface acquisition or presentation may block. These are CPU-side call
+durations, not GPU execution time, scanout, or OS-input-to-photon latency.
+The exercise injects egui events, not physical OS input. It enables AccessKit
+to observe semantic tab/splitter coordinates; driver state checks, coordinate
+inspection and CSV writing stay outside timing. Painted idle explicitly asks
+for a frame and does not measure the normal idle scheduler's ability to sleep.
+Use a fixed build/window/DPI and preserve every raw row when comparing runs;
+report p50/p95/maximum independently rather than summing phase medians.
+
+The same journey has a headless semantic test, with a test-owned presentation
+acknowledgement and zero timing placeholders. It is not GPU/OS evidence:
+
+```text
+cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --target-dir target --locked -j1 -E 'test(complete_egui_input_journey)'
+```
+
+The existing native eight-pane editor and its X11 drivers remain the separate
+physical-input and native-lifecycle gates. This exercise adds continuous host
+behavior and frame-cost evidence without changing those platform claims.
+The [recorded host run](../../docs/performance/2026-11-08-egui-host-exercise.md)
+includes every raw row, environment details and failed attempts.
+
 ## Docking Hover And Composed UI
 
 The caller-owned tier qualifies docking input against the exact accepted output

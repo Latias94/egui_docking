@@ -1,0 +1,23 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "LIBGL_ALWAYS_SOFTWARE=1",
+    "-e",
+    "WINIT_UNIX_BACKEND=x11",
+    "-e",
+    "WINIT_X11_SCALE_FACTOR=1",
+    "354e85cb1d95",
+    "xvfb-run",
+    "-a",
+    "--server-args=-screen 0 1280x1024x24 +extension RANDR",
+    "/native-target/debug/official-caller-owned-demo",
+    "--exercise",
+    "/tmp/dockspace-egui-host-linux.csv"
+  ],
+  "started": "2026-11-07T16:24:45.184281+00:00",
+  "finished": "2026-11-07T16:26:15.520773+00:00",
+  "returncode": 1,
+  "timed_out": false
+}

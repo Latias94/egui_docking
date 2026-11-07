@@ -109,10 +109,11 @@ jobs:
           cargo test --manifest-path integration/egui-official-harness/Cargo.toml
           --locked
 
-      - name: Check caller-owned official egui demo
+      - name: Run caller-owned official egui demo journey
         run: >-
-          cargo check --manifest-path integration/egui-official-harness/Cargo.toml
+          cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml
           --features demo --bin official-caller-owned-demo --locked -j1
+          -E 'test(complete_egui_input_journey)'
 
       - name: Run default-feature product harness
         run: >-

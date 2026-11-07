@@ -25,6 +25,13 @@ const EDITOR: ItemId = ItemId::new(1);
 const PREVIEW: ItemId = ItemId::new(2);
 const OUTLINE: ItemId = ItemId::new(3);
 const INSPECTOR: ItemId = ItemId::new(4);
+const CONSOLE: ItemId = ItemId::new(5);
+const HISTORY: ItemId = ItemId::new(6);
+const PROFILER: ItemId = ItemId::new(7);
+const ASSETS: ItemId = ItemId::new(8);
+
+#[path = "official_caller_owned_demo/exercise.rs"]
+mod exercise;
 
 #[derive(Debug)]
 enum UserEvent {
@@ -32,13 +39,22 @@ enum UserEvent {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let exercise = exercise::Exercise::from_args()?;
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
-    let mut host = OfficialDemoHost::new(event_loop.create_proxy());
+    let mut host = OfficialDemoHost::new(event_loop.create_proxy(), exercise);
     event_loop.run_app(&mut host)?;
+    if let Some(error) = host.failure {
+        return Err(error.into());
+    }
+    if let Some(exercise) = host.exercise {
+        exercise.require_complete()?;
+    }
     Ok(())
 }
 
 struct OfficialRenderer {
+    adapter_info: wgpu::AdapterInfo,
+    drop_reason: Option<&'static str>,
     instance: wgpu::Instance,
     surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
@@ -64,7 +80,8 @@ impl OfficialRenderer {
                 ..Default::default()
             })
             .await?;
-        let limits = if adapter.get_info().backend == wgpu::Backend::Gl {
+        let adapter_info = adapter.get_info();
+        let limits = if adapter_info.backend == wgpu::Backend::Gl {
             wgpu::Limits::downlevel_webgl2_defaults()
         } else {
             wgpu::Limits::default()
@@ -89,6 +106,8 @@ impl OfficialRenderer {
             egui_wgpu::RendererOptions::default(),
         );
         Ok(Self {
+            adapter_info,
+            drop_reason: None,
             instance,
             surface: Some(surface),
             device,
@@ -106,14 +125,17 @@ impl OfficialRenderer {
         pixels_per_point: f32,
         clipped_primitives: &[egui::ClippedPrimitive],
     ) -> SurfacePresentationResult {
+        self.drop_reason = None;
         let size = window.inner_size();
         if size.width == 0 || size.height == 0 {
+            self.drop_reason = Some("zero-sized window");
             return SurfacePresentationResult::Dropped;
         }
         if self.surface.is_none() {
             match self.instance.create_surface(Arc::clone(window)) {
                 Ok(surface) => self.surface = Some(surface),
                 Err(error) => {
+                    self.drop_reason = Some("surface recreation failed");
                     eprintln!("Failed to recreate the official demo surface: {error}");
                     return SurfacePresentationResult::Dropped;
                 }
@@ -142,21 +164,29 @@ impl OfficialRenderer {
                 frame
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
+                self.drop_reason = Some("surface outdated");
                 self.needs_reconfigure = true;
                 window.request_redraw();
                 return SurfacePresentationResult::Dropped;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
+                self.drop_reason = Some("surface lost");
                 // Release the lost surface before creating its replacement next frame.
                 self.surface = None;
                 window.request_redraw();
                 return SurfacePresentationResult::Dropped;
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
+                self.drop_reason = Some("surface timeout");
                 window.request_redraw();
                 return SurfacePresentationResult::Dropped;
             }
-            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Validation => {
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                self.drop_reason = Some("surface occluded");
+                return SurfacePresentationResult::Dropped;
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                self.drop_reason = Some("surface validation failure");
                 return SurfacePresentationResult::Dropped;
             }
         };
@@ -242,14 +272,20 @@ struct OfficialDemoHost {
     dockspace: Dockspace,
     panes: DemoPanes,
     next_repaint: Option<Instant>,
+    exercise: Option<exercise::Exercise>,
+    failure: Option<String>,
 }
 
 impl OfficialDemoHost {
-    fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+    fn new(proxy: EventLoopProxy<UserEvent>, exercise: Option<exercise::Exercise>) -> Self {
+        let context = Context::default();
+        if exercise.is_some() {
+            context.enable_accesskit();
+        }
         Self {
             proxy,
             window: None,
-            context: Context::default(),
+            context,
             egui_winit: None,
             painter: None,
             viewport_info: egui::ViewportInfo::default(),
@@ -258,21 +294,27 @@ impl OfficialDemoHost {
                 .expect("the static demo layout is valid"),
             panes: DemoPanes::new(),
             next_repaint: None,
+            exercise,
+            failure: None,
         }
     }
 
-    fn render(&mut self) {
+    fn render(&mut self) -> Result<bool, String> {
         let Some(window) = self.window.as_ref() else {
-            return;
+            return Ok(false);
         };
         let Some(egui_winit) = self.egui_winit.as_mut() else {
-            return;
+            return Ok(false);
         };
         let Some(painter) = self.painter.as_mut() else {
-            return;
+            return Ok(false);
         };
 
-        let input = egui_winit.take_egui_input(window);
+        let mut input = egui_winit.take_egui_input(window);
+        if let Some(exercise) = &mut self.exercise {
+            exercise.prepare(&mut input, &self.panes)?;
+        }
+        let frame_started = Instant::now();
         let (output, _) =
             match self
                 .dockspace
@@ -280,20 +322,28 @@ impl OfficialDemoHost {
             {
                 Ok(published) => published,
                 Err(error) => {
+                    if self.exercise.is_some() {
+                        return Err(format!("exercise update rejected: {error}"));
+                    }
                     window.set_title(&format!("Dockspace update rejected: {error}"));
                     window.request_redraw();
-                    return;
+                    return Ok(false);
                 }
             };
+        let update_ns = frame_started.elapsed().as_nanos();
         let (output, receipt) = output.into_parts();
 
         let FullOutput {
-            platform_output,
+            mut platform_output,
             textures_delta,
             shapes,
             pixels_per_point,
             viewport_output,
         } = output;
+        let observations = self
+            .exercise
+            .as_ref()
+            .and_then(|_| platform_output.accesskit_update.take());
         painter.pending_textures.append(textures_delta);
         for (_, viewport) in viewport_output {
             let mut actions_requested = Vec::new();
@@ -306,10 +356,49 @@ impl OfficialDemoHost {
             );
         }
         egui_winit.handle_platform_output(window, platform_output);
+        let tessellation_started = Instant::now();
         let clipped_primitives = self.context.tessellate(shapes, pixels_per_point);
+        let tessellate_ns = tessellation_started.elapsed().as_nanos();
+        let paint_started = Instant::now();
         // A panic before paint returns leaves the receipt to report Dropped through RAII.
         let presentation = painter.paint(window, pixels_per_point, &clipped_primitives);
+        let paint_present_ns = paint_started.elapsed().as_nanos();
         receipt.report(presentation);
+        let ui_to_present_ns = frame_started.elapsed().as_nanos();
+        if let Some(exercise) = &mut self.exercise {
+            exercise.observe(observations.as_ref());
+            if presentation == SurfacePresentationResult::Dropped && exercise.first_drop() {
+                eprintln!(
+                    "egui-host-exercise: initial dropped output: {:?}; visible={:?}; minimized={:?}; focused={}",
+                    painter.drop_reason,
+                    window.is_visible(),
+                    window.is_minimized(),
+                    window.has_focus()
+                );
+            }
+            let done = exercise.finish_frame(
+                &self.panes,
+                &self.dockspace,
+                presentation,
+                &clipped_primitives,
+                exercise::Timing {
+                    update_ns,
+                    tessellate_ns,
+                    paint_present_ns,
+                    ui_to_present_ns,
+                },
+            )?;
+            if !done {
+                if presentation == SurfacePresentationResult::Dropped {
+                    self.context
+                        .request_repaint_after(Duration::from_millis(16));
+                } else {
+                    window.request_redraw();
+                }
+            }
+            return Ok(done);
+        }
+        Ok(false)
     }
 }
 
@@ -320,7 +409,7 @@ impl ApplicationHandler<UserEvent> for OfficialDemoHost {
         }
         let attributes = WindowAttributes::default()
             .with_title("egui_dockspace — official caller-owned run")
-            .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 820.0));
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
@@ -336,6 +425,18 @@ impl ApplicationHandler<UserEvent> for OfficialDemoHost {
         );
         let painter = pollster::block_on(OfficialRenderer::new(event_loop, Arc::clone(&window)))
             .expect("the official demo initializes its wgpu surface");
+        if self.exercise.is_some() {
+            window.set_visible(true);
+            window.focus_window();
+            eprintln!(
+                "egui-host-exercise: adapter={:?}; physical_size={:?}; scale={}; present_mode={:?}; format={:?}",
+                painter.adapter_info,
+                window.inner_size(),
+                window.scale_factor(),
+                painter.config.present_mode,
+                painter.config.format,
+            );
+        }
         egui_winit.set_max_texture_side(painter.device.limits().max_texture_dimension_2d as usize);
         let proxy = self.proxy.clone();
         self.context.set_request_repaint_callback(move |info| {
@@ -359,12 +460,24 @@ impl ApplicationHandler<UserEvent> for OfficialDemoHost {
         if window.id() != window_id {
             return;
         }
+        if self.exercise.is_some()
+            && matches!(event, WindowEvent::Occluded(_) | WindowEvent::Focused(_))
+        {
+            eprintln!("egui-host-exercise: window event {event:?}");
+        }
         if matches!(event, WindowEvent::CloseRequested | WindowEvent::Destroyed) {
             event_loop.exit();
             return;
         }
         if matches!(event, WindowEvent::RedrawRequested) {
-            self.render();
+            match self.render() {
+                Ok(true) => event_loop.exit(),
+                Ok(false) => {}
+                Err(error) => {
+                    self.failure = Some(error);
+                    event_loop.exit();
+                }
+            }
             return;
         }
         if matches!(
@@ -413,7 +526,7 @@ impl ApplicationHandler<UserEvent> for OfficialDemoHost {
 }
 
 fn demo_layout() -> DockspaceLayout {
-    let main = DockspaceNode::split(
+    let top = DockspaceNode::split(
         DockspaceAxis::Horizontal,
         [
             (DockspaceNode::tabs([OUTLINE]), 0.24),
@@ -421,10 +534,20 @@ fn demo_layout() -> DockspaceLayout {
         ],
     )
     .expect("the static split is valid");
+    let bottom = DockspaceNode::split(
+        DockspaceAxis::Horizontal,
+        [
+            (DockspaceNode::tabs([CONSOLE, HISTORY]), 0.65),
+            (DockspaceNode::tabs([PROFILER, ASSETS]), 0.35),
+        ],
+    )
+    .expect("the bottom split is valid");
+    let main = DockspaceNode::split(DockspaceAxis::Vertical, [(top, 0.7), (bottom, 0.3)])
+        .expect("the editor rows are valid");
     let contained = DockspaceContainedLayout::new(
         FLOATING,
         DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([INSPECTOR])),
-        LogicalRect::new(700.0, 100.0, 300.0, 300.0).expect("the static rect is valid"),
+        LogicalRect::new(940.0, 90.0, 300.0, 300.0).expect("the static rect is valid"),
     );
     DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
@@ -437,6 +560,11 @@ fn demo_layout() -> DockspaceLayout {
 struct DemoPane {
     title: &'static str,
     text: String,
+    widgets: Vec<egui::Id>,
+    content: Option<egui::Rect>,
+    editor: Option<egui::Rect>,
+    scroll_offset: f32,
+    scroll_bounds: Option<egui::Rect>,
 }
 
 struct DemoPanes {
@@ -446,36 +574,60 @@ struct DemoPanes {
 impl DemoPanes {
     fn new() -> Self {
         Self {
-            panes: BTreeMap::from([
+            panes: [
                 (
                     EDITOR,
-                    DemoPane {
-                        title: "Editor",
-                        text: "fn main() {\n    println!(\"drag me\");\n}".to_owned(),
-                    },
+                    "Editor",
+                    "fn main() {\n    println!(\"drag me\");\n}",
                 ),
                 (
                     PREVIEW,
-                    DemoPane {
-                        title: "Preview",
-                        text: "Magnetic center and edge docking preview".to_owned(),
-                    },
+                    "Preview",
+                    "Magnetic center and edge docking preview",
                 ),
                 (
                     OUTLINE,
-                    DemoPane {
-                        title: "Outline",
-                        text: "workspace\n  editor\n  preview\n  inspector".to_owned(),
-                    },
+                    "Outline",
+                    "workspace\n  editor\n  preview\n  inspector",
                 ),
                 (
                     INSPECTOR,
-                    DemoPane {
-                        title: "Inspector",
-                        text: "Drag the dotted title strip to move this whole window.".to_owned(),
-                    },
+                    "Inspector",
+                    "Drag the dotted title strip to move this whole window.",
                 ),
-            ]),
+                (CONSOLE, "Console", "Application log"),
+                (
+                    HISTORY,
+                    "History",
+                    "Selected object\nMoved object\nSaved document",
+                ),
+                (
+                    PROFILER,
+                    "Profiler",
+                    "Illustrative values; no engine attached",
+                ),
+                (
+                    ASSETS,
+                    "Assets",
+                    "scene/main.scene\nmesh/player.mesh\ntexture/grid.png",
+                ),
+            ]
+            .into_iter()
+            .map(|(item, title, text)| {
+                (
+                    item,
+                    DemoPane {
+                        title,
+                        text: text.to_owned(),
+                        widgets: Vec::new(),
+                        content: None,
+                        editor: None,
+                        scroll_offset: 0.0,
+                        scroll_bounds: None,
+                    },
+                )
+            })
+            .collect(),
         }
     }
 }
@@ -489,11 +641,46 @@ impl PaneView for DemoPanes {
         let Some(pane) = self.panes.get_mut(&item) else {
             return;
         };
-        ui.add(
-            egui::TextEdit::multiline(&mut pane.text)
-                .code_editor()
-                .desired_width(f32::INFINITY)
-                .desired_rows(16),
-        );
+        pane.widgets.clear();
+        pane.content = Some(ui.available_rect_before_wrap());
+        pane.editor = None;
+        if item == CONSOLE {
+            let log = egui::ScrollArea::vertical()
+                .id_salt("official-editor-console")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    pane.widgets.push(ui.unique_id());
+                    for line in 0..128 {
+                        pane.widgets
+                            .push(ui.monospace(format!("[{line:03}] Scene updated")).id);
+                    }
+                });
+            pane.scroll_offset = log.state.clamped_offset().y;
+            pane.scroll_bounds = Some(log.inner_rect);
+            for id in [log.id.with("area"), log.id.with(1_usize)] {
+                if ui.ctx().viewport(|v| v.this_pass.widgets.get(id).is_some()) {
+                    pane.widgets.push(id);
+                }
+            }
+        } else if item == PROFILER {
+            pane.widgets.push(ui.label(&pane.text).id);
+            for (name, value) in [("Simulation", 0.16), ("Rendering", 0.32), ("UI", 0.05)] {
+                pane.widgets
+                    .push(ui.add(egui::ProgressBar::new(value).text(name)).id);
+            }
+        } else {
+            let response = ui.add_sized(
+                ui.available_size(),
+                egui::TextEdit::multiline(&mut pane.text)
+                    .code_editor()
+                    .desired_width(f32::INFINITY),
+            );
+            pane.editor = Some(response.rect);
+            pane.widgets.push(response.id);
+        }
+    }
+
+    fn docking_content_widgets(&self, item: ItemId) -> &[egui::Id] {
+        self.panes.get(&item).map_or(&[], |pane| &pane.widgets)
     }
 }
