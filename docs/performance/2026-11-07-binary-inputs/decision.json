@@ -1,0 +1,67 @@
+{
+  "utc": "2026-11-07T00:37:33.901836+00:00",
+  "decision": "retain binary local inputs with unchanged original solver",
+  "actual_control_commit": "dc689a6004fb2500ad8ee2d89054ff991255c1cb",
+  "candidate_binary_sha256": "4a41d0c57fcc97a256638919163c6d1d70f09473c3c6a56b8855ead5edfe4cf8",
+  "reason": "40/42 complete p50 improve; all14 large group/cells improve;2 negative cells retained",
+  "statistics": {
+    "dc689a6004fb2500ad8ee2d89054ff991255c1cb": {
+      "p50": {
+        "improve": 40,
+        "regress": 2,
+        "ties": 0,
+        "reduction_range_percent": [
+          -1.260931462273751,
+          8.524757529351712
+        ]
+      },
+      "p95": {
+        "improve": 36,
+        "regress": 6,
+        "ties": 0,
+        "reduction_range_percent": [
+          -12.5,
+          25.127906493074338
+        ]
+      },
+      "max": {
+        "improve": 25,
+        "regress": 17,
+        "ties": 0,
+        "reduction_range_percent": [
+          -185.07804248327662,
+          82.83605736305746
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 2,
+        "regress": 40,
+        "ties": 0,
+        "reduction_range_percent": [
+          -320.0,
+          8.291376638145287
+        ]
+      },
+      "p95": {
+        "improve": 1,
+        "regress": 41,
+        "ties": 0,
+        "reduction_range_percent": [
+          -344.4,
+          9.341157466167772
+        ]
+      },
+      "max": {
+        "improve": 9,
+        "regress": 33,
+        "ties": 0,
+        "reduction_range_percent": [
+          -3563.5235732009924,
+          54.23886046024479
+        ]
+      }
+    }
+  }
+}

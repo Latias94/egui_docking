@@ -980,8 +980,7 @@ fn prepare_split_projection(
     };
     let axis = payload.axis();
     let children = &topology.children[child_range.clone()];
-    scratch.constraints.clear();
-    scratch.constraints.extend(children.iter().map(|&row| {
+    let axis_constraint = |&row: &usize| {
         let constraints = measurements[row].constraints;
         match axis {
             Axis::Horizontal => AxisConstraint {
@@ -993,27 +992,47 @@ fn prepare_split_projection(
                 max: constraints.max().height(),
             },
         }
-    }));
+    };
+    let binary_constraints;
+    let axis_constraints: &[AxisConstraint] = match children {
+        [first, second] => {
+            binary_constraints = [axis_constraint(first), axis_constraint(second)];
+            &binary_constraints
+        }
+        _ => {
+            scratch.constraints.clear();
+            scratch
+                .constraints
+                .extend(children.iter().map(axis_constraint));
+            &scratch.constraints
+        }
+    };
     for ((minimum, maximum), constraint) in projection.splits.child_minimum_extents
         [child_range.clone()]
     .iter_mut()
     .zip(&mut projection.splits.child_maximum_extents[child_range.clone()])
-    .zip(&scratch.constraints)
+    .zip(axis_constraints)
     {
         *minimum = constraint.min();
         *maximum = constraint.max();
     }
+    let binary_weights;
     let axis_weights = if let Some(overrides) = weight_overrides.get(&node_id) {
         overrides.as_slice()
     } else {
-        scratch.weights.clear();
-        scratch.weights.extend(
-            payload
-                .weights()
-                .iter()
-                .map(|weight| f64::from(weight.get())),
-        );
-        &scratch.weights
+        match (children, payload.weights()) {
+            ([_, _], [first, second]) => {
+                binary_weights = [f64::from(first.get()), f64::from(second.get())];
+                binary_weights.as_slice()
+            }
+            (_, weights) => {
+                scratch.weights.clear();
+                scratch
+                    .weights
+                    .extend(weights.iter().map(|weight| f64::from(weight.get())));
+                scratch.weights.as_slice()
+            }
+        }
     };
     let central_index = children
         .iter()
@@ -1027,7 +1046,7 @@ fn prepare_split_projection(
     let solved = solve_axis_into(
         extent - splitter_extent,
         axis_weights,
-        &scratch.constraints,
+        axis_constraints,
         central_index,
         &mut projection.splits.child_extents[child_range.clone()],
         &mut scratch.eligible,

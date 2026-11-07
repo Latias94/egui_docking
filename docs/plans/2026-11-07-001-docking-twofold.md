@@ -292,3 +292,12 @@ two; all large cells improve 2.05–6.49%. Retain it with all adverse tails in
 remains 28/42, with every small cell above 2x. Continue separate binary inputs,
 unified values, committed weight checks and metadata ownership. New runtime
 commits still require fresh remote CI.
+
+Binary input storage passes the complete ordinary gates and preserves all
+work/vectors. It improves 40/42 complete p50 cells against the compact-frame
+control, with two regressions; all large group/cells improve 1.16–5.55%.
+Retain this one-file change with the unchanged solver and
+[all adverse observations](../performance/2026-11-07-binary-inputs.md).
+The target remains 28/42, with small ratios now 2.12–4.20x in this campaign.
+Continue unified values, committed weight checks and the reviewed concrete
+command ownership deletions. Compact-frame CI `42318019349` is still running.

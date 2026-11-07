@@ -1,0 +1,34 @@
+Findings first: **no source blocker found in this exact three-Vec binary-input rebase.** The original binary-selection logic, single checked axis solver, actual override precedence and fallback lengths are preserved. I read the original review and verified the new complete pairs, artifacts, limited function differences and exact final composition. This is a source-only verdict, not compilation, behavior qualification, allocator evidence or performance benefit.
+
+Reviewed patch SHA256: `48f8bf0cafdb29d1771728a2a36b5b8c911c10cb44aa91011a2536e026d7c3f0`, 2,755 bytes, one runtime file +32/-13, no changed tests. Manifest SHA256: `1e93d86d10ceb80a6adfb0bd5afd654a278a7c7219ee987f6ce7dc60f612ad65`. The original patch remains `8b59150dea86587f64bac80f6fe222a14959f0367ce0a2dfcc7ecc82dcbb183a`; `/tmp/binary-split-inputs/review.md` and the original candidate were not modified.
+
+| Complete paired source, relative to `crates/dockspace/src/` | Frozen base SHA256 | Frozen tree SHA256 |
+|---|---|---|
+| `layout.rs` | `c7157518d4ff7d91552863671461a9fcd5787320f1f6074330793a230e463c5c` | `8f072885d6f8a0b1d6a672c7a5395ac49fd0068aec0fec6235de42938f247d5f` |
+| `layout/projection.rs`, unchanged | `d82120c1f004511128e65ad7a57f907583c150545ff286acfead2bc4cbfeeed4` | same |
+| `layout/reference.rs`, unchanged | `ea4afaf3fc82be4e3f27f8c00aa558d5aed0ff37ff15a184d3db3dc49f7e7b27` | same |
+| `layout/topology.rs`, unchanged | `89e94dc277cbfe3d4734ddd16f25fffee4c735b5144f75fd3e4b119006ece9c9` | same |
+| `layout/topology_tests.rs`, unchanged | `e7bacde83b6d7c957ee8d749cdaf70fb06ca6f85c5850515169e2bd279b1d729` | same |
+
+All byte counts/hashes, artifact bindings, manifest/READY and five-path set hashes match. Base set is `71840b7135d0998175f697e932049d6308d749b45dc82cae9f47491a92e4d219`; tree set is `83480184010efa8da4d5bdcc28dbcb22dba0e62fe85d1b7ba6122bc1aa8b66af`. The complete base equals the frame3Vec tree in all five files, and the complete output equals the reviewed scalar3Vec base in all five files. I independently reconstructed tree from the three uniquely matching primary hunk bodies in memory and reproduced candidate.patch exactly from the full pairs. No checkout patch application was performed by this reviewer.
+
+Comparing the full new prepare body against the originally reviewed binary output shows only retained-storage substitutions: the former slab minimum/maximum views become the original separate Vec fields, their zip indentation follows that loop, and the solver destination becomes `projection.splits.child_extents[child_range.clone()]`. Binary mapper, local-array branches, conversion order, actual override branch and solver/outcome/state code are otherwise unchanged. Everything outside prepare is byte-identical to this base. The other four complete files are byte-identical. No frame, childrow, slab, unified-value or axis-validation-bypass hunk is mixed into this one-file patch.
+
+Branch behavior retains the original reviewed boundary:
+
+- Two actual children select exactly two local AxisConstraints, in child order. Other arities clear/refill the full constraint Vec.
+- Graph weights select a local f64 pair only when both actual child and weight slices have length two. Mismatched or other shapes clear/refill the complete weight Vec; no truncation or padding hides original cardinalities.
+- An actual override is selected first and stays the entire borrowed f64 slice. It is not narrowed, normalized again, replaced with graph weights or tested by scratch capacity.
+- Each generic fallback clears its corresponding Vec before refill, so transitions among binary/nonbinary/override splits cannot consume leftover scratch contents. Local arrays are assigned before use and outlive the unique solver call; nothing is stored in a continuation.
+
+The same pure mapper fields and `f64::from(weight.get())` expressions preserve floating-point bits and order. The individual minimum/maximum output writes still cover every child before weight selection. Central selection, projected splitter geometry and exactly one `solve_axis_into` call retain their prior positions. Full validation, feasibility exits and all arithmetic remain unchanged. There is no alternate binary solver. The change introduces no new fallible scalar construction, so raw cardinality/geometry/weight error order is retained. I did not re-audit the unchanged solver.
+
+The complete retained three-Vec SplitMap/result section is byte-identical to the initial retained implementation, with no checked-3E allocation or slices helpers. Immutable ownership, public slices, generational lookups, Clone/equality and full fresh/export obligations remain. Frame pending behavior and its original 55-line registered descendant-before-parent-gap witness are untouched by this binary patch; the entire test module equals both frame3Vec output and the original frame output. Reference/topology stay independent and unchanged.
+
+Root's later rejection of childrows changes the intended adoption parent but not this frozen candidate's identity. This report must not be read as recommending retention of the rejected prerequisite; its recorded source pair still contains childrows. I separately applied the exact frame3Vec and then binary3Vec hunk bodies to immutable retained-gather e3 files entirely in memory; every old body matched uniquely. Reintroducing the exact childrow hunks afterward reconstructs this frozen combined output, showing the changes commute at their existing source boundaries. Therefore the small binary materialization hunks can be independently carried to the retained frame parent without reinstalling earlier childrow helpers/gathers. Bind the actual rebased output separately and do not copy these full files over the live implementation. Scalar unified values would require a separate gather-based variant and is not included here.
+
+Root-owned qualification should reuse existing full/minimum dense-reference comparisons, mixed n-ary/binary transitions, actual f64 override/source/error-priority tests, raw cardinality/DAG inputs, late geometry/old clones and deep traversal. The pending-state test is retained rather than regenerated. This review added no storage-form mirror test. No gate was executed here.
+
+The cost limitation remains the original one: scratch is already reused per root, so local pairs do not prove two allocations saved per split. Entirely binary roots may avoid acquiring fallback buffers; mixed arities and overrides retain them. Local arrays and branch/code-size/stack effects are not measured. The report supplies no allocator share, speedup or goal attainment claim, and no source correction is requested.
+
+Only this review.md was written for this frozen-binary review. No Cargo, compilation, tests, benchmark, timing, runner, repository/fork/cache/candidate changes, network or sub-agent was used. Original candidate and review remain stationary.
