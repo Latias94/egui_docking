@@ -1,0 +1,70 @@
+{
+  "actual_control_commit": "c7508eec3ac44138305797691244ae9c180d7680",
+  "candidate_binary_sha256": "73188fa44e168aaec6f591f029086b04dbc414ab0c4b79fcc21d44f4b0369d49",
+  "statistics": {
+    "c7508eec3ac44138305797691244ae9c180d7680": {
+      "p50": {
+        "improve": 26,
+        "regress": 16,
+        "ties": 0,
+        "reduction_range_percent": [
+          -12.768130745658834,
+          7.437329214684563
+        ]
+      },
+      "p95": {
+        "improve": 23,
+        "regress": 17,
+        "ties": 2,
+        "reduction_range_percent": [
+          -65.34379326257498,
+          10.659078590785908
+        ]
+      },
+      "max": {
+        "improve": 19,
+        "regress": 23,
+        "ties": 0,
+        "reduction_range_percent": [
+          -1292.102206736353,
+          67.95139890395154
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 3,
+        "regress": 39,
+        "ties": 0,
+        "reduction_range_percent": [
+          -220.00000000000003,
+          14.722271817472777
+        ]
+      },
+      "p95": {
+        "improve": 8,
+        "regress": 34,
+        "ties": 0,
+        "reduction_range_percent": [
+          -377.0992366412214,
+          23.653735675626642
+        ]
+      },
+      "max": {
+        "improve": 12,
+        "regress": 30,
+        "ties": 0,
+        "reduction_range_percent": [
+          -1042.043076923077,
+          58.46105782457253
+        ]
+      }
+    }
+  },
+  "within2x": 30,
+  "qualification": {
+    "ordinary_gates_passed": 3,
+    "all_twelve_passed": false,
+    "performance_screen_only": true
+  }
+}
