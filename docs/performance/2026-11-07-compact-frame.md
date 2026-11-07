@@ -61,3 +61,8 @@ exact control/candidate source pairs and the independent source reviews. Every
 member round-trips against the original bytes. The
 [decision](2026-11-07-compact-frame/decision.json) preserves the complete result
 counts and retention boundary. Fresh remote CI is required for this runtime head.
+
+The [independent evidence review](2026-11-07-compact-frame/evidence-review.md)
+binds immutable `dc689a6` to e3 and independently recomputes every complete
+statistic and vector. It supports the bounded retention decision, discloses
+the adverse small/tail cells, and confirms the overall target is incomplete.
