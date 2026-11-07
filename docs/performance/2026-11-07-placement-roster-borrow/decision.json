@@ -1,0 +1,14 @@
+{
+  "utc": "2026-11-07T12:13:17.980947+00:00",
+  "decision": "reject_restore",
+  "actual_control": "c7508eec3ac44138305797691244ae9c180d7680",
+  "candidate_binary_sha256": "7a459de3b9653943a2fd1693ecb1805bb481cdacd6870b67de228e20065462d0",
+  "reason": "Affectededge5of12<8 andsmall2of4<3. Performance screen fails, no confirmation or remaining9ordinarygates needed",
+  "ordinary_gates_passed": 3,
+  "full_twelve_gate_qualification": false,
+  "work_and_full_vectors_pass": true,
+  "all_324_formal_sources_restored": true,
+  "retained_runtime": "0e441c8",
+  "retained_inventory": 30,
+  "independent_evidence_review_sha256": "997a99f3112ef967ea0d1e8ccb16e76178effaa3d3752a61713d9bfdfc28bbdb"
+}
