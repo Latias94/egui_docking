@@ -61,4 +61,7 @@ The [archive](2026-11-07-projection-stack-reserve/evidence.tar.xz) roundtrips
 425 inputs, 16128 raw observations, 336 complete vectors, all gates, the source
 review and the decision rule recorded before measurement. The
 [decision](2026-11-07-projection-stack-reserve/decision.json) retains exactly this
-single initialization delta. Full independent evidence audit is pending.
+single initialization delta. The
+[independent full evidence audit](2026-11-07-projection-stack-reserve/independent-evidence-review.md)
+finds no blocking source or evidence issue; its SHA-256 is
+`44c6f892b4d831bd46eb3283a7cd9b0b8aa5e92e5e78084175d8e85d9c53d3ab`.

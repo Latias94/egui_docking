@@ -386,3 +386,23 @@ Small single-view resize now meets2x in both groups, moving the result from
 28/42to30/42. Twelve small conditions remain above2x. Next sample the exact
 retained binary's existing small resize/edge probe, then complete independent
 continuation/stopping review without claiming a language or architecture floor.
+
+
+## Final bounded-search decision
+
+The retained runtime is `0e441c8`. The source-matched control diagnostic found
+initial continuation growth; bounded standard-Vec reservation passes all ordinary
+gates, unchanged work/full vectors and its predeclared complete comparison rules.
+It improves 28 medians, regresses twelve and ties two. The final result is
+**30/42 within 2x**: all 128/1024-pane cells pass, twelve 16-pane cells miss.
+The original-to-final confirmation improves all p50/p95 cells and retains one
+max regression. No numerical completion, optimality or theoretical floor is claimed.
+
+Two independent reviewers support reasonably ending this broad search rather
+than expanding unprofiled variants. The last attributed opportunity was completed,
+and the distinct persistent storage, output storage, continuation and validation
+failures remain archived. See the [final report](../performance/2026-11-07-twofold-result.md),
+[source-bound diagnostic](../performance/2026-11-07-small-projection-diagnostic.md)
+and [reservation evidence](../performance/2026-11-07-projection-stack-reserve.md).
+Final publication still requires exact-head six-job remote CI and source matching;
+its receipt accompanies the handoff.
