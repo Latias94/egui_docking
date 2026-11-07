@@ -406,3 +406,18 @@ failures remain archived. See the [final report](../performance/2026-11-07-twofo
 and [reservation evidence](../performance/2026-11-07-projection-stack-reserve.md).
 Final publication still requires exact-head six-job remote CI and source matching;
 its receipt accompanies the handoff.
+
+
+## Authorized binary-axis follow-up
+
+The user requested a further same-output binary solver investigation. Two
+independent treatments against `a46fdda` passed all ordinary/work/vector gates
+but failed their predeclared selection rules: checked-weight reuse has
+21/20/1 median directions and 3/6 selected layout improvements; binary desired
+initialization has 17/24/1 and 2/6. Their 31/42 and 32/42 ImGui inventories do
+not override inferior control-relative results. Both are rejected and all
+324 formal source/configuration inputs are restored exactly. The retained
+runtime remains `0e441c8`, with no new oracle-test or production change. See
+the [follow-up evidence](../performance/2026-11-07-binary-solver-followup.md).
+This tests two numerical initialization hypotheses, not every possible binary
+water-filling algorithm or a theoretical limit.

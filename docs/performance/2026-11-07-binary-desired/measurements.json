@@ -1,0 +1,65 @@
+{
+  "actual_control_commit": "a46fddae12be5a81ac19144f55ab34066a745c5c",
+  "candidate_binary_sha256": "5a53a29bc3373e57c598da0a6a3a20952bebb0bc9aba6c3e8df250f8d270362e",
+  "statistics": {
+    "a46fddae12be5a81ac19144f55ab34066a745c5c": {
+      "p50": {
+        "improve": 17,
+        "regress": 24,
+        "ties": 1,
+        "reduction_range_percent": [
+          -6.0009601536245905,
+          5.768343331795112
+        ]
+      },
+      "p95": {
+        "improve": 17,
+        "regress": 25,
+        "ties": 0,
+        "reduction_range_percent": [
+          -40.262381775653424,
+          10.215384615384615
+        ]
+      },
+      "max": {
+        "improve": 18,
+        "regress": 24,
+        "ties": 0,
+        "reduction_range_percent": [
+          -317.14420548776377,
+          81.19597643999083
+        ]
+      }
+    },
+    "imgui": {
+      "p50": {
+        "improve": 3,
+        "regress": 39,
+        "ties": 0,
+        "reduction_range_percent": [
+          -240.0,
+          15.075454545454548
+        ]
+      },
+      "p95": {
+        "improve": 5,
+        "regress": 37,
+        "ties": 0,
+        "reduction_range_percent": [
+          -303.2258064516129,
+          40.37840332256576
+        ]
+      },
+      "max": {
+        "improve": 14,
+        "regress": 28,
+        "ties": 0,
+        "reduction_range_percent": [
+          -1856.64,
+          85.0932022886417
+        ]
+      }
+    }
+  },
+  "within2x": 32
+}

@@ -208,3 +208,13 @@ The [document review](2026-11-07-twofold-result/document-review.md) identified
 one publication wording issue: a full-evidence claim required the separate
 reservation audit to finish. That audit is now complete and linked above; no
 measurement was repeated or changed to resolve the wording.
+
+
+## Subsequent binary-axis investigation
+
+The user authorized a further [binary-axis follow-up](2026-11-07-binary-solver-followup.md).
+Both exact treatments passed ordinary/work/full-output qualification but failed
+predeclared performance selection against this retained runtime. Checked-total
+reuse and explicit two-child initialization were rejected. All 324 formal inputs
+were restored; the result and runtime in this report remain unchanged. The
+follow-up does not establish a complete binary solver's performance limit.

@@ -1,0 +1,25 @@
+{
+  "utc": "2026-11-07T08:20:52.849883+00:00",
+  "decision": "Reject both exact treatments; preserve the qualified runtime; close this bounded binary-initialization follow-up after final publication checks",
+  "actual_control": "a46fddae12be5a81ac19144f55ab34066a745c5c",
+  "retained_runtime": "0e441c8ddeb6f85b9b0e8237303b5def32e178ae",
+  "retained_binary_sha256": "3a885b09604d6552acb307d07e87d0ea40247b99866fcfcb8c37bb7d3bb8819b",
+  "all324_formalinputs_restored": true,
+  "new_runtime_or_test_delta": false,
+  "retained_imGui_inventory": 30,
+  "required": 42,
+  "numerical_target_met": false,
+  "tested_scope": [
+    "checked-weight-totalreuse",
+    "binarynocentraldesired/clampunrolling"
+  ],
+  "not_established": [
+    "Complete binary-constrained-water-filling performance limit",
+    "Cause of allremaininggap",
+    "Language or ownership lowerbound"
+  ],
+  "full_evidence_reviews": {
+    "validated-weight": "e463d6c8f49c355174d0fe406da7ed46c9862db75c5ce570f24d3c4e1d7ee76e",
+    "binary-desired": "e52c735fc08f823882d637963d1c957b721aef5561454a88cd28f6e010c0901c"
+  }
+}
