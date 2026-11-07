@@ -20,6 +20,7 @@ use super::super::app::{
     ROOT_WINDOW_TITLE, RedockLayout, Shared, ShiftProbe, SourceSelection, StationaryMode,
     StationaryOverflowProbe, StationaryPress,
 };
+use super::super::assertions::motion_receipt::{self, MotionReceipt};
 use super::super::assertions::{
     ActualGuideHit, DockPreviewEmission, LogicalBounds, LogicalPoint, NestedPaneCase,
     OverflowTabGeometry, PHYSICAL_TARGET_ENV, PaneCenterCase, PaneCenterError, PaneCenterGeometry,
@@ -1068,31 +1069,27 @@ fn inject_drag(
             request.deadline,
             &format!("{} source press", request.label),
         )?;
-        desktop.move_pointer(request.threshold)?;
-        desktop.assert_pointer(request.threshold, Some(true))?;
-        let source_at_threshold = input_barrier(
+        let source_at_threshold = inject_held_motion(
             shared,
             inspection,
+            desktop,
             request.source_viewport,
             source_at_press.step,
             request.source_client,
             request.source_pixels_per_point,
             request.threshold,
-            true,
             request.deadline,
             &format!("{} drag threshold", request.label),
         )?;
-        desktop.move_pointer(request.target)?;
-        desktop.assert_pointer(request.target, Some(true))?;
-        let source_at_first_target = input_barrier(
+        let source_at_first_target = inject_held_motion(
             shared,
             inspection,
+            desktop,
             request.source_viewport,
             source_at_threshold.step,
             request.source_client,
             request.source_pixels_per_point,
             request.target,
-            true,
             request.deadline,
             &format!("{} first target ingress", request.label),
         )?;
@@ -1112,22 +1109,20 @@ fn inject_drag(
                 request.label
             ),
         )?;
-        desktop.move_pointer(request.routed_target)?;
-        desktop.assert_pointer(request.routed_target, Some(true))?;
         let source_barrier_step = if request.source_viewport == ViewportId::ROOT {
             source_at_first_target.step.max(route_confirmed.step)
         } else {
             source_at_first_target.step
         };
-        let source_at_routed_target = input_barrier(
+        let source_at_routed_target = inject_held_motion(
             shared,
             inspection,
+            desktop,
             request.source_viewport,
             source_barrier_step,
             request.source_client,
             request.source_pixels_per_point,
             request.routed_target,
-            true,
             request.deadline,
             &format!("{} routed target input", request.label),
         )?;
@@ -1325,17 +1320,15 @@ fn stationary_while_pressed(
         );
         press
     };
-    desktop.move_pointer(point)?;
-    desktop.assert_pointer(point, Some(true))?;
-    let hovered = input_barrier(
+    let hovered = inject_held_motion(
         shared,
         inspection,
+        desktop,
         request.source_viewport,
         source_ingress_step,
         request.source_client,
         request.source_pixels_per_point,
         point,
-        true,
         deadline,
         "stationary inactive Main hover with primary held",
     )?;
@@ -1833,17 +1826,15 @@ fn stationary_overflow_while_pressed(
         probe.stress_active = true;
         press
     };
-    desktop.move_pointer(point)?;
-    desktop.assert_pointer(point, Some(true))?;
-    let hovered = input_barrier(
+    let hovered = inject_held_motion(
         shared,
         inspection,
+        desktop,
         request.source_viewport,
         source_ingress_step,
         request.source_client,
         request.source_pixels_per_point,
         point,
-        true,
         deadline,
         "stationary overflow one real motion into the effective right band",
     )?;
@@ -1867,17 +1858,15 @@ fn stationary_overflow_while_pressed(
             .as_mut()
             .unwrap()
             .exit_target = Some(exit);
-        desktop.move_pointer(exit)?;
-        desktop.assert_pointer(exit, Some(true))?;
-        source_step = input_barrier(
+        source_step = inject_held_motion(
             shared,
             inspection,
+            desktop,
             request.source_viewport,
             source_step,
             request.source_client,
             request.source_pixels_per_point,
             exit,
-            true,
             deadline,
             "stationary overflow control exit reached the held source UI",
         )?
@@ -2124,17 +2113,15 @@ fn inject_redock_drag(
             )?;
             // Resume the same held gesture with real motion into the docking target.
             // The stationary probe is complete before this new candidate begins.
-            desktop.move_pointer(request.routed_ingress)?;
-            desktop.assert_pointer(request.routed_ingress, Some(true))?;
-            let source_after_resume = input_barrier(
+            let source_after_resume = inject_held_motion(
                 shared,
                 inspection,
+                desktop,
                 request.source_viewport,
                 source_after_main.step,
                 request.source_client,
                 request.source_pixels_per_point,
                 request.routed_ingress,
-                true,
                 request.deadline,
                 "stationary resume held redock with real motion",
             )?;
@@ -2288,31 +2275,27 @@ fn reach_target_surface_while_pressed(
     )?;
     let root_before_route = root_step_before_drag_route(inspection, request, source_at_press.step)?;
     let route_checkpoint = pointer_passthrough_checkpoint(shared);
-    desktop.move_pointer(request.threshold)?;
-    desktop.assert_pointer(request.threshold, Some(true))?;
-    let source_at_threshold = input_barrier(
+    let source_at_threshold = inject_held_motion(
         shared,
         inspection,
+        desktop,
         request.source_viewport,
         source_at_press.step,
         request.source_client,
         request.source_pixels_per_point,
         request.threshold,
-        true,
         request.deadline,
         &format!("{} drag threshold", request.label),
     )?;
-    desktop.move_pointer(request.ingress)?;
-    desktop.assert_pointer(request.ingress, Some(true))?;
-    let source_at_first_ingress = input_barrier(
+    let source_at_first_ingress = inject_held_motion(
         shared,
         inspection,
+        desktop,
         request.source_viewport,
         source_at_threshold.step,
         request.source_client,
         request.source_pixels_per_point,
         request.ingress,
-        true,
         request.deadline,
         &format!("{} first target-surface ingress", request.label),
     )?;
@@ -2349,22 +2332,20 @@ fn reach_target_surface_while_pressed(
         ),
     )?;
 
-    desktop.move_pointer(request.routed_ingress)?;
-    desktop.assert_pointer(request.routed_ingress, Some(true))?;
     let source_barrier_step = if request.source_viewport == ViewportId::ROOT {
         source_at_first_ingress.step.max(route_confirmed.step)
     } else {
         source_at_first_ingress.step
     };
-    let source_at_routed_ingress = input_barrier(
+    let source_at_routed_ingress = inject_held_motion(
         shared,
         inspection,
+        desktop,
         request.source_viewport,
         source_barrier_step,
         request.source_client,
         request.source_pixels_per_point,
         request.routed_ingress,
-        true,
         request.deadline,
         &format!("{} routed target-surface ingress input", request.label),
     )?;
@@ -2533,17 +2514,15 @@ fn move_to_overflow_target_while_pressed(
     let (point, logical) =
         overflow_tab_point(geometry, window.bounds, before.pixels_per_point, &guides)
             .map_err(|error| format!("overflow clipped input point: {error:?}"))?;
-    desktop.move_pointer(point)?;
-    desktop.assert_pointer(point, Some(true))?;
-    let source = input_barrier(
+    let source = inject_held_motion(
         shared,
         inspection,
+        desktop,
         request.source_viewport,
         source_step,
         request.source_client,
         request.source_pixels_per_point,
         point,
-        true,
         request.deadline,
         "overflow real motion into clipped Main",
     )?;
@@ -2940,22 +2919,20 @@ fn move_to_pane_target_while_pressed(
         );
     }
     let load_enabled = pointer_load_enabled()?;
-    desktop.move_pointer(selected)?;
-    desktop.assert_pointer(selected, Some(true))?;
     let source_step = if request.source_viewport == request.target_viewport {
         source_ingress_step.max(target_tree.step)
     } else {
         source_ingress_step
     };
-    let source_at_motion = input_barrier(
+    let source_at_motion = inject_held_motion(
         shared,
         inspection,
+        desktop,
         request.source_viewport,
         source_step,
         request.source_client,
         request.source_pixels_per_point,
         selected,
-        true,
         request.deadline,
         &format!("{} non-guide native motion", target.name()),
     )?;
@@ -3328,17 +3305,15 @@ fn shift_pause_while_pressed(
         request.deadline,
     )?;
     desktop.assert_pointer(selected, Some(true))?;
-    desktop.move_pointer(resumed)?;
-    desktop.assert_pointer(resumed, Some(true))?;
-    let source_at_motion = input_barrier(
+    let source_at_motion = inject_held_motion(
         shared,
         inspection,
+        desktop,
         request.source_viewport,
         source_step,
         request.source_client,
         request.source_pixels_per_point,
         resumed,
-        true,
         request.deadline,
         "Shift real distinct center motion reaches the held Child",
     )?;
@@ -3462,17 +3437,15 @@ fn move_to_center_guide_while_pressed(
         target_window.bounds
     );
 
-    desktop.move_pointer(guide)?;
-    desktop.assert_pointer(guide, Some(true))?;
-    let _source_at_guide = input_barrier(
+    let _source_at_guide = inject_held_motion(
         shared,
         inspection,
+        desktop,
         request.source_viewport,
         source_ingress_step,
         request.source_client,
         request.source_pixels_per_point,
         guide,
-        true,
         request.deadline,
         &format!("{} exact Center guide input", request.label),
     )?;
@@ -3544,6 +3517,43 @@ fn verify_final_center_guide(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn inject_held_motion(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    desktop: &X11Desktop,
+    viewport: ViewportId,
+    previous_step: u64,
+    client: PhysicalBounds,
+    pixels_per_point: f32,
+    point: PhysicalPoint,
+    deadline: Instant,
+    stage: &str,
+) -> Result<ViewportTreeSnapshot, String> {
+    let baseline = shared
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .motion
+        .latest(viewport)
+        .filter(|receipt| receipt.lifetime.is_some() && receipt.primary_down)
+        .ok_or_else(|| format!("{stage}: no held UI motion baseline for {viewport:?}"))?;
+    desktop.move_pointer(point)?;
+    desktop.assert_pointer(point, Some(true))?;
+    input_barrier_with_motion(
+        shared,
+        inspection,
+        viewport,
+        previous_step,
+        client,
+        pixels_per_point,
+        point,
+        true,
+        deadline,
+        stage,
+        Some(baseline),
+    )
+}
+
 fn input_barrier(
     shared: &Shared,
     inspection: &mut InspectionClient,
@@ -3556,12 +3566,41 @@ fn input_barrier(
     overall_deadline: Instant,
     stage: &str,
 ) -> Result<ViewportTreeSnapshot, String> {
+    input_barrier_with_motion(
+        shared,
+        inspection,
+        viewport,
+        previous_step,
+        client,
+        pixels_per_point,
+        expected_physical,
+        expected_primary_down,
+        overall_deadline,
+        stage,
+        None,
+    )
+}
+
+fn input_barrier_with_motion(
+    shared: &Shared,
+    inspection: &mut InspectionClient,
+    viewport: ViewportId,
+    previous_step: u64,
+    client: PhysicalBounds,
+    pixels_per_point: f32,
+    expected_physical: PhysicalPoint,
+    expected_primary_down: bool,
+    overall_deadline: Instant,
+    stage: &str,
+    motion_baseline: Option<MotionReceipt>,
+) -> Result<ViewportTreeSnapshot, String> {
     let expected = desktop_to_viewport_logical(client, pixels_per_point, expected_physical)
         .map_err(|error| format!("{stage}: derive expected semantic pointer: {error:?}"))?;
     let deadline = bounded_stage_deadline(overall_deadline, Duration::from_secs(3));
     let mut attempts = 0_u32;
     let mut last_step = previous_step;
     let mut last_observation = None;
+    let mut last_motion = None;
     let mut last_lookup = "not attempted";
     let mut last_tree = None;
     while Instant::now() < deadline {
@@ -3573,13 +3612,35 @@ fn input_barrier(
                 .as_ref()
                 .map_or_else(|| "no tree observed".to_owned(), semantic_tree_summary);
             format!(
-                "{stage}: semantic input barrier read failed; viewport={viewport:?}, previous_step={previous_step}, last_step={last_step}, expected_physical={expected_physical:?}, client={client:?}, pixels_per_point={pixels_per_point}, expected_position={expected:?}, expected_primary_down={expected_primary_down}, last_observation={last_observation:?}, last_lookup={last_lookup}, attempts={attempts}, tree={tree_summary}; {error}"
+                "{stage}: semantic input barrier read failed; viewport={viewport:?}, previous_step={previous_step}, last_step={last_step}, expected_physical={expected_physical:?}, client={client:?}, pixels_per_point={pixels_per_point}, expected_position={expected:?}, expected_primary_down={expected_primary_down}, last_observation={last_observation:?}, motion_baseline={motion_baseline:?}, last_motion={last_motion:?}, last_lookup={last_lookup}, attempts={attempts}, tree={tree_summary}; {error}"
             )
         })?;
         attempts = attempts.saturating_add(1);
         last_step = snapshot.step;
         if snapshot.step <= previous_step {
             last_lookup = "tree step did not advance";
+            last_tree = Some(snapshot.tree);
+            continue;
+        }
+        if let Some(baseline) = motion_baseline {
+            last_motion = shared
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .motion
+                .latest(viewport);
+            let sample = motion_receipt::sample(&snapshot.tree)
+                .map_err(|error| format!("{stage}: {error}"))?;
+            if let (Some(receipt), Some(sample)) = (last_motion, sample)
+                && receipt.matches(baseline, viewport, sample, expected, pixels_per_point)
+            {
+                eprintln!(
+                    "physical-smoke: {stage}: viewport={viewport:?} step={} attempts={attempts} consumed_motion={receipt:?}",
+                    snapshot.step,
+                );
+                return Ok(snapshot);
+            }
+            last_lookup = "consumed motion receipt did not match";
             last_tree = Some(snapshot.tree);
             continue;
         }
@@ -3617,7 +3678,7 @@ fn input_barrier(
         .as_ref()
         .map_or_else(|| "no tree observed".to_owned(), semantic_tree_summary);
     Err(format!(
-        "{stage}: AccessKit pointer diagnostic did not cross the OS-event/tree barrier; previous_step={previous_step}, last_step={last_step}, expected_position={expected:?}, expected_primary_down={expected_primary_down}, last_observation={last_observation:?}, last_lookup={last_lookup}, attempts={attempts}, tree={tree_summary}"
+        "{stage}: AccessKit pointer diagnostic did not cross the OS-event/tree barrier; previous_step={previous_step}, last_step={last_step}, expected_position={expected:?}, expected_primary_down={expected_primary_down}, last_observation={last_observation:?}, motion_baseline={motion_baseline:?}, last_motion={last_motion:?}, last_lookup={last_lookup}, attempts={attempts}, tree={tree_summary}"
     ))
 }
 

@@ -20,6 +20,7 @@ use winit::event::{DeviceId, ElementState, MouseButton, PointerPressToken, Windo
 use winit::keyboard::ModifiersState;
 use winit::window::WindowId;
 
+use super::assertions::motion_receipt::MotionProbe;
 use super::assertions::{
     NestedPaneCase, OverflowTabGeometry, PHYSICAL_TARGET_ENV, POINTER_DIAGNOSTIC_LABEL,
     PaneEdgeCase, PhysicalBounds, PhysicalPoint, ROOT_PANE_CONTENT_LABEL,
@@ -646,6 +647,7 @@ impl ShiftProbe {
 #[derive(Debug, Default)]
 pub(super) struct SharedState {
     pub(super) observation: ProductObservation,
+    pub(super) motion: MotionProbe,
     pub(super) pointer_passthrough_sequence: u64,
     pub(super) pointer_passthrough: Vec<PointerPassthroughObservation>,
     pub(super) roster_epoch: u64,
@@ -888,6 +890,12 @@ impl egui::Plugin for PhysicalSemanticProbe {
             self.diagnostic_enabled = true;
         }
         publish_pointer_diagnostic(ui);
+        self.shared
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .motion
+            .publish(ui);
     }
 
     fn output_hook(&mut self, _: &egui::Context, output: &mut egui::FullOutput) {

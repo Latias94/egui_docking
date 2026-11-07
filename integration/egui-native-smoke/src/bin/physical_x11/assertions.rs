@@ -3,6 +3,9 @@
 use eframe::egui;
 use eframe::egui::accesskit::{Role, TreeUpdate};
 
+#[path = "motion_receipt.rs"]
+pub(super) mod motion_receipt;
+
 pub(super) const POINTER_DIAGNOSTIC_LABEL: &str = "Physical smoke pointer input";
 pub(super) const NATIVE_DRAG_PREVIEW_DIAGNOSTIC_LABEL: &str =
     "Dockspace native drag preview painted";

@@ -1,0 +1,7 @@
+{
+  "regular_input_files": 89,
+  "all_members_roundtrip_equal": true,
+  "source_parent": "9ddb63f425ca8316bdf483d6297e923c35a16ac3",
+  "local_qualification": "macOS physical unit binary;32pass;Linux runtime not locally executed",
+  "first_attempt_texture_disposal_failure_retained": true
+}
