@@ -1,0 +1,16 @@
+{
+  "base_commit": "000c484d1c99c530254c763911a4b90749ed10ba",
+  "branch": "refactor/egui-pane-ergonomics",
+  "final_source_sha256": {
+    "crates/dockspace/src/engine.rs": "a677b04d8e61ad12c10014223d9bc6d65213fe092a09ff6d5606626d4b5cf4d6",
+    "crates/dockspace/src/engine/pointer_transaction.rs": "725dc126f54c252e281778584f34a8d71b9e23cd82e222600cd889419e9512b3",
+    "crates/dockspace/src/engine/semantic_candidate.rs": "3a2ed4ecf446b826197445924d334fe5dc6ef9b43436b36cefbecd1dc460b204",
+    "crates/dockspace/src/engine/tab_strip_input.rs": "c8322e77140c9e3e9b6b9a66ff1e925be1e98825385088aed66ba18919dd8337",
+    "crates/dockspace/src/engine/tests/tab_strip.rs": "f2b32440f8dc3f8d046423069d0cccd5e665b52b476739d739627bc023e81341",
+    "crates/egui_dockspace/src/product_owned_run_tests.rs": "e9505a2e392f2a12f4ef8db41e61fabc6475674fee9989f844d5d8b6e60cf38a"
+  },
+  "final_binary_sha256": "3c3b3a56f3fc2e5e9714f86e4317b8710c24fa4b525bf4bd84c575b8d5240dcc",
+  "final_script_sha256": "ad9d16e2b7787c7ee83bdebc3fb88ae8f03e9fc0d6f5cc1aeb4a8a527139a9aa",
+  "container": "354e85cb1d95",
+  "environment": "Linux, Rust 1.95.0, Xvfb/Openbox/XTest, software GL, one CPU, 4 GiB; 680 x 620 editor"
+}

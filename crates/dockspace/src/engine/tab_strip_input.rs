@@ -2,6 +2,13 @@
 
 use super::*;
 
+pub(super) enum TabListMenuActivation {
+    /// Current-UI semantic input can request content focus without global desktop facts.
+    Local(FocusCausalStamp),
+    /// Native pointer input retains ordered activation and compensation handling.
+    Journal(FocusCausalStamp),
+}
+
 pub(super) fn aligned_tab_strip_scroll_offset(
     plan: &PresentationPlan,
     key: TabStripStateKey,
@@ -301,10 +308,10 @@ impl DockEngine {
         })
     }
 
-    pub(super) fn finish_journal_tab_list_menu_row(
+    pub(super) fn finish_tab_list_menu_row(
         &mut self,
         cause: ReductionCause,
-        focus_causal: FocusCausalStamp,
+        activation: TabListMenuActivation,
         frozen: &FrozenTabListMenuRowClick,
         plan: &PresentationPlan,
         policy: &DockPolicySnapshot,
@@ -389,17 +396,31 @@ impl DockEngine {
         } else {
             self.consume_tab_strip_state_delta(cause, &close_delta)?;
         }
-        if let Some(binding) = self
-            .viewport
-            .viewport(session.key().surface())
-            .filter(|record| record.can_accept_activation())
-            .map(crate::viewport_registry::ViewportRecord::binding)
-        {
+        let surface = session.key().surface();
+        let (focus_causal, native_activation) = match activation {
+            TabListMenuActivation::Local(causal) => (causal, None),
+            TabListMenuActivation::Journal(causal) => (
+                causal,
+                self.viewport
+                    .viewport(surface)
+                    .filter(|record| record.can_accept_activation())
+                    .map(crate::viewport_registry::ViewportRecord::binding),
+            ),
+        };
+        if let Some(binding) = native_activation {
             let _ = self.start_viewport_activation(
                 ViewportActivationRequest::pointer_tab_gesture(binding, PanelFocus::Item(tab.item)),
                 focus_causal,
                 events,
             )?;
+        } else {
+            let native_guard = self.viewport_focus_binding(surface);
+            self.viewport_focus
+                .request_local_pane_focus(surface, tab.item, native_guard, focus_causal)
+                .map_err(|source| EngineError::CausedViewportFocus {
+                    cause: focus_causal.cause(),
+                    source,
+                })?;
         }
         Ok(InteractionOutcome::TabListMenuItemSelected {
             session,
@@ -601,9 +622,9 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<InputOutcome, EngineError> {
         let outcome = match self.prepared_tab_strip_plan(prepared.presentation) {
-            Ok(plan) => self.finish_journal_tab_list_menu_row(
+            Ok(plan) => self.finish_tab_list_menu_row(
                 cause,
-                focus_causal,
+                TabListMenuActivation::Local(focus_causal),
                 &prepared.row,
                 &plan,
                 policy,

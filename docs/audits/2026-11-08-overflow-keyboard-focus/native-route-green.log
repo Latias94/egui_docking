@@ -1,0 +1,8 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.50s
+────────────
+ Nextest run ID 866a3e60-8020-401b-9c18-fe0a10f06aad with nextest profile: default
+    Starting 1 test across 1 binary (2077 tests skipped)
+        PASS [   0.020s] (1/1) dockspace engine::tests::tab_strip::prepared_menu_end_then_enter_binds_the_event_cause_and_requests_pane_focus
+────────────
+     Summary [   0.020s] 1 test run: 1 passed, 2077 skipped

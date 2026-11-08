@@ -447,9 +447,9 @@ impl DockEngine {
                 record,
                 adjustment,
             } => self.finish_tab_strip_scroll(cause, plan, *key, record, adjustment)?,
-            LocalTabChromeAction::ActivateMenuRow(row) => self.finish_journal_tab_list_menu_row(
+            LocalTabChromeAction::ActivateMenuRow(row) => self.finish_tab_list_menu_row(
                 cause,
-                focus_causal,
+                TabListMenuActivation::Local(focus_causal),
                 row,
                 plan,
                 policy,

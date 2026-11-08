@@ -299,32 +299,32 @@ fn application_panels_leave_their_remaining_rectangle_for_docking_and_pane_conte
     receipt.report(SurfacePresentationResult::Presented);
 }
 
-#[test]
-fn keyboard_navigation_keeps_tab_focus_after_editable_pane_selection_commits() {
-    #[derive(Default)]
-    struct EditablePanes([String; 2]);
+#[derive(Default)]
+struct EditablePanes([String; 2]);
 
-    impl PaneView for EditablePanes {
-        fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
-            match item {
-                FIRST => Some("First".into()),
-                SECOND => Some("Second".into()),
-                _ => None,
-            }
-        }
-
-        fn ui(&mut self, item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
-            let target = self.focus_target(item).unwrap();
-            let text = &mut self.0[usize::from(item == SECOND)];
-            let response = ui.add(egui::TextEdit::multiline(text).id(target));
-            crate::PaneResponse::from(&response)
-        }
-
-        fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
-            Some(egui::Id::unique(("navigation-editable-pane", item.get())))
+impl PaneView for EditablePanes {
+    fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+        match item {
+            FIRST => Some("First".into()),
+            SECOND => Some("Second".into()),
+            _ => None,
         }
     }
 
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
+        let target = self.focus_target(item).unwrap();
+        let text = &mut self.0[usize::from(item == SECOND)];
+        let response = ui.add(egui::TextEdit::multiline(text).id(target));
+        crate::PaneResponse::from(&response)
+    }
+
+    fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
+        Some(egui::Id::unique(("navigation-editable-pane", item.get())))
+    }
+}
+
+#[test]
+fn keyboard_navigation_keeps_tab_focus_after_editable_pane_selection_commits() {
     let (context, mut dockspace, _, _) = presented_tabs("editable-tab-navigation");
     let mut panes = EditablePanes::default();
     let mut first_tab = None;
@@ -424,6 +424,91 @@ fn keyboard_navigation_keeps_tab_focus_after_editable_pane_selection_commits() {
             receipt.report(SurfacePresentationResult::Presented);
         }
     }
+}
+
+#[test]
+fn activating_an_overflow_menu_row_focuses_its_editable_content() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
+    )])
+    .unwrap();
+    let mut dockspace = Dockspace::builder("editable-overflow-selection", layout)
+        .style(crate::DockStyle {
+            tab_min_width: 400.0,
+            tab_max_width: 400.0,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+    let mut panes = EditablePanes::default();
+    let mut menu_button = None;
+    for pass in 0..24 {
+        let phase = pass % 12;
+        let events = match phase {
+            4 => vec![Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Click,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: menu_button.unwrap(),
+                    data: None,
+                },
+            )],
+            6 | 8 => vec![Event::Key {
+                key: if phase == 6 {
+                    egui::Key::End
+                } else if pass < 12 {
+                    egui::Key::Enter
+                } else {
+                    egui::Key::Space
+                },
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            11 => vec![Event::Text("typed after menu selection".to_owned())],
+            _ => Vec::new(),
+        };
+        let (output, _) = dockspace
+            .run_single_surface(
+                &context,
+                input(f64::from(pass) * 0.1, events),
+                SURFACE,
+                &mut panes,
+            )
+            .unwrap();
+        let (output, receipt) = output.into_parts();
+        if phase == 3 {
+            menu_button = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Show hidden tabs"))
+                .map(|(id, _)| *id);
+            assert!(menu_button.is_some());
+        }
+        if phase == 10 {
+            assert!(dockspace.view().item(SECOND).unwrap().is_selected());
+            assert_eq!(
+                context.memory(egui::Memory::focused),
+                panes.focus_target(SECOND),
+                "activating an overflow row must enter its content after deferred selection settles, pass {pass}"
+            );
+        }
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert_eq!(
+        panes.0[1],
+        "typed after menu selectiontyped after menu selection"
+    );
+    assert!(panes.0[0].is_empty());
 }
 
 struct LateDiscard {

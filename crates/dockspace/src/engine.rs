@@ -53,6 +53,7 @@ use self::pointer_proof::{
     validated_desktop_delivery_route,
 };
 
+use self::tab_strip_input::TabListMenuActivation;
 #[cfg(test)]
 use self::tab_strip_input::aligned_tab_strip_scroll_offset;
 

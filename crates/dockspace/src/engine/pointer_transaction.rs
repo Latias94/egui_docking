@@ -1604,9 +1604,9 @@ impl DockEngine {
             FrozenClickAction::TabStripControl(control) => {
                 self.finish_journal_tab_strip_control(cause, control, presentation.plan())
             }
-            FrozenClickAction::TabListMenuRow(row) => self.finish_journal_tab_list_menu_row(
+            FrozenClickAction::TabListMenuRow(row) => self.finish_tab_list_menu_row(
                 cause,
-                focus_causal,
+                TabListMenuActivation::Journal(focus_causal),
                 row,
                 presentation.plan(),
                 policy,

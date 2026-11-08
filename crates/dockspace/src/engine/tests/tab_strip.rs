@@ -1,6 +1,7 @@
 //! Tab strip, overflow menu, and popup authority reducer tests.
 
 use super::*;
+use crate::viewport_focus::unknown_focus_observation;
 
 #[test]
 fn requirement_pipeline_reconciles_popup_before_finalizing_disabled_policy() {
@@ -1070,84 +1071,180 @@ fn prepared_menu_navigation_rejects_missing_targets_and_stale_session_aba() {
 }
 
 #[test]
-fn prepared_menu_end_then_enter_binds_the_exact_workspace_event_cause() {
-    let mut fixture = tab_strip_reducer_fixture_with_selection(DockPolicy::default(), 0);
-    let surface = fixture.surface;
-    let bar = fixture.bar;
-    let target = fixture.items[3];
-    let host = fixture
-        .engine
-        .create_presentation_host()
-        .expect("test presentation host must mint");
-    publish_tab_strip_reducer_projection(&mut fixture, host, true);
-    let opened = submit_prepared_interaction(&mut fixture.engine, host, |view| {
-        view.prepare_tab_strip_control_activation(surface, TabStripControlId::TabListMenu(bar))
-            .map(|prepared| EngineInput::ActivateTabStripControl { prepared })
-    });
-    let session = match opened.reduced_inputs()[0].outcome() {
-        InputOutcome::InteractionProcessed {
-            outcome:
-                InteractionOutcome::TabStripControlActivated {
-                    menu: Some(session),
+fn prepared_menu_end_then_enter_binds_the_event_cause_and_requests_pane_focus() {
+    for native in [false, true] {
+        let mut fixture = tab_strip_reducer_fixture_with_selection(DockPolicy::default(), 0);
+        let surface = fixture.surface;
+        let bar = fixture.bar;
+        let target = fixture.items[3];
+        let host = fixture
+            .engine
+            .create_presentation_host()
+            .expect("test presentation host must mint");
+        let native_guard = if native {
+            let provider = test_platform_provider(&mut fixture.engine);
+            let expected = fixture.engine.version();
+            let registered = submit_test_input(
+                &mut fixture.engine,
+                host,
+                EngineInput::RegisterViewport {
+                    provider,
+                    expected,
+                    surface,
+                    token: WindowToken::new(501),
+                    role: ViewportRole::Root,
+                    recovery_target: None,
+                },
+            )
+            .unwrap();
+            let InputOutcome::ViewportRegistered { binding } =
+                registered.reduced_inputs()[0].outcome()
+            else {
+                panic!("the native root must register");
+            };
+            let binding = *binding;
+            let mut capabilities = PlatformCapabilities::default();
+            capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+            let snapshot = test_platform_snapshot(
+                capabilities,
+                unknown_focus_observation(
+                    FocusObservationGeneration::new(1),
+                    AuthorityUnavailableReason::NotReported,
+                ),
+                vec![
+                    ObservedWindow::new(binding)
+                        .with_coordinate_observation(WindowCoordinateObservation::new(
+                            binding,
+                            CoordinateObservationGeneration::new(1),
+                            Authority::Known(PhysicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap()),
+                            Authority::Known(PhysicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap()),
+                            Authority::Known(ScaleFactor::new(1.0).unwrap()),
+                            Authority::Known(ScaleFactor::new(1.0).unwrap()),
+                        ))
+                        .with_presentation_observation(WindowPresentationObservation::new(
+                            binding,
+                            crate::viewport::PresentationObservationGeneration::new(1),
+                            Authority::Known(WindowPresentationState::Visible),
+                            PresentationEffectAcknowledgement::known(None),
+                        )),
+                ],
+                Vec::new(),
+                unknown_work_area_observation(1),
+            )
+            .unwrap();
+            let expected_epoch = fixture.engine.version().epoch();
+            submit_test_input(
+                &mut fixture.engine,
+                host,
+                EngineInput::PublishPlatformSnapshot {
+                    provider,
+                    expected_epoch,
+                    snapshot,
+                },
+            )
+            .unwrap();
+            assert!(
+                fixture
+                    .engine
+                    .viewport()
+                    .viewport(surface)
+                    .unwrap()
+                    .can_accept_activation()
+            );
+            assert!(
+                fixture
+                    .engine
+                    .viewport_focus()
+                    .focus_observation()
+                    .is_none()
+            );
+            Some(binding)
+        } else {
+            None
+        };
+        let observed_before = fixture.engine.viewport_focus().current_focus();
+        publish_tab_strip_reducer_projection(&mut fixture, host, true);
+        let opened = submit_prepared_interaction(&mut fixture.engine, host, |view| {
+            view.prepare_tab_strip_control_activation(surface, TabStripControlId::TabListMenu(bar))
+                .map(|prepared| EngineInput::ActivateTabStripControl { prepared })
+        });
+        let session = match opened.reduced_inputs()[0].outcome() {
+            InputOutcome::InteractionProcessed {
+                outcome:
+                    InteractionOutcome::TabStripControlActivated {
+                        menu: Some(session),
+                        ..
+                    },
+                ..
+            } => *session,
+            outcome => panic!("prepared control must open one menu: {outcome:?}"),
+        };
+        publish_tab_strip_reducer_projection(&mut fixture, host, true);
+
+        let navigated = submit_prepared_interaction(&mut fixture.engine, host, |view| {
+            view.prepare_tab_list_menu_navigation(surface, session, TabListMenuNavigation::Last)
+                .map(|prepared| EngineInput::NavigateTabListMenu { prepared })
+        });
+        assert!(matches!(
+            navigated.reduced_inputs()[0].outcome(),
+            InputOutcome::InteractionProcessed {
+                outcome: InteractionOutcome::TabListMenuFocusMoved {
+                    item,
+                    changed: true,
                     ..
                 },
-            ..
-        } => *session,
-        outcome => panic!("prepared control must open one menu: {outcome:?}"),
-    };
-    publish_tab_strip_reducer_projection(&mut fixture, host, true);
-
-    let navigated = submit_prepared_interaction(&mut fixture.engine, host, |view| {
-        view.prepare_tab_list_menu_navigation(surface, session, TabListMenuNavigation::Last)
-            .map(|prepared| EngineInput::NavigateTabListMenu { prepared })
-    });
-    assert!(matches!(
-        navigated.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::TabListMenuFocusMoved {
-                item,
-                changed: true,
                 ..
-            },
-            ..
-        } if *item == target
-    ));
-    publish_tab_strip_reducer_projection(&mut fixture, host, true);
+            } if *item == target
+        ));
+        publish_tab_strip_reducer_projection(&mut fixture, host, true);
 
-    let tab = TabSceneId {
-        root: bar.root,
-        tabs: bar.tabs,
-        item: target,
-    };
-    let selected = submit_prepared_interaction(&mut fixture.engine, host, |view| {
-        view.prepare_tab_list_menu_row_activation(surface, session, tab)
-            .map(|prepared| EngineInput::ActivateTabListMenuRow { prepared })
-    });
-    assert!(matches!(
-        selected.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::TabListMenuItemSelected {
-                tab: actual,
-                changed: true,
+        let tab = TabSceneId {
+            root: bar.root,
+            tabs: bar.tabs,
+            item: target,
+        };
+        let selected = submit_prepared_interaction(&mut fixture.engine, host, |view| {
+            view.prepare_tab_list_menu_row_activation(surface, session, tab)
+                .map(|prepared| EngineInput::ActivateTabListMenuRow { prepared })
+        });
+        assert!(matches!(
+            selected.reduced_inputs()[0].outcome(),
+            InputOutcome::InteractionProcessed {
+                outcome: InteractionOutcome::TabListMenuItemSelected {
+                    tab: actual,
+                    changed: true,
+                    ..
+                },
                 ..
-            },
-            ..
-        } if *actual == tab
-    ));
-    assert_eq!(selected.events().len(), 1);
-    let reduced = &selected.reduced_inputs()[0];
-    let cause = ReductionCause::Input {
-        tick: reduced.tick(),
-        ordinal: reduced.causal_ordinal(),
-        input: reduced.sequence(),
-        source: reduced.source(),
-        source_sequence: reduced.source_sequence(),
-    };
-    assert_eq!(
-        selected.events()[0].cause(),
-        cause,
-        "the shared journal/semantic reducer must retain the exact input cause"
-    );
+            } if *actual == tab
+        ));
+        assert_eq!(selected.events().len(), 1);
+        let reduced = &selected.reduced_inputs()[0];
+        let cause = ReductionCause::Input {
+            tick: reduced.tick(),
+            ordinal: reduced.causal_ordinal(),
+            input: reduced.sequence(),
+            source: reduced.source(),
+            source_sequence: reduced.source_sequence(),
+        };
+        assert_eq!(
+            selected.events()[0].cause(),
+            cause,
+            "the shared journal/semantic reducer must retain the exact input cause"
+        );
+        let intent = fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .expect("menu activation in a local host must request content focus");
+        assert_eq!(intent.surface(), surface);
+        assert_eq!(intent.focus(), PanelFocus::Item(target));
+        assert_eq!(intent.native_guard(), native_guard);
+        assert_eq!(
+            fixture.engine.viewport_focus().current_focus(),
+            observed_before
+        );
+    }
 }
 
 #[test]
@@ -1819,9 +1916,9 @@ fn menu_row_selection_and_close_publish_atomically_and_stale_sessions_reject() {
     let policy = fixture.engine.policy.clone();
     let outcome = fixture
         .engine
-        .finish_journal_tab_list_menu_row(
+        .finish_tab_list_menu_row(
             tab_strip_test_cause(),
-            tab_strip_test_focus_causal(),
+            TabListMenuActivation::Journal(tab_strip_test_focus_causal()),
             &frozen,
             &menu_plan,
             &policy,
@@ -1878,9 +1975,9 @@ fn menu_row_selection_and_close_publish_atomically_and_stale_sessions_reject() {
     let workspace_after = fixture.engine.workspace.clone();
     let outcome = fixture
         .engine
-        .finish_journal_tab_list_menu_row(
+        .finish_tab_list_menu_row(
             tab_strip_test_cause(),
-            tab_strip_test_focus_causal(),
+            TabListMenuActivation::Journal(tab_strip_test_focus_causal()),
             &frozen,
             &menu_plan,
             &policy,
