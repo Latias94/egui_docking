@@ -336,7 +336,7 @@ mod x11 {
                         root_tabs(view) == Some([FIRST, SECOND].as_slice())
                             && view.surfaces().map(|surface| surface.id()).eq([SURFACE])
                             && view.surface(SURFACE).unwrap().contained_count() == 0
-                    }) == Some(true);
+                    });
                     if self.stable(initial && settled && painted)
                         && let Some(drag) = self.drag(ui.ctx())
                     {
@@ -345,21 +345,18 @@ mod x11 {
                     }
                 }
                 Stage::Contained => {
-                    let contained = self
-                        .dockspace
-                        .with_view(|view| {
-                            let second = view.item(SECOND)?;
-                            let floating = second.contained()?;
-                            assert_eq!(root_tabs(view), Some([FIRST].as_slice()));
-                            assert_eq!(second.surface(), SURFACE);
-                            assert_ne!(second.root(), ROOT);
-                            assert_eq!(second.tabs().items(), &[SECOND]);
-                            assert!(second.is_selected());
-                            assert_eq!(view.surfaces().count(), 1);
-                            assert_eq!(view.surface(SURFACE)?.contained_count(), 1);
-                            Some((floating, view.contained(floating)?.rect()))
-                        })
-                        .flatten();
+                    let contained = self.dockspace.with_view(|view| {
+                        let second = view.item(SECOND)?;
+                        let floating = second.contained()?;
+                        assert_eq!(root_tabs(view), Some([FIRST].as_slice()));
+                        assert_eq!(second.surface(), SURFACE);
+                        assert_ne!(second.root(), ROOT);
+                        assert_eq!(second.tabs().items(), &[SECOND]);
+                        assert!(second.is_selected());
+                        assert_eq!(view.surfaces().count(), 1);
+                        assert_eq!(view.surface(SURFACE)?.contained_count(), 1);
+                        Some((floating, view.contained(floating)?.rect()))
+                    });
                     if self.stable(contained.is_some() && settled && painted)
                         && let Some((floating, rect)) = contained
                     {
@@ -389,7 +386,7 @@ mod x11 {
                                     && second.contained().is_none()
                                     && second.is_selected()
                             })
-                    }) == Some(true);
+                    });
                     if self.stable(redocked && settled && painted && self.driver_done) {
                         self.completed.store(true, Ordering::SeqCst);
                         self.advance(Stage::Done, ui.ctx());

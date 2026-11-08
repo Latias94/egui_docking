@@ -102,3 +102,7 @@ predates only the final two settlement match arms; its public example is
 unchanged. Core docking algorithms and portable adapter Rust sources were
 unchanged, so their full workspaces were not rerun. Remote CI was not run during
 this local verification.
+
+The subsequent [inspection and pane workflow follow-up](2026-11-08-native-inspection-and-pane-workflow.md)
+removes the redundant optional native view, corrects current-host reopening and
+contained-pane extraction, and adds direct menu-input evidence.

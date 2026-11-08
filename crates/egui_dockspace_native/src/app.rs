@@ -185,8 +185,12 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     ///
     /// A fatal native-cycle error freezes further host ingress but preserves
     /// the last committed read-only view while owned host state is quarantined.
-    pub fn with_view<R>(&self, inspect: impl FnOnce(DockspaceView<'_>) -> R) -> Option<R> {
-        lock_state(&self.state).with_view(inspect)
+    /// The callback always runs, including before native attachment and after
+    /// shutdown. It must not call this application's other runtime methods:
+    /// the same lock remains held until the callback returns.
+    pub fn with_view<R>(&self, inspect: impl FnOnce(DockspaceView<'_>) -> R) -> R {
+        let state = lock_state(&self.state);
+        inspect(state.view())
     }
 
     /// Inspects the application pane registry while holding the runtime lock.

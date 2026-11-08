@@ -117,8 +117,7 @@ impl DockingSmoke {
             && !app.dockspace.current_output_is_retained();
         let target_selected = app
             .dockspace
-            .with_view(|view| view.item(self.target).unwrap().is_selected())
-            == Some(true);
+            .with_view(|view| view.item(self.target).unwrap().is_selected());
         let target_title = app
             .dockspace
             .with_panes(|panes| panes.panes[&self.target].title);
@@ -152,15 +151,12 @@ impl DockingSmoke {
         {
             let source = (source.min + source.size() * 0.35) * scale;
             let target = target.center() * scale;
-            let (mut target_items, source_items) = app
-                .dockspace
-                .with_view(|view| {
-                    (
-                        view.item(self.target).unwrap().tabs().items().to_vec(),
-                        view.item(self.source).unwrap().tabs().items().to_vec(),
-                    )
-                })
-                .unwrap();
+            let (mut target_items, source_items) = app.dockspace.with_view(|view| {
+                (
+                    view.item(self.target).unwrap().tabs().items().to_vec(),
+                    view.item(self.source).unwrap().tabs().items().to_vec(),
+                )
+            });
             assert!(!target_items.contains(&self.source));
             target_items.push(self.source);
             self.expected_target = target_items;
@@ -190,7 +186,7 @@ impl DockingSmoke {
                 && self.remaining_source.first().is_none_or(|item| {
                     view.item(*item).unwrap().tabs().items() == self.remaining_source
                 })
-        }) == Some(true);
+        });
         if self.announced && docked && app.dockspace.is_quiescent() {
             if !self.complete {
                 eprintln!(

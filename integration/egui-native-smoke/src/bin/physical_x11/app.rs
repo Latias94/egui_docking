@@ -1514,13 +1514,10 @@ impl PhysicalSmokeApp {
         stationary_result: Option<eframe::NativeViewportPointerObservationCommandToken>,
     ) {
         let root_presented = self.dockspace.is_surface_presented(ROOT_SURFACE);
-        let child_location = self
-            .dockspace
-            .with_view(|view| {
-                view.item(CHILD_ITEM)
-                    .map(dockspace::model::DockspaceItemView::surface)
-            })
-            .flatten();
+        let child_location = self.dockspace.with_view(|view| {
+            view.item(CHILD_ITEM)
+                .map(dockspace::model::DockspaceItemView::surface)
+        });
         if self.child_surface.is_none()
             && let Some(surface) = child_location
             && surface != ROOT_SURFACE
@@ -1533,19 +1530,17 @@ impl PhysicalSmokeApp {
         let redocked = self.child_surface.is_some() && child_location == Some(ROOT_SURFACE);
         let redock_layout = redocked
             .then(|| {
-                self.dockspace
-                    .with_view(|view| {
-                        if self.nested_target {
-                            nested::observed_redock_layout(view)
-                        } else if self.stationary_mode.enabled() {
-                            observed_stationary_redock_layout(view)
-                        } else if self.overflow_target {
-                            observed_overflow_redock_layout(view)
-                        } else {
-                            observed_redock_layout(view)
-                        }
-                    })
-                    .flatten()
+                self.dockspace.with_view(|view| {
+                    if self.nested_target {
+                        nested::observed_redock_layout(view)
+                    } else if self.stationary_mode.enabled() {
+                        observed_stationary_redock_layout(view)
+                    } else if self.overflow_target {
+                        observed_overflow_redock_layout(view)
+                    } else {
+                        observed_redock_layout(view)
+                    }
+                })
             })
             .flatten();
         let center_merge_verified = matches!(
@@ -1593,31 +1588,30 @@ impl PhysicalSmokeApp {
         } else {
             None
         };
-        let source_selection =
-            self.stationary_mode
-                .enabled()
-                .then(|| {
-                    self.dockspace
-                        .with_view(|view| {
-                            let main = view.item(MAIN_ITEM)?;
-                            let anchor = view.item(ANCHOR_ITEM)?;
-                            let child = view.item(CHILD_ITEM)?;
-                            if [main, anchor].iter().any(|item| {
-                                item.surface() != ROOT_SURFACE || item.root() != MAIN_ROOT
-                            }) || self.child_surface != Some(child.surface())
-                                || child.surface() == ROOT_SURFACE
-                            {
-                                return None;
-                            }
-                            Some(SourceSelection {
-                                main_selected: main.is_selected(),
-                                anchor_selected: anchor.is_selected(),
-                                child_selected: child.is_selected(),
-                            })
-                        })
-                        .flatten()
+        let source_selection = self
+            .stationary_mode
+            .enabled()
+            .then(|| {
+                self.dockspace.with_view(|view| {
+                    let main = view.item(MAIN_ITEM)?;
+                    let anchor = view.item(ANCHOR_ITEM)?;
+                    let child = view.item(CHILD_ITEM)?;
+                    if [main, anchor]
+                        .iter()
+                        .any(|item| item.surface() != ROOT_SURFACE || item.root() != MAIN_ROOT)
+                        || self.child_surface != Some(child.surface())
+                        || child.surface() == ROOT_SURFACE
+                    {
+                        return None;
+                    }
+                    Some(SourceSelection {
+                        main_selected: main.is_selected(),
+                        anchor_selected: anchor.is_selected(),
+                        child_selected: child.is_selected(),
+                    })
                 })
-                .flatten();
+            })
+            .flatten();
         let stationary_semantic =
             self.stationary_mode.enabled() && !self.dockspace.current_output_is_retained();
         let (lock, changed) = &*self.shared;

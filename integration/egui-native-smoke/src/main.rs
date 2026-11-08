@@ -350,8 +350,7 @@ impl SmokeApp {
         if Instant::now() >= self.deadline {
             let child_surface = self
                 .dockspace
-                .with_view(|view| view.item(CHILD_ITEM).map(|pane| pane.surface()))
-                .flatten();
+                .with_view(|view| view.item(CHILD_ITEM).map(|pane| pane.surface()));
             let presented = (
                 self.dockspace.is_surface_presented(ROOT_SURFACE),
                 child_surface
@@ -466,7 +465,7 @@ impl SmokeApp {
                         .is_some_and(|pane| pane.surface() == target_surface)
                 })
         });
-        if transferred == Some(true) {
+        if transferred {
             match self.scenario {
                 SmokeScenario::Redock => self.queue_redock(context, target_surface),
                 SmokeScenario::RecoverClose
@@ -538,7 +537,7 @@ impl SmokeApp {
                 child_window_exists,
                 self.dockspace.is_surface_presented(ROOT_SURFACE),
                 self.dockspace.is_surface_presented(target_surface),
-                layout_matches == Some(true),
+                layout_matches,
                 self.dockspace.is_quiescent(),
             ) {
                 self.finish(context, Ok(()));
@@ -584,44 +583,38 @@ impl SmokeApp {
                 SmokeScenario::Redock | SmokeScenario::CancelClose => false,
             }
         });
-        match layout_matches {
-            Some(true) => self.finish(context, Ok(())),
-            Some(false) => {
-                let layout = self.dockspace.with_view(|view| {
-                    let root = view
-                        .surface(ROOT_SURFACE)
-                        .and_then(|surface| surface.main_root())
-                        .map(|root| root.id());
-                    let target = view
-                        .surface(target_surface)
-                        .and_then(|surface| surface.main_root())
-                        .map(|root| root.id());
-                    let items = [CHILD_ITEM, CHILD_DETAIL].map(|item| {
-                        view.item(item).map(|pane| {
-                            (
-                                item,
-                                pane.surface(),
-                                pane.root(),
-                                pane.contained(),
-                                pane.is_selected(),
-                            )
-                        })
-                    });
-                    format!("root={root:?}, target={target:?}, items={items:?}")
+        if layout_matches {
+            self.finish(context, Ok(()));
+        } else {
+            let layout = self.dockspace.with_view(|view| {
+                let root = view
+                    .surface(ROOT_SURFACE)
+                    .and_then(|surface| surface.main_root())
+                    .map(|root| root.id());
+                let target = view
+                    .surface(target_surface)
+                    .and_then(|surface| surface.main_root())
+                    .map(|root| root.id());
+                let items = [CHILD_ITEM, CHILD_DETAIL].map(|item| {
+                    view.item(item).map(|pane| {
+                        (
+                            item,
+                            pane.surface(),
+                            pane.root(),
+                            pane.contained(),
+                            pane.is_selected(),
+                        )
+                    })
                 });
-                self.finish(
-                    context,
-                    Err(format!(
-                        "{:?} reached retired and quiescent state with an unexpected layout: {}",
-                        self.scenario,
-                        layout.unwrap_or_else(|| "published view unavailable".to_owned())
-                    )),
-                );
-            }
-            None => self.finish(
+                format!("root={root:?}, target={target:?}, items={items:?}")
+            });
+            self.finish(
                 context,
-                Err("native runtime lost its published view after child close".to_owned()),
-            ),
+                Err(format!(
+                    "{:?} reached retired and quiescent state with an unexpected layout: {}",
+                    self.scenario, layout
+                )),
+            );
         }
     }
 
@@ -659,7 +652,7 @@ impl SmokeApp {
                         .surface(target_surface)
                         .is_none_or(|surface| surface.is_rootless())
                 });
-                if left_child == Some(true) {
+                if left_child {
                     self.transition(SmokePhase::AwaitRetirement { target_surface });
                 } else {
                     self.fail_without_context(
@@ -688,7 +681,7 @@ impl SmokeApp {
                         .is_some_and(|pane| pane.surface() == ROOT_SURFACE)
                 })
         });
-        if restored == Some(true) {
+        if restored {
             self.finish(context, Ok(()));
         }
     }

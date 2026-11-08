@@ -1,0 +1,27 @@
+{
+  "display": ":100",
+  "window": "2097155",
+  "actions": [
+    {
+      "image": "inventory.png",
+      "click": [
+        307,
+        34
+      ]
+    },
+    {
+      "image": "move-menu.png",
+      "click": [
+        449,
+        130
+      ]
+    },
+    {
+      "image": "after-float.png",
+      "click": [
+        562,
+        153
+      ]
+    }
+  ]
+}

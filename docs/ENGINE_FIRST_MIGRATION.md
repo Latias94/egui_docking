@@ -184,6 +184,22 @@ measurement. The fixed application host must survive closing and cross-surface
 movement; a refused departure returns `HostSurfaceRequired` without occupying
 the slot.
 
+`NativeDockspaceApp::with_view` now returns its callback result directly. Remove
+the outer `Option` handling (`flatten`, `unwrap`, or `== Some(true)`) that only
+represented the native view's presence. The callback always receives the last
+committed view, including before native attachment and after fatal shutdown.
+Optional item/root lookups inside the callback remain optional:
+
+```rust,ignore
+let host = app.root_surface();
+let open_on_host = app.with_view(|view| {
+    view.item(item).is_some_and(|pane| pane.surface() == host)
+});
+```
+
+View and pane callbacks hold the native runtime lock. Read other runtime values
+before entering a callback, and submit commands after it returns.
+
 `show_single_surface` is the limited callback integration. It publishes each
 accepted call independently and cannot roll it back after an enclosing run or
 late hook fails. The composed `egui_dockspace::run_ui` wrapper can report exact

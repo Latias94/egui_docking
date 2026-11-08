@@ -1,0 +1,23 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--manifest-path",
+    "integration/egui-fork-workspace/Cargo.toml",
+    "-p",
+    "egui_dockspace_native",
+    "--example",
+    "basic",
+    "--all-features",
+    "--target-dir",
+    "target",
+    "--locked",
+    "--offline",
+    "-j1",
+    "--no-fail-fast"
+  ],
+  "started": "2026-11-08T03:42:39.704011+00:00",
+  "finished": "2026-11-08T03:42:51.981982+00:00",
+  "returncode": 100
+}

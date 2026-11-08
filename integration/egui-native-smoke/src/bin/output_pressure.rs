@@ -109,19 +109,17 @@ struct SourceOwnership {
 
 impl SourceOwnership {
     fn read(runtime: &NativeDockspaceApp<Panes>) -> Option<Self> {
-        runtime
-            .with_view(|view| {
-                let item = view.item(CHILD_ITEM)?;
-                let floating = item.contained()?;
-                let contained = view.contained(floating)?;
-                (contained.root()?.id() == item.root()).then_some(Self {
-                    surface: item.surface(),
-                    root: item.root(),
-                    floating,
-                    rect: contained.rect(),
-                })
+        runtime.with_view(|view| {
+            let item = view.item(CHILD_ITEM)?;
+            let floating = item.contained()?;
+            let contained = view.contained(floating)?;
+            (contained.root()?.id() == item.root()).then_some(Self {
+                surface: item.surface(),
+                root: item.root(),
+                floating,
+                rect: contained.rect(),
             })
-            .flatten()
+        })
     }
 }
 
@@ -237,7 +235,7 @@ impl PressureState {
             );
         }
         if let Some(child) = self.child_surface
-            && (runtime.with_view(|view| view.surface(child).is_none()) != Some(true)
+            && (runtime.with_view(|view| view.surface(child).is_some())
                 || runtime.is_surface_presented(child))
         {
             return Err("the withheld child output published ownership or presentation".into());
@@ -624,7 +622,7 @@ impl PressureApp {
                     view.item(CHILD_ITEM)
                         .is_some_and(|item| item.surface() == ROOT_SURFACE)
                 });
-                if redocked == Some(true)
+                if redocked
                     && state
                         .child_surface
                         .is_some_and(|surface| !runtime.is_surface_presented(surface))

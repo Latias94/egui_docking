@@ -255,6 +255,11 @@ success and actual surface presentation. Layout/document replacement keeps its
 dedicated preparation methods; see the
 [migration guide](../../docs/ENGINE_FIRST_MIGRATION.md#egui-integration).
 
+Native `with_view` returns the callback result directly. The committed layout
+remains readable before host attachment and after fatal shutdown. View/pane
+callbacks hold the runtime lock, so perform other runtime queries and requests
+outside them.
+
 ## Features
 
 Run the bounded editor layout example with:

@@ -527,8 +527,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         self.root_surface
     }
 
-    pub(crate) fn with_view<R>(&self, inspect: impl FnOnce(DockspaceView<'_>) -> R) -> Option<R> {
-        Some(inspect(self.coordinator.session().view()))
+    pub(crate) fn view(&self) -> DockspaceView<'_> {
+        self.coordinator.session().view()
     }
 
     pub(crate) const fn panes(&self) -> &P {
@@ -2470,7 +2470,7 @@ mod tests {
                 .to_string(),
             first_error
         );
-        assert!(state.with_view(|_| ()).is_some());
+        assert!(state.view().surface(SURFACE).is_some());
     }
 
     #[test]

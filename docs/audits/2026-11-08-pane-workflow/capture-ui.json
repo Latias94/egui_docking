@@ -1,0 +1,25 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-i",
+    "-e",
+    "LIBGL_ALWAYS_SOFTWARE=1",
+    "-e",
+    "LP_NUM_THREADS=1",
+    "-e",
+    "WINIT_UNIX_BACKEND=x11",
+    "-e",
+    "WINIT_X11_SCALE_FACTOR=1",
+    "354e85cb1d95",
+    "xvfb-run",
+    "-a",
+    "--server-args=-screen 0 1440x1000x24",
+    "python3",
+    "/tmp/capture_native_ui.py"
+  ],
+  "stdin": "307 34\n449 130\n562 153\n",
+  "observed_at": "2026-11-08T03:57:11.473137+00:00",
+  "returncode": 0,
+  "observation": "Inspected before/menu/after screenshots: Inspector floated independently, Preview retained its group, readable success feedback, editor remained live. App and window manager were terminated by the finite driver."
+}

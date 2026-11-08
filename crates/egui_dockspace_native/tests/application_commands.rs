@@ -64,6 +64,6 @@ fn a_stored_command_shares_bounded_admission_without_mutating_application_data()
     );
     assert_eq!(
         app.with_view(|view| view.item(FIRST).unwrap().root()),
-        Some(RootId::new(1))
+        RootId::new(1)
     );
 }

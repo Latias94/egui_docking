@@ -370,7 +370,7 @@ impl RootRebinding {
                         view.item(*item)
                             .is_some_and(|pane| pane.surface() == current)
                     })
-            }) == Some(true)
+            })
             && smoke.capture_tabs(app)? == self.tabs;
         intact.then_some(()).ok_or_else(|| {
             "Root rebinding retained the old surface or changed pane IDs, tabs, selection or the published host".to_owned()

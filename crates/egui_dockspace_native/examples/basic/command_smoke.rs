@@ -12,15 +12,15 @@ pub(super) fn layout() -> DockspaceLayout {
         DockspaceRootLayout::new(
             MAIN_ROOT,
             DockspaceNode::central_tabs_with_selection(
-                [OUTLINE, EDITOR, PREVIEW, CONSOLE, HISTORY, PROFILER],
-                Some(EDITOR),
+                [OUTLINE, PREVIEW, CONSOLE, HISTORY, PROFILER],
+                Some(OUTLINE),
             )
-            .expect("the editor is present"),
+            .expect("the outline is present"),
         ),
     )
     .with_contained(DockspaceContainedLayout::new(
         INSPECTOR_FLOATING,
-        DockspaceRootLayout::new(INSPECTOR_ROOT, DockspaceNode::tabs([INSPECTOR])),
+        DockspaceRootLayout::new(INSPECTOR_ROOT, DockspaceNode::tabs([INSPECTOR, EDITOR])),
         LogicalRect::new(5000.0, 4000.0, 360.0, 300.0).unwrap(),
     ))
     .with_contained(DockspaceContainedLayout::new(
@@ -120,6 +120,23 @@ impl CommandSmoke {
             if let Some(result) = app.take_action_status() {
                 let status = result.map_err(|error| error.to_string())?;
                 self.check_status(&status)?;
+                if self.step == 0 {
+                    let extracted = app.with_view(|view| {
+                        view.item(INSPECTOR).is_some_and(|pane| {
+                            pane.root() == INSPECTOR_ROOT && pane.tabs().items() == [INSPECTOR]
+                        }) && view.item(EDITOR).is_some_and(|pane| {
+                            pane.root() != INSPECTOR_ROOT
+                                && pane.contained().is_some()
+                                && pane.tabs().items() == [EDITOR]
+                        })
+                    });
+                    if !extracted {
+                        return Err("contained extraction did not preserve the source group and create a separate singleton".to_owned());
+                    }
+                    eprintln!(
+                        "command-smoke: contained extraction preserved Inspector's original group and created a separate Editor singleton"
+                    );
+                }
                 eprintln!("command-smoke: step={} result={status:?}", self.step);
                 self.waiting = false;
                 self.step += 1;
@@ -127,13 +144,11 @@ impl CommandSmoke {
             return Ok(false);
         }
         let host = app.root_surface();
-        let surfaces = app
-            .with_view(|view| {
-                view.surfaces()
-                    .map(|surface| surface.id())
-                    .collect::<Vec<_>>()
-            })
-            .ok_or("view unavailable")?;
+        let surfaces = app.with_view(|view| {
+            view.surfaces()
+                .map(|surface| surface.id())
+                .collect::<Vec<_>>()
+        });
         if !app.is_quiescent()
             || !surfaces
                 .into_iter()
@@ -147,13 +162,12 @@ impl CommandSmoke {
             return Ok(false);
         }
         if self.step == 9 {
-            if app.with_view(|view| {
+            if !app.with_view(|view| {
                 view.surfaces().count() == 1
                     && view
                         .item(EDITOR)
                         .is_some_and(|pane| pane.root() == MAIN_ROOT)
-            }) != Some(true)
-            {
+            }) {
                 return Err("final docking did not restore the single host surface".to_owned());
             }
             return Ok(true);
@@ -172,7 +186,6 @@ impl CommandSmoke {
             5 | 7 => {
                 let root = app
                     .with_view(|view| view.item(EDITOR).map(|pane| pane.root()))
-                    .flatten()
                     .ok_or("Editor disappeared")?;
                 NativeCommand::MoveRootToNewWindow {
                     root,

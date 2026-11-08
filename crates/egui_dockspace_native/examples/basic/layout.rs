@@ -1,11 +1,15 @@
 //! Application inventory, bounded presets and decisions from core close plans.
 
 use dockspace::close::{CloseDecision, CloseItemDecisionState, DeferredCloseDecision};
-use dockspace::model::{DockAnchor, DockPlacement};
+use dockspace::model::{DockAnchor, DockPlacement, DockspaceNodeView, DockspaceView};
 use dockspace::runtime::DockspaceCloseResolution;
 use egui_dockspace_native::NativeCommand;
 
 use super::*;
+
+#[cfg(test)]
+#[path = "layout_tests.rs"]
+mod tests;
 
 #[cfg(feature = "serde")]
 const MAX_PRESETS: usize = 8;
@@ -77,7 +81,7 @@ impl NativeExampleApp {
                     view.item(*item)
                         .is_some_and(|pane| pane.surface() == root_surface)
                 })
-        }) == Some(true)
+        })
     }
 
     pub(super) fn all_surfaces_presented(&self) -> bool {
@@ -87,12 +91,10 @@ impl NativeExampleApp {
                 .map(|surface| surface.id())
                 .collect::<Vec<_>>()
         });
-        surfaces.is_some_and(|surfaces| {
-            surfaces.contains(&root_surface)
-                && surfaces
-                    .into_iter()
-                    .all(|surface| self.dockspace.is_surface_presented(surface))
-        })
+        surfaces.contains(&root_surface)
+            && surfaces
+                .into_iter()
+                .all(|surface| self.dockspace.is_surface_presented(surface))
     }
 
     pub(super) fn request_default_layout(&self) -> Result<(), String> {
@@ -248,13 +250,10 @@ impl NativeExampleApp {
                 .collect::<Vec<_>>()
         });
         for (item, title, loaded) in inventory {
-            let Some(location) = self.dockspace.with_view(|view| {
+            let location = self.dockspace.with_view(|view| {
                 view.item(item)
                     .map(|pane| (pane.root(), pane.is_selected()))
-            }) else {
-                ui.weak("Waiting for the current layout…");
-                return;
-            };
+            });
             ui.push_id(item, |ui| {
                 ui.horizontal(|ui| {
                     let can_request = self.controls_available();
@@ -349,26 +348,19 @@ impl NativeExampleApp {
 
     fn show_pane_move_commands(&mut self, ui: &mut egui::Ui, item: ItemId) {
         let host = self.dockspace.root_surface();
-        let Some(Some((contained, surface, placement))) = self.dockspace.with_view(|view| {
+        let Some((contained, can_float, placement)) = self.dockspace.with_view(|view| {
             let pane = view.item(item)?;
-            let placement = match view.surface(host)?.main_root() {
-                None => Some(DockPlacement::Main(host)),
-                Some(root) if root.central().is_some() => {
-                    Some(DockPlacement::Center(DockAnchor::Central(root.id())))
-                }
-                Some(root) => [
-                    OUTLINE, EDITOR, PREVIEW, INSPECTOR, CONSOLE, HISTORY, PROFILER, ASSETS,
-                ]
-                .into_iter()
-                .find(|candidate| {
-                    *candidate != item
-                        && view
-                            .item(*candidate)
-                            .is_some_and(|pane| pane.root() == root.id())
-                })
-                .map(|anchor| DockPlacement::Center(DockAnchor::Item(anchor))),
-            };
-            Some((pane.contained().is_some(), pane.surface(), placement))
+            let contained = pane.contained().is_some();
+            let standalone = view
+                .root(pane.root())?
+                .content()?
+                .tabs()
+                .is_some_and(|tabs| tabs.items() == [item]);
+            Some((
+                contained,
+                !contained || pane.surface() != host || !standalone,
+                main_dock_placement(view, host, Some(item)),
+            ))
         }) else {
             return;
         };
@@ -379,7 +371,7 @@ impl NativeExampleApp {
             ),
             (
                 "Float in main window",
-                (!contained || surface != host).then_some(NativeCommand::FloatItem {
+                can_float.then_some(NativeCommand::FloatItem {
                     item,
                     surface: host,
                 }),
@@ -406,31 +398,12 @@ impl NativeExampleApp {
     }
 
     fn reopen_pane(&mut self, item: ItemId) {
-        let inventory = self
-            .dockspace
-            .with_panes(|panes| panes.panes.keys().copied().collect::<Vec<_>>());
-        let placement = self
-            .dockspace
-            .with_view(|view| {
-                if view.item(EDITOR).is_some() {
-                    return Some(DockPlacement::Center(DockAnchor::Item(EDITOR)));
-                }
-                let surface = view.surface(SURFACE)?;
-                Some(match surface.main_root() {
-                    Some(root) if root.central().is_some() => {
-                        DockPlacement::Center(DockAnchor::Central(root.id()))
-                    }
-                    Some(root) => {
-                        let anchor = inventory.into_iter().find(|candidate| {
-                            view.item(*candidate)
-                                .is_some_and(|pane| pane.root() == root.id())
-                        })?;
-                        DockPlacement::Center(DockAnchor::Item(anchor))
-                    }
-                    None => DockPlacement::Main(surface.id()),
-                })
-            })
-            .flatten();
+        let host = self.dockspace.root_surface();
+        let placement = self.dockspace.with_view(|view| {
+            view.item(EDITOR)
+                .map(|_| DockPlacement::Center(DockAnchor::Item(EDITOR)))
+                .or_else(|| main_dock_placement(view, host, None))
+        });
         let Some(placement) = placement else {
             self.status =
                 Some("Could not reopen pane: no current Document or main-root anchor.".to_owned());
@@ -553,7 +526,36 @@ impl NativeExampleApp {
     }
 }
 
-pub(super) fn describe_status(status: &NativeActionStatus) -> String {
+fn main_dock_placement(
+    view: DockspaceView<'_>,
+    host: SurfaceId,
+    exclude: Option<ItemId>,
+) -> Option<DockPlacement> {
+    let Some(root) = view.surface(host)?.main_root() else {
+        return Some(DockPlacement::Main(host));
+    };
+    if root.central().is_some() {
+        return Some(DockPlacement::Center(DockAnchor::Central(root.id())));
+    }
+    first_dock_anchor(root.content()?, exclude)
+        .map(|item| DockPlacement::Center(DockAnchor::Item(item)))
+}
+
+fn first_dock_anchor(node: DockspaceNodeView<'_>, exclude: Option<ItemId>) -> Option<ItemId> {
+    if let Some(tabs) = node.tabs() {
+        return tabs
+            .items()
+            .iter()
+            .copied()
+            .find(|item| Some(*item) != exclude);
+    }
+    node.split()?
+        .children()
+        .find_map(|child| first_dock_anchor(child, exclude))
+}
+
+pub(super) fn describe_status(status: &NativeActionStatus, panes: &ExamplePanes) -> String {
+    let title = |item| panes.panes.get(&item).map_or("Pane", |pane| pane.title);
     match status {
         NativeActionStatus::RootContinuationRejected { kind, .. } => {
             format!(
@@ -562,16 +564,65 @@ pub(super) fn describe_status(status: &NativeActionStatus) -> String {
         }
         NativeActionStatus::Dock(DockspaceActionStatus::Applied(outcome)) => match outcome {
             DockspaceActionOutcome::Selected { item, changed } => {
-                format!("Selected pane {} (changed: {changed}).", item.get())
+                if *changed {
+                    format!("Selected {}.", title(*item))
+                } else {
+                    format!("{} is already selected.", title(*item))
+                }
             }
-            DockspaceActionOutcome::Opened { item, .. } => format!(
-                "Reopened pane {} with its retained application data.",
-                item.get()
-            ),
+            DockspaceActionOutcome::Opened { item, .. } => {
+                format!("Reopened {} with its retained content.", title(*item))
+            }
             DockspaceActionOutcome::Existing { item } => {
-                format!("Pane {} is already open.", item.get())
+                format!("{} is already open.", title(*item))
             }
-            outcome => format!("Presentation action completed: {outcome:?}"),
+            DockspaceActionOutcome::Docked { item, changed, .. } => {
+                if *changed {
+                    format!("Docked {}; its content is retained.", title(*item))
+                } else {
+                    format!("{} is already at that docking position.", title(*item))
+                }
+            }
+            DockspaceActionOutcome::Floated { item, changed, .. } => {
+                if *changed {
+                    format!("{} is floating; its content is retained.", title(*item))
+                } else {
+                    format!("{} is already floating at that position.", title(*item))
+                }
+            }
+            DockspaceActionOutcome::ContainedRaised { changed, .. } => {
+                if *changed {
+                    "Brought the floating group to the front.".to_owned()
+                } else {
+                    "The floating group is already in front.".to_owned()
+                }
+            }
+            DockspaceActionOutcome::ContainedBoundsUpdated { changed, .. } => {
+                if *changed {
+                    "Moved the floating group into view.".to_owned()
+                } else {
+                    "The floating group is already in view.".to_owned()
+                }
+            }
+            DockspaceActionOutcome::RootDocked { changed, .. } => {
+                if *changed {
+                    "Docked the group; pane content is retained.".to_owned()
+                } else {
+                    "The group is already at that docking position.".to_owned()
+                }
+            }
+            DockspaceActionOutcome::RootFloated { changed, .. } => {
+                if *changed {
+                    "The group is floating; pane content is retained.".to_owned()
+                } else {
+                    "The group is already floating at that position.".to_owned()
+                }
+            }
+            DockspaceActionOutcome::RootFloatRequested { .. }
+            | DockspaceActionOutcome::RootDockRequested { .. }
+            | DockspaceActionOutcome::NativeRootTearOffRequested { .. } => {
+                "Moving the group; waiting for the destination window to display it.".to_owned()
+            }
         },
         NativeActionStatus::Dock(DockspaceActionStatus::Rejected(reason)) => {
             format!("The action was rejected: {reason}")

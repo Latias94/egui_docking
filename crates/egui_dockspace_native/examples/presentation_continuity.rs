@@ -84,7 +84,7 @@ impl eframe::App for ContinuityApp {
             assert_eq!(
                 self.dockspace
                     .with_view(|view| view.item(target).unwrap().is_selected()),
-                Some(true),
+                true,
             );
             self.pending = None;
         }

@@ -176,13 +176,10 @@ impl NativeExampleApp {
     fn show_controls(&mut self, ui: &mut egui::Ui) {
         self.finish_presentation_wait();
         let root_surface = self.dockspace.root_surface();
-        let inspector = self
-            .dockspace
-            .with_view(|view| {
-                view.item(INSPECTOR)
-                    .map(|item| InspectorLocation::new(item, root_surface))
-            })
-            .flatten();
+        let inspector = self.dockspace.with_view(|view| {
+            view.item(INSPECTOR)
+                .map(|item| InspectorLocation::new(item, root_surface))
+        });
         let root_presented = self.dockspace.is_surface_presented(root_surface);
 
         ui.horizontal_wrapped(|ui| {
@@ -444,7 +441,10 @@ impl NativeExampleApp {
             }
             _ => ExampleActionState::Idle,
         };
-        self.status = Some(layout::describe_status(status));
+        self.status = Some(
+            self.dockspace
+                .with_panes(|panes| layout::describe_status(status, panes)),
+        );
     }
 
     fn finish_presentation_wait(&mut self) {

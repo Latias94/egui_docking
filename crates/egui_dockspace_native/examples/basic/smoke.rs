@@ -235,21 +235,18 @@ impl EditorSmoke {
         #[cfg(feature = "serde")]
         let may_be_closed = may_be_closed || matches!(self.stage, Stage::DocumentRestore);
         let root_surface = app.dockspace.root_surface();
-        let location = app
-            .dockspace
-            .with_view(|view| {
-                for item in [
-                    OUTLINE, EDITOR, PREVIEW, INSPECTOR, CONSOLE, HISTORY, PROFILER, ASSETS,
-                ] {
-                    if view.item(item).is_none() && !(item == INSPECTOR && may_be_closed) {
-                        return Err(format!("open pane {} unexpectedly disappeared", item.get()));
-                    }
+        let location = app.dockspace.with_view(|view| {
+            for item in [
+                OUTLINE, EDITOR, PREVIEW, INSPECTOR, CONSOLE, HISTORY, PROFILER, ASSETS,
+            ] {
+                if view.item(item).is_none() && !(item == INSPECTOR && may_be_closed) {
+                    return Err(format!("open pane {} unexpectedly disappeared", item.get()));
                 }
-                Ok(view
-                    .item(INSPECTOR)
-                    .map(|item| InspectorLocation::new(item, root_surface)))
-            })
-            .ok_or("the current product view is unavailable")??;
+            }
+            Ok(view
+                .item(INSPECTOR)
+                .map(|item| InspectorLocation::new(item, root_surface)))
+        })?;
         match self.stage {
             Stage::RootInput
                 if location.is_some_and(|location| self.ready(app, location, false)) =>
@@ -484,7 +481,7 @@ impl EditorSmoke {
                             && pane.is_selected()
                             && pane.tabs().items().contains(&EDITOR)
                     })
-                }) == Some(true);
+                });
                 if !centered {
                     return Err(
                         "the reopened Inspector is not selected in the current Document center"
@@ -605,9 +602,9 @@ impl EditorSmoke {
                             }
                         ))
                     ) || !app.dockspace.arrangement_locked()
-                        || app.dockspace.with_view(|view| {
+                        || !app.dockspace.with_view(|view| {
                             view.item(EDITOR).is_some_and(|pane| pane.is_selected())
-                        }) != Some(true)
+                        })
                     {
                         return Err(format!(
                             "content selection did not work while locked: {status:?}"
@@ -687,7 +684,7 @@ impl EditorSmoke {
                             && pane.contained().is_some()
                             && pane.tabs().items() == [PREVIEW, INSPECTOR]
                     })
-                }) == Some(true);
+                });
                 if !app.all_root_profile() || !default_panes {
                     return Err("Default did not restore all eight IDs and the default tab groups to the root host".to_owned());
                 }
@@ -1074,7 +1071,7 @@ impl EditorSmoke {
                             view.item(*item)
                                 .is_some_and(|pane| pane.surface() == root_surface)
                         })
-                }) == Some(true);
+                });
                 if !all_root
                     || app.dockspace.arrangement_locked()
                     || !app.dockspace.pending_content_close_plans().is_empty()
@@ -1136,7 +1133,6 @@ impl EditorSmoke {
                     InspectorLocation::new(assets, root_surface),
                 ])
             })
-            .ok_or("the multi-surface layout is unavailable")?
             .map_err(str::to_owned)
     }
 
@@ -1155,7 +1151,6 @@ impl EditorSmoke {
                     })
                     .collect::<Result<Vec<_>, &str>>()
             })
-            .ok_or("the saved tab groups are unavailable")?
             .map_err(str::to_owned)
     }
 
@@ -1180,7 +1175,7 @@ impl EditorSmoke {
                             }
                     })
                 })
-        }) == Some(true);
+        });
         if !layout_intact
             || !locations.iter().all(|location| location.is_native_child())
             || locations[0].surface == locations[1].surface

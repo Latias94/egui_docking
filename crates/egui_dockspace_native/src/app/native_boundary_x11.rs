@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use dockspace::geometry::{LogicalRect, PhysicalRect};
 use dockspace::model::{
     DockspaceContainedLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
-    FloatingPresentationId,
+    FloatingPresentationId, ItemId, NativeWindowPlacement, RootId,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
@@ -670,18 +670,16 @@ fn assert_capacity(state: &State) {
 }
 
 fn source(state: &State) -> (SurfaceId, RootId, FloatingPresentationId, LogicalRect) {
-    lock_state(state)
-        .with_view(|view| {
-            let item = view.item(ItemId::new(4)).unwrap();
-            let floating = item.contained().unwrap();
-            (
-                item.surface(),
-                item.root(),
-                floating,
-                view.contained(floating).unwrap().rect(),
-            )
-        })
-        .unwrap()
+    let state = lock_state(state);
+    let view = state.view();
+    let item = view.item(ItemId::new(4)).unwrap();
+    let floating = item.contained().unwrap();
+    (
+        item.surface(),
+        item.root(),
+        floating,
+        view.contained(floating).unwrap().rect(),
+    )
 }
 
 fn parked(state: &State, request: NativeViewportCloseRequest) -> Option<(u64, Duration)> {

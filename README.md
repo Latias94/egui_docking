@@ -513,6 +513,12 @@ floating in the main window, raising a contained group and moving it into view.
 Close decisions and arrangement locking use the same bounded command slot;
 layout and document replacement retain their dedicated preparation methods.
 
+`with_view` returns its callback result directly and always exposes the last
+committed layout, including after a fatal stop. Read the current `root_surface()`
+before the callback when choosing a host destination; host rebinding can change
+that logical identity. Runtime methods must be called outside view/pane callbacks
+because they share the same lock.
+
 The finite `basic --command-smoke` mode exercises those four operations in the
 actual host, then moves a singleton into a native child and returns it through
 both item-floating and item-docking commands. It verifies typed terminal results,

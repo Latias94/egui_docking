@@ -190,7 +190,7 @@ impl CombinedPressure {
                         && item.root() == entry.root
                         && item.contained().is_none()
                 })
-            }) == Some(true)
+            })
         {
             eprintln!(
                 "output-pressure: satellite {} first-live committed",
@@ -279,7 +279,7 @@ impl CombinedPressure {
                     && view.item(entry.item).is_some_and(|item| {
                         item.surface() == ROOT_SURFACE && item.root() == MAIN_ROOT
                     })
-            }) == Some(true)
+            })
         {
             eprintln!(
                 "output-pressure: satellite {} destroyed and retired",
@@ -304,7 +304,7 @@ impl CombinedPressure {
             return Err("combined pressure did not retire every exact native child".into());
         }
         let expected: Vec<_> = (1..=16).map(ItemId::new).collect();
-        if runtime.with_view(|view| {
+        if !runtime.with_view(|view| {
             view.surfaces().count() == 1
                 && view
                     .surface(ROOT_SURFACE)
@@ -312,8 +312,7 @@ impl CombinedPressure {
                 && view
                     .item(MAIN_ITEM)
                     .is_some_and(|item| item.root() == MAIN_ROOT && item.tabs().items() == expected)
-        }) != Some(true)
-        {
+        }) {
             return Err(
                 "combined pressure did not restore the exact ordered [1..16] main tabs".into(),
             );
