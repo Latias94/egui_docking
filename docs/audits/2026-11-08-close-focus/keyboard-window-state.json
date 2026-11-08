@@ -1,0 +1,14 @@
+{
+  "host": "2097155",
+  "navigation": [
+    "Home",
+    "End",
+    "Home",
+    "Right",
+    "Left",
+    "End"
+  ],
+  "activation": "Return",
+  "marker": "~KEYBOARD_ACTIVATION~",
+  "verification": "Inspect each destination and its focus ring in the captured screenshots; exit alone does not assert widget state."
+}

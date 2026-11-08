@@ -330,8 +330,8 @@ impl NativeExampleApp {
                 );
                 ui.label(
                     "5. Pane inventory lists all eight application-owned panes. Select an open pane, \
-                     request a pane or group close, then explicitly Allow, Veto or Defer each pending decision. \
-                     Finish a deferred decision with its continuation controls. Reopen restores the same pane data \
+                     request a pane or group close, then choose Close, Keep open or Decide later for each pane. \
+                     Postponed decisions use the same Close and Keep open controls. A group closes together; keeping any pane open cancels the request. Reopen restores the same pane data \
                      beside the current Document, or in the current main root when Document is closed. \
                      Lock arrangement disables layout changes while selection and content editing remain available.",
                 );

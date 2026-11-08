@@ -1,0 +1,5 @@
+--- crates/dockspace/src/runtime/paint/actions.rs (candidate)
++++ crates/dockspace/src/runtime/paint/actions.rs (baseline navigation behavior)
+@@ -364 +364 @@
+-            crate::engine::LocalTabFocus::Preserve,
++            crate::engine::LocalTabFocus::Pane,

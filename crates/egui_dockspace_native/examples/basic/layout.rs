@@ -1,8 +1,10 @@
 //! Application inventory, bounded presets and decisions from core close plans.
 
-use dockspace::close::{CloseDecision, CloseItemDecisionState, DeferredCloseDecision};
+use dockspace::close::{
+    CloseDecision, CloseItemDecisionState, CloseRequestId, DeferredCloseDecision,
+};
 use dockspace::model::{DockAnchor, DockPlacement, DockspaceNodeView, DockspaceView};
-use dockspace::runtime::DockspaceCloseResolution;
+use dockspace::runtime::{DockspaceCloseItem, DockspaceCloseResolution};
 use egui_dockspace_native::NativeCommand;
 
 use super::*;
@@ -343,7 +345,7 @@ impl NativeExampleApp {
                 });
             });
         }
-        ui.small("Close requests need an explicit decision below the toolbar.");
+        ui.small("Review close confirmations below the toolbar; pane content is retained.");
     }
 
     fn show_pane_move_commands(&mut self, ui: &mut egui::Ui, item: ItemId) {
@@ -421,94 +423,118 @@ impl NativeExampleApp {
         if plans.is_empty() {
             return;
         }
-        egui::CollapsingHeader::new(format!("Pending close decisions ({})", plans.len()))
+        egui::CollapsingHeader::new(format!("Close confirmations ({})", plans.len()))
             .id_salt("native-pending-close-decisions")
             .default_open(true)
             .show(ui, |ui| {
-                ui.small("Allow every pane to close the target atomically; any Veto cancels it.");
+                ui.small("Pane content is retained. Reopen closed panes from Pane inventory.");
                 for plan in plans {
-                    ui.label(format!(
-                        "Close request {} — {:?}",
-                        plan.request(),
-                        plan.target()
-                    ));
-                    for item in plan.items() {
-                        let title = self.dockspace.with_panes(|panes| {
-                            panes
-                                .panes
-                                .get(&item.item())
-                                .map_or("Unknown pane", |pane| pane.title)
+                    ui.push_id(plan.request(), |ui| {
+                        ui.group(|ui| {
+                            if let [item] = plan.items() {
+                                let title = self.dockspace.with_panes(|panes| {
+                                    panes.panes.get(&item.item()).map_or("Pane", |pane| pane.title)
+                                });
+                                ui.strong(format!("Close {title}?"));
+                            } else {
+                                ui.strong(format!("Close {} panes together?", plan.items().len()));
+                                ui.small("All panes close together. Keep open cancels the complete request.");
+                            }
+                            for item in plan.items() {
+                                self.show_close_decision(ui, plan.request(), *item);
+                            }
                         });
-                        ui.push_id((plan.request(), item.item()), |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(title);
-                                match item.state() {
-                                    CloseItemDecisionState::Pending => {
-                                        for (label, decision) in [
-                                            ("Allow", CloseDecision::Allow),
-                                            ("Veto", CloseDecision::Veto),
-                                            ("Defer", CloseDecision::Deferred),
-                                        ] {
-                                            let enabled = self.controls_available()
-                                                && (decision != CloseDecision::Deferred
-                                                    || item.capability().allows_deferred());
-                                            if ui
-                                                .add_enabled(enabled, egui::Button::new(label))
-                                                .clicked()
-                                            {
-                                                let request = self.dockspace.request_command(
-                                                    NativeCommand::DecideClose {
-                                                        request: plan.request(),
-                                                        token: item.token(),
-                                                        decision,
-                                                    },
-                                                );
-                                                self.begin_layout_action(
-                                                    "Resolve close decision",
-                                                    request,
-                                                );
-                                            }
-                                        }
-                                    }
-                                    CloseItemDecisionState::Deferred { continuation } => {
-                                        ui.weak("Deferred — finish with the core continuation:");
-                                        for (label, decision) in [
-                                            ("Allow deferred", DeferredCloseDecision::Allow),
-                                            ("Veto deferred", DeferredCloseDecision::Veto),
-                                        ] {
-                                            if ui
-                                                .add_enabled(
-                                                    self.controls_available(),
-                                                    egui::Button::new(label),
-                                                )
-                                                .clicked()
-                                            {
-                                                let request = self.dockspace.request_command(
-                                                    NativeCommand::ContinueClose {
-                                                        request: plan.request(),
-                                                        token: continuation,
-                                                        decision,
-                                                    },
-                                                );
-                                                self.begin_layout_action(
-                                                    "Continue deferred close",
-                                                    request,
-                                                );
-                                            }
-                                        }
-                                    }
-                                    CloseItemDecisionState::Allowed => {
-                                        ui.weak("Allowed; waiting for the other panes.");
-                                    }
-                                    CloseItemDecisionState::Vetoed => {
-                                        ui.weak("Vetoed; the target stays open.");
-                                    }
-                                }
-                            });
-                        });
+                    });
+                }
+            });
+    }
+
+    fn show_close_decision(
+        &mut self,
+        ui: &mut egui::Ui,
+        request: CloseRequestId,
+        item: DockspaceCloseItem,
+    ) {
+        let title = self.dockspace.with_panes(|panes| {
+            panes
+                .panes
+                .get(&item.item())
+                .map_or("Unknown pane", |pane| pane.title)
+        });
+        ui.push_id(item.item(), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(title);
+                let commands = match item.state() {
+                    CloseItemDecisionState::Pending => [
+                        Some((
+                            "Close",
+                            NativeCommand::DecideClose {
+                                request,
+                                token: item.token(),
+                                decision: CloseDecision::Allow,
+                            },
+                        )),
+                        Some((
+                            "Keep open",
+                            NativeCommand::DecideClose {
+                                request,
+                                token: item.token(),
+                                decision: CloseDecision::Veto,
+                            },
+                        )),
+                        item.capability().allows_deferred().then_some((
+                            "Decide later",
+                            NativeCommand::DecideClose {
+                                request,
+                                token: item.token(),
+                                decision: CloseDecision::Deferred,
+                            },
+                        )),
+                    ],
+                    CloseItemDecisionState::Deferred { continuation } => {
+                        ui.weak("Decision postponed.");
+                        [
+                            Some((
+                                "Close",
+                                NativeCommand::ContinueClose {
+                                    request,
+                                    token: continuation,
+                                    decision: DeferredCloseDecision::Allow,
+                                },
+                            )),
+                            Some((
+                                "Keep open",
+                                NativeCommand::ContinueClose {
+                                    request,
+                                    token: continuation,
+                                    decision: DeferredCloseDecision::Veto,
+                                },
+                            )),
+                            None,
+                        ]
+                    }
+                    CloseItemDecisionState::Allowed => {
+                        ui.weak("Ready to close; waiting for the other panes.");
+                        return;
+                    }
+                    CloseItemDecisionState::Vetoed => {
+                        ui.weak("Kept open; the close request is cancelled.");
+                        return;
+                    }
+                };
+                for (label, command) in commands.into_iter().flatten() {
+                    let response =
+                        ui.add_enabled(self.controls_available(), egui::Button::new(label));
+                    ui.ctx().accesskit_node_builder(response.id, |node| {
+                        node.set_label(format!("{title}: {label}"));
+                    });
+                    if response.clicked() {
+                        let result = self.dockspace.request_command(command);
+                        self.begin_layout_action("Close decision", result);
                     }
                 }
             });
+        });
     }
 
     fn begin_layout_action<E: std::fmt::Display>(
@@ -563,12 +589,8 @@ pub(super) fn describe_status(status: &NativeActionStatus, panes: &ExamplePanes)
             )
         }
         NativeActionStatus::Dock(DockspaceActionStatus::Applied(outcome)) => match outcome {
-            DockspaceActionOutcome::Selected { item, changed } => {
-                if *changed {
-                    format!("Selected {}.", title(*item))
-                } else {
-                    format!("{} is already selected.", title(*item))
-                }
+            DockspaceActionOutcome::Selected { item, .. } => {
+                format!("Selected {}.", title(*item))
             }
             DockspaceActionOutcome::Opened { item, .. } => {
                 format!("Reopened {} with its retained content.", title(*item))
@@ -635,14 +657,9 @@ pub(super) fn describe_status(status: &NativeActionStatus, panes: &ExamplePanes)
         NativeActionStatus::Dock(DockspaceActionStatus::PresentationFailed { reason, .. }) => {
             format!("The target presentation did not complete: {reason:?}")
         }
-        NativeActionStatus::CloseRequested { reused, .. } => format!(
-            "{} close request; choose Allow, Veto or Defer in Pending close decisions.",
-            if *reused {
-                "Reused the pending"
-            } else {
-                "Opened a new"
-            }
-        ),
+        NativeActionStatus::CloseRequested { .. } => {
+            "Review the close confirmation below. Pane content is retained.".to_owned()
+        }
         NativeActionStatus::CloseRejected(reason) => {
             format!("The close request was rejected: {reason}")
         }
@@ -654,28 +671,28 @@ pub(super) fn describe_status(status: &NativeActionStatus, panes: &ExamplePanes)
         } => {
             if let Some(application) = application {
                 return match application {
-                    Ok(outcome) => format!(
-                        "Close applied (changed: {changed}): {outcome:?}. Pane data remains in the inventory."
-                    ),
+                    Ok(_) if *changed => "Closed the requested panes. Reopen them from Pane inventory; their content is retained.".to_owned(),
+                    Ok(_) => "The close request completed without changing the layout.".to_owned(),
                     Err(reason) => format!("The approved close could not apply: {reason}"),
                 };
             }
             match resolution {
                 DockspaceCloseResolution::Recorded { .. } => {
-                    "Allow recorded; the other panes still need a decision.".to_owned()
+                    "Close confirmed for this pane; waiting for the other panes.".to_owned()
                 }
                 DockspaceCloseResolution::Deferred { .. } => {
-                    "Close deferred; use Allow deferred or Veto deferred to continue.".to_owned()
+                    "Decision postponed. Use Close or Keep open when ready.".to_owned()
                 }
                 DockspaceCloseResolution::Approved { .. } => {
-                    "Close approved; waiting for the atomic close result.".to_owned()
+                    "Close confirmed; waiting for the panes to finish closing.".to_owned()
                 }
                 DockspaceCloseResolution::Vetoed { .. } => {
-                    "Close vetoed; the complete target stays open.".to_owned()
+                    "Kept open; the complete close request was cancelled.".to_owned()
                 }
-                DockspaceCloseResolution::Inert(reason) => format!(
-                    "Close decision had no effect: {reason:?}. Use the current pending decisions."
-                ),
+                DockspaceCloseResolution::Inert(_) => {
+                    "This close decision no longer applies. Use the current confirmation."
+                        .to_owned()
+                }
             }
         }
         NativeActionStatus::ArrangementLockChanged {

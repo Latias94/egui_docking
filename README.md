@@ -307,8 +307,10 @@ decisions and arrangement locking. Consume `take_action_status()` before queuing
 another command; `NativeActionStatus::Dock` carries the original docking status.
 `pending_content_close_plans()` discovers current chrome and application requests
 directly from the core's existing inventory. The `basic` example shows the eight
-application-owned pane entries and explicit Allow/Veto/Defer controls. Pane data
-remains application-owned while an item is closed.
+application-owned pane entries and named close confirmations with Close, Keep
+open and Decide later controls. Group closes apply together; keeping any member
+open cancels the request. Pane data remains application-owned while an item is
+closed.
 
 Ordinary facade commands keep the configured root logical surface. A close that would remove
 its only presentation returns `NativeActionRequestError::HostSurfaceRequired`,

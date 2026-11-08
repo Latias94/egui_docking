@@ -1,0 +1,24 @@
+{
+  "captured": "2026-11-08T08:52:44.947466+00:00",
+  "rust_sources": {
+    "crates/dockspace/src/engine.rs": "6b373b7c7f9d62dd0ddfe14c527e4da6aed8307d5d6bc44f32e54ec9d7b1d58b",
+    "crates/dockspace/src/engine/deferred_action.rs": "9967873c58fb1fde53e7af7259b954facd22f9b640c23fd19f61ccbc9e21d5c0",
+    "crates/dockspace/src/engine/input.rs": "a522e23e049df62d1a56ec80d1e265b8a9c5379fcc0ebd776356f11e9838d33f",
+    "crates/dockspace/src/engine/product_action.rs": "554a6ad26138769fde6e137f7c0c7091a25191a3199a985b836d6fd72a8419f2",
+    "crates/dockspace/src/engine/reducer.rs": "2b6f887b981e77790754dfbc9f0fc969a589686f8337840b1a8042b3078410eb",
+    "crates/dockspace/src/engine/semantic_candidate.rs": "c0bd037d0056c851386c8d031b28d0b8d6bfbabec6de087f8f694d0725f764df",
+    "crates/dockspace/src/engine/tests/focus.rs": "e58fe0bf83be2d24a2a8a00ec0f15751d9df8a4c4c60f9eaeda1ec51a74cc23b",
+    "crates/dockspace/src/runtime/host_frame.rs": "60bf2ac519be16450ff554f75a078c27efa16a5306eaaaab4fa7476cb4228242",
+    "crates/dockspace/src/runtime/local_action.rs": "47d8541b026ff71d5ec70342ec04c5a5c5add57e1d438db8704e01f990c26643",
+    "crates/dockspace/src/runtime/paint.rs": "df78bd9e1230b023ddb01812aaf166ebb89d33a0cf88d5a4869388f128309894",
+    "crates/dockspace/src/runtime/paint/actions.rs": "d6faa1fd9d2ca81d4314435b411846b1ce3d9e3d78f7205266bf8db606bda806",
+    "crates/dockspace/src/runtime/session.rs": "801c173dafb21e783d0ac8863ba64d09904089a23f5df417494b4dc52f993d07",
+    "crates/dockspace/src/viewport_focus.rs": "320ca440e5e4e33713252e64e240da04998dd4f97df7d5f52da533a1ed7d23e6",
+    "crates/dockspace/tests/open_gpui_close_contract.rs": "c50039b8b329414e4e6b4b813dfa1280e678b3adc0f4bf14b4fb621d94dc09f0",
+    "crates/egui_dockspace/src/product_owned_run_tests.rs": "742ccf850a952a71f6ca975e122a8934b8f80f3981eee78fdf3ae5816a8d6b6b",
+    "crates/egui_dockspace_native/examples/basic.rs": "1bea99865a70f051326bdce7e3e4d535e506afbba0a81ba2e3a9a8a0f25d563c",
+    "crates/egui_dockspace_native/examples/basic/layout.rs": "9ec2e2d2a7f3ad7d7891f67552c4dabbe5b5f9b53d36e57f68bb2a9bea84e6cf",
+    "crates/egui_dockspace_native/examples/basic/layout_tests.rs": "f3ca00fc15cbff3e638864c7e2cd692c502c3680f1e748caa2c07fb1e6bcdd64",
+    "crates/egui_dockspace_native/src/command.rs": "11fd7f392de98260ea4775c2733c8ff53198c33a43bc9e5c6691d6c3d8826b1b"
+  }
+}

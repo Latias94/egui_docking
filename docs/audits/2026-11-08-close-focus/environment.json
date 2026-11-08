@@ -1,0 +1,25 @@
+{
+  "captured": "2026-11-08T08:52:44.947466+00:00",
+  "baseline": "e9887c9c215a58ae745286b5a8f56d982008aa06",
+  "branch": "refactor/egui-pane-ergonomics",
+  "host_rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "host_cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+  "nextest": "cargo-nextest 0.9.115 (b8e0d5dcd 2025-12-15)\nrelease: 0.9.115\ncommit-hash: b8e0d5dcd489d42e7f0ea22580940ebaa585e03d\ncommit-date: 2025-12-15\nhost: aarch64-apple-darwin",
+  "cargo_build_jobs": 1,
+  "nextest_test_workers": 1,
+  "linux_image_limits": "egui-dockspace-x11:rust-1.95-xdotool; NanoCpus=1000000000; Memory=4294967296",
+  "linux_rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "linux_example_sha256": "1ae12ec29ee4d9e091a0bce6865fb4cab0b53d9e2a1aa7618995685a4591c72e",
+  "window_stack": [
+    "Xvfb 1440x1000x24",
+    "Openbox",
+    "X11",
+    "software GL"
+  ],
+  "window_environment": {
+    "LIBGL_ALWAYS_SOFTWARE": "1",
+    "LP_NUM_THREADS": "1",
+    "WINIT_UNIX_BACKEND": "x11",
+    "WINIT_X11_SCALE_FACTOR": "1"
+  }
+}
