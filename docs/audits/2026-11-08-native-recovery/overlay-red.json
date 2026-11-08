@@ -1,0 +1,23 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--manifest-path",
+    "integration/egui-fork-workspace/Cargo.toml",
+    "-p",
+    "egui_dockspace_native",
+    "--lib",
+    "--all-features",
+    "--target-dir",
+    "target",
+    "--locked",
+    "--offline",
+    "-j1",
+    "-E",
+    "test(click_only_overlay_blocks_native_press_without_a_drag_receiver) | test(foreign_hover_overlay_blocks_declared_pane_content_in_native_hover_lane)"
+  ],
+  "started": "2026-11-08T10:30:46.217370+00:00",
+  "finished": "2026-11-08T10:31:23.564129+00:00",
+  "returncode": 100
+}

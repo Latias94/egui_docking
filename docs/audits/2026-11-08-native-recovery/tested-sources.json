@@ -1,0 +1,11 @@
+{
+  "captured_at": "2026-11-08T10:38:37.600957+00:00",
+  "base_commit": "ec9fe1d",
+  "files": {
+    "crates/egui_dockspace_native/src/receiver.rs": "70e68d73a4e863f2ab8ff62b7fc0bf795c9430e597e336e98e6783f7c3ab0374",
+    "crates/egui_dockspace_native/examples/basic.rs": "411d5c25021150bccff3e935365eb87066fd7b65226ca8a7e19632d295c48bf8",
+    "crates/egui_dockspace_native/examples/basic/layout.rs": "030bec0396bd5ec408e4bf351c80ee2467a18bc2cc12a97675816573f96ae2ba",
+    "crates/egui_dockspace_native/examples/basic/layout_tests.rs": "8815737ed880953098e08958deeb6fb894c3a3a389ea4e464cbb2c1ba722439d",
+    "integration/egui-native-smoke/editor_x11.py": "96bace08ff916b0856a71ab5c48ee673fd40a68a38a725555bb4dc53737125a3"
+  }
+}

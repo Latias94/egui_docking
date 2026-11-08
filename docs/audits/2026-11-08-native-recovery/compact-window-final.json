@@ -1,0 +1,23 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "LIBGL_ALWAYS_SOFTWARE=1",
+    "-e",
+    "LP_NUM_THREADS=1",
+    "-e",
+    "WINIT_UNIX_BACKEND=x11",
+    "-e",
+    "WINIT_X11_SCALE_FACTOR=1",
+    "354e85cb1d95",
+    "xvfb-run",
+    "-a",
+    "--server-args=-screen 0 1440x1000x24",
+    "python3",
+    "/tmp/compact_inventory_journey.py"
+  ],
+  "started": "2026-11-08T10:39:42.163125+00:00",
+  "finished": "2026-11-08T10:40:01.025888+00:00",
+  "returncode": 0
+}

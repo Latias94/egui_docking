@@ -256,15 +256,16 @@ impl NativeExampleApp {
                 view.item(item)
                     .map(|pane| (pane.root(), pane.is_selected()))
             });
+            let state = match location {
+                Some((_, true)) => "selected",
+                Some((_, false)) => "open",
+                None => "closed",
+            };
             ui.push_id(item, |ui| {
-                ui.horizontal(|ui| {
+                ui.menu_button(format!("{title} — {state}"), |ui| {
                     let can_request = self.controls_available();
                     let can_arrange = can_request && !self.dockspace.arrangement_locked();
-                    if let Some((root, selected)) = location {
-                        ui.label(format!(
-                            "{title} — {}",
-                            if selected { "selected" } else { "open" }
-                        ));
+                    if let Some((root, _)) = location {
                         if ui
                             .add_enabled(can_request, egui::Button::new("Select"))
                             .clicked()
@@ -275,12 +276,12 @@ impl NativeExampleApp {
                             self.begin_layout_action("Select pane", request);
                             ui.close();
                         }
+                        ui.separator();
                         ui.add_enabled_ui(
                             self.controls_available() && !self.dockspace.arrangement_locked(),
-                            |ui| {
-                                ui.menu_button("Move", |ui| self.show_pane_move_commands(ui, item));
-                            },
+                            |ui| self.show_pane_move_commands(ui, item),
                         );
+                        ui.separator();
                         if ui
                             .add_enabled(
                                 can_arrange && !self.action.is_pending(),
@@ -308,16 +309,14 @@ impl NativeExampleApp {
                             self.begin_layout_action("Request group close", request);
                             ui.close();
                         }
-                    } else {
-                        ui.label(format!("{title} — closed"));
-                        if ui
-                            .add_enabled(can_arrange, egui::Button::new("Reopen"))
-                            .clicked()
-                        {
-                            self.reopen_pane(item);
-                            ui.close();
-                        }
+                    } else if ui
+                        .add_enabled(can_arrange, egui::Button::new("Reopen"))
+                        .clicked()
+                    {
+                        self.reopen_pane(item);
+                        ui.close();
                     }
+                    ui.separator();
                     if ui
                         .add_enabled(
                             self.controls_available(),

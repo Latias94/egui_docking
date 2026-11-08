@@ -1,0 +1,24 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--manifest-path",
+    "integration/egui-fork-workspace/Cargo.toml",
+    "-p",
+    "egui_dockspace_native",
+    "--example",
+    "basic",
+    "--all-features",
+    "--target-dir",
+    "target",
+    "--locked",
+    "--offline",
+    "-j1",
+    "-E",
+    "test(narrow_inventory_keeps_content_actions_visible_and_targets_the_named_pane)"
+  ],
+  "started": "2026-11-08T10:18:52.289985+00:00",
+  "finished": "2026-11-08T10:18:57.781066+00:00",
+  "returncode": 100
+}

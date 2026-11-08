@@ -1,0 +1,28 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "LIBGL_ALWAYS_SOFTWARE=1",
+    "-e",
+    "LP_NUM_THREADS=1",
+    "-e",
+    "WINIT_UNIX_BACKEND=x11",
+    "-e",
+    "WINIT_X11_SCALE_FACTOR=1",
+    "-e",
+    "EGUI_DOCKSPACE_EDITOR_ROOT_REBIND=1",
+    "-w",
+    "/Users/frankorz/codes/rust/egui_docking",
+    "354e85cb1d95",
+    "xvfb-run",
+    "-a",
+    "--server-args=-screen 0 1440x1000x24",
+    "python3",
+    "-c",
+    "import subprocess\nmanager = subprocess.Popen([\"openbox\", \"--sm-disable\"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\ntry:\n    result = subprocess.run([\"python3\", \"integration/egui-native-smoke/editor_x11.py\", \"/native-target/debug/examples/basic\"], timeout=150)\n    raise SystemExit(result.returncode)\nfinally:\n    manager.terminate()\n    manager.wait(timeout=5)\n"
+  ],
+  "started": "2026-11-08T10:05:52.709952+00:00",
+  "finished": "2026-11-08T10:06:04.307123+00:00",
+  "returncode": 0
+}

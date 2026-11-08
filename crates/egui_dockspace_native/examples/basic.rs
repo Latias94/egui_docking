@@ -329,7 +329,7 @@ impl NativeExampleApp {
                      Closing an OS child restores its recovery target and keeps pane data.",
                 );
                 ui.label(
-                    "5. Pane inventory lists all eight application-owned panes. Select an open pane, \
+                    "5. Pane inventory lists all eight application-owned panes. Open a pane's menu to select or move it, \
                      request a pane or group close, then choose Close, Keep open or Decide later for each pane. \
                      Postponed decisions use the same Close and Keep open controls. A group closes together; keeping any pane open cancels the request. Reopen restores the same pane data \
                      beside the current Document, or in the current main root when Document is closed. \

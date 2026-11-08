@@ -297,9 +297,6 @@ impl NativeReceiverStore {
             NativeReceiverPurpose::HoverHit => hit.contains_pointer(),
             NativeReceiverPurpose::ScrollDelivery(_) => unreachable!("scroll resolved above"),
         };
-        let Some(identity) = identity else {
-            return NativeReceiverAnswer::NoReceiver(query.presented_surface());
-        };
         let receiver_for = |identity: egui::WidgetHitIdentity| {
             let mut matches = presented.receivers.iter().copied().filter(|receiver| {
                 receiver.viewport_id() == presented.viewport
@@ -314,6 +311,14 @@ impl NativeReceiverStore {
                 return Err(NativeReceiverAnswer::Unknown);
             }
             Ok(receiver)
+        };
+        let Some(identity) = identity else {
+            // An overlay can occlude both lanes while sensing only one of them.
+            // Its missing lane does not prove that the underlying core geometry is empty.
+            return hit
+                .contains_pointer()
+                .and_then(|identity| receiver_for(identity).err())
+                .unwrap_or_else(|| NativeReceiverAnswer::NoReceiver(query.presented_surface()));
         };
         let receiver = match receiver_for(identity) {
             Ok(receiver) => receiver,
@@ -1631,7 +1636,7 @@ mod tests {
 
     #[test]
     fn exact_registered_hit_clears_hover_lane_while_uncertain_hits_fail_closed() {
-        assert_native_hover_receiver_contract(&mut UnclaimedPanes, false, true);
+        assert_native_hover_receiver_contract(&mut UnclaimedPanes, None, true);
     }
 
     #[derive(Default)]
@@ -1680,14 +1685,14 @@ mod tests {
         }
     }
 
-    fn paint_foreign_hover_overlay(ui: &Ui) {
+    fn paint_foreign_overlay(ui: &Ui, sense: Sense) {
         egui::Area::new(Id::unique("native-foreign-hover-overlay"))
             .order(egui::Order::Foreground)
             .fixed_pos(egui::pos2(64.0, 64.0))
             .movable(false)
             .fade_in(false)
             .show(ui.ctx(), |ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(160.0), Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(160.0), sense);
                 ui.painter().rect_filled(rect, 0.0, egui::Color32::DARK_RED);
             });
     }
@@ -1698,12 +1703,12 @@ mod tests {
             declared: true,
             ..Default::default()
         };
-        assert_native_hover_receiver_contract(&mut panes, false, true);
+        assert_native_hover_receiver_contract(&mut panes, None, true);
     }
 
     #[test]
     fn undeclared_hover_only_pane_content_blocks_native_hover_lane() {
-        assert_native_hover_receiver_contract(&mut HoverContentPanes::default(), false, false);
+        assert_native_hover_receiver_contract(&mut HoverContentPanes::default(), None, false);
     }
 
     #[test]
@@ -1713,7 +1718,7 @@ mod tests {
             interactive_declared: Some(false),
             ..Default::default()
         };
-        assert_native_hover_receiver_contract(&mut panes, false, false);
+        assert_native_hover_receiver_contract(&mut panes, None, false);
     }
 
     #[test]
@@ -1723,7 +1728,7 @@ mod tests {
             interactive_declared: Some(true),
             ..Default::default()
         };
-        assert_native_hover_receiver_contract(&mut panes, false, true);
+        assert_native_hover_receiver_contract(&mut panes, None, true);
     }
 
     #[test]
@@ -1732,12 +1737,21 @@ mod tests {
             declared: true,
             ..Default::default()
         };
-        assert_native_hover_receiver_contract(&mut panes, true, false);
+        assert_native_hover_receiver_contract(&mut panes, Some(Sense::hover()), false);
+    }
+
+    #[test]
+    fn click_only_overlay_blocks_native_press_without_a_drag_receiver() {
+        let mut panes = HoverContentPanes {
+            declared: true,
+            ..Default::default()
+        };
+        assert_native_hover_receiver_contract(&mut panes, Some(Sense::click()), false);
     }
 
     fn assert_native_hover_receiver_contract(
         panes: &mut dyn PaneView,
-        foreign_overlay: bool,
+        foreign_overlay: Option<Sense>,
         expects_clear_hover: bool,
     ) {
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
@@ -1819,7 +1833,7 @@ mod tests {
         measured.commit().expect("native measurement commits");
 
         let context = egui::Context::default();
-        if foreign_overlay {
+        if let Some(sense) = foreign_overlay {
             // Complete the Area sizing pass before capturing the presented hit authority.
             let mut warmup = context.run_ui(
                 RawInput {
@@ -1829,7 +1843,7 @@ mod tests {
                     )),
                     ..RawInput::default()
                 },
-                |ui| paint_foreign_hover_overlay(ui),
+                |ui| paint_foreign_overlay(ui, sense),
             );
             warmup.textures_delta.clear();
         }
@@ -1904,8 +1918,8 @@ mod tests {
                     .expect("native paint frame settles");
                 let mut report = frame.commit().expect("native paint frame commits");
                 painted_output = report.take_painted_outputs().pop();
-                if foreign_overlay {
-                    paint_foreign_hover_overlay(ui);
+                if let Some(sense) = foreign_overlay {
+                    paint_foreign_overlay(ui, sense);
                 }
             },
         );
@@ -1971,7 +1985,7 @@ mod tests {
             .hit_test(logical_pos(pane_point).expect("pane point projects into egui space"))
             .and_then(|hit| hit.contains_pointer())
             .expect("the completed pass has a frontmost widget at the pane point");
-        if foreign_overlay {
+        if foreign_overlay.is_some() {
             assert_eq!(pane_identity.layer_id().order, egui::Order::Foreground);
         }
         let matching = receivers
@@ -2040,6 +2054,63 @@ mod tests {
         assert_ne!(mismatched_artifact, presented_artifact);
         let mismatched_store = presented_set(vec![pane_receiver], mismatched_artifact);
         let obsolete_store = presented_set(vec![pane_receiver], previous_artifact);
+
+        if foreign_overlay.is_some() {
+            assert!(
+                hit_authority
+                    .hit_test(logical_pos(pane_point).unwrap())
+                    .unwrap()
+                    .drag()
+                    .is_none(),
+                "the overlay must reproduce the missing drag lane"
+            );
+            let mut resolved_lanes = [false; 2];
+            for event in [
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+            ] {
+                session
+                    .record_native_pointer(NativePointerInput::new(
+                        NativePointerId::new(1),
+                        event,
+                        NativeDesktopPointerLocation::new(
+                            NativeDesktopPosition::Exact(
+                                PhysicalPoint::new(pane_point.x(), pane_point.y()).unwrap(),
+                            ),
+                            NativePointerHover::Dock(binding),
+                            None,
+                        ),
+                        NativePointerOwner::Native(binding),
+                        NativePointerOwner::Native(binding),
+                    ))
+                    .expect("the overlay's real native edge records");
+                let mut press = session
+                    .begin_native_host_frame(|query| {
+                        let answer = exact_store.resolve(query);
+                        if matches!(
+                            query.purpose(),
+                            NativeReceiverPurpose::ClickDelivery | NativeReceiverPurpose::DragDelivery
+                        ) {
+                            assert_eq!(
+                                answer,
+                                NativeReceiverAnswer::Blocked(query.presented_surface()),
+                                "a foreign overlay blocks docking even when it has no widget for this lane"
+                            );
+                            resolved_lanes[usize::from(matches!(
+                                query.purpose(),
+                                NativeReceiverPurpose::DragDelivery
+                            ))] = true;
+                        }
+                        answer
+                    })
+                    .expect("overlay input must not contradict the underlying core receiver");
+                press
+                    .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                    .unwrap();
+                press.commit().expect("blocked overlay input commits");
+            }
+            assert_eq!(resolved_lanes, [true, true]);
+        }
 
         let tab_point = tab_point.expect("the ready surface paints one tab receiver");
         session

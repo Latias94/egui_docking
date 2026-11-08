@@ -1,0 +1,19 @@
+{
+  "baseline_commit": "ec9fe1d",
+  "baseline_linux_binary_sha256": "1ae12ec29ee4d9e091a0bce6865fb4cab0b53d9e2a1aa7618995685a4591c72e",
+  "tab_cancel_os_assertions": {
+    "host": "2097155",
+    "child": "2097164",
+    "fresh": "2097170",
+    "active_after_cancel": "2097164",
+    "returncode": 0
+  },
+  "group_cancel_os_assertions": {
+    "host": "2097155",
+    "child": "2097164",
+    "fresh": "2097170",
+    "active_after_cancel": "2097164",
+    "returncode": 0
+  },
+  "scope": "Source and original native window retained on Escape; toolbar restores create fresh children. Pane topology, guides and retained text require visual inspection. The menu-stop diagnostic was captured with temporary tagged probes, which are absent from final sources."
+}
