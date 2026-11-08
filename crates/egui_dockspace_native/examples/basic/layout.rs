@@ -3,6 +3,7 @@
 use dockspace::close::{CloseDecision, CloseItemDecisionState, DeferredCloseDecision};
 use dockspace::model::{DockAnchor, DockPlacement};
 use dockspace::runtime::DockspaceCloseResolution;
+use egui_dockspace_native::NativeCommand;
 
 use super::*;
 
@@ -19,7 +20,10 @@ pub(super) struct NamedPreset {
 
 impl NativeExampleApp {
     pub(super) fn controls_available(&self) -> bool {
-        !self.action.is_pending() && self.smoke.is_none() && self.dockspace.error_kind().is_none()
+        !self.action.is_pending()
+            && self.smoke.is_none()
+            && self.command_smoke.is_none()
+            && self.dockspace.error_kind().is_none()
     }
 
     pub(super) fn show_layout_controls(&mut self, ui: &mut egui::Ui) {
@@ -33,7 +37,9 @@ impl NativeExampleApp {
                 )
                 .changed()
             {
-                let request = self.dockspace.request_set_arrangement_locked(locked);
+                let request = self
+                    .dockspace
+                    .request_command(NativeCommand::SetArrangementLocked { locked });
                 self.begin_layout_action("Change arrangement lock", request);
             }
             if ui
@@ -262,10 +268,18 @@ impl NativeExampleApp {
                             .add_enabled(can_request, egui::Button::new("Select"))
                             .clicked()
                         {
-                            let request = self.dockspace.request_select_item(item);
+                            let request = self
+                                .dockspace
+                                .request_command(NativeCommand::SelectItem { item });
                             self.begin_layout_action("Select pane", request);
                             ui.close();
                         }
+                        ui.add_enabled_ui(
+                            self.controls_available() && !self.dockspace.arrangement_locked(),
+                            |ui| {
+                                ui.menu_button("Move", |ui| self.show_pane_move_commands(ui, item));
+                            },
+                        );
                         if ui
                             .add_enabled(
                                 can_arrange && !self.action.is_pending(),
@@ -273,7 +287,9 @@ impl NativeExampleApp {
                             )
                             .clicked()
                         {
-                            let request = self.dockspace.request_close_item(item);
+                            let request = self
+                                .dockspace
+                                .request_command(NativeCommand::CloseItem { item });
                             self.begin_layout_action("Request pane close", request);
                             ui.close();
                         }
@@ -285,7 +301,9 @@ impl NativeExampleApp {
                             .on_hover_text("Request an atomic close of every pane in this root.")
                             .clicked()
                         {
-                            let request = self.dockspace.request_close_root(root);
+                            let request = self
+                                .dockspace
+                                .request_command(NativeCommand::CloseRoot { root });
                             self.begin_layout_action("Request group close", request);
                             ui.close();
                         }
@@ -329,6 +347,64 @@ impl NativeExampleApp {
         ui.small("Close requests need an explicit decision below the toolbar.");
     }
 
+    fn show_pane_move_commands(&mut self, ui: &mut egui::Ui, item: ItemId) {
+        let host = self.dockspace.root_surface();
+        let Some(Some((contained, surface, placement))) = self.dockspace.with_view(|view| {
+            let pane = view.item(item)?;
+            let placement = match view.surface(host)?.main_root() {
+                None => Some(DockPlacement::Main(host)),
+                Some(root) if root.central().is_some() => {
+                    Some(DockPlacement::Center(DockAnchor::Central(root.id())))
+                }
+                Some(root) => [
+                    OUTLINE, EDITOR, PREVIEW, INSPECTOR, CONSOLE, HISTORY, PROFILER, ASSETS,
+                ]
+                .into_iter()
+                .find(|candidate| {
+                    *candidate != item
+                        && view
+                            .item(*candidate)
+                            .is_some_and(|pane| pane.root() == root.id())
+                })
+                .map(|anchor| DockPlacement::Center(DockAnchor::Item(anchor))),
+            };
+            Some((pane.contained().is_some(), pane.surface(), placement))
+        }) else {
+            return;
+        };
+        for (label, command) in [
+            (
+                "Dock in main area",
+                placement.map(|placement| NativeCommand::DockItem { item, placement }),
+            ),
+            (
+                "Float in main window",
+                (!contained || surface != host).then_some(NativeCommand::FloatItem {
+                    item,
+                    surface: host,
+                }),
+            ),
+            (
+                "Bring group to front",
+                contained.then_some(NativeCommand::RaiseContained { item }),
+            ),
+            (
+                "Move group into view",
+                contained.then_some(NativeCommand::BringContainedIntoView { item }),
+            ),
+        ] {
+            if ui
+                .add_enabled(command.is_some(), egui::Button::new(label))
+                .clicked()
+                && let Some(command) = command
+            {
+                let request = self.dockspace.request_command(command);
+                self.begin_layout_action(label, request);
+                ui.close();
+            }
+        }
+    }
+
     fn reopen_pane(&mut self, item: ItemId) {
         let inventory = self
             .dockspace
@@ -360,7 +436,9 @@ impl NativeExampleApp {
                 Some("Could not reopen pane: no current Document or main-root anchor.".to_owned());
             return;
         };
-        let request = self.dockspace.request_open_item(item, placement);
+        let request = self
+            .dockspace
+            .request_command(NativeCommand::OpenItem { item, placement });
         self.begin_layout_action("Reopen pane", request);
     }
 
@@ -405,12 +483,13 @@ impl NativeExampleApp {
                                                 .add_enabled(enabled, egui::Button::new(label))
                                                 .clicked()
                                             {
-                                                let request =
-                                                    self.dockspace.request_close_decision(
-                                                        plan.request(),
-                                                        item.token(),
+                                                let request = self.dockspace.request_command(
+                                                    NativeCommand::DecideClose {
+                                                        request: plan.request(),
+                                                        token: item.token(),
                                                         decision,
-                                                    );
+                                                    },
+                                                );
                                                 self.begin_layout_action(
                                                     "Resolve close decision",
                                                     request,
@@ -431,12 +510,13 @@ impl NativeExampleApp {
                                                 )
                                                 .clicked()
                                             {
-                                                let request =
-                                                    self.dockspace.request_deferred_close_decision(
-                                                        plan.request(),
-                                                        continuation,
+                                                let request = self.dockspace.request_command(
+                                                    NativeCommand::ContinueClose {
+                                                        request: plan.request(),
+                                                        token: continuation,
                                                         decision,
-                                                    );
+                                                    },
+                                                );
                                                 self.begin_layout_action(
                                                     "Continue deferred close",
                                                     request,

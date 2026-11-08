@@ -1,6 +1,7 @@
 //! Finite real-renderer regression for blank frames while changing tabs and moving windows.
 //! Pass `--single-pass` to exercise retention when egui cannot repeat its measurement pass.
 
+use egui_dockspace_native::NativeCommand;
 use std::time::{Duration, Instant};
 
 use dockspace::model::{
@@ -105,7 +106,9 @@ impl eframe::App for ContinuityApp {
                 } else {
                     FIRST
                 };
-                self.dockspace.request_select_item(target).unwrap();
+                self.dockspace
+                    .request_command(NativeCommand::SelectItem { item: target })
+                    .unwrap();
                 self.selections += 1;
                 self.pending = Some(target);
             } else if self.moves < 10 {

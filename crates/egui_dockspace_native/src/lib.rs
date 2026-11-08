@@ -12,6 +12,7 @@ mod app;
 mod application_action;
 mod capabilities;
 mod close_control;
+mod command;
 mod coordinator;
 mod deferred_viewport;
 mod effect_coordinator;
@@ -40,6 +41,7 @@ pub use application_action::{
     NativeActionFailure, NativeActionInterruption, NativeActionRequestError, NativeActionStatus,
 };
 pub use close_control::NativeWindowClosePolicy;
+pub use command::NativeCommand;
 pub use coordinator::NativeStorageLimit;
 pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};
 pub use layout_management::NativeLayoutRequestError;

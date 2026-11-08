@@ -1,0 +1,26 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "CARGO_BUILD_JOBS=1",
+    "354e85cb1d95",
+    "cargo",
+    "build",
+    "--manifest-path",
+    "integration/egui-fork-workspace/Cargo.toml",
+    "-p",
+    "egui_dockspace_native",
+    "--example",
+    "basic",
+    "--all-features",
+    "--target-dir",
+    "/native-target",
+    "--locked",
+    "--offline",
+    "-j1"
+  ],
+  "started": "2026-11-08T02:53:23.462708+00:00",
+  "finished": "2026-11-08T02:53:34.251188+00:00",
+  "returncode": 0
+}

@@ -1,11 +1,10 @@
 //! Application commands share the existing bounded native action slot.
 
 use dockspace::close::{
-    CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanTarget, CloseRequestId,
-    DeferredCloseDecision, DeferredCloseToken,
+    CloseDecision, CloseItemDecisionState, ClosePlanTarget, DeferredCloseDecision,
 };
 use dockspace::model::{
-    DockPlacement, DockspaceLayout, ItemId, NativeWindowPlacement, RootId, SurfaceId,
+    DockAnchor, DockPlacement, DockspaceLayout, DockspaceRootView, RootId, SurfaceId,
 };
 use dockspace::runtime::{DockspaceClosePlan, NativeSurfaceBinding};
 use eframe::egui;
@@ -192,99 +191,160 @@ impl<P: PaneView> NativeRuntimeState<P> {
         Ok(())
     }
 
-    pub(crate) fn request_dock_root(
+    pub(crate) fn request_command(
         &mut self,
-        root: RootId,
-        placement: DockPlacement,
+        command: crate::NativeCommand,
     ) -> Result<(), NativeActionRequestError> {
-        let action = self
-            .coordinator
-            .session()
-            .prepare_dock_root(root, placement);
-        self.enqueue_application_action(action)
-    }
+        use crate::NativeCommand;
 
-    pub(crate) fn request_select_item(
-        &mut self,
-        item: ItemId,
-    ) -> Result<(), NativeActionRequestError> {
-        let action = self.coordinator.session().prepare_select_item(item);
-        self.enqueue_application_action(action)
-    }
-
-    pub(crate) fn request_open_item(
-        &mut self,
-        item: ItemId,
-        placement: DockPlacement,
-    ) -> Result<(), NativeActionRequestError> {
-        let action = self
-            .coordinator
-            .session()
-            .prepare_open_item(item, placement);
-        self.enqueue_application_action(action)
-    }
-
-    pub(crate) fn request_close_item(
-        &mut self,
-        item: ItemId,
-    ) -> Result<(), NativeActionRequestError> {
-        let action = self.coordinator.session().prepare_close_item(item);
-        self.enqueue_application_action(action)
-    }
-
-    pub(crate) fn request_close_root(
-        &mut self,
-        root: RootId,
-    ) -> Result<(), NativeActionRequestError> {
-        let action = self.coordinator.session().prepare_close_root(root);
-        self.enqueue_application_action(action)
-    }
-
-    pub(crate) fn request_close_decision(
-        &mut self,
-        request: CloseRequestId,
-        token: CloseDecisionToken,
-        decision: CloseDecision,
-    ) -> Result<(), NativeActionRequestError> {
-        let action = NativeApplicationAction::new(
-            self.coordinator.session().version(),
-            NativeApplicationCommand::DecideClose {
+        self.ensure_application_slot_available()?;
+        if self.command_removes_host_surface(command) {
+            return Err(NativeActionRequestError::HostSurfaceRequired {
+                surface: self.root_surface,
+            });
+        }
+        let session = self.coordinator.session();
+        let action: NativeApplicationAction = match command {
+            NativeCommand::SelectItem { item } => session.prepare_select_item(item).into(),
+            NativeCommand::OpenItem { item, placement } => {
+                session.prepare_open_item(item, placement).into()
+            }
+            NativeCommand::DockItem { item, placement } => {
+                session.prepare_dock_item(item, placement).into()
+            }
+            NativeCommand::DockRoot { root, placement } => {
+                session.prepare_dock_root(root, placement).into()
+            }
+            NativeCommand::DockRootBack { root } => session.prepare_dock_root_back(root).into(),
+            NativeCommand::FloatItem { item, surface } => {
+                session.prepare_float_item(item, surface).into()
+            }
+            NativeCommand::RaiseContained { item } => session.prepare_raise_contained(item).into(),
+            NativeCommand::BringContainedIntoView { item } => {
+                session.prepare_bring_contained_into_view(item).into()
+            }
+            NativeCommand::MoveRootToNewWindow { root, placement } => session
+                .prepare_move_root_to_new_window(root, placement)
+                .into(),
+            NativeCommand::CloseItem { item } => session.prepare_close_item(item).into(),
+            NativeCommand::CloseRoot { root } => session.prepare_close_root(root).into(),
+            NativeCommand::DecideClose {
                 request,
                 token,
                 decision,
-            },
-        );
-        self.enqueue_application_action(action)
-    }
-
-    pub(crate) fn request_deferred_close_decision(
-        &mut self,
-        request: CloseRequestId,
-        token: DeferredCloseToken,
-        decision: DeferredCloseDecision,
-    ) -> Result<(), NativeActionRequestError> {
-        let action = NativeApplicationAction::new(
-            self.coordinator.session().version(),
-            NativeApplicationCommand::ContinueClose {
+            } => NativeApplicationAction::new(
+                session.version(),
+                NativeApplicationCommand::DecideClose {
+                    request,
+                    token,
+                    decision,
+                },
+            ),
+            NativeCommand::ContinueClose {
                 request,
                 token,
                 decision,
-            },
-        );
+            } => NativeApplicationAction::new(
+                session.version(),
+                NativeApplicationCommand::ContinueClose {
+                    request,
+                    token,
+                    decision,
+                },
+            ),
+            NativeCommand::SetArrangementLocked { locked } => {
+                let mut policy = session.policy().clone();
+                policy.set_arrangement_locked(locked);
+                NativeApplicationAction::new(
+                    session.version(),
+                    NativeApplicationCommand::ArrangementLock(Box::new(policy)),
+                )
+            }
+        };
         self.enqueue_application_action(action)
     }
 
-    pub(crate) fn request_set_arrangement_locked(
-        &mut self,
-        locked: bool,
-    ) -> Result<(), NativeActionRequestError> {
-        let mut policy = self.coordinator.session().policy().clone();
-        policy.set_arrangement_locked(locked);
-        let action = NativeApplicationAction::new(
-            self.coordinator.session().version(),
-            NativeApplicationCommand::ArrangementLock(Box::new(policy)),
-        );
-        self.enqueue_application_action(action)
+    fn sole_host_root(&self) -> Option<DockspaceRootView<'_>> {
+        let surface = self
+            .coordinator
+            .session()
+            .view()
+            .surface(self.root_surface)?;
+        let main = surface.main_root();
+        if usize::from(main.is_some()) + surface.contained_count() != 1 {
+            return None;
+        }
+        main.or_else(|| surface.contained().next()?.root())
+    }
+
+    fn command_removes_host_surface(&self, command: crate::NativeCommand) -> bool {
+        use crate::NativeCommand;
+
+        // A locked move cannot remove the host; retain its core-owned rejection.
+        if self.arrangement_locked() {
+            return false;
+        }
+        let Some(root) = self.sole_host_root() else {
+            return false;
+        };
+        let complete_item = |item| {
+            root.central().is_none()
+                && root
+                    .content()
+                    .and_then(|node| node.tabs())
+                    .is_some_and(|tabs| tabs.items() == [item])
+        };
+        let view = self.coordinator.session().view();
+        let target = match command {
+            NativeCommand::DockItem { item, placement } if complete_item(item) => {
+                self.placement_surface(placement)
+            }
+            NativeCommand::DockRoot {
+                root: source,
+                placement,
+            } if source == root.id() => self.placement_surface(placement),
+            NativeCommand::FloatItem { item, surface } if complete_item(item) => {
+                view.surface(surface).map(|surface| surface.id())
+            }
+            _ => None,
+        };
+        target.is_some_and(|target| target != self.root_surface)
+    }
+
+    fn placement_surface(&self, placement: DockPlacement) -> Option<SurfaceId> {
+        let view = self.coordinator.session().view();
+        let root_surface = |root: RootId| {
+            view.surfaces()
+                .find(|surface| {
+                    surface.main_root().is_some_and(|main| main.id() == root)
+                        || surface.contained().any(|contained| {
+                            contained.root().is_some_and(|owner| owner.id() == root)
+                        })
+                })
+                .map(|surface| surface.id())
+        };
+        match placement {
+            DockPlacement::Center(DockAnchor::Item(item))
+            | DockPlacement::InnerEdge {
+                anchor: DockAnchor::Item(item),
+                ..
+            }
+            | DockPlacement::Before(item)
+            | DockPlacement::After(item) => view.item(item).map(|item| item.surface()),
+            DockPlacement::Center(DockAnchor::Central(root))
+            | DockPlacement::InnerEdge {
+                anchor: DockAnchor::Central(root),
+                ..
+            } => {
+                view.root(root)?.central()?;
+                root_surface(root)
+            }
+            DockPlacement::OuterEdge { root, .. } => root_surface(root),
+            DockPlacement::Main(surface) => view
+                .surface(surface)
+                .filter(|surface| surface.is_rootless())
+                .map(|surface| surface.id()),
+        }
     }
 
     pub(crate) fn arrangement_locked(&self) -> bool {
@@ -352,14 +412,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             }
             _ => return false,
         };
-        let Some(surface) = session.view().surface(self.root_surface) else {
-            return false;
-        };
-        let main = surface.main_root();
-        if usize::from(main.is_some()) + surface.contained_count() != 1 {
-            return false;
-        }
-        let Some(root) = main.or_else(|| surface.contained().next()?.root()) else {
+        let Some(root) = self.sole_host_root() else {
             return false;
         };
         match target {
@@ -373,26 +426,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
             }
             ClosePlanTarget::Surface { .. } => false,
         }
-    }
-
-    pub(crate) fn request_dock_root_back(
-        &mut self,
-        root: RootId,
-    ) -> Result<(), NativeActionRequestError> {
-        let action = self.coordinator.session().prepare_dock_root_back(root);
-        self.enqueue_application_action(action)
-    }
-
-    pub(crate) fn request_move_root_to_new_window(
-        &mut self,
-        root: RootId,
-        placement: NativeWindowPlacement,
-    ) -> Result<(), NativeActionRequestError> {
-        let action = self
-            .coordinator
-            .session()
-            .prepare_move_root_to_new_window(root, placement);
-        self.enqueue_application_action(action)
     }
 
     pub(crate) fn take_action_status(&mut self) -> Option<NativeActionTerminal> {

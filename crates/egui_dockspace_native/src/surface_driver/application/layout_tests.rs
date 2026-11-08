@@ -1,5 +1,6 @@
 //! Layout commands use the native application's bounded command and result slot.
 
+use crate::NativeCommand;
 use std::error::Error;
 
 use dockspace::model::{
@@ -150,7 +151,7 @@ fn queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic
             NativeActionRequestError::Busy,
         );
         assert_eq!(
-            state.request_select_item(FIRST),
+            state.request_command(NativeCommand::SelectItem { item: FIRST }),
             Err(NativeActionRequestError::Busy)
         );
         let report = commit_queued(&mut state, Some(if round == 0 { SECOND } else { FIRST }));
@@ -181,7 +182,7 @@ fn queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic
                 .any(|input| matches!(input, HostInputOutcome::ProductActionApplied(_)))
         );
         assert_eq!(
-            state.request_select_item(FIRST),
+            state.request_command(NativeCommand::SelectItem { item: FIRST }),
             Err(NativeActionRequestError::Busy)
         );
         assert_eq!(
@@ -239,7 +240,9 @@ fn queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic
     assert_eq!(retained.root(), PRESET_ROOT);
     assert_eq!(state.panes.0, panes);
     assert!(state.shutdown.is_none());
-    state.request_select_item(THIRD).unwrap();
+    state
+        .request_command(NativeCommand::SelectItem { item: THIRD })
+        .unwrap();
     commit_queued(&mut state, None);
     assert!(matches!(
         take(&mut state),
@@ -253,7 +256,9 @@ fn queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic
 fn lock_and_host_validation_leave_the_slot_free_and_stopped_takes_precedence() {
     let mut state = test_state();
     let panes = state.panes.0.clone();
-    state.request_set_arrangement_locked(true).unwrap();
+    state
+        .request_command(NativeCommand::SetArrangementLocked { locked: true })
+        .unwrap();
     commit_queued(&mut state, None);
     assert!(matches!(
         take(&mut state),
@@ -276,7 +281,9 @@ fn lock_and_host_validation_leave_the_slot_free_and_stopped_takes_precedence() {
     assert!(!state.application_actions.is_occupied());
     assert_eq!(state.coordinator.session().version(), before);
 
-    state.request_set_arrangement_locked(false).unwrap();
+    state
+        .request_command(NativeCommand::SetArrangementLocked { locked: false })
+        .unwrap();
     commit_queued(&mut state, None);
     take(&mut state);
     let before = state.coordinator.session().version();
@@ -779,7 +786,9 @@ mod persistence {
             Some(root)
         );
         assert!(state.shutdown.is_none());
-        state.request_select_item(SECOND).unwrap();
+        state
+            .request_command(NativeCommand::SelectItem { item: SECOND })
+            .unwrap();
         commit_queued(&mut state, None);
         assert!(matches!(take(&mut state), NativeActionStatus::Dock(_)));
         assert!(state.shutdown.is_none());
@@ -1219,7 +1228,9 @@ mod persistence {
         let mut state = persistent_state();
         let panes = state.panes.0.clone();
         let saved = state.save_document_json().unwrap();
-        state.request_set_arrangement_locked(true).unwrap();
+        state
+            .request_command(NativeCommand::SetArrangementLocked { locked: true })
+            .unwrap();
         commit_queued(&mut state, None);
         assert!(state.arrangement_locked());
         assert_queue_error(
@@ -1252,7 +1263,9 @@ mod persistence {
         );
         assert_eq!(state.panes.0, panes);
 
-        state.request_set_arrangement_locked(false).unwrap();
+        state
+            .request_command(NativeCommand::SetArrangementLocked { locked: false })
+            .unwrap();
         assert_queue_error(
             state
                 .request_document_restore_json(&saved, |_, _| {
@@ -1291,7 +1304,9 @@ mod persistence {
         assert!(state.shutdown.is_none());
         assert_eq!(state.panes.0, panes);
 
-        state.request_set_arrangement_locked(true).unwrap();
+        state
+            .request_command(NativeCommand::SetArrangementLocked { locked: true })
+            .unwrap();
         commit_queued(&mut state, None);
         assert!(state.arrangement_locked());
         state.stop_current_output(NativeHostProtocolError::RootSurfaceUnavailable(SURFACE).into());
@@ -1452,7 +1467,9 @@ mod persistence {
             generation
         );
 
-        state.request_select_item(SECOND).unwrap();
+        state
+            .request_command(NativeCommand::SelectItem { item: SECOND })
+            .unwrap();
         assert_queue_error(
             state
                 .request_document_restore_json(b"{", |_, _| {

@@ -1,5 +1,6 @@
 //! One-shot X11/Glow smoke for the real native coordinator.
 
+use egui_dockspace_native::NativeCommand;
 use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
@@ -407,8 +408,10 @@ impl SmokeApp {
         );
         match self
             .dockspace
-            .request_move_root_to_new_window(CHILD_ROOT, placement)
-        {
+            .request_command(NativeCommand::MoveRootToNewWindow {
+                root: CHILD_ROOT,
+                placement,
+            }) {
             Ok(()) => self.transition(SmokePhase::AwaitTearOff),
             Err(error) => self.finish(context, Err(action_request_message(error))),
         }
@@ -623,10 +626,10 @@ impl SmokeApp {
     }
 
     fn queue_redock(&mut self, context: &egui::Context, target_surface: SurfaceId) {
-        match self.dockspace.request_dock_root(
-            CHILD_ROOT,
-            DockPlacement::Center(DockAnchor::Item(MAIN_ITEM)),
-        ) {
+        match self.dockspace.request_command(NativeCommand::DockRoot {
+            root: CHILD_ROOT,
+            placement: DockPlacement::Center(DockAnchor::Item(MAIN_ITEM)),
+        }) {
             Ok(()) => self.transition(SmokePhase::AwaitRedock { target_surface }),
             Err(error) => self.finish(context, Err(action_request_message(error))),
         }

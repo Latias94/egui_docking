@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use egui_dockspace_native::NativeCommand;
 use std::collections::BTreeMap;
 
 use dockspace::geometry::{LogicalRect, PhysicalRect};
@@ -31,6 +32,8 @@ const ASSETS: ItemId = ItemId::new(8);
 #[cfg(feature = "serde")]
 const DOCUMENT_ID: DockspaceDocumentId = DockspaceDocumentId::from_bytes(*b"native-editor-v1");
 
+#[path = "basic/command_smoke.rs"]
+mod command_smoke;
 #[path = "basic/docking_smoke.rs"]
 mod docking_smoke;
 #[path = "basic/layout.rs"]
@@ -43,7 +46,12 @@ fn main() -> eframe::Result {
     policy.set_allow_native_surfaces(true);
     policy.set_close_capability(CloseCapability::DeferredAllowed);
     let panes = ExamplePanes::new();
-    let default_layout = example_layout();
+    let command_smoke = std::env::args().any(|argument| argument == "--command-smoke");
+    let default_layout = if command_smoke {
+        command_smoke::layout()
+    } else {
+        example_layout()
+    };
     #[cfg(feature = "serde")]
     let session = {
         let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT_ID);
@@ -84,6 +92,7 @@ fn main() -> eframe::Result {
         docking_smoke: std::env::args()
             .any(|argument| argument == "--docking-smoke")
             .then(docking_smoke::DockingSmoke::new),
+        command_smoke: command_smoke.then(command_smoke::CommandSmoke::new),
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 820.0]),
@@ -113,6 +122,7 @@ struct NativeExampleApp {
     status: Option<String>,
     smoke: Option<smoke::EditorSmoke>,
     docking_smoke: Option<docking_smoke::DockingSmoke>,
+    command_smoke: Option<command_smoke::CommandSmoke>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -154,6 +164,10 @@ impl eframe::App for NativeExampleApp {
         if let Some(mut smoke) = self.docking_smoke.take() {
             smoke.advance(self, ui.ctx());
             self.docking_smoke = Some(smoke);
+        }
+        if let Some(mut smoke) = self.command_smoke.take() {
+            smoke.advance(&self.dockspace, ui.ctx());
+            self.command_smoke = Some(smoke);
         }
     }
 }
@@ -353,7 +367,7 @@ impl NativeExampleApp {
         let placement = NativeWindowPlacement::new(bounds);
         match self
             .dockspace
-            .request_move_root_to_new_window(root, placement)
+            .request_command(NativeCommand::MoveRootToNewWindow { root, placement })
         {
             Ok(()) => {
                 self.action = ExampleActionState::AwaitingTearOffOutcome;
@@ -364,7 +378,10 @@ impl NativeExampleApp {
     }
 
     fn request_root_dock_back(&mut self, root: RootId) {
-        match self.dockspace.request_dock_root_back(root) {
+        match self
+            .dockspace
+            .request_command(NativeCommand::DockRootBack { root })
+        {
             Ok(()) => {
                 self.action = ExampleActionState::AwaitingDockBackOutcome(root);
                 self.status = None;

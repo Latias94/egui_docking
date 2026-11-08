@@ -1,5 +1,7 @@
 //! Shared root/child surface driver over one native coordinator.
 
+#[cfg(test)]
+use crate::NativeCommand;
 use dockspace::model::{DockspaceView, SurfaceId};
 use dockspace::runtime::{
     HostFrameReport, HostInputOutcome, HostWindowToken, NativeInputBudget, SurfaceUnavailableReason,
@@ -2280,11 +2282,17 @@ mod tests {
         let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
 
         state
-            .request_dock_root(RootId::new(1), placement)
+            .request_command(NativeCommand::DockRoot {
+                root: RootId::new(1),
+                placement,
+            })
             .expect("the empty application-action slot accepts one request");
         assert_eq!(
             state
-                .request_dock_root(RootId::new(1), placement)
+                .request_command(NativeCommand::DockRoot {
+                    root: RootId::new(1),
+                    placement
+                })
                 .expect_err("a second action cannot overtake the pending request"),
             crate::NativeActionRequestError::Busy
         );
@@ -2318,7 +2326,10 @@ mod tests {
         ));
 
         state
-            .request_dock_root(RootId::new(1), placement)
+            .request_command(NativeCommand::DockRoot {
+                root: RootId::new(1),
+                placement,
+            })
             .expect("consuming the result releases the bounded slot");
 
         state.stop_current_output(NativeHostProtocolError::OutputTokenUnavailable.into());
@@ -2332,7 +2343,10 @@ mod tests {
         assert!(!state.application_actions.is_occupied());
         assert_eq!(
             state
-                .request_dock_root(RootId::new(1), placement)
+                .request_command(NativeCommand::DockRoot {
+                    root: RootId::new(1),
+                    placement
+                })
                 .expect_err("a stopped runtime rejects new application actions"),
             crate::NativeActionRequestError::Stopped
         );
@@ -2346,10 +2360,10 @@ mod tests {
         ));
 
         state
-            .request_dock_root(
-                RootId::new(1),
-                DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
-            )
+            .request_command(NativeCommand::DockRoot {
+                root: RootId::new(1),
+                placement: DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+            })
             .expect("the committed boundary accepts one application action");
 
         assert!(
@@ -2373,7 +2387,10 @@ mod tests {
         let mut state = test_state();
         let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
         state
-            .request_dock_root(RootId::new(1), placement)
+            .request_command(NativeCommand::DockRoot {
+                root: RootId::new(1),
+                placement,
+            })
             .expect("the presentation action is queued");
         let _action = state
             .application_actions
@@ -2411,7 +2428,10 @@ mod tests {
         let mut state = test_state();
         let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
         state
-            .request_dock_root(RootId::new(1), placement)
+            .request_command(NativeCommand::DockRoot {
+                root: RootId::new(1),
+                placement,
+            })
             .expect("the application action is queued");
         let _action = state
             .application_actions
@@ -2458,7 +2478,10 @@ mod tests {
         let mut state = test_state();
         let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
         state
-            .request_dock_root(RootId::new(1), placement)
+            .request_command(NativeCommand::DockRoot {
+                root: RootId::new(1),
+                placement,
+            })
             .expect("the application action is queued");
         let _action = state
             .application_actions
@@ -2535,7 +2558,9 @@ mod tests {
         assert!(!state.is_quiescent());
         assert_eq!(
             state
-                .request_dock_root_back(RootId::new(1))
+                .request_command(NativeCommand::DockRootBack {
+                    root: RootId::new(1)
+                })
                 .expect_err("fatal quarantine rejects semantic mutation"),
             crate::NativeActionRequestError::Stopped
         );

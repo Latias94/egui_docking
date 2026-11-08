@@ -155,6 +155,35 @@ scroll line extents remain independent, as do egui colors and ghost offset.
 Style values are compared after exact `f32` to `f64` promotion; an unrepresentable
 core geometry value is rejected rather than rounded silently.
 
+Native application commands now use `NativeCommand` and
+`NativeDockspaceApp::request_command(command)`. Replace ordinary per-operation
+request methods with their command variants, for example:
+
+```rust,ignore
+app.request_command(NativeCommand::FloatItem { item, surface })?;
+// On a later application update, consume the exact result before submitting more.
+if let Some(result) = app.take_action_status() {
+    handle_command_result(result);
+}
+```
+
+`SelectItem`, `OpenItem`, `DockItem`, `DockRoot`, `DockRootBack`, `FloatItem`,
+`RaiseContained`, `BringContainedIntoView`, `MoveRootToNewWindow`, `CloseItem`,
+`CloseRoot`, `DecideClose`, `ContinueClose` and `SetArrangementLocked` share the
+same bounded slot. Queue acceptance does not imply command success. The slot
+remains Busy until its terminal result is consumed, including while native
+migration waits for exact presentation. Consume the result before waiting for
+quiescence. A stored command is an intent prepared at admission; it is not a
+revision-bound prepared token. Layout reset and JSON restoration retain their
+dedicated preparation methods.
+
+`FloatItem` creates contained content on an existing surface. OS-window creation
+uses `MoveRootToNewWindow`. Raising does not select a pane, and bringing a window
+into view does not raise it. Geometry-dependent operations need current surface
+measurement. The fixed application host must survive closing and cross-surface
+movement; a refused departure returns `HostSurfaceRequired` without occupying
+the slot.
+
 `show_single_surface` is the limited callback integration. It publishes each
 accepted call independently and cannot roll it back after an enclosing run or
 late hook fails. The composed `egui_dockspace::run_ui` wrapper can report exact

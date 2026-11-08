@@ -506,6 +506,20 @@ keyboard and window-close input; diagnostics locate the controls without
 granting docking or presentation authority. This editor workflow does not
 certify physical drag or other operating systems.
 
+Native application menus submit `NativeCommand` values through
+`NativeDockspaceApp::request_command` and consume `take_action_status` before
+their next command. The pane inventory's **Move** submenu exposes item docking,
+floating in the main window, raising a contained group and moving it into view.
+Close decisions and arrangement locking use the same bounded command slot;
+layout and document replacement retain their dedicated preparation methods.
+
+The finite `basic --command-smoke` mode exercises those four operations in the
+actual host, then moves a singleton into a native child and returns it through
+both item-floating and item-docking commands. It verifies typed terminal results,
+fresh presentation, child retirement and unchanged application data. Run it in
+an isolated display with a window manager; CI uses Xvfb/Openbox. This is a
+programmatic command check, separate from the OS-input `--smoke` workflow above.
+
 The [platform support matrix](docs/PLATFORM_SUPPORT.md) separates the public
 engine-host contract, official-egui output limits, backend capability bits and
 the exact scope of real-window/physical qualification.

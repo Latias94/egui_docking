@@ -1,0 +1,24 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "LIBGL_ALWAYS_SOFTWARE=1",
+    "-e",
+    "LP_NUM_THREADS=1",
+    "-e",
+    "WINIT_UNIX_BACKEND=x11",
+    "-e",
+    "WINIT_X11_SCALE_FACTOR=1",
+    "354e85cb1d95",
+    "xvfb-run",
+    "-a",
+    "--server-args=-screen 0 1280x1024x24",
+    "python3",
+    "/tmp/run_command_smoke.py"
+  ],
+  "started": "2026-11-08T02:51:46.127783+00:00",
+  "finished": "2026-11-08T02:51:48.962462+00:00",
+  "elapsed_seconds": 2.834278,
+  "returncode": 1
+}

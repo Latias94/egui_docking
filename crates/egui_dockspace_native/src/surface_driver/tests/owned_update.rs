@@ -2,6 +2,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::NativeCommand;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -343,7 +344,9 @@ impl eframe::App for DriverApp {
         let mut state = lock(&self.state);
         let mut probe = lock(&self.probe);
         if probe.token.is_none() && state.is_surface_presented(SURFACE) {
-            state.request_select_item(SECOND).unwrap();
+            state
+                .request_command(NativeCommand::SelectItem { item: SECOND })
+                .unwrap();
             probe.token = Some(token);
             probe.version = Some(state.coordinator.session().version());
             probe.reports_before = self.reports.load(Ordering::SeqCst);

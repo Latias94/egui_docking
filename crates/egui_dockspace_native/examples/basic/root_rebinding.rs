@@ -1,6 +1,7 @@
 //! Bounded opt-in continuation of the existing physical Root window.
 
 use super::*;
+use egui_dockspace_native::NativeCommand;
 
 const INCOMING_ROOT: SurfaceId = SurfaceId::new(1_000);
 #[cfg(feature = "serde")]
@@ -91,7 +92,9 @@ impl RootRebinding {
         // Replacement inherits actual focus. Establish that antecedent after
         // the preceding child retirements instead of assuming a central pane
         // owns focus merely because it is selected in the incoming layout.
-        let request = app.dockspace.request_select_item(EDITOR);
+        let request = app
+            .dockspace
+            .request_command(NativeCommand::SelectItem { item: EDITOR });
         smoke.submit(
             app,
             request,

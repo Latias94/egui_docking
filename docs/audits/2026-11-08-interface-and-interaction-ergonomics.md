@@ -147,3 +147,8 @@ should use the existing action queue and its Busy/Stopped/result/stale checks,
 with public consumer scenarios for those operations. This review does not
 justify replacing the core evaluator, inventing another command system, or
 expanding platform support claims.
+
+The follow-up is implemented in
+[Native application command interface](2026-11-08-native-command-interface.md),
+with a unified entrance, migrated consumers and a nine-command actual-window
+journey.

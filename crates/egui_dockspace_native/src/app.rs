@@ -2,12 +2,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use dockspace::close::{
-    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
-};
-use dockspace::model::{
-    DockPlacement, DockspaceLayout, DockspaceView, ItemId, NativeWindowPlacement, RootId, SurfaceId,
-};
+use dockspace::model::{DockspaceLayout, DockspaceView, SurfaceId};
 use dockspace::runtime::DockspaceClosePlan;
 use dockspace::runtime::DockspaceSession;
 use eframe::egui::{self, Id, ViewportClass, ViewportId};
@@ -318,137 +313,32 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).input_storage_reserved_bytes()
     }
 
-    /// Queues one complete-root dock action for the next final root pass.
+    /// Queues one application command for the next eligible final root pass.
     ///
-    /// The action is prepared against the exact published revision while the
-    /// native runtime lock is held. At most one application action may wait at
-    /// a time, which keeps retention bounded and preserves deterministic input
-    /// ordering ahead of local actions produced by that pass.
+    /// Preparation freezes the current published revision under the runtime lock.
+    /// Earlier ordered input may make that preparation stale before execution.
+    /// Acceptance means queued, not applied: inspect [`Self::take_action_status`]
+    /// for the exact committed result. The single slot remains Busy through any
+    /// required presentation transition and until its terminal result is consumed.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when another application action is pending or the
-    /// native runtime has stopped.
-    pub fn request_dock_root(
-        &self,
-        root: RootId,
-        placement: DockPlacement,
-    ) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_dock_root(root, placement)
-    }
-
-    /// Queues recovery of one contained or native complete-root presentation.
-    ///
-    /// The core derives and revalidates the current recovery target. Native
-    /// ownership remains with the source window until the target output is
-    /// actually presented.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when another application action is pending or the
-    /// native runtime has stopped.
-    pub fn request_dock_root_back(&self, root: RootId) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_dock_root_back(root)
-    }
-
-    /// Queues one complete-root move to a new native window for the next final root pass.
-    ///
-    /// Source ownership remains in place until the managed native lifecycle
-    /// accepts the child's exact first-live content presentation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when another application action is pending or the
-    /// native runtime has stopped.
-    pub fn request_move_root_to_new_window(
-        &self,
-        root: RootId,
-        placement: NativeWindowPlacement,
-    ) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_move_root_to_new_window(root, placement)
-    }
-
-    /// Queues selection of an open pane through the ordinary core command path.
+    /// Ordinary semantic completion does not prove a fresh framebuffer. Use
+    /// [`Self::is_surface_presented`] when the next operation requires presented
+    /// geometry, and consume the result before waiting for [`Self::is_quiescent`].
+    /// Do not re-enter this method from a `with_view` or pane-registry callback:
+    /// those callbacks already hold the same runtime lock.
     ///
     /// # Errors
     ///
     /// Returns [`NativeActionRequestError::Busy`] while the previous command or
-    /// its unconsumed result owns the slot, or `Stopped` after fatal shutdown.
-    pub fn request_select_item(&self, item: ItemId) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_select_item(item)
-    }
-
-    /// Queues reopening of one application-owned pane at an explicit placement.
-    ///
-    /// Pane data remains in the application's registry while closed. Current
-    /// policy, duplicate-item and placement checks remain core-owned.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Busy` or `Stopped` under the same single-slot rule as docking.
-    pub fn request_open_item(
+    /// its result owns the slot, `Stopped` after fatal shutdown, or
+    /// `HostSurfaceRequired` when the operation would remove the fixed host.
+    /// Policy and target rejections are committed action results. Close decisions
+    /// remain explicit application choices, including for chrome-created plans.
+    pub fn request_command(
         &self,
-        item: ItemId,
-        placement: DockPlacement,
+        command: crate::NativeCommand,
     ) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_open_item(item, placement)
-    }
-
-    /// Queues a close request for one pane without approving its close decision.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Busy`, `Stopped`, or `HostSurfaceRequired` when removing the last
-    /// non-central item would remove this application's fixed host surface.
-    /// Policy rejection is a committed action result.
-    pub fn request_close_item(&self, item: ItemId) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_close_item(item)
-    }
-
-    /// Queues one atomic close plan for every pane in a complete root.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Busy`, `Stopped`, or `HostSurfaceRequired` when this group is the
-    /// host surface's only presentation. Close individual panes in a central
-    /// root to retain an empty dock area. The application must decide accepted plans.
-    pub fn request_close_root(&self, root: RootId) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_close_root(root)
-    }
-
-    /// Queues an exact initial decision from a core-owned close plan.
-    ///
-    /// Stale, foreign and duplicate tokens remain typed core inert results.
-    /// The facade does not turn a request into an implicit approval.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Busy`, `Stopped`, or `HostSurfaceRequired` before accepting the
-    /// decision. The fixed-host constraint also applies to chrome-created plans;
-    /// a Veto remains available, and invalid tokens still reach core validation.
-    pub fn request_close_decision(
-        &self,
-        request: CloseRequestId,
-        token: CloseDecisionToken,
-        decision: CloseDecision,
-    ) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_close_decision(request, token, decision)
-    }
-
-    /// Queues the exact continuation of a previously deferred close decision.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Busy`, `Stopped`, or `HostSurfaceRequired` for a live exact Allow
-    /// which would remove the fixed host surface. Other token validity is
-    /// reported after commit.
-    pub fn request_deferred_close_decision(
-        &self,
-        request: CloseRequestId,
-        token: DeferredCloseToken,
-        decision: DeferredCloseDecision,
-    ) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_deferred_close_decision(request, token, decision)
+        lock_state(&self.state).request_command(command)
     }
 
     /// Returns current unresolved content-close plans from the core owner.
@@ -459,21 +349,6 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     #[must_use]
     pub fn pending_content_close_plans(&self) -> Vec<DockspaceClosePlan> {
         lock_state(&self.state).pending_content_close_plans()
-    }
-
-    /// Queues arrangement locking at the next final root configuration boundary.
-    ///
-    /// Earlier input and local actions keep their order. Pane content remains
-    /// interactive; the core determines which arrangement commands are disabled.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Busy` or `Stopped` before accepting the configuration command.
-    pub fn request_set_arrangement_locked(
-        &self,
-        locked: bool,
-    ) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_set_arrangement_locked(locked)
     }
 
     /// Returns the currently committed arrangement lock state.

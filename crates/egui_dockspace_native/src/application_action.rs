@@ -53,7 +53,7 @@ impl std::fmt::Display for NativeActionRequestError {
             Self::Busy => "a native dockspace application action is already pending",
             Self::Stopped => "the native dockspace runtime is stopped",
             Self::HostSurfaceRequired { .. } => {
-                "keep a central dock area or another group open before closing this content"
+                "keep a central dock area or another group on the application host surface"
             }
         };
         formatter.write_str(message)
@@ -933,6 +933,25 @@ fn completed_presentation_outcome(
                 items,
                 ..
             },
+            DockspaceActionOutcome::Docked {
+                item,
+                source_root,
+                target_root: completed_target,
+                ..
+            },
+        ) if source_root == root
+            && completed_target == target_root
+            && items.as_slice() == [*item] =>
+        {
+            Some(completed.clone())
+        }
+        (
+            DockspaceActionOutcome::RootDockRequested {
+                root,
+                target_root,
+                items,
+                ..
+            },
             DockspaceActionOutcome::RootDocked {
                 root: completed_root,
                 target_root: completed_target,
@@ -942,6 +961,20 @@ fn completed_presentation_outcome(
         ) if completed_root == root
             && completed_target == target_root
             && completed_items == items =>
+        {
+            Some(completed.clone())
+        }
+        (
+            DockspaceActionOutcome::RootFloatRequested { root, items, .. },
+            DockspaceActionOutcome::Floated {
+                item,
+                root: completed_root,
+                surface,
+                ..
+            },
+        ) if completed_root == root
+            && *surface == transition.target_surface()
+            && items.as_slice() == [*item] =>
         {
             Some(completed.clone())
         }

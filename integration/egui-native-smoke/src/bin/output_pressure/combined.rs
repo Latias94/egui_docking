@@ -1,6 +1,7 @@
 //! Finite W16/O256 fixture identities, outside the runtime storage allowance.
 
 use super::*;
+use egui_dockspace_native::NativeCommand;
 
 const SATELLITES: usize = 14;
 
@@ -163,9 +164,9 @@ impl CombinedPressure {
             let column = u32::try_from(self.next_create % 4).unwrap();
             let row = u32::try_from(self.next_create / 4).unwrap();
             runtime
-                .request_move_root_to_new_window(
-                    entry.root,
-                    NativeWindowPlacement::new(
+                .request_command(NativeCommand::MoveRootToNewWindow {
+                    root: entry.root,
+                    placement: NativeWindowPlacement::new(
                         PhysicalRect::new(
                             710.0 + f64::from(column) * 280.0,
                             60.0 + f64::from(row) * 220.0,
@@ -174,7 +175,7 @@ impl CombinedPressure {
                         )
                         .unwrap(),
                     ),
-                )
+                })
                 .map_err(|error| format!("satellite tear-off: {error}"))?;
             self.create_queued = true;
         }
@@ -259,10 +260,12 @@ impl CombinedPressure {
         };
         if !self.redock_queued && runtime.is_quiescent() {
             runtime
-                .request_dock_root(
-                    entry.root,
-                    DockPlacement::Center(DockAnchor::Item(ItemId::new(entry.item.get() - 1))),
-                )
+                .request_command(NativeCommand::DockRoot {
+                    root: entry.root,
+                    placement: DockPlacement::Center(DockAnchor::Item(ItemId::new(
+                        entry.item.get() - 1,
+                    ))),
+                })
                 .map_err(|error| format!("satellite redock: {error}"))?;
             self.redock_queued = true;
         }

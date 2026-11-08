@@ -245,6 +245,16 @@ Native construction rejects mismatched geometry/timing instead of displaying a
 style whose core hit regions use different metrics. Colors and ghost offset stay
 adapter-local; custom core-only configuration remains authoritative.
 
+Native menus submit `egui_dockspace_native::NativeCommand` values through
+`NativeDockspaceApp::request_command`. Item docking/floating and contained
+raise/bring-into-view use the same bounded command slot as selection, reopening,
+close decisions and native-window promotion. Read `take_action_status` on a
+later update and consume its terminal result before submitting another command
+or waiting for quiescence. Acceptance into the queue is separate from core
+success and actual surface presentation. Layout/document replacement keeps its
+dedicated preparation methods; see the
+[migration guide](../../docs/ENGINE_FIRST_MIGRATION.md#egui-integration).
+
 ## Features
 
 Run the bounded editor layout example with:

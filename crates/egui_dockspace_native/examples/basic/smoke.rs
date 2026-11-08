@@ -6,6 +6,7 @@
 //! `EGUI_DOCKSPACE_EDITOR_ROOT_REBIND=1` appends two Root edits, or four with serde,
 //! including the application's Default and named-preset restore call sites.
 
+use egui_dockspace_native::NativeCommand;
 use std::time::{Duration, Instant};
 
 use dockspace::close::{CloseDecision, CloseItemDecisionState, ClosePlanTarget, CloseRequestId};
@@ -311,7 +312,9 @@ impl EditorSmoke {
                 if location.is_some_and(|location| self.ready(app, location, false)) =>
             {
                 if self.input(app, INSPECTOR, "RECOVERED_EDIT", false)? {
-                    let request = app.dockspace.request_close_item(INSPECTOR);
+                    let request = app
+                        .dockspace
+                        .request_command(NativeCommand::CloseItem { item: INSPECTOR });
                     self.submit(
                         app,
                         request,
@@ -354,11 +357,11 @@ impl EditorSmoke {
                         },
                         INSPECTOR.get()
                     );
-                    let request = app.dockspace.request_close_decision(
-                        plan.request(),
-                        plan.items()[0].token(),
-                        CloseDecision::Allow,
-                    );
+                    let request = app.dockspace.request_command(NativeCommand::DecideClose {
+                        request: plan.request(),
+                        token: plan.items()[0].token(),
+                        decision: CloseDecision::Allow,
+                    });
                     self.submit(
                         app,
                         request,
@@ -437,10 +440,10 @@ impl EditorSmoke {
                         )?;
                         return Ok(());
                     }
-                    let request = app.dockspace.request_open_item(
-                        INSPECTOR,
-                        DockPlacement::Center(DockAnchor::Item(EDITOR)),
-                    );
+                    let request = app.dockspace.request_command(NativeCommand::OpenItem {
+                        item: INSPECTOR,
+                        placement: DockPlacement::Center(DockAnchor::Item(EDITOR)),
+                    });
                     self.submit(
                         app,
                         request,
@@ -511,7 +514,9 @@ impl EditorSmoke {
                     );
                 }
                 if self.input(app, INSPECTOR, "REOPENED_EDIT", false)? {
-                    let request = app.dockspace.request_set_arrangement_locked(true);
+                    let request = app
+                        .dockspace
+                        .request_command(NativeCommand::SetArrangementLocked { locked: true });
                     self.submit(
                         app,
                         request,
@@ -548,7 +553,10 @@ impl EditorSmoke {
                 );
                 let request = app
                     .dockspace
-                    .request_move_root_to_new_window(location.root, placement);
+                    .request_command(NativeCommand::MoveRootToNewWindow {
+                        root: location.root,
+                        placement,
+                    });
                 self.submit(
                     app,
                     request,
@@ -575,7 +583,9 @@ impl EditorSmoke {
                         "editor-smoke: programmatic=locked-move-rejected item={}",
                         INSPECTOR.get()
                     );
-                    let request = app.dockspace.request_select_item(EDITOR);
+                    let request = app
+                        .dockspace
+                        .request_command(NativeCommand::SelectItem { item: EDITOR });
                     self.submit(
                         app,
                         request,
@@ -608,7 +618,9 @@ impl EditorSmoke {
                         "editor-smoke: programmatic=select-while-locked item={}",
                         EDITOR.get()
                     );
-                    let request = app.dockspace.request_set_arrangement_locked(false);
+                    let request = app
+                        .dockspace
+                        .request_command(NativeCommand::SetArrangementLocked { locked: false });
                     self.submit(
                         app,
                         request,
@@ -682,7 +694,9 @@ impl EditorSmoke {
                 eprintln!(
                     "editor-smoke: programmatic=default-presented registry=8 text=preserved fresh-presented=true quiescent=true"
                 );
-                let request = app.dockspace.request_select_item(EDITOR);
+                let request = app
+                    .dockspace
+                    .request_command(NativeCommand::SelectItem { item: EDITOR });
                 self.submit(
                     app,
                     request,
@@ -718,7 +732,9 @@ impl EditorSmoke {
                             "editor-smoke: programmatic=capture-preset profile=default-all-root slots=1 registry=8"
                         );
                         self.restore_after_close = true;
-                        let request = app.dockspace.request_close_item(INSPECTOR);
+                        let request = app
+                            .dockspace
+                            .request_command(NativeCommand::CloseItem { item: INSPECTOR });
                         self.submit(
                             app,
                             request,
@@ -788,7 +804,9 @@ impl EditorSmoke {
                     "editor-smoke: programmatic=reload item={} data=retained",
                     INSPECTOR.get()
                 );
-                let request = app.dockspace.request_select_item(INSPECTOR);
+                let request = app
+                    .dockspace
+                    .request_command(NativeCommand::SelectItem { item: INSPECTOR });
                 self.submit(
                     app,
                     request,

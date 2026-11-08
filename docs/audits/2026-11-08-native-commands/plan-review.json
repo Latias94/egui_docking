@@ -1,0 +1,14 @@
+{
+  "plan": "docs/plans/2026-11-08-1016-refactor-native-command-interface-plan.md",
+  "reviewers": [
+    "coherence",
+    "feasibility",
+    "design-lens",
+    "scope-guardian"
+  ],
+  "fixes_applied": 0,
+  "proposed_fixes_count": 0,
+  "decisions_count": 0,
+  "fyi_count": 0,
+  "planning_correction": "Source research demonstrated that a final non-central singleton departure can vacate the fixed host. R4 and U2 now explicitly require a narrow regression and lifetime protection. This preserves the existing native fixed-host contract."
+}

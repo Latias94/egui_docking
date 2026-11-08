@@ -5,6 +5,7 @@
 //! The test thread runs eframe; one driver thread supplies physical input. No fork
 //! tokens, platform snapshots, close callbacks, or renderer terminals are invented.
 
+use crate::NativeCommand;
 use std::num::NonZeroUsize;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -641,10 +642,12 @@ fn wm_delete(window: WindowId) -> Result<(), String> {
 
 fn move_root(state: &State, context: &egui::Context, root: RootId, y: f64) {
     lock_state(state)
-        .request_move_root_to_new_window(
+        .request_command(NativeCommand::MoveRootToNewWindow {
             root,
-            NativeWindowPlacement::new(PhysicalRect::new(880.0, y, 320.0, 240.0).unwrap()),
-        )
+            placement: NativeWindowPlacement::new(
+                PhysicalRect::new(880.0, y, 320.0, 240.0).unwrap(),
+            ),
+        })
         .unwrap();
     context.request_repaint_of(ViewportId::ROOT);
 }

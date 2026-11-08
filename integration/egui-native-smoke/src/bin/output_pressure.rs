@@ -3,6 +3,7 @@
 //! The bounded test proxy owns its own result buffer, outside runtime storage.
 //! This does not model 256 simultaneously queued GPU frames.
 
+use egui_dockspace_native::NativeCommand;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::io;
@@ -586,12 +587,12 @@ impl PressureApp {
                 }
                 state.source_ownership = Some(source);
                 runtime
-                    .request_move_root_to_new_window(
-                        CHILD_ROOT,
-                        NativeWindowPlacement::new(
+                    .request_command(NativeCommand::MoveRootToNewWindow {
+                        root: CHILD_ROOT,
+                        placement: NativeWindowPlacement::new(
                             PhysicalRect::new(720.0, 100.0, 380.0, 280.0).unwrap(),
                         ),
-                    )
+                    })
                     .map_err(|error| format!("tear-off request: {error}"))?;
                 state.phase = Phase::AwaitChild;
             }
@@ -609,10 +610,10 @@ impl PressureApp {
                     && backlog.control() == 0
                 {
                     runtime
-                        .request_dock_root(
-                            CHILD_ROOT,
-                            DockPlacement::Center(DockAnchor::Item(MAIN_ITEM)),
-                        )
+                        .request_command(NativeCommand::DockRoot {
+                            root: CHILD_ROOT,
+                            placement: DockPlacement::Center(DockAnchor::Item(MAIN_ITEM)),
+                        })
                         .map_err(|error| format!("redock after output pressure: {error}"))?;
                     state.phase = Phase::AwaitRedock;
                     eprintln!("output-pressure: ordinary output owners drained; redocking");
