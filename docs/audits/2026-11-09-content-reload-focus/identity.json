@@ -1,0 +1,13 @@
+{
+  "recorded_after_journey": "2026-11-08T16:59:20.206647+00:00",
+  "base_commit": "68b70b91561457e11da01639a2df81c3aa9ba077",
+  "source_sha256": {
+    "crates/egui_dockspace_native/examples/basic.rs": "8dd03d273c3620a7d22eeb0222ab11e3001d3ff17abda25804c2614ed1a46c14",
+    "crates/egui_dockspace_native/examples/basic/layout_tests.rs": "87c18e15ff385875a40e789fa71d5c41a81ef1b2b4598f8980f91dac11dd0efb"
+  },
+  "binary_sha256": "f7b3e64815cfa320af06fc0b336ab358bb77b90a6086d688d8a9a2b190abe6b5",
+  "source_changed_during_journey": false,
+  "actual_window_scope": "Linux Xvfb/Openbox, XTest, software GL, 1000x780 root window",
+  "automated_assertions": "exact active host window and live app; actual text and focus ring inspected separately in original screenshots",
+  "final_application_stderr_bytes": 0
+}

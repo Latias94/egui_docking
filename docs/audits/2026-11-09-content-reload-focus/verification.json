@@ -1,0 +1,125 @@
+[
+  {
+    "name": "native-all",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--target-dir",
+      "target",
+      "--locked",
+      "--offline",
+      "-j1",
+      "--no-fail-fast"
+    ],
+    "started": "2026-11-08T16:52:03.373267+00:00",
+    "finished": "2026-11-08T16:52:28.186230+00:00",
+    "returncode": 0
+  },
+  {
+    "name": "native-default",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "-p",
+      "egui_dockspace_native",
+      "--all-targets",
+      "--target-dir",
+      "target",
+      "--locked",
+      "--offline",
+      "-j1",
+      "--no-fail-fast"
+    ],
+    "started": "2026-11-08T16:52:28.186715+00:00",
+    "finished": "2026-11-08T16:52:50.979189+00:00",
+    "returncode": 0
+  },
+  {
+    "name": "native-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "-p",
+      "egui_dockspace_native",
+      "--all-targets",
+      "--all-features",
+      "--target-dir",
+      "target",
+      "--locked",
+      "--offline",
+      "--",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started": "2026-11-08T16:52:50.979542+00:00",
+    "finished": "2026-11-08T16:53:46.986649+00:00",
+    "returncode": 0
+  },
+  {
+    "name": "native-fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "started": "2026-11-08T16:53:46.987373+00:00",
+    "finished": "2026-11-08T16:53:49.145245+00:00",
+    "returncode": 0
+  },
+  {
+    "name": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "started": "2026-11-08T16:53:49.145731+00:00",
+    "finished": "2026-11-08T16:53:49.159914+00:00",
+    "returncode": 0
+  },
+  {
+    "name": "linux-build",
+    "command": [
+      "docker",
+      "exec",
+      "-e",
+      "CARGO_BUILD_JOBS=1",
+      "-w",
+      "/Users/frankorz/codes/rust/egui_docking",
+      "354e85cb1d95",
+      "cargo",
+      "build",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "-p",
+      "egui_dockspace_native",
+      "--example",
+      "basic",
+      "--all-features",
+      "--target-dir",
+      "/native-target",
+      "--locked",
+      "--offline"
+    ],
+    "started": "2026-11-08T16:53:49.160155+00:00",
+    "finished": "2026-11-08T16:54:03.158823+00:00",
+    "returncode": 0
+  }
+]

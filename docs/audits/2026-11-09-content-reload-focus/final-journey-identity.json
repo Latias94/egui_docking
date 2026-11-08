@@ -1,0 +1,9 @@
+{
+  "binary_sha256": "f7b3e64815cfa320af06fc0b336ab358bb77b90a6086d688d8a9a2b190abe6b5",
+  "source_head": "68b70b91561457e11da01639a2df81c3aa9ba077",
+  "active_window": "2097155",
+  "host_window": "2097155",
+  "app_alive": true,
+  "journey": "edit Document; unload through inventory; click Reload content; type without clicking editor",
+  "text_and_focus_verdict": "inspect original screenshots separately from process/window assertions"
+}

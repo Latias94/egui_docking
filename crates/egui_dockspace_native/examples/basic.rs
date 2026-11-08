@@ -694,6 +694,9 @@ impl PaneView for ExamplePanes {
             let reload = ui.button("Reload content");
             if reload.clicked() {
                 pane.set_loaded(true);
+                if let Some(target) = self.focus_target(item) {
+                    ui.memory_mut(|memory| memory.request_focus(target));
+                }
                 ui.ctx().request_repaint();
             }
             return content

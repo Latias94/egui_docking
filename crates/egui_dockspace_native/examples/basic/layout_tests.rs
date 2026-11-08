@@ -469,3 +469,56 @@ fn inventory_point(output: &egui::FullOutput, text: &str) -> egui::Pos2 {
         ((bounds.y0 + bounds.y1) / 2.0) as f32,
     )
 }
+
+#[test]
+fn reloading_pane_content_hands_keyboard_focus_to_its_editor() {
+    for activation in [egui::Key::Enter, egui::Key::Space] {
+        let context = egui::Context::default();
+        let mut panes = ExamplePanes::new();
+        let retained = panes.panes[&EDITOR].text.clone();
+        panes.panes.get_mut(&EDITOR).unwrap().set_loaded(false);
+        let paint = |panes: &mut ExamplePanes, events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    panes.ui(EDITOR, ui);
+                },
+            );
+            output.textures_delta.clear();
+        };
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        paint(&mut panes, Vec::new());
+        paint(&mut panes, vec![key(egui::Key::Tab)]);
+        paint(&mut panes, vec![key(activation)]);
+        assert!(panes.panes[&EDITOR].loaded, "Reload content was activated");
+        paint(&mut panes, Vec::new());
+        assert!(
+            context.memory(|memory| memory.has_focus(pane_focus_id(EDITOR))),
+            "{activation:?} on Reload content must focus the restored editor"
+        );
+        paint(
+            &mut panes,
+            vec![egui::Event::Text("~AFTER_RELOAD~".to_owned())],
+        );
+        assert!(panes.panes[&EDITOR].loaded);
+        assert!(panes.panes[&EDITOR].text.contains(&retained));
+        assert!(panes.panes[&EDITOR].text.contains("~AFTER_RELOAD~"));
+        assert_eq!(
+            panes.panes[&INSPECTOR].text,
+            ExamplePanes::new().panes[&INSPECTOR].text,
+        );
+    }
+}
