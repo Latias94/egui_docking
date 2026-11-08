@@ -72,7 +72,7 @@ pub use self::input::{
     PreparedTabStripScroll, TabListMenuNavigation, TabScrollAdjustment, TabScrollAdjustmentError,
     ValidatedWorkspaceRestore,
 };
-pub(crate) use self::input::{LocalSurfaceAction, LocalTabChromeAction};
+pub(crate) use self::input::{LocalSurfaceAction, LocalTabChromeAction, LocalTabFocus};
 use self::native_admission::NativeAdmissionState;
 use self::pending_mutation::{PendingMutation, PendingPresentationTracker};
 use self::presentation_authority::PresentationAuthorityState;

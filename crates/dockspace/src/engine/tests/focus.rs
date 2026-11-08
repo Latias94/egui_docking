@@ -636,6 +636,93 @@ fn request_focus_effect(
     (effect, activation.generation())
 }
 
+#[test]
+fn programmatic_selection_activates_an_existing_native_window_before_pane_focus() {
+    let mut fixture = focus_effect_fixture();
+    let binding_a = fixture.binding_a;
+    let binding_b = fixture.binding_b;
+    publish_effect_focus_snapshot(
+        &mut fixture,
+        Authority::Known(GlobalFocusedWindow::Dock(binding_a)),
+        Authority::Known(None),
+    );
+    let expected = fixture.engine.version();
+    let transition = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::SelectItem {
+            expected,
+            item: ItemId::new(2),
+        },
+    )
+    .expect("explicit selection must reduce even when the pane is already selected");
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionProcessed {
+            outcome: crate::model::DockspaceActionOutcome::Selected {
+                item,
+                changed: false,
+            },
+            version,
+        } if *item == ItemId::new(2) && *version == expected
+    ));
+    let effect = transition
+        .platform_effects()
+        .iter()
+        .find(|request| {
+            matches!(
+                request.effect(),
+                crate::effect::PlatformEffect::RequestFocus { binding, .. } if *binding == binding_b
+            )
+        })
+        .expect("selecting a pane in another native window must request that exact window's focus")
+        .id();
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_activation()
+            .is_some()
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .published_pane_intent()
+            .is_none()
+    );
+    assert_eq!(
+        fixture.engine.viewport_focus().panel_focus(TARGET_SURFACE),
+        PanelFocusRecord::NoHistory,
+        "selection cannot acknowledge either native or pane focus"
+    );
+
+    publish_effect_focus_snapshot(
+        &mut fixture,
+        Authority::Known(GlobalFocusedWindow::Dock(binding_b)),
+        Authority::Known(Some(effect)),
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_activation()
+            .is_none()
+    );
+    let intent = fixture
+        .engine
+        .viewport_focus()
+        .pending_pane_intent()
+        .expect("the observed native activation must make pane focus ready");
+    assert_eq!(intent.item(), Some(ItemId::new(2)));
+    assert_eq!(intent.native_guard(), Some(binding_b));
+    assert_eq!(
+        fixture.engine.viewport_focus().panel_focus(TARGET_SURFACE),
+        PanelFocusRecord::NoHistory,
+        "the adapter must still observe the requested pane's focus"
+    );
+}
+
 fn observed_focus_effect_ids(transition: &EngineTransition) -> Vec<crate::effect::EffectId> {
     transition
         .focus_delta()
@@ -931,6 +1018,7 @@ fn local_tab_selection_without_a_native_binding_publishes_pane_focus() {
             expected,
             scene,
             tab,
+            focus: LocalTabFocus::Pane,
         },
     )
     .expect("local tab selection must reduce");

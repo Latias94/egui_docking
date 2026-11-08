@@ -27,6 +27,9 @@ use dockspace::model::{DockPlacement, ItemId, NativeWindowPlacement, RootId, Sur
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NativeCommand {
     /// Select an open pane and request its focus through the core.
+    ///
+    /// An eligible native window is explicitly activated, including when its pane
+    /// is already selected. Native and pane focus still require host observations.
     SelectItem {
         /// Pane to select.
         item: ItemId,

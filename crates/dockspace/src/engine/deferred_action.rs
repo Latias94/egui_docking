@@ -53,11 +53,12 @@ impl DockEngine {
         }
 
         let outcome = match action {
-            LocalSurfaceAction::SelectTab { tab, .. } => self.select_tab_from_candidate(
+            LocalSurfaceAction::SelectTab { tab, focus, .. } => self.select_tab_from_candidate(
                 input,
                 focus_causal,
                 witness,
                 *tab,
+                *focus,
                 policy,
                 events,
                 interaction_events,

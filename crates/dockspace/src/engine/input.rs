@@ -377,11 +377,18 @@ impl LocalTabChromeAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalTabFocus {
+    Pane,
+    Preserve,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum LocalSurfaceAction {
     SelectTab {
         scene: SurfaceSceneStamp,
         tab: TabSceneId,
+        focus: LocalTabFocus,
     },
     Close {
         scene: SurfaceSceneStamp,
@@ -424,7 +431,14 @@ pub(crate) enum LocalSurfaceAction {
 impl LocalSurfaceAction {
     pub(crate) fn same_intent(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::SelectTab { tab: a, .. }, Self::SelectTab { tab: b, .. }) => a == b,
+            (
+                Self::SelectTab {
+                    tab: a, focus: af, ..
+                },
+                Self::SelectTab {
+                    tab: b, focus: bf, ..
+                },
+            ) => a == b && af == bf,
             (Self::Close { target: a, .. }, Self::Close { target: b, .. }) => a == b,
             (Self::CloseRoot { root: a, .. }, Self::CloseRoot { root: b, .. }) => a == b,
             (
@@ -856,6 +870,8 @@ pub enum EngineInput {
         scene: SurfaceSceneStamp,
         /// Stable tab identity exposed by that candidate.
         tab: crate::scene::TabSceneId,
+        /// Content activation or navigation which preserves framework tab focus.
+        focus: LocalTabFocus,
     },
     /// Apply one current-frame tab-strip or popup action from an exact Ready candidate.
     ApplyLocalTabChromeAction {

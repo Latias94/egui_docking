@@ -315,6 +315,9 @@ impl SurfacePaintPlan<'_> {
     }
 
     /// Prepares navigation within the exact tab strip which owns `item`.
+    ///
+    /// Navigation preserves framework tab focus through deferred selection. It
+    /// supersedes older pane-focus requests without requesting content focus.
     #[must_use]
     pub fn prepare_tab_navigation(
         self,
@@ -358,6 +361,7 @@ impl SurfacePaintPlan<'_> {
             self.scene,
             self.frozen_action_witness()?,
             destination,
+            crate::engine::LocalTabFocus::Preserve,
         ))
     }
 

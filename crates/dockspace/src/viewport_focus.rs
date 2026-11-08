@@ -4709,6 +4709,22 @@ impl ViewportFocusCoordinator {
         )
     }
 
+    /// Preserves framework focus while superseding older content-focus requests.
+    pub(crate) fn preserve_local_focus(
+        &mut self,
+        surface: SurfaceId,
+        native_guard: Option<ViewportBinding>,
+        causal: FocusCausalStamp,
+    ) -> bool {
+        self.admit_pane_causal_claim(PaneCausalClaim {
+            causal,
+            source: PaneFocusIntentSource::PointerTabGesture,
+            target: native_guard.map_or(FocusClaimTarget::Surface(surface), FocusClaimTarget::Dock),
+            pane: PaneFocusDisposition::Preserve,
+            cause: ViewportActivationCause::PointerTabGesture,
+        })
+    }
+
     /// Installs one presentation-neutral item focus request.
     pub(crate) fn request_local_pane_focus(
         &mut self,
@@ -6446,6 +6462,58 @@ mod tests {
             Some(recovery),
             "a rejected activation must leave the existing recovery intent intact"
         );
+    }
+
+    #[test]
+    fn local_focus_preservation_retires_old_pane_intents_and_late_native_activation() {
+        let target = binding();
+        let mut coordinator = ViewportFocusCoordinator::default();
+        let _ = publish_platform_focus(
+            &mut coordinator,
+            focus_observation(1, GlobalFocusedWindow::Foreign),
+            1,
+            PlatformFocusRestoreGate::KnownAllReleased,
+        );
+        let request = ViewportActivationRequest::explicit(target, PanelFocus::Item(ItemId::new(1)));
+        let owner = NativeCreateSagaId::new(1);
+        assert!(coordinator.reserve_activation_causal(owner, focus_stamp(2), request));
+        coordinator
+            .request_local_pane_focus(
+                target.surface(),
+                ItemId::new(1),
+                Some(target),
+                focus_stamp(3),
+            )
+            .unwrap()
+            .expect("the older content-focus request must remain unacknowledged");
+        let observed = coordinator.current_focus();
+
+        assert!(coordinator.preserve_local_focus(target.surface(), Some(target), focus_stamp(4)));
+        assert_eq!(coordinator.pending_pane_intent(), None);
+        assert_eq!(coordinator.pending_activation(), None);
+        assert_eq!(coordinator.current_focus(), observed);
+        assert_eq!(
+            coordinator.panel_focus(target.surface()),
+            PanelFocusRecord::NoHistory
+        );
+
+        let late = coordinator
+            .request_reserved_activation(
+                owner,
+                request,
+                focus_stamp(2),
+                true,
+                |candidate| candidate == target,
+                |surface, item| surface == target.surface() && item == ItemId::new(1),
+            )
+            .unwrap();
+        assert_eq!(
+            late.outcome(),
+            ActivationStartOutcome::Suppressed(ActivationSuppression::CausallySuperseded {
+                current: PaneFocusIntentGeneration::new(4),
+            })
+        );
+        assert_eq!(coordinator.pending_pane_intent(), None);
     }
 
     #[test]

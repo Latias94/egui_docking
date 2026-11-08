@@ -396,6 +396,8 @@ impl DockspaceHostFrame<'_> {
     /// Selects one currently open item by stable identity.
     ///
     /// The reducer resolves the current tabs source inside this rollback candidate.
+    /// Selection requests pane focus and explicit activation of an eligible native
+    /// window, even when the item is already selected. Focus still requires host observation.
     ///
     /// # Errors
     ///

@@ -300,70 +300,130 @@ fn application_panels_leave_their_remaining_rectangle_for_docking_and_pane_conte
 }
 
 #[test]
-fn keyboard_navigation_focuses_the_target_tab_before_its_queued_selection() {
-    let (context, mut dockspace, mut panes, position) = presented_tabs("on-demand-tab-focus");
-    for (time, events) in [
-        (1.0, press(position)),
-        (
-            1.1,
-            vec![Event::PointerButton {
-                pos: position,
-                button: PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-        ),
-    ] {
+fn keyboard_navigation_keeps_tab_focus_after_editable_pane_selection_commits() {
+    #[derive(Default)]
+    struct EditablePanes([String; 2]);
+
+    impl PaneView for EditablePanes {
+        fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+            match item {
+                FIRST => Some("First".into()),
+                SECOND => Some("Second".into()),
+                _ => None,
+            }
+        }
+
+        fn ui(&mut self, item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
+            let target = self.focus_target(item).unwrap();
+            let text = &mut self.0[usize::from(item == SECOND)];
+            let response = ui.add(egui::TextEdit::multiline(text).id(target));
+            crate::PaneResponse::from(&response)
+        }
+
+        fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
+            Some(egui::Id::unique(("navigation-editable-pane", item.get())))
+        }
+    }
+
+    let (context, mut dockspace, _, _) = presented_tabs("editable-tab-navigation");
+    let mut panes = EditablePanes::default();
+    let mut first_tab = None;
+    let mut first_node = None;
+    // Settle the initial activation and its content-focus observation before navigation.
+    for step in 0..5 {
+        let events = if step == 1 {
+            vec![Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Focus,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: first_node.unwrap(),
+                    data: None,
+                },
+            )]
+        } else {
+            Vec::new()
+        };
         let (output, _) = dockspace
-            .run_single_surface(&context, input(time, events), SURFACE, &mut panes)
+            .run_single_surface(
+                &context,
+                input(0.4 + f64::from(step) * 0.1, events),
+                SURFACE,
+                &mut panes,
+            )
             .unwrap();
         let (output, receipt) = output.into_parts();
+        let tabs = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let first = tabs
+            .iter()
+            .find(|(_, node)| node.role() == Role::Tab && node.label() == Some("First"))
+            .unwrap()
+            .0;
+        first_node = Some(first);
+        if let Some(focused) = context.memory(egui::Memory::focused)
+            && focused.value() == first.0
+        {
+            first_tab = Some(focused);
+        }
         output.drop_without_applying_deltas();
         receipt.report(SurfacePresentationResult::Presented);
     }
-    assert!(dockspace.view().item(SECOND).unwrap().is_selected());
-    let before = context.memory(egui::Memory::focused).unwrap();
-    let (output, _) = dockspace
-        .run_single_surface(
-            &context,
-            input(
-                1.2,
+    let first_tab = first_tab.expect("the real tab must accept accessible framework focus");
+    context.memory_mut(|memory| memory.request_focus(first_tab));
+
+    for (step, key, item, title) in [
+        (0, egui::Key::End, SECOND, "Second"),
+        (1, egui::Key::Home, FIRST, "First"),
+        (2, egui::Key::ArrowRight, SECOND, "Second"),
+        (3, egui::Key::ArrowLeft, FIRST, "First"),
+    ] {
+        for pass in 0..3 {
+            let events = if pass == 0 {
                 vec![Event::Key {
-                    key: egui::Key::ArrowLeft,
+                    key,
                     physical_key: None,
                     pressed: true,
                     repeat: false,
                     modifiers: egui::Modifiers::NONE,
-                }],
-            ),
-            SURFACE,
-            &mut panes,
-        )
-        .unwrap();
-    let (output, receipt) = output.into_parts();
-    let target = output
-        .platform_output
-        .accesskit_update
-        .as_ref()
-        .unwrap()
-        .nodes
-        .iter()
-        .find(|(_, node)| node.role() == Role::Tab && node.label() == Some("First"))
-        .unwrap()
-        .0;
-    let focused = context.memory(egui::Memory::focused).unwrap();
-    assert_ne!(focused, before);
-    assert_eq!(focused.value(), target.0);
-    output.drop_without_applying_deltas();
-    receipt.report(SurfacePresentationResult::Presented);
-
-    let (output, _) = dockspace
-        .run_single_surface(&context, input(1.3, Vec::new()), SURFACE, &mut panes)
-        .unwrap();
-    let (output, receipt) = output.into_parts();
-    output.drop_without_applying_deltas();
-    receipt.report(SurfacePresentationResult::Presented);
-    assert!(dockspace.view().item(FIRST).unwrap().is_selected());
+                }]
+            } else {
+                Vec::new()
+            };
+            let (output, _) = dockspace
+                .run_single_surface(
+                    &context,
+                    input(1.0 + f64::from(step * 3 + pass) * 0.1, events),
+                    SURFACE,
+                    &mut panes,
+                )
+                .unwrap();
+            let (output, receipt) = output.into_parts();
+            let target = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == Role::Tab && node.label() == Some(title))
+                .unwrap()
+                .0;
+            assert_eq!(
+                context.memory(egui::Memory::focused).map(|id| id.value()),
+                Some(target.0),
+                "{key:?} must retain {title} tab focus at step {step}, pass {pass}",
+            );
+            if pass > 0 {
+                assert!(dockspace.view().item(item).unwrap().is_selected());
+            }
+            output.drop_without_applying_deltas();
+            receipt.report(SurfacePresentationResult::Presented);
+        }
+    }
 }
 
 struct LateDiscard {

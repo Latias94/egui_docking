@@ -400,6 +400,7 @@ impl Harness {
             expected: self.engine.version(),
             scene: fact.scene,
             tab,
+            focus: dockspace::engine::LocalTabFocus::Pane,
         });
         support::publish_surface(
             &mut self.engine,

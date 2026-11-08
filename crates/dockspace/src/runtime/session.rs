@@ -244,6 +244,9 @@ impl DockspaceSession {
     }
 
     /// Prepares one revision-bound selection action from the published workspace.
+    ///
+    /// Selection requests pane focus and explicit activation of an eligible native
+    /// window, even when the item is already selected. Focus still requires host observation.
     pub const fn prepare_select_item(&self, item: crate::ids::ItemId) -> PreparedDockAction {
         self.engine.prepare_select_item(item)
     }

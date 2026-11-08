@@ -2049,6 +2049,9 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     /// Prepares a current-candidate tab selection without exposing scene identity.
+    ///
+    /// Activation requests the selected pane's content focus. Use
+    /// [`Self::prepare_tab_navigation`] to preserve framework tab focus instead.
     #[must_use]
     pub fn prepare_tab_select(self, item: ItemId) -> Option<super::PreparedSurfaceAction> {
         let tab = self.tab_record(item)?;
@@ -2059,6 +2062,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.scene,
             self.frozen_action_witness()?,
             *tab.id(),
+            crate::engine::LocalTabFocus::Pane,
         ))
     }
 

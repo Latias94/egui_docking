@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::engine::{EngineInput, LocalSurfaceAction as SurfaceAction, LocalTabChromeAction};
+use crate::engine::{
+    EngineInput, LocalSurfaceAction as SurfaceAction, LocalTabChromeAction, LocalTabFocus,
+};
 use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, ItemId, SurfaceId};
 use crate::intent::CloseSceneTarget;
 use crate::interaction::EscapeDelivery;
@@ -109,13 +111,14 @@ impl PreparedSurfaceAction {
         scene: SurfaceSceneStamp,
         witness: Arc<crate::scene::SurfacePlanScene>,
         tab: TabSceneId,
+        focus: LocalTabFocus,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface: scene.surface(),
             witness,
-            action: SurfaceAction::SelectTab { scene, tab },
+            action: SurfaceAction::SelectTab { scene, tab, focus },
         }
     }
 
@@ -293,7 +296,10 @@ impl PreparedSurfaceAction {
         self.surface
     }
 
-    /// Returns the tab which should receive framework focus after this action.
+    /// Returns the tab which should receive immediate framework focus.
+    ///
+    /// Navigation preserves this focus after selection commits. Content activation
+    /// subsequently requests pane focus through the ordinary observation path.
     #[must_use]
     pub const fn tab_focus_target(&self) -> Option<ItemId> {
         match self.action {
@@ -317,10 +323,11 @@ impl PreparedSurfaceAction {
             return Err(PreparedSurfaceActionAuthorityMismatch);
         }
         Ok(match self.action {
-            SurfaceAction::SelectTab { scene, tab } => EngineInput::SelectLocalSceneTab {
+            SurfaceAction::SelectTab { scene, tab, focus } => EngineInput::SelectLocalSceneTab {
                 expected: self.expected,
                 scene,
                 tab,
+                focus,
             },
             SurfaceAction::Close { scene, target } => EngineInput::RequestLocalSceneClose {
                 expected: self.expected,
@@ -424,7 +431,10 @@ impl DeferredSurfaceAction {
         self.0.expected_version()
     }
 
-    /// Returns the stable item that should receive framework focus after selection.
+    /// Returns the tab which should receive immediate framework focus.
+    ///
+    /// Navigation preserves this focus after selection commits; content activation
+    /// subsequently requests pane focus.
     #[must_use]
     pub const fn tab_focus_target(&self) -> Option<ItemId> {
         self.0.tab_focus_target()

@@ -292,6 +292,9 @@ impl DockEngine {
     }
 
     /// Prepares one selection action against the exact published workspace version.
+    ///
+    /// Selection requests pane focus, including explicit activation of an eligible
+    /// native window. Repeating selection still requests focus without changing the layout.
     #[must_use]
     pub const fn prepare_select_item(&self, item: ItemId) -> PreparedDockAction {
         self.prepare_product_action(ProductAction::SelectItem { item })
@@ -524,7 +527,11 @@ impl DockEngine {
                 if (changed || matches!(action, ProductAction::SelectItem { .. }))
                     && let Some(item) = focus_item
                 {
-                    self.request_product_item_focus(item, focus_causal)?;
+                    if matches!(action, ProductAction::SelectItem { .. }) {
+                        self.request_product_selection_focus(item, focus_causal, events)?;
+                    } else {
+                        self.request_product_item_focus(item, focus_causal)?;
+                    }
                 }
                 Ok(InputOutcome::ProductActionProcessed {
                     outcome: context.map_outcome(outcome, changed)?,
@@ -579,6 +586,29 @@ impl DockEngine {
                     })
                 })
             })
+    }
+
+    fn request_product_selection_focus(
+        &mut self,
+        item: ItemId,
+        causal: FocusCausalStamp,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<(), EngineError> {
+        let binding = self
+            .workspace
+            .locate_item_by_id(item)
+            .and_then(|(root, _, _)| self.root_surface(root))
+            .and_then(|surface| self.viewport_focus_binding(surface));
+        if let Some(binding) = binding {
+            self.start_viewport_activation(
+                ViewportActivationRequest::explicit(binding, PanelFocus::Item(item)),
+                causal,
+                events,
+            )?;
+            Ok(())
+        } else {
+            self.request_product_item_focus(item, causal)
+        }
     }
 
     pub(super) fn request_product_item_focus(

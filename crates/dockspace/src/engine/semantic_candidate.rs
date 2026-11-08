@@ -105,6 +105,7 @@ impl DockEngine {
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
         tab: crate::scene::TabSceneId,
+        focus: LocalTabFocus,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -125,6 +126,7 @@ impl DockEngine {
             focus_causal,
             &candidate,
             tab,
+            focus,
             policy,
             events,
             interaction_events,
@@ -138,6 +140,7 @@ impl DockEngine {
         focus_causal: FocusCausalStamp,
         candidate: &crate::scene::SurfacePlanScene,
         tab: crate::scene::TabSceneId,
+        focus: LocalTabFocus,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -275,13 +278,29 @@ impl DockEngine {
         };
         if matches!(&outcome, InputOutcome::CommandProcessed { .. }) {
             let native_guard = self.viewport_focus_binding(scene.surface());
-            let _ = self
-                .viewport_focus
-                .request_local_pane_focus(scene.surface(), tab.item, native_guard, focus_causal)
-                .map_err(|source| EngineError::CausedViewportFocus {
-                    cause: focus_causal.cause(),
-                    source,
-                })?;
+            match focus {
+                LocalTabFocus::Pane => {
+                    let _ = self
+                        .viewport_focus
+                        .request_local_pane_focus(
+                            scene.surface(),
+                            tab.item,
+                            native_guard,
+                            focus_causal,
+                        )
+                        .map_err(|source| EngineError::CausedViewportFocus {
+                            cause: focus_causal.cause(),
+                            source,
+                        })?;
+                }
+                LocalTabFocus::Preserve => {
+                    self.viewport_focus.preserve_local_focus(
+                        scene.surface(),
+                        native_guard,
+                        focus_causal,
+                    );
+                }
+            }
         }
         Ok(outcome)
     }

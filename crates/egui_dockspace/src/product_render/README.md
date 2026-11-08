@@ -221,6 +221,13 @@ tab activation to the matching widget identity if that behavior is required; an
 unqualified raw click is not sufficient evidence. This bridge must not introduce a
 second gesture state machine or override a core request to focus pane content.
 
+Keyboard tab navigation keeps framework focus on its destination tab after the
+queued selection commits, including when that pane exposes an editable focus
+target. The opaque core action preserves this navigation purpose through direct
+and deferred submission and supersedes older content-focus requests using the
+existing focus coordinator. Enter, Space and explicit tab activation retain their
+ordinary pane-content focus behavior.
+
 ## Validation and regression diagnosis
 
 `pointer_authority_contract_tests` covers the host and native journal contracts,
