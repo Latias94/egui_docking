@@ -3376,19 +3376,17 @@ fn admitted_native_replacement_waits_for_exact_first_live_without_a_create_resou
 }
 
 #[test]
-fn hidden_native_create_waits_for_visible_and_focused_observations() {
+fn hidden_native_create_activates_after_first_live_presentation_without_known_focus() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
-    let _ = publish_windows_with_global_focus!(
+    let _ = publish_windows!(
         &mut fixture,
         vec![
             source_window(&fixture),
             host_window(&fixture),
             native_window_with_presentation(request, WindowPresentationState::Hidden),
         ],
-        GlobalFocusedWindow::None,
-        None,
     );
 
     let pre_show = fixture
@@ -3408,15 +3406,13 @@ fn hidden_native_create_waits_for_visible_and_focused_observations() {
         pre_show,
     );
 
-    let acknowledged = publish_windows_with_global_focus!(
+    let acknowledged = publish_windows!(
         &mut fixture,
         vec![
             source_window(&fixture),
             host_window(&fixture),
             native_window_with_presentation(request, WindowPresentationState::Hidden),
         ],
-        GlobalFocusedWindow::None,
-        None,
     );
     assert!(platform_effects(&fixture, &acknowledged).is_empty());
     assert!(matches!(
@@ -3430,15 +3426,13 @@ fn hidden_native_create_waits_for_visible_and_focused_observations() {
     ));
     assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
 
-    let visible = publish_windows_with_global_focus!(
+    let visible = publish_windows!(
         &mut fixture,
         vec![
             source_window(&fixture),
             host_window(&fixture),
             native_window_with_presentation(request, WindowPresentationState::Visible),
         ],
-        GlobalFocusedWindow::None,
-        None,
     );
     assert!(platform_effects(&fixture, &visible).iter().all(|effect| {
         !matches!(
@@ -3481,6 +3475,20 @@ fn hidden_native_create_waits_for_visible_and_focused_observations() {
     ));
     publish_scene(&mut fixture);
     let focus = requested_focus_effect(&fixture, request.binding());
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .focus_observation()
+            .is_none()
+    );
+    assert!(
+        fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .is_none()
+    );
     assert!(
         fixture
             .engine

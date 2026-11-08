@@ -110,6 +110,11 @@ fn invalid_work_areas_preserve_destroyed_settlement_and_exact_child_quiescence()
     native.bind_viewport(viewport, window, child).unwrap();
     let mut presented = paint_and_present_all_surfaces(&mut native);
     assert!(presented.take_native_effects().is_empty());
+    native
+        .session
+        .report_native_global_focus(NativeGlobalFocus::Dock(root))
+        .unwrap();
+    callback_prefix::commit_boundary(&mut native);
 
     let mut redock = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)

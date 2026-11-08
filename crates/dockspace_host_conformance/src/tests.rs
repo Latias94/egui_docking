@@ -19,24 +19,24 @@ use dockspace::runtime::{
     DropGuidePaintRecord, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
     HostSurfaceCommitStatus, HostWindowToken, HostWorkAreaToken, NativeCloseState,
     NativeDesktopPointerLocation, NativeDesktopPosition, NativeEffectAcknowledgement,
-    NativeEffectOperation, NativeEffectRequest, NativeHostCapabilities, NativeHostCapability,
-    NativeHostErrorKind, NativePointerButton, NativePointerEvent, NativePointerHover,
-    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
-    NativeReceiverAnswer, NativeReceiverPurpose, NativeScrollDelta, NativeScrollDeviceId,
-    NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
-    NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeStagingPresentationPhase,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPlacement,
-    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PanePaintRecord,
-    PresentedDockReceiver, PresentedDockspaceSurface, SplitterJunctionPaintRecord,
-    SplitterPaintRecord, SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer,
-    SurfaceMeasurementRequest, SurfacePaintPlan, SurfacePaintProgramOperation,
-    SurfacePaintProgramStep, SurfacePointerButton, SurfacePointerCancelReason,
-    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
-    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
-    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceSplitterAdjustment,
-    SurfaceUnavailableReason, TabBarPaintRecord, TabPaintRecord, TabStripMetrics,
-    UniformSurfaceMetrics,
+    NativeEffectOperation, NativeEffectRequest, NativeGlobalFocus, NativeHostCapabilities,
+    NativeHostCapability, NativeHostErrorKind, NativePointerButton, NativePointerEvent,
+    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
+    NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
+    NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPlacement, NativeWindowPresentationState,
+    NativeWorkAreaFacts, NativeWorkAreaRoster, PanePaintRecord, PresentedDockReceiver,
+    PresentedDockspaceSurface, SplitterJunctionPaintRecord, SplitterPaintRecord,
+    SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
+    SurfacePaintPlan, SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
+    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
+    SurfaceSplitterAdjustment, SurfaceUnavailableReason, TabBarPaintRecord, TabPaintRecord,
+    TabStripMetrics, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -1886,8 +1886,19 @@ impl ManagedLifecycleScenarioFixture {
             .expect("the root retains its current presentation");
         let mut report = frame.commit().expect("the first-live output commits");
         self.present_outputs(&mut report);
-        let admitted = self.commit();
+        let mut admitted = self.commit();
         assert_eq!(admitted.native_admissions(), &[child]);
+        let focus = take_only_effect(&mut admitted);
+        assert!(matches!(
+            focus.operation(),
+            NativeEffectOperation::RequestFocus { binding } if *binding == child
+        ));
+        assert!(focus.accepted().is_none());
+        self.host
+            .session
+            .report_native_global_focus(NativeGlobalFocus::Dock(child))
+            .expect("the admitted child reports the requested focus");
+        self.commit();
     }
 
     fn request_redock(&mut self, child: NativeSurfaceBinding) -> NativeEffectRequest {
@@ -1923,7 +1934,27 @@ impl ManagedLifecycleScenarioFixture {
             self.host.view().item(X).map(|item| item.surface()),
             Some(SURFACE),
         );
-        take_only_effect(&mut settled)
+        let mut release = None;
+        let mut requested_root_focus = false;
+        for effect in settled.take_native_effects() {
+            match effect.operation() {
+                NativeEffectOperation::ReleaseChild { binding } if *binding == child => {
+                    assert!(release.replace(effect).is_none());
+                }
+                NativeEffectOperation::RequestFocus { binding } if *binding == self.root => {
+                    assert!(!requested_root_focus);
+                    requested_root_focus = true;
+                    assert!(effect.accepted().is_none());
+                }
+                operation => panic!("unexpected redock effect: {operation:?}"),
+            }
+        }
+        assert!(requested_root_focus);
+        self.host
+            .session
+            .report_native_global_focus(NativeGlobalFocus::Dock(self.root))
+            .expect("the redock host reports the requested focus");
+        release.expect("the redocked child retains its exact release effect")
     }
 
     fn retire_child(&mut self, child: NativeSurfaceBinding, release: NativeEffectRequest) {
@@ -2412,10 +2443,22 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
         &[B, A],
     );
     let committed_version = host.version();
-    assert!(
-        released.take_native_effects().is_empty(),
-        "releasing an External Root content drag needs no pass-through restore",
-    );
+    let [focus] = released
+        .take_native_effects()
+        .try_into()
+        .unwrap_or_else(|effects: Vec<_>| {
+            panic!(
+                "the root release must request focus without a pass-through restore: {effects:?}"
+            )
+        });
+    assert!(matches!(
+        focus.operation(),
+        NativeEffectOperation::RequestFocus { binding } if *binding == source_binding
+    ));
+    assert!(focus.accepted().is_none());
+    host.session
+        .report_native_global_focus(NativeGlobalFocus::Dock(source_binding))
+        .expect("the surviving source reports the requested focus");
     let released_outputs = released.take_painted_outputs();
     assert_eq!(
         released_outputs.len(),

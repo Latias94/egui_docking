@@ -1,0 +1,24 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--manifest-path",
+    "integration/egui-fork-workspace/Cargo.toml",
+    "-p",
+    "egui_dockspace_native",
+    "--lib",
+    "--all-features",
+    "--target-dir",
+    "target",
+    "--locked",
+    "--offline",
+    "-j1",
+    "--no-fail-fast",
+    "-E",
+    "test(coordinator::tests::retirement::) | test(coordinator::tests::dispatch_terminal::) | test(coordinator::tests::combined_soak::) | test(coordinator::tests::ingress_create::active_load::)"
+  ],
+  "started": "2026-11-08T14:21:12.525532+00:00",
+  "finished": "2026-11-08T14:21:57.694306+00:00",
+  "returncode": 0
+}

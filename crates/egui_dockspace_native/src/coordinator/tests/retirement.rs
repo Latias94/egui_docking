@@ -646,6 +646,11 @@ fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {
         .expect("child viewport binds");
     let mut initially_presented = paint_and_present_all_surfaces(&mut native);
     assert!(initially_presented.take_native_effects().is_empty());
+    native
+        .session
+        .report_native_global_focus(NativeGlobalFocus::Dock(root))
+        .expect("the redock destination is already the active root");
+    super::callback_prefix::commit_boundary(&mut native);
 
     let started = NativeWindowEventRecord::for_test(
         9,
@@ -741,6 +746,11 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         .expect("child viewport binds");
     let mut initially_presented = paint_and_present_all_surfaces(&mut native);
     assert!(initially_presented.take_native_effects().is_empty());
+    native
+        .session
+        .report_native_global_focus(NativeGlobalFocus::Dock(first))
+        .expect("the redock destination is already the active root");
+    super::callback_prefix::commit_boundary(&mut native);
     let point = PhysicalPoint::new(10.0, 20.0).unwrap();
     let coordinates = native.session.native_local_coordinates(second).unwrap();
     let geometry = coordinates.geometry();

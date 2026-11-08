@@ -75,6 +75,10 @@ fn fixture(clock: NativeMonotonicClock) -> (NativeCoordinator, Receivers) {
     .unwrap();
     let binding = register_source(&mut native);
     publish_desktop_authority(&mut native, binding);
+    native
+        .session
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .expect("the local input model starts in its focused source window");
     let mut painted = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();

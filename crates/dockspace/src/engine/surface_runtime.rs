@@ -1137,15 +1137,24 @@ impl DockEngine {
                 PaneFocusDisposition::Preserve | PaneFocusDisposition::Clear => true,
             };
             if item_is_current {
-                let Some(observation) = self.viewport_focus.focus_observation() else {
+                if self
+                    .viewport_focus
+                    .activation_observation_baseline()
+                    .is_none()
+                {
                     return Ok(None);
-                };
-                let target_is_focused = matches!(
-                    observation.focused(),
-                    Authority::Known(
-                        crate::viewport_focus::GlobalFocusedWindow::Dock(binding)
-                    ) if *binding == request.target()
-                );
+                }
+                let target_is_focused =
+                    self.viewport_focus
+                        .focus_observation()
+                        .is_some_and(|observation| {
+                            matches!(
+                                observation.focused(),
+                                Authority::Known(
+                                    crate::viewport_focus::GlobalFocusedWindow::Dock(binding)
+                                ) if *binding == request.target()
+                            )
+                        });
                 if !target_is_focused
                     && !self
                         .viewport

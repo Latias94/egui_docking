@@ -1,0 +1,172 @@
+[
+  {
+    "time": 1794145983.017064,
+    "step": "child-visible",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145987.355338,
+    "step": "idle-complete",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145987.362013,
+    "step": "before-root-activation",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145987.3687046,
+    "step": "after-root-activation-0",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145987.480596,
+    "step": "after-root-activation-1",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145987.5926418,
+    "step": "after-root-activation-2",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145987.6972501,
+    "step": "after-root-activation-3",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145987.8026783,
+    "step": "after-root-activation-4",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145987.9064739,
+    "step": "after-root-activation-5",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.0126207,
+    "step": "after-root-activation-6",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.1185791,
+    "step": "after-root-activation-7",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.2273543,
+    "step": "after-root-activation-8",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.3363287,
+    "step": "after-root-activation-9",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.4442434,
+    "step": "after-root-activation-10",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.559666,
+    "step": "after-root-activation-11",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.6657946,
+    "step": "after-root-activation-12",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.7721224,
+    "step": "after-root-activation-13",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.8840642,
+    "step": "after-root-activation-14",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145988.995649,
+    "step": "after-root-activation-15",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145989.1092532,
+    "step": "after-root-activation-16",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145989.2167966,
+    "step": "after-root-activation-17",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145989.3243213,
+    "step": "after-root-activation-18",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145989.4313586,
+    "step": "after-root-activation-19",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145989.8827333,
+    "step": "before-root-click",
+    "active": "2097165"
+  },
+  {
+    "time": 1794145989.995662,
+    "step": "after-root-click-0",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145990.1074417,
+    "step": "after-root-click-1",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145990.2152023,
+    "step": "after-root-click-2",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145990.320409,
+    "step": "after-root-click-3",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145990.4277797,
+    "step": "after-root-click-4",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145990.5394309,
+    "step": "after-root-click-5",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145990.6438293,
+    "step": "after-root-click-6",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145990.7491233,
+    "step": "after-root-click-7",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145990.8550382,
+    "step": "after-root-click-8",
+    "active": "2097155"
+  },
+  {
+    "time": 1794145990.962212,
+    "step": "after-root-click-9",
+    "active": "2097155"
+  }
+]

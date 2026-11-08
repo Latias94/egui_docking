@@ -730,19 +730,30 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
         1,
         "presented redocking retains one exact child cleanup obligation",
     );
-    let effects = report.take_native_effects();
-    assert!(matches!(
-        effects.as_slice(),
-        [effect]
-            if matches!(
-                effect.operation(),
-                super::super::NativeEffectOperation::ReleaseChild { binding }
-                    if *binding == child_binding
-            )
-    ));
-    let acknowledgement = effects
-        .into_iter()
-        .next()
+    let mut release = None;
+    let mut requested_root_focus = false;
+    for effect in report.take_native_effects() {
+        match effect.operation() {
+            super::super::NativeEffectOperation::ReleaseChild { binding }
+                if *binding == child_binding =>
+            {
+                assert!(release.replace(effect).is_none());
+            }
+            super::super::NativeEffectOperation::RequestFocus { binding }
+                if *binding == root_binding =>
+            {
+                assert!(!requested_root_focus);
+                requested_root_focus = true;
+                assert!(effect.accepted().is_none());
+            }
+            operation => panic!("unexpected redock effect: {operation:?}"),
+        }
+    }
+    assert!(requested_root_focus);
+    session
+        .report_native_global_focus(NativeGlobalFocus::Dock(root_binding))
+        .expect("the exact redock host reports the requested focus");
+    let acknowledgement = release
         .expect("the release effect exists")
         .accepted()
         .expect("the release effect returns an exact acknowledgement");

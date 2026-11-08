@@ -714,7 +714,17 @@ fn first_live_admission_invalidates_the_other_old_output_until_fresh_measure_and
     assert_eq!(session.version(), first_version);
     let mut report = commit_managed_frame_report(&mut session);
     assert_eq!(report.native_admissions(), &[children[1]]);
-    assert!(report.take_native_effects().is_empty());
+    let [focus] = report
+        .take_native_effects()
+        .try_into()
+        .unwrap_or_else(|effects: Vec<_>| {
+            panic!("the winning admitted child must request its exact focus: {effects:?}")
+        });
+    assert!(matches!(
+        focus.operation(),
+        NativeEffectOperation::RequestFocus { binding } if *binding == children[1]
+    ));
+    assert!(focus.accepted().is_none());
     let [presentation] = report.surface_presentation_commits() else {
         panic!("the fresh second output must settle exactly once");
     };

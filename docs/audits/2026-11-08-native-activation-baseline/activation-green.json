@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "dockspace",
+    "--lib",
+    "--all-features",
+    "--target-dir",
+    "target",
+    "--locked",
+    "--offline",
+    "-j1",
+    "--no-fail-fast",
+    "-E",
+    "test(unknown_focus_baseline_allows_activation_without_claiming_observed_focus) | test(activation_without_a_valid_observation_stream_stays_suppressed) | test(hidden_native_create_activates_after_first_live_presentation_without_known_focus)"
+  ],
+  "started": "2026-11-08T14:01:16.253387+00:00",
+  "finished": "2026-11-08T14:01:33.145379+00:00",
+  "returncode": 0
+}

@@ -1,0 +1,25 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "LIBGL_ALWAYS_SOFTWARE=1",
+    "-e",
+    "LP_NUM_THREADS=1",
+    "-e",
+    "WINIT_UNIX_BACKEND=x11",
+    "-e",
+    "WINIT_X11_SCALE_FACTOR=1",
+    "354e85cb1d95",
+    "xvfb-run",
+    "-a",
+    "--server-args=-screen 0 1440x1000x24",
+    "python3",
+    "/tmp/probe_window_focus.py"
+  ],
+  "started": "2026-11-08T13:41:19.629659+00:00",
+  "commit": "c0daedf03ca069dc897900d7cd0baf3a9339cbac",
+  "binary_sha256": "3c3b3a56f3fc2e5e9714f86e4317b8710c24fa4b525bf4bd84c575b8d5240dcc",
+  "finished": "2026-11-08T13:41:27.114773+00:00",
+  "returncode": 1
+}

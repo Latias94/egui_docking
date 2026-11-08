@@ -2309,6 +2309,17 @@ impl ViewportFocusCoordinator {
         self.focus_observations.current()
     }
 
+    /// Returns ordering evidence without treating an unknown focus owner as authority.
+    pub(crate) const fn activation_observation_baseline(
+        &self,
+    ) -> Option<FocusObservationGeneration> {
+        if self.focus_observations.requires_tombstone {
+            None
+        } else {
+            self.focus_observations.last_generation
+        }
+    }
+
     #[must_use]
     pub const fn pending_activation(&self) -> Option<PendingViewportActivation> {
         self.focus_lane.driving
@@ -2620,7 +2631,7 @@ impl ViewportFocusCoordinator {
         }
         let observation = self.focus_observations.current();
         if request.cause.requests_platform_focus() {
-            let Some(observation) = observation else {
+            if self.activation_observation_baseline().is_none() {
                 return Ok(ActivationStart {
                     generation,
                     superseded: None,
@@ -2628,8 +2639,9 @@ impl ViewportFocusCoordinator {
                         ActivationSuppression::FocusObservationBaselineUnavailable,
                     ),
                 });
-            };
-            let requires_effect = !Self::observation_focuses(observation, request.target)
+            }
+            let requires_effect = observation
+                .is_none_or(|observation| !Self::observation_focuses(observation, request.target))
                 || self.focus_lane.driving.is_some();
             if requires_effect && !can_request_platform_focus {
                 return Ok(ActivationStart {
@@ -2781,7 +2793,7 @@ impl ViewportFocusCoordinator {
         superseded: Option<PendingViewportActivation>,
         can_request_platform_focus: bool,
     ) -> Result<ActivationStart, ViewportFocusError> {
-        let Some(observation) = observation else {
+        let Some(observation_baseline) = self.activation_observation_baseline() else {
             return Ok(ActivationStart {
                 generation,
                 superseded,
@@ -2790,7 +2802,10 @@ impl ViewportFocusCoordinator {
                 ),
             });
         };
-        if Self::observation_focuses(observation, request.target) && superseded.is_none() {
+        if let Some(observation) = observation
+            && Self::observation_focuses(observation, request.target)
+            && superseded.is_none()
+        {
             let Some(focus) = request.focus() else {
                 return Ok(ActivationStart {
                     generation,
@@ -2831,7 +2846,7 @@ impl ViewportFocusCoordinator {
             generation,
             causal,
             request,
-            observation_baseline: observation.generation,
+            observation_baseline,
             platform_focus: PendingPlatformFocus::EffectRequired,
         });
         Ok(ActivationStart {
@@ -6179,6 +6194,133 @@ mod tests {
             restored.pane_intent().map(PaneFocusIntent::source),
             Some(PaneFocusIntentSource::PlatformActivation)
         );
+    }
+
+    #[test]
+    fn unknown_focus_baseline_allows_activation_without_claiming_observed_focus() {
+        let target = second_binding();
+        let mut coordinator = ViewportFocusCoordinator::default();
+        let baseline = focus_tombstone(1);
+        publish_platform_focus(
+            &mut coordinator,
+            baseline,
+            1,
+            PlatformFocusRestoreGate::KnownAllReleased,
+        );
+        let request = ViewportActivationRequest::explicit(target, PanelFocus::Item(ItemId::new(2)));
+        let unsupported = coordinator
+            .request_activation(
+                request,
+                focus_stamp(2),
+                false,
+                |candidate| candidate == target,
+                |_, _| true,
+            )
+            .unwrap();
+        assert_eq!(
+            unsupported.outcome(),
+            ActivationStartOutcome::Suppressed(
+                ActivationSuppression::PlatformFocusControlUnavailable
+            )
+        );
+        let start = coordinator
+            .request_activation(
+                request,
+                focus_stamp(3),
+                true,
+                |candidate| candidate == target,
+                |surface, item| surface == target.surface() && item == ItemId::new(2),
+            )
+            .unwrap();
+        assert_eq!(
+            start.outcome(),
+            ActivationStartOutcome::RequestPlatformFocus { target }
+        );
+        assert_eq!(
+            coordinator
+                .pending_activation()
+                .unwrap()
+                .observation_baseline(),
+            baseline.generation()
+        );
+        assert!(coordinator.focus_observation().is_none());
+        assert_eq!(coordinator.current_focus(), Some(CurrentUiFocus::Unknown));
+        assert!(coordinator.pending_pane_intent().is_none());
+        assert_eq!(
+            coordinator.attach_platform_focus_effect(start.generation(), EffectId::new(1)),
+            FocusEffectAttachment::Applied
+        );
+        assert!(matches!(
+            publish_platform_focus(
+                &mut coordinator,
+                baseline,
+                4,
+                PlatformFocusRestoreGate::KnownAllReleased,
+            ),
+            FocusObservationTransition::Duplicate
+        ));
+        assert!(coordinator.pending_activation().is_some());
+        assert!(coordinator.pending_pane_intent().is_none());
+
+        let completed = publish_platform_focus(
+            &mut coordinator,
+            focus_observation(2, GlobalFocusedWindow::Dock(target)),
+            5,
+            PlatformFocusRestoreGate::KnownAllReleased,
+        );
+        let FocusObservationTransition::Applied(completed) = completed else {
+            panic!("a fresh exact native focus observation must complete activation");
+        };
+        assert_eq!(completed.completed_activation(), Some(start.generation()));
+        assert_eq!(
+            completed.pane_intent().and_then(PaneFocusIntent::item),
+            Some(ItemId::new(2))
+        );
+    }
+
+    #[test]
+    fn activation_without_a_valid_observation_stream_stays_suppressed() {
+        let mut missing = FocusObservationStream::default();
+        missing.observe(Some(focus_tombstone(1)));
+        missing.observe(None);
+        let mut conflict = FocusObservationStream::default();
+        conflict.observe(Some(focus_tombstone(1)));
+        conflict.observe(Some(focus_observation(1, GlobalFocusedWindow::None)));
+        let mut gap = FocusObservationStream::default();
+        gap.observe(Some(focus_tombstone(1)));
+        gap.observe(Some(focus_tombstone(3)));
+        let mut replacement = FocusObservationStream::default();
+        replacement.observe(Some(focus_tombstone(1)));
+        replacement.reset_for_provider_replacement();
+        for stream in [
+            FocusObservationStream::default(),
+            missing,
+            conflict,
+            gap,
+            replacement,
+        ] {
+            let mut coordinator = ViewportFocusCoordinator {
+                focus_observations: stream,
+                ..Default::default()
+            };
+            let start = coordinator
+                .request_activation(
+                    ViewportActivationRequest::explicit(binding(), PanelFocus::None),
+                    focus_stamp(1),
+                    true,
+                    |_| true,
+                    |_, _| true,
+                )
+                .unwrap();
+            assert_eq!(
+                start.outcome(),
+                ActivationStartOutcome::Suppressed(
+                    ActivationSuppression::FocusObservationBaselineUnavailable
+                )
+            );
+            assert!(coordinator.pending_activation().is_none());
+            assert!(coordinator.pending_pane_intent().is_none());
+        }
     }
 
     #[test]

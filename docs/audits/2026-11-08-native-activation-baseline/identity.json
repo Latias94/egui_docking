@@ -1,0 +1,21 @@
+{
+  "base_commit": "c0daedf03ca069dc897900d7cd0baf3a9339cbac",
+  "branch": "refactor/egui-pane-ergonomics",
+  "final_sources_sha256": {
+    "crates/dockspace/src/engine/surface_runtime.rs": "53a2c11755bce83387e2087ebf7cbee2d49a77cc33b515226b26388a54f6a43a",
+    "crates/dockspace/src/runtime/native/tests.rs": "215afe58a8c5aa3cfa28a23bdf86f1acd35ffd77dac6712049fecd2f0e7b6cc3",
+    "crates/dockspace/src/runtime/native/tests/managed_lifecycle/multiple_first_live.rs": "a017fe7e4c642d9d0da698e73af76d07a985176ee0f4f7f6186cd8387e11d629",
+    "crates/dockspace/src/viewport_focus.rs": "d3704532ad3e81573944e4d2c401061c473554ffcc378f795769846a3944b18d",
+    "crates/dockspace/tests/viewport_lifecycle.rs": "ddcb6dee334e56599cf9e7c3ae0622f334bb3d0968a5897168752d4ebee45e58",
+    "crates/dockspace_host_conformance/src/tests.rs": "8e44d092eb38b195e8dd8757a90ed54487c9e3c644cb86ca80936867b10e7f9c",
+    "crates/egui_dockspace_native/src/coordinator/tests/combined_soak.rs": "29e176365e5a0c8d1d3db027632be610c2775331f8e52519986d80615ed10ec0",
+    "crates/egui_dockspace_native/src/coordinator/tests/dispatch_terminal.rs": "97a482661cfd7c2aa86cfd3f0f3fe2c4682329f28e9c4cf8574e4a156353088b",
+    "crates/egui_dockspace_native/src/coordinator/tests/ingress_create/active_load.rs": "e1fc85afbd717a1d1088e834e8c069845395e5f5500cda395092824032fa51de",
+    "crates/egui_dockspace_native/src/coordinator/tests/retirement.rs": "3af57969f2ca47588a1323d424decb250cc391033fc2bd929388a8561f50891c"
+  },
+  "final_binary_sha256": "ad5f170e72f4fab0b13cf8afb88eeea502a89889a5bfbd955f883c64173d58fe",
+  "final_script_sha256": "82359504bf0ee99d0ea18b82d1421b2ed1909c958f1a28f86dd0807c8070ff59",
+  "final_application_stderr_bytes": 0,
+  "container": "354e85cb1d95",
+  "environment": "Linux Rust 1.95.0, Xvfb/Openbox/XTest, software GL; 1 CPU, 4 GiB; root 1000 x 780, child 440 x 340"
+}

@@ -1089,6 +1089,11 @@ fn assert_close_create_and_output_pressure(
         )
         .unwrap();
     drop(commit_boundary(&mut native));
+    native
+        .session
+        .report_native_global_focus(NativeGlobalFocus::Dock(bindings[2]))
+        .expect("the active release model starts in its input window");
+    drop(commit_boundary(&mut native));
     let presented = paint_and_present_all_surfaces(&mut native);
     drop(settle_report(&mut native, presented));
 
