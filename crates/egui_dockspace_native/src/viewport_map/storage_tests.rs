@@ -110,7 +110,7 @@ fn full_route_store_attaches_and_replaces_before_moving_only_the_exact_receipt()
     let backing = routes.viewports.as_ptr();
     routes.reserve(viewport, first).unwrap();
     routes.attach(viewport, first, window).unwrap();
-    routes.set_focus_reportable([first]);
+    routes.set_focus_reportable(&[first]);
     assert_eq!(routes.focus_binding_for_event(window, None), Some(first));
     assert!(
         routes
@@ -367,7 +367,7 @@ fn foreign_provider_handles_with_reused_public_ids_do_not_match_exact_guards() {
     let mut routes = NativeViewportMap::with_capacity_limit(1).unwrap();
     let bytes = routes.owned_data_capacity_bytes();
     routes.bind(viewport, window, predecessor).unwrap();
-    routes.set_focus_reportable([predecessor]);
+    assert!(routes.set_focus_reportable(&[predecessor]));
     assert!(
         routes
             .replace(viewport, predecessor, window, successor)
@@ -375,14 +375,14 @@ fn foreign_provider_handles_with_reused_public_ids_do_not_match_exact_guards() {
             .is_none()
     );
     assert_eq!(routes.focus_binding_for_event(window, None), None);
-    routes.set_focus_reportable([predecessor]);
+    assert!(!routes.set_focus_reportable(&[predecessor]));
     assert_eq!(routes.focus_binding_for_event(window, None), None);
     assert!(routes.attach(viewport, predecessor, window).is_err());
     assert!(routes.remove_viewport(viewport, predecessor).is_err());
     assert!(!routes.suppress_pointer_route(viewport, predecessor));
     assert!(routes.take_window_receipt(viewport, predecessor).is_none());
     routes.prepare_retirements(&committed).unwrap();
-    routes.set_focus_reportable([successor]);
+    assert!(routes.set_focus_reportable(&[successor]));
     assert_eq!(
         routes.focus_binding_for_event(window, None),
         Some(successor)

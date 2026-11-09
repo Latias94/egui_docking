@@ -194,7 +194,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Latias94/egui
-          ref: f94ee58b3914de7ad71dab36919b329ef36b4035
+          ref: 0d9c48d765954dd3eff99c0d3cfa686e9d8591cf
           path: .ci/egui-fork
           persist-credentials: false
       - name: Check out pinned winit fork

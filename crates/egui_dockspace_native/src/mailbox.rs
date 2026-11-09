@@ -964,7 +964,7 @@ mod tests {
             .unwrap();
         bridge.with_viewports_mut(|routes| {
             routes.refresh_local_coordinates(&session);
-            routes.set_focus_reportable([predecessor]);
+            routes.set_focus_reportable(&[predecessor]);
             assert!(routes.block_semantic_viewport(ViewportId::ROOT));
             assert!(
                 routes
@@ -2009,6 +2009,7 @@ struct NativeHostState {
     submitted_output_prefix: usize,
     output_order_invalid: bool,
     event_boundary_pending: bool,
+    global_focus_refresh_pending: bool,
     terminal_roster: TerminalRosterState,
 }
 
@@ -2252,6 +2253,7 @@ impl NativeHostState {
             submitted_output_prefix: 0,
             output_order_invalid: false,
             event_boundary_pending: false,
+            global_focus_refresh_pending: false,
             terminal_roster,
         })
     }
@@ -2769,10 +2771,14 @@ impl NativeHostState {
     }
 
     fn record_global_focus(&mut self, record: NativeGlobalFocusRecord) -> bool {
-        if !self.admit_ordinary() {
-            return false;
+        let admitted =
+            self.admit_ordinary() && self.journal.push_back(HostRecord::GlobalFocus(record));
+        if admitted {
+            self.global_focus_refresh_pending = false;
+        } else if self.mode.accepts_new_work() {
+            self.global_focus_refresh_pending = true;
         }
-        self.journal.push_back(HostRecord::GlobalFocus(record))
+        admitted
     }
 
     fn record_viewport_focus(&mut self, record: NativeViewportFocusRecord) -> bool {
@@ -4245,6 +4251,25 @@ impl NativeHostBridge {
         let result = action(&mut records.viewports);
         records.refresh_window_resource_references();
         result
+    }
+
+    pub(crate) fn set_focus_reportable(&self, bindings: &[NativeSurfaceBinding]) {
+        let mut records = self.lock();
+        let newly_reportable = records.viewports.set_focus_reportable(bindings);
+        records.global_focus_refresh_pending |= newly_reportable;
+    }
+
+    /// Retry only after ordinary ingress recovers; retain no old focus payload.
+    pub(crate) fn request_pending_global_focus(&self, context: &eframe::egui::Context) {
+        let request = {
+            let records = self.lock();
+            records.global_focus_refresh_pending
+                && records.mode.accepts_new_work()
+                && matches!(records.admission, NativeAdmission::Running)
+        };
+        if request {
+            eframe::request_native_global_focus(context);
+        }
     }
 
     /// Transfers an exact never-admitted route into its prepaid retirement row.
@@ -6234,6 +6259,8 @@ impl NativeHostHandler for NativeHostBridge {
         let record = NativeGlobalFocusRecord::capture(observation, &records.viewports);
         if records.record_global_focus(record) {
             NativeHostWake::RepaintRoot
+        } else if records.global_focus_refresh_pending && records.mode.accepts_new_work() {
+            NativeHostWake::RepaintRootAfterCurrent
         } else {
             NativeHostWake::Wait
         }

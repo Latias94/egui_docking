@@ -1,0 +1,25 @@
+[workspace]
+
+[package]
+name = "dockspace-ui-style-audit"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "glow", "x11", "wayland", "native-host-seam"] }
+egui_dockspace = { path = "../../../../crates/egui_dockspace" }
+egui_dockspace_native = { path = "../../../../crates/egui_dockspace_native" }
+dockspace = { path = "../../../../crates/dockspace" }
+serde_json = "1.0.149"
+
+[patch.crates-io]
+
+ecolor = { git = "https://github.com/Latias94/egui", rev = "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf" }
+eframe = { git = "https://github.com/Latias94/egui", rev = "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf" }
+egui = { git = "https://github.com/Latias94/egui", rev = "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf" }
+egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf" }
+egui-winit = { git = "https://github.com/Latias94/egui", rev = "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf" }
+egui_glow = { git = "https://github.com/Latias94/egui", rev = "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf" }
+emath = { git = "https://github.com/Latias94/egui", rev = "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf" }
+epaint = { git = "https://github.com/Latias94/egui", rev = "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf" }
+winit = { git = "https://github.com/Latias94/winit.git", rev = "2664589f0bd6fd03b2a5490f23bcd692853e63dd" }

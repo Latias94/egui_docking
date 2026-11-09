@@ -1,0 +1,114 @@
+{
+  "created_at": "2026-11-09T19:40:18.955592+08:00",
+  "main_base": "f75ceaf",
+  "egui_fork_revision": "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf",
+  "egui_fork_parent": "f94ee58b3914de7ad71dab36919b329ef36b4035",
+  "winit_fork_revision": "2664589f0bd6fd03b2a5490f23bcd692853e63dd",
+  "publication": "Local commits only. Cargo Git caches were seeded from the local fork commit; the fork revision must be published before fresh clones or CI can resolve the pin.",
+  "checks": [
+    {
+      "name": "eframe native library suite",
+      "command": "CARGO_BUILD_JOBS=1 cargo nextest run --manifest-path repo-ref/egui-focus-refresh/Cargo.toml --target-dir target --config 'profile.dev.package.\"*\".opt-level=0' -p eframe --lib --no-default-features --features glow,wgpu,native-host-seam,x11,wayland --locked --test-threads=1",
+      "result": "107 passed, 0 skipped",
+      "evidence": "eframe-tests.txt (transcribed summary)"
+    },
+    {
+      "name": "fork/native full pinned suite",
+      "command": "CARGO_BUILD_JOBS=1 cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml --target-dir target --workspace --exclude egui-native-smoke --all-features --all-targets --locked --offline --test-threads=1",
+      "result": "584 passed, 1 skipped",
+      "evidence": "native-tests.log.gz"
+    },
+    {
+      "name": "eframe Clippy",
+      "command": "CARGO_BUILD_JOBS=1 cargo clippy --manifest-path repo-ref/egui-focus-refresh/Cargo.toml --target-dir target --config 'profile.dev.package.\"*\".opt-level=0' -p eframe --lib --tests --no-default-features --features glow,wgpu,native-host-seam,x11,wayland --locked -- -D clippy::correctness -D clippy::suspicious",
+      "result": "passed, advisory warnings",
+      "evidence": "eframe-clippy.log.gz"
+    },
+    {
+      "name": "native Clippy",
+      "command": "CARGO_BUILD_JOBS=1 cargo clippy --manifest-path integration/egui-fork-workspace/Cargo.toml --target-dir target --workspace --exclude egui-native-smoke --all-features --all-targets --locked --offline -- -D clippy::correctness -D clippy::suspicious",
+      "result": "passed, advisory warnings",
+      "evidence": "native-clippy.log.gz"
+    },
+    {
+      "name": "strict eframe docs",
+      "command": "RUSTDOCFLAGS=\"-D warnings\" CARGO_BUILD_JOBS=1 cargo doc --manifest-path repo-ref/egui-focus-refresh/Cargo.toml --target-dir target --config 'profile.dev.package.\"*\".opt-level=0' -p eframe --no-default-features --features glow,native-host-seam,x11,wayland,persistence,inspection --no-deps --locked --offline",
+      "result": "passed",
+      "evidence": "eframe-doc.log.gz"
+    },
+    {
+      "name": "GUI pinned build",
+      "command": "docker exec -e CARGO_BUILD_JOBS=1 -w /Users/frankorz/codes/rust/egui_docking 354e85cb1d95 cargo build --manifest-path .git/native-focus-refresh-audit/fixture/Cargo.toml --target-dir /native-target --locked --offline",
+      "result": "passed",
+      "evidence": "gui-build.log.gz"
+    },
+    {
+      "name": "real X11 capture",
+      "command": "docker exec -e LIBGL_ALWAYS_SOFTWARE=1 -e LP_NUM_THREADS=1 -e WINIT_UNIX_BACKEND=x11 -e WINIT_X11_SCALE_FACTOR=1 -w /Users/frankorz/codes/rust/egui_docking 354e85cb1d95 xvfb-run -a \"--server-args=-screen 0 1440x1000x24 +extension XTEST\" python3 .git/native-focus-refresh-audit/capture.py",
+      "result": "passed, 23 snapshots across dark/light/zoom/background",
+      "evidence": "gui-capture.log.gz"
+    },
+    {
+      "name": "formatting and archived fixture metadata",
+      "result": "passed",
+      "evidence": "validation.log.gz"
+    }
+  ],
+  "post_capture_checks": "All 23 recorded frames preserve their initial tab selection.",
+  "manually_inspected_images": [
+    "dark-editor.png",
+    "light-editor.png",
+    "zoom-editor.png",
+    "background-selected.png",
+    "dark-blurred.png",
+    "dark-floating.png",
+    "dark-external.png"
+  ],
+  "scope": "Real GUI: Linux X11, Openbox, Xvfb, XTest, Glow, software GL. Library tests: macOS aarch64 with Glow and WGPU. No Windows, Wayland, or macOS real-window acceptance in this run.",
+  "source_sha256": {
+    ".github/workflows/ci.yml": "12bad309b32d7db2aacefefbdedeca8f7de67de06531de973897e0c193067b4c",
+    "integration/egui-fork-workspace/Cargo.toml": "388830ee079b02a367a27dc3eef09af0ad7d882b3a3ec3ec401190d52d368637",
+    "integration/egui-fork-workspace/Cargo.lock": "e030510198c27f6493214086d95b037e128ba87a15c23b4892a375d2c9a009bc",
+    "integration/egui-native-smoke/Cargo.toml": "3dca6f1264077c2d2f1dce971414d0c52393390895d681a1a221478f4e51d5f0",
+    "crates/egui_dockspace_native/src/coordinator.rs": "c2ffa3386713f2760f2d670955167a0828c5194360b8d604973081088bd7982e",
+    "crates/egui_dockspace_native/src/coordinator/tests/workspace_replacement.rs": "e0698caa7741c57cc85535e45fe95eeea51b062ab65d2462ef67953f55da12bb",
+    "crates/egui_dockspace_native/src/mailbox.rs": "5892390405ef1ee6ca4b5c2d54407776528f9e92e6849e3bb509aa38c07ac145",
+    "crates/egui_dockspace_native/src/mailbox/admission_tests.rs": "b125e04d09cb9a0726f4366ae9f3d9943031081b82c9b548c55bb227da6f6e1b",
+    "crates/egui_dockspace_native/src/surface_driver.rs": "c49cbabfa694c46128d82fa87d6bb09e5557edca6a8f99d008345cf6a322527e",
+    "crates/egui_dockspace_native/src/viewport_map.rs": "402c166eb54178cf42750cdcf4004948526760f83718f309887be328ffbe4ed0",
+    "crates/egui_dockspace_native/src/viewport_map/storage_tests.rs": "d6156d552a4518c6c409eb568747a54c0f6f35c5278fb4aad0b78289217e49a2",
+    "docs/audits/2026-11-09-native-startup-focus-refresh.md": "d3869f15717ea8a62f24ce993c5d35502fb65a6b62d1d37acff103f3873c7d3e",
+    "repo-ref/egui-focus-refresh/crates/eframe/src/lib.rs": "b2b978ff7ac919c1fefc6efb9d0b475826754a0cd1583aa51b0751c785cc44b3",
+    "repo-ref/egui-focus-refresh/crates/eframe/src/native/epi_integration.rs": "ad2dc7e1db71cc148daa405f0950dd3f135db7f356f61212842b61cfe2dba249",
+    "repo-ref/egui-focus-refresh/crates/eframe/src/native/glow_integration.rs": "b039cfae581de383bda1256e4e7cebc1888eb8092008837191570f2e9381c0b5",
+    "repo-ref/egui-focus-refresh/crates/eframe/src/native/host_seam.rs": "ccad6b9c8788b0c420cb09d71db4c9b7204fba450d857a0bc0654fc17ee150c1",
+    "repo-ref/egui-focus-refresh/crates/eframe/src/native/host_seam/close_tests.rs": "1e966d953d8ab684213ed794ca48db15b55d8fc0424f8d3eda6516aa8535314e",
+    "repo-ref/egui-focus-refresh/crates/eframe/src/native/host_seam/pointer_capture_tests.rs": "4d4e8e1fc8b1038628ee20b4011905047f74c05cf82c83843bd042360c89b841",
+    "repo-ref/egui-focus-refresh/crates/eframe/src/native/host_seam/property_tests.rs": "fb85b80ba28402ad111a16a0b45fef1d51a2eef6f4df8095a5035466b22bbf1f",
+    "repo-ref/egui-focus-refresh/crates/eframe/src/native/run.rs": "c6008956282d4000aa2d72c2376a7f71827c6cc966f420777379331f8f428f22",
+    "repo-ref/egui-focus-refresh/crates/eframe/src/native/wgpu_integration.rs": "c50fc489b30a4cdedbdcfb77678cc7f77e0175fcbc6639f779d92c97b61b3b51"
+  },
+  "artifact_sha256": {
+    "capture.py": "2fb2e484fcfae6cf66f11ee8fd5f6e0ed795a1e87dcca5029aae73fea257b731",
+    "eframe-clippy.log.gz": "048ca9b44ca6c3397043d7c38747ff9db6dbb010d68fd28ba4efaa7d5fc91f48",
+    "eframe-doc.log.gz": "9619fafcbd0d2eb6fdfd2147ad95906bcf8879122711826e2a14039ade62ebbc",
+    "eframe-tests.txt": "2be8b3061ce9cb0e8f179169a9a5776ac78d76ffd54593ace7847c609bee85a5",
+    "evidence/background-selected.png": "844bc520b5677c39b88c90134c92b23d022c18be35ce0e23469e42f30dc66e1f",
+    "evidence/dark-blurred.png": "ec09f520e1809b55cc8d82073c411f464032058064199cea3dfd9a951da76392",
+    "evidence/dark-editor.png": "04c906f1f05cde81c01b37a9161b31789307a3fb687416cc09bc14f20ee9075e",
+    "evidence/dark-external.png": "2a83889ad55858ab9532edfcdefea641cce8d1bfc1e257738092efc07e9f906c",
+    "evidence/dark-floating.png": "39feee9d664da64c3b77e8bafbda94360895225fcf6488f340ffa2aa1ab7d3d1",
+    "evidence/light-editor.png": "fe3b4305ef069e302906d8aec8db324a501169048f093507a92095a19b85dbb8",
+    "evidence/zoom-editor.png": "a78e2220b6cb111602eca501ed43b00f3445a2c4e8f3925cdb89a4f5982558ce",
+    "fixture/Cargo.lock": "e7d31c552181bf2c71676401b165d28dc159065e29ca829c2720964653124841",
+    "fixture/Cargo.toml": "922aad773b34f44f6a6fb098b5806ba84b944957828fa534f8db7b2d10af8aec",
+    "fixture/src/main.rs": "3cb8c57a112971bbe41db39d750fae057c2a55872c1c6d5c9659f5e49b889796",
+    "frames.json.gz": "ba0af5a98e363f1b8477bc760510916ea60cc5e28ce439b50769a78d26225be7",
+    "gui-build.log.gz": "a88d43d87ccbd3f2e46f9c4c3bee46324d7a4912fca7426b7bc05dcb0c45632f",
+    "gui-capture.log.gz": "fba28e64cfc7c1a3b5f879b42b02d730fa012ef4e337f415d0c4964c95b9d491",
+    "native-clippy.log.gz": "c5ad4080b497586d3e717e977f729952b5e12d54e325940619d47a7d85d823df",
+    "native-tests.log.gz": "e1194c5e1e1e664a5c14dc06d840a955de0bf18be3b8e85a3666b65b652dc3ae",
+    "observations.json": "d7566ca2eb54e90300678806c2ff64be35e31ce760d4a488b177c6cc0b8b7607",
+    "validation.log.gz": "15381823c0790fa0061c4bb46e85e6ebb245db2cea6f87a4d9d42771bbcfe6fe"
+  }
+}

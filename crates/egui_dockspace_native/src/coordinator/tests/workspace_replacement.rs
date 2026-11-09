@@ -66,7 +66,7 @@ fn reset_rebinds_every_retained_root_on_its_current_physical_window() {
     let (mut native, first, second) = presented_local_coordinate_routes();
     let peer = native.surface_viewport(SECOND_SURFACE).unwrap();
     native.bridge.with_viewports_mut(|routes| {
-        routes.set_focus_reportable([first, second]);
+        routes.set_focus_reportable(&[first, second]);
     });
     let old_coordinates = native.session.native_local_coordinates(first).unwrap();
     let old_focus = native.bridge.with_viewports(|routes| {

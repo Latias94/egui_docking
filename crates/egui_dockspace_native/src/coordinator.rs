@@ -1115,9 +1115,7 @@ impl NativeCoordinator {
         self.bridge.retirement_settle_snapshot(snapshot_applied);
         if snapshot_applied {
             self.work_areas.commit(queued.work_areas, &self.session);
-            self.bridge.with_viewports_mut(|viewports| {
-                viewports.set_focus_reportable(queued.focus_reportable)
-            });
+            self.bridge.set_focus_reportable(&queued.focus_reportable);
             let window_acknowledged = !queued.acknowledgements.is_empty();
             for acknowledgement in queued.acknowledgements {
                 if acknowledgement.create {

@@ -1,0 +1,309 @@
+{
+  "background-blurred": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "background-editor": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        268.760009765625,
+        51.0,
+        389.353759765625,
+        53.0
+      ]
+    ]
+  },
+  "background-external": {
+    "focused_widget": 7069072403677035830,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "background-floating": {
+    "focused_widget": 6629918704722885567,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        469.0,
+        320.0,
+        569.3125,
+        322.0
+      ]
+    ]
+  },
+  "background-refocused": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        268.760009765625,
+        51.0,
+        389.353759765625,
+        53.0
+      ]
+    ]
+  },
+  "background-selected": {
+    "focused_widget": null,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "dark-blurred": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "dark-editor": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        268.760009765625,
+        51.0,
+        389.353759765625,
+        53.0
+      ]
+    ]
+  },
+  "dark-external": {
+    "focused_widget": 7069072403677035830,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "dark-floating": {
+    "focused_widget": 6629918704722885567,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        469.0,
+        320.0,
+        569.3125,
+        322.0
+      ]
+    ]
+  },
+  "dark-refocused": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        268.760009765625,
+        51.0,
+        389.353759765625,
+        53.0
+      ]
+    ]
+  },
+  "dark-selected": {
+    "focused_widget": null,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "light-blurred": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "light-editor": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        268.760009765625,
+        51.0,
+        389.353759765625,
+        53.0
+      ]
+    ]
+  },
+  "light-external": {
+    "focused_widget": 7069072403677035830,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "light-floating": {
+    "focused_widget": 6629918704722885567,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        469.0,
+        320.0,
+        569.3125,
+        322.0
+      ]
+    ]
+  },
+  "light-refocused": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        268.760009765625,
+        51.0,
+        389.353759765625,
+        53.0
+      ]
+    ]
+  },
+  "light-selected": {
+    "focused_widget": null,
+    "pixels_per_point": 1.0,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "zoom-blurred": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.5,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "zoom-editor": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.5,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        166.3625030517578,
+        51.0,
+        241.8662872314453,
+        53.0
+      ]
+    ]
+  },
+  "zoom-external": {
+    "focused_widget": 7069072403677035830,
+    "pixels_per_point": 1.5,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  },
+  "zoom-refocused": {
+    "focused_widget": 14813075037393810558,
+    "pixels_per_point": 1.5,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": [
+      [
+        166.3625030517578,
+        51.0,
+        241.8662872314453,
+        53.0
+      ]
+    ]
+  },
+  "zoom-selected": {
+    "focused_widget": null,
+    "pixels_per_point": 1.5,
+    "selected_tabs": [
+      "Document.rs",
+      "Scene",
+      "Inspector"
+    ],
+    "cue_bounds": []
+  }
+}

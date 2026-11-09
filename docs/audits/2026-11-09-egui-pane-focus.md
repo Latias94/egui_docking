@@ -52,7 +52,11 @@ build job, one nextest test thread, and the existing target directory:
 | Workspace documentation tests | 11 passed. |
 | Main and fork/native formatting | Passed. |
 
-## Native startup focus gap: confirmed P2, still open
+## Native startup focus gap: original P2 diagnosis
+
+The native integration follow-up is recorded in
+[Native startup focus refresh](2026-11-09-native-startup-focus-refresh.md).
+The original failure observations and artifacts below are retained for comparison.
 
 The real-window follow-up exposed an existing native startup observation gap.
 In dark, light, and zoom 1.5 fixtures, clicking Document.rs's editor after

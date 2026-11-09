@@ -456,6 +456,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             }
             context.request_repaint_of(ViewportId::ROOT);
         }
+        bridge.request_pending_global_focus(context);
         Ok(true)
     }
 
@@ -1386,6 +1387,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
         } else if durable_progress {
             context.request_repaint_of(ViewportId::ROOT);
         }
+        self.coordinator
+            .dispatch_bridge()
+            .request_pending_global_focus(context);
         Ok(())
     }
 

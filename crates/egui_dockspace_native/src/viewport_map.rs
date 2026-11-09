@@ -698,26 +698,17 @@ impl NativeViewportMap {
         .then_some(binding)
     }
 
-    /// Replaces the exact focus-reportable roster after a platform snapshot commits.
-    pub(crate) fn set_focus_reportable(
-        &mut self,
-        bindings: impl IntoIterator<Item = NativeSurfaceBinding>,
-    ) {
+    /// Replaces the committed focus roster and reports newly eligible routes.
+    pub(crate) fn set_focus_reportable(&mut self, bindings: &[NativeSurfaceBinding]) -> bool {
+        let mut newly_reportable = false;
         for route in &mut self.viewports {
-            route.focus_reportable = false;
+            let reportable = bindings.contains(&route.binding)
+                && !route.pointer_suppressed
+                && !self.prepared_retirements.contains(&route.binding);
+            newly_reportable |= reportable && !route.focus_reportable;
+            route.focus_reportable = reportable;
         }
-        for binding in bindings {
-            if self.prepared_retirements.contains(&binding) {
-                continue;
-            }
-            if let Some(route) = self
-                .viewports
-                .iter_mut()
-                .find(|route| route.binding == binding && !route.pointer_suppressed)
-            {
-                route.focus_reportable = true;
-            }
-        }
+        newly_reportable
     }
 
     pub(crate) fn route_for_event(
@@ -1387,14 +1378,14 @@ mod tests {
         );
         assert_eq!(routes.window_ingress().count(), 1);
         assert_eq!(routes.owned_data_capacity_bytes(), two_attached);
-        routes.set_focus_reportable([first, second]);
+        routes.set_focus_reportable(&[first, second]);
         let two_focused = routes.owned_data_capacity_bytes();
         assert_eq!(two_focused, two_attached);
         assert_eq!(
             routes.focus_binding_for_event(WindowId::from(81), None),
             Some(first)
         );
-        routes.set_focus_reportable([second]);
+        routes.set_focus_reportable(&[second]);
         let one_focused = routes.owned_data_capacity_bytes();
         assert_eq!(one_focused, two_focused);
         assert_eq!(
@@ -1403,11 +1394,38 @@ mod tests {
         );
         assert!(routes.suppress_pointer_route(first_viewport, first));
         assert_eq!(routes.owned_data_capacity_bytes(), two_focused);
-        routes.set_focus_reportable([]);
+        routes.set_focus_reportable(&[]);
         assert_eq!(routes.owned_data_capacity_bytes(), two_attached);
         drop(routes.remove_viewport(first_viewport, first).unwrap());
         drop(routes.remove_viewport(second_viewport, second).unwrap());
         assert_eq!(routes.owned_data_capacity_bytes(), empty);
+    }
+
+    #[test]
+    fn focus_refresh_only_tracks_newly_reportable_routes() {
+        let (first, second) = bindings();
+        let child = ViewportId::from_hash_of("focus-refresh-child");
+        let mut routes = NativeViewportMap::default();
+        routes
+            .bind(ViewportId::ROOT, WindowId::from(71), first)
+            .unwrap();
+        routes.bind(child, WindowId::from(72), second).unwrap();
+
+        assert!(routes.set_focus_reportable(&[first]));
+        for _ in 0..32 {
+            assert!(!routes.set_focus_reportable(&[first]));
+        }
+        assert!(routes.set_focus_reportable(&[first, second]));
+        assert!(!routes.set_focus_reportable(&[first]));
+        assert!(routes.set_focus_reportable(&[first, second]));
+        assert!(routes.suppress_pointer_route(child, second));
+        assert!(!routes.set_focus_reportable(&[first, second]));
+        assert_eq!(
+            routes.focus_binding_for_event(WindowId::from(72), None),
+            None
+        );
+        assert!(!routes.set_focus_reportable(&[]));
+        assert!(routes.set_focus_reportable(&[first]));
     }
 
     #[test]

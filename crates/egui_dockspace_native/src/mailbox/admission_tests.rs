@@ -80,6 +80,91 @@ fn cursor(ordinal: u64, window: WindowId, binding: NativeSurfaceBinding) -> Host
 }
 
 #[test]
+fn focus_refresh_settles_on_admission_and_stays_idle_for_unchanged_rosters() {
+    use dockspace::runtime::NativeGlobalFocus;
+
+    let (bridge, _, binding, window) = bridge_with_clock();
+    bridge.set_focus_reportable(&[binding]);
+    assert!(bridge.lock().global_focus_refresh_pending);
+    let current = NativeGlobalFocusRecord::capture_for_test(
+        1,
+        eframe::NativeGlobalFocus::Viewport {
+            viewport_id: ViewportId::ROOT,
+            window_id: window,
+        },
+        &bridge.lock().viewports,
+    );
+    assert_eq!(current.focus(), NativeGlobalFocus::Dock(binding));
+    assert!(bridge.lock().record_global_focus(current));
+    assert!(!bridge.lock().global_focus_refresh_pending);
+    assert!(bridge.acknowledge_global_focus(current));
+
+    for _ in 0..32 {
+        bridge.set_focus_reportable(&[binding]);
+        assert!(!bridge.lock().global_focus_refresh_pending);
+        assert_eq!(bridge.lock().journal.len(), 0);
+    }
+    bridge.set_focus_reportable(&[]);
+    assert!(!bridge.lock().global_focus_refresh_pending);
+    bridge.set_focus_reportable(&[binding]);
+    assert!(bridge.lock().global_focus_refresh_pending);
+}
+
+#[test]
+fn rejected_focus_reobserves_unknown_after_recovery_with_or_without_a_pending_refresh() {
+    use dockspace::runtime::NativeGlobalFocus;
+
+    for refresh_requested in [false, true] {
+        let (bridge, _, binding, window) = bridge_with_clock();
+        bridge.set_focus_reportable(&[binding]);
+        let initial = NativeGlobalFocusRecord::for_test(1, NativeGlobalFocus::Unknown);
+        assert!(bridge.lock().record_global_focus(initial));
+        assert!(bridge.acknowledge_global_focus(initial));
+        bridge.commit_frame_boundary(false);
+        assert!(!bridge.lock().global_focus_refresh_pending);
+        if refresh_requested {
+            bridge.set_focus_reportable(&[]);
+            bridge.set_focus_reportable(&[binding]);
+        }
+        assert_eq!(
+            bridge.lock().global_focus_refresh_pending,
+            refresh_requested
+        );
+        for ordinal in 2..=4_097 {
+            bridge.push_record(cursor(ordinal, window, binding));
+        }
+        let rejected = NativeGlobalFocusRecord::for_test(4_098, NativeGlobalFocus::Dock(binding));
+        assert!(!bridge.lock().record_global_focus(rejected));
+        assert!(bridge.lock().global_focus_refresh_pending);
+        assert_eq!(bridge.lock().journal.captured_through(), 4_097);
+        bridge.commit_frame_boundary(false);
+        for ordinal in 2..=4_097 {
+            assert!(bridge.acknowledge_event(ordinal));
+        }
+        bridge.commit_frame_boundary(false);
+        assert_eq!(
+            bridge.admission_dispatch(),
+            NativeDispatch::Cancel { boundary: 4_097 }
+        );
+        assert!(bridge.finish_overload_cancellation(4_097));
+        assert_eq!(bridge.admission_dispatch(), NativeDispatch::Idle);
+        assert_eq!(bridge.lock().admission, NativeAdmission::Running);
+        assert!(!bridge.lock().viewports.set_focus_reportable(&[binding]));
+        assert!(bridge.lock().global_focus_refresh_pending);
+
+        let fresh = NativeGlobalFocusRecord::capture_for_test(
+            4_099,
+            eframe::NativeGlobalFocus::Unknown,
+            &bridge.lock().viewports,
+        );
+        assert!(bridge.lock().record_global_focus(fresh));
+        assert_eq!(bridge.front_global_focus(), Some(fresh));
+        assert_eq!(fresh.focus(), NativeGlobalFocus::Unknown);
+        assert!(!bridge.lock().global_focus_refresh_pending);
+    }
+}
+
+#[test]
 fn selected_window_limit_rejects_whole_synthetic_rosters_before_minting() {
     let (bridge, _, binding, _) = bridge_with_clock();
     let snapshot = crate::coordinator::NativeSnapshotStorageLimit::required_bytes(1, 1).unwrap();
