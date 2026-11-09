@@ -461,9 +461,14 @@ jobs:
         run: |
           xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension XTEST" python3 - <<'PY'
           import subprocess
+          import sys
+
+          sys.path.insert(0, "integration/egui-native-smoke")
+          from qualify_editor import wait_for_window_manager
 
           manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
           try:
+              wait_for_window_manager(manager)
               subprocess.run(
                   [
                       "cargo", "nextest", "run",
@@ -490,7 +495,24 @@ jobs:
         run: |
           timeout --kill-after=5s 45s xvfb-run -a \
             --server-args="-screen 0 1280x1024x24" \
-            integration/egui-fork-workspace/target/debug/egui-native-smoke
+            python3 - <<'PY'
+          import subprocess
+          import sys
+
+          sys.path.insert(0, "integration/egui-native-smoke")
+          from qualify_editor import wait_for_window_manager
+
+          manager = subprocess.Popen(["openbox", "--sm-disable"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          try:
+              wait_for_window_manager(manager)
+              subprocess.run(
+                  ["integration/egui-fork-workspace/target/debug/egui-native-smoke"],
+                  check=True, timeout=35,
+              )
+          finally:
+              manager.terminate()
+              manager.wait(timeout=5)
+          PY
 
           run_close_smoke() {
             scenario="$1"
