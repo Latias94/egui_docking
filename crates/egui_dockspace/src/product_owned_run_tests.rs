@@ -511,6 +511,98 @@ fn activating_an_overflow_menu_row_focuses_its_editable_content() {
     assert!(panes.0[0].is_empty());
 }
 
+#[test]
+fn escaping_an_overflow_menu_returns_focus_to_its_button_for_keyboard_reopening() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
+    )])
+    .unwrap();
+    let mut dockspace = Dockspace::builder("overflow-menu-keyboard-cancellation", layout)
+        .style(crate::DockStyle {
+            tab_min_width: 400.0,
+            tab_max_width: 400.0,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+    let mut panes = EditablePanes::default();
+    let mut menu_button = None;
+    for pass in 0..24 {
+        let phase = pass % 12;
+        if pass == 8 {
+            context.options_mut(|options| options.max_passes = NonZeroUsize::new(3).unwrap());
+            context.add_plugin(LateDiscard { remaining: 2 });
+        }
+        let events = if pass == 4 {
+            vec![Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Click,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: menu_button.unwrap(),
+                    data: None,
+                },
+            )]
+        } else if matches!(phase, 4 | 6 | 8) {
+            vec![Event::Key {
+                key: match phase {
+                    4 => egui::Key::Enter,
+                    6 => egui::Key::End,
+                    _ => egui::Key::Escape,
+                },
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]
+        } else {
+            Vec::new()
+        };
+        let (output, _) = dockspace
+            .run_single_surface(
+                &context,
+                input(f64::from(pass) * 0.1, events),
+                SURFACE,
+                &mut panes,
+            )
+            .unwrap();
+        let (output, receipt) = output.into_parts();
+        if pass == 8 {
+            assert_eq!(output.platform_output.num_completed_passes, 3);
+        }
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        if pass == 3 {
+            menu_button = nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Show hidden tabs"))
+                .map(|(id, _)| *id);
+        }
+        let menu_visible = nodes.iter().any(|(_, node)| node.role() == Role::Menu);
+        if phase == 7 {
+            assert!(menu_visible, "the menu must open in cycle {}", pass / 12);
+        }
+        if phase == 10 {
+            assert!(!menu_visible, "Escape must dismiss the menu");
+            assert!(dockspace.view().item(FIRST).unwrap().is_selected());
+            assert_eq!(
+                context.memory(egui::Memory::focused).map(|id| id.value()),
+                Some(menu_button.unwrap().0),
+                "Escape must restore its button focus for reopening, pass {pass}"
+            );
+        }
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert!(panes.0.iter().all(String::is_empty));
+}
+
 struct LateDiscard {
     remaining: usize,
 }

@@ -1,9 +1,9 @@
 //! Tab-strip overflow controls and the core-owned tab-list popup.
 
 use dockspace::runtime::{
-    SurfacePaintDisposition, SurfaceTabListNavigation, TabListMenuBackdropPaintRecord,
-    TabListMenuPaintRecord, TabListMenuRowPaintRecord, TabStripControlKind,
-    TabStripControlPaintRecord,
+    DockspaceVisualId, SurfacePaintDisposition, SurfaceTabListNavigation,
+    TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
+    TabStripControlKind, TabStripControlPaintRecord,
 };
 use egui::accesskit::{Action, HasPopup, Role};
 use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -32,11 +32,15 @@ fn paint_control_records(
         let Some(hit) = egui_rect(control.hit_bounds()) else {
             continue;
         };
-        let id = context.ui.make_persistent_id((
-            context.instance_id,
-            "tab-strip-control",
-            control.visual_id(),
-        ));
+        let id = if control.kind() == TabStripControlKind::TabListMenu {
+            tab_list_menu_trigger_id(context, control.tab_bar_visual_id())
+        } else {
+            context.ui.make_persistent_id((
+                context.instance_id,
+                "tab-strip-control",
+                control.visual_id(),
+            ))
+        };
         let enabled = effective_enabled(context.ui, control.enabled());
         let response = context.interact_receiver(
             hit,
@@ -73,6 +77,12 @@ fn paint_control_records(
             context.push_local_action(origin, action);
         }
     }
+}
+
+fn tab_list_menu_trigger_id(context: &RenderContext<'_, '_, '_>, tab_bar: DockspaceVisualId) -> Id {
+    context
+        .ui
+        .make_persistent_id((context.instance_id, "tab-list-menu-trigger", tab_bar))
 }
 
 fn paint_control(
@@ -368,7 +378,13 @@ fn paint_menu_row(
         }
     });
     if enabled && row.focused() {
-        context.ui.memory_mut(|memory| memory.request_focus(id));
+        // Escape may already have returned focus during an earlier pass of this run.
+        let trigger = tab_list_menu_trigger_id(context, menu.tab_bar_visual_id());
+        let focus_returned = context.ui.ctx().current_pass_index() > 0
+            && context.ui.memory(|memory| memory.has_focus(trigger));
+        if !focus_returned {
+            context.ui.memory_mut(|memory| memory.request_focus(id));
+        }
     }
 
     let pointer = pointer_operable
@@ -624,6 +640,18 @@ fn capture_menu_keyboard(
         && let Some(action) = context.plan.prepare_tab_list_menu_dismiss(menu.backdrop())
     {
         context.push_local_action(id.with(("keyboard-dismiss", Key::Escape)), action);
+        let target = tab_list_menu_trigger_id(context, menu.tab_bar_visual_id());
+        if context.ui.ctx().viewport(|viewport| {
+            viewport
+                .this_pass
+                .widgets
+                .get(target)
+                .is_some_and(|widget| {
+                    widget.enabled && widget.visible && widget.sense.is_focusable()
+                })
+        }) {
+            context.ui.memory_mut(|memory| memory.request_focus(target));
+        }
     }
 }
 

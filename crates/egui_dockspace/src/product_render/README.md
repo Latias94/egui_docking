@@ -228,6 +228,12 @@ and deferred submission and supersedes older content-focus requests using the
 existing focus coordinator. Enter, Space and explicit tab activation retain their
 ordinary pane-content focus behavior.
 
+Escape dismisses an open tab-list menu and returns keyboard focus to its owning
+tab-list button when that button remains enabled and visible. Repeated encoding
+passes in the same run preserve that handoff, so Enter can reopen the menu after
+the queued dismissal commits. Pointer backdrop dismissal keeps its existing
+focus behavior.
+
 ## Validation and regression diagnosis
 
 `pointer_authority_contract_tests` covers the host and native journal contracts,
