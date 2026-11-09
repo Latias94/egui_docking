@@ -173,3 +173,7 @@ scrolling. Some large-font content therefore overflows; it is not part of the
 caption geometry check. Saved contained-window placement also remains durable
 when zoom or host bounds change, with explicit bring-into-view recovery as
 described in the original audit.
+
+The later [pane-focus follow-up](2026-11-09-egui-pane-focus.md) implements the
+active content cue, assesses header consolidation, and records a separately
+reproduced native startup focus gap. The evidence in this report is unchanged.

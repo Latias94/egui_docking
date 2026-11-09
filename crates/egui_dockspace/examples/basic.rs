@@ -216,10 +216,17 @@ impl PaneView for ExamplePanes {
         };
         let response = ui.add(
             egui::TextEdit::multiline(&mut pane.text)
+                .id(egui::Id::unique(("basic-pane-editor", item)))
                 .code_editor()
                 .desired_width(f32::INFINITY),
         );
         egui_dockspace::PaneResponse::from(&response)
+    }
+
+    fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
+        self.panes
+            .contains_key(&item)
+            .then(|| egui::Id::unique(("basic-pane-editor", item)))
     }
 }
 

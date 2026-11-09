@@ -1,0 +1,82 @@
+{
+  "confirmed_open_p2": "Native startup global-focus observation gap; OS refocus is a diagnostic positive control, not a fix.",
+  "variants": {
+    "dark": {
+      "startup_editor_focus": 14813075037393810558,
+      "startup_cues": [],
+      "after_os_refocus_same_editor_focus": 14813075037393810558,
+      "after_os_refocus_cues": [
+        [
+          268.760009765625,
+          51.0,
+          389.353759765625,
+          53.0
+        ]
+      ],
+      "floating_cues": [
+        [
+          469.0,
+          320.0,
+          569.3125,
+          322.0
+        ]
+      ],
+      "external_cues": [],
+      "preserved_selected_tabs": [
+        "Document.rs",
+        "Inspector",
+        "Scene"
+      ],
+      "pixels_per_point": 1.0
+    },
+    "light": {
+      "startup_editor_focus": 14813075037393810558,
+      "startup_cues": [],
+      "after_os_refocus_same_editor_focus": 14813075037393810558,
+      "after_os_refocus_cues": [
+        [
+          268.760009765625,
+          51.0,
+          389.353759765625,
+          53.0
+        ]
+      ],
+      "floating_cues": [
+        [
+          469.0,
+          320.0,
+          569.3125,
+          322.0
+        ]
+      ],
+      "external_cues": [],
+      "preserved_selected_tabs": [
+        "Document.rs",
+        "Inspector",
+        "Scene"
+      ],
+      "pixels_per_point": 1.0
+    },
+    "zoom": {
+      "startup_editor_focus": 14813075037393810558,
+      "startup_cues": [],
+      "after_os_refocus_same_editor_focus": 14813075037393810558,
+      "after_os_refocus_cues": [
+        [
+          166.3625030517578,
+          51.0,
+          241.8662872314453,
+          53.0
+        ]
+      ],
+      "floating_cues": "not exercised: contained tabs clipped at this zoom",
+      "external_cues": [],
+      "preserved_selected_tabs": [
+        "Document.rs",
+        "Inspector",
+        "Scene"
+      ],
+      "pixels_per_point": 1.5
+    }
+  }
+}

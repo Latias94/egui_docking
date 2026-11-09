@@ -1312,6 +1312,7 @@ fn surface_focus_request_stays_pending_until_an_exact_focused_observation() {
         .expect("selection publishes an exact pane-focus request");
     assert_eq!(request.surface(), SURFACE);
     assert_eq!(request.item(), Some(SECOND));
+    assert_eq!(plan.focused_pane(), None);
     let not_focused = plan
         .prepare_pane_focus_observation(request, DockspacePaneFocusObservation::NotFocused)
         .expect("the exact request accepts a not-focused observation");
@@ -1336,6 +1337,7 @@ fn surface_focus_request_stays_pending_until_an_exact_focused_observation() {
         .pane_focus_request()
         .expect("not-focused keeps the exact request pending");
     assert_eq!(retained, request);
+    assert_eq!(plan.focused_pane(), None);
     let focused = plan
         .prepare_pane_focus_observation(retained, DockspacePaneFocusObservation::Focused)
         .expect("the retained request accepts a focused observation");
@@ -1350,14 +1352,12 @@ fn surface_focus_request_stays_pending_until_an_exact_focused_observation() {
     let mut settled = session
         .begin_host_frame()
         .expect("settled focus inspection frame begins");
-    assert!(
-        settled
-            .paint_plan(SURFACE)
-            .expect("settled focus plan lookup succeeds")
-            .expect("the settled focus surface remains paintable")
-            .pane_focus_request()
-            .is_none()
-    );
+    let plan = settled
+        .paint_plan(SURFACE)
+        .expect("settled focus plan lookup succeeds")
+        .expect("the settled focus surface remains paintable");
+    assert!(plan.pane_focus_request().is_none());
+    assert_eq!(plan.focused_pane(), Some(SECOND));
     settled
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the settled surface is retained");

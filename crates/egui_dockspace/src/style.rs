@@ -27,6 +27,10 @@ pub struct DockVisualOverrides {
     pub tab_text_color: Option<Color32>,
     /// Text color of the selected tab.
     pub tab_active_text_color: Option<Color32>,
+    /// Underline color of the selected tab whose pane owns observed content focus.
+    ///
+    /// Defaults to egui's selection stroke. A transparent color hides the cue.
+    pub pane_focus_color: Option<Color32>,
     /// Fill of an idle splitter.
     pub splitter_color: Option<Color32>,
     /// Fill of a hovered, dragged, or keyboard-focused splitter.
@@ -64,6 +68,7 @@ pub(crate) struct ResolvedDockVisuals {
     pub(crate) tab_active_fill: Color32,
     pub(crate) tab_text_color: Color32,
     pub(crate) tab_active_text_color: Color32,
+    pub(crate) pane_focus_color: Color32,
     pub(crate) splitter_color: Color32,
     pub(crate) splitter_hover_color: Color32,
     pub(crate) drop_fill: Color32,
@@ -111,6 +116,9 @@ impl DockVisualOverrides {
                 .tab_active_text_color
                 .or(visuals.override_text_color)
                 .unwrap_or(visuals.widgets.active.fg_stroke.color),
+            pane_focus_color: self
+                .pane_focus_color
+                .unwrap_or(visuals.selection.stroke.color),
             splitter_color: self.splitter_color.unwrap_or(tab_bar_fill),
             splitter_hover_color: self
                 .splitter_hover_color

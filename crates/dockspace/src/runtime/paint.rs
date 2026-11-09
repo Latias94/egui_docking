@@ -1861,6 +1861,18 @@ impl<'frame> SurfacePaintPlan<'frame> {
         }
     }
 
+    /// Returns the currently observed pane focus on this surface.
+    ///
+    /// Selection, pending focus requests, and restoration history do not establish
+    /// this value. Workspace, external, unknown, and other-surface focus return
+    /// `None`.
+    #[must_use]
+    pub const fn focused_pane(&self) -> Option<ItemId> {
+        self.candidate
+            .viewport_focus()
+            .current_pane_focus(self.surface)
+    }
+
     /// Returns the exact pane-focus request admitted for this surface.
     #[must_use]
     pub const fn pane_focus_request(&self) -> Option<DockspacePaneFocusRequest> {

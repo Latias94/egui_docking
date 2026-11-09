@@ -213,6 +213,14 @@ focus confirmation path as the legacy local renderer. Core pane focus requests
 resolve through `PaneView::focus_target`; final focus observations remain tied to
 the exact output's settlement.
 
+The selected tab's content-focus underline reads
+`SurfacePaintPlan::focused_pane`, which exposes the current core observation for
+this surface. It does not infer activity from selection, floating z-order,
+restoration history, or a pending request. Painting the cue never requests focus
+or changes interaction bounds. The source-gap disposition, enabled strip state,
+and current viewport focus suppress it when appropriate. Its color follows the
+local egui selection stroke unless explicitly overridden.
+
 Pane content focus and tab chrome focus are distinct. An accepted journal tab
 click must preserve the intended framework focus behavior for subsequent keyboard
 navigation. `capture_tab_actions` only requests tab widget focus for local pointer,

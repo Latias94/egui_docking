@@ -255,6 +255,19 @@ of reusing the shortened tab label. That menu inherits egui's popup frame,
 shadow, row spacing, and selected-item colors. A global `override_text_color`
 also applies to tab text unless a corresponding docking text override is set.
 
+A selected tab gains a two-point underline when its pane owns observed content
+focus. This is distinct from selection and the outline around a keyboard-focused
+tab. The cue uses egui's selection stroke color; override
+`style.visuals.pane_focus_color`, or set it to `Color32::TRANSPARENT` to hide it.
+Expose `PaneView::focus_target` (or an authoritative composite `focus_state`) so
+the existing host-focus sampling can identify the pane. Selection, a pending
+focus request, and the frontmost floating window alone do not produce the cue.
+Unfocused windows and disabled tab strips do not show it.
+The experimental native host has a known startup observation gap which can
+delay this cue until a fresh OS focus event; the
+[focus audit](../../docs/audits/2026-11-09-egui-pane-focus.md#native-startup-focus-gap-confirmed-p2-still-open)
+records the reproduction and required fork integration change.
+
 For the experimental native host, create the session with the same
 `style.presentation_config()?` before passing both objects to `NativeDockspaceApp`.
 Native construction rejects mismatched geometry/timing instead of displaying a

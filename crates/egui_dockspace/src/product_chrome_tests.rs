@@ -91,6 +91,10 @@ impl Harness {
             events,
             ..Default::default()
         };
+        self.run_input(raw)
+    }
+
+    fn run_input(&mut self, raw: RawInput) -> FullOutput {
         let output = if let Some(style) = &self.local_style {
             crate::run_ui(&self.context, raw, |ui| {
                 ui.set_style(style.clone());
@@ -238,6 +242,167 @@ fn floating_resize_edge_paints_keyboard_focus_and_adjusts_the_same_edge() {
             .map(|id| id.value()),
         Some(edge_after.0.0)
     );
+}
+
+fn pane_focus_cues(output: &FullOutput, color: egui::Color32) -> Vec<Rect> {
+    fn visit(shape: &egui::Shape, color: egui::Color32, cues: &mut Vec<Rect>) {
+        match shape {
+            egui::Shape::Rect(rect) if rect.fill == color && rect.rect.height() == 2.0 => {
+                cues.push(rect.rect);
+            }
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, color, cues);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut cues = Vec::new();
+    for clipped in &output.shapes {
+        visit(&clipped.shape, color, &mut cues);
+    }
+    cues
+}
+
+#[test]
+fn pane_focus_cue_tracks_content_across_split_and_floating_groups_without_changing_selection() {
+    use crate::{DockspaceAxis, DockspaceContainedLayout, FloatingPresentationId, LogicalRect};
+
+    let color = egui::Color32::from_rgb(17, 192, 123);
+    let mut style = DockStyle::default();
+    style.visuals.pane_focus_color = Some(color);
+    let mut harness = Harness::new(
+        ["Editor", "Hidden", "Outline", "Inspector"]
+            .map(str::to_owned)
+            .to_vec(),
+        ItemId::new(1),
+        style.clone(),
+    );
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(
+            RootId::new(1),
+            DockspaceNode::split(
+                DockspaceAxis::Horizontal,
+                [
+                    (DockspaceNode::tabs([ItemId::new(1), ItemId::new(2)]), 0.5),
+                    (DockspaceNode::tabs([ItemId::new(3)]), 0.5),
+                ],
+            )
+            .unwrap(),
+        ),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FloatingPresentationId::new(1),
+        DockspaceRootLayout::new(RootId::new(2), DockspaceNode::tabs([ItemId::new(4)])),
+        LogicalRect::new(160.0, 200.0, 320.0, 250.0).unwrap(),
+    ))])
+    .unwrap();
+    harness.dockspace = Dockspace::builder("split-pane-focus-regression", layout)
+        .style(style)
+        .build()
+        .unwrap();
+    for _ in 0..3 {
+        let output = harness.run(900.0, Vec::new());
+        assert!(pane_focus_cues(&output, color).is_empty());
+    }
+    let selected = |harness: &Harness| {
+        (1..=4)
+            .filter(|item| {
+                harness
+                    .dockspace
+                    .view()
+                    .item(ItemId::new(*item))
+                    .unwrap()
+                    .is_selected()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(selected(&harness), [1, 3, 4]);
+    for (item, title) in [(1, "Editor"), (3, "Outline"), (4, "Inspector")] {
+        let target = harness.panes.focus_target(ItemId::new(item)).unwrap();
+        harness
+            .context
+            .memory_mut(|memory| memory.request_focus(target));
+        for _ in 0..2 {
+            let output = harness.run(900.0, Vec::new());
+            let cues = pane_focus_cues(&output, color);
+            assert_eq!(cues.len(), 1, "{title} must be the only focused pane");
+            let tab = nodes(&output)
+                .iter()
+                .find(|(_, node)| node.role() == Role::Tab && node.label() == Some(title))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            assert_eq!(f64::from(cues[0].bottom()), tab.y1);
+            assert!(f64::from(cues[0].left()) <= tab.x0);
+            assert!(f64::from(cues[0].right()) >= tab.x1);
+            assert_eq!(selected(&harness), [1, 3, 4]);
+            assert_eq!(harness.context.memory(egui::Memory::focused), Some(target));
+        }
+    }
+    harness.focus_tab(900.0, "Editor");
+    let output = harness.run(900.0, Vec::new());
+    assert!(
+        pane_focus_cues(&output, color).is_empty(),
+        "tab focus is separate from content focus"
+    );
+    assert_eq!(selected(&harness), [1, 3, 4]);
+}
+
+#[test]
+fn pane_focus_cue_follows_local_theme_and_clears_on_blur_or_unknown_focus() {
+    let color = egui::Color32::from_rgb(29, 157, 211);
+    let mut harness = floating_harness(DockStyle::default());
+    let mut theme = (*harness.context.global_style()).clone();
+    theme.visuals.selection.stroke.color = color;
+    harness.local_style = Some(theme);
+    for _ in 0..3 {
+        harness.run(640.0, Vec::new());
+    }
+    let target = harness.panes.focus_target(ItemId::new(1)).unwrap();
+    harness
+        .context
+        .memory_mut(|memory| memory.request_focus(target));
+    let output = harness.run(640.0, Vec::new());
+    assert_eq!(pane_focus_cues(&output, color).len(), 1);
+
+    let mut blurred = RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(640.0, 600.0))),
+        time: Some(f64::from(harness.frame) * 0.1 + 0.05),
+        focused: false,
+        ..Default::default()
+    };
+    blurred
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .focused = Some(false);
+    let output = harness.run_input(blurred);
+    assert!(pane_focus_cues(&output, color).is_empty());
+
+    harness
+        .context
+        .memory_mut(|memory| memory.request_focus(egui::Id::unique("unknown-focused-widget")));
+    let output = harness.run(640.0, Vec::new());
+    assert!(
+        pane_focus_cues(&output, color).is_empty(),
+        "unregistered focus cannot revive pane history"
+    );
+
+    harness
+        .context
+        .memory_mut(|memory| memory.request_focus(target));
+    let output = harness.run(640.0, Vec::new());
+    assert_eq!(pane_focus_cues(&output, color).len(), 1);
+    let mut style = DockStyle::default();
+    style.visuals.pane_focus_color = Some(egui::Color32::TRANSPARENT);
+    harness.dockspace.set_style(style).unwrap();
+    let output = harness.run(640.0, Vec::new());
+    assert!(pane_focus_cues(&output, color).is_empty());
+    assert_eq!(harness.context.memory(egui::Memory::focused), Some(target));
 }
 
 #[test]

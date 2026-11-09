@@ -9,6 +9,8 @@ defects were reproduced. This audit changes no production behavior.
 The five defects and the popup/text-theme corrections have since been
 implemented; see the [fix verification](2026-11-09-egui-ui-fixes.md). The
 baseline captures and receipt below remain unchanged.
+The [pane-focus follow-up](2026-11-09-egui-pane-focus.md) implements the active
+content cue and records a separately reproduced native startup focus gap.
 
 The recommended direction is a focused adapter cleanup plus two core tab-strip
 corrections. The evidence does not justify replacing the docking architecture or

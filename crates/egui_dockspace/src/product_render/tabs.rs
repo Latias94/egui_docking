@@ -373,6 +373,21 @@ pub(crate) fn paint_tab(
             context.visuals.tab_fill
         };
         context.ui.painter().rect_filled(visible, 0.0, fill);
+        if selected
+            && operable
+            && context.plan.focused_pane() == Some(tab.item())
+            && context.ui.input(|input| input.focused)
+            && context.visuals.pane_focus_color.a() > 0
+        {
+            let underline = egui::Rect::from_min_max(
+                pos2(visible.left(), (visible.bottom() - 2.0).max(visible.top())),
+                visible.right_bottom(),
+            );
+            context
+                .ui
+                .painter()
+                .rect_filled(underline, 0.0, context.visuals.pane_focus_color);
+        }
         if focused {
             context.ui.painter().rect_stroke(
                 visible.shrink(1.0),
