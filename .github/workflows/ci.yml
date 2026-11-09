@@ -411,8 +411,12 @@ jobs:
           import subprocess
           import sys
 
+          sys.path.insert(0, "integration/egui-native-smoke")
+          from qualify_editor import wait_for_window_manager
+
           manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
           try:
+              wait_for_window_manager(manager)
               result = subprocess.run(
                   ["target/debug/examples/basic", "--command-smoke"],
                   capture_output=True, text=True, timeout=75,
