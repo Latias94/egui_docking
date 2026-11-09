@@ -455,6 +455,18 @@ impl NativeExampleApp {
                 self.action = ExampleActionState::Idle;
                 self.status = Some("Native child reached its first live presentation.".to_owned());
             }
+            ExampleActionState::AwaitingFirstPresentation(surface)
+                if self.dockspace.is_quiescent()
+                    && self
+                        .dockspace
+                        .with_view(|view| view.surface(surface).is_none()) =>
+            {
+                self.action = ExampleActionState::Idle;
+                self.status = Some(
+                    "Native child is no longer available; its panes remain in the dockspace."
+                        .to_owned(),
+                );
+            }
             ExampleActionState::AwaitingFreshPresentation(operation)
                 if self.all_surfaces_presented() && self.dockspace.is_quiescent() =>
             {

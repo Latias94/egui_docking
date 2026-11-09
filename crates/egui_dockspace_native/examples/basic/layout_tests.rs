@@ -32,6 +32,171 @@ fn app_with_session(
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the example regression drives a real accepted native create through resource refusal and recovery"
+)]
+fn failed_native_creation_releases_the_example_presentation_wait() {
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use dockspace::runtime::{
+        NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit,
+    };
+    use egui_dockspace_native::{NativeStorageLimit, NativeWindowClosePolicy};
+    use winit::platform::x11::EventLoopBuilderExtX11 as _;
+
+    if std::env::var_os("DISPLAY").is_none() {
+        eprintln!(
+            "SKIP native example create recovery: DISPLAY is unavailable; run the X11 qualification gate"
+        );
+        return;
+    }
+
+    struct CreationRecoveryApp {
+        example: NativeExampleApp,
+        requested: bool,
+        accepted: Option<SurfaceId>,
+        completed: Arc<AtomicBool>,
+        started: Instant,
+    }
+
+    impl eframe::App for CreationRecoveryApp {
+        fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+            assert!(
+                self.started.elapsed() < Duration::from_secs(15),
+                "the real native creation refusal must finish its recovery"
+            );
+            self.example.collect_action_status();
+            if let ExampleActionState::AwaitingFirstPresentation(target) = self.example.action {
+                if let Some(previous) = self.accepted {
+                    assert_eq!(target, previous);
+                }
+                self.accepted = Some(target);
+            }
+            self.example.finish_presentation_wait();
+            assert!(
+                self.example.dockspace.error_kind().is_none(),
+                "a refused native creation is recoverable"
+            );
+            if let Some(target) = self.accepted
+                && self.example.dockspace.is_quiescent()
+            {
+                assert!(!self.example.dockspace.is_surface_presented(target));
+                self.example.dockspace.with_view(|view| {
+                    assert!(
+                        view.surface(target).is_none(),
+                        "the failed staging child must retire"
+                    );
+                    let inspector = view.item(INSPECTOR).unwrap();
+                    assert_eq!(inspector.surface(), SURFACE);
+                    assert!(
+                        inspector.contained().is_some(),
+                        "the source group remains available"
+                    );
+                });
+                assert!(self.example.dockspace.with_panes(|panes| {
+                    panes.panes[&INSPECTOR]
+                        .text
+                        .ends_with("~CREATE_FAILURE_RETAINED~")
+                }));
+                assert!(
+                    matches!(self.example.action, ExampleActionState::Idle),
+                    "the completed create failure must leave the example's presentation wait"
+                );
+                assert!(
+                    self.example.controls_available(),
+                    "recovery must restore normal toolbar and inventory commands"
+                );
+                self.completed.store(true, Ordering::SeqCst);
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            if !self.requested
+                && self.example.dockspace.is_surface_presented(SURFACE)
+                && self.example.dockspace.is_quiescent()
+            {
+                self.example.request_inspector_window(INSPECTOR_ROOT);
+                assert!(matches!(
+                    self.example.action,
+                    ExampleActionState::AwaitingTearOffOutcome
+                ));
+                self.requested = true;
+            }
+            eframe::App::ui(&mut self.example.dockspace, ui, frame);
+            ui.ctx().request_repaint_after(Duration::from_millis(5));
+        }
+    }
+
+    let slots = |count| NonZeroUsize::new(count).unwrap();
+    let input = NativeInputStorageLimit::new(slots(512), 768 * 1024)
+        .with_producer_storage_limit(NativeProducerStorageLimit::new(
+            slots(16),
+            slots(8),
+            128 * 1024,
+        ))
+        .with_report_storage_limit(NativeReportStorageLimit::new(
+            slots(64),
+            slots(16),
+            256 * 1024,
+        ));
+    // Core can accept the child binding; the root occupies the sole physical
+    // resource slot, so normal effect dispatch must refuse the child creation.
+    let storage = NativeStorageLimit::new(input, 4 * 1024 * 1024, 1, 16).unwrap();
+    let layout = example_layout();
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let session = DockspaceSession::from_layout(layout.clone(), policy).unwrap();
+    let mut example = app(layout, SURFACE);
+    example.dockspace = NativeDockspaceApp::new_with_storage_limit(
+        egui::Id::unique("example-failed-native-create"),
+        session,
+        SURFACE,
+        ExamplePanes::new(),
+        DockStyle::default(),
+        NativeWindowClosePolicy::default(),
+        storage,
+    )
+    .unwrap();
+    example.dockspace.with_panes_mut(|panes| {
+        panes
+            .panes
+            .get_mut(&INSPECTOR)
+            .unwrap()
+            .text
+            .push_str("~CREATE_FAILURE_RETAINED~")
+    });
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 820.0]),
+        native_host: Some(example.dockspace.native_host_handler()),
+        renderer: eframe::Renderer::Glow,
+        event_loop_builder: Some(Box::new(|builder| {
+            builder.with_x11().with_any_thread(true);
+        })),
+        ..Default::default()
+    };
+    let completed = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&completed);
+    eframe::run_native(
+        "Native example creation recovery",
+        options,
+        Box::new(move |_| {
+            Ok(Box::new(CreationRecoveryApp {
+                example,
+                requested: false,
+                accepted: None,
+                completed,
+                started: Instant::now(),
+            }))
+        }),
+    )
+    .unwrap();
+    assert!(observed.load(Ordering::SeqCst));
+}
+
 #[test]
 fn reopen_without_document_uses_the_current_host_after_rebinding() {
     let host = SurfaceId::new(1_000);
