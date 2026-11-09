@@ -460,6 +460,33 @@ fn pending_query_preserves_target_scope_across_selection_and_unrelated_policy_ch
 }
 
 #[test]
+fn configuration_replacements_return_their_exact_committed_outcomes() {
+    let mut session = session();
+    let original = session.presentation_config().clone();
+    let larger = original.to_builder().tab_bar_height(42.0).build().unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    let unchanged = frame.replace_presentation_config(original.clone()).unwrap();
+    let changed = frame.replace_presentation_config(larger).unwrap();
+    let restored = frame.replace_presentation_config(original).unwrap();
+    let report = commit(frame);
+    for (action, changed, revision) in [
+        (unchanged, false, 0),
+        (changed, true, 1),
+        (restored, true, 2),
+    ] {
+        assert_eq!(
+            report.submitted_action_outcome(action),
+            Some(&HostInputOutcome::PresentationConfigReplaced {
+                changed,
+                revision: super::PresentationConfigRevision::new(revision),
+            })
+        );
+    }
+    let later = commit(session.begin_host_frame().unwrap());
+    assert!(later.submitted_action_outcome(changed).is_none());
+}
+
+#[test]
 fn pending_query_retires_target_scope_after_effective_close_policy_changes() {
     let mut session = session();
     let prepared = session.prepare_close_root(ROOT);

@@ -8,7 +8,7 @@ use dockspace::model::{
 };
 use dockspace::runtime::{DockspaceClosePlan, NativeSurfaceBinding};
 use eframe::egui;
-use egui_dockspace::PaneView;
+use egui_dockspace::{DockStyle, PaneView};
 
 use crate::application_action::{
     NativeActionRequestError, NativeActionTerminal, NativeApplicationAction,
@@ -22,6 +22,27 @@ use crate::NativeLayoutRequestError;
 mod tests;
 
 impl<P: PaneView> NativeRuntimeState<P> {
+    pub(crate) fn request_style(
+        &mut self,
+        style: DockStyle,
+    ) -> Result<(), crate::NativeStyleRequestError> {
+        self.ensure_application_slot_available()?;
+        style.validate()?;
+        let presentation =
+            style.presentation_config_with(self.coordinator.session().presentation_config())?;
+        let changed = self.style != style;
+        let action = NativeApplicationAction::new(
+            self.coordinator.session().version(),
+            NativeApplicationCommand::Style {
+                style: Box::new(style),
+                presentation: Box::new(presentation),
+                changed,
+            },
+        );
+        self.enqueue_application_action(action)?;
+        Ok(())
+    }
+
     pub(crate) fn request_layout_reset_rebinding_root(
         &mut self,
         layout: DockspaceLayout,

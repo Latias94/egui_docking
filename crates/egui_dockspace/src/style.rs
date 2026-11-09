@@ -2,7 +2,9 @@
 
 use std::{error::Error, fmt};
 
-use dockspace::runtime::{DockPresentationConfig, DockPresentationConfigError};
+use dockspace::runtime::{
+    DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
+};
 use egui::{Color32, Frame, Margin, Rgba, Style as EguiStyle, Vec2, Visuals};
 
 /// Optional visual overrides applied on top of the current egui theme.
@@ -320,7 +322,30 @@ impl DockStyle {
     pub fn presentation_config(
         &self,
     ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
-        DockPresentationConfig::builder()
+        self.configure_presentation(DockPresentationConfig::builder())
+    }
+
+    /// Updates represented settings while preserving core-only configuration.
+    ///
+    /// Use this when changing a live session's style. Pointer thresholds,
+    /// magnetic targeting and other settings absent from `DockStyle` retain
+    /// their current values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the combined geometry or timing is invalid.
+    pub fn presentation_config_with(
+        &self,
+        current: &DockPresentationConfig,
+    ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
+        self.configure_presentation(current.to_builder())
+    }
+
+    fn configure_presentation(
+        &self,
+        builder: DockPresentationConfigBuilder,
+    ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
+        builder
             .hover_selection_delay(self.hover_selection_delay)
             .touch_long_press_delay(self.touch_long_press_delay)
             .touch_press_slop_distance(f64::from(self.touch_press_slop_distance))

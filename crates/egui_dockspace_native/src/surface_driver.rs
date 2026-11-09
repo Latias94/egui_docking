@@ -1105,7 +1105,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let Some(NativeOwnedUpdate {
             host,
             run: _,
-            publication,
+            mut publication,
         }) = self
             .owned_update
             .take_if(|update| update.run.token == token)
@@ -1158,6 +1158,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         // This is the only publication of the run. The bridge keeps staging,
         // route replacement and core publication under the existing lock.
         let mut report = host.commit_publishing_root(&mut self.root_surface)?;
+        self.publish_application_style(context, &mut publication.application_action, &report)?;
         if let Some(acknowledged) = publication.ui_actions {
             self.pass_actions.acknowledge(acknowledged);
         }
@@ -1278,6 +1279,31 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .map_err(NativeHostProtocolError::OutputBindingFailed)?;
         if matches!(wake, NativeHostWake::RepaintRoot) {
             context.request_repaint_once_of(egui::ViewportId::ROOT);
+        }
+        Ok(())
+    }
+
+    fn publish_application_style(
+        &mut self,
+        context: &egui::Context,
+        submitted: &mut Option<NativeSubmittedApplicationAction>,
+        report: &HostFrameReport,
+    ) -> Result<(), NativeRuntimeError> {
+        let style = submitted
+            .as_mut()
+            .map(|submitted| submitted.commit_style(report))
+            .transpose()
+            .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?
+            .flatten();
+        if let Some(style) = style {
+            self.style = *style;
+            // Font resources and theme tokens can change without changing any
+            // DockStyle value. A successful request also refreshes idle children.
+            for surface in self.view().surfaces() {
+                if let Some(viewport) = self.coordinator.surface_viewport(surface.id()) {
+                    context.request_repaint_once_of(viewport);
+                }
+            }
         }
         Ok(())
     }

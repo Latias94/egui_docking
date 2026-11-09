@@ -21,6 +21,17 @@ Root receives no `DestroyNotify`, and checks retired child X11 resources.
 Lifecycle commands inside that workflow remain programmatic where its driver
 documents them. The five docking cases supply actual pointer input.
 
+The lifecycle driver also checks descriptive OS titles for Inspector and the
+simultaneous Inspector/Assets children while retaining its PID, exact window ID,
+and destruction assertions. Unicode captions are compared in Python rather than
+through the window-search tool's locale-sensitive regular expressions.
+
+The separate `basic --command-smoke` journey retains its nine docking commands
+and applies four styles while a native child is live: geometry, visual-only,
+unchanged, and restored defaults. It checks each terminal result, fresh child
+content bounds, the unchanged physical window ID, and retained application data
+before completing the second native round trip.
+
 ## Run against a built editor
 
 Build serially from the repository root, using the repository target directory:

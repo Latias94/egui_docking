@@ -94,6 +94,47 @@ impl DockPresentationConfig {
         DockPresentationConfigBuilder::default()
     }
 
+    /// Starts a builder preserving every current geometry and timing setting.
+    #[must_use]
+    pub fn to_builder(&self) -> DockPresentationConfigBuilder {
+        DockPresentationConfigBuilder {
+            tab_bar_height: self.tab_bar_height,
+            tab_strip_scroll_line_extent: self.tab_strip_scroll_line_extent,
+            tab_strip_edge_scroll_band: self.tab_strip_edge_scroll_band,
+            tab_strip_edge_scroll_interval: self.tab_strip_edge_scroll_interval,
+            tab_group_grip_extent: self.tab_group_grip_extent,
+            tab_horizontal_padding: self.tab_horizontal_padding,
+            tab_min_width: self.tab_min_width,
+            tab_max_width: self.tab_max_width,
+            tab_close_extent: self.tab_close_extent,
+            splitter_thickness: self.splitter_thickness,
+            splitter_hit_extent: self.splitter_hit_extent,
+            splitter_keyboard_step: self.splitter_keyboard_step,
+            pointer_drag_start_distance: self.pointer_drag_start_distance,
+            hover_selection_delay: self.hover_selection_delay,
+            touch_long_press_delay: self.touch_long_press_delay,
+            touch_press_slop_distance: self.touch_press_slop_distance,
+            touch_resize_hit_extent: self.touch_resize_hit_extent,
+            guide_extent: self.guide_extent,
+            guide_gap: self.guide_gap,
+            guide_hit_padding: self.guide_hit_padding,
+            guide_outer_inset: self.guide_outer_inset,
+            magnetic_center_fraction: self.magnetic_center_fraction,
+            magnetic_outer_band_fraction: self.magnetic_outer_band_fraction,
+            magnetic_outer_band_minimum: self.magnetic_outer_band_minimum,
+            magnetic_outer_band_maximum: self.magnetic_outer_band_maximum,
+            target_release_hysteresis: self.target_release_hysteresis,
+            dock_fraction: self.dock_fraction,
+            floating_title_height: self.floating_title_height,
+            floating_border_width: self.floating_border_width,
+            floating_resize_extent: self.floating_resize_extent,
+            minimum_pane_width: self.minimum_pane_size.width(),
+            minimum_pane_height: self.minimum_pane_size.height(),
+            minimum_floating_width: self.minimum_floating_size.width(),
+            minimum_floating_height: self.minimum_floating_size.height(),
+        }
+    }
+
     /// Returns the tab-bar height.
     #[must_use]
     pub const fn tab_bar_height(&self) -> f64 {

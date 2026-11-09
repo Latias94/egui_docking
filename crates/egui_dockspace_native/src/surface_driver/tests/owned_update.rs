@@ -49,6 +49,7 @@ impl PaneView for CountingPanes {
 
 #[derive(Default)]
 struct Probe {
+    style_change: bool,
     token: Option<NativeOutputToken>,
     version: Option<WorkspaceVersion>,
     reports_before: usize,
@@ -83,6 +84,15 @@ impl egui::plugin::Plugin for OutputHook {
             && probe.token == eframe::current_native_output_token()
             && !probe.published
         {
+            assert_eq!(state.style.tab_bar_height, 28.0);
+            assert_eq!(
+                state
+                    .coordinator
+                    .session()
+                    .presentation_config()
+                    .tab_bar_height(),
+                28.0
+            );
             assert_eq!(self.reports.load(Ordering::SeqCst), probe.reports_before);
             assert_eq!(Some(state.coordinator.session().version()), probe.version);
             assert!(
@@ -157,6 +167,15 @@ impl NativeOutputPassFinalizer for Finalizer {
                 "the output hook precedes every finalizer"
             );
             if discarded {
+                assert_eq!(state.style.tab_bar_height, 28.0);
+                assert_eq!(
+                    state
+                        .coordinator
+                        .session()
+                        .presentation_config()
+                        .tab_bar_height(),
+                    28.0
+                );
                 assert_eq!(self.reports.load(Ordering::SeqCst), probe.reports_before);
                 assert!(state.owned_update.is_some());
             } else {
@@ -171,7 +190,7 @@ impl NativeOutputPassFinalizer for Finalizer {
                         .coordinator
                         .session()
                         .view()
-                        .item(SECOND)
+                        .item(if probe.style_change { FIRST } else { SECOND })
                         .unwrap()
                         .is_selected()
                 );
@@ -181,7 +200,25 @@ impl NativeOutputPassFinalizer for Finalizer {
                         .dispatch_bridge()
                         .has_pending_output(token)
                 );
-                assert!(matches!(state.take_action_status(), Some(Ok(_))));
+                let status = state.take_action_status().unwrap().unwrap();
+                if probe.style_change {
+                    assert_eq!(state.style.tab_bar_height, 44.0);
+                    assert_eq!(
+                        state
+                            .coordinator
+                            .session()
+                            .presentation_config()
+                            .tab_bar_height(),
+                        44.0
+                    );
+                    assert_eq!(
+                        status,
+                        crate::NativeActionStatus::StyleChanged {
+                            changed: true,
+                            geometry_changed: true
+                        }
+                    );
+                }
                 probe.published = true;
                 return NativeHostWake::RepaintRootAfterCurrent;
             }
@@ -344,9 +381,18 @@ impl eframe::App for DriverApp {
         let mut state = lock(&self.state);
         let mut probe = lock(&self.probe);
         if probe.token.is_none() && state.is_surface_presented(SURFACE) {
-            state
-                .request_command(NativeCommand::SelectItem { item: SECOND })
-                .unwrap();
+            if probe.style_change {
+                state
+                    .request_style(DockStyle {
+                        tab_bar_height: 44.0,
+                        ..DockStyle::default()
+                    })
+                    .unwrap();
+            } else {
+                state
+                    .request_command(NativeCommand::SelectItem { item: SECOND })
+                    .unwrap();
+            }
             probe.token = Some(token);
             probe.version = Some(state.coordinator.session().version());
             probe.reports_before = self.reports.load(Ordering::SeqCst);
@@ -354,6 +400,15 @@ impl eframe::App for DriverApp {
         }
         let update = state.update_surface(ui, SURFACE).unwrap();
         if probe.token == Some(token) && !probe.published {
+            assert_eq!(state.style.tab_bar_height, 28.0);
+            assert_eq!(
+                state
+                    .coordinator
+                    .session()
+                    .presentation_config()
+                    .tab_bar_height(),
+                28.0
+            );
             assert_eq!(update, NativeSurfaceUpdate::Semantic);
             probe.passes += 1;
             assert_eq!(Some(state.coordinator.session().version()), probe.version);
@@ -394,6 +449,15 @@ impl eframe::App for DriverApp {
 
 #[test]
 fn real_eframe_actual_passes_publish_the_owned_update_once_after_output_hooks() {
+    run_owned_update(false);
+}
+
+#[test]
+fn real_eframe_style_publishes_with_core_geometry_after_the_terminal_pass() {
+    run_owned_update(true);
+}
+
+fn run_owned_update(style_change: bool) {
     if std::env::var_os("DISPLAY").is_none() {
         eprintln!("SKIP real native E3: DISPLAY is unavailable; run the X11 qualification gate");
         return;
@@ -424,7 +488,10 @@ fn real_eframe_actual_passes_publish_the_owned_update_once_after_output_hooks() 
     });
     let host = state.native_host_handler();
     let state = Arc::new(Mutex::new(state));
-    let probe = Arc::new(Mutex::new(Probe::default()));
+    let probe = Arc::new(Mutex::new(Probe {
+        style_change,
+        ..Probe::default()
+    }));
     assert!(host.install_output_pass_finalizer(Arc::new(Finalizer {
         state: Arc::downgrade(&state),
         probe: Arc::clone(&probe),

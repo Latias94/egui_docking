@@ -2269,7 +2269,7 @@ fn terminal_configuration_commits_after_semantic_actions() {
     frame
         .replace_policy(policy.clone())
         .expect("policy replacement enters the terminal phase");
-    frame
+    let config_action = frame
         .replace_presentation_config(presentation.clone())
         .expect("presentation replacement shares the terminal phase");
     let report = commit(frame);
@@ -2290,7 +2290,15 @@ fn terminal_configuration_commits_after_semantic_actions() {
                 changed: true,
                 version: report.after(),
             },
+            HostInputOutcome::PresentationConfigReplaced {
+                changed: true,
+                revision: dockspace::runtime::PresentationConfigRevision::new(1),
+            },
         ]
+    );
+    assert_eq!(
+        report.submitted_action_outcome(config_action),
+        report.inputs().last()
     );
 }
 

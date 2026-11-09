@@ -345,6 +345,27 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).request_command(command)
     }
 
+    /// Queues renderer styling for the next eligible final root pass.
+    ///
+    /// Use [`DockStyle::from_egui`] after changing egui fonts or density, then
+    /// reapply application overrides. Core-only geometry and interaction settings
+    /// remain unchanged. Font resources themselves belong to egui's context.
+    ///
+    /// The existing application command slot retains this request until its
+    /// [`NativeActionStatus::StyleChanged`] result is consumed. Acceptance does
+    /// not change the style immediately: core geometry and adapter style publish
+    /// together after the final pass commits. Geometry changes cancel gestures
+    /// through core; visual-only changes preserve them. All live windows repaint.
+    /// Consume the result before waiting for fresh presentation or quiescence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a queue error while busy or stopped, or the original configuration
+    /// error for invalid style. Rejected requests leave both authorities unchanged.
+    pub fn request_style(&self, style: DockStyle) -> Result<(), crate::NativeStyleRequestError> {
+        lock_state(&self.state).request_style(style)
+    }
+
     /// Returns current unresolved content-close plans from the core owner.
     ///
     /// Includes tab, group and contained chrome requests and programmatic

@@ -181,6 +181,12 @@ impl HostFrameReport {
                         version: *version,
                     })
                 }
+                InputOutcome::PresentationConfigReplaced { changed, revision } => {
+                    Some(HostInputOutcome::PresentationConfigReplaced {
+                        changed: *changed,
+                        revision: *revision,
+                    })
+                }
                 InputOutcome::ContentCloseRequested { plan, reused, .. } => {
                     Some(HostInputOutcome::CloseRequested {
                         plan: DockspaceClosePlan::from_core(plan),

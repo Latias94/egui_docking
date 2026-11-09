@@ -372,6 +372,12 @@ impl DockspaceHostFrame<'_> {
         self.frame.view().version()
     }
 
+    /// Returns the configuration used to measure this frame's surfaces.
+    #[must_use]
+    pub fn presentation_config(&self) -> &DockPresentationConfig {
+        self.frame.view().presentation_config()
+    }
+
     /// Resolves one stable item identity to its session-owned external key.
     ///
     /// This is available while a candidate frame is open so an adapter can build
@@ -816,6 +822,8 @@ impl DockspaceHostFrame<'_> {
     ///
     /// The configuration controls semantic layout and interaction geometry. Visual-only colors,
     /// fonts, and animation remain adapter-owned.
+    /// The returned receipt resolves this replacement's exact committed result
+    /// through [`HostFrameReport::submitted_action_outcome`].
     ///
     /// # Errors
     ///
@@ -824,14 +832,15 @@ impl DockspaceHostFrame<'_> {
     pub fn replace_presentation_config(
         &mut self,
         config: DockPresentationConfig,
-    ) -> Result<(), DockspaceRuntimeError> {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
         let sequence = self.begin_configuration_input()?;
         self.frame.append_presentation_config_replacement(
             APPLICATION_INPUT_SOURCE,
             sequence,
             config,
         )?;
-        Ok(())
+        Ok(DockspaceSubmittedAction::new(frame_attempt, sequence))
     }
 
     /// Explicitly marks one frozen surface unavailable for this presentation pass.

@@ -38,6 +38,9 @@ pub(super) struct CommandSmoke {
     done: bool,
     expected: Option<BTreeMap<ItemId, String>>,
     child: Option<SurfaceId>,
+    style_step: usize,
+    style_waiting: bool,
+    style_window: Option<u64>,
 }
 
 impl CommandSmoke {
@@ -49,6 +52,9 @@ impl CommandSmoke {
             done: false,
             expected: None,
             child: None,
+            style_step: 0,
+            style_waiting: false,
+            style_window: None,
         }
     }
 
@@ -60,13 +66,13 @@ impl CommandSmoke {
         if self.done {
             return;
         }
-        match self.advance_inner(app) {
+        match self.advance_inner(app, context) {
             Ok(false) => context.request_repaint_after(Duration::from_millis(16)),
             result => {
                 self.done = true;
                 match result {
                     Ok(true) => eprintln!(
-                        "command-smoke: complete; nine commands, four pane operations, two singleton native-child round trips, eight stable panes and retained document data; presented and quiescent"
+                        "command-smoke: complete; nine docking commands, four style updates, two singleton native-child round trips, eight stable panes and retained document data; presented and quiescent"
                     ),
                     Err(error) => eprintln!("command-smoke: FAIL {error}"),
                     Ok(false) => unreachable!(),
@@ -76,7 +82,11 @@ impl CommandSmoke {
         }
     }
 
-    fn advance_inner(&mut self, app: &NativeDockspaceApp<ExamplePanes>) -> Result<bool, String> {
+    fn advance_inner(
+        &mut self,
+        app: &NativeDockspaceApp<ExamplePanes>,
+        context: &egui::Context,
+    ) -> Result<bool, String> {
         if self.started.elapsed() > Duration::from_secs(60) {
             return Err(format!(
                 "timed out at command {} (waiting={})",
@@ -114,6 +124,25 @@ impl CommandSmoke {
         });
         if !unchanged {
             return Err("application pane data changed during a presentation command".to_owned());
+        }
+
+        if self.style_waiting {
+            if let Some(result) = app.take_action_status() {
+                let status = result.map_err(|error| error.to_string())?;
+                let expected = NativeActionStatus::StyleChanged {
+                    changed: self.style_step != 2,
+                    geometry_changed: matches!(self.style_step, 0 | 3),
+                };
+                if status != expected {
+                    return Err(format!(
+                        "style {} returned {status:?}, expected {expected:?}",
+                        self.style_step
+                    ));
+                }
+                self.style_waiting = false;
+                self.style_step += 1;
+            }
+            return Ok(false);
         }
 
         if self.waiting {
@@ -160,6 +189,64 @@ impl CommandSmoke {
             && !app.is_surface_presented(child)
         {
             return Ok(false);
+        }
+        if self.step == 6 {
+            let (window, top, color) = app.with_panes(|panes| {
+                let editor = &panes.panes[&EDITOR];
+                (
+                    editor.window_id,
+                    editor.content.map(|(bounds, _)| bounds.top()),
+                    editor.text_color,
+                )
+            });
+            if self.style_step == 3 && color != egui::Color32::MAGENTA {
+                return Ok(false);
+            }
+            if self.style_step == 4 && color == egui::Color32::MAGENTA {
+                return Ok(false);
+            }
+            if let Some(expected) = self.style_window {
+                if window != Some(expected) {
+                    return Err("style update replaced the live child window".to_owned());
+                }
+            } else {
+                self.style_window = Some(window.ok_or("the live editor lacks a physical window")?);
+            }
+            let height = if (1..=3).contains(&self.style_step) {
+                44.0
+            } else {
+                28.0
+            };
+            if top.is_none_or(|top| (top - height).abs() > 0.1) {
+                return Err(format!(
+                    "style {} did not repaint the live child: content top={top:?}, expected {height}",
+                    self.style_step
+                ));
+            }
+            if self.style_step < 4 {
+                if matches!(self.style_step, 2 | 3) {
+                    context.all_styles_mut(|style| {
+                        style.visuals.override_text_color =
+                            (self.style_step == 2).then_some(egui::Color32::MAGENTA);
+                    });
+                }
+                let mut style = DockStyle::default();
+                if self.style_step < 3 {
+                    style.tab_bar_height = 44.0;
+                    style.floating_title_height = 44.0;
+                }
+                if matches!(self.style_step, 1 | 2) {
+                    style.visuals.tab_active_fill = Some(egui::Color32::DARK_RED);
+                }
+                app.request_style(style)
+                    .map_err(|error| error.to_string())?;
+                self.style_waiting = true;
+                return Ok(false);
+            }
+            eprintln!(
+                "command-smoke: four style updates repainted root and child without replacing window {}",
+                self.style_window.unwrap()
+            );
         }
         if self.step == 9 {
             if !app.with_view(|view| {

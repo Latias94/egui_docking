@@ -8,14 +8,14 @@ use dockspace::policy::DockPolicy;
 #[cfg(feature = "serde")]
 use dockspace::runtime::PreparedDockspaceDocumentRestore;
 use dockspace::runtime::{
-    DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
+    DockPresentationConfig, DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
     DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspaceHostFrame,
     DockspacePresentationTransition, DockspacePresentationTransitionId,
     DockspacePresentationTransitionResult, DockspaceRuntimeError, DockspaceRuntimeErrorKind,
     DockspaceSubmittedAction, HostFrameReport, HostInputOutcome, NativeSurfaceBinding,
     PreparedCloseRequest, PreparedDockAction, PreparedDockspaceLayoutReset,
 };
-use egui_dockspace::DockspaceActionStatus;
+use egui_dockspace::{DockStyle, DockspaceActionStatus};
 
 use crate::NativeRuntimeErrorKind;
 
@@ -169,6 +169,13 @@ pub enum NativeActionStatus {
         /// Workspace version after the configuration input.
         version: WorkspaceVersion,
     },
+    /// Renderer style and its represented core settings committed together.
+    StyleChanged {
+        /// Whether the adapter style differed from its previous value.
+        changed: bool,
+        /// Whether core geometry or interaction timing changed.
+        geometry_changed: bool,
+    },
     /// An application default or preset replaced the logical layout.
     ///
     /// Native bindings and output authority still require their fresh observations.
@@ -219,6 +226,11 @@ pub(crate) enum NativeApplicationCommand {
         decision: DeferredCloseDecision,
     },
     ArrangementLock(Box<DockPolicy>),
+    Style {
+        style: Box<DockStyle>,
+        presentation: Box<DockPresentationConfig>,
+        changed: bool,
+    },
     LayoutReset(Box<PreparedDockspaceLayoutReset>),
     LayoutResetRebindingRoot {
         reset: Box<PreparedDockspaceLayoutReset>,
@@ -291,6 +303,17 @@ impl NativeApplicationAction {
             NativeApplicationCommand::ArrangementLock(policy) => {
                 return Ok(NativeApplicationSubmission::Configuration(policy));
             }
+            NativeApplicationCommand::Style {
+                style,
+                presentation,
+                changed,
+            } => {
+                return Ok(NativeApplicationSubmission::Style {
+                    style,
+                    presentation,
+                    changed,
+                });
+            }
             NativeApplicationCommand::LayoutReset(reset) => {
                 return Ok(NativeApplicationSubmission::Replacement(
                     NativeWorkspaceReplacement::Layout(reset),
@@ -338,6 +361,7 @@ impl NativeApplicationAction {
             NativeApplicationCommand::ArrangementLock(policy) => {
                 NativeActionExpectation::ArrangementLock(policy.arrangement_locked())
             }
+            NativeApplicationCommand::Style { .. } => NativeActionExpectation::Style,
             NativeApplicationCommand::LayoutReset(_)
             | NativeApplicationCommand::LayoutResetRebindingRoot { .. } => {
                 NativeActionExpectation::LayoutReset
@@ -364,6 +388,11 @@ impl NativeApplicationAction {
 pub(crate) enum NativeApplicationSubmission {
     Input(DockspaceSubmittedAction),
     Configuration(Box<DockPolicy>),
+    Style {
+        style: Box<DockStyle>,
+        presentation: Box<DockPresentationConfig>,
+        changed: bool,
+    },
     Replacement(NativeWorkspaceReplacement),
     Terminal(NativeActionStatus),
 }
@@ -386,10 +415,45 @@ pub(crate) enum NativeWorkspaceReplacement {
 /// Exact correlation within the committed frame; replacement is its unique terminal input.
 pub(crate) enum NativeSubmittedApplicationAction {
     Input(DockspaceSubmittedAction),
+    Style {
+        style: Box<DockStyle>,
+        submitted: Option<DockspaceSubmittedAction>,
+        changed: bool,
+    },
     LayoutReset,
     #[cfg(feature = "serde")]
     DocumentRestore,
     Terminal(NativeActionStatus),
+}
+
+impl NativeSubmittedApplicationAction {
+    /// Extracts adapter styling only after the matching core frame committed.
+    pub(crate) fn commit_style(
+        &mut self,
+        report: &HostFrameReport,
+    ) -> Result<Option<Box<DockStyle>>, ()> {
+        let Self::Style {
+            submitted, changed, ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        let geometry_changed = match submitted {
+            Some(submitted) => match report.submitted_action_outcome(*submitted) {
+                Some(HostInputOutcome::PresentationConfigReplaced { changed, .. }) => *changed,
+                _ => return Err(()),
+            },
+            None => false,
+        };
+        let status = NativeActionStatus::StyleChanged {
+            changed: *changed,
+            geometry_changed,
+        };
+        let Self::Style { style, .. } = std::mem::replace(self, Self::Terminal(status)) else {
+            unreachable!("the style submission was checked before replacement")
+        };
+        Ok(Some(style))
+    }
 }
 
 impl NativeApplicationSubmission {
@@ -403,6 +467,22 @@ impl NativeApplicationSubmission {
             Self::Configuration(policy) => frame
                 .replace_policy(*policy)
                 .map(NativeSubmittedApplicationAction::Input),
+            Self::Style {
+                style,
+                presentation,
+                changed,
+            } => {
+                let submitted = if frame.presentation_config() == presentation.as_ref() {
+                    None
+                } else {
+                    Some(frame.replace_presentation_config(*presentation)?)
+                };
+                Ok(NativeSubmittedApplicationAction::Style {
+                    style,
+                    submitted,
+                    changed,
+                })
+            }
             Self::Replacement(NativeWorkspaceReplacement::Layout(reset)) => {
                 frame.submit_layout_reset(&reset)?;
                 Ok(NativeSubmittedApplicationAction::LayoutReset)
@@ -473,6 +553,7 @@ enum NativeActionExpectation {
     Close,
     CloseDecision,
     ArrangementLock(bool),
+    Style,
     LayoutReset,
     #[cfg(feature = "serde")]
     DocumentRestore,
@@ -559,6 +640,7 @@ impl NativeApplicationActions {
             Some(NativeSubmittedApplicationAction::Input(submitted)) => {
                 report.submitted_action_outcome(submitted)
             }
+            Some(NativeSubmittedApplicationAction::Style { .. }) => return Err(()),
             Some(NativeSubmittedApplicationAction::LayoutReset) => report
                 .inputs()
                 .iter()
@@ -576,11 +658,14 @@ impl NativeApplicationActions {
                 let valid = match status {
                     NativeActionStatus::Stale {
                         expected: stale, ..
-                    } => expected == stale,
-                    NativeActionStatus::RootContinuationRejected { .. } => true,
+                    } => expected == stale && kind.is_replacement(),
+                    NativeActionStatus::RootContinuationRejected { .. } => kind.is_replacement(),
+                    NativeActionStatus::StyleChanged { .. } => {
+                        matches!(kind, NativeActionExpectation::Style)
+                    }
                     _ => false,
                 };
-                if !valid || !kind.is_replacement() {
+                if !valid {
                     return Err(());
                 }
                 self.state = NativeApplicationActionState::Terminal(Ok(status));

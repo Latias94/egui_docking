@@ -465,6 +465,8 @@ struct BackpressureApp {
     host: Arc<DelayedTerminalHost>,
     calls: Arc<AtomicUsize>,
     started: Instant,
+    style_queued: bool,
+    style_applied: bool,
 }
 
 impl eframe::App for BackpressureApp {
@@ -491,6 +493,19 @@ impl eframe::App for BackpressureApp {
         let token = eframe::current_native_output_token().unwrap();
         let mut probe = lock(&self.host.probe);
         if probe.holding {
+            if !self.style_queued {
+                self.app
+                    .request_style(DockStyle {
+                        tab_bar_height: 44.0,
+                        ..DockStyle::default()
+                    })
+                    .unwrap();
+                self.style_queued = true;
+            }
+            assert!(
+                self.app.take_action_status().is_none(),
+                "retained output cannot publish the queued style"
+            );
             assert!(
                 retained,
                 "a full core output slot must retain the framebuffer"
@@ -507,11 +522,24 @@ impl eframe::App for BackpressureApp {
                 self.host.release();
             }
         } else if probe.released {
+            if let Some(result) = self.app.take_action_status() {
+                assert_eq!(
+                    result.unwrap(),
+                    crate::NativeActionStatus::StyleChanged {
+                        changed: true,
+                        geometry_changed: true
+                    }
+                );
+                self.style_applied = true;
+            }
             if after > before && !retained && probe.resumed.is_none() {
                 assert!(after > probe.calls_at_hold);
                 probe.resumed = Some(token);
             }
-            if probe.resumed_presented {
+            if probe.resumed_presented
+                && self.style_applied
+                && self.app.is_surface_presented(SURFACE)
+            {
                 probe.done = true;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -527,6 +555,10 @@ impl eframe::App for BackpressureApp {
             probe.calls_at_hold = after;
         }
         ui.ctx().request_repaint_after(Duration::from_millis(5));
+    }
+
+    fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
+        assert!(self.style_queued && self.style_applied);
     }
 }
 
@@ -575,6 +607,8 @@ fn real_eframe_output_capacity_retains_framebuffer_and_resumes_pane_callbacks() 
                 host,
                 calls,
                 started: Instant::now(),
+                style_queued: false,
+                style_applied: false,
             }))
         }),
     )

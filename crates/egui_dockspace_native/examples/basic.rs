@@ -85,6 +85,7 @@ fn main() -> eframe::Result {
         #[cfg(feature = "serde")]
         preset_name: "Working".to_owned(),
         action: ExampleActionState::Idle,
+        font_size: 13.0,
         status: None,
         smoke: std::env::args()
             .any(|argument| argument == "--smoke")
@@ -119,6 +120,7 @@ struct NativeExampleApp {
     #[cfg(feature = "serde")]
     preset_name: String,
     action: ExampleActionState,
+    font_size: f32,
     status: Option<String>,
     smoke: Option<smoke::EditorSmoke>,
     docking_smoke: Option<docking_smoke::DockingSmoke>,
@@ -185,6 +187,38 @@ impl NativeExampleApp {
         ui.horizontal_wrapped(|ui| {
             ui.strong("Dockspace native editor");
             ui.separator();
+            ui.add_enabled_ui(self.controls_available(), |ui| {
+                egui::containers::menu::MenuButton::new("Appearance")
+                    .config(
+                        egui::containers::menu::MenuConfig::new()
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                    )
+                    .ui(ui, |ui| {
+                        let previous_theme = ui.ctx().options(|options| options.theme_preference);
+                        egui::widgets::global_theme_preference_buttons(ui);
+                        let font_changed = ui
+                            .add(
+                                egui::DragValue::new(&mut self.font_size)
+                                    .range(10.0..=36.0)
+                                    .prefix("Font "),
+                            )
+                            .changed();
+                        if font_changed {
+                            let font = egui::FontId::proportional(self.font_size);
+                            ui.ctx().all_styles_mut(|style| {
+                                style.override_font_id = Some(font.clone())
+                            });
+                        }
+                        if font_changed
+                            || ui.ctx().options(|options| options.theme_preference)
+                                != previous_theme
+                        {
+                            ui.set_style(ui.ctx().global_style());
+                            let result = self.dockspace.request_style(DockStyle::from_egui(ui));
+                            self.begin_layout_action("Appearance", result);
+                        }
+                    });
+            });
             let contained_root = inspector.filter(|location| location.is_contained());
             let enabled = self.controls_available()
                 && !self.dockspace.arrangement_locked()
@@ -432,6 +466,9 @@ impl NativeExampleApp {
 
     fn record_action_status(&mut self, status: &NativeActionStatus) {
         self.action = match status {
+            NativeActionStatus::StyleChanged { .. } => {
+                ExampleActionState::AwaitingFreshPresentation("Appearance")
+            }
             NativeActionStatus::LayoutReset { .. } => {
                 ExampleActionState::AwaitingFreshPresentation("Default layout")
             }
@@ -576,6 +613,7 @@ struct ExamplePane {
     input: Option<(egui::ViewportId, egui::Rect, bool, f32)>,
     content: Option<(egui::Rect, f32)>,
     window_id: Option<u64>,
+    text_color: egui::Color32,
 }
 
 impl ExamplePane {
@@ -617,6 +655,7 @@ impl ExamplePanes {
                 input: None,
                 content: None,
                 window_id: None,
+                text_color: egui::Color32::TRANSPARENT,
             }))
             .collect(),
         }
@@ -691,6 +730,7 @@ impl PaneView for ExamplePanes {
             return PaneResponse::default();
         };
         pane.input = None;
+        pane.text_color = ui.visuals().text_color();
         pane.content = Some((ui.max_rect(), ui.ctx().pixels_per_point()));
         pane.window_id = None;
         pane.missing_painted = false;

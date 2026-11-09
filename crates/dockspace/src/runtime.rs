@@ -59,6 +59,7 @@ pub use crate::model::{
 pub use crate::pointer_journal::{PointerDeviceKind, PointerEventMetadata};
 pub use crate::presentation_config::{
     DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
+    PresentationConfigRevision,
 };
 use close::PreparedCloseRequestAuthorityMismatch;
 pub use close::{
@@ -309,6 +310,13 @@ pub enum HostInputOutcome {
         changed: bool,
         /// Workspace version immediately after processing this replacement.
         version: WorkspaceVersion,
+    },
+    /// Presentation geometry or interaction timing was replaced or found equal.
+    PresentationConfigReplaced {
+        /// Whether configuration state changed.
+        changed: bool,
+        /// Independent presentation configuration revision after this input.
+        revision: PresentationConfigRevision,
     },
     /// One core-owned touch or context-menu interaction was reported.
     Touch(DockspaceTouchEvent),

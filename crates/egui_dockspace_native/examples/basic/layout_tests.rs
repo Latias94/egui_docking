@@ -25,6 +25,7 @@ fn app_with_session(
         #[cfg(feature = "serde")]
         preset_name: "Working".to_owned(),
         action: ExampleActionState::Idle,
+        font_size: 13.0,
         status: None,
         smoke: None,
         docking_smoke: None,

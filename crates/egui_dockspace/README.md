@@ -263,18 +263,30 @@ Expose `PaneView::focus_target` (or an authoritative composite `focus_state`) so
 the existing host-focus sampling can identify the pane. Selection, a pending
 focus request, and the frontmost floating window alone do not produce the cue.
 Unfocused windows and disabled tab strips do not show it.
-The experimental native host has a known startup observation gap which can
-delay this cue until a fresh OS focus event; the
-[focus audit](../../docs/audits/2026-11-09-egui-pane-focus.md#native-startup-focus-gap-confirmed-p2-still-open)
-records the reproduction and required fork integration change.
+The experimental native host refreshes exact native focus after route enrollment
+and ingress recovery; the [focus verification](../../docs/audits/2026-11-09-native-startup-focus-refresh.md)
+records the cold-start and background-launch behavior.
 
 For the experimental native host, create the session with the same
 `style.presentation_config()?` before passing both objects to `NativeDockspaceApp`.
 Native construction rejects mismatched geometry/timing instead of displaying a
 style whose core hit regions use different metrics. Colors and ghost offset stay
 adapter-local; custom core-only configuration remains authoritative.
-Native hosts currently configure font-dependent geometry at session creation;
-this does not add a runtime native style-update command.
+After a runtime font or density change, queue
+`native_app.request_style(DockStyle::from_egui(ui))?`, with application overrides
+reapplied. This shares the existing application command slot. Consume its
+`NativeActionStatus::StyleChanged` result before waiting for fresh presentation
+or quiescence. Core geometry and adapter styling publish together after the
+final root pass commits. Core-only configuration is preserved. Geometry changes
+cancel active gestures through core; visual-only and unchanged styles leave
+those gestures intact. Every live window is repainted. The native example's
+Appearance menu demonstrates font changes; egui still owns the font resources.
+
+Managed child OS windows derive descriptive titles from each tab group's
+selected pane, including split and contained groups. Pane selection and renamed
+titles update the caption without changing the native window identity. Missing
+content uses stable item/surface fallback names. The application retains its
+own Root title and may still issue explicit viewport title commands.
 
 Native menus submit `egui_dockspace_native::NativeCommand` values through
 `NativeDockspaceApp::request_command`. Item docking/floating and contained

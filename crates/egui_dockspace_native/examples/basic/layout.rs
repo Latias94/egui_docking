@@ -536,7 +536,7 @@ impl NativeExampleApp {
         });
     }
 
-    fn begin_layout_action<E: std::fmt::Display>(
+    pub(super) fn begin_layout_action<E: std::fmt::Display>(
         &mut self,
         operation: &'static str,
         request: Result<(), E>,
@@ -700,6 +700,12 @@ pub(super) fn describe_status(status: &NativeActionStatus, panes: &ExamplePanes)
             "Arrangement {} (changed: {changed}); pane selection and content editing remain available.",
             if *locked { "locked" } else { "unlocked" }
         ),
+        NativeActionStatus::StyleChanged {
+            changed,
+            geometry_changed,
+        } => {
+            format!("Dock style committed; changed={changed}, geometry changed={geometry_changed}.")
+        }
         NativeActionStatus::LayoutReset { previous, current } => format!(
             "Default layout applied ({previous:?} → {current:?}); waiting for the windows to display their panes and be ready for editing."
         ),

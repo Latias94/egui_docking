@@ -662,15 +662,221 @@ fn commit_queued(state: &mut NativeRuntimeState<Panes>) {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     let report = frame.commit().unwrap();
+    let mut submitted = Some(submitted);
+    state
+        .publish_application_style(&egui::Context::default(), &mut submitted, &report)
+        .unwrap();
     state
         .application_actions
-        .settle_submission(Some(submitted), &report)
+        .settle_submission(submitted, &report)
         .unwrap();
     state.coordinator.settle_host_frame_report(&report).unwrap();
 }
 
 fn take(state: &mut NativeRuntimeState<Panes>) -> NativeActionStatus {
     state.take_action_status().unwrap().unwrap()
+}
+
+#[test]
+fn style_requests_share_the_command_slot_and_publish_only_after_commit() {
+    let mut state = state();
+    let original = state.style.clone();
+    let updated = DockStyle {
+        tab_bar_height: 42.0,
+        ..original.clone()
+    };
+    state.request_style(updated.clone()).unwrap();
+    assert_eq!(state.style, original);
+    assert_eq!(
+        state
+            .coordinator
+            .session()
+            .presentation_config()
+            .tab_bar_height(),
+        28.0
+    );
+    assert!(matches!(
+        state.request_style(original.clone()),
+        Err(crate::NativeStyleRequestError::Queue(
+            NativeActionRequestError::Busy
+        ))
+    ));
+    commit_queued(&mut state);
+    assert_eq!(state.style, updated);
+    assert_eq!(
+        state
+            .coordinator
+            .session()
+            .presentation_config()
+            .tab_bar_height(),
+        42.0
+    );
+    assert_eq!(
+        state.request_command(NativeCommand::SelectItem { item: FIRST }),
+        Err(NativeActionRequestError::Busy)
+    );
+    assert_eq!(
+        take(&mut state),
+        NativeActionStatus::StyleChanged {
+            changed: true,
+            geometry_changed: true
+        }
+    );
+    state.request_style(original).unwrap();
+    commit_queued(&mut state);
+    assert_eq!(
+        take(&mut state),
+        NativeActionStatus::StyleChanged {
+            changed: true,
+            geometry_changed: true
+        }
+    );
+}
+
+#[test]
+fn visual_and_unchanged_styles_do_not_submit_geometry_replacements() {
+    let mut state = state();
+    let mut style = state.style.clone();
+    style.visuals.tab_active_fill = Some(egui::Color32::RED);
+    for changed in [true, false] {
+        let before = state.coordinator.session().presentation_config().clone();
+        state.request_style(style.clone()).unwrap();
+        let action = state.application_actions.take().unwrap();
+        let published = state.coordinator.session().version();
+        let mut frame = state
+            .coordinator
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let mut submitted = Some(
+            action
+                .submit(&mut frame.frame, published)
+                .unwrap()
+                .finish(&mut frame.frame)
+                .unwrap(),
+        );
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        assert!(
+            !report
+                .inputs()
+                .iter()
+                .any(|input| matches!(input, HostInputOutcome::PresentationConfigReplaced { .. }))
+        );
+        state
+            .publish_application_style(&egui::Context::default(), &mut submitted, &report)
+            .unwrap();
+        state
+            .application_actions
+            .settle_submission(submitted, &report)
+            .unwrap();
+        state.coordinator.settle_host_frame_report(&report).unwrap();
+        assert_eq!(state.style, style);
+        assert_eq!(state.coordinator.session().presentation_config(), &before);
+        assert_eq!(
+            take(&mut state),
+            NativeActionStatus::StyleChanged {
+                changed,
+                geometry_changed: false
+            }
+        );
+    }
+}
+
+#[test]
+fn rejected_and_rolled_back_styles_leave_both_authorities_unchanged() {
+    let mut state = state();
+    let original = state.style.clone();
+    let original_config = state.coordinator.session().presentation_config().clone();
+    let invalid = DockStyle {
+        tab_bar_height: f32::NAN,
+        ..original.clone()
+    };
+    assert!(matches!(
+        state.request_style(invalid),
+        Err(crate::NativeStyleRequestError::Style(_))
+    ));
+    assert!(!state.application_actions.is_occupied());
+    state
+        .request_style(DockStyle {
+            tab_bar_height: 42.0,
+            ..original.clone()
+        })
+        .unwrap();
+    let action = state.application_actions.take().unwrap();
+    let published = state.coordinator.session().version();
+    {
+        let mut frame = state
+            .coordinator
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let submitted = action
+            .submit(&mut frame.frame, published)
+            .unwrap()
+            .finish(&mut frame.frame)
+            .unwrap();
+        drop(submitted);
+    }
+    assert_eq!(state.style, original);
+    assert_eq!(
+        state.coordinator.session().presentation_config(),
+        &original_config
+    );
+    state.stop_current_output(
+        crate::error::NativeHostProtocolError::OutputRouteAttachmentFailed.into(),
+    );
+    assert!(matches!(
+        state.request_style(original),
+        Err(crate::NativeStyleRequestError::Queue(
+            NativeActionRequestError::Stopped
+        ))
+    ));
+}
+
+#[test]
+fn style_updates_preserve_custom_core_only_settings() {
+    let mut state = state();
+    let config = state
+        .coordinator
+        .session()
+        .presentation_config()
+        .to_builder()
+        .pointer_drag_start_distance(12.0)
+        .tab_strip_scroll_line_extent(30.0)
+        .magnetic_center_fraction(0.6)
+        .target_release_hysteresis(11.0)
+        .build()
+        .unwrap();
+    let mut frame = state
+        .coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .frame
+        .replace_presentation_config(config.clone())
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    state.coordinator.settle_host_frame_report(&report).unwrap();
+    state
+        .request_style(DockStyle {
+            tab_bar_height: 42.0,
+            ..state.style.clone()
+        })
+        .unwrap();
+    commit_queued(&mut state);
+    let expected = config.to_builder().tab_bar_height(42.0).build().unwrap();
+    assert_eq!(state.coordinator.session().presentation_config(), &expected);
+    assert_eq!(
+        take(&mut state),
+        NativeActionStatus::StyleChanged {
+            changed: true,
+            geometry_changed: true
+        }
+    );
 }
 
 fn request_plan(
