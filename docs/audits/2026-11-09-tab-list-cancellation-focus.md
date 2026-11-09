@@ -81,8 +81,10 @@ record that separate check before the menu edits.
 While preparing the child-menu check, attempts to open Inspector from a
 680 × 620 main window were rejected with `surface 1 has no current presentation
 geometry`. Expanding the host to 1000 × 780 before creation succeeded. This
-separate observation is being investigated; the menu fix does not claim to
-resolve it. The child-menu journey explicitly expands the host before creation.
+separate observation remained outside the menu fix's scope. The child-menu
+journey explicitly expands the host before creation.
+The subsequent [offscreen native promotion follow-up](2026-11-09-offscreen-native-promotion.md)
+isolates and corrects this independent measurement lookup defect.
 
 ## Verification and review
 

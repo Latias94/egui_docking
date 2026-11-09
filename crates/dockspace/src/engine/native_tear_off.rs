@@ -157,9 +157,10 @@ impl DockEngine {
         let minimum_size = match existing_floating {
             Some(floating) => projection
                 .plan()
-                .contained_record(floating)
-                .filter(|record| record.root() == root)
-                .map(crate::scene::ContainedRecord::minimum_size),
+                .contained_minimums()
+                .iter()
+                .find(|measurement| measurement.floating() == floating)
+                .map(|measurement| measurement.minimum_size()),
             None => projection
                 .plan()
                 .layout_facts()
@@ -288,9 +289,10 @@ impl DockEngine {
         let minimum_size = match existing_floating {
             Some(floating) => projection
                 .plan()
-                .contained_record(floating)
-                .filter(|record| record.root() == root)
-                .map(crate::scene::ContainedRecord::minimum_size),
+                .contained_minimums()
+                .iter()
+                .find(|measurement| measurement.floating() == floating)
+                .map(|measurement| measurement.minimum_size()),
             None => projection
                 .plan()
                 .layout_facts()

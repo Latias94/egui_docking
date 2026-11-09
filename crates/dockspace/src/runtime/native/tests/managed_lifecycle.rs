@@ -304,6 +304,82 @@ fn programmatic_native_root_tear_off_starts_the_shared_create_saga() {
 }
 
 #[test]
+fn programmatic_native_root_tear_off_preserves_measured_recovery_for_offscreen_groups() {
+    const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
+    for x in [40.0, 850.0] {
+        let (mut session, _) = programmatic_tear_off_session_at(x);
+        let projection = session.engine.interaction_projection(SURFACE).unwrap();
+        assert_eq!(
+            projection.plan().contained_record(FLOATING).is_some(),
+            x < 640.0
+        );
+        let minimum = projection
+            .plan()
+            .contained_minimums()
+            .iter()
+            .find(|measurement| measurement.floating() == FLOATING)
+            .unwrap()
+            .minimum_size();
+        let before = session.version();
+        let placement = PhysicalRect::new(920.0, 120.0, 420.0, 320.0).unwrap();
+        assert!(
+            session
+                .presentation_commands(ROOT)
+                .move_to_new_window(NativeWindowPlacement::new(placement))
+                .unwrap()
+                .is_ready(),
+            "explicit placement must be available for the measured group at x={x}"
+        );
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        frame
+            .move_root_to_new_window_current(ROOT, NativeWindowPlacement::new(placement))
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let mut report = frame.commit().unwrap();
+        let effects = report.take_native_effects();
+        assert_eq!(effects.len(), 1, "x={x}; inputs: {:?}", report.inputs());
+        let NativeEffectOperation::CreateWindow {
+            binding,
+            placement: requested,
+            ..
+        } = effects[0].operation()
+        else {
+            panic!("expected native creation at x={x}");
+        };
+        assert_eq!(*requested, placement);
+        assert_eq!(
+            report.inputs(),
+            &[super::super::super::HostInputOutcome::ProductActionApplied(
+                crate::model::DockspaceActionOutcome::NativeRootTearOffRequested {
+                    root: ROOT,
+                    source_surface: SURFACE,
+                    target_surface: binding.surface(),
+                    items: vec![ITEM, SECOND_ITEM],
+                },
+            )]
+        );
+        let (_, saga) = session
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .next()
+            .unwrap();
+        assert_eq!(
+            saga.prepared().proposal().converted_main().minimum_size(),
+            minimum
+        );
+        assert_eq!(session.version(), before);
+        for item in [ITEM, SECOND_ITEM] {
+            assert_eq!(session.view().item(item).unwrap().surface(), SURFACE);
+        }
+    }
+}
+
+#[test]
 fn duplicate_programmatic_native_root_tear_off_is_rejected_atomically() {
     let (mut session, _) = programmatic_tear_off_session();
     let before = session.version();
@@ -1657,6 +1733,10 @@ fn registered_root_window_menu_allows_contained_float_and_child_promotion() {
 }
 
 pub(super) fn programmatic_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {
+    programmatic_tear_off_session_at(40.0)
+}
+
+fn programmatic_tear_off_session_at(x: f64) -> (DockspaceSession, NativeSurfaceBinding) {
     const MAIN_ROOT: RootId = RootId::new(2);
     const MAIN_ITEM: ItemId = ItemId::new(3);
     const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
@@ -1683,7 +1763,7 @@ pub(super) fn programmatic_tear_off_session() -> (DockspaceSession, NativeSurfac
         FLOATING,
         ContainedFloating::new(
             ROOT,
-            LogicalRect::new(40.0, 50.0, 360.0, 280.0).expect("the contained root bounds validate"),
+            LogicalRect::new(x, 50.0, 360.0, 280.0).expect("the contained root bounds validate"),
         ),
     );
     managed_session_from_workspace(

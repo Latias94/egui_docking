@@ -1,0 +1,29 @@
+{
+  "command": [
+    "docker",
+    "exec",
+    "-e",
+    "LIBGL_ALWAYS_SOFTWARE=1",
+    "-e",
+    "LP_NUM_THREADS=1",
+    "-e",
+    "WINIT_UNIX_BACKEND=x11",
+    "-e",
+    "WINIT_X11_SCALE_FACTOR=1",
+    "354e85cb1d95",
+    "xvfb-run",
+    "-a",
+    "--server-args=-screen 0 1440x1000x24",
+    "python3",
+    "/tmp/offscreen_journey_final.py",
+    "/tmp/dockspace-offscreen-final-confirmed"
+  ],
+  "started": "2026-11-09T01:43:32.974776+00:00",
+  "source_sha256": {
+    "crates/dockspace/src/engine/native_tear_off.rs": "53194ea93e0efda613e6d677c3d82c35b2932219ab8e62de066bf029d733f02f",
+    "crates/dockspace/src/runtime/native/tests/managed_lifecycle.rs": "fa10873d8e51a2c722020d24ed0d9e4f17c318726b078d198aa5fd4bdc3e20f5",
+    "crates/dockspace/src/runtime/presentation_commands.rs": "68ac2d0823ba2ac7440de168b4fa6a34f02e2f17d0ce0a36cd6f3ab6dcae7c8d"
+  },
+  "finished": "2026-11-09T01:43:44.580711+00:00",
+  "returncode": 0
+}

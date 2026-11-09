@@ -86,6 +86,10 @@ impl<'session> DockspacePresentationCommands<'session> {
 
     /// Preflights promotion into a managed native child window.
     ///
+    /// An explicitly placed promotion may recover a contained group outside
+    /// its source surface's visible bounds. It still requires current source
+    /// presentation authority and the group's measured minimum size.
+    ///
     /// # Errors
     ///
     /// Returns an internal runtime error only when native preflight violates a core invariant.
