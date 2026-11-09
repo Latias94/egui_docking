@@ -1,0 +1,189 @@
+{
+  "result": "Five P2 findings reproduced; production behavior remains unchanged.",
+  "P2-1": {
+    "name": "Keyboard navigation cannot reach a hidden last tab",
+    "before_focus": {
+      "bounds": [
+        129.55999755859375,
+        25.0,
+        175.55999755859375,
+        53.0
+      ],
+      "disabled": false,
+      "id": 5928521589919005747,
+      "label": "Document.rs",
+      "role": "Tab",
+      "selected": true
+    },
+    "after_focus": {
+      "bounds": [
+        129.55999755859375,
+        25.0,
+        175.55999755859375,
+        53.0
+      ],
+      "disabled": false,
+      "id": 5928521589919005747,
+      "label": "Document.rs",
+      "role": "Tab",
+      "selected": true
+    },
+    "selected_before": [
+      "Scene",
+      "Document.rs"
+    ],
+    "selected_after": [
+      "Scene",
+      "Document.rs"
+    ],
+    "positive_controls": {
+      "next_visible": {
+        "bounds": [
+          201.55999755859375,
+          25.0,
+          247.55999755859375,
+          53.0
+        ],
+        "disabled": false,
+        "id": 2026008120484920236,
+        "label": "History",
+        "role": "Tab",
+        "selected": true
+      },
+      "home_visible": {
+        "bounds": [
+          129.55999755859375,
+          25.0,
+          175.55999755859375,
+          53.0
+        ],
+        "disabled": false,
+        "id": 5928521589919005747,
+        "label": "Document.rs",
+        "role": "Tab",
+        "selected": true
+      },
+      "end_when_all_visible": {
+        "bounds": [
+          672.010009765625,
+          25.0,
+          866.010009765625,
+          53.0
+        ],
+        "disabled": false,
+        "id": 2700581275579054660,
+        "label": "Material settings and texture references",
+        "role": "Tab",
+        "selected": true
+      }
+    }
+  },
+  "P2-2": {
+    "name": "Selected last tab becomes hidden after a host resize",
+    "wide_selected": [
+      "Material settings and texture references",
+      "Scene",
+      "Inspector"
+    ],
+    "narrow_visible_selected": [
+      "Scene"
+    ],
+    "narrow_content_still_contains_selected_title": true
+  },
+  "P2-3": {
+    "name": "Long tab ellipsis is outside the actual text clip",
+    "observations": [
+      {
+        "frame": "egui-long-base",
+        "pixels_per_point": 1.0,
+        "text_clip_width": 174.0,
+        "ellipsis_start_x": 480.760009765625,
+        "text_clip_right": 452.760009765625,
+        "ellipsis_entirely_outside_clip": true
+      },
+      {
+        "frame": "egui-long-zoom-base",
+        "pixels_per_point": 1.5,
+        "text_clip_width": 173.99998474121094,
+        "ellipsis_start_x": 377.6958312988281,
+        "text_clip_right": 350.36248779296875,
+        "ellipsis_entirely_outside_clip": true
+      }
+    ]
+  },
+  "P2-4": {
+    "name": "Floating resize edge has no painted focus indicator",
+    "focused_before": {
+      "bounds": [
+        813.0,
+        272.0,
+        820.0,
+        568.0
+      ],
+      "disabled": false,
+      "id": 12210629464277806488,
+      "label": "Resize floating right edge",
+      "role": "Splitter",
+      "selected": null
+    },
+    "focused_after": {
+      "bounds": [
+        829.0,
+        272.0,
+        836.0,
+        568.0
+      ],
+      "disabled": false,
+      "id": 12210629464277806488,
+      "label": "Resize floating right edge",
+      "role": "Splitter",
+      "selected": null
+    },
+    "right_edge_keyboard_delta_points": 16.0,
+    "visual_inspection": [
+      "evidence/egui-dark-edge-before.png",
+      "evidence/egui-dark-edge-after.png"
+    ]
+  },
+  "P2-5": {
+    "name": "Global font override clips title glyph ink",
+    "global_override_font_points": 36.0,
+    "title_text_shape": {
+      "clip": [
+        474.0,
+        266.0,
+        744.0,
+        294.0
+      ],
+      "elided": false,
+      "fallback": [
+        140,
+        140,
+        140,
+        255
+      ],
+      "ink_bounds": [
+        536.78125,
+        267.5,
+        684.78125,
+        299.5
+      ],
+      "last_glyph": {
+        "char": "r",
+        "end_x": 150.46400451660156,
+        "x": 137.0
+      },
+      "override": null,
+      "pos": [
+        533.78125,
+        259.5
+      ],
+      "size": [
+        150.4375,
+        41.0
+      ],
+      "text": "Inspector"
+    },
+    "title_ink_exceeds_clip_bottom_by_points": 5.5
+  }
+}
