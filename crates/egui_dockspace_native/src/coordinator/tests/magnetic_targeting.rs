@@ -12,6 +12,9 @@ use winit::keyboard::ModifiersState;
 
 use super::*;
 
+#[path = "escape_cancel.rs"]
+mod escape_cancel;
+
 fn captured_record(
     native: &NativeCoordinator,
     binding: NativeSurfaceBinding,

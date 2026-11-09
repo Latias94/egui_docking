@@ -10,7 +10,9 @@ use crate::engine::SurfaceContributionToken;
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, HostPresentationAttemptId, ItemId, RootId, SurfaceId};
-use crate::interaction::{ContainedTransformPreview, InteractionPreview, PreviewVisual};
+use crate::interaction::{
+    ContainedTransformPreview, EscapeDelivery, InteractionPreview, PreviewVisual,
+};
 use crate::model::{DockspaceActionRejection, DockspaceAxis, ProductAction};
 use crate::presentation_hit::{
     PresentationHitRegion, PresentationHitRegionId, PresentationHitRegionKind,
@@ -1029,7 +1031,7 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) plan: &'frame PresentationPlan,
     pub(super) hit_manifest: &'frame crate::presentation_hit::PresentationHitManifest,
     pub(super) splitter_keyboard_step: f64,
-    pub(super) escape_available: bool,
+    pub(super) escape_delivery: Option<EscapeDelivery>,
     pub(super) drop_affordance: Option<&'frame DropAffordance>,
     pub(super) drag_preview: Option<&'frame InteractionPreview>,
     pub(super) drag_decoration: Option<DockspaceDragDecoration<'frame>>,
@@ -1386,6 +1388,15 @@ impl DockspaceHostFrame<'_> {
                     intent,
                 )
             });
+        let escape_delivery =
+            if view.interaction().status() == crate::interaction::InteractionStatus::Idle {
+                None
+            } else if let Some(record) = view.viewport().viewport(surface) {
+                Some(EscapeDelivery::NativeBinding(record.binding()))
+            } else {
+                (view.interaction().active_surface() == Some(surface))
+                    .then_some(EscapeDelivery::Surface(surface))
+            };
         let plan = SurfacePaintPlan {
             encoding_started: &self.encoding_started,
             encoding_pass: self.encoding_pass,
@@ -1402,7 +1413,7 @@ impl DockspaceHostFrame<'_> {
             plan: candidate.plan(),
             hit_manifest: candidate.hit_manifest(),
             splitter_keyboard_step: view.presentation_config().splitter_keyboard_step(),
-            escape_available: view.interaction().active_surface() == Some(surface),
+            escape_delivery,
             drop_affordance,
             drag_preview: view.presentation_drag_preview(surface),
             drag_decoration,

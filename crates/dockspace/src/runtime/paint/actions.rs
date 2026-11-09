@@ -457,16 +457,20 @@ impl SurfacePaintPlan<'_> {
         ))
     }
 
-    /// Prepares Escape cancellation only for this surface's active local gesture.
+    /// Prepares cancellation of the exact active gesture exposed by this callback.
+    ///
+    /// Local surfaces may cancel their own gesture. A native surface carries its
+    /// exact current window binding and may cancel a gesture from another window.
     #[must_use]
     pub fn prepare_escape_cancel(self) -> Option<PreparedSurfaceAction> {
-        self.escape_available.then_some(())?;
+        let delivery = self.escape_delivery?;
         Some(PreparedSurfaceAction::cancel_with_escape(
             self.authority_domain,
             self.version,
             self.surface,
             self.frozen_action_witness()?,
             self.candidate.interaction().status(),
+            delivery,
         ))
     }
 

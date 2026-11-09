@@ -141,12 +141,9 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
-            LocalSurfaceAction::CancelWithEscape { .. } => self.reduce_escape_input(
-                input,
-                self.version,
-                EscapeDelivery::Surface(witness.stamp().surface()),
-                interaction_events,
-            ),
+            LocalSurfaceAction::CancelWithEscape { delivery, .. } => {
+                self.reduce_escape_input(input, self.version, *delivery, interaction_events)
+            }
         }?;
         Ok(match outcome {
             InputOutcome::CommandProcessed {
@@ -282,7 +279,7 @@ impl DockEngine {
                     .all(|splitter| root_is_current(splitter.root))
                     && self.deferred_splitter_geometry_is_current(witness)
             }
-            LocalSurfaceAction::CancelWithEscape { status } => {
+            LocalSurfaceAction::CancelWithEscape { status, .. } => {
                 *status == self.interaction.status() && *status != InteractionStatus::Idle
             }
         };

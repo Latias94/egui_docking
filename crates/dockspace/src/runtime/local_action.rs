@@ -243,13 +243,14 @@ impl PreparedSurfaceAction {
         surface: SurfaceId,
         witness: Arc<crate::scene::SurfacePlanScene>,
         status: crate::interaction::InteractionStatus,
+        delivery: EscapeDelivery,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface,
             witness,
-            action: SurfaceAction::CancelWithEscape { status },
+            action: SurfaceAction::CancelWithEscape { status, delivery },
         }
     }
 
@@ -385,10 +386,10 @@ impl PreparedSurfaceAction {
                 direction,
                 delta,
             },
-            SurfaceAction::CancelWithEscape { .. } => {
+            SurfaceAction::CancelWithEscape { delivery, .. } => {
                 EngineInput::CancelActiveInteractionWithEscape {
                     expected: self.expected,
-                    delivery: EscapeDelivery::Surface(self.surface),
+                    delivery,
                 }
             }
         })

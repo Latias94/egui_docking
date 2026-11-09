@@ -425,6 +425,7 @@ pub(crate) enum LocalSurfaceAction {
     },
     CancelWithEscape {
         status: InteractionStatus,
+        delivery: EscapeDelivery,
     },
 }
 
@@ -488,7 +489,16 @@ impl LocalSurfaceAction {
                     ..
                 },
             ) => a == b && aa == ba && ad == bd,
-            (Self::CancelWithEscape { status: a }, Self::CancelWithEscape { status: b }) => a == b,
+            (
+                Self::CancelWithEscape {
+                    status: a,
+                    delivery: ad,
+                },
+                Self::CancelWithEscape {
+                    status: b,
+                    delivery: bd,
+                },
+            ) => a == b && ad == bd,
             _ => false,
         }
     }
