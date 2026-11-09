@@ -16,6 +16,27 @@ use crate::mailbox::NativeHostBridge;
 use crate::pointer_event::NativePointerTranslator;
 use crate::receiver::NativeReceiverStore;
 
+pub(crate) fn retained_focus_binding(
+    context: &egui::Context,
+    token: eframe::NativeOutputToken,
+    surface: SurfaceId,
+    bridge: &NativeHostBridge,
+) -> Option<dockspace::runtime::NativeSurfaceBinding> {
+    let binding = bridge
+        .output_reservation(token)
+        .and_then(|reservation| reservation.binding())?;
+    (token.viewport_id() == context.viewport_id()
+        && binding.surface() == surface
+        && bridge.with_viewports(|viewports| {
+            viewports.binding_for_output(
+                token.viewport_id(),
+                token.window_id(),
+                token.create_attempt(),
+            )
+        }) == Some(binding))
+    .then_some(binding)
+}
+
 /// Final-pass paint metadata plus fork-owned scroll identities from that same pass.
 pub(crate) struct NativeSurfacePaint {
     inner: egui_dockspace::native_support::NativeSurfacePaint,
@@ -98,6 +119,21 @@ impl std::fmt::Debug for NativeHostFrame<'_> {
 }
 
 impl<'session> NativeHostFrame<'session> {
+    pub(crate) fn retain_pane_focus(
+        &self,
+        context: &egui::Context,
+        surface: SurfaceId,
+        panes: &dyn PaneView,
+    ) {
+        // A replacement may reuse item/widget IDs in a new workspace epoch.
+        if self.frame.proposed_native_bindings().next().is_some() {
+            return;
+        }
+        if let Some(surface) = self.frame.view().surface(surface) {
+            egui_dockspace::native_support::retain_skipped_pane_focus(context, surface, panes);
+        }
+    }
+
     pub(crate) fn presented_focus_bindings(
         &self,
         surface: SurfaceId,

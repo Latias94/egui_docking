@@ -1,0 +1,21 @@
+{
+  "recorded_at": "2026-11-09T03:16:31.936195+00:00",
+  "base_head": "c33bc0f57ebf35ea5934f3e7c2ae78c30925f43c",
+  "binary_sha256": "99accb3da64b8dda5c9d4bab97cf80c2feed09bceefda6a58da43f1402cedfce",
+  "source_sha256": {
+    "crates/egui_dockspace/src/native_support.rs": "b332e33fc762e2408b53ba624c4446d13db62468b295e49d33cb6e037d1bdc63",
+    "crates/egui_dockspace/src/pane.rs": "71ef8ebe8da8ce039c3faafea4f0e0f536ebfd607ab07a6a5cb5eaefeda81f23",
+    "crates/egui_dockspace/src/product_focus.rs": "55f07fc6d40372566b29e58bb338de893926d36dbb8d612fdc367326a8971043",
+    "crates/egui_dockspace/src/product_focus_tests.rs": "935932fac92fdf37f5193b7156355daeca7bab975facb4585f763a27e591236f",
+    "crates/egui_dockspace/src/product_owned_run_tests.rs": "aa35b84269998afcec7fb14cbc4cb8733de14831729db29bc03e5382b573d749",
+    "crates/egui_dockspace/src/product_render/tab_chrome.rs": "23f651f6c6cb1d5c84cc8238628746d5729d48c3e3ca09051b48e4ec3266e9ab",
+    "crates/egui_dockspace_native/src/app.rs": "7917d4ca215b299ea505cb7852d78ec39de52a89b48928a51e2c30a948ceae32",
+    "crates/egui_dockspace_native/src/host_frame.rs": "f6a18844890a4bcfabb66dee94ed9d2501ab9c03e4bd63cf29c34c6da03f145b",
+    "crates/egui_dockspace_native/src/receiver.rs": "19c971282af692b38b7e957a1db9f0a88497d1a87c3a4ebf12216337ea9f4f92",
+    "crates/egui_dockspace_native/src/surface_driver.rs": "74f8074ba53c9aa6209ed1810af27e06a60db6aec12e9a994620d685a8581c41",
+    "crates/egui_dockspace_native/src/receiver_focus_tests.rs": "2a6ea2eea6738b21f2b526911a500a9a67147fc01f01307c7d5443f3a3be154e",
+    "crates/egui_dockspace_native/src/receiver_menu_tests.rs": "de1cb4f1e80adcb05b7387a51f0f4c2a43be994217c02305116abe214d25eb53",
+    "crates/egui_dockspace_native/src/retained_focus_tests.rs": "34f4f551cc14a7b56f84e5fd514a2bce2f749e6d2badf49feddebd7757246049",
+    "crates/egui_dockspace_native/examples/basic.rs": "8dd03d273c3620a7d22eeb0222ab11e3001d3ff17abda25804c2614ed1a46c14"
+  }
+}

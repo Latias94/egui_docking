@@ -630,9 +630,28 @@ impl<P: PaneView> NativeRuntimeState<P> {
 
     pub(crate) fn stage_retain_previous(
         &mut self,
+        context: &egui::Context,
         token: NativeOutputToken,
         surface: SurfaceId,
     ) -> Result<(), NativeRuntimeError> {
+        if crate::host_frame::retained_focus_binding(
+            context,
+            token,
+            surface,
+            &self.coordinator.dispatch_bridge(),
+        )
+        .is_some_and(|binding| {
+            self.coordinator
+                .session()
+                .is_current_native_binding(binding)
+        }) && let Some(surface) = self.coordinator.session().view().surface(surface)
+        {
+            egui_dockspace::native_support::retain_skipped_pane_focus(
+                context,
+                surface,
+                &self.panes,
+            );
+        }
         self.pass_actions
             .stage_retain_previous(token, surface)
             .map_err(map_pass_action_error)
@@ -679,9 +698,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .is_some_and(|update| update.run.token != token)
         {
             self.pending_service = true;
-            self.pass_actions
-                .stage_retain_previous(token, surface)
-                .map_err(map_pass_action_error)?;
+            self.stage_retain_previous(&context, token, surface)?;
             require_durable_root_cycle(&self.coordinator, token, true)?;
             return Ok(NativeSurfaceUpdate::RetainPrevious);
         }
@@ -730,9 +747,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 if surface != self.root_surface {
                     bridge.block_semantic_viewport(token.viewport_id());
                 }
-                self.pass_actions
-                    .stage_retain_previous(token, surface)
-                    .map_err(map_pass_action_error)?;
+                self.stage_retain_previous(&context, token, surface)?;
                 require_durable_root_cycle(&self.coordinator, token, true)?;
                 context.request_repaint_once_of(ViewportId::ROOT);
                 context.request_repaint_once_of(token.viewport_id());
@@ -887,10 +902,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
             retain_previous = true;
         }
         if retain_previous {
-            egui_dockspace::native_support::retain_presented_pane_focus(
-                &context,
-                host_frame.presented_focus_bindings(surface, token.viewport_id()),
-            );
+            if crate::host_frame::retained_focus_binding(&context, token, surface, &bridge)
+                .is_some()
+            {
+                host_frame.retain_pane_focus(&context, surface, &self.panes);
+            }
             if surface != self.root_surface {
                 bridge.block_semantic_viewport(token.viewport_id());
             }

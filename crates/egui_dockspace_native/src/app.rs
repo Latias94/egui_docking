@@ -589,7 +589,7 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
             paint_placeholder(ui, class, Some(disposition));
         }
         DeferredViewportPaint::Retain(binding) => {
-            if let Err(error) = state.stage_retain_previous(token, binding.surface()) {
+            if let Err(error) = state.stage_retain_previous(ui.ctx(), token, binding.surface()) {
                 state.stop_current_output(error);
                 ui.ctx().request_repaint_once_of(ViewportId::ROOT);
                 state.render_error(ui, NativeErrorPresentation::NoFrame);
@@ -704,6 +704,11 @@ fn paint_root_waiting(ui: &mut egui::Ui) {
         ui.label("Waiting for dockspace authority…");
     });
 }
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+#[path = "retained_focus_tests.rs"]
+mod retained_focus_tests;
 
 #[cfg(test)]
 mod tests {

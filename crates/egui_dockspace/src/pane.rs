@@ -128,7 +128,8 @@ pub trait PaneView {
 
     /// Returns the stable egui focus identity registered by `item`'s pane UI.
     ///
-    /// The adapter uses this identity only to request or surrender focus. Merely
+    /// The adapter uses this identity to request or surrender focus, and to keep
+    /// an already focused selected pane alive while its UI is skipped. Merely
     /// selecting the item's tab, rendering the pane, or issuing a request never
     /// acknowledges a core pane-focus intent. In a caller-owned non-root
     /// viewport, terminal confirmation requires this identity to appear in the

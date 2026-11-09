@@ -447,6 +447,10 @@ fn logical_pos(point: LogicalPoint) -> Option<egui::Pos2> {
 }
 
 #[cfg(test)]
+#[path = "receiver_focus_tests.rs"]
+mod focus_tests;
+
+#[cfg(test)]
 mod tests {
     use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
     use dockspace::model::{

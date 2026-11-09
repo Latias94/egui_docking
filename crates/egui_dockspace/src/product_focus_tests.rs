@@ -7,7 +7,7 @@ use dockspace::model::{
 use dockspace::runtime::{DockspaceHostFocus, DockspaceSession};
 use egui::{Context, Id, Pos2, RawInput, Rect, TextEdit, Ui, ViewportId, WidgetText, vec2};
 
-use super::{retain_presented_pane_focus, sample_host_focus};
+use super::{retain_presented_pane_focus, retain_skipped_pane_focus, sample_host_focus};
 use crate::pane::PaneView;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -251,5 +251,44 @@ fn a_retained_record_cannot_override_window_blur_or_resurrect_surrendered_focus(
         );
         assert_eq!(context.memory(|memory| memory.focused()), None);
     });
+    assert_eq!(context.memory(|memory| memory.focused()), None);
+}
+
+#[test]
+fn skipped_pane_focus_requires_the_current_selected_target_and_never_requests_focus() {
+    let context = test_context();
+    let selected = session(EDITOR);
+    let unselected = session(OTHER);
+    let mut pane = EditorPane::new();
+    focus_editor(&context, &mut pane);
+    let mut blurred = input(ViewportId::ROOT);
+    blurred.focused = false;
+    blurred
+        .viewports
+        .get_mut(&ViewportId::ROOT)
+        .unwrap()
+        .focused = Some(false);
+    for _ in 0..2 {
+        run(&context, blurred.clone(), |_| {
+            retain_skipped_pane_focus(&context, selected.view().surface(SURFACE).unwrap(), &pane);
+        });
+        assert!(context.memory(|memory| memory.has_focus(pane.target)));
+    }
+    run(&context, input(ViewportId::ROOT), |_| {
+        retain_skipped_pane_focus(&context, unselected.view().surface(SURFACE).unwrap(), &pane);
+    });
+    assert_eq!(context.memory(|memory| memory.focused()), None);
+    run(&context, input(ViewportId::ROOT), |_| {
+        retain_skipped_pane_focus(&context, selected.view().surface(SURFACE).unwrap(), &pane);
+    });
+    assert_eq!(context.memory(|memory| memory.focused()), None);
+
+    focus_editor(&context, &mut pane);
+    let old_target = pane.target;
+    pane.target = pane.target.with("replacement-editor");
+    run(&context, input(ViewportId::ROOT), |_| {
+        retain_skipped_pane_focus(&context, selected.view().surface(SURFACE).unwrap(), &pane);
+    });
+    assert!(!context.memory(|memory| memory.has_focus(old_target)));
     assert_eq!(context.memory(|memory| memory.focused()), None);
 }

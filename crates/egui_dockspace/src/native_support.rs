@@ -21,7 +21,7 @@ use crate::pane::PaneView;
 use crate::product_render;
 use crate::style::DockStyle;
 
-pub use crate::product_focus::{retain_presented_pane_focus, sample_host_focus};
+pub use crate::product_focus::{retain_skipped_pane_focus, sample_host_focus};
 pub use crate::product_render::EguiSurfaceAction;
 
 /// Validates a native renderer style and returns its first mismatched core field.

@@ -56,27 +56,15 @@ pub fn sample_host_focus(
 
     let focused_id = context.memory(|memory| memory.focused());
     let mut evidence = PaneFocusEvidence::default();
-    let mut pending = surface
-        .main_root()
-        .into_iter()
-        .chain(surface.contained().filter_map(|contained| contained.root()))
-        .filter_map(|root| root.content())
-        .collect::<Vec<_>>();
-    while let Some(node) = pending.pop() {
-        if let Some(tabs) = node.tabs() {
-            if let Some(item) = tabs.selected() {
-                collect_pane_focus(
-                    item,
-                    context,
-                    panes,
-                    focused_id,
-                    retained_focus,
-                    &mut evidence,
-                );
-            }
-        } else if let Some(split) = node.split() {
-            pending.extend(split.children());
-        }
+    for item in selected_panes(surface) {
+        collect_pane_focus(
+            item,
+            context,
+            panes,
+            focused_id,
+            retained_focus,
+            &mut evidence,
+        );
     }
 
     if evidence.ambiguous {
@@ -125,6 +113,46 @@ pub fn retain_presented_pane_focus(context: &Context, retained_focus: &[(ItemId,
         // hit registration. The original output still owns this state identity.
         context.check_for_id_clash(id, Rect::ZERO, "retained dockspace pane focus");
     }
+}
+
+/// Keeps a selected pane's existing focus identity alive while its UI is skipped.
+///
+/// The caller must validate the current surface's viewport and native lifetime.
+/// This neither requests focus nor supplies presentation evidence to focus sampling.
+#[doc(hidden)]
+#[cfg(any(test, feature = "native-render-support"))]
+pub fn retain_skipped_pane_focus(
+    context: &Context,
+    surface: DockspaceSurfaceView<'_>,
+    panes: &dyn PaneView,
+) {
+    let Some(id) = context.memory(|memory| memory.focused()) else {
+        return;
+    };
+    if selected_panes(surface).any(|item| panes.focus_target(item) == Some(id)) {
+        context.check_for_id_clash(id, Rect::ZERO, "skipped dockspace pane focus");
+    }
+}
+
+fn selected_panes(surface: DockspaceSurfaceView<'_>) -> impl Iterator<Item = ItemId> + '_ {
+    let mut pending = surface
+        .main_root()
+        .into_iter()
+        .chain(surface.contained().filter_map(|contained| contained.root()))
+        .filter_map(|root| root.content())
+        .collect::<Vec<_>>();
+    std::iter::from_fn(move || {
+        while let Some(node) = pending.pop() {
+            if let Some(tabs) = node.tabs() {
+                if let Some(item) = tabs.selected() {
+                    return Some(item);
+                }
+            } else if let Some(split) = node.split() {
+                pending.extend(split.children());
+            }
+        }
+        None
+    })
 }
 
 fn collect_pane_focus(
