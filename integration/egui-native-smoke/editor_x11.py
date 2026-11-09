@@ -35,17 +35,24 @@ def xdotool(*arguments: str) -> str:
 
 
 def windows(pid: int, kind: str) -> set[str]:
-    title = "Dockspace panel" if kind == "child" else "Dockspace native editor"
     result = subprocess.run(
         ["xdotool", "search", "--all", "--onlyvisible", "--pid", str(pid),
-         "--name", f"^{title}$"],
+         "--name", ".*"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5,
         check=False,
     )
     if result.returncode == 1 and not result.stdout.strip():
         return set()
     result.check_returncode()
-    return set(result.stdout.splitlines())
+    matches = set()
+    for window_id in result.stdout.splitlines():
+        title = xdotool("getwindowname", window_id)
+        if kind == "child":
+            if title.endswith(" — Dockspace") or re.fullmatch(r"Dockspace panel(?: [0-9]+)?", title):
+                matches.add(window_id)
+        elif title == "Dockspace native editor":
+            matches.add(window_id)
+    return matches
 
 
 def window(pid: int, kind: str) -> str:
@@ -53,6 +60,18 @@ def window(pid: int, kind: str) -> str:
     if len(matches) != 1:
         raise RuntimeError(f"expected one {kind} window for process {pid}, got {matches}")
     return next(iter(matches))
+
+
+def assert_window_title(window_id: str, expected: str) -> None:
+    deadline = time.monotonic() + 3
+    actual = ""
+    while time.monotonic() < deadline:
+        actual = xdotool("getwindowname", window_id)
+        if actual == expected:
+            print(f"editor-x11: window_id={window_id} title={actual!r}", flush=True)
+            return
+        time.sleep(0.02)
+    raise RuntimeError(f"window {window_id} title is {actual!r}, expected {expected!r}")
 
 
 def assert_destroyed(window_id: str) -> None:
@@ -327,6 +346,7 @@ def run(binary: Path) -> None:
                         f"actual widget window {target} is not a live {kind} owned by the app"
                     )
                 if marker == "CHILD_EDIT":
+                    assert_window_title(target, "Inspector — Dockspace")
                     children.append(target)
                 if not (
                     float(left) < float(x) < float(right)
@@ -490,6 +510,8 @@ def run(binary: Path) -> None:
                     if match is None:
                         raise RuntimeError("both old children need exact presented OS window IDs")
                     old_children = list(match.groups())
+                    for child, title in zip(old_children, ("Inspector", "Assets")):
+                        assert_window_title(child, f"{title} — Dockspace")
                     if len(set(old_children)) != 2 or set(old_children) & set(children):
                         raise RuntimeError("the multi-surface predecessors reused earlier window IDs")
                     if windows(process.pid, "child") != set(old_children):

@@ -42,12 +42,7 @@ impl DeferredViewportSpec {
     }
 
     pub(crate) fn builder(self) -> ViewportBuilder {
-        ViewportBuilder::default()
-            .with_visible(self.visible)
-            .with_title(match self.role {
-                NativeSurfaceRole::Root => "Dockspace",
-                NativeSurfaceRole::Child => "Dockspace panel",
-            })
+        ViewportBuilder::default().with_visible(self.visible)
     }
 }
 
@@ -200,6 +195,7 @@ pub(crate) fn viewport_id_for(binding: NativeSurfaceBinding) -> ViewportId {
 pub(crate) fn declare_deferred_viewports(
     context: &egui::Context,
     specs: impl IntoIterator<Item = DeferredViewportSpec>,
+    title: impl Fn(DeferredViewportSpec) -> String,
     callback: impl Fn(DeferredViewportSpec, &mut egui::Ui, ViewportClass)
     + Clone
     + Send
@@ -208,9 +204,13 @@ pub(crate) fn declare_deferred_viewports(
 ) {
     for spec in specs {
         let callback = callback.clone();
-        context.show_viewport_deferred(spec.viewport(), spec.builder(), move |ui, class| {
-            callback(spec, ui, class);
-        });
+        context.show_viewport_deferred(
+            spec.viewport(),
+            spec.builder().with_title(title(spec)),
+            move |ui, class| {
+                callback(spec, ui, class);
+            },
+        );
     }
 }
 

@@ -34,6 +34,7 @@ mod surface_driver;
 mod viewport_callback;
 mod viewport_map;
 mod window_snapshot;
+mod window_title;
 mod work_area;
 
 pub use app::NativeDockspaceApp;

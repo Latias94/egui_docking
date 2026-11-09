@@ -525,9 +525,19 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         }
 
         let state = Arc::clone(&self.state);
-        declare_deferred_viewports(&context, specs, move |spec, ui, class| {
-            render_deferred_viewport(&state, spec, ui, class);
-        });
+        declare_deferred_viewports(
+            &context,
+            specs,
+            |spec| {
+                let state = lock_state(&self.state);
+                crate::window_title::window_title(
+                    state.view(),
+                    state.panes(),
+                    spec.binding().surface(),
+                )
+            },
+            move |spec, ui, class| render_deferred_viewport(&state, spec, ui, class),
+        );
     }
 }
 
@@ -569,7 +579,22 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
     match disposition {
         DeferredViewportPaint::Semantic(binding) if binding == spec.binding() => {
             match state.update_surface(ui, binding.surface()) {
-                Ok(NativeSurfaceUpdate::Semantic) => {}
+                Ok(NativeSurfaceUpdate::Semantic) => {
+                    let title = crate::window_title::window_title(
+                        state.view(),
+                        state.panes(),
+                        binding.surface(),
+                    );
+                    if !ui
+                        .ctx()
+                        .viewport(|viewport| viewport.builder.title.as_deref() == Some(&title))
+                    {
+                        // The existing declaration builder diffs captions, so
+                        // unchanged titles emit no OS command. Explicit host
+                        // title commands remain effective until pane titles change.
+                        ui.ctx().request_repaint_once_of(ViewportId::ROOT);
+                    }
+                }
                 Ok(NativeSurfaceUpdate::RetainPrevious) => {
                     paint_placeholder(ui, class, Some(DeferredViewportPaint::Waiting));
                 }
