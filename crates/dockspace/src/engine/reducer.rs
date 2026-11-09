@@ -1649,15 +1649,13 @@ impl DockEngine {
             EngineInput::SelectLocalSceneTab {
                 expected,
                 scene,
-                tab,
-                focus,
+                selection,
             } => self.reduce_local_scene_tab_select(
                 input.sequence,
                 focus_causal,
                 *expected,
                 *scene,
-                *tab,
-                *focus,
+                *selection,
                 tick_start.policy,
                 events,
                 interaction_events,

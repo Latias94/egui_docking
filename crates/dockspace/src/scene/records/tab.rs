@@ -91,6 +91,7 @@ pub struct TabRecord {
     id: TabSceneId,
     full_bounds: LogicalRect,
     visible_bounds: LogicalRect,
+    text_layout_bounds: LogicalRect,
     text_bounds: LogicalRect,
     drag_hit: HitRegion,
     close_visual_bounds: Option<LogicalRect>,
@@ -105,6 +106,7 @@ impl TabRecord {
         id: TabSceneId,
         full_bounds: LogicalRect,
         visible_bounds: LogicalRect,
+        text_layout_bounds: LogicalRect,
         text_bounds: LogicalRect,
         drag_hit: HitRegion,
         close_visual_bounds: Option<LogicalRect>,
@@ -116,6 +118,7 @@ impl TabRecord {
             id,
             full_bounds,
             visible_bounds,
+            text_layout_bounds,
             text_bounds,
             drag_hit,
             close_visual_bounds,
@@ -147,6 +150,12 @@ impl TabRecord {
     #[must_use]
     pub const fn text_bounds(&self) -> LogicalRect {
         self.text_bounds
+    }
+
+    /// Returns the allocated text rectangle before viewport clipping.
+    #[must_use]
+    pub const fn text_layout_bounds(&self) -> LogicalRect {
+        self.text_layout_bounds
     }
 
     /// Returns the exact drag/select interaction region.

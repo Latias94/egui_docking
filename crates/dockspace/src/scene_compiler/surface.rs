@@ -1278,7 +1278,10 @@ fn compile_tab_strip(
         .unwrap_or(0.0)
         .clamp(0.0, max_scroll);
     let selection_changed = state.is_none_or(|state| state.resolved_selection() != selected);
-    let scroll = if selection_changed {
+    let viewport_shrank = state
+        .and_then(|state| state.resolved_viewport_width())
+        .is_some_and(|previous| viewport_width < previous);
+    let scroll = if selection_changed || viewport_shrank {
         selected_range.map_or(requested_scroll, |(start, end)| {
             reveal_tab_range(requested_scroll, max_scroll, viewport.width(), start, end)
         })
@@ -1323,6 +1326,7 @@ fn compile_tab_strip(
                 id,
                 full,
                 chrome.visible,
+                chrome.text_layout,
                 chrome.text,
                 HitRegion::new(drag),
                 chrome.close,
@@ -1793,6 +1797,7 @@ pub(super) fn reveal_tab_range(
 
 struct TabChromeGeometry {
     visible: LogicalRect,
+    text_layout: LogicalRect,
     text: LogicalRect,
     drag: LogicalRect,
     close: Option<LogicalRect>,
@@ -1814,7 +1819,7 @@ fn operable_tab_chrome(
     if visible.width() < operable {
         return Ok(None);
     }
-    let close = if close_allowed {
+    let allocated_close = if close_allowed {
         let size = config
             .tab_close_extent()
             .min(full.height())
@@ -1831,6 +1836,11 @@ fn operable_tab_chrome(
             size,
             size,
         )?;
+        Some(close)
+    } else {
+        None
+    };
+    let close = if let Some(close) = allocated_close {
         if rect_contains(visible, close) {
             Some(close)
         } else if visible.max().x() < full.max().x() {
@@ -1858,18 +1868,17 @@ fn operable_tab_chrome(
     }
     let padding = config.tab_horizontal_padding().min(full.width());
     let text_left = (full.x() + padding).min(full.max().x());
-    let text_right = close.map_or(full.max().x() - padding, |close| close.x() - padding);
-    let text = clip_rect(
-        LogicalRect::new(
-            text_left,
-            full.y(),
-            text_right.clamp(text_left, full.max().x()) - text_left,
-            full.height(),
-        )?,
-        visible,
+    let text_right = allocated_close.map_or(full.max().x() - padding, |close| close.x() - padding);
+    let text_layout = LogicalRect::new(
+        text_left,
+        full.y(),
+        text_right.clamp(text_left, full.max().x()) - text_left,
+        full.height(),
     )?;
+    let text = clip_rect(text_layout, visible)?;
     Ok(Some(TabChromeGeometry {
         visible,
+        text_layout,
         text,
         drag,
         close,

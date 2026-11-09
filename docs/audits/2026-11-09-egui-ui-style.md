@@ -6,6 +6,10 @@ visual language. The remaining problems are concentrated in text layout, popup
 styling, and the connection between tab navigation and visibility. Five P2
 defects were reproduced. This audit changes no production behavior.
 
+The five defects and the popup/text-theme corrections have since been
+implemented; see the [fix verification](2026-11-09-egui-ui-fixes.md). The
+baseline captures and receipt below remain unchanged.
+
 The recommended direction is a focused adapter cleanup plus two core tab-strip
 corrections. The evidence does not justify replacing the docking architecture or
 copying ImGui's palette.

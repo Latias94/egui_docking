@@ -2085,8 +2085,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.version,
             self.scene,
             self.frozen_action_witness()?,
-            *tab.id(),
-            crate::engine::LocalTabFocus::Pane,
+            crate::engine::LocalTabSelection::Activate(*tab.id()),
         ))
     }
 

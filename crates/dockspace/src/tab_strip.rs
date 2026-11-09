@@ -252,6 +252,7 @@ impl TabStripControlId {
 pub(crate) struct TabStripState {
     scroll_offset: Option<f64>,
     resolved_selection: Option<ItemId>,
+    resolved_viewport_width: Option<f64>,
 }
 
 impl TabStripState {
@@ -263,6 +264,10 @@ impl TabStripState {
 
     pub(crate) const fn resolved_selection(&self) -> Option<ItemId> {
         self.resolved_selection
+    }
+
+    pub(crate) const fn resolved_viewport_width(&self) -> Option<f64> {
+        self.resolved_viewport_width
     }
 
     /// Replaces the explicit strip offset.
@@ -524,25 +529,29 @@ impl TabStripStateStore {
     pub(crate) fn adopt_resolved_scroll_offsets(
         &mut self,
         surface: SurfaceId,
-        offsets: impl IntoIterator<Item = (TabBarSceneId, f64, Option<ItemId>)>,
+        offsets: impl IntoIterator<Item = (TabBarSceneId, f64, Option<ItemId>, f64)>,
     ) -> Result<(), TabStripStateError> {
         let offsets = offsets
             .into_iter()
-            .map(|(bar, offset, selected)| (TabStripStateKey::new(surface, bar), offset, selected))
+            .map(|(bar, offset, selected, width)| {
+                (TabStripStateKey::new(surface, bar), offset, selected, width)
+            })
             .collect::<Vec<_>>();
-        for (key, offset, _) in &offsets {
+        for (key, offset, _, width) in &offsets {
             validate_offset("tab-strip scroll offset", *offset)?;
+            validate_offset("tab-strip viewport width", *width)?;
             if !self.states.contains_key(key) {
                 return Err(TabStripStateError::UnknownTabStrip { key: *key });
             }
         }
-        for (key, offset, selected) in offsets {
+        for (key, offset, selected, width) in offsets {
             let state = self
                 .states
                 .get_mut(&key)
                 .expect("validated tab-strip state remains present");
             state.scroll_offset = Some(offset);
             state.resolved_selection = selected;
+            state.resolved_viewport_width = Some(width);
         }
         Ok(())
     }

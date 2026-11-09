@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use eframe::egui;
 use egui_dockspace::{
-    CloseDecision, CloseItemDecisionState, Dockspace, DockspaceAxis, DockspaceCapability,
-    DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, DockspaceUnavailableReason, FloatingPresentationId, ItemId,
-    LogicalRect, PaneView, RootId, SurfaceId,
+    CloseDecision, CloseItemDecisionState, DockStyle, Dockspace, DockspaceAxis,
+    DockspaceCapability, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
+    DockspaceRootLayout, DockspaceSurfaceLayout, DockspaceUnavailableReason,
+    FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId, SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -37,6 +37,8 @@ struct DockspaceApp {
     panes: ExamplePanes,
     error: Option<String>,
     presentation_settlement: DockspaceCapability,
+    font_size: f32,
+    refresh_chrome: bool,
 }
 
 impl DockspaceApp {
@@ -48,6 +50,8 @@ impl DockspaceApp {
             dockspace,
             panes: ExamplePanes::new(),
             error: None,
+            font_size: 13.0,
+            refresh_chrome: true,
             presentation_settlement: DockspaceCapability::Unavailable(
                 DockspaceUnavailableReason::PresentationSettlementRequired,
             ),
@@ -57,12 +61,29 @@ impl DockspaceApp {
 
 impl eframe::App for DockspaceApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.refresh_chrome {
+            match self.dockspace.set_style(DockStyle::from_egui(ui)) {
+                Ok(_) => self.refresh_chrome = false,
+                Err(error) => self.error = Some(error.to_string()),
+            }
+        }
         if let Some(error) = &self.error {
             egui::Panel::bottom("dockspace-error").show(ui, |ui| {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             });
         }
         egui::Panel::top("dockspace-help").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                egui::widgets::global_theme_preference_buttons(ui);
+                ui.separator();
+                if ui.add(egui::DragValue::new(&mut self.font_size).range(10.0..=36.0).prefix("Font ")).changed() {
+                    ui.ctx().all_styles_mut(|style| {
+                        style.override_font_id = Some(egui::FontId::proportional(self.font_size));
+                    });
+                    self.refresh_chrome = true;
+                    ui.ctx().request_repaint();
+                }
+            });
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Unmodified eframe compatibility demo");
                 ui.separator();

@@ -6,14 +6,14 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::engine::{
-    EngineInput, LocalSurfaceAction as SurfaceAction, LocalTabChromeAction, LocalTabFocus,
+    EngineInput, LocalSurfaceAction as SurfaceAction, LocalTabChromeAction, LocalTabSelection,
 };
 use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, ItemId, SurfaceId};
 use crate::intent::CloseSceneTarget;
 use crate::interaction::EscapeDelivery;
 use crate::model::WorkspaceVersion;
 use crate::scene::{
-    ContainedResizeDirection, SplitterJunctionId, SplitterSceneId, SurfaceSceneStamp, TabSceneId,
+    ContainedResizeDirection, SplitterJunctionId, SplitterSceneId, SurfaceSceneStamp,
 };
 
 /// Product-facing navigation within one exact tab strip.
@@ -110,15 +110,14 @@ impl PreparedSurfaceAction {
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
         witness: Arc<crate::scene::SurfacePlanScene>,
-        tab: TabSceneId,
-        focus: LocalTabFocus,
+        selection: LocalTabSelection,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface: scene.surface(),
             witness,
-            action: SurfaceAction::SelectTab { scene, tab, focus },
+            action: SurfaceAction::SelectTab { scene, selection },
         }
     }
 
@@ -304,7 +303,7 @@ impl PreparedSurfaceAction {
     #[must_use]
     pub const fn tab_focus_target(&self) -> Option<ItemId> {
         match self.action {
-            SurfaceAction::SelectTab { tab, .. } => Some(tab.item),
+            SurfaceAction::SelectTab { selection, .. } => Some(selection.target().item),
             SurfaceAction::Close { .. }
             | SurfaceAction::CloseRoot { .. }
             | SurfaceAction::PresentationCommand { .. }
@@ -316,6 +315,20 @@ impl PreparedSurfaceAction {
         }
     }
 
+    /// Returns the stable visual identity of the tab which receives framework focus.
+    ///
+    /// A navigation target may be hidden in this candidate. Its identity remains
+    /// valid when selection reveals it in the following frame.
+    #[must_use]
+    pub const fn tab_focus_visual(&self) -> Option<super::DockspaceVisualId> {
+        match self.action {
+            SurfaceAction::SelectTab { selection, .. } => {
+                Some(super::DockspaceVisualId::from_tab_scene(selection.target()))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn into_engine_input(
         self,
         authority_domain: EngineAuthorityDomainId,
@@ -324,11 +337,10 @@ impl PreparedSurfaceAction {
             return Err(PreparedSurfaceActionAuthorityMismatch);
         }
         Ok(match self.action {
-            SurfaceAction::SelectTab { scene, tab, focus } => EngineInput::SelectLocalSceneTab {
+            SurfaceAction::SelectTab { scene, selection } => EngineInput::SelectLocalSceneTab {
                 expected: self.expected,
                 scene,
-                tab,
-                focus,
+                selection,
             },
             SurfaceAction::Close { scene, target } => EngineInput::RequestLocalSceneClose {
                 expected: self.expected,

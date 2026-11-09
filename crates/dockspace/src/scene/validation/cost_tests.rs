@@ -245,6 +245,7 @@ fn tab_directory_preserves_input_error_order_with_multiple_invalid_visible_recor
             *record.id(),
             record.full_bounds(),
             record.visible_bounds(),
+            record.text_layout_bounds(),
             LogicalRect::new(
                 record.visible_bounds().max().x() + 1.0,
                 text.y(),

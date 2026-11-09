@@ -1360,7 +1360,12 @@ impl DockEngine {
                         crate::drop_resolver::structural_work::record_selection_lookup();
                         let id = *record.id();
                         let selected = plan.selected_in_tabs(id.tabs);
-                        (id, record.scroll_offset(), selected)
+                        (
+                            id,
+                            record.scroll_offset(),
+                            selected,
+                            record.viewport().width(),
+                        )
                     })
                     .collect::<Vec<_>>();
                 let output_serial = self.presentation_authority.issue_scene_output()?;

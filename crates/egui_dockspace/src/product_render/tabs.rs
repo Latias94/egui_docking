@@ -381,19 +381,20 @@ pub(crate) fn paint_tab(
                 StrokeKind::Inside,
             );
         }
-        if let Some(text) = egui_rect(tab.text_bounds()) {
+        if let Some(text) = egui_rect(tab.text_bounds())
+            && let Some(layout) = egui_rect(tab.text_layout_bounds())
+        {
             let color = if selected {
                 context.visuals.tab_active_text_color
             } else if RenderContext::response_emphasized(&response) {
-                context
-                    .interaction_stroke(&response, context.style.visuals.tab_text_color)
-                    .color
+                context.interaction_text_color(&response, context.style.visuals.tab_text_color)
             } else {
                 context.visuals.tab_text_color
             };
+            let galley = resource.galley_for_width(context.ui, layout.width());
             context.ui.painter_at(text).galley_with_override_text_color(
-                pos2(text.min.x, text.center().y - resource.galley.size().y * 0.5),
-                resource.galley.clone(),
+                pos2(layout.min.x, layout.center().y - galley.size().y * 0.5),
+                galley,
                 color,
             );
         }
@@ -504,9 +505,7 @@ fn capture_tab_actions(
             context
                 .ui
                 .memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
-            if let Some(target) = action.tab_focus_target()
-                && let Some(target_visual) = context.resources.tab_visual(context.plan, target)
-            {
+            if let Some(target_visual) = action.tab_focus_visual() {
                 context.ui.memory_mut(|memory| {
                     memory.request_focus(tab_id_for_visual(
                         context.ui,

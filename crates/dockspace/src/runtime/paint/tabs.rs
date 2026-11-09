@@ -108,6 +108,12 @@ impl TabPaintRecord<'_> {
         self.record.text_bounds()
     }
 
+    /// Returns the allocation used to shape and position text before scrolling clips it.
+    #[must_use]
+    pub const fn text_layout_bounds(self) -> LogicalRect {
+        self.record.text_layout_bounds()
+    }
+
     #[must_use]
     pub const fn drag_bounds(self) -> LogicalRect {
         self.record.drag_hit().rect()

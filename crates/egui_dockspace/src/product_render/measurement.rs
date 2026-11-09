@@ -1,5 +1,6 @@
 //! Egui-owned measurement facts for one renderer-neutral host frame.
 
+#[cfg(feature = "native-render-support")]
 use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -28,8 +29,22 @@ pub(crate) struct TabPaintResource {
     pub(crate) missing: bool,
 }
 
+impl TabPaintResource {
+    pub(crate) fn galley_for_width(&self, ui: &Ui, width: f32) -> Arc<Galley> {
+        if !self.galley.elided && self.galley.size().x <= width {
+            return self.galley.clone();
+        }
+        let mut job = (*self.galley.job).clone();
+        job.wrap.max_width = width.max(0.0);
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        ui.fonts_mut(|fonts| fonts.layout_job(job))
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct PaintResources {
+    #[cfg(feature = "native-render-support")]
     tab_visuals: OnceCell<HashMap<ItemId, DockspaceVisualId>>,
     items: HashMap<ItemId, TabPaintResource>,
     missing: BTreeSet<ItemId>,
@@ -41,23 +56,16 @@ impl PaintResources {
         plan: dockspace::runtime::SurfacePaintPlan<'_>,
         ui: &Ui,
         panes: &dyn PaneView,
-        style: &DockStyle,
     ) -> Result<(), DockspaceRuntimeError> {
         plan.visit_tab_resources(|_, item| {
-            self.get_or_shape(item, ui, panes, style);
+            self.get_or_shape(item, ui, panes);
         })?;
         Ok(())
     }
 
-    fn get_or_shape(
-        &mut self,
-        item: ItemId,
-        ui: &Ui,
-        panes: &dyn PaneView,
-        style: &DockStyle,
-    ) -> &TabPaintResource {
+    fn get_or_shape(&mut self, item: ItemId, ui: &Ui, panes: &dyn PaneView) -> &TabPaintResource {
         self.items.entry(item).or_insert_with(|| {
-            let resource = shape_tab(ui, panes, style, item);
+            let resource = shape_tab(ui, panes, item);
             if resource.missing {
                 self.missing.insert(item);
             }
@@ -65,14 +73,14 @@ impl PaintResources {
         })
     }
 
+    #[cfg(feature = "native-render-support")]
     pub(crate) fn tab_visual(
         &self,
         plan: dockspace::runtime::SurfacePaintPlan<'_>,
         item: ItemId,
     ) -> Option<DockspaceVisualId> {
         if self.tab_visuals.get().is_none() {
-            // Ordinary paint does not query this map. Navigation and diagnostics
-            // materialize it once from this call's exact program, in program order.
+            // Only native diagnostics materialize this exact program map.
             let mut visuals = HashMap::new();
             plan.visit_tab_resources(|visual, item| {
                 if visual.kind() == dockspace::runtime::DockspaceVisualKind::Tab {
@@ -112,20 +120,21 @@ pub(crate) fn measure_surface(
         logical_rect(popup_rect).map_err(|()| DockspaceErrorSource::InvalidMeasurement {
             what: "popup plane bounds",
         })?;
-    let popup_style = ui.ctx().global_style();
-    let popup_spacing = popup_style.spacing.clone();
-    let popup_stroke = popup_style.visuals.window_stroke.width.max(0.0);
+    let popup_style = ui.style();
+    let popup_spacing = &popup_style.spacing;
+    let popup_frame = style.resolved_popup_frame(&popup_style);
+    let popup_stroke = popup_frame.stroke.width.max(0.0);
     let horizontal_padding = f32::from(
         i8::max(
-            popup_spacing.menu_margin.left,
-            popup_spacing.menu_margin.right,
+            popup_frame.inner_margin.left,
+            popup_frame.inner_margin.right,
         )
         .max(0),
     ) + popup_stroke;
     let vertical_padding = f32::from(
         i8::max(
-            popup_spacing.menu_margin.top,
-            popup_spacing.menu_margin.bottom,
+            popup_frame.inner_margin.top,
+            popup_frame.inner_margin.bottom,
         )
         .max(0),
     ) + popup_stroke;
@@ -208,10 +217,10 @@ fn resolve_measurement(
         } => {
             let uncached;
             let resource = if let Some(resources) = resources {
-                resources.get_or_shape(item, ui, panes, style)
+                resources.get_or_shape(item, ui, panes)
             } else {
                 // Independent native measurement has no same-pass paint owner.
-                uncached = shape_tab(ui, panes, style, item);
+                uncached = shape_tab(ui, panes, item);
                 &uncached
             };
             if resource.missing {
@@ -221,7 +230,7 @@ fn resolve_measurement(
                 ui.spacing()
                     .interact_size
                     .y
-                    .max(resource.galley.size().y + style.tab_horizontal_padding),
+                    .max(resource.galley.size().y + ui.spacing().button_padding.y * 2.0),
             );
             row_heights
                 .entry(bar)
@@ -273,7 +282,7 @@ fn resolve_measurement(
     }
 }
 
-fn shape_tab(ui: &Ui, panes: &dyn PaneView, style: &DockStyle, item: ItemId) -> TabPaintResource {
+fn shape_tab(ui: &Ui, panes: &dyn PaneView, item: ItemId) -> TabPaintResource {
     let title = panes.title(item);
     let missing = title.is_none();
     let widget_text = title.unwrap_or_else(|| format!("Missing pane {}", item.get()).into());
@@ -281,7 +290,7 @@ fn shape_tab(ui: &Ui, panes: &dyn PaneView, style: &DockStyle, item: ItemId) -> 
     let galley = widget_text.into_galley(
         ui,
         Some(TextWrapMode::Truncate),
-        style.tab_max_width,
+        f32::INFINITY,
         FontSelection::Style(TextStyle::Button),
     );
     TabPaintResource {

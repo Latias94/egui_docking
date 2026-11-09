@@ -196,12 +196,19 @@ impl RenderContext<'_, '_, '_> {
 
     fn interaction_stroke(&self, response: &Response, idle_color: Option<Color32>) -> Stroke {
         let mut stroke = self.ui.style().interact(response).fg_stroke;
-        if !Self::response_emphasized(response)
-            && let Some(color) = idle_color
-        {
-            stroke.color = color;
-        }
+        stroke.color = idle_color
+            .filter(|_| !Self::response_emphasized(response))
+            .or(self.ui.visuals().override_text_color)
+            .unwrap_or(stroke.color);
         stroke
+    }
+
+    fn interaction_text_color(
+        &self,
+        response: &Response,
+        override_color: Option<Color32>,
+    ) -> Color32 {
+        override_color.unwrap_or_else(|| self.interaction_stroke(response, None).color)
     }
 
     fn interaction_fill(&self, response: &Response) -> Color32 {
@@ -371,7 +378,7 @@ pub(crate) fn paint_surface(
     >,
 ) -> Result<ProductPaintOutput, DockspaceRuntimeError> {
     let visuals = style.resolved_visuals(ui.visuals());
-    resources.prepare_for_plan(plan, ui, panes, style)?;
+    resources.prepare_for_plan(plan, ui, panes)?;
     let pane_focus_request = plan.pane_focus_request();
     let mut pane_focus_target_requested = false;
     let mut pane_focus_target = None;

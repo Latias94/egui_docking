@@ -104,8 +104,7 @@ impl DockEngine {
         focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        tab: crate::scene::TabSceneId,
-        focus: LocalTabFocus,
+        selection: LocalTabSelection,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -125,8 +124,7 @@ impl DockEngine {
             input,
             focus_causal,
             &candidate,
-            tab,
-            focus,
+            selection,
             policy,
             events,
             interaction_events,
@@ -139,19 +137,20 @@ impl DockEngine {
         input: InputSequence,
         focus_causal: FocusCausalStamp,
         candidate: &crate::scene::SurfacePlanScene,
-        tab: crate::scene::TabSceneId,
-        focus: LocalTabFocus,
+        selection: LocalTabSelection,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         let scene = candidate.stamp();
+        let tab = selection.target();
+        let receiver = selection.receiver();
         let (source, raise) = {
             let Some(record) = candidate
                 .plan()
                 .tab_records()
                 .iter()
-                .find(|record| *record.id() == tab)
+                .find(|record| *record.id() == receiver)
             else {
                 return Ok(self.candidate_action_rejection(
                     InteractionRejection::TabGestureSourceUnavailable {
@@ -166,6 +165,21 @@ impl DockEngine {
                 return Ok(self.candidate_action_rejection(
                     InteractionRejection::SemanticReceiverUnavailable {
                         target: PresentationHitRegionKind::TabBody(tab),
+                    },
+                ));
+            }
+            if tab.root != receiver.root
+                || tab.tabs != receiver.tabs
+                || !candidate.plan().tab_bar_records().iter().any(|bar| {
+                    bar.id().root == tab.root
+                        && bar.id().tabs == tab.tabs
+                        && bar.interaction() == crate::policy::TabBarInteraction::Enabled
+                        && bar.members().iter().any(|member| member.tab() == tab)
+                })
+            {
+                return Ok(self.candidate_action_rejection(
+                    InteractionRejection::TabGestureSourceUnavailable {
+                        source: TabGestureSource::Item(tab),
                     },
                 ));
             }
@@ -255,12 +269,12 @@ impl DockEngine {
             (source, raise)
         };
 
-        let selection = WorkspaceCommand::Select { source };
+        let selection_command = WorkspaceCommand::Select { source };
         let outcome = if let Some(raise) = raise {
             self.reduce_local_contained_tab_select(
                 input,
                 raise,
-                selection,
+                selection_command,
                 policy,
                 events,
                 interaction_events,
@@ -270,7 +284,7 @@ impl DockEngine {
                 input,
                 self.version,
                 self.version,
-                &selection,
+                &selection_command,
                 policy,
                 events,
                 interaction_events,
@@ -278,8 +292,8 @@ impl DockEngine {
         };
         if matches!(&outcome, InputOutcome::CommandProcessed { .. }) {
             let native_guard = self.viewport_focus_binding(scene.surface());
-            match focus {
-                LocalTabFocus::Pane => {
+            match selection {
+                LocalTabSelection::Activate(_) => {
                     let _ = self
                         .viewport_focus
                         .request_local_pane_focus(
@@ -293,7 +307,21 @@ impl DockEngine {
                             source,
                         })?;
                 }
-                LocalTabFocus::Preserve => {
+                LocalTabSelection::Navigate { .. } => {
+                    if let Some(bar) = candidate
+                        .plan()
+                        .tab_bar_records()
+                        .iter()
+                        .find(|bar| bar.id().root == tab.root && bar.id().tabs == tab.tabs)
+                    {
+                        let _ = self.finish_tab_strip_scroll(
+                            focus_causal.cause(),
+                            candidate.plan(),
+                            TabStripStateKey::new(scene.surface(), *bar.id()),
+                            bar,
+                            &TabScrollAdjustment::reveal_item(tab.item),
+                        )?;
+                    }
                     self.viewport_focus.preserve_local_focus(
                         scene.surface(),
                         native_guard,

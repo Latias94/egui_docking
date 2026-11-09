@@ -53,12 +53,11 @@ impl DockEngine {
         }
 
         let outcome = match action {
-            LocalSurfaceAction::SelectTab { tab, focus, .. } => self.select_tab_from_candidate(
+            LocalSurfaceAction::SelectTab { selection, .. } => self.select_tab_from_candidate(
                 input,
                 focus_causal,
                 witness,
-                *tab,
-                *focus,
+                *selection,
                 policy,
                 events,
                 interaction_events,
@@ -149,12 +148,12 @@ impl DockEngine {
             InputOutcome::CommandProcessed {
                 changed, version, ..
             } if matches!(action, LocalSurfaceAction::SelectTab { .. }) => {
-                let LocalSurfaceAction::SelectTab { tab, .. } = action else {
+                let LocalSurfaceAction::SelectTab { selection, .. } = action else {
                     unreachable!("the guard selects the same action variant");
                 };
                 InputOutcome::ProductActionProcessed {
                     outcome: crate::model::DockspaceActionOutcome::Selected {
-                        item: tab.item,
+                        item: selection.target().item,
                         changed,
                     },
                     version,
@@ -245,8 +244,32 @@ impl DockEngine {
                 .is_some_and(|region| self.presented_receiver_is_current(plan, region.id()))
         };
         let current = match action {
-            LocalSurfaceAction::SelectTab { tab, .. } => {
-                item_receiver_is_current(PresentationHitRegionKind::TabBody(*tab))
+            LocalSurfaceAction::SelectTab { selection, .. } => {
+                item_receiver_is_current(PresentationHitRegionKind::TabBody(selection.receiver()))
+                    && match selection {
+                        LocalTabSelection::Activate(_) => true,
+                        LocalTabSelection::Navigate { source, .. } => {
+                            root_is_current(source.root)
+                                && plan
+                                    .tab_bar_records()
+                                    .iter()
+                                    .find(|bar| {
+                                        bar.id().root == source.root && bar.id().tabs == source.tabs
+                                    })
+                                    .is_some_and(|bar| {
+                                        self.presentation_authority
+                                            .tab_strip_states
+                                            .state(TabStripStateKey::new(surface, *bar.id()))
+                                            .is_some_and(|state| {
+                                                state.scroll_offset().is_none_or(|offset| {
+                                                    offset == bar.scroll_offset()
+                                                }) && state.resolved_viewport_width().is_none_or(
+                                                    |width| width == bar.viewport().width(),
+                                                )
+                                            })
+                                    })
+                        }
+                    }
             }
             LocalSurfaceAction::Close {
                 target: CloseSceneTarget::Tab(tab),

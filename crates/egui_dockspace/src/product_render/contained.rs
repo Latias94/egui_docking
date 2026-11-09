@@ -264,6 +264,18 @@ pub(crate) fn paint_controls(
                 enabled,
             );
             if enabled && response.has_focus() {
+                if !paint_omitted {
+                    let inset = if horizontal_arrows {
+                        egui::vec2((bounds.width() - 2.0).max(0.0) * 0.5, 0.0)
+                    } else {
+                        egui::vec2(0.0, (bounds.height() - 2.0).max(0.0) * 0.5)
+                    };
+                    context.ui.painter().rect_filled(
+                        bounds.shrink2(inset),
+                        0.0,
+                        context.splitter_fill(&response, true),
+                    );
+                }
                 context.ui.memory_mut(|memory| {
                     memory.set_focus_lock_filter(
                         id,

@@ -1479,6 +1479,7 @@ fn validate_tab_records(
                     record.full_bounds(),
                     bar.viewport(),
                 )
+                && rect_contains(record.full_bounds(), record.text_layout_bounds())
                 && rect_contains(record.visible_bounds(), record.text_bounds())
                 && close_visual_matches
                 && interaction_geometry_matches;

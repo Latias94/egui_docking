@@ -6,7 +6,7 @@ use dockspace::runtime::{
     TabStripControlKind, TabStripControlPaintRecord,
 };
 use egui::accesskit::{Action, HasPopup, Role};
-use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, pos2, vec2};
 
 use super::RenderContext;
 use super::actions::{button_activation_origin, effective_enabled};
@@ -103,7 +103,12 @@ fn paint_control(
             .interaction_stroke(response, context.style.visuals.tab_text_color)
             .color
     } else {
-        context.visuals.tab_text_color.gamma_multiply(0.45)
+        let alpha = if context.ui.is_enabled() {
+            context.ui.visuals().disabled_alpha
+        } else {
+            1.0
+        };
+        context.visuals.tab_text_color.gamma_multiply(alpha)
     };
     context.ui.painter().rect_filled(bounds, 0.0, fill);
     match control.kind() {
@@ -265,13 +270,13 @@ pub(crate) fn paint_menu(
     );
     let paint_omitted = context.source_gap_active(paint);
     if !paint_omitted {
-        context.ui.painter().rect(
-            bounds,
-            3.0,
-            context.visuals.floating_fill,
-            Stroke::new(1.0, context.visuals.floating_border_color),
-            StrokeKind::Inside,
-        );
+        let mut frame = context.style.resolved_popup_frame(context.ui.style());
+        frame.inner_margin = egui::Margin::ZERO;
+        frame.outer_margin = egui::Margin::ZERO;
+        context
+            .ui
+            .painter()
+            .add(frame.paint(bounds.shrink(frame.stroke.width)));
     }
     context.ui.ctx().accesskit_node_builder(frame_id, |node| {
         node.set_role(Role::Menu);
@@ -333,7 +338,7 @@ fn paint_menu_row(
         .flatten();
     let pointer_operable = receiver.is_some();
     let response = row.interaction_bounds().and_then(egui_rect).map(|hit| {
-        context.interact_receiver(
+        let response = context.interact_receiver(
             hit,
             id,
             if pointer_operable {
@@ -342,7 +347,12 @@ fn paint_menu_row(
                 Sense::hover()
             },
             receiver,
-        )
+        );
+        if let Some(resource) = context.resources.item(row.item()) {
+            response.on_hover_text(resource.title.as_str())
+        } else {
+            response
+        }
     });
     let paint_omitted = context.source_gap_active(paint);
     let fill = if row.focused() {
@@ -357,7 +367,7 @@ fn paint_menu_row(
     {
         context.interaction_fill(response)
     } else if row.selected() {
-        context.visuals.tab_active_fill
+        context.ui.visuals().selection.bg_fill
     } else {
         context.visuals.floating_fill
     };
@@ -366,22 +376,23 @@ fn paint_menu_row(
         painter.rect_filled(bounds, 0.0, fill);
     }
     if !paint_omitted && let Some(resource) = context.resources.item(row.item()) {
-        let text_pos = pos2(
-            bounds.min.x,
-            bounds.center().y - resource.galley.size().y * 0.5,
-        );
+        let galley = resource.galley_for_width(context.ui, bounds.width());
+        let text_pos = pos2(bounds.min.x, bounds.center().y - galley.size().y * 0.5);
         painter.galley_with_override_text_color(
             text_pos,
-            resource.galley.clone(),
+            galley,
             if row.selected() {
-                context.visuals.tab_active_text_color
+                context
+                    .style
+                    .visuals
+                    .tab_active_text_color
+                    .or(context.ui.visuals().override_text_color)
+                    .unwrap_or(context.ui.visuals().selection.stroke.color)
             } else if let Some(response) = response
                 .as_ref()
                 .filter(|response| enabled && RenderContext::response_emphasized(response))
             {
-                context
-                    .interaction_stroke(response, context.style.visuals.tab_text_color)
-                    .color
+                context.interaction_text_color(response, context.style.visuals.tab_text_color)
             } else {
                 context.visuals.tab_text_color
             },

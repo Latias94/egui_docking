@@ -330,28 +330,13 @@ impl SurfacePaintPlan<'_> {
             .iter()
             .find(|record| record.id().item == item)?;
         self.tab_is_operable(current).then_some(())?;
-        let selected = self
-            .plan
-            .tab_records()
-            .iter()
-            .find(|record| {
-                self.plan.tab_selected(record)
-                    && record.id().root == current.id().root
-                    && record.id().tabs == current.id().tabs
-            })
-            .map(|record| record.id().item);
+        let selected = self.plan.selected_in_tabs(current.id().tabs);
         let destination = crate::tab_strip::tab_navigation_destination(
             self.plan,
             *current.id(),
             selected,
             navigation.into_core(),
         )?;
-        let destination_record = self
-            .plan
-            .tab_records()
-            .iter()
-            .find(|record| *record.id() == destination)?;
-        self.tab_is_operable(destination_record).then_some(())?;
         if destination == *current.id() {
             return None;
         }
@@ -360,8 +345,10 @@ impl SurfacePaintPlan<'_> {
             self.version,
             self.scene,
             self.frozen_action_witness()?,
-            destination,
-            crate::engine::LocalTabFocus::Preserve,
+            crate::engine::LocalTabSelection::Navigate {
+                source: *current.id(),
+                target: destination,
+            },
         ))
     }
 

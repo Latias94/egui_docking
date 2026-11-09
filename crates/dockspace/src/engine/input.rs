@@ -378,17 +378,33 @@ impl LocalTabChromeAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LocalTabFocus {
-    Pane,
-    Preserve,
+pub(crate) enum LocalTabSelection {
+    Activate(TabSceneId),
+    Navigate {
+        source: TabSceneId,
+        target: TabSceneId,
+    },
+}
+
+impl LocalTabSelection {
+    pub(crate) const fn target(self) -> TabSceneId {
+        match self {
+            Self::Activate(tab) | Self::Navigate { target: tab, .. } => tab,
+        }
+    }
+
+    pub(crate) const fn receiver(self) -> TabSceneId {
+        match self {
+            Self::Activate(tab) | Self::Navigate { source: tab, .. } => tab,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum LocalSurfaceAction {
     SelectTab {
         scene: SurfaceSceneStamp,
-        tab: TabSceneId,
-        focus: LocalTabFocus,
+        selection: LocalTabSelection,
     },
     Close {
         scene: SurfaceSceneStamp,
@@ -432,14 +448,7 @@ pub(crate) enum LocalSurfaceAction {
 impl LocalSurfaceAction {
     pub(crate) fn same_intent(&self, other: &Self) -> bool {
         match (self, other) {
-            (
-                Self::SelectTab {
-                    tab: a, focus: af, ..
-                },
-                Self::SelectTab {
-                    tab: b, focus: bf, ..
-                },
-            ) => a == b && af == bf,
+            (Self::SelectTab { selection: a, .. }, Self::SelectTab { selection: b, .. }) => a == b,
             (Self::Close { target: a, .. }, Self::Close { target: b, .. }) => a == b,
             (Self::CloseRoot { root: a, .. }, Self::CloseRoot { root: b, .. }) => a == b,
             (
@@ -878,10 +887,8 @@ pub enum EngineInput {
         expected: WorkspaceVersion,
         /// Exact Ready candidate painted by the framework callback.
         scene: SurfaceSceneStamp,
-        /// Stable tab identity exposed by that candidate.
-        tab: crate::scene::TabSceneId,
-        /// Content activation or navigation which preserves framework tab focus.
-        focus: LocalTabFocus,
+        /// Activation, or navigation from an operable tab to a member of its strip.
+        selection: LocalTabSelection,
     },
     /// Apply one current-frame tab-strip or popup action from an exact Ready candidate.
     ApplyLocalTabChromeAction {

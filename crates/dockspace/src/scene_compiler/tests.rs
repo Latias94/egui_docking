@@ -1249,6 +1249,57 @@ fn selected_tab_reveal_preserves_visible_offsets_and_moves_only_as_needed() {
     );
 }
 
+#[test]
+fn viewport_shrink_reveals_the_existing_selection_once() {
+    let policy = policy_snapshot();
+    let (workspace, manifest, measurements, mut states, surface, bar, items) =
+        overflowing_tab_strip_fixture_with(&policy, None, false);
+    states
+        .adopt_resolved_scroll_offsets(surface, [(bar, 0.0, Some(items[3]), 1000.0)])
+        .unwrap();
+    let solve = |states: &TabStripStateStore| {
+        compile_surface_measurements(
+            &workspace,
+            version(),
+            &policy,
+            &DockPresentationConfig::default(),
+            &manifest,
+            &measurements,
+            states,
+            &[],
+            None,
+        )
+        .unwrap()
+    };
+    let shrunk = solve(&states);
+    let record = &shrunk.tab_bar_records()[0];
+    assert_eq!(
+        record.members()[3].visibility(),
+        TabStripMemberVisibility::Visible
+    );
+    assert!(record.scroll_offset() > 0.0);
+    states
+        .adopt_resolved_scroll_offsets(
+            surface,
+            [(
+                bar,
+                record.scroll_offset(),
+                Some(items[3]),
+                record.viewport().width(),
+            )],
+        )
+        .unwrap();
+    states
+        .set_tab_strip_scroll_offset(TabStripStateKey::new(surface, bar), 0.0)
+        .unwrap();
+    let scrolled = solve(&states);
+    assert_eq!(scrolled.tab_bar_records()[0].scroll_offset(), 0.0);
+    assert_eq!(
+        scrolled.tab_bar_records()[0].members()[3].visibility(),
+        TabStripMemberVisibility::Hidden
+    );
+}
+
 fn hit_manifest(
     workspace: &Workspace,
     policy: &DockPolicySnapshot,
@@ -1979,8 +2030,28 @@ fn left_clipped_tab_tails_require_complete_close_chrome_before_exposing_body_inp
             .tab_max_width(400.0)
             .build()
             .expect("fixed tab widths should be valid");
+        let initial = compile_surface_measurements(
+            &workspace,
+            version(),
+            &policy,
+            &config,
+            &manifest,
+            &measurements,
+            &states,
+            &[],
+            None,
+        )
+        .unwrap();
         states
-            .adopt_resolved_scroll_offsets(surface, [(bar, 400.0 - visible_width, Some(items[3]))])
+            .adopt_resolved_scroll_offsets(
+                surface,
+                [(
+                    bar,
+                    400.0 - visible_width,
+                    Some(items[3]),
+                    initial.tab_bar_records()[0].viewport().width(),
+                )],
+            )
             .expect("the left-clipped scroll offset should be valid");
         let plan = compile_surface_measurements(
             &workspace,

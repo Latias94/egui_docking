@@ -39,6 +39,10 @@ use crate::style::DockStyle;
 #[path = "product_owned_run.rs"]
 mod owned_run;
 
+#[cfg(test)]
+#[path = "product_chrome_tests.rs"]
+mod chrome_tests;
+
 /// Stateful egui adapter whose headless session is the sole docking authority.
 pub struct Dockspace {
     id: Id,

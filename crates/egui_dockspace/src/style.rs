@@ -105,9 +105,11 @@ impl DockVisualOverrides {
             tab_active_fill: self.tab_active_fill.unwrap_or(visuals.panel_fill),
             tab_text_color: self
                 .tab_text_color
+                .or(visuals.override_text_color)
                 .unwrap_or(visuals.widgets.inactive.fg_stroke.color),
             tab_active_text_color: self
                 .tab_active_text_color
+                .or(visuals.override_text_color)
                 .unwrap_or(visuals.widgets.active.fg_stroke.color),
             splitter_color: self.splitter_color.unwrap_or(tab_bar_fill),
             splitter_hover_color: self
@@ -214,8 +216,52 @@ pub struct DockStyle {
 }
 
 impl DockStyle {
+    /// Derives initial chrome geometry from the current egui fonts and spacing.
+    ///
+    /// Call this inside a UI pass after configuring fonts. The returned metrics
+    /// are ordinary fixed docking geometry, not a live theme subscription.
+    /// Reapply them explicitly with `Dockspace::set_style` after changing font
+    /// size or density. A native host must construct its session from the same
+    /// [`Self::presentation_config`]. Whole-UI zoom needs no geometry update.
+    #[must_use]
+    pub fn from_egui(ui: &egui::Ui) -> Self {
+        let font = egui::FontSelection::Default
+            .resolve_with_fallback(ui.style(), egui::TextStyle::Button.into());
+        let font_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
+        let spacing = ui.spacing();
+        let height = (font_height + spacing.button_padding.y * 2.0).max(spacing.interact_size.y);
+        let mut result = Self {
+            tab_bar_height: height,
+            floating_title_height: height,
+            tab_group_grip_extent: height,
+            tab_close_size: font_height,
+            tab_horizontal_padding: spacing.button_padding.x,
+            floating_border_width: ui.visuals().window_stroke.width,
+            ..Self::default()
+        };
+        result.tab_min_width = result
+            .tab_min_width
+            .max(font_height + spacing.button_padding.x * 3.0);
+        result.tab_max_width = result.tab_max_width.max(result.tab_min_width);
+        result.floating_resize_extent = result
+            .floating_resize_extent
+            .max(result.floating_border_width);
+        result
+    }
+
     pub(crate) fn resolved_visuals(&self, visuals: &Visuals) -> ResolvedDockVisuals {
         self.visuals.resolve(visuals)
+    }
+
+    pub(crate) fn resolved_popup_frame(&self, style: &EguiStyle) -> Frame {
+        let mut frame = Frame::popup(style);
+        if let Some(fill) = self.visuals.floating_fill {
+            frame.fill = fill;
+        }
+        if let Some(color) = self.visuals.floating_border_color {
+            frame.stroke.color = color;
+        }
+        frame
     }
 
     pub(crate) fn resolved_contained_window(

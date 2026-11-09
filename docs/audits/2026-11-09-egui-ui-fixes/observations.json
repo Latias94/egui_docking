@@ -1,0 +1,307 @@
+{
+  "capture_frames": 30,
+  "hidden_end": {
+    "before_focus": {
+      "bounds": [
+        129.55999755859375,
+        25.0,
+        175.55999755859375,
+        53.0
+      ],
+      "disabled": false,
+      "id": 5928521589919005747,
+      "label": "Document.rs",
+      "role": "Tab",
+      "selected": true
+    },
+    "after_focus": {
+      "bounds": [
+        292.0,
+        25.0,
+        338.0,
+        53.0
+      ],
+      "disabled": false,
+      "id": 2700581275579054660,
+      "label": "Material settings and texture references",
+      "role": "Tab",
+      "selected": true
+    },
+    "selected_target": {
+      "bounds": [
+        292.0,
+        25.0,
+        338.0,
+        53.0
+      ],
+      "disabled": false,
+      "id": 2700581275579054660,
+      "label": "Material settings and texture references",
+      "role": "Tab",
+      "selected": true
+    },
+    "passed": true
+  },
+  "selected_tab_after_shrink": {
+    "wide": {
+      "bounds": [
+        672.010009765625,
+        25.0,
+        866.010009765625,
+        53.0
+      ],
+      "disabled": false,
+      "id": 2700581275579054660,
+      "label": "Material settings and texture references",
+      "role": "Tab",
+      "selected": true
+    },
+    "narrow": {
+      "bounds": [
+        292.0,
+        25.0,
+        338.0,
+        53.0
+      ],
+      "disabled": false,
+      "id": 2700581275579054660,
+      "label": "Material settings and texture references",
+      "role": "Tab",
+      "selected": true
+    },
+    "passed": true
+  },
+  "ellipsis": [
+    {
+      "frame": "egui-long-base",
+      "pixels_per_point": 1.0,
+      "text_clip": [
+        278.760009765625,
+        25.0,
+        452.760009765625,
+        53.0
+      ],
+      "text_origin": [
+        278.760009765625,
+        31.5
+      ],
+      "ellipsis_start_from_origin": 157.0,
+      "ellipsis_end_from_origin": 169.947998046875,
+      "ellipsis_inside_clip": true
+    },
+    {
+      "frame": "egui-long-zoom-base",
+      "pixels_per_point": 1.5,
+      "text_clip": [
+        176.3625030517578,
+        25.0,
+        350.36248779296875,
+        53.0
+      ],
+      "text_origin": [
+        176.3625030517578,
+        31.671875
+      ],
+      "ellipsis_start_from_origin": 156.6666717529297,
+      "ellipsis_end_from_origin": 169.6146697998047,
+      "ellipsis_inside_clip": true
+    }
+  ],
+  "font_geometry": [
+    {
+      "frame": "egui-large-base",
+      "caption_shapes": [
+        {
+          "galley_size": [
+            108.65625,
+            30.0
+          ],
+          "ink_bounds": [
+            546.671875,
+            275.0,
+            653.671875,
+            298.0
+          ],
+          "clip": [
+            474.0,
+            266.0,
+            724.0,
+            302.0
+          ],
+          "elided": false
+        },
+        {
+          "galley_size": [
+            108.65625,
+            30.0
+          ],
+          "ink_bounds": [
+            487.0,
+            311.0,
+            594.0,
+            334.0
+          ],
+          "clip": [
+            485.0,
+            302.0,
+            593.65625,
+            338.0
+          ],
+          "elided": false
+        }
+      ],
+      "vertical_glyph_fit": true
+    },
+    {
+      "frame": "egui-font36-base",
+      "caption_shapes": [
+        {
+          "galley_size": [
+            150.4375,
+            41.0
+          ],
+          "ink_bounds": [
+            517.40625,
+            276.1875,
+            665.40625,
+            308.1875
+          ],
+          "clip": [
+            474.0,
+            266.0,
+            705.25,
+            311.375
+          ],
+          "elided": false
+        },
+        {
+          "galley_size": [
+            100.84375,
+            41.0
+          ],
+          "ink_bounds": [
+            497.375,
+            321.5625,
+            591.375,
+            353.5625
+          ],
+          "clip": [
+            494.375,
+            311.375,
+            603.31640625,
+            356.75
+          ],
+          "elided": true
+        }
+      ],
+      "vertical_glyph_fit": true
+    }
+  ],
+  "floating_edge": {
+    "before": {
+      "bounds": [
+        813.0,
+        272.0,
+        820.0,
+        568.0
+      ],
+      "disabled": false,
+      "id": 12210629464277806488,
+      "label": "Resize floating right edge",
+      "role": "Splitter",
+      "selected": null
+    },
+    "after": {
+      "bounds": [
+        829.0,
+        272.0,
+        836.0,
+        568.0
+      ],
+      "disabled": false,
+      "id": 12210629464277806488,
+      "label": "Resize floating right edge",
+      "role": "Splitter",
+      "selected": null
+    },
+    "delta_x_points": 16.0,
+    "marker": "Both screenshots visually inspected; a bright two-point marker remains on the focused right edge."
+  },
+  "popup_theme": {
+    "full_menu_title": {
+      "clip": [
+        150.3125,
+        62.0,
+        383.0,
+        209.0
+      ],
+      "elided": false,
+      "fallback": [
+        180,
+        30,
+        130,
+        255
+      ],
+      "ink_bounds": [
+        150.3125,
+        190.0,
+        383.3125,
+        202.0
+      ],
+      "last_glyph": {
+        "char": "s",
+        "end_x": 232.56399536132812,
+        "x": 227.0
+      },
+      "override": [
+        180,
+        30,
+        130,
+        255
+      ],
+      "pos": [
+        150.3125,
+        188.0
+      ],
+      "size": [
+        232.6875,
+        15.0
+      ],
+      "text": "Material settings and texture references"
+    },
+    "global_text_color": [
+      180,
+      30,
+      130,
+      255
+    ],
+    "selected_row_after_keyboard_moves": {
+      "bounds": [
+        152.3125,
+        60.0,
+        385.0,
+        80.0
+      ],
+      "disabled": false,
+      "id": 4238715220999171531,
+      "label": "Document.rs",
+      "role": "MenuItem",
+      "selected": true
+    },
+    "next_row": {
+      "bounds": [
+        152.3125,
+        83.0,
+        385.0,
+        103.0
+      ],
+      "disabled": false,
+      "id": 13942014633138223733,
+      "label": "History",
+      "role": "MenuItem",
+      "selected": false
+    },
+    "visual_inspection": "Popup rounding, three-point border and shadow agree with the sentinel egui popup recipe; current-item selection remains visible independently of the next-row focus highlight."
+  },
+  "scope": "Actual native fixture on Linux X11; pane content layout and durable offscreen contained placement are application-owned and not rated as chrome regressions."
+}

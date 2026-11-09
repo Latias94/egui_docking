@@ -239,11 +239,29 @@ let dockspace = Dockspace::builder("my-dockspace", layout)
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+Geometry remains explicit. To match a customized font or control density, call
+`DockStyle::from_egui(ui)` during a UI pass, then pass the result to the builder
+or `Dockspace::set_style`. This reads the actual font height, button padding,
+interaction height, and window border width. Call it again after an application
+font/density change; whole-UI zoom already scales logical points and needs no
+extra geometry multiplication. Reapply any application geometry/color overrides
+to the derived style before submitting it. The `basic` example demonstrates
+theme and font changes. `DockStyle::default()` retains its fixed geometry for
+applications which configure these metrics directly.
+
+Tab titles elide within their allocated text area. The full title remains
+available on hover, and the open-tab menu uses its own available width instead
+of reusing the shortened tab label. That menu inherits egui's popup frame,
+shadow, row spacing, and selected-item colors. A global `override_text_color`
+also applies to tab text unless a corresponding docking text override is set.
+
 For the experimental native host, create the session with the same
 `style.presentation_config()?` before passing both objects to `NativeDockspaceApp`.
 Native construction rejects mismatched geometry/timing instead of displaying a
 style whose core hit regions use different metrics. Colors and ghost offset stay
 adapter-local; custom core-only configuration remains authoritative.
+Native hosts currently configure font-dependent geometry at session creation;
+this does not add a runtime native style-update command.
 
 Native menus submit `egui_dockspace_native::NativeCommand` values through
 `NativeDockspaceApp::request_command`. Item docking/floating and contained
