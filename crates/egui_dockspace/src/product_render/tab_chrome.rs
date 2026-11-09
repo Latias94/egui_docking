@@ -198,7 +198,7 @@ pub(crate) fn paint_backdrop(
         bounds,
         id,
         if enabled {
-            Sense::click()
+            Sense::click_and_drag()
         } else {
             Sense::hover()
         },
@@ -238,7 +238,16 @@ pub(crate) fn paint_menu(
         menu.visual_id(),
     ));
     context.register_scroll_receiver(frame_scroll_id, frame_receiver);
-    let _ = context.interact_receiver(bounds, frame_id, Sense::hover(), frame_receiver);
+    let _ = context.interact_receiver(
+        bounds,
+        frame_id,
+        if enabled {
+            Sense::CLICK | Sense::DRAG
+        } else {
+            Sense::hover()
+        },
+        frame_receiver,
+    );
     let paint_omitted = context.source_gap_active(paint);
     if !paint_omitted {
         context.ui.painter().rect(
@@ -341,7 +350,7 @@ fn paint_menu_row(
     }
     if !paint_omitted && let Some(resource) = context.resources.item(row.item()) {
         let text_pos = pos2(
-            bounds.min.x + 8.0,
+            bounds.min.x,
             bounds.center().y - resource.galley.size().y * 0.5,
         );
         painter.galley_with_override_text_color(

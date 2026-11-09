@@ -603,6 +603,101 @@ fn escaping_an_overflow_menu_returns_focus_to_its_button_for_keyboard_reopening(
     assert!(panes.0.iter().all(String::is_empty));
 }
 
+#[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "AccessKit bounds come from the finite logical egui menu geometry"
+)]
+fn overflow_menu_titles_fit_their_text_clip_after_ui_zoom() {
+    for zoom in [1.0, 1.5] {
+        let context = Context::default();
+        context.enable_accesskit();
+        context.set_zoom_factor(zoom);
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
+        )])
+        .unwrap();
+        let mut dockspace = Dockspace::builder("overflow-menu-label-clip", layout)
+            .style(crate::DockStyle {
+                tab_min_width: 400.0,
+                tab_max_width: 400.0,
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let mut panes = EditablePanes::default();
+        let mut menu_button = None;
+        for pass in 0..8 {
+            let events = if pass == 4 {
+                vec![Event::AccessKitActionRequest(
+                    egui::accesskit::ActionRequest {
+                        action: egui::accesskit::Action::Click,
+                        target_tree: egui::accesskit::TreeId::ROOT,
+                        target_node: menu_button.unwrap(),
+                        data: None,
+                    },
+                )]
+            } else {
+                Vec::new()
+            };
+            let (output, _) = dockspace
+                .run_single_surface(
+                    &context,
+                    input(f64::from(pass) * 0.1, events),
+                    SURFACE,
+                    &mut panes,
+                )
+                .unwrap();
+            let (output, receipt) = output.into_parts();
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            if pass == 3 {
+                menu_button = nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some("Show hidden tabs"))
+                    .map(|(id, _)| *id);
+            }
+            if pass == 7 {
+                assert!((output.pixels_per_point - zoom).abs() < f32::EPSILON);
+                let bounds = nodes
+                    .iter()
+                    .find(|(_, node)| node.role() == Role::Menu)
+                    .unwrap()
+                    .1
+                    .bounds()
+                    .unwrap();
+                let menu = Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                );
+                let mut titles = 0;
+                for clipped in &output.shapes {
+                    if let Shape::Text(text) = &clipped.shape
+                        && menu.contains(text.pos)
+                    {
+                        let full_title = text.galley.rect.translate(text.pos.to_vec2());
+                        assert!(
+                            clipped.clip_rect.expand(0.5).contains_rect(full_title),
+                            "menu title {:?} is clipped at zoom {zoom}: {full_title:?} outside {:?}",
+                            text.galley.text(),
+                            clipped.clip_rect
+                        );
+                        titles += 1;
+                    }
+                }
+                assert_eq!(titles, 2, "both menu row titles must actually be painted");
+            }
+            output.drop_without_applying_deltas();
+            receipt.report(SurfacePresentationResult::Presented);
+        }
+    }
+}
+
 struct LateDiscard {
     remaining: usize,
 }

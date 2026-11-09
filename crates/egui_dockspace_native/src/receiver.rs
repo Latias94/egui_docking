@@ -451,6 +451,10 @@ fn logical_pos(point: LogicalPoint) -> Option<egui::Pos2> {
 mod focus_tests;
 
 #[cfg(test)]
+#[path = "receiver_menu_tests.rs"]
+mod menu_tests;
+
+#[cfg(test)]
 mod tests {
     use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
     use dockspace::model::{
@@ -671,7 +675,7 @@ mod tests {
         (first_artifact, first_commit, second_artifact, second_commit)
     }
 
-    struct TestPanes;
+    pub(super) struct TestPanes;
 
     impl PaneView for TestPanes {
         fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
