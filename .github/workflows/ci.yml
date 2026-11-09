@@ -449,6 +449,32 @@ jobs:
           python3 integration/egui-native-smoke/qualify_editor.py
           --start-openbox target/debug/examples/basic
 
+      - name: Preserve editor input while native output is backpressured
+        env:
+          CARGO_BUILD_JOBS: 1
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          LP_NUM_THREADS: "1"
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension XTEST" python3 - <<'PY'
+          import subprocess
+
+          manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          try:
+              subprocess.run(
+                  [
+                      "cargo", "nextest", "run",
+                      "--manifest-path", "integration/egui-fork-workspace/Cargo.toml",
+                      "--package", "egui_dockspace_native", "--lib", "--all-features", "--locked",
+                      "--test-threads=1", "--target-dir", "target", "--run-ignored", "ignored-only",
+                      "-E", "test(real_eframe_output_capacity_preserves_text_)",
+                  ],
+                  check=True, timeout=120,
+              )
+          finally:
+              manager.terminate()
+              manager.wait(timeout=5)
+          PY
+
       - name: Run physical X11 smoke unit tests
         run: >-
           cargo test --manifest-path integration/egui-native-smoke/Cargo.toml

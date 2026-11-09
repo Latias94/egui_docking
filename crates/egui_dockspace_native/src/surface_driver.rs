@@ -248,6 +248,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         &mut self,
         context: &egui::Context,
         token: NativeOutputToken,
+        has_input: bool,
     ) -> Result<eframe::NativeOutputInputAdmission, NativeRuntimeError> {
         self.abandon_unfinalized_output_passes(context)?;
         if let Some(update) = &self.owned_update {
@@ -259,7 +260,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         let bridge = self.coordinator.dispatch_bridge();
         if self.shutdown.is_some()
-            || bridge.is_control_output(token)
             || bridge.create_binding(token.viewport_id()).is_some()
             || bridge.output_has_staging_request(token)
         {
@@ -288,6 +288,33 @@ impl<P: PaneView> NativeRuntimeState<P> {
             // An application close queued outside UI needs one final control
             // pass, without publishing a new semantic output during exit.
             bridge.abandon_output(token);
+            return Ok(eframe::NativeOutputInputAdmission::Proceed);
+        }
+        if has_input {
+            let blocked = if bridge.is_control_output(token) {
+                true
+            } else {
+                // Probe the core's actual output allowance before eframe takes
+                // raw input. The unpublished candidate emits no output or UI.
+                match self
+                    .coordinator
+                    .poll_resolved_host_frame(context, &mut budget)?
+                {
+                    Some(mut frame) => matches!(
+                        frame.frame.surface_work(surface)?,
+                        dockspace::runtime::SurfaceWork::Deferred(
+                            dockspace::runtime::SurfaceWorkDeferred::OutputCapacity
+                        )
+                    ),
+                    None => true,
+                }
+            };
+            if blocked
+                || self.coordinator.session().has_pending_native_input()
+                || budget.is_exhausted()
+            {
+                return self.defer_output_input(token);
+            }
         }
         Ok(eframe::NativeOutputInputAdmission::Proceed)
     }

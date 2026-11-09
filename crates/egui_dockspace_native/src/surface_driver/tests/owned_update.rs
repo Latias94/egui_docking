@@ -130,10 +130,10 @@ impl NativeOutputPassFinalizer for Finalizer {
         &self,
         context: &egui::Context,
         token: NativeOutputToken,
-        _has_input: bool,
+        has_input: bool,
     ) -> eframe::NativeOutputInputAdmission {
         lock(&self.state.upgrade().unwrap())
-            .prepare_output_input(context, token)
+            .prepare_output_input(context, token, has_input)
             .unwrap()
     }
 

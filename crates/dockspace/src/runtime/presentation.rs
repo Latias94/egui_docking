@@ -588,6 +588,26 @@ impl SubmittedPresentationObservation {
     }
 }
 
+fn required_output_slots(
+    pending: &[PendingPresentationOutput],
+    submitted: &SubmittedPresentationObservation,
+    observations: &[HostPresentationObservationOutcome],
+    reserved: usize,
+) -> Option<usize> {
+    let surviving = pending
+        .iter()
+        .filter(|entry| {
+            !observations
+                .iter()
+                .filter_map(|outcome| submitted_retirement(outcome, submitted))
+                .any(|(stream, through)| {
+                    entry.output.stream() == stream && entry.output.key() <= through
+                })
+        })
+        .count();
+    surviving.checked_add(reserved)?.checked_add(1)
+}
+
 impl RuntimePresentationState {
     pub(super) fn blocks_pointer_authority(
         &self,
@@ -608,6 +628,16 @@ impl RuntimePresentationState {
         Ok(())
     }
 
+    pub(super) fn output_slot_available(
+        &self,
+        submitted: &SubmittedPresentationObservation,
+        observations: &[HostPresentationObservationOutcome],
+        reserved: usize,
+    ) -> bool {
+        required_output_slots(&self.pending.lock(), submitted, observations, reserved)
+            .is_some_and(|total| self.slot_limit.is_none_or(|limit| total <= limit))
+    }
+
     pub(super) fn reserve_output(
         &mut self,
         submitted: &SubmittedPresentationObservation,
@@ -617,21 +647,7 @@ impl RuntimePresentationState {
         reserved_streams: impl Iterator<Item = Option<HostPresentationStreamId>>,
     ) -> Result<bool, NativePlatformError> {
         let mut pending = self.pending.lock();
-        let surviving = pending
-            .iter()
-            .filter(|entry| {
-                !observations
-                    .iter()
-                    .filter_map(|outcome| submitted_retirement(outcome, submitted))
-                    .any(|(stream, through)| {
-                        entry.output.stream() == stream && entry.output.key() <= through
-                    })
-            })
-            .count();
-        let Some(total) = surviving
-            .checked_add(reserved)
-            .and_then(|value| value.checked_add(1))
-        else {
+        let Some(total) = required_output_slots(&pending, submitted, observations, reserved) else {
             return Ok(false);
         };
         let new_streams = reserved_streams

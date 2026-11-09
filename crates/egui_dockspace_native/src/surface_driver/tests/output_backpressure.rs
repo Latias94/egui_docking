@@ -3,6 +3,7 @@
 #![cfg(target_os = "linux")]
 
 use std::num::NonZeroUsize;
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -54,6 +55,14 @@ struct Probe {
     resumed_presented: bool,
     observed_ordinal: u64,
     done: bool,
+    text_mode: bool,
+    resize_before_key: bool,
+    native_resize_seen: bool,
+    native_text_seen: bool,
+    text_input_token: Option<NativeOutputToken>,
+    text_input_admission: Option<eframe::NativeOutputInputAdmission>,
+    release_on_service: bool,
+    text_reached_retained_ui: bool,
 }
 
 /// Delays one real terminal and its ordered suffix; every other callback is forwarded.
@@ -92,6 +101,14 @@ impl NativeHostHandler for DelayedTerminalHost {
     }
 
     fn on_service(&self, context: &egui::Context) -> NativeHostWake {
+        let release = {
+            let mut probe = lock(&self.probe);
+            std::mem::take(&mut probe.release_on_service)
+        };
+        if release {
+            self.release();
+            context.request_repaint();
+        }
         self.inner.on_service(context)
     }
 
@@ -101,13 +118,46 @@ impl NativeHostHandler for DelayedTerminalHost {
         token: NativeOutputToken,
         has_input: bool,
     ) -> eframe::NativeOutputInputAdmission {
-        self.inner.before_output_input(context, token, has_input)
+        let admission = self.inner.before_output_input(context, token, has_input);
+        let mut probe = lock(&self.probe);
+        if probe.text_mode
+            && probe.holding
+            && probe.native_text_seen
+            && has_input
+            && probe.text_input_token.is_none()
+        {
+            probe.text_input_token = Some(token);
+            probe.text_input_admission = Some(admission);
+            // Release only after this real output attempts input admission. A
+            // deferred pass has no App callback, so recovery belongs to service.
+            probe.release_on_service = true;
+        }
+        admission
     }
 
     fn on_window_event(
         &self,
         event: eframe::NativeWindowEvent<'_>,
     ) -> eframe::NativeWindowEventDisposition {
+        if matches!(
+            event.event(),
+            winit::event::WindowEvent::Resized(size) if size.width == 720 && size.height == 520
+        ) {
+            let mut probe = lock(&self.probe);
+            if probe.text_mode && probe.holding {
+                probe.native_resize_seen = true;
+            }
+        }
+        if let winit::event::WindowEvent::KeyboardInput { event, .. } = event.event()
+            && event.state == winit::event::ElementState::Pressed
+            && !event.repeat
+            && event.text.as_deref() == Some("a")
+        {
+            let mut probe = lock(&self.probe);
+            if probe.text_mode && probe.holding {
+                probe.native_text_seen = true;
+            }
+        }
         self.inner.on_window_event(event)
     }
 
@@ -178,7 +228,9 @@ impl NativeHostHandler for DelayedTerminalHost {
         let mut probe = lock(&self.probe);
         assert!(terminal.ordinal().get() > probe.observed_ordinal);
         probe.observed_ordinal = terminal.ordinal().get();
-        if probe.retained.contains(&terminal.token()) {
+        if probe.retained.contains(&terminal.token())
+            && !(probe.resize_before_key && probe.native_resize_seen)
+        {
             assert_eq!(
                 terminal.status(),
                 NativeOutputStatus::NotPresented,
@@ -194,16 +246,218 @@ impl NativeHostHandler for DelayedTerminalHost {
                 assert_eq!(terminal.status(), NativeOutputStatus::Presented);
             }
             assert!(
-                probe.buffered.len() < 4,
+                probe.buffered.len() < if probe.text_mode { 16 } else { 4 },
                 "the test retains a bounded suffix"
             );
             probe.holding = true;
             probe.buffered.push(terminal);
-            return NativeHostWake::RepaintRootAfterCurrent;
+            return if probe.release_on_service {
+                NativeHostWake::ServiceAfterCurrent
+            } else {
+                NativeHostWake::RepaintRootAfterCurrent
+            };
         }
         drop(probe);
         self.inner.on_output(terminal)
     }
+}
+
+struct EditorPanes {
+    text: String,
+    target: egui::Id,
+    calls: Arc<AtomicUsize>,
+}
+
+impl PaneView for EditorPanes {
+    fn title(&self, _: dockspace::model::ItemId) -> Option<egui::WidgetText> {
+        Some("Backpressured editor".into())
+    }
+
+    fn ui(
+        &mut self,
+        _: dockspace::model::ItemId,
+        ui: &mut egui::Ui,
+    ) -> egui_dockspace::PaneResponse {
+        let response = ui.add(egui::TextEdit::singleline(&mut self.text).id(self.target));
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            response.request_focus();
+        }
+        egui_dockspace::PaneResponse::default().with_content(&response)
+    }
+
+    fn focus_target(&self, _: dockspace::model::ItemId) -> Option<egui::Id> {
+        Some(self.target)
+    }
+}
+
+struct RetainedTextApp {
+    app: NativeDockspaceApp<EditorPanes>,
+    host: Arc<DelayedTerminalHost>,
+    calls: Arc<AtomicUsize>,
+    key_sent: bool,
+    resize_before_key: bool,
+    started: Instant,
+}
+
+impl eframe::App for RetainedTextApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        assert!(
+            self.started.elapsed() < Duration::from_secs(15),
+            "the real keyboard input must recover: {:?}",
+            lock(&self.host.probe)
+        );
+        let before = self.calls.load(Ordering::SeqCst);
+        eframe::App::ui(&mut self.app, ui, frame);
+        assert!(self.app.error_kind().is_none());
+        let after = self.calls.load(Ordering::SeqCst);
+        let retained = self.app.current_output_is_retained();
+        let token = eframe::current_native_output_token().unwrap();
+        let mut probe = lock(&self.host.probe);
+        if probe.holding {
+            assert!(retained, "the real occupied output slot must retain pixels");
+            assert_eq!(after, probe.calls_at_hold);
+            if !probe.retained.contains(&token) {
+                probe.retained.push(token);
+            }
+            if ui.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Text(text) if text == "a"))
+            }) {
+                probe.text_reached_retained_ui = true;
+            }
+            if !self.key_sent {
+                self.key_sent = true;
+                drop(probe);
+                let window = u64::from(token.window_id()).to_string();
+                let mut command = Command::new("xdotool");
+                command.args(["windowactivate", "--sync", &window]);
+                if self.resize_before_key {
+                    command.args(["windowsize", "--sync", &window, "720", "520"]);
+                }
+                let result = command
+                    .args(["key", "a"])
+                    .output()
+                    .expect("the X11 keyboard regression requires xdotool");
+                assert!(result.status.success(), "{result:?}");
+            }
+        } else if probe.released {
+            if after > before && !retained && probe.resumed.is_none() {
+                probe.resumed = Some(token);
+            }
+            if probe.resumed_presented {
+                probe.done = true;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else if probe.hold_token == Some(token) {
+            probe.calls_at_hold = after;
+        } else if probe.hold_token.is_none()
+            && self.app.is_surface_presented(SURFACE)
+            && after > before
+            && !retained
+        {
+            probe.hold_token = Some(token);
+            probe.calls_at_hold = after;
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(5));
+    }
+
+    fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
+        let text = self.app.with_panes(|panes| panes.text.clone());
+        assert_eq!(
+            text,
+            "a",
+            "a real X11 Text event admitted while output is retained must reach the restored TextEdit; probe={:?}",
+            lock(&self.host.probe)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires isolated X11/XTest renderer, an EWMH WM, and xdotool"]
+fn real_eframe_output_capacity_preserves_text_until_the_editor_resumes() {
+    assert_retained_text_delivery_after_backpressure(false);
+}
+
+#[test]
+#[ignore = "requires isolated X11/XTest renderer, an EWMH WM, and xdotool"]
+fn real_eframe_output_capacity_preserves_text_after_native_resize() {
+    assert_retained_text_delivery_after_backpressure(true);
+}
+
+fn assert_retained_text_delivery_after_backpressure(resize_before_key: bool) {
+    assert!(std::env::var_os("DISPLAY").is_some());
+    let mut session = test_session();
+    session
+        .configure_output_capacity(NonZeroUsize::new(1).unwrap())
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = NativeDockspaceApp::new_with_close_policy(
+        egui::Id::unique("real-retained-text"),
+        session,
+        SURFACE,
+        EditorPanes {
+            text: String::new(),
+            target: egui::Id::unique("real-retained-text-editor"),
+            calls: Arc::clone(&calls),
+        },
+        DockStyle::default(),
+        NativeWindowClosePolicy::RetainLayout,
+    )
+    .unwrap();
+    let probe = Arc::new(Mutex::new(Probe {
+        text_mode: true,
+        resize_before_key,
+        ..Probe::default()
+    }));
+    let host = Arc::new(DelayedTerminalHost {
+        inner: app.native_host_handler(),
+        probe: Arc::clone(&probe),
+    });
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([640.0, 480.0]),
+        native_host: Some(host.clone()),
+        renderer: eframe::Renderer::Glow,
+        event_loop_builder: Some(Box::new(|builder| {
+            builder.with_x11().with_any_thread(true);
+        })),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Dockspace retained native text regression",
+        options,
+        Box::new(move |_| {
+            Ok(Box::new(RetainedTextApp {
+                app,
+                host,
+                calls,
+                key_sent: false,
+                resize_before_key,
+                started: Instant::now(),
+            }))
+        }),
+    )
+    .unwrap();
+    let probe = lock(&probe);
+    assert!(probe.native_text_seen && probe.text_input_token.is_some());
+    assert!(
+        !resize_before_key || probe.native_resize_seen,
+        "the resized branch must receive the actual native 720x520 resize: {probe:?}"
+    );
+    assert!(
+        matches!(
+            probe.text_input_admission,
+            Some(eframe::NativeOutputInputAdmission::Defer(_))
+        ),
+        "backpressure must defer before taking the real Text event: {probe:?}"
+    );
+    assert!(
+        !probe.text_reached_retained_ui,
+        "the Text event must stay buffered until pane rendering resumes: {probe:?}"
+    );
+    assert!(probe.released && probe.resumed_presented && probe.done);
+    assert!(probe.buffered.is_empty());
 }
 
 struct BackpressureApp {

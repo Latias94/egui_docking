@@ -654,13 +654,13 @@ impl<P: PaneView + Send + 'static> NativeOutputPassFinalizer for NativePassFinal
         &self,
         context: &egui::Context,
         token: NativeOutputToken,
-        _has_input: bool,
+        has_input: bool,
     ) -> eframe::NativeOutputInputAdmission {
         let Some(state) = self.state.upgrade() else {
             return eframe::NativeOutputInputAdmission::Defer(NativeHostWake::Wait);
         };
         let mut state = lock_state(&state);
-        match state.prepare_output_input(context, token) {
+        match state.prepare_output_input(context, token, has_input) {
             Ok(admission) => admission,
             Err(error) => {
                 state.stop_current_output(error);
