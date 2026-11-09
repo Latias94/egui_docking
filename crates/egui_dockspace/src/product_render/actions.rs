@@ -5,7 +5,7 @@ use egui::{Id, Key, PointerButton, Response, Ui};
 
 use super::PointerActionAuthority;
 pub(super) fn effective_enabled(ui: &Ui, enabled: bool) -> bool {
-    enabled && ui.is_enabled()
+    enabled && ui.is_enabled() && ui.memory(|memory| memory.allows_interaction(ui.layer_id()))
 }
 
 pub(super) fn button_activation_origin(

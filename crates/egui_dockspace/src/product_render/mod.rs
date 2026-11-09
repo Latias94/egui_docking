@@ -392,11 +392,12 @@ pub(crate) fn paint_surface(
             .rect_filled(bounds, 0.0, visuals.workspace_fill);
         let target = ui.make_persistent_id((instance_id, "workspace-focus", plan.surface()));
         let _ = ui.interact(bounds, target, Sense::focusable_noninteractive());
+        let enabled = actions::effective_enabled(ui, true);
         ui.ctx().accesskit_node_builder(target, |node| {
             node.set_role(egui::accesskit::Role::Pane);
             node.set_label("Dockspace workspace");
             node.set_bounds(geometry::accesskit_bounds(bounds));
-            if ui.is_enabled() {
+            if enabled {
                 node.add_action(egui::accesskit::Action::Focus);
             } else {
                 node.set_disabled();
@@ -405,7 +406,7 @@ pub(crate) fn paint_surface(
         });
         if pane_focus_request.is_some_and(|request| request.item().is_none())
             && pointer_authority.supports_preview_gestures()
-            && ui.is_enabled()
+            && enabled
         {
             ui.memory_mut(|memory| memory.request_focus(target));
             pane_focus_target_requested = true;

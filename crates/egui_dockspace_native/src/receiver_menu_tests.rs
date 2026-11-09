@@ -1,4 +1,6 @@
-//! Popup clicks cross the actual egui hit snapshot and native input reducer.
+//! Popup input crosses the actual egui hit snapshot and native input reducer.
+
+use std::num::NonZeroUsize;
 
 use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::model::{
@@ -9,9 +11,11 @@ use dockspace::runtime::{
     HostWindowToken, NativeCloseState, NativeCreateStrategy, NativeDesktopPointerLocation,
     NativeDesktopPosition, NativePointerButton, NativePointerEvent, NativePointerHover,
     NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
-    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
-    SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePresentationResult,
-    SurfaceUnavailableReason, TabStripControlKind,
+    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
+    NativeScrollMomentum, NativeScrollPhase, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaRoster, SurfacePaintProgramOperation,
+    SurfacePaintProgramStep, SurfacePresentationResult, SurfaceUnavailableReason,
+    TabStripControlKind,
 };
 use egui::{Id, Pos2, RawInput, Rect, Vec2};
 use egui_dockspace::{DockStyle, native_support};
@@ -324,10 +328,279 @@ fn tab_list_menu_rows_route_native_click_and_drag_after_ui_zoom() {
     }
 }
 
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression presents a real popup and modal before sending native wheel through the exact receiver store and core reducer"
+)]
+fn an_application_modal_blocks_native_menu_scroll_without_rejecting_input() {
+    let zoom = 1.2_f32;
+    let (mut session, binding) = managed_session_with_item_count(zoom, 40);
+    let context = egui::Context::default();
+    context.options_mut(|options| {
+        options.zoom_factor = zoom;
+        options.max_passes = NonZeroUsize::new(1).unwrap();
+    });
+    let input = RawInput {
+        screen_rect: Some(Rect::from_min_size(
+            Pos2::ZERO,
+            Vec2::new(640.0, 480.0) / zoom,
+        )),
+        ..Default::default()
+    };
+    let style = DockStyle {
+        tab_min_width: 400.0,
+        tab_max_width: 400.0,
+        ..Default::default()
+    };
+    let mut panes = TestPanes;
+    let mut store = NativeReceiverStore::default();
+    let mut point = None;
+    let projected_delta = egui::WidgetScrollDelta::new(0.0, -3.0).unwrap();
+    for pass in 0..4 {
+        let mut open = None;
+        let mut painted = None;
+        let mut output = None;
+        let mut scroll_identities = Vec::new();
+        context
+            .run_ui(input.clone(), |ui| {
+                if pass >= 2 {
+                    let modal = egui::Modal::new(Id::unique("native-menu-scroll-modal"))
+                        .show(ui.ctx(), |ui| {
+                            ui.label("Application modal without a ScrollArea")
+                        });
+                    if pass == 3 {
+                        assert!(modal.is_top_modal);
+                        assert!(!ui.memory(|memory| memory.allows_interaction(ui.layer_id())));
+                    }
+                }
+                let mut measured = session
+                    .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                    .unwrap();
+                native_support::measure_surface(
+                    &mut measured,
+                    SURFACE,
+                    ui,
+                    ui.max_rect(),
+                    ui.max_rect(),
+                    &panes,
+                    &style,
+                )
+                .unwrap();
+                measured.commit().unwrap();
+
+                let mut frame = session
+                    .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                    .unwrap();
+                let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+                let mut saw_menu = false;
+                plan.visit_surface_program(|step| {
+                    match step {
+                        SurfacePaintProgramStep::Operation {
+                            operation: SurfacePaintProgramOperation::TabStripControl(control),
+                            ..
+                        } if pass == 0 && control.kind() == TabStripControlKind::TabListMenu => {
+                            open = plan.prepare_tab_strip_control_activation(control);
+                        }
+                        SurfacePaintProgramStep::PopupMenu { menu, .. } => {
+                            saw_menu = true;
+                            assert!(menu.maximum_scroll_offset() > 0.0);
+                            assert_eq!(menu.scroll_offset(), 0.0);
+                            point = plan
+                                .receiver_for_tab_list_menu_scroll(menu)
+                                .map(|receiver| receiver.center());
+                        }
+                        _ => {}
+                    }
+                    Ok::<(), ()>(())
+                })
+                .unwrap();
+                assert_eq!(saw_menu, pass > 0);
+                let mut register_scroll = |ui: &egui::Ui, rect: Rect, id: Id| {
+                    let identity = ui.register_scroll_hit_candidate(rect, id);
+                    scroll_identities.push(identity);
+                    (identity.id(), identity.layer_id())
+                };
+                let mut paint = native_support::paint_surface(
+                    &mut frame,
+                    Id::unique("native-menu-modal-scroll"),
+                    SURFACE,
+                    ui,
+                    &mut panes,
+                    &style,
+                    &mut register_scroll,
+                )
+                .unwrap();
+                assert!(paint.confirm_into(&mut frame).unwrap());
+                output = frame.commit().unwrap().take_painted_outputs().pop();
+                painted = Some(paint);
+            })
+            .drop_without_applying_deltas();
+        let paint = painted.unwrap();
+        let output = output.unwrap();
+        let artifact = output.presentation_artifact();
+        let hit_authority = context
+            .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
+            .unwrap();
+        let scroll_receivers = paint
+            .scroll_receivers()
+            .zip(scroll_identities)
+            .map(|(receiver, identity)| PresentedScrollReceiver { receiver, identity })
+            .collect::<Vec<_>>();
+        if pass == 1 {
+            let candidate = scroll_receivers
+                .iter()
+                .find(|candidate| {
+                    candidate.receiver.role() == DockspaceReceiverRole::TabListMenuScroll
+                })
+                .expect("the unobstructed menu must publish a real scroll receiver");
+            assert_eq!(
+                hit_authority
+                    .scroll_hit_test(
+                        logical_pos(point.unwrap()).unwrap(),
+                        &scroll_receivers
+                            .iter()
+                            .map(|candidate| candidate.identity)
+                            .collect::<Vec<_>>(),
+                        egui::WidgetScrollHitChallenge::Spatial {
+                            projected_delta: Some(projected_delta),
+                        },
+                    )
+                    .unwrap()
+                    .hit(),
+                egui::WidgetScrollHit::Candidate(candidate.identity)
+            );
+        }
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        let mut settled = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        settled
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        settled.commit().unwrap();
+        store.presented.insert(
+            SURFACE,
+            vec![PresentedReceiverSet {
+                binding,
+                viewport: egui::ViewportId::ROOT,
+                hit_authority,
+                artifact,
+                receivers: paint.receivers().collect(),
+                scroll_receivers,
+                focus_bindings: paint.pane_focus_bindings().to_vec(),
+            }],
+        );
+        if let Some(open) = open {
+            let mut frame = session
+                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            frame.submit_surface_action(open).unwrap();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            frame.commit().unwrap();
+        }
+    }
+    let point = point.unwrap();
+    let presented = &store.presented[&SURFACE][0];
+    let identities = presented
+        .scroll_receivers
+        .iter()
+        .map(|receiver| receiver.identity)
+        .collect::<Vec<_>>();
+    let scroll_hit = presented
+        .hit_authority
+        .scroll_hit_test(
+            logical_pos(point).unwrap(),
+            &identities,
+            egui::WidgetScrollHitChallenge::Spatial {
+                projected_delta: Some(projected_delta),
+            },
+        )
+        .unwrap()
+        .hit();
+    session
+        .record_native_pointer(NativePointerInput::new(
+            NativePointerId::new(1),
+            NativePointerEvent::Scrolled(NativeScrollEvent::new(
+                NativeScrollDeviceId::new(1),
+                NativeScrollPhase::Discrete {
+                    delta: NativeScrollDelta::Lines { x: 0.0, y: -3.0 },
+                },
+                NativeScrollMomentum::Unknown,
+                NativeScrollModifiers::Exact {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    command: false,
+                },
+            )),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(
+                    PhysicalPoint::new(point.x() * f64::from(zoom), point.y() * f64::from(zoom))
+                        .unwrap(),
+                ),
+                NativePointerHover::Dock(binding),
+                None,
+            ),
+            NativePointerOwner::Native(binding),
+            NativePointerOwner::None,
+        ))
+        .unwrap();
+    let mut scroll_answer = None;
+    let mut frame = session
+        .begin_native_host_frame(|query| {
+            let answer = store.resolve(query);
+            if matches!(query.purpose(), NativeReceiverPurpose::ScrollDelivery(_)) {
+                scroll_answer = Some(answer);
+            }
+            answer
+        })
+        .unwrap_or_else(|error| {
+            panic!(
+                "a modal must block native wheel without rejecting input: hit={scroll_hit:?}, answer={scroll_answer:?}, error={error:?}"
+            )
+        });
+    frame
+        .paint_plan(SURFACE)
+        .unwrap()
+        .unwrap()
+        .visit_surface_program(|step| {
+            if let SurfacePaintProgramStep::PopupMenu { menu, .. } = step {
+                assert_eq!(menu.scroll_offset(), 0.0);
+            }
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+    assert!(frame.view().item(FIRST).unwrap().is_selected());
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    assert_eq!(scroll_hit, egui::WidgetScrollHit::Blocked);
+    assert!(matches!(
+        scroll_answer,
+        Some(NativeReceiverAnswer::Blocked(_))
+    ));
+}
+
 fn managed_session(zoom: f32) -> (DockspaceSession, NativeSurfaceBinding) {
+    managed_session_with_item_count(zoom, 2)
+}
+
+fn managed_session_with_item_count(
+    zoom: f32,
+    item_count: u64,
+) -> (DockspaceSession, NativeSurfaceBinding) {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
-        DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
+        DockspaceRootLayout::new(
+            RootId::new(1),
+            DockspaceNode::central_tabs((1..=item_count).map(ItemId::new)),
+        ),
     )])
     .unwrap();
     let presentation = DockPresentationConfig::builder()

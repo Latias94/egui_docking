@@ -967,7 +967,17 @@ impl Dockspace {
                     .any(|commit| commit.settles(*artifact))
         });
         for id in deferred_focus {
-            ui.ctx().memory_mut(|memory| memory.request_focus(id));
+            let target = ui
+                .ctx()
+                .viewport(|viewport| viewport.this_pass.widgets.get(id).copied());
+            if let Some(target) = target
+                && target.enabled
+                && target.visible
+                && target.sense.is_focusable()
+                && ui.memory(|memory| memory.allows_interaction(target.layer_id))
+            {
+                ui.memory_mut(|memory| memory.request_focus(id));
+            }
         }
         crate::product_pointer::schedule_pointer_continuation(&self.session, ui.ctx(), observed_at);
         self.measurement_deferred = defer_measurement;

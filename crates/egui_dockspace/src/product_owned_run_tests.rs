@@ -605,6 +605,488 @@ fn escaping_an_overflow_menu_returns_focus_to_its_button_for_keyboard_reopening(
 
 #[test]
 #[allow(
+    clippy::too_many_lines,
+    reason = "the regression opens a real menu, transfers focus to a modal and verifies text input and selection"
+)]
+fn an_overflow_menu_yields_focus_and_keyboard_activation_to_an_application_modal() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
+    )])
+    .unwrap();
+    let mut dockspace = Dockspace::builder("overflow-menu-application-modal", layout)
+        .style(crate::DockStyle {
+            tab_min_width: 400.0,
+            tab_max_width: 400.0,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+    let mut panes = EditablePanes(["first content".to_owned(), "second content".to_owned()]);
+    let mut menu_button = None;
+    let modal_editor = egui::Id::unique("overflow-menu-modal-editor");
+    let mut modal_focus_requested = false;
+    let mut modal_text = String::new();
+    for pass in 0..16 {
+        let events = match pass {
+            4 => vec![Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Click,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: menu_button.unwrap(),
+                    data: None,
+                },
+            )],
+            6 | 12 => vec![Event::Key {
+                key: if pass == 6 {
+                    egui::Key::End
+                } else {
+                    egui::Key::Enter
+                },
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            10 => vec![Event::Text("modal".to_owned())],
+            14 => vec![Event::Text(" typing".to_owned())],
+            _ => Vec::new(),
+        };
+        let (output, _) = dockspace
+            .run_single_surface_with_ui(
+                &context,
+                input(f64::from(pass) * 0.1, events),
+                SURFACE,
+                &mut panes,
+                |ui| {
+                    if pass >= 8 {
+                        egui::Modal::new(egui::Id::unique("overflow-menu-modal")).show(
+                            ui.ctx(),
+                            |ui| {
+                                // Leave Enter to the modal layer instead of consuming it here.
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(&mut modal_text)
+                                        .id(modal_editor)
+                                        .return_key(None),
+                                );
+                                if !modal_focus_requested && !ui.is_sizing_pass() {
+                                    response.request_focus();
+                                    modal_focus_requested = true;
+                                }
+                            },
+                        );
+                    }
+                },
+            )
+            .unwrap();
+        let (mut output, receipt) = output.into_parts();
+        output.textures_delta.clear();
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        if pass == 3 {
+            menu_button = nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Show hidden tabs"))
+                .map(|(id, _)| *id);
+        }
+        if pass == 7 {
+            let (row_id, _) = nodes
+                .iter()
+                .find(|(_, node)| node.role() == Role::MenuItem && node.label() == Some("Second"))
+                .expect("End must focus a real unselected overflow row before the modal opens");
+            assert_eq!(
+                context.memory(egui::Memory::focused).map(|id| id.value()),
+                Some(row_id.0)
+            );
+        }
+        if pass >= 9 {
+            assert_eq!(
+                context.memory(egui::Memory::focused),
+                Some(modal_editor),
+                "the modal editor must retain focus without another request, pass {pass}"
+            );
+        }
+        assert!(dockspace.view().item(FIRST).unwrap().is_selected());
+        assert!(!dockspace.view().item(SECOND).unwrap().is_selected());
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert_eq!(modal_text, "modal typing");
+    assert_eq!(panes.0, ["first content", "second content"]);
+}
+
+#[test]
+fn an_application_modal_blocks_accessible_tab_activation() {
+    for action in [
+        egui::accesskit::Action::Click,
+        egui::accesskit::Action::Focus,
+    ] {
+        let (context, mut dockspace, _, _) = presented_tabs("modal-accessible-tab-activation");
+        let mut panes = EditablePanes(["first content".to_owned(), "second content".to_owned()]);
+        let mut second_tab = None;
+        let modal_editor = egui::Id::unique("accessible-tab-modal-editor");
+        let mut modal_focus_requested = false;
+        let mut modal_text = String::new();
+        for pass in 0..10 {
+            let events = match pass {
+                6 => vec![Event::AccessKitActionRequest(
+                    egui::accesskit::ActionRequest {
+                        action,
+                        target_tree: egui::accesskit::TreeId::ROOT,
+                        target_node: second_tab.unwrap(),
+                        data: None,
+                    },
+                )],
+                8 => vec![Event::Text("modal input".to_owned())],
+                _ => Vec::new(),
+            };
+            let (output, _) = dockspace
+                .run_single_surface_with_ui(
+                    &context,
+                    input(1.0 + f64::from(pass) * 0.1, events),
+                    SURFACE,
+                    &mut panes,
+                    |ui| {
+                        if pass >= 2 {
+                            egui::Modal::new(egui::Id::unique("accessible-tab-modal")).show(
+                                ui.ctx(),
+                                |ui| {
+                                    let response = ui.add(
+                                        egui::TextEdit::singleline(&mut modal_text)
+                                            .id(modal_editor),
+                                    );
+                                    if !modal_focus_requested && !ui.is_sizing_pass() {
+                                        response.request_focus();
+                                        modal_focus_requested = true;
+                                    }
+                                },
+                            );
+                        }
+                    },
+                )
+                .unwrap();
+            let (mut output, receipt) = output.into_parts();
+            output.textures_delta.clear();
+            if pass == 1 {
+                let (id, node) = output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.role() == Role::Tab && node.label() == Some("Second"))
+                    .expect("the inactive tab must expose a real accessible activation target");
+                assert!(node.supports_action(action));
+                second_tab = Some(*id);
+            }
+            assert!(
+                dockspace.view().item(FIRST).unwrap().is_selected(),
+                "{action:?} must not select a tab behind the modal, pass {pass}"
+            );
+            assert!(!dockspace.view().item(SECOND).unwrap().is_selected());
+            if pass == 5 || pass >= 7 {
+                assert_eq!(
+                    context.memory(egui::Memory::focused),
+                    Some(modal_editor),
+                    "the modal must retain keyboard focus across {action:?}, pass {pass}"
+                );
+            }
+            output.drop_without_applying_deltas();
+            receipt.report(SurfacePresentationResult::Presented);
+        }
+        assert_eq!(modal_text, "modal input");
+        assert_eq!(panes.0, ["first content", "second content"]);
+    }
+}
+
+#[test]
+fn a_pending_pane_focus_request_does_not_steal_focus_from_an_application_modal() {
+    let (context, mut dockspace, _, _) = presented_tabs("modal-pending-pane-focus");
+    let mut panes = EditablePanes(["first content".to_owned(), "second content".to_owned()]);
+    let modal_editor = egui::Id::unique("pending-pane-modal-editor");
+    let mut modal_focus_requested = false;
+    let mut modal_text = String::new();
+    for pass in 0..8 {
+        if pass == 4 {
+            // Selecting the current item still publishes a real content-focus request.
+            dockspace.select_item_current(FIRST).unwrap();
+        }
+        let events = if pass == 6 {
+            vec![Event::Text("modal input".to_owned())]
+        } else {
+            Vec::new()
+        };
+        let (output, _) = dockspace
+            .run_single_surface_with_ui(
+                &context,
+                input(1.0 + f64::from(pass) * 0.1, events),
+                SURFACE,
+                &mut panes,
+                |ui| {
+                    egui::Modal::new(egui::Id::unique("pending-pane-modal")).show(ui.ctx(), |ui| {
+                        let response =
+                            ui.add(egui::TextEdit::singleline(&mut modal_text).id(modal_editor));
+                        if !modal_focus_requested && !ui.is_sizing_pass() {
+                            response.request_focus();
+                            modal_focus_requested = true;
+                        }
+                    });
+                },
+            )
+            .unwrap();
+        let (mut output, receipt) = output.into_parts();
+        output.textures_delta.clear();
+        if pass >= 3 {
+            assert_eq!(
+                context.memory(egui::Memory::focused),
+                Some(modal_editor),
+                "the modal must retain focus before and after the pane request, pass {pass}"
+            );
+        }
+        assert!(dockspace.view().item(FIRST).unwrap().is_selected());
+        assert!(!dockspace.view().item(SECOND).unwrap().is_selected());
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert_eq!(modal_text, "modal input");
+    assert_eq!(panes.0, ["first content", "second content"]);
+}
+
+#[test]
+fn a_tab_press_does_not_replace_a_new_application_modals_focus_after_publication() {
+    let (context, mut dockspace, _, position) = presented_tabs("modal-deferred-tab-focus");
+    context.options_mut(|options| options.max_passes = NonZeroUsize::new(2).unwrap());
+    // Let the new modal finish sizing inside the same run as the qualified tab press.
+    context.add_plugin(LateDiscard { remaining: 1 });
+    let mut panes = EditablePanes(["first content".to_owned(), "second content".to_owned()]);
+    let modal_editor = egui::Id::unique("deferred-tab-modal-editor");
+    let mut modal_focus_requested = false;
+    let mut modal_text = String::new();
+    for step in 0..5 {
+        // Keep the press held: releasing outside the modal legitimately blurs TextEdit.
+        let events = match step {
+            0 => press(position),
+            3 => vec![Event::Text("modal input".to_owned())],
+            _ => Vec::new(),
+        };
+        let (output, response) = dockspace
+            .run_single_surface_with_ui(
+                &context,
+                input(1.0 + f64::from(step) * 0.1, events),
+                SURFACE,
+                &mut panes,
+                |ui| {
+                    egui::Modal::new(egui::Id::unique("deferred-tab-modal")).show(ui.ctx(), |ui| {
+                        let response =
+                            ui.add(egui::TextEdit::singleline(&mut modal_text).id(modal_editor));
+                        if !modal_focus_requested && !ui.is_sizing_pass() {
+                            response.request_focus();
+                            modal_focus_requested = true;
+                        }
+                        if modal_focus_requested {
+                            assert_eq!(
+                                ui.memory(egui::Memory::focused),
+                                Some(modal_editor),
+                                "the real modal editor must own focus before docking paints"
+                            );
+                        }
+                    });
+                },
+            )
+            .unwrap();
+        let (mut output, receipt) = output.into_parts();
+        output.textures_delta.clear();
+        if step == 0 {
+            assert_eq!(output.platform_output.num_completed_passes, 2);
+            assert!(modal_focus_requested);
+            assert!(
+                response.mutation().workspace_changed(),
+                "the original presented tab press must actually reach the core"
+            );
+        }
+        assert!(dockspace.view().item(SECOND).unwrap().is_selected());
+        assert!(!dockspace.view().item(FIRST).unwrap().is_selected());
+        assert_eq!(
+            context.memory(egui::Memory::focused),
+            Some(modal_editor),
+            "publishing the tab press must preserve the newer modal focus, step {step}"
+        );
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert_eq!(modal_text, "modal input");
+    assert_eq!(panes.0, ["first content", "second content"]);
+}
+
+#[test]
+fn a_tab_press_does_not_focus_a_tab_disabled_by_the_terminal_pass() {
+    let (context, mut dockspace, _, position) = presented_tabs("terminal-disabled-tab-focus");
+    context.options_mut(|options| options.max_passes = NonZeroUsize::new(2).unwrap());
+    context.add_plugin(LateDiscard { remaining: 1 });
+    let mut panes = EditablePanes(["first content".to_owned(), "second content".to_owned()]);
+    let editor = egui::Id::unique("terminal-disabled-tab-application-editor");
+    let mut editor_focus_requested = false;
+    let mut text = String::new();
+    for step in 0..4 {
+        let events = match step {
+            0 => press(position),
+            2 => vec![Event::Text("application input".to_owned())],
+            _ => Vec::new(),
+        };
+        let (output, response) = dockspace
+            .run_single_surface_with_ui(
+                &context,
+                input(1.0 + f64::from(step) * 0.1, events),
+                SURFACE,
+                &mut panes,
+                |ui| {
+                    if step > 0 || ui.ctx().current_pass_index() > 0 {
+                        let response = ui.add(egui::TextEdit::singleline(&mut text).id(editor));
+                        if !editor_focus_requested {
+                            response.request_focus();
+                            editor_focus_requested = true;
+                        }
+                        assert!(response.enabled());
+                        // Disable only the UI built after the application editor.
+                        ui.disable();
+                    }
+                },
+            )
+            .unwrap();
+        let (mut output, receipt) = output.into_parts();
+        output.textures_delta.clear();
+        if step == 0 {
+            assert_eq!(output.platform_output.num_completed_passes, 2);
+            assert!(response.mutation().workspace_changed());
+            assert!(editor_focus_requested);
+        }
+        let (_, tab) = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Tab && node.label() == Some("Second"))
+            .expect("the terminal docking scope must still render the selected tab");
+        assert!(
+            tab.is_disabled(),
+            "the docking scope must inherit ui.disable()"
+        );
+        assert!(dockspace.view().item(SECOND).unwrap().is_selected());
+        assert!(!dockspace.view().item(FIRST).unwrap().is_selected());
+        assert_eq!(
+            context.memory(egui::Memory::focused),
+            Some(editor),
+            "the disabled terminal tab must not replace application focus, step {step}"
+        );
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert_eq!(text, "application input");
+    assert_eq!(panes.0, ["first content", "second content"]);
+}
+
+#[test]
+fn escaping_a_presentation_menu_returns_focus_to_its_button_for_keyboard_reopening() {
+    let (context, mut dockspace, _, _) = presented_tabs("presentation-menu-keyboard-cancellation");
+    let mut panes = EditablePanes(["first content".to_owned(), "second content".to_owned()]);
+    let mut menu_button = None;
+    for pass in 0..24 {
+        let phase = pass % 12;
+        let events = if pass == 2 {
+            vec![Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Focus,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: menu_button.unwrap(),
+                    data: None,
+                },
+            )]
+        } else if matches!(phase, 4 | 6 | 8) {
+            vec![Event::Key {
+                key: match phase {
+                    4 => egui::Key::Enter,
+                    6 => egui::Key::ArrowDown,
+                    _ => egui::Key::Escape,
+                },
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]
+        } else {
+            Vec::new()
+        };
+        let (output, _) = dockspace
+            .run_single_surface(
+                &context,
+                input(1.0 + f64::from(pass) * 0.1, events),
+                SURFACE,
+                &mut panes,
+            )
+            .unwrap();
+        let (mut output, receipt) = output.into_parts();
+        output.textures_delta.clear();
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        if pass == 1 {
+            menu_button = nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == Role::Button && node.label() == Some("Presentation commands")
+                })
+                .map(|(id, _)| *id);
+        }
+        if pass == 3 || phase == 10 {
+            assert_eq!(
+                context.memory(egui::Memory::focused).map(|id| id.value()),
+                Some(menu_button.unwrap().0),
+                "the presentation button must own focus before keyboard opening, pass {pass}"
+            );
+        }
+        let menu_visible = nodes.iter().any(|(_, node)| {
+            node.role() == Role::Menu && node.label() == Some("Presentation commands")
+        });
+        if phase == 7 {
+            assert!(
+                menu_visible,
+                "Enter must open the menu in cycle {}",
+                pass / 12
+            );
+            let focused = context.memory(egui::Memory::focused).map(|id| id.value());
+            assert!(
+                nodes
+                    .iter()
+                    .any(|(id, node)| { node.role() == Role::MenuItem && Some(id.0) == focused }),
+                "ArrowDown must enter a real presentation command before cancellation"
+            );
+        }
+        if phase == 10 {
+            assert!(!menu_visible, "Escape must dismiss the presentation menu");
+        }
+        assert!(dockspace.view().item(FIRST).unwrap().is_selected());
+        assert!(!dockspace.view().item(SECOND).unwrap().is_selected());
+        assert!(dockspace.view().item(FIRST).unwrap().contained().is_none());
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert_eq!(panes.0, ["first content", "second content"]);
+}
+
+#[test]
+#[allow(
     clippy::cast_possible_truncation,
     reason = "AccessKit bounds come from the finite logical egui menu geometry"
 )]

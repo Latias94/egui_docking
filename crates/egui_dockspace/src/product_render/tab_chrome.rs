@@ -193,7 +193,14 @@ pub(crate) fn paint_backdrop(
         "tab-list-menu-backdrop-scroll",
         backdrop.visual_id(),
     ));
-    context.register_scroll_receiver(scroll_id, receiver);
+    context.register_scroll_receiver(
+        scroll_id,
+        context
+            .ui
+            .is_enabled()
+            .then(|| context.plan.receiver_for_tab_list_menu_backdrop(backdrop))
+            .flatten(),
+    );
     let response = context.interact_receiver(
         bounds,
         id,
@@ -237,7 +244,15 @@ pub(crate) fn paint_menu(
         "tab-list-menu-frame-scroll-blocker",
         menu.visual_id(),
     ));
-    context.register_scroll_receiver(frame_scroll_id, frame_receiver);
+    // Keep the underlying scroll footprint even when a modal blocks this layer.
+    context.register_scroll_receiver(
+        frame_scroll_id,
+        context
+            .ui
+            .is_enabled()
+            .then(|| context.plan.receiver_for_tab_list_menu_frame(menu))
+            .flatten(),
+    );
     let _ = context.interact_receiver(
         bounds,
         frame_id,
@@ -272,7 +287,9 @@ pub(crate) fn paint_menu(
         "tab-list-menu-scroll",
         menu.visual_id(),
     ));
-    let scroll_receiver = enabled
+    let scroll_receiver = context
+        .ui
+        .is_enabled()
         .then(|| context.plan.receiver_for_tab_list_menu_scroll(menu))
         .flatten();
     context.register_scroll_receiver(scroll_id, scroll_receiver);

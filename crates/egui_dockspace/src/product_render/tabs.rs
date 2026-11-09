@@ -93,6 +93,7 @@ pub(crate) fn paint_pane(
                 .pane_focus_request
                 .is_some_and(|request| request.item() == Some(item))
                 && context.pointer_authority.supports_preview_gestures()
+                && effective_enabled(child_ui, true)
                 && !*context.pane_focus_target_requested
                 && let Some(target) = context.panes.focus_target(item)
             {
@@ -174,7 +175,10 @@ pub(crate) fn paint_tab_bar(
         context
             .ui
             .make_persistent_id((context.instance_id, "tab-strip-scroll", bar.visual_id()));
-    let receiver = effective_enabled(context.ui, true)
+    // Preserve scroll geometry so native hit testing can prove modal occlusion.
+    let receiver = context
+        .ui
+        .is_enabled()
         .then(|| context.plan.receiver_for_tab_strip_scroll(bar))
         .flatten();
     context.register_scroll_receiver(id, receiver);
@@ -332,7 +336,7 @@ pub(crate) fn paint_tab(
         return;
     };
     let id = tab_id(context.ui, context.instance_id, tab);
-    let operable = tab.operable() && context.ui.is_enabled();
+    let operable = effective_enabled(context.ui, tab.operable());
     let preview_gestures_available = context.pointer_authority.supports_preview_gestures();
     let receiver = (operable && preview_gestures_available)
         .then(|| context.plan.receiver_for_tab_body(tab))

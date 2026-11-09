@@ -10,7 +10,7 @@ use egui::{CursorIcon, EventFilter, Key, Sense};
 use crate::style::ResolvedContainedWindowVisuals;
 
 use super::RenderContext;
-use super::actions::button_activation_origin;
+use super::actions::{button_activation_origin, effective_enabled};
 use super::geometry::{accesskit_bounds, egui_rect};
 
 pub(crate) fn paint_background(
@@ -115,7 +115,7 @@ pub(crate) fn paint_controls(
         .title_text_color;
     let paint_omitted = context.source_gap_active(paint);
     if let Some(title) = egui_rect(contained.title_drag_bounds()) {
-        let core_enabled = contained.title_operable() && context.ui.is_enabled();
+        let core_enabled = effective_enabled(context.ui, contained.title_operable());
         let enabled = core_enabled && context.pointer_authority.supports_preview_gestures();
         let id = context.ui.make_persistent_id((
             context.instance_id,
@@ -169,8 +169,7 @@ pub(crate) fn paint_controls(
     }
 
     if let Some(close) = contained.close_bounds().and_then(egui_rect) {
-        let enabled = contained.close_operable()
-            && context.ui.is_enabled()
+        let enabled = effective_enabled(context.ui, contained.close_operable())
             && context
                 .plan
                 .prepare_contained_close(contained.floating())
@@ -235,7 +234,7 @@ pub(crate) fn paint_controls(
             resize.direction(),
         ));
         let cardinal = cardinal_resize_axis(resize.direction());
-        let enabled = resize.operable() && context.ui.is_enabled();
+        let enabled = effective_enabled(context.ui, resize.operable());
         let drag_enabled = enabled && context.pointer_authority.supports_preview_gestures();
         let response = context.interact_receiver(
             bounds,

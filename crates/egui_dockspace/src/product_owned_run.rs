@@ -578,7 +578,16 @@ impl Dockspace {
                     .any(|commit| commit.settles(*artifact))
         });
         for id in deferred_focus {
-            context.memory_mut(|memory| memory.request_focus(id));
+            // run_ui has ended, so prev_pass contains its terminal registrations.
+            let target = context.viewport(|viewport| viewport.prev_pass.widgets.get(id).copied());
+            if let Some(target) = target
+                && target.enabled
+                && target.visible
+                && target.sense.is_focusable()
+                && context.memory(|memory| memory.allows_interaction(target.layer_id))
+            {
+                context.memory_mut(|memory| memory.request_focus(id));
+            }
         }
         crate::product_pointer::schedule_pointer_continuation(&self.session, context, observed_at);
         let needs_repaint = pass.defer_measurement

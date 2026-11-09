@@ -12,7 +12,7 @@ use egui::{Button, Popup, Sense, UiBuilder, vec2};
 use crate::touch_menu::take_touch_context_menu;
 
 use super::RenderContext;
-use super::actions::clicked_response_origin;
+use super::actions::{clicked_response_origin, effective_enabled};
 use super::geometry::{accesskit_bounds, egui_rect};
 
 const COMMANDS: [DockspacePresentationCommandKind; 8] = [
@@ -61,7 +61,7 @@ pub(super) fn paint(
             },
         )
         .on_hover_text("Window actions");
-    let ui_enabled = context.ui.is_enabled() && operable;
+    let ui_enabled = effective_enabled(context.ui, operable);
     if ui_enabled && touch_requested {
         Popup::open_id(context.ui.ctx(), popup_id);
     }
@@ -112,7 +112,7 @@ pub(super) fn paint(
     } else {
         popup
     };
-    popup.show(|ui| {
+    let popup = popup.show(|ui| {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(Role::Menu);
             node.set_label("Presentation commands");
@@ -178,6 +178,17 @@ pub(super) fn paint(
             ui.close();
         }
     });
+
+    if ui_enabled
+        && activated.is_none()
+        && close_group.is_none()
+        && popup.is_some_and(|popup| popup.response.should_close())
+        && context
+            .ui
+            .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        response.request_focus();
+    }
 
     if let Some((origin, command)) = activated
         && let Some(action) = context.plan.prepare_presentation_command(command)
