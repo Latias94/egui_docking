@@ -654,6 +654,9 @@ fn capture_menu_keyboard(
             .plan
             .prepare_tab_list_menu_navigation(menu, navigation)
     {
+        context
+            .ui
+            .memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
         context.push_local_action(id.with(("keyboard-navigation", key)), action);
         return;
     }

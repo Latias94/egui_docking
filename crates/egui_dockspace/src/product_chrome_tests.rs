@@ -630,6 +630,158 @@ fn keyboard_navigation_reveals_hidden_targets_and_preserves_tab_focus() {
     assert_eq!(harness.panes.text, "typed after navigation");
 }
 
+struct OverflowNavigationLateDiscard {
+    remaining: usize,
+}
+
+impl egui::plugin::Plugin for OverflowNavigationLateDiscard {
+    fn debug_name(&self) -> &'static str {
+        "product_chrome_tests::overflow_navigation_late_discard"
+    }
+
+    fn output_hook(&mut self, _context: &Context, output: &mut FullOutput) {
+        if self.remaining > 0 {
+            self.remaining -= 1;
+            output
+                .platform_output
+                .request_discard_reasons
+                .push(egui::RepaintCause::new_reason(
+                    "retry overflow keyboard navigation after its output hook",
+                ));
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression keeps menu setup, consecutive key events and terminal focus in one journey"
+)]
+fn assert_overflow_arrow_up_then_enter(discarded_passes: usize) {
+    let mut harness = Harness::new(
+        vec!["A".to_owned(), "B".to_owned()],
+        ItemId::new(2),
+        DockStyle {
+            tab_min_width: 400.0,
+            tab_max_width: 400.0,
+            ..Default::default()
+        },
+    );
+    // Keep room for one minimum-width tab and the optional overflow controls.
+    let width = 640.0;
+    let mut output = harness.run(width, Vec::new());
+    for _ in 0..3 {
+        output = harness.run(width, Vec::new());
+    }
+    let trigger = nodes(&output)
+        .iter()
+        .find(|(_, node)| node.label() == Some("Show hidden tabs"))
+        .expect("the 640-point fixture keeps the overflow trigger beside a minimum-width tab")
+        .0;
+    harness.run(
+        width,
+        vec![Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: trigger,
+                data: None,
+            },
+        )],
+    );
+    for _ in 0..3 {
+        harness.run(width, Vec::new());
+    }
+    harness.run(width, vec![key(Key::Home)]);
+    for _ in 0..3 {
+        output = harness.run(width, Vec::new());
+    }
+    let first_row = nodes(&output)
+        .iter()
+        .find(|(_, node)| node.role() == Role::MenuItem && node.label() == Some("A"))
+        .unwrap()
+        .0;
+    assert_eq!(
+        harness
+            .context
+            .memory(egui::Memory::focused)
+            .map(|id| id.value()),
+        Some(first_row.0),
+        "Home must establish the first menu row before testing clamped ArrowUp",
+    );
+    assert!(
+        harness
+            .dockspace
+            .view()
+            .item(ItemId::new(2))
+            .unwrap()
+            .is_selected()
+    );
+
+    harness.context.options_mut(|options| {
+        options.max_passes = std::num::NonZeroUsize::new(discarded_passes + 1).unwrap();
+    });
+    harness.context.add_plugin(OverflowNavigationLateDiscard {
+        remaining: discarded_passes,
+    });
+    let arrow = harness.run(width, vec![key(Key::ArrowUp)]);
+    assert_eq!(
+        arrow.platform_output.num_completed_passes,
+        discarded_passes + 1
+    );
+    let focus_after_arrow = harness
+        .context
+        .memory(egui::Memory::focused)
+        .map(|id| id.value());
+
+    harness
+        .context
+        .with_plugin(|plugin: &mut OverflowNavigationLateDiscard| {
+            plugin.remaining = discarded_passes;
+        })
+        .unwrap();
+    let enter = harness.run(width, vec![key(Key::Enter)]);
+    assert_eq!(
+        enter.platform_output.num_completed_passes,
+        discarded_passes + 1
+    );
+    for _ in 0..3 {
+        output = harness.run(width, Vec::new());
+    }
+    assert_eq!(
+        (
+            focus_after_arrow,
+            harness
+                .dockspace
+                .view()
+                .item(ItemId::new(1))
+                .unwrap()
+                .is_selected(),
+            harness.context.memory(egui::Memory::focused),
+        ),
+        (
+            Some(first_row.0),
+            true,
+            harness.panes.focus_target(ItemId::new(1)),
+        ),
+        "ArrowUp must stay on the first row and the immediately following Enter must select its content, discarded_passes={discarded_passes}",
+    );
+    assert!(
+        nodes(&output)
+            .iter()
+            .all(|(_, node)| node.role() != Role::Menu)
+    );
+}
+
+#[test]
+fn overflow_arrow_up_then_enter_keeps_the_first_menu_row() {
+    assert_overflow_arrow_up_then_enter(0);
+}
+
+#[test]
+fn overflow_arrow_up_then_enter_keeps_the_first_menu_row_across_late_discards() {
+    assert_overflow_arrow_up_then_enter(2);
+}
+
 #[test]
 fn shrinking_a_strip_reveals_selection_without_overriding_later_manual_scroll() {
     let mut harness = Harness::tabs(6);
