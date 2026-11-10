@@ -257,6 +257,10 @@ impl DockEngine {
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::Conflict)?
         {
+            crate::RootPresentationOwner::Contained {
+                surface: current_surface,
+                ..
+            } if current_surface == surface => return Err(DockspaceActionRejection::Conflict),
             crate::RootPresentationOwner::Contained { floating, .. } => floating,
             crate::RootPresentationOwner::Main { .. } => self.next_product_floating()?,
         };

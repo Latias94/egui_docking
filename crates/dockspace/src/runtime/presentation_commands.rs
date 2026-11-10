@@ -61,6 +61,9 @@ impl<'session> DockspacePresentationCommands<'session> {
 
     /// Preflights a default contained-floating transition on `surface`.
     ///
+    /// Returns [`DockspacePresentationCommand::Unavailable`] when the root is
+    /// already contained on this surface. A contained root may move to another surface.
+    ///
     /// # Errors
     ///
     /// Returns an internal runtime error only when core command compilation violates an invariant.
