@@ -1,0 +1,81 @@
+{
+  "baseline": "306af2d421e650da591c5ca7bb957f33a1b6c84b",
+  "narrow_before_repairs": [
+    {
+      "check": "Core rectangle span",
+      "run_id": "2fd6f9bc-b0fd-4e0d-a5a5-6f205aa74641",
+      "expected_failure": true,
+      "observation": "Ordered finite corners accepted an infinite span"
+    },
+    {
+      "check": "Public contained-pane save/restore",
+      "run_id": "b7b9192f-7239-44ae-ab1b-81f8dcbb344e",
+      "expected_failure": true,
+      "observation": "Save succeeded; restore rejected null where f64 was required"
+    },
+    {
+      "check": "Existing external key during suspended update",
+      "run_id": "f197ea77-2768-4a5b-9101-1d65f084ae17",
+      "expected_failure": true,
+      "observations": {
+        "history_1": {
+          "allocations": 3,
+          "requested_bytes": 168
+        },
+        "history_128": {
+          "allocations": 14,
+          "requested_bytes": 1408
+        }
+      }
+    },
+    {
+      "check": "Real egui target rectangle conversion",
+      "run_id": "f635ed6f-c092-4a8f-950a-ef52d1a90549",
+      "expected_failure": true,
+      "observation": "Non-finite target endpoint and inconsistent shared corner rounding; unrelated menu fixture failed before the intended sequence and was corrected"
+    },
+    {
+      "check": "Overflow ArrowUp then Enter, single pass and two discards",
+      "run_id": "e79ea5f9-d46d-42ca-b093-f11faa3f4cf1",
+      "expected_failure": true,
+      "observation": "Focus left the first row and Enter did not activate its pane"
+    },
+    {
+      "check": "Actual X11 obsolete output token",
+      "expected_failure": true,
+      "observation": "Rejecting the predecessor advanced successor Created generation from 4 to 5",
+      "excerpt": "native-red-reproduction.txt"
+    }
+  ],
+  "narrow_after_repairs": [
+    {
+      "check": "Geometry and contained-placement subset",
+      "run_id": "b5d82fb0-f357-49d2-a577-14a9cb68507f",
+      "passed": 24
+    },
+    {
+      "check": "Identity scope invariants",
+      "run_id": "009d37b1-c58f-4f33-b208-7f5bedb6a7e0",
+      "passed": 5,
+      "log": "identity-targeted.log"
+    },
+    {
+      "check": "Independent public identity allocation slopes",
+      "run_id": "02f42625-d12d-48d8-b0f6-303455abd26f",
+      "passed": 2,
+      "history_sizes": [
+        1,
+        128,
+        1024,
+        16384
+      ],
+      "log": "identity-targeted.log"
+    },
+    {
+      "check": "Real egui menu and geometry",
+      "run_id": "25a2aa38-121f-4030-a5d9-29348eb9b24f",
+      "passed": 5,
+      "log": "render-targeted.log"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+native-smoke: scenario Redock; storage profile bounded
+native-smoke: AwaitTearOff
+native-smoke: AwaitFirstLive { target_surface: SurfaceId(2) }
+native-smoke: AwaitRedock { target_surface: SurfaceId(2) }
+native-smoke: AwaitRetirement { target_surface: SurfaceId(2) }
+native-smoke: storage profile bounded; root-boundary peaks resident=2219816 bytes, reserved=3340616 bytes; selected limit=4194304 bytes
+native-smoke: complete

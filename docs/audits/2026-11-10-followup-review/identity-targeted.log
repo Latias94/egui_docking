@@ -1,0 +1,22 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.85s
+────────────
+ Nextest run ID 009d37b1-c58f-4f33-b208-7f5bedb6a7e0 with nextest profile: default
+    Starting 5 tests across 1 binary (2090 tests skipped)
+        PASS [   0.008s] (1/5) dockspace document::tests::external_item_scope_bulk_iterator_borrows_only_committed_new_ids
+        PASS [   0.007s] (2/5) dockspace document::tests::external_item_scope_bulk_preserves_sparse_frontier_and_caller_order
+        PASS [   0.006s] (3/5) dockspace document::tests::external_item_scope_existing_keys_preserve_shared_allocation
+        PASS [   0.005s] (4/5) dockspace document::tests::external_item_scope_failed_batches_preserve_scope_and_frontier
+        PASS [   0.005s] (5/5) dockspace document::tests::external_item_scope_single_allocation_preserves_frozen_scope
+────────────
+     Summary [   0.034s] 5 tests run: 5 passed, 2090 skipped
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.18s
+────────────
+ Nextest run ID 02f42625-d12d-48d8-b0f6-303455abd26f with nextest profile: default
+    Starting 2 tests across 1 binary
+        PASS [   0.056s] (1/2) dockspace-host-harness::document_publication_cost existing_key_resolution_during_suspension_does_not_copy_identity_history
+        PASS [   0.054s] (2/2) dockspace-host-harness::document_publication_cost idle_publication_allocations_do_not_grow_with_identity_history
+────────────
+     Summary [   0.112s] 2 tests run: 2 passed, 0 skipped

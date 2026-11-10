@@ -1,0 +1,254 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+   Compiling egui_dockspace_native v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native)
+warning: method `request` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/close_control.rs:69:25
+   |
+64 | impl NativeViewportCloseCancellationRecord {
+   | ------------------------------------------ method in this implementation
+...
+69 |     pub(crate) const fn request(self) -> NativeViewportCloseRequest {
+   |                         ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `deferred_ingress` and `decision_count` are never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/close_control.rs:490:19
+    |
+261 | impl NativeCloseControl {
+    | ----------------------- methods in this implementation
+...
+490 |     pub(crate) fn deferred_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
+    |                   ^^^^^^^^^^^^^^^^
+...
+612 |     pub(crate) fn decision_count(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator.rs:690:12
+     |
+ 367 | impl NativeCoordinator {
+     | ---------------------- methods in this implementation
+...
+ 690 |     pub fn reserve_viewport(
+     |            ^^^^^^^^^^^^^^^^
+...
+ 709 |     pub fn attach_viewport_window(
+     |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+ 734 |     pub fn replace_viewport(
+     |            ^^^^^^^^^^^^^^^^
+...
+ 765 |     pub fn reserve_viewport_replacement(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 792 |     pub fn unbind_viewport(
+     |            ^^^^^^^^^^^^^^^
+...
+2387 |     pub fn report_snapshot(
+     |            ^^^^^^^^^^^^^^^
+...
+2405 |     pub fn report_inventory_unknown(&mut self) -> Result<(), NativeRuntimeError> {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2412 |     pub fn native_work_area(
+     |            ^^^^^^^^^^^^^^^^
+...
+2464 |     pub fn report_effect_result(
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+2481 |     pub fn report_binding_quiescence(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variant `NativeBindingNotQuiescent` is never constructed
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/error.rs:115:5
+    |
+ 29 | pub(crate) enum NativeHostProtocolError {
+    |                 ----------------------- variant in this enum
+...
+115 |     NativeBindingNotQuiescent(SurfaceId),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `NativeHostProtocolError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Reserve` and `Attach` are never constructed
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:152:5
+    |
+151 | pub(crate) enum NativeViewportReplacement {
+    |                 ------------------------- variants in this enum
+152 |     Reserve,
+    |     ^^^^^^^
+153 |     ReserveRetired,
+154 |     Attach(winit::window::WindowId),
+    |     ^^^^^^
+    |
+    = note: `NativeViewportReplacement` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated functions `active`, `with_clock`, and `try_with_clock` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:2149:8
+     |
+2031 | impl NativeHostState {
+     | -------------------- associated functions in this implementation
+...
+2149 |     fn active() -> Self {
+     |        ^^^^^^
+...
+2153 |     fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
+     |        ^^^^^^^^^^
+...
+2157 |     fn try_with_clock(
+     |        ^^^^^^^^^^^^^^
+
+warning: associated items `pointer_capture_pending`, `attach_viewport_route`, `unbind_viewport_route`, `new`, `try_new_with_capacity`, and `with_clock` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:3656:19
+     |
+3548 | impl NativeHostBridge {
+     | --------------------- associated items in this implementation
+...
+3656 |     pub(crate) fn pointer_capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+3754 |     pub(crate) fn attach_viewport_route(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+3780 |     pub(crate) fn unbind_viewport_route(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+3880 |     pub(crate) fn new(viewports: NativeViewportMap) -> Self {
+     |                   ^^^
+...
+3900 |     pub(crate) fn try_new_with_capacity(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+3931 |     fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
+     |        ^^^^^^^^^^
+
+warning: method `capture_pending` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/command_callback.rs:269:19
+    |
+140 | impl NativeCommandCallbacks {
+    | --------------------------- method in this implementation
+...
+269 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: methods `is_empty` and `front` are never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/journal.rs:93:19
+    |
+ 57 | impl HostIngressJournal {
+    | ----------------------- methods in this implementation
+...
+ 93 |     pub(super) fn is_empty(&self) -> bool {
+    |                   ^^^^^^^^
+...
+188 |     pub(super) fn front(&self) -> Option<&HostRecord> {
+    |                   ^^^^^
+
+warning: method `work_area_capacity_exceeded` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/terminal_roster.rs:134:25
+    |
+ 49 | impl TerminalRosterState {
+    | ------------------------ method in this implementation
+...
+134 |     pub(super) const fn work_area_capacity_exceeded(&self) -> bool {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `references_viewport_binding` and `capture_pending` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/window_resource.rs:158:19
+     |
+  96 | impl NativeWindowResources {
+     | -------------------------- methods in this implementation
+...
+ 158 |     pub(super) fn references_viewport_binding(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1087 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^
+
+warning: method `binding` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/pointer_observation.rs:75:25
+   |
+46 | impl NativePointerObservationRecord {
+   | ----------------------------------- method in this implementation
+...
+75 |     pub(crate) const fn binding(self) -> NativeSurfaceBinding {
+   |                         ^^^^^^^
+
+warning: method `quiescence_candidates` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/retirement.rs:880:19
+    |
+188 | impl NativeRetirementState {
+    | -------------------------- method in this implementation
+...
+880 |     pub(crate) fn quiescence_candidates(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `has_admitted_create_attempt` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/viewport_map.rs:864:19
+    |
+ 75 | impl NativeViewportMap {
+    | ---------------------- method in this implementation
+...
+864 |     pub(crate) fn has_admitted_create_attempt(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `egui_dockspace_native` (lib) generated 14 warnings
+warning: methods `replace_viewport`, `report_inventory_unknown`, and `native_work_area` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator.rs:734:12
+     |
+ 367 | impl NativeCoordinator {
+     | ---------------------- methods in this implementation
+...
+ 734 |     pub fn replace_viewport(
+     |            ^^^^^^^^^^^^^^^^
+...
+2405 |     pub fn report_inventory_unknown(&mut self) -> Result<(), NativeRuntimeError> {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2412 |     pub fn native_work_area(
+     |            ^^^^^^^^^^^^^^^^
+
+warning: methods `pointer_capture_pending`, `record_pointer_capture_for_test`, and `retire_deferred_binding` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:3656:19
+     |
+3548 | impl NativeHostBridge {
+     | --------------------- methods in this implementation
+...
+3656 |     pub(crate) fn pointer_capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+3695 |     pub(crate) fn record_pointer_capture_for_test(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+4875 |     pub(crate) fn retire_deferred_binding(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `capture_pending` and `receive_capture_record` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/window_resource.rs:1087:19
+     |
+  96 | impl NativeWindowResources {
+     | -------------------------- methods in this implementation
+...
+1087 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^
+...
+1122 |     pub(super) fn receive_capture_record(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `for_test` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/pointer_capture.rs:79:25
+   |
+39 | impl NativePointerCaptureRecord {
+   | ------------------------------- associated function in this implementation
+...
+79 |     pub(crate) const fn for_test(
+   |                         ^^^^^^^^
+
+warning: `egui_dockspace_native` (lib test) generated 6 warnings (2 duplicates)
+   Compiling egui-dockspace-fork-product-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-product-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 36s
+────────────
+ Nextest run ID ec7bcd13-cdf9-4371-a7d3-bd56bef6271f with nextest profile: default
+    Starting 592 tests across 8 binaries (1 test skipped)
+────────────
+     Summary [  16.042s] 592 tests run: 592 passed, 1 skipped

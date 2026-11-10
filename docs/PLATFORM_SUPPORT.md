@@ -2,7 +2,7 @@
 title: "Dockspace Platform Support"
 status: "Qualified finite profiles; clean-checkout delivery reproduced"
 reviewed: "2026-11-10"
-baseline_source_revision: "68a2245"
+baseline_source_revision: "116917b"
 ---
 
 # Dockspace Platform Support
@@ -32,6 +32,11 @@ The [2026-11-10 architecture remediation](VALIDATION.md#2026-11-10-architecture-
 qualifies the host-owned preparation interface, configuration before encoding
 and independent focus/measurement contracts. Fresh Linux X11 renderer, bounded
 redock and complete editor journeys pass; the platform limits below remain.
+
+The [follow-up review](VALIDATION.md#2026-11-10-follow-up-ownership-and-interaction-review)
+qualifies obsolete-output isolation, identity-scope sharing, finite geometry and
+overflow-menu keyboard focus at `116917b`. Seven actual eframe test processes,
+the bounded redock profile and complete editor journeys pass on Linux X11.
 
 ## Core and public engine-host contract
 

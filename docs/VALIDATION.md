@@ -15,6 +15,35 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-10 follow-up ownership and interaction review
+
+The [follow-up review](audits/2026-11-10-followup-review.md) reproduces and repairs
+five further P2 findings from baseline `306af2d`, with implementation complete at
+`116917b`. Core rectangle construction now rejects non-finite spans before they
+can reach a saved document. Existing-key resolution preserves the immutable
+identity scope during a suspended update; batch registration inserts only newly
+allocated identities. A predecessor output cannot mutate successor native
+preparation. Overflow-menu navigation cancels duplicate framework focus movement,
+and egui geometry conversion rounds original corners consistently and rejects
+unrepresentable target rectangles.
+
+Fresh serial gates pass workspace 2,304 with three existing skips, independent
+persistence host 340, official consumer 24, product 114 default / 119 persistence,
+and pinned native fork 592 with one existing ignore. Workspace/native
+correctness and suspicious Clippy checks, strict core/adapter/native documentation,
+eleven doctests, formatting and the core dependency boundary pass. All 603 frozen
+source, dependency, script and workflow hashes remain unchanged after validation.
+The public allocation-slope regression passes at 1/128/1,024/16,384 history keys;
+new identities still remain outside an already suspended update's scope.
+
+Actual Linux X11/Glow qualification passes seven isolated eframe processes,
+including the new predecessor-token regression and both text-retention profiles.
+The 4 MiB storage profile passes create/first-live/redock/retirement. The complete
+editor runner passes twelve focused edits, six child lifetimes and Root rebinding;
+every child is destroyed, the original Root survives and final quiescence holds.
+Raw commands, failing reproduction receipts, final process logs and hashes are
+linked from the review. This qualification retains the existing platform scope.
+
 ## 2026-11-10 architecture remediation and host preparation
 
 The [architecture remediation record](audits/2026-11-10-architecture-remediation.md)
