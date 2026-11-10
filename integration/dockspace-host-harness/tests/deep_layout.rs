@@ -122,6 +122,31 @@ fn deep_declarations_clone_compile_and_drop() {
 }
 
 #[test]
+fn deep_public_views_have_bounded_debug_output() {
+    subprocess("deep_public_views_have_bounded_debug_output", || {
+        let layout = DockspaceLayout::new([surface(SURFACE, ROOT, declaration())]).unwrap();
+        let view = layout.view();
+        let surface = view.surface(SURFACE).unwrap();
+        let root = surface.main_root().unwrap();
+        let node = root.content().unwrap();
+        for debug in [
+            format!("{view:?}"),
+            format!("{surface:?}"),
+            format!("{root:?}"),
+            format!("{node:?}"),
+            format!("{:?}", node.split().unwrap()),
+        ] {
+            assert!(debug.contains("child_count: 2"), "{debug}");
+            assert!(
+                debug.len() < 1_024,
+                "diagnostics must not expand the forest"
+            );
+            assert!(!debug.contains("NodeId"));
+        }
+    });
+}
+
+#[test]
 fn deep_declaration_errors_release_unvisited_subtrees() {
     subprocess("deep_declaration_errors_release_unvisited_subtrees", || {
         assert_eq!(

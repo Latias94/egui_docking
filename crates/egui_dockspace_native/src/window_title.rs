@@ -30,22 +30,25 @@ pub(crate) fn window_title(
 }
 
 fn append_selected_titles(title: &mut String, node: DockspaceNodeView<'_>, panes: &impl PaneView) {
-    if let Some(item) = node.tabs().and_then(DockspaceTabsView::selected) {
-        if !title.is_empty() {
-            title.push_str(" · ");
-        }
-        if let Some(caption) = panes
-            .title(item)
-            .filter(|caption| !caption.text().trim().is_empty())
-        {
-            title.push_str(caption.text().trim());
-        } else {
-            use std::fmt::Write as _;
-            let _ = write!(title, "Pane {}", item.get());
-        }
-    } else if let Some(split) = node.split() {
-        for child in split.children() {
-            append_selected_titles(title, child, panes);
+    let mut pending = vec![node];
+    while let Some(node) = pending.pop() {
+        if let Some(item) = node.tabs().and_then(DockspaceTabsView::selected) {
+            if !title.is_empty() {
+                title.push_str(" · ");
+            }
+            if let Some(caption) = panes
+                .title(item)
+                .filter(|caption| !caption.text().trim().is_empty())
+            {
+                title.push_str(caption.text().trim());
+            } else {
+                use std::fmt::Write as _;
+                let _ = write!(title, "Pane {}", item.get());
+            }
+        } else if let Some(split) = node.split() {
+            let base = pending.len();
+            pending.extend(split.children());
+            pending[base..].reverse();
         }
     }
 }
@@ -133,5 +136,50 @@ mod tests {
             window_title(session.view(), &Panes, SurfaceId::new(8)),
             "Dockspace panel 8"
         );
+    }
+
+    #[test]
+    fn deep_window_caption_preserves_leaf_order_without_call_stack_traversal() {
+        const TEST: &str = "window_title::tests::deep_window_caption_preserves_leaf_order_without_call_stack_traversal";
+        const CHILD: &str = "DOCKSPACE_DEEP_CAPTION_SUBPROCESS";
+        if std::env::var(CHILD).as_deref() != Ok(TEST) {
+            // A recursive traversal can abort the process on stack overflow.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, TEST)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{TEST} failed: {}\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+
+        let mut node = DockspaceNode::central_tabs([FIRST]);
+        let mut expected = "Inspector".to_owned();
+        for depth in 0_u64..10_000 {
+            let axis = if depth.is_multiple_of(2) {
+                DockspaceAxis::Horizontal
+            } else {
+                DockspaceAxis::Vertical
+            };
+            let item = depth + 3;
+            node =
+                DockspaceNode::equal_split(axis, [node, DockspaceNode::tabs([ItemId::new(item)])])
+                    .unwrap();
+            use std::fmt::Write as _;
+            write!(expected, " · Pane {item}").unwrap();
+        }
+        expected.push_str(" — Dockspace");
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(RootId::new(2), node),
+        )])
+        .unwrap();
+        assert_eq!(window_title(layout.view(), &Panes, SURFACE), expected);
     }
 }

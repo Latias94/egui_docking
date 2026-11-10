@@ -440,7 +440,7 @@ impl fmt::Debug for DockspaceSplitView<'_> {
         formatter
             .debug_struct("DockspaceSplitView")
             .field("axis", &self.axis)
-            .field("children", &self.children().collect::<Vec<_>>())
+            .field("child_count", &self.child_count())
             .field("weights", &self.weights().collect::<Vec<_>>())
             .finish()
     }
