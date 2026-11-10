@@ -367,8 +367,11 @@ impl BoundDocumentState {
         &mut self,
         external_key: impl Into<String>,
     ) -> Result<ItemId, ExternalItemKeyMapError> {
+        let previous_len = self.external_item_keys.len();
         let item = self.external_item_keys.ensure(external_key)?;
-        Arc::make_mut(&mut self.item_identity_scope).insert(item);
+        if self.external_item_keys.len() != previous_len {
+            Arc::make_mut(&mut self.item_identity_scope).insert(item);
+        }
         Ok(item)
     }
 
@@ -380,11 +383,11 @@ impl BoundDocumentState {
         I: IntoIterator<Item = K>,
         K: Into<String>,
     {
-        let previous_len = self.external_item_keys.len();
-        self.external_item_keys.ensure_all(external_keys)?;
-        if self.external_item_keys.len() != previous_len {
-            Arc::make_mut(&mut self.item_identity_scope)
-                .extend(self.external_item_keys.iter().map(|(_, item)| item));
+        let new_items = self
+            .external_item_keys
+            .ensure_all_new_items(external_keys)?;
+        if new_items.len() != 0 {
+            Arc::make_mut(&mut self.item_identity_scope).extend(new_items);
         }
         Ok(())
     }
@@ -1347,10 +1350,13 @@ fn validate_external_item_associations(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use crate::behavior_tests::support::{self, TestPresentationHost};
     use crate::engine::{DockEngine, EngineInput};
     use crate::external_item_key::{
-        ExternalItemKeyMap, ExternalItemKeyRestoreError, SnapshotExternalItemKeyEntry,
+        ExternalItemKeyMap, ExternalItemKeyMapError, ExternalItemKeyRestoreError,
+        ExternalItemKeySnapshot, SnapshotExternalItemKeyEntry,
     };
     use crate::geometry::{PhysicalRect, ScaleFactor};
     use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
@@ -1466,6 +1472,172 @@ mod tests {
             &document.viewport_placements,
         )
         .expect("mutated profile must remain canonically encodable");
+    }
+
+    #[test]
+    fn external_item_scope_existing_keys_preserve_shared_allocation() {
+        let mut binding = BoundDocumentState::from_parts(
+            DOCUMENT_ID,
+            Some(0),
+            profile_item_keys(),
+            ViewportPlacementPreferences::new(),
+        );
+        let frozen = binding.item_identity_scope();
+        let before = ExternalItemKeySnapshot::capture(&binding.external_item_keys);
+
+        assert_eq!(
+            binding.ensure_external_item_key("pane/two").unwrap(),
+            ItemId::new(2)
+        );
+        assert!(Arc::ptr_eq(&frozen, &binding.item_identity_scope()));
+        binding
+            .ensure_external_item_keys(["pane/three", "pane/one", "pane/three"])
+            .unwrap();
+        binding.ensure_external_item_keys([""; 0]).unwrap();
+        assert!(Arc::ptr_eq(&frozen, &binding.item_identity_scope()));
+        assert_eq!(
+            ExternalItemKeySnapshot::capture(&binding.external_item_keys),
+            before
+        );
+    }
+
+    #[test]
+    fn external_item_scope_single_allocation_preserves_frozen_scope() {
+        let mut binding = BoundDocumentState::from_parts(
+            DOCUMENT_ID,
+            Some(0),
+            item_keys(),
+            ViewportPlacementPreferences::new(),
+        );
+        let frozen = binding.item_identity_scope();
+        let added = binding.ensure_external_item_key("pane/new").unwrap();
+        let current = binding.item_identity_scope();
+
+        assert_eq!(added, ItemId::new(2));
+        assert!(!Arc::ptr_eq(&frozen, &current));
+        assert_eq!(frozen.len(), 1);
+        assert!(!frozen.contains(&added));
+        assert_eq!(current.len(), 2);
+        assert!(current.contains(&ItemId::new(1)));
+        assert!(current.contains(&added));
+        assert_eq!(binding.ensure_external_item_key("pane/new").unwrap(), added);
+        assert!(Arc::ptr_eq(&current, &binding.item_identity_scope()));
+    }
+
+    #[test]
+    fn external_item_scope_bulk_preserves_sparse_frontier_and_caller_order() {
+        let keys = ExternalItemKeySnapshot {
+            entries: vec![
+                SnapshotExternalItemKeyEntry {
+                    external_key: "middle/existing".to_owned(),
+                    item_id: 42,
+                },
+                SnapshotExternalItemKeyEntry {
+                    external_key: "zulu/existing".to_owned(),
+                    item_id: 7,
+                },
+            ],
+            next_item_id: Some(1_000),
+        }
+        .restore()
+        .unwrap();
+        let mut binding = BoundDocumentState::from_parts(
+            DOCUMENT_ID,
+            Some(0),
+            keys,
+            ViewportPlacementPreferences::new(),
+        );
+        let frozen = binding.item_identity_scope();
+        binding
+            .ensure_external_item_keys([
+                "beta/new",
+                "middle/existing",
+                "alpha/new",
+                "beta/new",
+                "zulu/existing",
+            ])
+            .unwrap();
+        let current = binding.item_identity_scope();
+
+        assert!(!Arc::ptr_eq(&frozen, &current));
+        assert_eq!(frozen.len(), 2);
+        assert_eq!(current.len(), 4);
+        for (key, item) in [
+            ("beta/new", ItemId::new(1_000)),
+            ("alpha/new", ItemId::new(1_001)),
+        ] {
+            assert_eq!(binding.item_id(key), Some(item));
+            assert!(current.contains(&item));
+            assert!(!frozen.contains(&item));
+        }
+        assert!(current.is_superset(&frozen));
+        assert_eq!(
+            binding.ensure_external_item_key("next/new").unwrap(),
+            ItemId::new(1_002)
+        );
+        assert!(!current.contains(&ItemId::new(1_002)));
+    }
+
+    #[test]
+    fn external_item_scope_bulk_iterator_borrows_only_committed_new_ids() {
+        let mut keys = profile_item_keys();
+        {
+            let mut added = keys
+                .ensure_all_new_items(["beta/new", "pane/one", "alpha/new", "beta/new"])
+                .unwrap();
+            assert_eq!(added.len(), 2);
+            assert_eq!(added.next(), Some(ItemId::new(5)));
+            assert_eq!(added.len(), 1);
+            assert_eq!(added.next(), Some(ItemId::new(4)));
+            assert_eq!(added.len(), 0);
+            assert_eq!(added.next(), None);
+        }
+        assert_eq!(keys.item_id("beta/new"), Some(ItemId::new(4)));
+        assert_eq!(keys.item_id("alpha/new"), Some(ItemId::new(5)));
+        assert_eq!(keys.ensure_all_new_items(["alpha/new"]).unwrap().len(), 0);
+        assert_eq!(keys.ensure("next/new").unwrap(), ItemId::new(6));
+    }
+
+    #[test]
+    fn external_item_scope_failed_batches_preserve_scope_and_frontier() {
+        for (item_id, next_item_id, batch, error) in [
+            (
+                7,
+                10,
+                ["new/a", "", "new/b"],
+                ExternalItemKeyMapError::EmptyExternalKey,
+            ),
+            (
+                u64::MAX - 1,
+                u64::MAX,
+                ["new/a", "pane/one", "new/b"],
+                ExternalItemKeyMapError::ItemIdSpaceExhausted {
+                    requested_new_keys: 2,
+                },
+            ),
+        ] {
+            let before = ExternalItemKeySnapshot {
+                entries: vec![SnapshotExternalItemKeyEntry {
+                    external_key: "pane/one".to_owned(),
+                    item_id,
+                }],
+                next_item_id: Some(next_item_id),
+            };
+            let mut binding = BoundDocumentState::from_parts(
+                DOCUMENT_ID,
+                Some(0),
+                before.clone().restore().unwrap(),
+                ViewportPlacementPreferences::new(),
+            );
+            let frozen = binding.item_identity_scope();
+
+            assert_eq!(binding.ensure_external_item_keys(batch), Err(error));
+            assert!(Arc::ptr_eq(&frozen, &binding.item_identity_scope()));
+            assert_eq!(
+                ExternalItemKeySnapshot::capture(&binding.external_item_keys),
+                before
+            );
+        }
     }
 
     #[test]

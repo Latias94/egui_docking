@@ -1,4 +1,4 @@
-//! Ordinary document publication must not copy append-only identity history.
+//! Publication and existing-key resolution must not copy identity history.
 #![cfg(feature = "serde")]
 
 use std::hint::black_box;
@@ -60,5 +60,35 @@ fn idle_publication_allocations_do_not_grow_with_identity_history() {
         drop(profiler);
         let expected = *baseline.get_or_insert((allocations, bytes));
         assert_eq!((allocations, bytes), expected, "historical_keys={history}");
+    }
+}
+
+#[test]
+fn existing_key_resolution_during_suspension_does_not_copy_identity_history() {
+    let mut baseline = None;
+    for history in [1, 128, 1_024, 16_384] {
+        let mut session = session(history);
+        let update = session.begin_update().unwrap();
+        let profiler = dhat::Profiler::builder()
+            .testing()
+            .trim_backtraces(Some(4))
+            .build();
+        let before = dhat::HeapStats::get();
+        let item = session
+            .ensure_external_item("historical-pane-00000000")
+            .unwrap();
+        let after = dhat::HeapStats::get();
+        let allocations = after.total_blocks - before.total_blocks;
+        let bytes = after.total_bytes - before.total_bytes;
+        drop(profiler);
+        assert_eq!(item, ItemId::new(1));
+        let expected = *baseline.get_or_insert((allocations, bytes));
+        assert_eq!((allocations, bytes), expected, "historical_keys={history}");
+
+        let mut frame = session.resume_update(update).unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap();
     }
 }

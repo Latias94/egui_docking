@@ -117,6 +117,22 @@ impl ExternalItemKeyMap {
         I: IntoIterator<Item = K>,
         K: Into<String>,
     {
+        self.ensure_all_new_items(external_keys).map(|_| ())
+    }
+
+    /// Atomically ensures a batch and borrows only its newly assigned identities.
+    ///
+    /// The batch is committed before this iterator is returned.
+    /// The iterator yields descending item identities. Assignments still follow
+    /// the caller's first-occurrence order, including after a restored frontier gap.
+    pub(crate) fn ensure_all_new_items<I, K>(
+        &mut self,
+        external_keys: I,
+    ) -> Result<impl ExactSizeIterator<Item = ItemId> + '_, ExternalItemKeyMapError>
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<String>,
+    {
         let external_keys = external_keys
             .into_iter()
             .map(Into::into)
@@ -134,6 +150,7 @@ impl ExternalItemKeyMap {
             })
             .collect::<Vec<_>>();
         let (allocations, next_item_id) = self.plan_allocations(unseen)?;
+        let new_count = allocations.len();
 
         for (external_key, item) in allocations {
             let previous_key = self.by_item.insert(item, external_key.clone());
@@ -141,7 +158,7 @@ impl ExternalItemKeyMap {
             debug_assert!(previous_key.is_none() && previous_item.is_none());
         }
         self.next_item_id = next_item_id;
-        Ok(())
+        Ok(self.by_item.keys().rev().take(new_count).copied())
     }
 
     /// Reconciles two append-only identity histories into one monotonic candidate.
