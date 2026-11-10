@@ -393,14 +393,15 @@ impl BoundDocumentState {
         Arc::clone(&self.item_identity_scope)
     }
 
-    pub(crate) fn prepare_publication(
+    pub(crate) fn prepare_placement_publication(
         &self,
         engine: &DockEngine,
-    ) -> Result<Self, DockspaceDocumentCaptureError> {
-        let viewport_placements = self.reconciled_native_host_preferences(engine)?;
-        let mut binding = self.clone();
-        binding.viewport_placements = viewport_placements;
-        Ok(binding)
+    ) -> Result<ViewportPlacementPreferences, DockspaceDocumentCaptureError> {
+        self.reconciled_native_host_preferences(engine)
+    }
+
+    pub(crate) fn publish_placements(&mut self, placements: ViewportPlacementPreferences) {
+        self.viewport_placements = placements;
     }
 
     pub(crate) fn prepare_capture(
@@ -748,7 +749,9 @@ impl PendingRuntimeDocumentRestore {
         {
             return Err(RuntimeDocumentRestoreError::EnginePublicationMismatch);
         }
-        let binding = self.binding.prepare_publication(core.candidate_engine())?;
+        let mut binding = self.binding;
+        let placements = binding.prepare_placement_publication(core.candidate_engine())?;
+        binding.publish_placements(placements);
         Ok(PreparedRuntimeDocumentPublication { core, binding })
     }
 }
@@ -1601,25 +1604,22 @@ mod tests {
             preferences.clone(),
         );
         let engine = profile_engine(&[2, 3]);
-        let candidate = bound.prepare_publication(&engine).unwrap();
+        let candidate = bound.prepare_placement_publication(&engine).unwrap();
         assert_eq!(bound.viewport_placements(), &preferences);
-        assert_eq!(candidate.next_generation(), Some(7));
-        assert_eq!(candidate.document_id(), DOCUMENT_ID);
-        assert_eq!(candidate.viewport_placements().native_host(child), None);
-        assert_eq!(candidate.viewport_placements().get(child), Some(&placement));
+        assert_eq!(bound.next_generation(), Some(7));
+        assert_eq!(bound.document_id(), DOCUMENT_ID);
+        assert_eq!(candidate.native_host(child), None);
+        assert_eq!(candidate.get(child), Some(&placement));
         assert_eq!(
-            candidate
-                .viewport_placements()
-                .surface_ids()
-                .collect::<Vec<_>>(),
+            candidate.surface_ids().collect::<Vec<_>>(),
             [child, SurfaceId::new(3)]
         );
         DockspaceDocument::capture_state(
             DOCUMENT_ID,
             7,
             &engine,
-            &candidate.external_item_keys,
-            candidate.viewport_placements(),
+            &bound.external_item_keys,
+            &candidate,
         )
         .unwrap()
         .restore(|_, _| true)
@@ -1653,11 +1653,11 @@ mod tests {
                 preferences.clone(),
             );
             let candidate = bound
-                .prepare_publication(&profile_engine(&[1, 2, 3]))
+                .prepare_placement_publication(&profile_engine(&[1, 2, 3]))
                 .unwrap();
-            assert_eq!(candidate.viewport_placements().native_host(source), None);
+            assert_eq!(candidate.native_host(source), None);
             assert_eq!(
-                candidate.viewport_placements().native_host(intermediate),
+                candidate.native_host(intermediate),
                 Some(NativeSurfaceHostPreference::Child {
                     recovery_host: host
                 })
@@ -1665,9 +1665,9 @@ mod tests {
             assert_eq!(bound.viewport_placements(), &preferences);
 
             let without_host = bound
-                .prepare_publication(&profile_engine(&[source.get(), intermediate.get()]))
+                .prepare_placement_publication(&profile_engine(&[source.get(), intermediate.get()]))
                 .unwrap();
-            assert!(without_host.viewport_placements().is_empty());
+            assert!(without_host.is_empty());
         }
         let mut preferences = profile_preferences();
         preferences.set_native_host(
@@ -1679,10 +1679,10 @@ mod tests {
         let bound =
             BoundDocumentState::from_parts(DOCUMENT_ID, Some(0), profile_item_keys(), preferences);
         let candidate = bound
-            .prepare_publication(&profile_engine(&[1, 2, 3]))
+            .prepare_placement_publication(&profile_engine(&[1, 2, 3]))
             .unwrap();
-        assert_eq!(candidate.viewport_placements().native_host(second), None);
-        assert_eq!(candidate.viewport_placements().len(), 2);
+        assert_eq!(candidate.native_host(second), None);
+        assert_eq!(candidate.len(), 2);
     }
 
     #[test]
@@ -1698,10 +1698,12 @@ mod tests {
         );
         let bound =
             BoundDocumentState::from_parts(DOCUMENT_ID, Some(0), profile_item_keys(), preferences);
-        let candidate = bound.prepare_publication(&profile_engine(&[1, 3])).unwrap();
-        assert_eq!(candidate.viewport_placements().native_host(child), None);
-        assert!(candidate.viewport_placements().get(child).is_none());
-        assert_eq!(candidate.viewport_placements().len(), 2);
+        let candidate = bound
+            .prepare_placement_publication(&profile_engine(&[1, 3]))
+            .unwrap();
+        assert_eq!(candidate.native_host(child), None);
+        assert!(candidate.get(child).is_none());
+        assert_eq!(candidate.len(), 2);
     }
 
     #[test]

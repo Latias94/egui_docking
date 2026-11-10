@@ -1029,10 +1029,10 @@ impl DockspaceHostFrame<'_> {
             (transition, presentation, effects, prepared_native)
         } else {
             let prepared = frame.prepare_owned(&session.engine)?;
-            let document = session
+            let document_placements = session
                 .document
                 .as_ref()
-                .map(|binding| binding.prepare_publication(prepared.candidate_engine()))
+                .map(|binding| binding.prepare_placement_publication(prepared.candidate_engine()))
                 .transpose()
                 .map_err(DockspacePersistenceError::capture)?;
             if !accepted_native_prefix
@@ -1060,7 +1060,15 @@ impl DockspaceHostFrame<'_> {
                 .abandoned_native_effects
                 .prepare_emissions(prepared.transition().platform_effects())?;
             let transition = prepared.commit(&mut session.engine)?;
-            session.document = document;
+            if let Some(placements) = document_placements {
+                // All fallible work preceded the engine publication. Keep the
+                // append-only identity history in its original session owner.
+                session
+                    .document
+                    .as_mut()
+                    .expect("prepared placement publication retains its document binding")
+                    .publish_placements(placements);
+            }
             (transition, presentation, effects, prepared_native)
         };
         #[cfg(not(feature = "serde"))]
