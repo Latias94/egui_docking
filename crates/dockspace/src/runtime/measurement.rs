@@ -73,7 +73,11 @@ pub enum SurfaceMeasurementRequest {
     PaneMinimum {
         /// Stable renderer identity of the tabs leaf.
         visual: DockspaceVisualId,
-        /// Pane item selected for the candidate layout, or `None` for an empty leaf.
+        /// Pane item, including an inactive tab, or `None` for an empty leaf.
+        ///
+        /// Every open item needs minimum-size metadata independently of its
+        /// content being loaded. Core uses it for exact potential drag layouts;
+        /// an unavailable minimum defers the complete surface contribution.
         item: Option<ItemId>,
     },
     /// Measure one tab's text-and-icon content width before core padding.

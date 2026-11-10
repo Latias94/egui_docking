@@ -1230,6 +1230,51 @@ fn host_pointer_fixture() -> (DockspaceSession, HostPointerScene) {
     host_pointer_fixture_for_item(FIRST)
 }
 
+#[test]
+fn active_source_retains_its_measurements_while_an_unrelated_surface_refreshes() {
+    use dockspace::runtime::SurfaceMeasurementRefresh;
+
+    let (mut session, scene) = host_pointer_fixture();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_host_pointer_batch([scene.press()]).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    assert!(session.has_active_gesture());
+
+    let mut frame = session.begin_host_frame().unwrap();
+    assert_eq!(
+        frame.paint_plan(A).unwrap().unwrap().measurement_refresh(),
+        SurfaceMeasurementRefresh::RetainGesture
+    );
+    assert_eq!(
+        frame.paint_plan(B).unwrap().unwrap().measurement_refresh(),
+        SurfaceMeasurementRefresh::Allowed
+    );
+    frame
+        .measure_surface(
+            B,
+            UniformSurfaceMetrics::new(bounds(900.0), LogicalSize::new(80.0, 64.0).unwrap(), 144.0)
+                .unwrap(),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    assert!(session.has_active_gesture());
+    let mut frame = session.begin_host_frame().unwrap();
+    assert_eq!(
+        frame.paint_plan(A).unwrap().unwrap().measurement_refresh(),
+        SurfaceMeasurementRefresh::RetainGesture
+    );
+    assert_eq!(
+        frame.paint_plan(B).unwrap().unwrap().measurement_refresh(),
+        SurfaceMeasurementRefresh::Allowed
+    );
+}
+
 fn host_pointer_fixture_for_item(source_item: ItemId) -> (DockspaceSession, HostPointerScene) {
     let mut session = session();
     session.enable_host_pointer().unwrap();

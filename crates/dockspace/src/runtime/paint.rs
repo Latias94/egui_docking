@@ -1269,6 +1269,24 @@ pub enum SurfaceWorkDeferred {
     OutputCapacity,
 }
 
+/// Whether this Ready surface may refresh its renderer measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceMeasurementRefresh {
+    /// No gesture or exact preview retains this surface's current geometry.
+    Allowed,
+    /// This surface owns the active press, drag, resize or contained transform.
+    RetainGesture,
+    /// This surface carries an exact manipulation or ownership-transfer preview.
+    RetainPreview,
+}
+
+impl SurfaceMeasurementRefresh {
+    #[must_use]
+    pub const fn is_allowed(self) -> bool {
+        matches!(self, Self::Allowed)
+    }
+}
+
 impl<'frame> SurfaceWork<'frame> {
     pub fn ready(self) -> Option<SurfacePaintPlan<'frame>> {
         match self {
@@ -1562,6 +1580,21 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self.drag_preview.is_some()
             || self.contained_transform_preview.is_some()
             || self.plan.contained_projection().is_some()
+    }
+
+    /// Returns the core-owned measurement decision for this exact surface.
+    ///
+    /// An unrelated surface's gesture does not freeze this surface. Adapter
+    /// resource retention or output backpressure can impose additional deferral.
+    #[must_use]
+    pub fn measurement_refresh(&self) -> SurfaceMeasurementRefresh {
+        if self.has_manipulation_preview() {
+            SurfaceMeasurementRefresh::RetainPreview
+        } else if self.candidate.interaction().active_surface() == Some(self.surface) {
+            SurfaceMeasurementRefresh::RetainGesture
+        } else {
+            SurfaceMeasurementRefresh::Allowed
+        }
     }
 
     #[must_use]

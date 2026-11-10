@@ -14,9 +14,43 @@ use crate::viewport_focus::{
 
 pub use crate::viewport_focus::HostFocusState as DockspaceHostFocus;
 
-use super::{DockspaceHostFrame, DockspaceRuntimeError};
+use super::{DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession};
+
+impl DockspaceSession {
+    /// Returns an admitted pane-focus request without reserving renderer output.
+    ///
+    /// Only an intent admitted at a successful commit is observable. The request
+    /// remains subject to exact authority checks when its observation is submitted.
+    #[must_use]
+    pub fn pane_focus_request(&self, surface: SurfaceId) -> Option<DockspacePaneFocusRequest> {
+        self.engine
+            .viewport_focus()
+            .published_pane_intent()
+            .filter(|intent| intent.surface() == surface)
+            .map(|intent| {
+                DockspacePaneFocusRequest::from_intent(
+                    self.engine.authority_domain(),
+                    self.version().epoch(),
+                    intent,
+                )
+            })
+    }
+}
 
 impl DockspaceHostFrame<'_> {
+    /// Returns the admitted focus request still current after this frame's input.
+    ///
+    /// This query neither seals input nor reserves encoding capacity. A new
+    /// candidate intent is unavailable until its publication boundary commits.
+    #[must_use]
+    pub fn pane_focus_request(&self, surface: SurfaceId) -> Option<DockspacePaneFocusRequest> {
+        let view = self.frame.view();
+        let committed = self.session.pane_focus_request(surface)?;
+        (view.version().epoch() == committed.expected_epoch
+            && view.published_pane_focus_intent() == Some(committed.intent))
+            .then_some(committed)
+    }
+
     /// Reports actual framework focus within this host's current surface scope.
     ///
     /// Unlike an exact request acknowledgement, this also represents unrelated
@@ -151,6 +185,18 @@ impl DockspacePaneFocusRequest {
     #[must_use]
     pub const fn target(self) -> DockspaceFocusTarget {
         self.target
+    }
+
+    /// Prepares an actual host observation without requiring a paint plan.
+    ///
+    /// Preparing does not acknowledge or refresh this request. Submission checks
+    /// its session, epoch, intent, target and any native activation guard again.
+    #[must_use]
+    pub const fn prepare_observation(
+        self,
+        observation: DockspacePaneFocusObservation,
+    ) -> PreparedPaneFocusObservation {
+        PreparedPaneFocusObservation::new(self, observation)
     }
 }
 

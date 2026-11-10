@@ -173,14 +173,12 @@ fn main() {
         println!("settled {surface:?}: {result:?}");
         if presented {
             let mut frame = session.begin_host_frame().unwrap();
-            let plan = frame.paint_plan(surface).unwrap().unwrap();
-            if let Some(request) = plan.pane_focus_request() {
+            if let Some(request) = frame.pane_focus_request(surface) {
                 // A real engine updates its own input-focus owner here. This
                 // recording host models that state after the exact output settled.
                 application_focus = Some(request.target());
-                let observation = plan
-                    .prepare_pane_focus_observation(request, DockspacePaneFocusObservation::Focused)
-                    .unwrap();
+                let observation =
+                    request.prepare_observation(DockspacePaneFocusObservation::Focused);
                 frame.submit_pane_focus_observation(observation).unwrap();
             }
             frame

@@ -159,6 +159,10 @@ pub trait PaneView {
 
     /// Returns the pane-specific minimum content size in egui points.
     ///
+    /// This metadata is queried for every open tab, including inactive or
+    /// unloaded content, so it must not depend on creating the pane UI. Core
+    /// needs exact potential-layout minimums before a tab is dragged out.
+    ///
     /// The default delegates the minimum floor entirely to
     /// [`DockStyle`](crate::style::DockStyle).
     fn minimum_size(&self, _item: ItemId) -> Vec2 {

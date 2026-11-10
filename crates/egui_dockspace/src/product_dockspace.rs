@@ -843,15 +843,12 @@ impl Dockspace {
             frame
                 .begin_encoding_pass()
                 .map_err(DockspaceError::from_detail)?;
-            let active_pointer = frame.has_active_gesture();
             let (measure, backpressured) = match frame
                 .surface_work(surface)
                 .map_err(DockspaceError::from_detail)?
             {
                 SurfaceWork::Ready(plan) => (
-                    !(self.measurement_deferred
-                        || active_pointer
-                        || plan.has_manipulation_preview()),
+                    plan.measurement_refresh().is_allowed() && !self.measurement_deferred,
                     false,
                 ),
                 SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured) => (true, false),

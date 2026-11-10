@@ -1,6 +1,7 @@
 use super::*;
 use crate::runtime::{
     DockspaceFocusTarget, DockspacePaneFocusObservation, DockspacePaneFocusRequest,
+    NativeCreateStrategy, NativeGlobalFocus,
 };
 
 const OTHER_SURFACE: SurfaceId = SurfaceId::new(40);
@@ -86,6 +87,101 @@ fn assert_pane_focus_lifecycle(
     observe_pane_focus(session, request, DockspacePaneFocusObservation::Focused);
     assert_eq!(pane_focus_request(session, surface), None);
     request
+}
+
+#[test]
+fn native_activation_focus_request_waits_for_observation_commit_and_survives_frame_drop() {
+    let mut session = root_focus_session(FIRST);
+    session
+        .enable_managed_native_host(
+            NativeCreateStrategy::Staged,
+            NativePointerRoster::Exact(Vec::new()),
+        )
+        .expect("the focus backend enrolls");
+    session
+        .configure_managed_native_capabilities(
+            managed_native_capabilities()
+                .with(NativeHostCapability::GlobalFocusObservation)
+                .with(NativeHostCapability::WindowActivationControl),
+        )
+        .expect("the focus backend capabilities configure");
+    session
+        .register_native_root(MAIN_SURFACE, NATIVE_ROOT_WINDOW)
+        .expect("the native focus root registers");
+    let registration = commit_managed_native_frame(&mut session);
+    let [HostInputOutcome::NativeSurfaceRegistered { binding }] = registration.inputs() else {
+        panic!(
+            "unexpected native focus registration: {:?}",
+            registration.inputs()
+        );
+    };
+    let binding = *binding;
+    session
+        .report_managed_native_snapshot(
+            [(
+                binding,
+                managed_native_window_facts(
+                    PhysicalRect::new(80.0, 60.0, 800.0, 600.0)
+                        .expect("native focus bounds validate"),
+                ),
+            )],
+            managed_native_work_areas(),
+        )
+        .expect("the native focus root reports live geometry");
+    session
+        .report_native_global_focus(NativeGlobalFocus::Foreign)
+        .expect("foreign focus establishes the activation baseline");
+    commit_managed_native_frame(&mut session);
+    present_surfaces(&mut session, &[MAIN_SURFACE, OTHER_SURFACE]);
+    assert_eq!(session.pane_focus_request(MAIN_SURFACE), None);
+
+    let mut activation = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the native pane activation frame begins");
+    activation
+        .select_item_current(SECOND)
+        .expect("selecting the pane requests native activation");
+    let mut activated = commit(activation);
+    // Keep the published effect owner alive while its matching observation retries.
+    let effects = activated.take_native_effects();
+    assert!(matches!(
+        effects.as_slice(),
+        [effect] if matches!(effect.operation(),
+            NativeEffectOperation::RequestFocus { binding: target } if *target == binding)
+    ));
+    assert_eq!(session.pane_focus_request(MAIN_SURFACE), None);
+
+    session
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .expect("the admitted activation receives a newer matching focus fact");
+    let before = session.version();
+    let unpublished = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the matching observation enters an unpublished frame");
+    assert_eq!(unpublished.pane_focus_request(MAIN_SURFACE), None);
+    drop(unpublished);
+    assert_eq!(session.version(), before);
+    assert_eq!(session.pane_focus_request(MAIN_SURFACE), None);
+    assert!(session.has_pending_native_input());
+
+    let retry = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the uncommitted focus observation retries");
+    assert_eq!(retry.pane_focus_request(MAIN_SURFACE), None);
+    commit(retry);
+    assert!(!session.has_pending_native_input());
+    let request = session
+        .pane_focus_request(MAIN_SURFACE)
+        .expect("only the committed observation publishes its pane-focus request");
+    assert_eq!(request.surface(), MAIN_SURFACE);
+    assert_eq!(request.target(), DockspaceFocusTarget::Pane(SECOND));
+
+    let later = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the next frame can read the committed request");
+    assert_eq!(later.pane_focus_request(MAIN_SURFACE), Some(request));
+    drop(later);
+    assert_eq!(session.pane_focus_request(MAIN_SURFACE), Some(request));
 }
 
 #[test]

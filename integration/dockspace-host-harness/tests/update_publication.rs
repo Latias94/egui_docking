@@ -589,6 +589,49 @@ fn full_output_capacity_defers_encoding_but_allows_zero_output_selection_and_clo
 }
 
 #[test]
+fn published_focus_progresses_without_output_admission() {
+    use dockspace::runtime::DockspacePaneFocusObservation;
+
+    let mut session = session();
+    session
+        .configure_output_capacity(NonZeroUsize::new(1).unwrap())
+        .unwrap();
+    let (_, _, initial) = measure_and_emit(&mut session, 800.0, 96.0);
+    session
+        .report_surface_presentation(initial, SurfacePresentationResult::Presented)
+        .unwrap();
+    settle(&mut session);
+    let (_, _, inflight) = measure_and_emit(&mut session, 800.0, 96.0);
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.select_item_current(FIRST).unwrap();
+    assert!(frame.pane_focus_request(A).is_none());
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+
+    let request = session.pane_focus_request(A).unwrap();
+    assert_eq!(request.item(), Some(FIRST));
+    let mut frame = session.begin_host_frame().unwrap();
+    assert!(matches!(
+        frame.surface_work(A).unwrap(),
+        SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity)
+    ));
+    assert_eq!(frame.pane_focus_request(A), Some(request));
+    frame
+        .submit_pane_focus_observation(
+            request.prepare_observation(DockspacePaneFocusObservation::Focused),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    assert!(session.pane_focus_request(A).is_none());
+    drop(inflight);
+}
+
+#[test]
 fn one_slot_is_reclaimed_by_reporting_or_dropping_inflight_output_in_the_next_update() {
     for disposition in [
         Some(SurfacePresentationResult::Presented),
