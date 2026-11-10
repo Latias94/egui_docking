@@ -914,7 +914,10 @@ impl DockEngine {
                 };
                 Ok(
                     match self.scroll_owner_from_region(cause, region, presentation, endpoint)? {
-                        Some(owner) => Ok(owner),
+                        Some(owner) if self.scroll_owner_lifecycle_loss(owner).is_none() => {
+                            Ok(owner)
+                        }
+                        Some(_) => Err(ScrollSuppressionReason::ReceiverUnknown),
                         None => Err(ScrollSuppressionReason::DockBlocker(region)),
                     },
                 )
@@ -1368,6 +1371,9 @@ impl DockEngine {
             .scene
             .interaction_projection(owner.receiver.surface())
         {
+            if !self.presented_receiver_is_current(projection.plan(), owner.receiver) {
+                return Some(ScrollTerminationReason::ReceiverLost);
+            }
             let Some(current_hit) = projection
                 .hit_manifest()
                 .region(owner.receiver)
@@ -1390,7 +1396,7 @@ impl DockEngine {
                     .presentation_authority
                     .tab_strip_states
                     .state(key)
-                    .is_none()
+                    .is_none_or(|state| state.scroll_offset().is_none())
                 {
                     return Some(ScrollTerminationReason::ReceiverLost);
                 }

@@ -60,6 +60,11 @@ impl DockEngine {
         threshold_origin: JournalDragThresholdOrigin,
         metadata: PointerEventMetadata,
     ) -> Result<Option<InteractionOutcome>, EngineError> {
+        if !self.presented_receiver_is_current(presentation.plan(), region) {
+            return Ok(Some(InteractionOutcome::Rejected(
+                InteractionRejection::StaleScene,
+            )));
+        }
         let (session, replaced) = self
             .interaction
             .begin_click(ClickStart {
@@ -213,6 +218,7 @@ impl DockEngine {
         presentation: &JournalSurfacePresentation,
     ) -> bool {
         click.region.surface() == presentation.surface()
+            && self.presented_receiver_is_current(presentation.plan(), click.region)
             && click.measurement == presentation.scene().requirement()
             && click
                 .coordinates
