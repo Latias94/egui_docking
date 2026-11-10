@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "egui_dockspace",
+    "--all-features",
+    "--lib",
+    "--locked",
+    "--test-threads=1",
+    "--status-level",
+    "fail",
+    "--final-status-level",
+    "fail",
+    "-E",
+    "test(native_support::output_tests::)"
+  ],
+  "started": "2026-11-10T13:15:58.160364+00:00",
+  "ended": "2026-11-10T13:16:07.803674+00:00",
+  "exit_code": 0
+}

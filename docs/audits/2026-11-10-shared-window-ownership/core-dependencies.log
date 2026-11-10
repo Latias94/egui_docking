@@ -1,0 +1,37 @@
+dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+blake3 v1.8.5
+arrayref v0.3.9
+arrayvec v0.7.8
+cfg-if v1.0.4
+constant_time_eq v0.4.2
+cpufeatures v0.3.0
+libc v0.2.186
+cc v1.2.67
+find-msvc-tools v0.1.9
+shlex v2.0.1
+serde v1.0.228
+serde_core v1.0.228
+serde_derive v1.0.228 (proc-macro)
+proc-macro2 v1.0.106
+unicode-ident v1.0.24
+quote v1.0.46
+proc-macro2 v1.0.106 (*)
+syn v2.0.119
+proc-macro2 v1.0.106 (*)
+quote v1.0.46 (*)
+unicode-ident v1.0.24
+serde_derive v1.0.228 (proc-macro) (*)
+serde_json v1.0.150
+itoa v1.0.18
+memchr v2.8.3
+serde v1.0.228 (*)
+serde_core v1.0.228 (*)
+zmij v1.0.23
+slotmap v1.1.1
+version_check v0.9.5
+thiserror v2.0.18
+thiserror-impl v2.0.18 (proc-macro)
+proc-macro2 v1.0.106 (*)
+quote v1.0.46 (*)
+syn v2.0.119 (*)
+Core dependency boundary passed (normal/build, all features and targets).

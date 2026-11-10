@@ -1,0 +1,21 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6m 49s
+────────────
+ Nextest run ID 0da11112-036c-45ff-9e56-896a8b76d141 with nextest profile: default
+    Starting 388 tests across 70 binaries
+     SIGABRT [   0.006s] ( 13/388) dockspace-host-harness::close_commands current_close_decisions_wait_for_the_complete_native_prefix
+  stdout ───
+
+    running 1 test
+  stderr ───
+
+    thread 'current_close_decisions_wait_for_the_complete_native_prefix' (89051025) has overflowed its stack
+    fatal runtime error: stack overflow, aborting
+
+    (test aborted with signal 6: SIGABRT)
+
+────────────
+     Summary [  42.007s] 388 tests run: 387 passed, 1 failed, 0 skipped
+     SIGABRT [   0.006s] ( 13/388) dockspace-host-harness::close_commands current_close_decisions_wait_for_the_complete_native_prefix
+error: test run failed

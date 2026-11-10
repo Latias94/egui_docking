@@ -5,6 +5,11 @@ This document specifies G01. Separate G02/G03 commands and G04 external-Root
 batch remapping do not establish shared-window support. No platform or physical
 interaction support is claimed by this proposal.
 
+The [ownership implementation slice](2026-11-10-shared-native-window-implementation.md)
+separates window identity/facts, client mapping and output collections internally.
+It retains the existing singleton native entry points. The complete G01 public
+composition described below remains unimplemented.
+
 ## Scope and completion rule
 
 Support one real external Root window containing multiple independent logical

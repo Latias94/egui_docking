@@ -1,0 +1,29 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.88s
+────────────
+ Nextest run ID 376d0986-4175-419e-8df3-d39357f00d1a with nextest profile: default
+    Starting 10 tests across 1 binary
+        FAIL [   0.009s] ( 6/10) dockspace-host-harness::native_local_pointer inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_continues
+  stdout ───
+
+    running 1 test
+    test inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_continues ... FAILED
+
+    failures:
+
+    failures:
+        inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_continues
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_continues' (89017454) panicked at tests/native_local_pointer.rs:1073:5:
+    assertion failed: client.contains(inside.client_position())
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.129s] 10 tests run: 9 passed, 1 failed, 0 skipped
+        FAIL [   0.009s] ( 6/10) dockspace-host-harness::native_local_pointer inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_continues
+error: test run failed

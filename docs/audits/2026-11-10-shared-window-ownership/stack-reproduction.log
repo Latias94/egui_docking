@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 5288f570-b355-4451-8781-dd7f484ee854 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+     SIGABRT [   0.031s] (1/1) dockspace-host-harness::close_commands current_close_decisions_wait_for_the_complete_native_prefix
+  stdout ───
+
+    running 1 test
+  stderr ───
+
+    thread 'current_close_decisions_wait_for_the_complete_native_prefix' (89057977) has overflowed its stack
+    fatal runtime error: stack overflow, aborting
+
+    (test aborted with signal 6: SIGABRT)
+
+  Cancelling due to test failure:
+────────────
+     Summary [   0.033s] 1 test run: 0 passed, 1 failed, 11 skipped
+     SIGABRT [   0.031s] (1/1) dockspace-host-harness::close_commands current_close_decisions_wait_for_the_complete_native_prefix
+error: test run failed

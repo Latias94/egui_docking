@@ -1,0 +1,18 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+error[E0502]: cannot borrow `registry` as mutable because it is also borrowed as immutable
+    --> crates/dockspace/src/viewport_registry.rs:2559:26
+     |
+2549 |           let live_before = registry
+     |                             -------- immutable borrow occurs here
+...
+2559 |           let transition = registry
+     |  __________________________^
+2560 | |             .revoke_live_provider_authority()
+     | |_____________________________________________^ mutable borrow occurs here
+...
+2574 |           assert_eq!(live_after.binding(), live_before.binding());
+     |                                            ----------- immutable borrow later used here
+
+For more information about this error, try `rustc --explain E0502`.
+error: could not compile `dockspace` (lib test) due to 1 previous error
+error: command `/Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin/cargo test --no-run --message-format json-render-diagnostics --package dockspace --lib --all-features --locked` exited with code 101

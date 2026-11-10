@@ -1,0 +1,28 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.21s
+────────────
+ Nextest run ID acd62a6e-7743-47c7-8b91-8682f9e64a39 with nextest profile: default
+    Starting 71 tests across 1 binary (2038 tests skipped)
+        FAIL [   0.006s] (71/71) dockspace viewport_registry::tests::window_owners_follow_continuations_and_retirement_without_surface_keys
+  stdout ───
+
+    running 1 test
+    test viewport_registry::tests::window_owners_follow_continuations_and_retirement_without_surface_keys ... FAILED
+
+    failures:
+
+    failures:
+        viewport_registry::tests::window_owners_follow_continuations_and_retirement_without_surface_keys
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2108 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'viewport_registry::tests::window_owners_follow_continuations_and_retirement_without_surface_keys' (89005214) panicked at crates/dockspace/src/viewport_registry.rs:1636:9:
+    assertion failed: view.has_coordinate_authority()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.458s] 71 tests run: 70 passed, 1 failed, 2038 skipped
+        FAIL [   0.006s] (71/71) dockspace viewport_registry::tests::window_owners_follow_continuations_and_retirement_without_surface_keys
+error: test run failed

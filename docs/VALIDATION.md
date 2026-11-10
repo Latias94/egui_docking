@@ -15,6 +15,46 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-10 native window and surface ownership refactor
+
+Implementation: `1718683`, based on `205195d`. The
+[ownership qualification](audits/2026-11-10-shared-window-ownership.md)
+records the first implementation slice of G01. Exact window identity is
+independent of surface identity. Window facts have one registry owner; a
+borrowed query joins each surface's admission/projection. Client transforms
+share one origin/scale/clip mapping, with clip-qualified hover and unclamped
+captured source motion. Existing complete binding ordering and hash field order
+are preserved explicitly.
+
+Native output, final-pass paint and receiver rosters are owned collections under
+the existing token, dispatch budget and publication owner. Full proof validation
+precedes all confirmations and a single commit. A batch renderer terminal checks
+every affine output before changing any slot; refusal preserves the complete
+collection. Backing capacity remains charged through terminal commit. The old
+single-output binder/error wrapper is removed. Experimental `ViewportRecord`
+is now a borrowed view, so owned history requires a registry snapshot.
+
+All sixteen final serial gates pass: core/conformance 2,152 with three existing
+skips, public persistence host 388, egui adapter 186, official consumer 24,
+product 114 default / 119 persistence, and native workspace 607 with one existing
+skip. Correctness/suspicious Clippy, strict documentation, eleven doctests,
+formatting and the renderer-neutral dependency boundary pass. Five final
+output-proof regressions pass after test-only deprecation cleanup.
+
+The first host run exposed default-stack overflow for an unchanged 256-element
+native input array. The preparation seam now borrows its iterator and completes
+caller destruction before maintenance or append. The original default-stack
+test, all twelve close controls, panic/capacity regressions and the final host
+full run pass without enlarging stack or allocating another preparation buffer.
+
+All thirteen real Linux X11 gates pass, including seven isolated eframe
+processes, bounded 4 MiB redock and both actual-editor drivers. Twelve real
+focused edits, six Child lifetimes and Root rebinding preserve the original
+Root and finish quiescent. The physical profile remains one screen, scale one
+and one surface per window. Configurable shared-window composition still needs
+window-scoped ingress, placement generations, first-live rosters, unified close
+and last-placement retirement. No new platform or ImGui timing claim is made.
+
 ## 2026-11-10 native payload commands and multi-Root restoration
 
 Implementation: `1d1abe8`, based on `6a63fb6`. The

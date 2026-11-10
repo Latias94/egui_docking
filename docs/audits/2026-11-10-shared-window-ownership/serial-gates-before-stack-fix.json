@@ -1,0 +1,55 @@
+[
+  {
+    "name": "core-tests",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "dockspace",
+      "-p",
+      "dockspace_host_conformance",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T12:37:33.699230+00:00",
+    "ended": "2026-11-10T12:39:31.368561+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "host-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T12:39:31.369081+00:00",
+    "ended": "2026-11-10T12:47:03.382728+00:00",
+    "exit_code": 100
+  }
+]

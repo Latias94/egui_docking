@@ -1,0 +1,5 @@
+
+running 1 test
+test surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_until_the_editor_resumes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 596 filtered out; finished in 0.28s

@@ -1,0 +1,19 @@
+Screen 0: minimum 1 x 1, current 1920 x 1080, maximum 1920 x 1080
+screen connected 1920x1080+0+0 (0x3a) normal (normal) 0mm x 0mm
+	Identifier: 0x3c
+	Timestamp:  194067
+	Subpixel:   unknown
+	Gamma:      1.0:1.0:1.0
+	Brightness: 0.0
+	Clones:
+	CRTC:       0
+	CRTCs:      0
+	Transform:  1.000000 0.000000 0.000000
+	            0.000000 1.000000 0.000000
+	            0.000000 0.000000 1.000000
+	           filter:
+	non-desktop: 0
+		supported: 0, 1
+  1920x1080 (0x3a)  0.000MHz *current
+        h: width  1920 start    0 end    0 total    0 skew    0 clock   0.00KHz
+        v: height 1080 start    0 end    0 total    0           clock   0.00Hz
