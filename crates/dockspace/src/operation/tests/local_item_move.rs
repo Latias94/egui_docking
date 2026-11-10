@@ -1,7 +1,6 @@
 use super::*;
 use crate::canonical::CanonicalizationError;
 use crate::drop_resolver::structural_work;
-use crate::validation::WorkspaceValidationError;
 
 const LOCAL_ROOT: RootId = RootId::new(1);
 const OTHER_ROOT: RootId = RootId::new(2);
@@ -448,7 +447,7 @@ fn inner_edge_input_weight_sum_witness_matches_general_rejection_and_rolls_back(
 }
 
 #[test]
-fn source_collapse_output_weight_sum_witness_matches_general_rejection_and_rolls_back() {
+fn source_collapse_of_wide_split_matches_general_success_and_preserves_items() {
     let mut builder = Workspace::builder();
     let children: Vec<_> = (0..2000)
         .map(|index| {
@@ -488,7 +487,7 @@ fn source_collapse_output_weight_sum_witness_matches_general_rejection_and_rolls
     );
     let mut workspace = builder.build().unwrap();
     workspace.validate().unwrap();
-    let original = workspace.clone();
+    let original_items = workspace.item_multiset();
     let movement = WorkspaceCommand::Move {
         payload: MovePayload::Item(
             workspace
@@ -498,26 +497,33 @@ fn source_collapse_output_weight_sum_witness_matches_general_rejection_and_rolls
         target: DockTarget::Center(workspace.capture_tab_target(OTHER_ROOT, target).unwrap()),
     };
     let policy = default_policy();
-    let expected = prepare_general_candidate(
+    let (expected_workspace, expected_report) = prepare_general_candidate(
         &workspace,
         TransactionAuthority::Policy(&policy),
         std::slice::from_ref(&movement),
         workspace.clone(),
     )
-    .unwrap_err();
-    assert!(matches!(
-        &expected,
-        TransactionError::Canonicalization(CanonicalizationError::InvalidOutput(errors))
-            if matches!(
-                errors.errors(),
-                [WorkspaceValidationError::SplitWeightsNotNormalized { split, .. }]
-                    if *split == source_split
-            )
-    ));
-    let actual = crate::transaction::WorkspaceTransaction::from_commands([movement])
+    .unwrap()
+    .into_parts();
+    let report = crate::transaction::WorkspaceTransaction::from_commands([movement])
         .apply(&mut workspace, &policy)
-        .unwrap_err();
-    assert_eq!(actual, expected);
-    assert_eq!(workspace, original);
+        .unwrap();
+    assert_eq!(workspace, expected_workspace);
+    assert_eq!(report, expected_report);
+    assert!(report.changed());
+    assert!(matches!(
+        report.outcomes(),
+        [CommandOutcome::Moved { items, changed: true, .. }] if items == &[MOVED]
+    ));
+    assert_eq!(workspace.item_multiset(), original_items);
+    assert!(matches!(
+        workspace.node(target),
+        Some(Node::Tabs { items, .. }) if items == &[ItemId::new(3), ItemId::new(4), MOVED]
+    ));
+    assert!(matches!(
+        workspace.node(source_split),
+        Some(Node::Split { children, .. }) if children.len() == 1999
+    ));
+    super::owner_reference::assert_actual_placement(&workspace);
     workspace.validate().unwrap();
 }

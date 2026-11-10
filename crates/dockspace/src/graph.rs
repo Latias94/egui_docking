@@ -108,24 +108,6 @@ impl SplitWeight {
             );
         }
 
-        // Absorb f32 rounding in the final entry so common weights validate exactly.
-        if normalized.len() > 1 {
-            let prefix: f32 = normalized[..normalized.len() - 1]
-                .iter()
-                .map(|weight| weight.0)
-                .sum();
-            let last = 1.0 - prefix;
-            if last.is_finite() && last > 0.0 {
-                let last_index = normalized.len() - 1;
-                normalized[last_index] = Self(last);
-            }
-        }
-
-        for (index, weight) in normalized.iter().copied().enumerate() {
-            SplitWeight::new(weight.0)
-                .map_err(|source| InvalidSplitWeights::Invalid { index, source })?;
-        }
-
         Ok(normalized)
     }
 }
