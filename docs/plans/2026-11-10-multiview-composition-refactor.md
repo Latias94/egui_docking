@@ -1,8 +1,12 @@
 # Multiview composition refactor
 
 Baseline: `6a63fb6`. G02/G03/G04 are implemented and independently reviewed at
-`1d1abe8`; all sixteen serial gates and thirteen real-X11 gates pass. G01
-ownership design is agreed and explicitly proposed; it remains unimplemented.
+`1d1abe8`; all sixteen serial gates and thirteen real-X11 gates pass. G01 is
+also complete from baseline `78c1eaa`, with core/public-host implementation at
+`270d81b`. Its sixteen serial and eighteen real-X11 gates pass, including the
+new shared-window journey and late-discard variant. The
+[G01 qualification](../audits/2026-11-11-shared-native-window.md) states the
+finite physical profile and separates it from protocol-only negative gates.
 
 ## Contract
 
@@ -10,7 +14,7 @@ Separate the lifetime and authority of a real native window from the placement
 of its logical docking surfaces. Keep a single joined input order and reuse the
 existing creation, first-live, close, recovery and retirement owners. Do not
 duplicate window tokens or introduce a second docking state machine in an
-adapter. Limit initial placement to an origin, scale and clip.
+adapter. Keep layout size independent of the physical origin, scale and clip.
 
 The public acceptance journey is one external Root hosting two independent
 surfaces, cross-area dragging, managed Child creation without early source
@@ -80,10 +84,13 @@ complete cycles and per-Child recovery hosts. Both document restoration and
 non-persistent layout reset use that batch contract. The native route consumer
 prepays resources and installs the complete committed batch under its existing
 publication lock. The reference application's automatic restore product entry
-still uses one external Root.
+continues one external Root window's complete placement roster. Several
+independent external windows use explicit core batch mappings.
 
 The [implementation and qualification record](../audits/2026-11-10-native-command-root-refactor.md)
-tracks fresh evidence and the Clone migration. These capabilities do not satisfy
-G01's shared-window acceptance journey. Its next implementation must replace
-window identity, placement, Joined routing, output ownership, window-wide close
-and final-placement retirement together.
+tracks the earlier evidence and Clone migration. The separate completed
+[G01 phase](2026-11-10-shared-native-window-implementation.md) replaces window
+identity, placement, Joined routing, output ownership, window-wide close and
+final-placement retirement together. No pending implementation item from this
+approved refactor remains; additional physical platforms and performance
+profiles retain their documented qualification limits.

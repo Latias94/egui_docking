@@ -1,0 +1,85 @@
+
+running 1 test
+test surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_when_the_root_roster_expands_after_admission ...
+thread 'surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_when_the_root_roster_expands_after_admission' (22373) panicked at /usr/local/cargo/git/checkouts/egui-1f51569bdb0e7ad4/0d9c48d/crates/epaint/src/mutex.rs:101:17:
+DEBUG PANIC: Failed to acquire RwLock write after 10s. Deadlock?
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: epaint::mutex::RwLock<T>::write::{{closure}}
+   3: core::option::Option<T>::unwrap_or_else
+   4: egui::context::Context::write
+   5: egui::context::Context::will_discard
+   6: egui::painter::Painter::is_visible
+   7: egui::ui::Ui::is_visible
+   8: egui_dockspace_native::surface_driver::composition::NativePaintMapping::child_ui::{{closure}}
+   9: egui::context::Context::memory_mut::{{closure}}
+  10: egui::context::Context::write
+  11: egui::context::Context::memory_mut
+  12: egui_dockspace_native::surface_driver::composition::NativePaintMapping::child_ui
+  13: egui_dockspace_native::surface_driver::NativeRuntimeState<P>::update_window_budgeted::{{closure}}::{{closure}}
+  14: core::iter::adapters::map::map_try_fold::{{closure}}
+  15: core::iter::adapters::copied::copy_try_fold::{{closure}}
+  16: core::iter::traits::iterator::Iterator::try_fold
+  17: <core::iter::adapters::copied::Copied<I> as core::iter::traits::iterator::Iterator>::try_fold
+  18: <core::iter::adapters::map::Map<I,F> as core::iter::traits::iterator::Iterator>::try_fold
+  19: <core::iter::adapters::GenericShunt<I,R> as core::iter::traits::iterator::Iterator>::try_fold
+  20: <core::iter::adapters::GenericShunt<I,R> as core::iter::traits::iterator::Iterator>::next
+  21: <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+  22: <alloc::vec::Vec<T> as alloc::vec::spec_from_iter::SpecFromIter<T,I>>::from_iter
+  23: <alloc::vec::Vec<T> as core::iter::traits::collect::FromIterator<T>>::from_iter
+  24: <core::result::Result<V,E> as core::iter::traits::collect::FromIterator<core::result::Result<A,E>>>::from_iter::{{closure}}
+  25: core::iter::adapters::try_process
+  26: <core::result::Result<V,E> as core::iter::traits::collect::FromIterator<core::result::Result<A,E>>>::from_iter
+  27: core::iter::traits::iterator::Iterator::collect
+  28: egui_dockspace_native::surface_driver::NativeRuntimeState<P>::update_window_budgeted::{{closure}}
+  29: core::option::Option<T>::map
+  30: egui_dockspace_native::surface_driver::NativeRuntimeState<P>::update_window_budgeted
+  31: egui_dockspace_native::surface_driver::NativeRuntimeState<P>::update_root_surfaces
+  32: egui_dockspace_native::app::NativeDockspaceApp<P>::update_root_with_placements
+  33: egui_dockspace_native::app::NativeDockspaceApp<P>::show_root_surfaces
+  34: <egui_dockspace_native::surface_driver::tests::output_backpressure::ExpandingRosterTextApp as eframe::epi::App>::ui
+  35: eframe::native::epi_integration::EpiIntegration::update::{{closure}}
+  36: core::ops::function::impls::<impl core::ops::function::FnMut<A> for &mut F>::call_mut
+  37: egui::context::Context::run_ui_with_pass_finalizer::{{closure}}::{{closure}}
+  38: egui::context::Context::root_ui
+  39: egui::context::Context::run_ui_with_pass_finalizer::{{closure}}
+  40: egui::context::Context::run_dyn
+  41: egui::context::Context::run_ui_with_pass_finalizer
+  42: eframe::native::epi_integration::EpiIntegration::update
+  43: eframe::native::glow_integration::GlowWinitRunning::run_ui_and_paint
+  44: <eframe::native::glow_integration::GlowWinitApp as eframe::native::winit_integration::WinitApp>::run_ui_and_paint
+  45: eframe::native::run::WinitAppWrapper<T>::check_redraw_requests
+  46: eframe::native::run::WinitAppWrapper<T>::handle_event_result
+  47: <eframe::native::run::WinitAppWrapper<T> as winit::application::ApplicationHandler<eframe::native::winit_integration::UserEvent>>::resumed::{{closure}}
+  48: eframe::native::event_loop_context::with_event_loop_context
+  49: <eframe::native::run::WinitAppWrapper<T> as winit::application::ApplicationHandler<eframe::native::winit_integration::UserEvent>>::resumed
+  50: winit::platform::run_on_demand::EventLoopExtRunOnDemand::run_app_on_demand::{{closure}}
+  51: core::ops::function::impls::<impl core::ops::function::FnMut<A> for &mut F>::call_mut
+  52: winit::platform_impl::linux::x11::EventLoop<T>::single_iteration
+  53: winit::platform_impl::linux::x11::EventLoop<T>::pump_events
+  54: winit::platform_impl::linux::x11::EventLoop<T>::run_on_demand
+  55: winit::platform_impl::linux::EventLoop<T>::run_on_demand
+  56: <winit::event_loop::EventLoop<T> as winit::platform::run_on_demand::EventLoopExtRunOnDemand>::run_on_demand
+  57: winit::platform::run_on_demand::EventLoopExtRunOnDemand::run_app_on_demand
+  58: eframe::native::run::run_and_return
+  59: eframe::native::run::run_glow::{{closure}}
+  60: eframe::native::run::with_event_loop::{{closure}}
+  61: std::thread::local::LocalKey<T>::try_with
+  62: std::thread::local::LocalKey<T>::with
+  63: eframe::native::run::with_event_loop
+  64: eframe::native::run::run_glow
+  65: eframe::run_native_ext
+  66: eframe::run_native
+  67: egui_dockspace_native::surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_when_the_root_roster_expands_after_admission
+  68: egui_dockspace_native::surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_when_the_root_roster_expands_after_admission::{{closure}}
+  69: core::ops::function::FnOnce::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+
+failures:
+
+failures:
+    surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_when_the_root_roster_expands_after_admission
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 615 filtered out; finished in 10.14s

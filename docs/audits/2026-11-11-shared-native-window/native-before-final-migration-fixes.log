@@ -1,0 +1,705 @@
+   Compiling egui_dockspace_native v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native)
+warning: method `request` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/close_control.rs:69:25
+   |
+64 | impl NativeViewportCloseCancellationRecord {
+   | ------------------------------------------ method in this implementation
+...
+69 |     pub(crate) const fn request(self) -> NativeViewportCloseRequest {
+   |                         ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `deferred_ingress` and `decision_count` are never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/close_control.rs:490:19
+    |
+261 | impl NativeCloseControl {
+    | ----------------------- methods in this implementation
+...
+490 |     pub(crate) fn deferred_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
+    |                   ^^^^^^^^^^^^^^^^
+...
+612 |     pub(crate) fn decision_count(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^
+
+warning: method `surface` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator.rs:129:25
+    |
+118 | impl PendingNoFrameInvalidation {
+    | ------------------------------- method in this implementation
+...
+129 |     pub(crate) const fn surface(self) -> SurfaceId {
+    |                         ^^^^^^^
+
+warning: multiple methods are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator.rs:743:12
+     |
+ 420 | impl NativeCoordinator {
+     | ---------------------- methods in this implementation
+...
+ 743 |     pub fn reserve_viewport(
+     |            ^^^^^^^^^^^^^^^^
+...
+ 762 |     pub fn attach_viewport_window(
+     |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+ 787 |     pub fn replace_viewport(
+     |            ^^^^^^^^^^^^^^^^
+...
+ 818 |     pub fn reserve_viewport_replacement(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 845 |     pub fn unbind_viewport(
+     |            ^^^^^^^^^^^^^^^
+...
+2450 |     pub fn report_snapshot(
+     |            ^^^^^^^^^^^^^^^
+...
+2468 |     pub fn report_inventory_unknown(&mut self) -> Result<(), NativeRuntimeError> {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2475 |     pub fn native_work_area(
+     |            ^^^^^^^^^^^^^^^^
+...
+2527 |     pub fn report_effect_result(
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+2544 |     pub fn report_binding_quiescence(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variant `NativeBindingNotQuiescent` is never constructed
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/error.rs:116:5
+    |
+ 30 | pub(crate) enum NativeHostProtocolError {
+    |                 ----------------------- variant in this enum
+...
+116 |     NativeBindingNotQuiescent(SurfaceId),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `NativeHostProtocolError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Reserve` and `Attach` are never constructed
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:154:5
+    |
+153 | pub(crate) enum NativeViewportReplacement {
+    |                 ------------------------- variants in this enum
+154 |     Reserve,
+    |     ^^^^^^^
+155 |     ReserveRetired,
+156 |     Attach(winit::window::WindowId),
+    |     ^^^^^^
+    |
+    = note: `NativeViewportReplacement` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated functions `active`, `with_clock`, and `try_with_clock` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:2157:8
+     |
+2036 | impl NativeHostState {
+     | -------------------- associated functions in this implementation
+...
+2157 |     fn active() -> Self {
+     |        ^^^^^^
+...
+2161 |     fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
+     |        ^^^^^^^^^^
+...
+2165 |     fn try_with_clock(
+     |        ^^^^^^^^^^^^^^
+
+warning: associated items `pointer_capture_pending`, `attach_viewport_route`, `unbind_viewport_route`, `new`, `try_new_with_capacity`, and `with_clock` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:3665:19
+     |
+3557 | impl NativeHostBridge {
+     | --------------------- associated items in this implementation
+...
+3665 |     pub(crate) fn pointer_capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+3763 |     pub(crate) fn attach_viewport_route(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+3789 |     pub(crate) fn unbind_viewport_route(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+3889 |     pub(crate) fn new(viewports: NativeViewportMap) -> Self {
+     |                   ^^^
+...
+3909 |     pub(crate) fn try_new_with_capacity(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+3940 |     fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
+     |        ^^^^^^^^^^
+
+warning: method `capture_pending` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/command_callback.rs:269:19
+    |
+140 | impl NativeCommandCallbacks {
+    | --------------------------- method in this implementation
+...
+269 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: methods `is_empty` and `front` are never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/journal.rs:93:19
+    |
+ 57 | impl HostIngressJournal {
+    | ----------------------- methods in this implementation
+...
+ 93 |     pub(super) fn is_empty(&self) -> bool {
+    |                   ^^^^^^^^
+...
+188 |     pub(super) fn front(&self) -> Option<&HostRecord> {
+    |                   ^^^^^
+
+warning: method `work_area_capacity_exceeded` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/terminal_roster.rs:134:25
+    |
+ 49 | impl TerminalRosterState {
+    | ------------------------ method in this implementation
+...
+134 |     pub(super) const fn work_area_capacity_exceeded(&self) -> bool {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `references_viewport_binding` and `capture_pending` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/window_resource.rs:163:19
+     |
+ 101 | impl NativeWindowResources {
+     | -------------------------- methods in this implementation
+...
+ 163 |     pub(super) fn references_viewport_binding(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1097 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^
+
+warning: method `binding` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/pointer_observation.rs:75:25
+   |
+46 | impl NativePointerObservationRecord {
+   | ----------------------------------- method in this implementation
+...
+75 |     pub(crate) const fn binding(self) -> NativeSurfaceBinding {
+   |                         ^^^^^^^
+
+warning: method `quiescence_candidates` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/retirement.rs:880:19
+    |
+188 | impl NativeRetirementState {
+    | -------------------------- method in this implementation
+...
+880 |     pub(crate) fn quiescence_candidates(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `has_admitted_create_attempt` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/viewport_map.rs:994:19
+    |
+ 85 | impl NativeViewportMap {
+    | ---------------------- method in this implementation
+...
+994 |     pub(crate) fn has_admitted_create_attempt(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `egui_dockspace_native` (lib) generated 15 warnings
+warning: use of deprecated associated function `eframe::egui::Id::new`: Use `Id::unique` (for a globally unique id) or `IdSalt::new` (for a locally unique salt) instead
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/receiver_no_frame_tests.rs:175:31
+    |
+175 |                     egui::Id::new(surface),
+    |                               ^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: methods `replace_viewport`, `report_inventory_unknown`, and `native_work_area` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator.rs:787:12
+     |
+ 420 | impl NativeCoordinator {
+     | ---------------------- methods in this implementation
+...
+ 787 |     pub fn replace_viewport(
+     |            ^^^^^^^^^^^^^^^^
+...
+2468 |     pub fn report_inventory_unknown(&mut self) -> Result<(), NativeRuntimeError> {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2475 |     pub fn native_work_area(
+     |            ^^^^^^^^^^^^^^^^
+
+warning: methods `pointer_capture_pending`, `record_pointer_capture_for_test`, `retire_deferred_binding`, and `attach_output_binding` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:3665:19
+     |
+3557 | impl NativeHostBridge {
+     | --------------------- methods in this implementation
+...
+3665 |     pub(crate) fn pointer_capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+3704 |     pub(crate) fn record_pointer_capture_for_test(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+4898 |     pub(crate) fn retire_deferred_binding(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+5614 |     pub(crate) fn attach_output_binding(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `capture_pending` and `receive_capture_record` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/window_resource.rs:1097:19
+     |
+ 101 | impl NativeWindowResources {
+     | -------------------------- methods in this implementation
+...
+1097 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^
+...
+1132 |     pub(super) fn receive_capture_record(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `for_test` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/pointer_capture.rs:79:25
+   |
+39 | impl NativePointerCaptureRecord {
+   | ------------------------------- associated function in this implementation
+...
+79 |     pub(crate) const fn for_test(
+   |                         ^^^^^^^^
+
+warning: `egui_dockspace_native` (lib test) generated 7 warnings (2 duplicates)
+   Compiling egui-dockspace-fork-product-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-product-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 04s
+────────────
+ Nextest run ID 998ed7ff-5771-4e71-8708-aeea8e8cb1c7 with nextest profile: default
+    Starting 624 tests across 8 binaries (1 test skipped)
+        FAIL [   0.013s] ( 32/624) egui_dockspace_native coordinator::tests::budget::pending_native_suffix_does_not_delay_committed_local_coordinate_refresh
+  stdout ───
+
+    running 1 test
+    test coordinator::tests::budget::pending_native_suffix_does_not_delay_committed_local_coordinate_refresh ... FAILED
+
+    failures:
+
+    failures:
+        coordinator::tests::budget::pending_native_suffix_does_not_delay_committed_local_coordinate_refresh
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'coordinator::tests::budget::pending_native_suffix_does_not_delay_committed_local_coordinate_refresh' (89770312) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator/tests/budget.rs:241:5:
+    assertion `left != right` failed
+      left: NativeLocalCoordinates { backend: BackendIngressLease { platform: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, pointer: PointerInputLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PointerProviderIncarnation(1), scope: NativeJoined(PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) }) }, presentation_host: PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) } }, binding: NativeWindowBinding { provider: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, window: WindowBinding { authority_domain: EngineAuthorityDomainId(1), epoch: WorkspaceEpoch(0), token: WindowToken { namespace: Host, value: 11 }, incarnation: WindowIncarnation(1) } }, generation: CoordinateGeneration(3), content_size: PhysicalSize { width: 640.0, height: 480.0 }, native_scale_factor: ScaleFactor(1.0) }
+     right: NativeLocalCoordinates { backend: BackendIngressLease { platform: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, pointer: PointerInputLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PointerProviderIncarnation(1), scope: NativeJoined(PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) }) }, presentation_host: PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) } }, binding: NativeWindowBinding { provider: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, window: WindowBinding { authority_domain: EngineAuthorityDomainId(1), epoch: WorkspaceEpoch(0), token: WindowToken { namespace: Host, value: 11 }, incarnation: WindowIncarnation(1) } }, generation: CoordinateGeneration(3), content_size: PhysicalSize { width: 640.0, height: 480.0 }, native_scale_factor: ScaleFactor(1.0) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.012s] ( 68/624) egui_dockspace_native coordinator::tests::first_live_cancellation::first_live_report_refreshes_local_capability_without_a_queued_snapshot
+  stdout ───
+
+    running 1 test
+    test coordinator::tests::first_live_cancellation::first_live_report_refreshes_local_capability_without_a_queued_snapshot ... FAILED
+
+    failures:
+
+    failures:
+        coordinator::tests::first_live_cancellation::first_live_report_refreshes_local_capability_without_a_queued_snapshot
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'coordinator::tests::first_live_cancellation::first_live_report_refreshes_local_capability_without_a_queued_snapshot' (89770670) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator/tests/first_live_cancellation.rs:412:5:
+    assertion failed: native.session.native_local_coordinates(child).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.010s] (132/624) egui_dockspace_native coordinator::tests::local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_snapshot
+  stdout ───
+
+    running 1 test
+    test coordinator::tests::local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_snapshot ... FAILED
+
+    failures:
+
+    failures:
+        coordinator::tests::local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_snapshot
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'coordinator::tests::local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_snapshot' (89770975) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator/tests.rs:560:5:
+    assertion `left != right` failed
+      left: NativeLocalCoordinates { backend: BackendIngressLease { platform: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, pointer: PointerInputLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PointerProviderIncarnation(1), scope: NativeJoined(PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) }) }, presentation_host: PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) } }, binding: NativeWindowBinding { provider: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, window: WindowBinding { authority_domain: EngineAuthorityDomainId(1), epoch: WorkspaceEpoch(0), token: WindowToken { namespace: Host, value: 11 }, incarnation: WindowIncarnation(1) } }, generation: CoordinateGeneration(3), content_size: PhysicalSize { width: 640.0, height: 480.0 }, native_scale_factor: ScaleFactor(1.0) }
+     right: NativeLocalCoordinates { backend: BackendIngressLease { platform: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, pointer: PointerInputLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PointerProviderIncarnation(1), scope: NativeJoined(PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) }) }, presentation_host: PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) } }, binding: NativeWindowBinding { provider: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, window: WindowBinding { authority_domain: EngineAuthorityDomainId(1), epoch: WorkspaceEpoch(0), token: WindowToken { namespace: Host, value: 11 }, incarnation: WindowIncarnation(1) } }, generation: CoordinateGeneration(3), content_size: PhysicalSize { width: 640.0, height: 480.0 }, native_scale_factor: ScaleFactor(1.0) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.012s] (134/624) egui_dockspace_native coordinator::tests::magnetic_targeting::committed_release_survives_late_shift_and_a_dropped_successor_output
+  stdout ───
+
+    running 1 test
+    test coordinator::tests::magnetic_targeting::committed_release_survives_late_shift_and_a_dropped_successor_output ... FAILED
+
+    failures:
+
+    failures:
+        coordinator::tests::magnetic_targeting::committed_release_survives_late_shift_and_a_dropped_successor_output
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'coordinator::tests::magnetic_targeting::committed_release_survives_late_shift_and_a_dropped_successor_output' (89770981) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator/tests/magnetic_targeting.rs:24:63:
+    called `Option::unwrap()` on a `None` value
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.011s] (167/624) egui_dockspace_native coordinator::tests::replacement::destroyed_owned_child_retains_replacement_on_the_existing_viewport
+  stdout ───
+
+    running 1 test
+    test coordinator::tests::replacement::destroyed_owned_child_retains_replacement_on_the_existing_viewport ... FAILED
+
+    failures:
+
+    failures:
+        coordinator::tests::replacement::destroyed_owned_child_retains_replacement_on_the_existing_viewport
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'coordinator::tests::replacement::destroyed_owned_child_retains_replacement_on_the_existing_viewport' (89771083) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator/tests/replacement.rs:146:5:
+    assertion `left == right` failed
+      left: Some(NativeSurfaceBinding { provider: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, binding: ViewportBinding { window: WindowBinding { authority_domain: EngineAuthorityDomainId(1), epoch: WorkspaceEpoch(0), token: WindowToken { namespace: Host, value: 22 }, incarnation: WindowIncarnation(2) }, surface: SurfaceId(2), placement_generation: PlacementGeneration(0) } })
+     right: Some(NativeSurfaceBinding { provider: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, binding: ViewportBinding { window: WindowBinding { authority_domain: EngineAuthorityDomainId(1), epoch: WorkspaceEpoch(0), token: WindowToken { namespace: Managed, value: 1 }, incarnation: WindowIncarnation(3) }, surface: SurfaceId(2), placement_generation: PlacementGeneration(0) } })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.011s] (168/624) egui_dockspace_native coordinator::tests::replacement::shutdown_cancels_unadmitted_replacement_without_retiring_its_predecessor
+  stdout ───
+
+    running 1 test
+    test coordinator::tests::replacement::shutdown_cancels_unadmitted_replacement_without_retiring_its_predecessor ... FAILED
+
+    failures:
+
+    failures:
+        coordinator::tests::replacement::shutdown_cancels_unadmitted_replacement_without_retiring_its_predecessor
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'coordinator::tests::replacement::shutdown_cancels_unadmitted_replacement_without_retiring_its_predecessor' (89771086) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator/tests/replacement.rs:177:5:
+    assertion `left == right` failed
+      left: Some(NativeSurfaceBinding { provider: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, binding: ViewportBinding { window: WindowBinding { authority_domain: EngineAuthorityDomainId(1), epoch: WorkspaceEpoch(0), token: WindowToken { namespace: Host, value: 22 }, incarnation: WindowIncarnation(2) }, surface: SurfaceId(2), placement_generation: PlacementGeneration(0) } })
+     right: None
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.008s] (237/624) egui_dockspace_native coordinator::tests::workspace_replacement::shared_root_reset_settles_one_window_resource_and_every_exact_predecessor
+  stdout ───
+
+    running 1 test
+    test coordinator::tests::workspace_replacement::shared_root_reset_settles_one_window_resource_and_every_exact_predecessor ... FAILED
+
+    failures:
+
+    failures:
+        coordinator::tests::workspace_replacement::shared_root_reset_settles_one_window_resource_and_every_exact_predecessor
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'coordinator::tests::workspace_replacement::shared_root_reset_settles_one_window_resource_and_every_exact_predecessor' (89771339) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator/tests/workspace_replacement.rs:345:6:
+    called `Result::unwrap()` on an `Err` value: NativeRuntimeError { source: HostProtocol(NativeReportStorageUnavailable) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.012s] (458/624) egui_dockspace_native receiver::focus_tests::minimized_surface_keeps_editor_focus_without_presented_receiver_authority
+  stdout ───
+
+    running 1 test
+    test receiver::focus_tests::minimized_surface_keeps_editor_focus_without_presented_receiver_authority ... FAILED
+
+    failures:
+
+    failures:
+        receiver::focus_tests::minimized_surface_keeps_editor_focus_without_presented_receiver_authority
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'receiver::focus_tests::minimized_surface_keeps_editor_focus_without_presented_receiver_authority' (89772091) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/receiver_focus_tests.rs:270:9:
+    skipped pass 0 must keep the existing editor identity alive
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.019s] (461/624) egui_dockspace_native receiver::no_frame_tests::application_only_no_frame_retires_both_presented_placements_after_the_window_terminal
+  stdout ───
+
+    running 1 test
+    test receiver::no_frame_tests::application_only_no_frame_retires_both_presented_placements_after_the_window_terminal ... FAILED
+
+    failures:
+
+    failures:
+        receiver::no_frame_tests::application_only_no_frame_retires_both_presented_placements_after_the_window_terminal
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'receiver::no_frame_tests::application_only_no_frame_retires_both_presented_placements_after_the_window_terminal' (89772100) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/receiver_no_frame_tests.rs:251:10:
+    called `Result::unwrap()` on an `Err` value: PendingNoFrameInvalidation { terminal: Observed, viewport: "FFFF", window: WindowId(1), create_attempt: None, binding: NativeSurfaceBinding { provider: PlatformObservationLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PlatformProviderIncarnation(1) }, binding: ViewportBinding { window: WindowBinding { authority_domain: EngineAuthorityDomainId(1), epoch: WorkspaceEpoch(0), token: WindowToken { namespace: Host, value: 1 }, incarnation: WindowIncarnation(1) }, surface: SurfaceId(1), placement_generation: PlacementGeneration(0) } } }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (490/624) egui_dockspace_native surface_driver::application::layout_tests::persistence::capture_and_external_restore_publish_known_and_new_keys_without_replacing_panes
+  stdout ───
+
+    running 1 test
+    test surface_driver::application::layout_tests::persistence::capture_and_external_restore_publish_known_and_new_keys_without_replacing_panes ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::application::layout_tests::persistence::capture_and_external_restore_publish_known_and_new_keys_without_replacing_panes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'surface_driver::application::layout_tests::persistence::capture_and_external_restore_publish_known_and_new_keys_without_replacing_panes' (89772195) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/surface_driver/application/layout_tests.rs:112:10:
+    called `Result::unwrap()` on an `Err` value: NativeRuntimeError { source: HostProtocol(NativeAdmissionRouteChanged(SurfaceId(1))) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (495/624) egui_dockspace_native surface_driver::application::layout_tests::persistence::root_rebinding_conflicts_leave_the_host_running_and_release_the_command_slot
+  stdout ───
+
+    running 1 test
+    test surface_driver::application::layout_tests::persistence::root_rebinding_conflicts_leave_the_host_running_and_release_the_command_slot ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::application::layout_tests::persistence::root_rebinding_conflicts_leave_the_host_running_and_release_the_command_slot
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'surface_driver::application::layout_tests::persistence::root_rebinding_conflicts_leave_the_host_running_and_release_the_command_slot' (89772210) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/surface_driver/application/layout_tests.rs:707:9:
+    assertion failed: state.coordinator.surface_viewport(OTHER_SURFACE).is_some()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (500/624) egui_dockspace_native surface_driver::application::layout_tests::queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic_identities
+  stdout ───
+
+    running 1 test
+    test surface_driver::application::layout_tests::queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic_identities ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::application::layout_tests::queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic_identities
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'surface_driver::application::layout_tests::queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic_identities' (89772226) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/surface_driver/application/layout_tests.rs:112:10:
+    called `Result::unwrap()` on an `Err` value: NativeRuntimeError { source: HostProtocol(NativeAdmissionRouteChanged(SurfaceId(1))) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.010s] (501/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::document::restore_before_the_first_root_registration_keeps_the_singleton_submission_path
+  stdout ───
+
+    running 1 test
+    test surface_driver::application::layout_tests::shared_window::document::restore_before_the_first_root_registration_keeps_the_singleton_submission_path ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::application::layout_tests::shared_window::document::restore_before_the_first_root_registration_keeps_the_singleton_submission_path
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'surface_driver::application::layout_tests::shared_window::document::restore_before_the_first_root_registration_keeps_the_singleton_submission_path' (89772229) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/surface_driver/application/layout_tests.rs:112:10:
+    called `Result::unwrap()` on an `Err` value: NativeRuntimeError { source: HostProtocol(NativeAdmissionRouteChanged(SurfaceId(1))) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.010s] (502/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::document::restore_prepares_and_publishes_every_shared_root_together_after_a_dropped_attempt
+  stdout ───
+
+    running 1 test
+    test surface_driver::application::layout_tests::shared_window::document::restore_prepares_and_publishes_every_shared_root_together_after_a_dropped_attempt ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::application::layout_tests::shared_window::document::restore_prepares_and_publishes_every_shared_root_together_after_a_dropped_attempt
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'surface_driver::application::layout_tests::shared_window::document::restore_prepares_and_publishes_every_shared_root_together_after_a_dropped_attempt' (89772232) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/retirement.rs:302:9:
+    assertion failed: !self.has_quiescence_owner(binding)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (503/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::document::restore_rebinding_the_representative_keeps_the_shared_sibling_on_its_real_window
+  stdout ───
+
+    running 1 test
+    test surface_driver::application::layout_tests::shared_window::document::restore_rebinding_the_representative_keeps_the_shared_sibling_on_its_real_window ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::application::layout_tests::shared_window::document::restore_rebinding_the_representative_keeps_the_shared_sibling_on_its_real_window
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'surface_driver::application::layout_tests::shared_window::document::restore_rebinding_the_representative_keeps_the_shared_sibling_on_its_real_window' (89772235) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/retirement.rs:302:9:
+    assertion failed: !self.has_quiescence_owner(binding)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.010s] (504/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::representative_root_rebinding_continues_its_shared_sibling_in_the_same_batch
+  stdout ───
+
+    running 1 test
+    test surface_driver::application::layout_tests::shared_window::representative_root_rebinding_continues_its_shared_sibling_in_the_same_batch ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::application::layout_tests::shared_window::representative_root_rebinding_continues_its_shared_sibling_in_the_same_batch
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'surface_driver::application::layout_tests::shared_window::representative_root_rebinding_continues_its_shared_sibling_in_the_same_batch' (89772238) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/retirement.rs:302:9:
+    assertion failed: !self.has_quiescence_owner(binding)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.010s] (505/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::reset_replaces_the_whole_shared_root_roster_only_after_commit
+  stdout ───
+
+    running 1 test
+    test surface_driver::application::layout_tests::shared_window::reset_replaces_the_whole_shared_root_roster_only_after_commit ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::application::layout_tests::shared_window::reset_replaces_the_whole_shared_root_roster_only_after_commit
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'surface_driver::application::layout_tests::shared_window::reset_replaces_the_whole_shared_root_roster_only_after_commit' (89772241) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/retirement.rs:302:9:
+    assertion failed: !self.has_quiescence_owner(binding)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.025s] (534/624) egui_dockspace_native surface_driver::composition::tests::product_menu_preserves_placement_anchor_scale_hit_accessibility_and_output_proof
+  stdout ───
+
+    running 1 test
+    test surface_driver::composition::tests::product_menu_preserves_placement_anchor_scale_hit_accessibility_and_output_proof ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::composition::tests::product_menu_preserves_placement_anchor_scale_hit_accessibility_and_output_proof
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'surface_driver::composition::tests::product_menu_preserves_placement_anchor_scale_hit_accessibility_and_output_proof' (89772350) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/surface_driver/composition.rs:444:17:
+    assertion `left == right` failed: the product command's AccessKit bounds must match its actual pixels
+      left: Rect { x0: 318.5, y0: 92.5, x1: 516.5, y1: 122.5 }
+     right: Rect { x0: 39.5, y0: 10.0, x1: 89.421875, y1: 40.0 }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.025s] (535/624) egui_dockspace_native surface_driver::composition::tests::product_menu_uses_the_full_viewport_constraint_for_a_clipped_edge_surface
+  stdout ───
+
+    running 1 test
+    test surface_driver::composition::tests::product_menu_uses_the_full_viewport_constraint_for_a_clipped_edge_surface ... FAILED
+
+    failures:
+
+    failures:
+        surface_driver::composition::tests::product_menu_uses_the_full_viewport_constraint_for_a_clipped_edge_surface
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'surface_driver::composition::tests::product_menu_uses_the_full_viewport_constraint_for_a_clipped_edge_surface' (89772353) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/surface_driver/composition.rs:444:17:
+    assertion `left == right` failed: the product command's AccessKit bounds must match its actual pixels
+      left: Rect { x0: 439.5, y0: 42.0, x1: 637.5, y1: 72.0 }
+     right: Rect { x0: 100.5, y0: 10.5, x1: 150.421875, y1: 40.5 }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.008s] (560/624) egui_dockspace_native viewport_map::continuation_tests::changed_placement_generation_continues_one_window_with_its_complete_exact_roster
+  stdout ───
+
+    running 1 test
+    test viewport_map::continuation_tests::changed_placement_generation_continues_one_window_with_its_complete_exact_roster ... FAILED
+
+    failures:
+
+    failures:
+        viewport_map::continuation_tests::changed_placement_generation_continues_one_window_with_its_complete_exact_roster
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'viewport_map::continuation_tests::changed_placement_generation_continues_one_window_with_its_complete_exact_roster' (89772431) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/viewport_map/continuation_tests.rs:68:10:
+    called `Result::unwrap()` on an `Err` value: DockspaceRuntimeError { source: Native(CapabilityRosterUnavailable) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (561/624) egui_dockspace_native viewport_map::continuation_tests::continuation_rejects_another_window_domain_and_a_later_epoch_without_rebinding_the_route
+  stdout ───
+
+    running 1 test
+    test viewport_map::continuation_tests::continuation_rejects_another_window_domain_and_a_later_epoch_without_rebinding_the_route ... FAILED
+
+    failures:
+
+    failures:
+        viewport_map::continuation_tests::continuation_rejects_another_window_domain_and_a_later_epoch_without_rebinding_the_route
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 601 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'viewport_map::continuation_tests::continuation_rejects_another_window_domain_and_a_later_epoch_without_rebinding_the_route' (89772434) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/viewport_map/continuation_tests.rs:68:10:
+    called `Result::unwrap()` on an `Err` value: DockspaceRuntimeError { source: Native(CapabilityRosterUnavailable) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [  16.701s] 624 tests run: 603 passed, 21 failed, 1 skipped
+        FAIL [   0.013s] ( 32/624) egui_dockspace_native coordinator::tests::budget::pending_native_suffix_does_not_delay_committed_local_coordinate_refresh
+        FAIL [   0.012s] ( 68/624) egui_dockspace_native coordinator::tests::first_live_cancellation::first_live_report_refreshes_local_capability_without_a_queued_snapshot
+        FAIL [   0.010s] (132/624) egui_dockspace_native coordinator::tests::local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_snapshot
+        FAIL [   0.012s] (134/624) egui_dockspace_native coordinator::tests::magnetic_targeting::committed_release_survives_late_shift_and_a_dropped_successor_output
+        FAIL [   0.011s] (167/624) egui_dockspace_native coordinator::tests::replacement::destroyed_owned_child_retains_replacement_on_the_existing_viewport
+        FAIL [   0.011s] (168/624) egui_dockspace_native coordinator::tests::replacement::shutdown_cancels_unadmitted_replacement_without_retiring_its_predecessor
+        FAIL [   0.008s] (237/624) egui_dockspace_native coordinator::tests::workspace_replacement::shared_root_reset_settles_one_window_resource_and_every_exact_predecessor
+        FAIL [   0.012s] (458/624) egui_dockspace_native receiver::focus_tests::minimized_surface_keeps_editor_focus_without_presented_receiver_authority
+        FAIL [   0.019s] (461/624) egui_dockspace_native receiver::no_frame_tests::application_only_no_frame_retires_both_presented_placements_after_the_window_terminal
+        FAIL [   0.009s] (490/624) egui_dockspace_native surface_driver::application::layout_tests::persistence::capture_and_external_restore_publish_known_and_new_keys_without_replacing_panes
+        FAIL [   0.009s] (495/624) egui_dockspace_native surface_driver::application::layout_tests::persistence::root_rebinding_conflicts_leave_the_host_running_and_release_the_command_slot
+        FAIL [   0.009s] (500/624) egui_dockspace_native surface_driver::application::layout_tests::queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic_identities
+        FAIL [   0.010s] (501/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::document::restore_before_the_first_root_registration_keeps_the_singleton_submission_path
+        FAIL [   0.010s] (502/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::document::restore_prepares_and_publishes_every_shared_root_together_after_a_dropped_attempt
+        FAIL [   0.009s] (503/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::document::restore_rebinding_the_representative_keeps_the_shared_sibling_on_its_real_window
+        FAIL [   0.010s] (504/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::representative_root_rebinding_continues_its_shared_sibling_in_the_same_batch
+        FAIL [   0.010s] (505/624) egui_dockspace_native surface_driver::application::layout_tests::shared_window::reset_replaces_the_whole_shared_root_roster_only_after_commit
+        FAIL [   0.025s] (534/624) egui_dockspace_native surface_driver::composition::tests::product_menu_preserves_placement_anchor_scale_hit_accessibility_and_output_proof
+        FAIL [   0.025s] (535/624) egui_dockspace_native surface_driver::composition::tests::product_menu_uses_the_full_viewport_constraint_for_a_clipped_edge_surface
+        FAIL [   0.008s] (560/624) egui_dockspace_native viewport_map::continuation_tests::changed_placement_generation_continues_one_window_with_its_complete_exact_roster
+        FAIL [   0.009s] (561/624) egui_dockspace_native viewport_map::continuation_tests::continuation_rejects_another_window_domain_and_a_later_epoch_without_rebinding_the_route
+error: test run failed

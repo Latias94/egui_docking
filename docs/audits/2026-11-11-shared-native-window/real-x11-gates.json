@@ -1,0 +1,275 @@
+[
+  {
+    "name": "x11-window-manager",
+    "command": [
+      "xprop",
+      "-root",
+      "_NET_SUPPORTING_WM_CHECK",
+      "_NET_WORKAREA"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:47.469726+00:00",
+    "ended": "2026-11-10T19:53:47.475375+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "linux-native-build",
+    "command": [
+      "cargo",
+      "test",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "-p",
+      "egui_dockspace_native",
+      "--lib",
+      "--all-features",
+      "--no-run",
+      "--locked",
+      "--target-dir",
+      "/native-target",
+      "--message-format=json-render-diagnostics"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:47.475829+00:00",
+    "ended": "2026-11-10T19:53:47.808398+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_old_output_cannot_revoke_successor_preparation_and_its_exact_created_receipt",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "mailbox::preparation_output_tests::real_old_output_cannot_revoke_successor_preparation_and_its_exact_created_receipt",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:47.810967+00:00",
+    "ended": "2026-11-10T19:53:48.036935+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_eframe_actual_passes_publish_the_owned_update_once_after_output_hooks",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "surface_driver::tests::owned_update::real_eframe_actual_passes_publish_the_owned_update_once_after_output_hooks",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:48.037757+00:00",
+    "ended": "2026-11-10T19:53:48.320597+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_eframe_style_publishes_with_core_geometry_after_the_terminal_pass",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "surface_driver::tests::owned_update::real_eframe_style_publishes_with_core_geometry_after_the_terminal_pass",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:48.321333+00:00",
+    "ended": "2026-11-10T19:53:48.543994+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_eframe_output_capacity_retains_framebuffer_and_resumes_pane_callbacks",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "surface_driver::tests::output_backpressure::real_eframe_output_capacity_retains_framebuffer_and_resumes_pane_callbacks",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:48.544668+00:00",
+    "ended": "2026-11-10T19:53:48.823046+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_native_ui_ingress_retries_acknowledges_bounds_retires_and_deduplicates_actual_passes",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "pass_actions::tests::real_native_ui_ingress_retries_acknowledges_bounds_retires_and_deduplicates_actual_passes",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:48.823982+00:00",
+    "ended": "2026-11-10T19:53:49.046136+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_eframe_output_capacity_preserves_text_until_the_editor_resumes",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_until_the_editor_resumes",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:49.047032+00:00",
+    "ended": "2026-11-10T19:53:49.379379+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_eframe_output_capacity_preserves_text_after_native_resize",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_after_native_resize",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:49.380209+00:00",
+    "ended": "2026-11-10T19:53:49.770509+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_shared_text_capacity",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "surface_driver::tests::output_backpressure::real_eframe_shared_output_capacity_defers_text_until_both_surface_slots_are_available",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:49.771229+00:00",
+    "ended": "2026-11-10T19:53:50.106658+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_dynamic_roster_text_capacity",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_when_the_root_roster_expands_after_admission",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:50.107329+00:00",
+    "ended": "2026-11-10T19:53:50.457810+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "real_ordinary_entry_text_capacity",
+    "command": [
+      "/native-target/debug/deps/egui_dockspace_native-cf94b94abc92f195",
+      "--exact",
+      "surface_driver::tests::output_backpressure::real_eframe_output_capacity_preserves_text_when_shared_root_switches_to_the_ordinary_entry",
+      "--test-threads=1",
+      "--include-ignored",
+      "--nocapture"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:50.458672+00:00",
+    "ended": "2026-11-10T19:53:50.783089+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "linux-smoke-build",
+    "command": [
+      "cargo",
+      "build",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "-p",
+      "egui-native-smoke",
+      "--bin",
+      "egui-native-smoke",
+      "--bin",
+      "shared_window",
+      "--locked",
+      "--target-dir",
+      "/native-target"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:50.783666+00:00",
+    "ended": "2026-11-10T19:53:53.843928+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "native-redock-bounded",
+    "command": [
+      "/native-target/debug/egui-native-smoke"
+    ],
+    "environment_override": {
+      "EGUI_DOCKSPACE_NATIVE_SMOKE_STORAGE": "bounded"
+    },
+    "started": "2026-11-10T19:53:53.844623+00:00",
+    "ended": "2026-11-10T19:53:54.475223+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "shared-window-journey",
+    "command": [
+      "/native-target/debug/shared_window"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:53:54.475887+00:00",
+    "ended": "2026-11-10T19:54:15.720891+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "shared-window-late-discard",
+    "command": [
+      "/native-target/debug/shared_window",
+      "--late-discard"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:54:15.721754+00:00",
+    "ended": "2026-11-10T19:54:36.831269+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "linux-editor-build",
+    "command": [
+      "cargo",
+      "build",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "-p",
+      "egui_dockspace_native",
+      "--example",
+      "basic",
+      "--all-features",
+      "--locked",
+      "--target-dir",
+      "/native-target"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:54:36.832752+00:00",
+    "ended": "2026-11-10T19:54:37.006024+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "actual-editor-lifecycle",
+    "command": [
+      "python3",
+      "integration/egui-native-smoke/qualify_editor.py",
+      "/native-target/debug/examples/basic"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:54:37.006840+00:00",
+    "ended": "2026-11-10T19:54:55.763900+00:00",
+    "exit_code": 0
+  }
+]

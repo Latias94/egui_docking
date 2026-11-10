@@ -15,6 +15,52 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-11 shared native window composition
+
+Baseline: `78c1eaa`. Core and public-host implementation: `270d81b`; native
+adapter and real-window consumer: `3136d5e`. The
+[G01 qualification record](audits/2026-11-11-shared-native-window.md) retains the
+complete acceptance mapping, independent review dispositions, source hashes,
+exact serial commands and real X11 receipts. This completes the approved
+window/placement ownership refactor and supersedes the pending G01 status in
+the earlier ownership and command checkpoints below.
+
+One real external Root window hosts independent logical surfaces with separate
+layout sizes, physical origins, scales and clips. One Joined input order
+projects captured source and actual hover independently. Window-hit selection
+requires the framework's exact presented artifact. Physical facts, close and
+resource lifetime belong to the window; output, receivers and recovery anchors
+retain exact placement scope. One native output token owns the complete
+final-pass collection. Atomic Allow/Defer/Veto, first-live rosters, candidate
+rollback, shared Root continuation and each placement's retirement obligations
+pass their public-host and native component gates.
+
+All sixteen final serial gates pass: core/conformance 2,164 with three existing
+skips, public persistence host 417, egui adapter 186, official consumer 24,
+product 114 default / 119 persistence, and native workspace 633 with one
+existing skip. Correctness/suspicious Clippy, strict documentation, eleven
+doctests, formatting and the renderer-neutral dependency boundary pass. The
+four new public shared-window suites contribute 27 passing tests.
+
+All eighteen real Linux X11 gates pass. Ten isolated actual-eframe tests include
+three new text-capacity probes for shared output admission, same-run roster
+expansion and switching to the ordinary Root entry. The bounded 4 MiB redock
+profile passes. Both new shared-window runs complete A-to-B, A-to-Child-to-B,
+changed B origin/scale, whole-Root reset and WM close, normally and after
+discarded passes. Existing complete editor drivers also pass: twelve real
+focused edits, six destroyed Child lifetimes, preserved original Root through
+rebinding and final quiescence.
+
+The new physical profile is Xvfb/Openbox, eframe/Glow, one 1920x1080 screen and
+native DPI one. The two Root placements use scales 1 and 1.25, then B changes
+to 1.4. OS DPI changes, physical Defer/Veto dialogs and arbitrary shared-window
+overlay negatives remain protocol/component coverage, not new platform claims.
+No Windows, macOS, Wayland, multi-screen or new ImGui timing qualification is
+inferred. Intermediate observer failures and their diagnosed coordinate,
+Unicode, snapshot-publication and output-viewport fixes remain separate from
+the successful final receipts. All changes are local; no upstream framework
+pull request or remote publication is part of this work.
+
 ## 2026-11-10 native window and surface ownership refactor
 
 Implementation: `1718683`, based on `205195d`. The

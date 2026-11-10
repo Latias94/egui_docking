@@ -1,0 +1,373 @@
+   Compiling serde_json v1.0.154
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling dhat v0.3.3
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 22s
+────────────
+ Nextest run ID 61d4250d-d8a0-4a77-9aad-515553f292a3 with nextest profile: default
+    Starting 414 tests across 74 binaries
+        FAIL [   0.010s] (122/414) dockspace-host-harness::magnetic_targeting marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition
+  stdout ───
+
+    running 1 test
+    test marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition ... FAILED
+
+    failures:
+
+    failures:
+        marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition' (89663638) panicked at tests/magnetic_targeting.rs:53:39:
+    called `Result::unwrap()` on an `Err` value: DockspaceRuntimeError { source: Engine(ReductionCauseInvariant { detail: "validated first-live roster lost its retained coordinate capture" }) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.018s] (155/414) dockspace-host-harness::native_document_restore rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_late_facts
+  stdout ───
+
+    running 1 test
+    test rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_late_facts ... FAILED
+
+    failures:
+
+    failures:
+        rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_late_facts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_late_facts' (89663773) panicked at tests/native_document_restore.rs:1217:5:
+    assertion failed: host.session.native_local_coordinates(host.root).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.013s] (156/414) dockspace-host-harness::native_document_restore restored_child_keeps_its_full_forest_through_preparation_and_first_live_barriers
+  stdout ───
+
+    running 1 test
+    test restored_child_keeps_its_full_forest_through_preparation_and_first_live_barriers ... FAILED
+
+    failures:
+
+    failures:
+        restored_child_keeps_its_full_forest_through_preparation_and_first_live_barriers
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'restored_child_keeps_its_full_forest_through_preparation_and_first_live_barriers' (89663776) panicked at tests/native_document_restore.rs:2143:5:
+    assertion failed: host.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (174/414) dockspace-host-harness::native_local_pointer placement_mapping_only_changes_with_committed_snapshots_and_preserves_window_coordinates
+  stdout ───
+
+    running 1 test
+    test placement_mapping_only_changes_with_committed_snapshots_and_preserves_window_coordinates ... FAILED
+
+    failures:
+
+    failures:
+        placement_mapping_only_changes_with_committed_snapshots_and_preserves_window_coordinates
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'placement_mapping_only_changes_with_committed_snapshots_and_preserves_window_coordinates' (89663833) panicked at tests/native_local_pointer.rs:883:5:
+    assertion failed: session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.015s] (217/414) dockspace-host-harness::native_surface_creation cancellation_retry_keeps_its_owner_and_rejects_a_late_create_ack_for_the_new_incarnation
+  stdout ───
+
+    running 1 test
+    test cancellation_retry_keeps_its_owner_and_rejects_a_late_create_ack_for_the_new_incarnation ... FAILED
+
+    failures:
+
+    failures:
+        cancellation_retry_keeps_its_owner_and_rejects_a_late_create_ack_for_the_new_incarnation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'cancellation_retry_keeps_its_owner_and_rejects_a_late_create_ack_for_the_new_incarnation' (89663984) panicked at tests/native_surface_creation.rs:159:9:
+    assertion failed: self.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (219/414) dockspace-host-harness::native_surface_creation create_ack_survives_unknown_preparation_or_coordinates
+  stdout ───
+
+    running 1 test
+    test create_ack_survives_unknown_preparation_or_coordinates ... FAILED
+
+    failures:
+
+    failures:
+        create_ack_survives_unknown_preparation_or_coordinates
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'create_ack_survives_unknown_preparation_or_coordinates' (89663990) panicked at tests/native_surface_creation.rs:159:9:
+    assertion failed: self.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.010s] (220/414) dockspace-host-harness::native_surface_creation direct_prepared_first_live_admits_the_existing_surface_without_changing_its_topology
+  stdout ───
+
+    running 1 test
+    test direct_prepared_first_live_admits_the_existing_surface_without_changing_its_topology ... FAILED
+
+    failures:
+
+    failures:
+        direct_prepared_first_live_admits_the_existing_surface_without_changing_its_topology
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'direct_prepared_first_live_admits_the_existing_surface_without_changing_its_topology' (89663993) panicked at tests/native_surface_creation.rs:159:9:
+    assertion failed: self.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.010s] (221/414) dockspace-host-harness::native_surface_creation dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_once
+  stdout ───
+
+    running 1 test
+    test dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_once ... FAILED
+
+    failures:
+
+    failures:
+        dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_once
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_once' (89663996) panicked at tests/native_surface_creation.rs:159:9:
+    assertion failed: self.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (222/414) dockspace-host-harness::native_surface_creation dropped_and_late_first_live_outputs_cannot_restore_revoked_native_readiness
+  stdout ───
+
+    running 1 test
+    test dropped_and_late_first_live_outputs_cannot_restore_revoked_native_readiness ... FAILED
+
+    failures:
+
+    failures:
+        dropped_and_late_first_live_outputs_cannot_restore_revoked_native_readiness
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'dropped_and_late_first_live_outputs_cannot_restore_revoked_native_readiness' (89664001) panicked at tests/native_surface_creation.rs:159:9:
+    assertion failed: self.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.017s] (224/414) dockspace-host-harness::native_surface_creation identical_prepared_snapshot_preserves_inflight_first_live
+  stdout ───
+
+    running 1 test
+    test identical_prepared_snapshot_preserves_inflight_first_live ... FAILED
+
+    failures:
+
+    failures:
+        identical_prepared_snapshot_preserves_inflight_first_live
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'identical_prepared_snapshot_preserves_inflight_first_live' (89664008) panicked at tests/native_surface_creation.rs:159:9:
+    assertion failed: self.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (226/414) dockspace-host-harness::native_surface_creation late_presented_and_destroyed_results_for_a_cancelled_initial_owner_cannot_admit_a_new_binding
+  stdout ───
+
+    running 1 test
+    test late_presented_and_destroyed_results_for_a_cancelled_initial_owner_cannot_admit_a_new_binding ... FAILED
+
+    failures:
+
+    failures:
+        late_presented_and_destroyed_results_for_a_cancelled_initial_owner_cannot_admit_a_new_binding
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'late_presented_and_destroyed_results_for_a_cancelled_initial_owner_cannot_admit_a_new_binding' (89664014) panicked at tests/native_surface_creation.rs:159:9:
+    assertion failed: self.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.010s] (227/414) dockspace-host-harness::native_surface_creation prepared_existing_surface_requires_ready_geometry_and_semantic_first_live
+  stdout ───
+
+    running 1 test
+    test prepared_existing_surface_requires_ready_geometry_and_semantic_first_live ... FAILED
+
+    failures:
+
+    failures:
+        prepared_existing_surface_requires_ready_geometry_and_semantic_first_live
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'prepared_existing_surface_requires_ready_geometry_and_semantic_first_live' (89664017) panicked at tests/native_surface_creation.rs:159:9:
+    assertion failed: self.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (228/414) dockspace-host-harness::native_surface_creation typed_creation_rejections_and_dispatch_failure_preserve_the_complete_surface
+  stdout ───
+
+    running 1 test
+    test typed_creation_rejections_and_dispatch_failure_preserve_the_complete_surface ... FAILED
+
+    failures:
+
+    failures:
+        typed_creation_rejections_and_dispatch_failure_preserve_the_complete_surface
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'typed_creation_rejections_and_dispatch_failure_preserve_the_complete_surface' (89664020) panicked at tests/native_surface_creation.rs:159:9:
+    assertion failed: self.session.native_local_coordinates(binding).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (255/414) dockspace-host-harness::presentation_admission_scope first_pending_output_after_deferred_selection_admits_only_unchanged_receivers
+  stdout ───
+
+    running 1 test
+    test first_pending_output_after_deferred_selection_admits_only_unchanged_receivers ... FAILED
+
+    failures:
+
+    failures:
+        first_pending_output_after_deferred_selection_admits_only_unchanged_receivers
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'first_pending_output_after_deferred_selection_admits_only_unchanged_receivers' (89664106) panicked at tests/presentation_admission_scope.rs:120:52:
+    called `Result::unwrap()` on an `Err` value: DockspaceRuntimeError { source: Engine(ReductionCauseInvariant { detail: "validated first-live roster lost its retained coordinate capture" }) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.052s] (319/414) dockspace-host-harness::replacement_native_settlement document_restore::document_restore_preserves_native_snapshot_and_focus_without_authorizing_late_old_facts
+  stdout ───
+
+    running 1 test
+    test document_restore::document_restore_preserves_native_snapshot_and_focus_without_authorizing_late_old_facts ... FAILED
+
+    failures:
+
+    failures:
+        document_restore::document_restore_preserves_native_snapshot_and_focus_without_authorizing_late_old_facts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.05s
+
+  stderr ───
+
+    thread 'document_restore::document_restore_preserves_native_snapshot_and_focus_without_authorizing_late_old_facts' (89664325) panicked at tests/replacement_native_settlement.rs:485:9:
+    assertion failed: session.native_local_coordinates(successor).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.008s] (320/414) dockspace-host-harness::replacement_native_settlement layout_reset_preserves_native_snapshot_settlement_and_retry_watermarks
+  stdout ───
+
+    running 1 test
+    test layout_reset_preserves_native_snapshot_settlement_and_retry_watermarks ... FAILED
+
+    failures:
+
+    failures:
+        layout_reset_preserves_native_snapshot_settlement_and_retry_watermarks
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'layout_reset_preserves_native_snapshot_settlement_and_retry_watermarks' (89664328) panicked at tests/replacement_native_settlement.rs:239:5:
+    assertion failed: session.native_local_coordinates(successor).is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.008s] (352/414) dockspace-host-harness::shared_window_input first_live_child_returns_to_a_scaled_shared_placement_through_one_handoff_event
+  stdout ───
+
+    running 1 test
+    test first_live_child_returns_to_a_scaled_shared_placement_through_one_handoff_event ... FAILED
+
+    failures:
+
+    failures:
+        first_live_child_returns_to_a_scaled_shared_placement_through_one_handoff_event
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'first_live_child_returns_to_a_scaled_shared_placement_through_one_handoff_event' (89664427) panicked at tests/shared_window_input.rs:751:63:
+    called `Result::unwrap()` on an `Err` value: []
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.012s] (356/414) dockspace-host-harness::shared_window_layout an_explicit_initial_whole_client_placement_keeps_its_layout_after_window_resize
+  stdout ───
+
+    running 1 test
+    test an_explicit_initial_whole_client_placement_keeps_its_layout_after_window_resize ... FAILED
+
+    failures:
+
+    failures:
+        an_explicit_initial_whole_client_placement_keeps_its_layout_after_window_resize
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'an_explicit_initial_whole_client_placement_keeps_its_layout_after_window_resize' (89664439) panicked at tests/shared_window_layout.rs:122:5:
+    assertion `left == right` failed
+      left: Some(NativeSurfacePlacement { surface: SurfaceId(1), size: LogicalSize { width: 1400.0, height: 1000.0 }, origin: PhysicalPoint { x: 0.0, y: 0.0 }, scale_factor: ScaleFactor(1.0), clip: PhysicalRect { min: PhysicalPoint { x: 0.0, y: 0.0 }, max: PhysicalPoint { x: 1400.0, y: 1000.0 } } })
+     right: Some(NativeSurfacePlacement { surface: SurfaceId(1), size: LogicalSize { width: 1200.0, height: 900.0 }, origin: PhysicalPoint { x: 0.0, y: 0.0 }, scale_factor: ScaleFactor(1.0), clip: PhysicalRect { min: PhysicalPoint { x: 0.0, y: 0.0 }, max: PhysicalPoint { x: 1200.0, y: 900.0 } } })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [  40.901s] 414 tests run: 396 passed, 18 failed, 0 skipped
+        FAIL [   0.010s] (122/414) dockspace-host-harness::magnetic_targeting marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition
+        FAIL [   0.018s] (155/414) dockspace-host-harness::native_document_restore rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_late_facts
+        FAIL [   0.013s] (156/414) dockspace-host-harness::native_document_restore restored_child_keeps_its_full_forest_through_preparation_and_first_live_barriers
+        FAIL [   0.009s] (174/414) dockspace-host-harness::native_local_pointer placement_mapping_only_changes_with_committed_snapshots_and_preserves_window_coordinates
+        FAIL [   0.015s] (217/414) dockspace-host-harness::native_surface_creation cancellation_retry_keeps_its_owner_and_rejects_a_late_create_ack_for_the_new_incarnation
+        FAIL [   0.009s] (219/414) dockspace-host-harness::native_surface_creation create_ack_survives_unknown_preparation_or_coordinates
+        FAIL [   0.010s] (220/414) dockspace-host-harness::native_surface_creation direct_prepared_first_live_admits_the_existing_surface_without_changing_its_topology
+        FAIL [   0.010s] (221/414) dockspace-host-harness::native_surface_creation dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_once
+        FAIL [   0.009s] (222/414) dockspace-host-harness::native_surface_creation dropped_and_late_first_live_outputs_cannot_restore_revoked_native_readiness
+        FAIL [   0.017s] (224/414) dockspace-host-harness::native_surface_creation identical_prepared_snapshot_preserves_inflight_first_live
+        FAIL [   0.009s] (226/414) dockspace-host-harness::native_surface_creation late_presented_and_destroyed_results_for_a_cancelled_initial_owner_cannot_admit_a_new_binding
+        FAIL [   0.010s] (227/414) dockspace-host-harness::native_surface_creation prepared_existing_surface_requires_ready_geometry_and_semantic_first_live
+        FAIL [   0.009s] (228/414) dockspace-host-harness::native_surface_creation typed_creation_rejections_and_dispatch_failure_preserve_the_complete_surface
+        FAIL [   0.009s] (255/414) dockspace-host-harness::presentation_admission_scope first_pending_output_after_deferred_selection_admits_only_unchanged_receivers
+        FAIL [   0.052s] (319/414) dockspace-host-harness::replacement_native_settlement document_restore::document_restore_preserves_native_snapshot_and_focus_without_authorizing_late_old_facts
+        FAIL [   0.008s] (320/414) dockspace-host-harness::replacement_native_settlement layout_reset_preserves_native_snapshot_settlement_and_retry_watermarks
+        FAIL [   0.008s] (352/414) dockspace-host-harness::shared_window_input first_live_child_returns_to_a_scaled_shared_placement_through_one_handoff_event
+        FAIL [   0.012s] (356/414) dockspace-host-harness::shared_window_layout an_explicit_initial_whole_client_placement_keeps_its_layout_after_window_resize
+error: test run failed

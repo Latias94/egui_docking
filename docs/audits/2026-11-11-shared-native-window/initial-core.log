@@ -1,0 +1,194 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+warning: unused import: `NativeLocalPointerRoute`
+   --> crates/dockspace/src/engine.rs:184:5
+    |
+184 |     NativeLocalPointerRoute, PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `NativeLocalPointerRoute`
+  --> crates/dockspace/src/interaction.rs:37:52
+   |
+37 |     DesktopRouteValidation, HostLocalPointerRoute, NativeLocalPointerRoute, PointerCaptureOwner,
+   |                                                    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `binding`, `observation_generation`, and `outer_bounds` are never used
+   --> crates/dockspace/src/coordinates.rs:285:25
+    |
+284 | impl WindowCoordinateSnapshot {
+    | ----------------------------- methods in this implementation
+285 |     pub(crate) const fn binding(self) -> WindowBinding { self.binding }
+    |                         ^^^^^^^
+286 |     pub(crate) const fn coordinate_generation(self) -> CoordinateGeneration { self.coordinate_generation }
+287 |     pub(crate) const fn observation_generation(self) -> CoordinateObservationGeneration { self.observation_generation }
+    |                         ^^^^^^^^^^^^^^^^^^^^^^
+...
+292 |     pub(crate) const fn outer_bounds(self) -> Option<PhysicalRect> { self.outer_bounds }
+    |                         ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `presented_artifact_for_test` is never used
+    --> crates/dockspace/src/runtime/native/tests.rs:1977:8
+     |
+1976 | impl DockspaceSession {
+     | --------------------- method in this implementation
+1977 |     fn presented_artifact_for_test(&self, surface: SurfaceId) -> Option<crate::runtime::SurfacePresentationArtifact> {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `presented_artifact_for_test` is never used
+   --> crates/dockspace/src/runtime/presentation.rs:529:19
+    |
+527 | impl RuntimePresentationState {
+    | ----------------------------- method in this implementation
+528 |     #[cfg(test)]
+529 |     pub(super) fn presented_artifact_for_test(&self, surface: SurfaceId) -> Option<SurfacePresentationArtifact> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `coordinate_generation`, `presentation_observation`, `create_preparation`, `renderer_prepared_since`, and `close_observations` are never used
+   --> crates/dockspace/src/viewport_registry.rs:132:25
+    |
+125 | impl WindowRecordView<'_> {
+    | ------------------------- methods in this implementation
+...
+132 |     pub(crate) const fn coordinate_generation(self) -> CoordinateGeneration { self.record.coordinate_generation }
+    |                         ^^^^^^^^^^^^^^^^^^^^^
+...
+146 |     pub(crate) const fn presentation_observation(self) -> Option<WindowPresentationObservation> { self.record.presentation_observat...
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^
+147 |     pub(crate) const fn create_preparation(self) -> Option<WindowCreatePreparationObservation> { self.record.create_preparation_obs...
+    |                         ^^^^^^^^^^^^^^^^^^
+148 |     pub(crate) const fn renderer_prepared_since(self) -> Option<CoordinateObservationGeneration> { self.record.create_preparation_o...
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^
+149 |     pub(crate) const fn close_observations(self) -> WindowCloseObservationStream { self.record.close_observations }
+    |                         ^^^^^^^^^^^^^^^^^^
+
+warning: methods `is_observed` and `native_close_edge_disposition` are never used
+   --> crates/dockspace/src/viewport_registry.rs:342:25
+    |
+163 | impl ViewportRecord<'_> {
+    | ----------------------- methods in this implementation
+...
+342 |     pub(crate) const fn is_observed(self) -> bool {
+    |                         ^^^^^^^^^^^
+...
+368 |     pub(crate) fn native_close_edge_disposition(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `dockspace` (lib test) generated 7 warnings (run `cargo fix --lib -p dockspace --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.16s
+────────────
+ Nextest run ID a3545aaf-f2d8-4820-9b6b-def327f867a8 with nextest profile: default
+    Starting 109 tests across 1 binary (2016 tests skipped)
+        PASS [   0.009s] (  1/109) dockspace engine::native_admission::tests::first_live_revocation_clears_the_whole_window_and_rejects_prior_output
+        PASS [   0.007s] (  2/109) dockspace engine::native_admission::tests::first_live_roster_rejects_partial_or_foreign_replacement_without_mutation
+        PASS [   0.007s] (  3/109) dockspace engine::native_admission::tests::mismatched_binding_cannot_consume_the_current_barrier
+        PASS [   0.006s] (  4/109) dockspace engine::native_admission::tests::mismatched_resource_cannot_consume_the_current_barrier
+        PASS [   0.007s] (  5/109) dockspace engine::native_admission::tests::native_create_barrier_is_unique_per_saga
+        PASS [   0.007s] (  6/109) dockspace engine::native_admission::tests::window_first_live_requires_each_exact_member_above_its_own_floor
+        PASS [   0.010s] (  7/109) dockspace engine::surface_runtime::window_close_tests::changing_and_restoring_window_membership_cannot_revive_a_close_scope
+        PASS [   0.006s] (  8/109) dockspace engine::surface_runtime::window_close_tests::one_sibling_veto_keeps_the_complete_window_close_unapproved
+        PASS [   0.008s] (  9/109) dockspace engine::surface_runtime::window_close_tests::window_content_close_keeps_an_empty_central_sibling_in_the_exact_scope
+        PASS [   0.006s] ( 10/109) dockspace engine::surface_runtime::window_close_tests::window_content_close_waits_for_all_siblings_and_prepares_one_draft
+        PASS [   0.006s] ( 11/109) dockspace frame::binding_cleanup::tests::begin_rejects_token_and_cleanup_effect_aliases
+        PASS [   0.005s] ( 12/109) dockspace frame::binding_cleanup::tests::cancelled_create_failure_finishes_only_its_exact_unobserved_appearance_wait
+        PASS [   0.006s] ( 13/109) dockspace frame::binding_cleanup::tests::cancelled_create_failure_preserves_observed_windows_and_destructive_lineage
+        PASS [   0.007s] ( 14/109) dockspace frame::binding_cleanup::tests::cleanup_lineage_retains_only_the_destructive_predecessor_and_current_observer
+        PASS [   0.005s] ( 15/109) dockspace frame::binding_cleanup::tests::cleanup_observation_alias_rejection_is_atomic
+        PASS [   0.076s] ( 16/109) dockspace frame::binding_cleanup::tests::exact_quiescence_compacts_same_provider_guards_without_cross_binding_fallthrough
+        PASS [   0.006s] ( 17/109) dockspace frame::binding_cleanup::tests::provider_replacement_rebases_retired_binding_observation_generations
+        PASS [   0.072s] ( 18/109) dockspace frame::binding_cleanup::tests::quiesced_producer_compacts_only_its_terminal_binding_guards
+        PASS [   0.006s] ( 19/109) dockspace frame::binding_cleanup::tests::retention_accounts_for_active_quarantine_and_cleanup_indexes
+        PASS [   0.006s] ( 20/109) dockspace frame::binding_cleanup::tests::same_token_from_another_window_lifetime_cannot_finish_shared_retirement
+        PASS [   0.006s] ( 21/109) dockspace frame::binding_cleanup::tests::shared_transport_observations_preserve_exact_cleanup_effect_lineage
+        PASS [   0.005s] ( 22/109) dockspace frame::binding_cleanup::tests::shared_window_retirement_observes_the_original_transport_and_keeps_its_exact_owner
+        PASS [   0.005s] ( 23/109) dockspace frame::binding_cleanup::tests::terminal_destruction_releases_token_and_complete_cleanup_lineage
+        PASS [   0.006s] ( 24/109) dockspace viewport_focus::tests::acknowledged_lifecycle_barrier_with_quarantined_target_reasserts_winner
+        PASS [   0.005s] ( 25/109) dockspace viewport_focus::tests::activation_generation_exhaustion_is_atomic
+        PASS [   0.006s] ( 26/109) dockspace viewport_focus::tests::activation_without_a_valid_observation_stream_stays_suppressed
+        PASS [   0.006s] ( 27/109) dockspace viewport_focus::tests::cancelling_a_newer_native_reservation_restores_the_older_owner
+        PASS [   0.005s] ( 28/109) dockspace viewport_focus::tests::cancelling_an_older_native_reservation_cannot_roll_back_a_newer_owner
+        PASS [   0.005s] ( 29/109) dockspace viewport_focus::tests::closing_binding_cancels_unissued_activation_but_settles_emitted_obligation
+        PASS [   0.005s] ( 30/109) dockspace viewport_focus::tests::coordinator_quarantines_known_focus_after_equal_generation_conflict
+        PASS [   0.005s] ( 31/109) dockspace viewport_focus::tests::coordinator_revokes_focus_for_generation_gaps_and_unknown_tombstones
+        PASS [   0.006s] ( 32/109) dockspace viewport_focus::tests::equal_generation_focus_conflicts_preserve_native_activation_reservations
+        PASS [   0.006s] ( 33/109) dockspace viewport_focus::tests::exact_pane_focus_observation_keeps_not_focused_pending_until_focused
+        PASS [   0.006s] ( 34/109) dockspace viewport_focus::tests::exact_root_continuation_preserves_only_the_current_physical_focus_fact
+        PASS [   0.005s] ( 35/109) dockspace viewport_focus::tests::explicit_activation_completes_only_its_requested_pane
+        PASS [   0.005s] ( 36/109) dockspace viewport_focus::tests::failed_lifecycle_focus_barrier_reconciles_an_unchanged_current_focus_once
+        PASS [   0.005s] ( 37/109) dockspace viewport_focus::tests::focus_delta_collapses_drop_then_close_to_the_final_pane_intent
+        PASS [   0.006s] ( 38/109) dockspace viewport_focus::tests::focus_delta_hides_waiting_and_publishes_only_local_or_ready_bound_intents
+        PASS [   0.006s] ( 39/109) dockspace viewport_focus::tests::focus_delta_reports_final_intent_surface_and_effect_state
+        PASS [   0.006s] ( 40/109) dockspace viewport_focus::tests::focus_observation_stream_provider_replacement_resets_its_namespace
+        PASS [   0.005s] ( 41/109) dockspace viewport_focus::tests::focus_observation_stream_quarantines_missing_and_skipped_generations
+        PASS [   0.005s] ( 42/109) dockspace viewport_focus::tests::focus_observation_stream_requires_causal_tombstones
+        PASS [   0.005s] ( 43/109) dockspace viewport_focus::tests::focus_stream_faults_preserve_native_activation_reservations
+        PASS [   0.006s] ( 44/109) dockspace viewport_focus::tests::isolated_staging_focus_completes_the_exact_reserved_claim_after_admission
+        PASS [   0.006s] ( 45/109) dockspace viewport_focus::tests::lifecycle_compensation_reasserts_a_pointer_winner_after_old_staging_focus
+        PASS [   0.006s] ( 46/109) dockspace viewport_focus::tests::local_focus_preservation_retires_old_pane_intents_and_late_native_activation
+        PASS [   0.005s] ( 47/109) dockspace viewport_focus::tests::matching_unacknowledged_pane_observation_does_not_consume_intent
+        PASS [   0.005s] ( 48/109) dockspace viewport_focus::tests::native_activation_reservation_blocks_older_readiness_completion
+        PASS [   0.005s] ( 49/109) dockspace viewport_focus::tests::newer_pointer_claim_retargets_an_unsettled_lifecycle_focus_barrier
+        PASS [   0.005s] ( 50/109) dockspace viewport_focus::tests::pane_intent_identity_exhaustion_does_not_publish_partial_state
+        PASS [   0.007s] ( 51/109) dockspace viewport_focus::tests::physical_window_focus_never_restores_a_surface_history
+        PASS [   0.006s] ( 52/109) dockspace viewport_focus::tests::provider_replacement_atomically_retires_an_unsettled_lifecycle_focus_barrier
+        PASS [   0.005s] ( 53/109) dockspace viewport_focus::tests::provider_replacement_revokes_native_activation_reservations
+        PASS [   0.005s] ( 54/109) dockspace viewport_focus::tests::provider_revocation_preserves_pane_history_and_resets_focus_namespace
+        PASS [   0.005s] ( 55/109) dockspace viewport_focus::tests::published_observe_only_obligation_accepts_a_late_closing_ack
+        PASS [   0.005s] ( 56/109) dockspace viewport_focus::tests::repeated_workspace_replacement_cannot_turn_revoked_focus_into_no_history
+        PASS [   0.005s] ( 57/109) dockspace viewport_focus::tests::replacement_capture_distinguishes_outside_focus_and_pending_semantic_owner
+        PASS [   0.006s] ( 58/109) dockspace viewport_focus::tests::retired_duplicate_preserves_raw_focus_and_accepts_the_next_known_focus
+        PASS [   0.006s] ( 59/109) dockspace viewport_focus::tests::retired_focus_conflicts_and_gaps_still_require_a_provider_tombstone
+        PASS [   0.006s] ( 60/109) dockspace viewport_focus::tests::same_generation_close_recovery_supersedes_lower_priority_explicit_activation
+        PASS [   0.005s] ( 61/109) dockspace viewport_focus::tests::same_generation_explicit_activation_cannot_clear_higher_priority_close_recovery
+        PASS [   0.005s] ( 62/109) dockspace viewport_focus::tests::same_generation_high_priority_preserve_wins_in_both_orders
+        PASS [   0.005s] ( 63/109) dockspace viewport_focus::tests::shared_window_activation_keeps_its_exact_pane_target_without_an_os_focus_effect
+        PASS [   0.006s] ( 64/109) dockspace viewport_focus::tests::shared_window_focus_preserves_an_exact_pane_fact_without_selecting_a_sibling
+        PASS [   0.006s] ( 65/109) dockspace viewport_focus::tests::stale_retired_focus_does_not_revoke_a_newer_root_observation
+        PASS [   0.005s] ( 66/109) dockspace viewport_focus::tests::unavailable_pane_focus_observation_terminates_only_its_exact_request
+        PASS [   0.005s] ( 67/109) dockspace viewport_focus::tests::unknown_exact_ack_preserves_the_complete_lifecycle_focus_lane
+        PASS [   0.005s] ( 68/109) dockspace viewport_focus::tests::unknown_focus_baseline_allows_activation_without_claiming_observed_focus
+        PASS [   0.005s] ( 69/109) dockspace viewport_focus::tests::workspace_replacement_preserves_the_focus_provider_replay_watermark
+        PASS [   0.006s] ( 70/109) dockspace viewport_registry::tests::authoritative_absence_is_missing_and_never_synthesizes_destruction
+        PASS [   0.006s] ( 71/109) dockspace viewport_registry::tests::awaiting_destroyed_requires_a_typed_tombstone
+        PASS [   0.006s] ( 72/109) dockspace viewport_registry::tests::close_events_preserve_provider_and_ingress_generations_without_reemitting
+        PASS [   0.005s] ( 73/109) dockspace viewport_registry::tests::coordinate_generation_exhaustion_is_atomic
+        PASS [   0.005s] ( 74/109) dockspace viewport_registry::tests::coordinate_provider_generation_restarts_after_exact_rebind
+        PASS [   0.005s] ( 75/109) dockspace viewport_registry::tests::coordinate_provider_stream_separates_watermark_from_semantic_authority
+        PASS [   0.006s] ( 76/109) dockspace viewport_registry::tests::delayed_geometry_from_a_reused_token_cannot_mutate_the_new_binding
+        PASS [   0.006s] ( 77/109) dockspace viewport_registry::tests::destroyed_binding_cannot_reappear_and_rejection_is_atomic
+        PASS [   0.006s] ( 78/109) dockspace viewport_registry::tests::detaching_one_shared_placement_cannot_retire_its_populated_sibling_window
+        PASS [   0.005s] ( 79/109) dockspace viewport_registry::tests::external_resource_values_do_not_control_or_alias_managed_window_allocation
+        PASS [   0.005s] ( 80/109) dockspace viewport_registry::tests::focus_authority_requires_visible_presentation_but_survives_coordinate_gaps
+        PASS [   0.005s] ( 81/109) dockspace viewport_registry::tests::foreign_authority_domain_observation_is_rejected_atomically
+        PASS [   0.006s] ( 82/109) dockspace viewport_registry::tests::hidden_and_minimized_presentations_revoke_placement_authority
+        PASS [   0.006s] ( 83/109) dockspace viewport_registry::tests::inventory_generation_exhaustion_is_atomic
+        PASS [   0.006s] ( 84/109) dockspace viewport_registry::tests::moving_one_shared_placement_preserves_sibling_and_physical_coordinate_generations
+        PASS [   0.005s] ( 85/109) dockspace viewport_registry::tests::narrow_close_observation_cannot_bypass_retirement_for_destruction
+        PASS [   0.005s] ( 86/109) dockspace viewport_registry::tests::narrow_close_observation_rejects_stale_incarnation_atomically
+        PASS [   0.005s] ( 87/109) dockspace viewport_registry::tests::narrow_close_observations_preserve_exact_edge_and_clear_order
+        PASS [   0.005s] ( 88/109) dockspace viewport_registry::tests::one_shared_close_edge_and_retirement_apply_to_the_complete_window
+        PASS [   0.006s] ( 89/109) dockspace viewport_registry::tests::only_a_never_observed_reservation_can_be_discarded
+        PASS [   0.005s] ( 90/109) dockspace viewport_registry::tests::pending_close_edge_requires_exact_provider_and_ingress_generations
+        PASS [   0.006s] ( 91/109) dockspace viewport_registry::tests::provider_revocation_clears_live_streams_and_preserves_structural_state
+        PASS [   0.005s] ( 92/109) dockspace viewport_registry::tests::provider_revocation_coordinate_generation_exhaustion_is_atomic
+        PASS [   0.005s] ( 93/109) dockspace viewport_registry::tests::provider_revocation_does_not_roll_back_destroyed_records
+        PASS [   0.005s] ( 94/109) dockspace viewport_registry::tests::provider_revocation_inventory_generation_exhaustion_is_atomic
+        PASS [   0.006s] ( 95/109) dockspace viewport_registry::tests::provider_revocation_resets_only_stale_watermarks_without_advancing_inventory
+        PASS [   0.006s] ( 96/109) dockspace viewport_registry::tests::restore_continuation_validates_exact_sources_and_unique_unoccupied_targets_atomically
+        PASS [   0.006s] ( 97/109) dockspace viewport_registry::tests::restore_rebind_requires_a_new_exact_binding_close_observation
+        PASS [   0.005s] ( 98/109) dockspace viewport_registry::tests::restore_rebind_resets_old_presentation_stream_authority
+        PASS [   0.005s] ( 99/109) dockspace viewport_registry::tests::restore_reconciliation_incarnation_exhaustion_is_atomic
+        PASS [   0.005s] (100/109) dockspace viewport_registry::tests::restore_reconciliation_removes_and_returns_complete_retired_facts
+        PASS [   0.035s] (101/109) dockspace viewport_registry::tests::retired_surface_authority_history_compacts_without_resetting_live_headless_aba
+        PASS [   0.007s] (102/109) dockspace viewport_registry::tests::shared_placement_refusal_preserves_the_complete_roster_and_generation_frontier
+        PASS [   0.007s] (103/109) dockspace viewport_registry::tests::shared_root_continuation_mints_one_window_and_resets_all_old_live_authority
+        PASS [   0.005s] (104/109) dockspace viewport_registry::tests::shared_window_reduces_one_physical_observation_and_projects_independent_mappings
+        PASS [   0.005s] (105/109) dockspace viewport_registry::tests::terminal_tombstone_is_the_only_old_binding_fact_allowed_after_token_aba
+        PASS [   0.005s] (106/109) dockspace viewport_registry::tests::token_reuse_requires_a_new_incarnation
+        PASS [   0.005s] (107/109) dockspace viewport_registry::tests::typed_tombstone_after_missing_destroys_once
+        PASS [   0.006s] (108/109) dockspace viewport_registry::tests::visible_staging_binding_can_report_focus_without_semantic_admission
+        PASS [   0.007s] (109/109) dockspace viewport_registry::tests::window_owners_follow_continuations_and_retirement_without_surface_keys
+────────────
+     Summary [   0.816s] 109 tests run: 109 passed, 2016 skipped

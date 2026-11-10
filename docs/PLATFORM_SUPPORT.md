@@ -1,8 +1,8 @@
 ---
 title: "Dockspace Platform Support"
-status: "Qualified finite profiles; clean-checkout delivery reproduced"
-reviewed: "2026-11-10"
-baseline_source_revision: "444d618"
+status: "Finite profiles, including shared-window Linux X11"
+reviewed: "2026-11-11"
+baseline_source_revision: "3136d5e"
 ---
 
 # Dockspace Platform Support
@@ -13,6 +13,16 @@ input, scheduling and platform resources; `egui_dockspace` and
 public host contract, adapter output ownership and actual platform qualification.
 Implementing an API or publishing a capability bit does not certify physical
 input on that backend.
+
+G01 shared-native-window composition is **implemented and qualified for the
+recorded finite Linux X11 profile**. The
+[qualification record](audits/2026-11-11-shared-native-window.md) retains sixteen
+serial and eighteen real-X11 passing gates. Two independently placed surfaces
+share one Root window, with real cross-area docking, managed Child round trips,
+placement changes and Root reset in ordinary and late-discard runs. Native DPI
+remains one; independent placement scales are 1, 1.25 and 1.4. Public protocol
+tests separately qualify DPI invalidation, atomic close decisions and exact
+resource retirement. Earlier platform records retain their stated scope.
 
 This snapshot follows the [canonical engine-host plan](plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md)
 and the dated [validation record](VALIDATION.md). The source-input capability
@@ -94,23 +104,27 @@ certification. Open-GPUI and the user's actual engine are outside the current
 completion dependencies.
 
 Native creation retains durable source ownership while compiling prospective
-child content. The accepted exact first valid interactive child output
-atomically publishes transfer, workspace revision and admission. Created,
-Prepared, host show dispatch and preparation output cannot transfer ownership by
-themselves. See [`engine/native_projection.rs`](../crates/dockspace/src/engine/native_projection.rs),
+child content. Exact first-live output must satisfy the complete required
+surface/placement roster before transfer, workspace revision and admission
+publish atomically. Runtime-owned Children retain one whole-client placement;
+a sibling output or preparation paint cannot substitute for a required entry.
+Created, Prepared and host show dispatch cannot transfer ownership by themselves.
+See [`engine/native_projection.rs`](../crates/dockspace/src/engine/native_projection.rs),
 [`engine/native_admission.rs`](../crates/dockspace/src/engine/native_admission.rs)
 and the [R15 qualification](VALIDATION.md#2026-10-30-r15-first-live-ownership-replacement).
 
-### Multiview composition limits
+### Multiview composition
 
 The [docking and multiview responsibility review](audits/2026-11-10-docking-multiview-responsibility-review.md)
-distinguishes implemented capabilities from unsupported combinations:
+records the earlier responsibility gaps. The completed G01 implementation
+replaces the one-surface-per-window assumption:
 
-- HostLocal input supports several independent logical surfaces. Managed native
-  hosting currently binds one surface to one OS window lifetime. Several
-  independent SurfaceIds in one OS window, combined with managed native Child
-  docking, are not yet a supported composition. Multiple panes and groups inside
-  one surface remain supported.
+- HostLocal input supports several independent logical surfaces. The managed
+  native implementation now separates a real window from its exact surface
+  placements. Shared placement is limited to externally owned Root windows;
+  runtime-owned Child windows keep one whole-client surface. Multiple panes and
+  groups within a surface remain the ordinary docking model. Shared Root plus
+  managed Child interaction has the finite Linux X11 qualification above.
 - Pointer-driven and public programmatic native tear-off share payload
   admission for items, captured tabs groups and complete roots. Group selection
   freezes its exact source and version; source ownership remains unchanged until
@@ -119,18 +133,60 @@ distinguishes implemented capabilities from unsupported combinations:
 - Renderer-neutral native document restore accepts explicit existing-window to
   incoming-Root mappings. Core validates and publishes the complete batch,
   supports Root cycles, and queues Children against their own declared recovery
-  hosts. Batch layout reset is also available without persistence. The reference
-  application's automatic restore entry remains a single-Root product profile.
+  hosts. Batch layout reset is also available without persistence. In the G01
+  implementation, the reference application's automatic restore continues its
+  current external Root window's complete shared roster. Hosts composing several
+  independent external windows use the explicit core batch mappings.
 - Default native placement is available through independent session commands as
   well as paint-plan commands. Both use current authoritative source geometry
   and the same core work-area solver. Explicit placement remains available;
   absent facts return typed unavailable results.
 
-These limits do not change the physical-platform evidence below. Native endpoint
-identity, logical placement and shared-window close scope must be addressed
-together before the first composition can be advertised.
-The proposed replacement is specified in the
+Shared-window input, output, first-live, close, recovery and retirement pass the
+complete layered acceptance gates together. The current physical profile is
+limited to Linux X11; it does not extend the other backend qualifications below.
+The contract and completed acceptance gates are specified in the
 [shared native window design](plans/2026-11-10-shared-native-window-design.md).
+
+### Shared-window host migration
+
+The following implemented interfaces are covered by public host and adapter
+tests. Physical qualification remains limited to the recorded profile.
+
+| Concern | Required migration |
+| --- | --- |
+| Layout and clipping | Use `runtime::NativeSurfacePlacement::new(surface, size, origin, scale_factor, clip)`. `size` is surface-logical layout size, independent of the physical client clip. Origin and clip are physical client coordinates; scale is physical pixels per logical unit. Native DPI must not be applied to that mapping again. |
+| Atomic Root composition | Call `DockspaceHostFrame::set_native_surface_placements(window, placements)` with the complete nonempty roster before measurement/encoding. Candidate drop preserves committed placement authority. Empty rosters, duplicate surfaces and unsupported Child composition are rejected. Repeating the identical roster is a no-op even while close approval or cancellation is pending; actual placement changes remain refused then. |
+| Reference Root callback | Call `NativeDockspaceApp::show_root_surfaces(ui, placements)` once from the Root application's UI callback. Include `root_surface()` and supply the same complete roster on repeated passes. The ordinary callback starts as a single-surface convenience path and honors the retained complete roster after shared composition. |
+| Physical window identity | Use `NativeSurfaceBinding::window()` to obtain `NativeWindowBinding`. Enumerate real windows through `DockspaceSession::native_window_bindings`; query their exact placements with `native_surface_bindings_for_window` and `native_surface_placement` on the session or candidate frame. Report each physical window once per snapshot. Window lifetime correlation does not replace provider or exact placement checks. |
+| Input and local geometry | `NativePointerHover::Dock`, `NativePointerOwner::Native` and `NativeGlobalFocus::Dock` now take a window binding. `NativeLocalGeometry::new(content_size, native_scale_factor)` describes event/callback physical client geometry. Preserve that original geometry; core applies the selected placement transform. |
+| Receiver query breaking change | Match `NativeReceiverQuery::WindowHit` and `NativeReceiverQuery::Surface`. WindowHit uses a physical client point and requires a framework-selected `NativeWindowHit::Surface` with its exact presented artifact, or explicit background/blocked/unknown. Only Surface exposes the existing surface-local receiver methods. A captured source surface is not an answer to the independent hover question. |
+| Focus | `NativeGlobalFocus::Dock(window)` grants physical window focus only. It does not choose a sibling surface, activate a tab or focus a pane. Exact framework pane-focus observations remain required. |
+| Presentation collections | One native output token owns every actual contribution from its completed pass. Validate the complete set before confirmation/publication, then use `report_surface_presentations` for their common renderer terminal. A rejected batch returns all original affine outputs through `into_outputs`; no valid prefix is consumed. Single-surface APIs remain available. |
+
+Close and first-live are window-scoped transactions. One native close request
+captures the complete exact surface/content roster in one core close plan;
+Defer or Veto cannot close only some siblings. Prepared window readiness does not
+grant first-live ownership: every required surface/placement must satisfy its own
+fresh output floor before admission. Recovery and external Root continuation
+retain each surface's own recovery anchor and publish the complete replacement
+roster atomically. Fresh coordinates, presentation and framework focus are still
+needed after replacement.
+
+Removing one placement does not destroy a window that retains another. A physical
+Destroyed observation applies to the complete hosted roster, and each exact
+retired placement's output/callback lane must quiesce before that lifetime can be
+reclaimed. Hosts must not replace these owners with separate per-surface native
+close plans, duplicate physical producers or synthetic window tokens.
+
+Raw input is checked against the complete window roster before the framework
+takes it. A different placement declaration inside an input-owning callback is
+eligible on a later run; the current run still renders its frozen admitted
+roster. Switching to the ordinary Root entry follows that same rule, so it
+cannot drop a focused sibling's text. Text and IME events are not replayed.
+Dockspace-owned menus preserve placement scale and use the full viewport for
+constraints; independent pane framework popups retain egui viewport-point
+semantics.
 
 ## Official egui reference adapter
 
@@ -186,7 +242,7 @@ These bits must be read separately from the evidence:
 
 | Platform | Recorded finite qualification | Remaining platform limit |
 | --- | --- | --- |
-| X11 | Thirteen finite XTest target journeys; complete eframe/Glow stationary hover-selection and real InputOnly negative profiles, each with two fresh passes; a center-only high-rate profile; programmatic/output-pressure and deterministic lifecycle evidence. | Qualified only under the exact authority and environment below. Additional DPI, ancestry, backend or load profiles require separate evidence. |
+| X11 | Thirteen finite XTest target journeys; complete eframe/Glow stationary hover-selection and real InputOnly negative profiles, each with two fresh passes; a center-only high-rate profile; programmatic/output-pressure and deterministic lifecycle evidence. The G01 profile adds shared Root A/B, Child round trips, origin/scale changes and Root reset in ordinary and late-discard runs, plus three real text-capacity probes. | Qualified only under the recorded authority and environment. G01 uses one screen and native DPI one; OS DPI transitions, other ancestry, backend or load profiles require separate evidence. |
 | macOS | Real-window default/bounded programmatic tear-off, first-live, redock and retirement; six output-pressure cases. Same-window event-time facts have Winit test coverage, and local mouse geometry has deterministic producer/adapter coverage. | Programmatic and same-window fact evidence does not certify a physical cross-window release. `AuthoritativeButtonState` remains absent; cross-surface physical promotion stays fail-closed. Retina/mixed-DPI and the complete physical matrix remain unqualified. |
 | Windows | Conservative capability mapping and shared host/adapter contracts. | No current Windows real-input/platform certification is established by the cited records. Hovered-window, desktop-pointer and authoritative-button bits remain absent; placement/lifecycle bits alone do not qualify cross-window docking. |
 | Wayland | Limited observation/control mapping; deterministic event-time local mouse geometry and Touch position/geometry-pair contracts. | No compositor/physical-input qualification. Managed native lifecycle, global placement, work area and desktop pointer/hover authority remain unavailable in this mapping. Proven local operations need no global desktop lane. |

@@ -1,0 +1,330 @@
+[
+  {
+    "name": "core-tests",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "dockspace",
+      "-p",
+      "dockspace_host_conformance",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:00:44.047102+00:00",
+    "ended": "2026-11-10T19:02:44.255424+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "host-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:02:44.257586+00:00",
+    "ended": "2026-11-10T19:10:38.758917+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "adapter-tests",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "egui_dockspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:10:38.760412+00:00",
+    "ended": "2026-11-10T19:11:53.583282+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "official-consumer",
+    "command": [
+      "cargo",
+      "test",
+      "--manifest-path",
+      "integration/egui-official-harness/Cargo.toml",
+      "--locked",
+      "--target-dir",
+      "target"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:11:53.585041+00:00",
+    "ended": "2026-11-10T19:12:43.251347+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "product-default",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-product-harness/Cargo.toml",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:12:43.253012+00:00",
+    "ended": "2026-11-10T19:14:04.045596+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "product-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-product-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:14:04.046791+00:00",
+    "ended": "2026-11-10T19:15:27.392756+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "native-tests",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--workspace",
+      "--exclude",
+      "egui-native-smoke",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:20:24.466249+00:00",
+    "ended": "2026-11-10T19:22:21.817777+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "workspace-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:22:21.818848+00:00",
+    "ended": "2026-11-10T19:23:59.569100+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "native-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:49:39.248143+00:00",
+    "ended": "2026-11-10T19:51:05.122430+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "workspace-docs",
+    "command": [
+      "cargo",
+      "doc",
+      "--workspace",
+      "--all-features",
+      "--no-deps",
+      "--locked"
+    ],
+    "environment_override": {
+      "RUSTDOCFLAGS": "-D warnings"
+    },
+    "started": "2026-11-10T19:25:48.058246+00:00",
+    "ended": "2026-11-10T19:26:20.155142+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "native-docs",
+    "command": [
+      "cargo",
+      "doc",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "-p",
+      "egui_dockspace_native",
+      "--all-features",
+      "--no-deps",
+      "--locked",
+      "--target-dir",
+      "target"
+    ],
+    "environment_override": {
+      "RUSTDOCFLAGS": "-D warnings"
+    },
+    "started": "2026-11-10T19:26:20.155909+00:00",
+    "ended": "2026-11-10T19:26:42.735416+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "workspace-doctests",
+    "command": [
+      "cargo",
+      "test",
+      "--doc",
+      "--workspace",
+      "--all-features",
+      "--locked"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:26:42.736580+00:00",
+    "ended": "2026-11-10T19:28:07.690012+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "workspace-fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:28:07.691218+00:00",
+    "ended": "2026-11-10T19:28:09.442074+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "host-fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--all",
+      "--check"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:28:50.896840+00:00",
+    "ended": "2026-11-10T19:28:52.774396+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "native-fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--all",
+      "--check"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:55:14.743064+00:00",
+    "ended": "2026-11-10T19:55:17.165120+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "core-dependencies",
+    "command": [
+      "python3",
+      "scripts/check_core_dependencies.py"
+    ],
+    "environment_override": {},
+    "started": "2026-11-10T19:28:55.006800+00:00",
+    "ended": "2026-11-10T19:28:55.158604+00:00",
+    "exit_code": 0
+  }
+]
