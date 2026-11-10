@@ -278,10 +278,14 @@ impl DockEngine {
             LocalSurfaceAction::Close {
                 target: CloseSceneTarget::Contained(floating),
                 ..
-            }
-            | LocalSurfaceAction::AdjustContainedResize { floating, .. } => plan
+            } => plan
                 .contained_record(*floating)
                 .is_some_and(|record| root_is_current(record.root())),
+            LocalSurfaceAction::AdjustContainedResize { floating, .. } => {
+                plan.contained_record(*floating)
+                    .is_some_and(|record| root_is_current(record.root()))
+                    && self.deferred_resize_geometry_is_current(witness, action)
+            }
             LocalSurfaceAction::CloseRoot { root, .. } => root_is_current(*root),
             LocalSurfaceAction::PresentationCommand { action, .. } => {
                 product_action::product_presentation_transition_root(*action)
@@ -293,14 +297,14 @@ impl DockEngine {
             }
             LocalSurfaceAction::AdjustSplitter { splitter, .. } => {
                 root_is_current(splitter.root)
-                    && self.deferred_splitter_geometry_is_current(witness)
+                    && self.deferred_resize_geometry_is_current(witness, action)
             }
             LocalSurfaceAction::AdjustSplitterJunction { junction, .. } => {
                 junction
                     .splitters()
                     .iter()
                     .all(|splitter| root_is_current(splitter.root))
-                    && self.deferred_splitter_geometry_is_current(witness)
+                    && self.deferred_resize_geometry_is_current(witness, action)
             }
             LocalSurfaceAction::CancelWithEscape { status, .. } => {
                 *status == self.interaction.status() && *status != InteractionStatus::Idle
@@ -311,9 +315,10 @@ impl DockEngine {
             .ok_or(InteractionRejection::TargetAuthorityInvalid)
     }
 
-    fn deferred_splitter_geometry_is_current(
+    fn deferred_resize_geometry_is_current(
         &self,
         witness: &crate::scene::SurfacePlanScene,
+        action: &LocalSurfaceAction,
     ) -> bool {
         let Some(current) = self.scene().surface(witness.stamp().surface()) else {
             return false;
@@ -322,11 +327,27 @@ impl DockEngine {
             return false;
         }
         match current {
-            SurfaceScene::Ready(ready) => ready
-                .plan()
-                .layout_facts()
-                .zip(witness.plan().layout_facts())
-                .is_some_and(|(current, frozen)| current.measurements() == frozen.measurements()),
+            SurfaceScene::Ready(ready) => match action {
+                LocalSurfaceAction::AdjustContainedResize { floating, .. } => {
+                    ready.plan().bounds() == witness.plan().bounds()
+                        && ready
+                            .plan()
+                            .contained_record(*floating)
+                            .zip(witness.plan().contained_record(*floating))
+                            .is_some_and(|(current, frozen)| {
+                                current.minimum_size() == frozen.minimum_size()
+                            })
+                }
+                LocalSurfaceAction::AdjustSplitter { .. }
+                | LocalSurfaceAction::AdjustSplitterJunction { .. } => ready
+                    .plan()
+                    .layout_facts()
+                    .zip(witness.plan().layout_facts())
+                    .is_some_and(|(current, frozen)| {
+                        current.measurements() == frozen.measurements()
+                    }),
+                _ => false,
+            },
             // A discarded UI pass can supply the first exact geometry for the
             // current requirements. An explicit failed observation cannot.
             SurfaceScene::Bootstrap(scene) => matches!(
