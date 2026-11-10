@@ -62,6 +62,8 @@ mod lifecycle_ingress_tests;
 mod output_resource;
 #[cfg(test)]
 mod pointer_observation_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod preparation_output_tests;
 mod roster;
 mod terminal_roster;
 mod window_resource;
@@ -5150,9 +5152,11 @@ impl NativeHostBridge {
                 .abandon();
             return DeferredViewportPaint::Waiting;
         };
-        if records
-            .window_resources
-            .begin_preparation_paint(token.viewport_id(), request)
+        // A retained predecessor output cannot begin or roll back its successor's paint.
+        if reservation.binding() == Some(request.binding())
+            && records
+                .window_resources
+                .begin_preparation_paint(token.viewport_id(), request)
         {
             let resource = records
                 .output_resources

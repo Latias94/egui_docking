@@ -440,8 +440,8 @@ jobs:
           cargo nextest run
           --manifest-path integration/egui-fork-workspace/Cargo.toml
           --package egui_dockspace_native --lib --all-features --locked
-          --test-threads=1 --target-dir target
-          -E 'test(real_eframe_actual_passes_publish_the_owned_update_once_after_output_hooks) | test(real_eframe_style_publishes_with_core_geometry_after_the_terminal_pass) | test(real_eframe_output_capacity_retains_framebuffer_and_resumes_pane_callbacks) | test(real_native_ui_ingress_retries_acknowledges_bounds_retires_and_deduplicates_actual_passes)'
+          --test-threads=1 --target-dir target --run-ignored all
+          -E 'test(real_eframe_actual_passes_publish_the_owned_update_once_after_output_hooks) | test(real_eframe_style_publishes_with_core_geometry_after_the_terminal_pass) | test(real_eframe_output_capacity_retains_framebuffer_and_resumes_pane_callbacks) | test(real_native_ui_ingress_retries_acknowledges_bounds_retires_and_deduplicates_actual_passes) | test(real_old_output_cannot_revoke_successor_preparation_and_its_exact_created_receipt)'
 
       - name: Qualify actual editor docking and lifecycle
         timeout-minutes: 8
