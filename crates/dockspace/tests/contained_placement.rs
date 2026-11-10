@@ -3,7 +3,7 @@ use super::support;
 use dockspace::command::WorkspaceCommand;
 use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::error::CommandError;
-use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
+use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
@@ -277,24 +277,6 @@ fn placement_requires_a_current_ready_surface() {
             .contained_placement(SURFACE_A, initial_rect(), size(0.0, 0.0))
             .is_ok(),
         "only geometry confirmed painted before reduction may authorize placement"
-    );
-}
-
-#[test]
-fn finite_corners_with_an_infinite_span_are_rejected() {
-    let mut fixture = fixture();
-    publish_ready_scene(&mut fixture.engine, &mut fixture.host);
-    let requested = LogicalRect::from_min_max(
-        LogicalPoint::new(-f64::MAX, 0.0).expect("minimum point must be finite"),
-        LogicalPoint::new(f64::MAX, 10.0).expect("maximum point must be finite"),
-    )
-    .expect("ordered finite corners must construct a rectangle");
-
-    assert_eq!(
-        fixture
-            .engine
-            .contained_placement(SURFACE_A, requested, size(0.0, 0.0)),
-        Err(ContainedPlacementUnavailable::UnrepresentableGeometry { surface: SURFACE_A })
     );
 }
 

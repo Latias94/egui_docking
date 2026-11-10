@@ -131,6 +131,50 @@ fn candidate_frame_resolves_session_owned_external_keys() {
 }
 
 #[test]
+fn constructible_contained_rects_round_trip_without_non_finite_wire_values() {
+    use dockspace::model::{DockspaceContainedLayout, FloatingPresentationId};
+
+    let mut restored_rects = 0;
+    for (minimum, maximum) in [
+        ((-f64::MAX, 0.0), (f64::MAX, 1.0)),
+        ((0.0, -f64::MAX), (1.0, f64::MAX)),
+        ((-f64::MAX, -f64::MAX), (0.0, 0.0)),
+    ] {
+        let Ok(rect) = LogicalRect::from_min_max(
+            LogicalPoint::new(minimum.0, minimum.1).unwrap(),
+            LogicalPoint::new(maximum.0, maximum.1).unwrap(),
+        ) else {
+            continue;
+        };
+        let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
+        let item = bootstrap.ensure_item("pane:first").unwrap();
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::rootless(SURFACE)
+            .with_contained(DockspaceContainedLayout::new(
+                FloatingPresentationId::new(1),
+                DockspaceRootLayout::new(ROOT, DockspaceNode::tabs([item])),
+                rect,
+            ))])
+        .unwrap();
+        let mut session =
+            DockspaceSession::from_persistent_layout(layout, DockPolicy::default(), bootstrap)
+                .unwrap();
+        let encoded = session.save_document_json().unwrap();
+        let restored = DockspaceSession::from_document_json(
+            &encoded,
+            DockPolicy::default(),
+            |document, key| document == DOCUMENT && key == "pane:first",
+        )
+        .expect("a successfully saved validated layout must remain restorable");
+        assert_eq!(restored.view().item(item).unwrap().surface(), SURFACE);
+        restored_rects += 1;
+    }
+    assert_eq!(
+        restored_rects, 1,
+        "the largest finite span remains supported"
+    );
+}
+
+#[test]
 fn restore_keeps_document_owned_item_ids_when_the_application_recognizes_keys() {
     let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
     let first = bootstrap.ensure_item("pane:first").expect("first item");

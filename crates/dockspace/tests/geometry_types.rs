@@ -85,6 +85,51 @@ fn rects_use_half_open_edges_and_reject_overflow() {
 }
 
 #[test]
+fn finite_corners_cannot_create_non_finite_sizes() {
+    for (minimum, maximum, component, physical_component) in [
+        ((-f64::MAX, 0.0), (f64::MAX, 1.0), "width", "physical_width"),
+        (
+            (0.0, -f64::MAX),
+            (1.0, f64::MAX),
+            "height",
+            "physical_height",
+        ),
+    ] {
+        let logical = LogicalRect::from_min_max(
+            LogicalPoint::new(minimum.0, minimum.1).unwrap(),
+            LogicalPoint::new(maximum.0, maximum.1).unwrap(),
+        );
+        assert!(matches!(
+            logical,
+            Err(GeometryError::NonFinite { component: rejected, .. }) if rejected == component
+        ));
+        let physical = PhysicalRect::from_min_max(
+            PhysicalPoint::new(minimum.0, minimum.1).unwrap(),
+            PhysicalPoint::new(maximum.0, maximum.1).unwrap(),
+        );
+        assert!(matches!(
+            physical,
+            Err(GeometryError::NonFinite { component: rejected, .. }) if rejected == physical_component
+        ));
+    }
+
+    let min = LogicalPoint::new(-f64::MAX, -f64::MAX).unwrap();
+    let max = LogicalPoint::new(0.0, 0.0).unwrap();
+    let rect = LogicalRect::from_min_max(min, max).unwrap();
+    assert_eq!(rect.size(), LogicalSize::new(f64::MAX, f64::MAX).unwrap());
+    let physical = rect
+        .to_desktop_physical(
+            PhysicalPoint::new(0.0, 0.0).unwrap(),
+            ScaleFactor::new(1.0).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        physical.size(),
+        PhysicalSize::new(f64::MAX, f64::MAX).unwrap()
+    );
+}
+
+#[test]
 fn target_scale_performs_a_single_origin_aware_conversion() {
     let target_scale = ScaleFactor::new(1.5).expect("scale is valid");
     let logical = LogicalRect::new(-100.0, 20.0, 320.0, 180.0).expect("rect is valid");

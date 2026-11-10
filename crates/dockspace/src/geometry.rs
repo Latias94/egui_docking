@@ -155,14 +155,17 @@ pub struct LogicalRect {
 }
 
 impl LogicalRect {
-    /// Constructs a rectangle from finite, ordered corners.
+    /// Constructs a rectangle from finite, ordered corners and a finite size.
     ///
     /// # Errors
     ///
-    /// Returns [`GeometryError::InvertedBounds`] when either minimum exceeds its maximum.
+    /// Returns [`GeometryError::InvertedBounds`] when either minimum exceeds its maximum,
+    /// or [`GeometryError::NonFinite`] when their span overflows.
     pub fn from_min_max(min: LogicalPoint, max: LogicalPoint) -> Result<Self, GeometryError> {
         ordered("x", min.x, max.x)?;
         ordered("y", min.y, max.y)?;
+        finite("width", max.x - min.x)?;
+        finite("height", max.y - min.y)?;
         Ok(Self { min, max })
     }
 
@@ -352,14 +355,17 @@ pub struct PhysicalRect {
 }
 
 impl PhysicalRect {
-    /// Constructs a physical rectangle from finite, ordered corners.
+    /// Constructs a physical rectangle from finite, ordered corners and a finite size.
     ///
     /// # Errors
     ///
-    /// Returns [`GeometryError::InvertedBounds`] when either minimum exceeds its maximum.
+    /// Returns [`GeometryError::InvertedBounds`] when either minimum exceeds its maximum,
+    /// or [`GeometryError::NonFinite`] when their span overflows.
     pub fn from_min_max(min: PhysicalPoint, max: PhysicalPoint) -> Result<Self, GeometryError> {
         ordered("physical_x", min.x, max.x)?;
         ordered("physical_y", min.y, max.y)?;
+        finite("physical_width", max.x - min.x)?;
+        finite("physical_height", max.y - min.y)?;
         Ok(Self { min, max })
     }
 

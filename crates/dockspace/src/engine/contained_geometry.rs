@@ -70,13 +70,7 @@ fn placed_contained_rect(
     let bounds_height = bounds.height();
     let requested_width = requested.width();
     let requested_height = requested.height();
-    if !bounds_width.is_finite()
-        || !bounds_height.is_finite()
-        || !requested_width.is_finite()
-        || !requested_height.is_finite()
-        || bounds_width <= 0.0
-        || bounds_height <= 0.0
-    {
+    if bounds_width <= 0.0 || bounds_height <= 0.0 {
         return Err(());
     }
 
