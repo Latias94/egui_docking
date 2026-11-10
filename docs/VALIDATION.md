@@ -15,6 +15,40 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-10 core action authority and split normalization review
+
+The [core action and layout review](audits/2026-11-10-core-action-and-layout-review.md)
+reproduces and repairs four P2 findings from baseline `828e6d1`, with final
+qualification at `4cb90d2`. Presentation transition identities now include the
+engine authority domain, preserving request-to-terminal correlation across
+independent sessions. Direct prepared Escape retains its captured gesture
+identity and cannot cancel a same-version successor. Deferred contained resize
+rejects superseded surface bounds and target minimum measurements while allowing
+unrelated background changes and a valid discarded first-pass witness.
+
+Split normalization removes an erroneous f32 prefix compensation and a duplicate
+validation loop. A public 712-way equal split and a 713-way close now succeed;
+the 2,000-child move control checks successful equivalence and item conservation.
+Finite, positive, underflow and strict total-weight validation remain. The
+nested-minimum rounding regression pins its original legal complementary shares
+to preserve positive residual and both-axis reverse-expansion coverage.
+
+All sixteen serial gates pass: workspace 2,314 with three existing skips,
+independent persistence host 352, official consumer 24, product 114 default /
+119 persistence, and pinned native fork 593 with one existing skip. Eight new
+public host regressions, adjacent action/geometry controls, correctness/suspicious
+Clippy, strict documentation, eleven doctests, formatting and the core dependency
+boundary pass. Independent cross-review confirms all four repairs. The audit
+retains exact failing commands, before/after logs and the rounding-fixture
+correction without weakening its behavior assertions.
+
+Actual Linux X11/Glow qualification passes seven isolated eframe processes, the
+4 MiB create/first-live/redock/retirement profile and both complete editor drivers.
+Twelve real focused edits, six destroyed child lifetimes and Root rebinding
+preserve the original Root and finish quiescent. Source matches `4cb90d2` after
+qualification. Existing physical-platform and ImGui timing scopes retain their
+recorded limits.
+
 ## 2026-11-10 focus-provider storage and menu review
 
 The [focus-provider and menu review](audits/2026-11-10-focus-and-menu-review.md)

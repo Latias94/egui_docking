@@ -1,0 +1,29 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling dockspace_host_conformance v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace_host_conformance)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.86s
+────────────
+ Nextest run ID da428f1a-1927-4eed-b769-191d60ffaff1 with nextest profile: default
+    Starting 2133 tests across 5 binaries (3 tests skipped)
+        FAIL [   0.010s] (1008/2133) dockspace engine::splitter_geometry::tests::rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes
+  stdout ───
+
+    running 1 test
+    test engine::splitter_geometry::tests::rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes ... FAILED
+
+    failures:
+
+    failures:
+        engine::splitter_geometry::tests::rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2094 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'engine::splitter_geometry::tests::rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes' (88478708) panicked at crates/dockspace/src/engine/splitter_geometry/tests.rs:679:9:
+    Horizontal: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [  23.501s] 2133 tests run: 2132 passed, 1 failed, 3 skipped
+        FAIL [   0.010s] (1008/2133) dockspace engine::splitter_geometry::tests::rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes
+error: test run failed

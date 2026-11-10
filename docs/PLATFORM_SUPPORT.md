@@ -2,7 +2,7 @@
 title: "Dockspace Platform Support"
 status: "Qualified finite profiles; clean-checkout delivery reproduced"
 reviewed: "2026-11-10"
-baseline_source_revision: "e159073"
+baseline_source_revision: "4cb90d2"
 ---
 
 # Dockspace Platform Support
@@ -51,6 +51,13 @@ focus at `e159073`. Final serial gates, seven actual eframe processes, the 4 MiB
 redock profile and complete editor journeys pass. Twelve real focused edits, six
 destroyed child lifetimes and Root rebinding preserve the original Root and end
 quiescent. These results refresh the finite X11 profiles below.
+
+The [core action and layout review](VALIDATION.md#2026-11-10-core-action-authority-and-split-normalization-review)
+qualifies session-scoped transition identities, exact prepared Escape, measured
+contained-resize authority and wide-split normalization at `4cb90d2`. All sixteen
+serial gates, seven real eframe processes, the 4 MiB redock profile and complete
+editor drivers pass. The original Root survives rebinding; all six Child windows
+are destroyed and final quiescence holds. The finite platform scope below remains.
 
 ## Core and public engine-host contract
 

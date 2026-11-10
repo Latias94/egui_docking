@@ -1,0 +1,6 @@
+    Checking dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+ Documenting egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+ Documenting dockspace_host_conformance v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace_host_conformance)
+ Documenting dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 31.51s
+   Generated /Users/frankorz/codes/rust/egui_docking/target/doc/dockspace/index.html and 2 other files

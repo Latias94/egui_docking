@@ -1,0 +1,70 @@
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.84s
+────────────
+ Nextest run ID a9e1573a-8b77-4a21-be8c-6420910a19d2 with nextest profile: default
+    Starting 5 tests across 2 binaries
+        FAIL [   0.011s] (1/5) dockspace-host-harness::deferred_contained_geometry deferred_contained_resize_rejects_a_superseded_minimum_without_a_workspace_change
+  stdout ───
+
+    running 1 test
+    test deferred_contained_resize_rejects_a_superseded_minimum_without_a_workspace_change ... FAILED
+
+    failures:
+
+    failures:
+        deferred_contained_resize_rejects_a_superseded_minimum_without_a_workspace_change
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'deferred_contained_resize_rejects_a_superseded_minimum_without_a_workspace_change' (88456757) panicked at tests/deferred_contained_geometry.rs:144:5:
+    assertion failed: matches!(report.inputs(), [HostInputOutcome::StaleRejected { .. }])
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.008s] (2/5) dockspace-host-harness::deferred_contained_geometry deferred_contained_resize_rejects_superseded_surface_bounds_without_a_workspace_change
+  stdout ───
+
+    running 1 test
+    test deferred_contained_resize_rejects_superseded_surface_bounds_without_a_workspace_change ... FAILED
+
+    failures:
+
+    failures:
+        deferred_contained_resize_rejects_superseded_surface_bounds_without_a_workspace_change
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'deferred_contained_resize_rejects_superseded_surface_bounds_without_a_workspace_change' (88456761) panicked at tests/deferred_contained_geometry.rs:175:5:
+    assertion failed: matches!(report.inputs(), [HostInputOutcome::StaleRejected { .. }])
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.007s] (3/5) dockspace-host-harness::deferred_contained_geometry discarded_first_pass_can_supply_a_deferred_contained_resize_witness
+        PASS [   0.007s] (4/5) dockspace-host-harness::deferred_contained_geometry unrelated_background_minimum_does_not_expire_a_deferred_contained_resize
+        FAIL [   0.011s] (5/5) dockspace-host-harness::prepared_escape_scope direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version
+  stdout ───
+
+    running 1 test
+    test direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version ... FAILED
+
+    failures:
+
+    failures:
+        direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version' (88456770) panicked at tests/prepared_escape_scope.rs:141:5:
+    Escape captured from the cancelled gesture must leave its same-version successor active: HostFrameReport { before: WorkspaceVersion { epoch: WorkspaceEpoch(0), revision: WorkspaceRevision(0) }, after: WorkspaceVersion { epoch: WorkspaceEpoch(0), revision: WorkspaceRevision(0) }, workspace_changed: false, published_state_changed: true, affected_surfaces: [], surface_commits: [], inputs: [], submitted_actions: [], presentation_transitions: [], manipulation_feedback: [DockspaceManipulationFeedback { id: DockspaceManipulationFeedbackId(..), manipulation: DockspaceManipulationId(..), status: Cancelled(Escape) }], painted_outputs: [], surface_presentation_commits: [], native_admissions: [], native_bindings: [], native_root_continuations: [], native_input_pending: false, native_effects: [], repaint_surfaces: [] }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.049s] 5 tests run: 2 passed, 3 failed, 0 skipped
+        FAIL [   0.011s] (1/5) dockspace-host-harness::deferred_contained_geometry deferred_contained_resize_rejects_a_superseded_minimum_without_a_workspace_change
+        FAIL [   0.008s] (2/5) dockspace-host-harness::deferred_contained_geometry deferred_contained_resize_rejects_superseded_surface_bounds_without_a_workspace_change
+        FAIL [   0.011s] (5/5) dockspace-host-harness::prepared_escape_scope direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version
+error: test run failed

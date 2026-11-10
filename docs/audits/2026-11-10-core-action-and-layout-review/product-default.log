@@ -1,0 +1,10 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+   Compiling dockspace_host_conformance v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace_host_conformance)
+   Compiling egui-dockspace-product-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-product-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+────────────
+ Nextest run ID 0e6d332e-cbc7-4a49-ae26-bd9027b2b763 with nextest profile: default
+    Starting 114 tests across 6 binaries
+────────────
+     Summary [  10.030s] 114 tests run: 114 passed, 0 skipped

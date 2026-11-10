@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+────────────
+ Nextest run ID 32e1c321-5ee4-47c9-8a44-45176fce5fa0 with nextest profile: default
+    Starting 8 tests across 1 binary (2087 tests skipped)
+        PASS [   0.006s] (1/8) dockspace behavior_tests::graph_model::central_region_must_be_a_reachable_tabs_leaf
+        PASS [   0.006s] (2/8) dockspace behavior_tests::graph_model::strict_validation_enforces_root_presentation_and_backlinks
+        PASS [   0.005s] (3/8) dockspace behavior_tests::graph_model::strict_validation_preserves_the_first_owner_across_three_presentations
+        PASS [   0.005s] (4/8) dockspace behavior_tests::graph_model::strict_validation_rejects_duplicate_items_and_invalid_selection
+        PASS [   0.006s] (5/8) dockspace behavior_tests::graph_model::strict_validation_rejects_non_positive_contained_geometry
+        PASS [   0.006s] (6/8) dockspace behavior_tests::graph_model::strict_validation_rejects_weight_and_canonical_shape_corruption
+        PASS [   0.006s] (7/8) dockspace behavior_tests::graph_model::strict_validation_reports_cycle_shared_node_and_orphan
+        PASS [   0.006s] (8/8) dockspace behavior_tests::graph_model::valid_workspace_preserves_items_and_unique_presentations
+────────────
+     Summary [   0.049s] 8 tests run: 8 passed, 2087 skipped
