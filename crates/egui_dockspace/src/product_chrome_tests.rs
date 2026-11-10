@@ -652,11 +652,7 @@ impl egui::plugin::Plugin for OverflowNavigationLateDiscard {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the regression keeps menu setup, consecutive key events and terminal focus in one journey"
-)]
-fn assert_overflow_arrow_up_then_enter(discarded_passes: usize) {
+fn overflow_menu_with_first_row_focused() -> (Harness, f32, NodeId) {
     let mut harness = Harness::new(
         vec!["A".to_owned(), "B".to_owned()],
         ItemId::new(2),
@@ -706,7 +702,7 @@ fn assert_overflow_arrow_up_then_enter(discarded_passes: usize) {
             .memory(egui::Memory::focused)
             .map(|id| id.value()),
         Some(first_row.0),
-        "Home must establish the first menu row before testing clamped ArrowUp",
+        "Home must establish the first menu row before testing keyboard traversal",
     );
     assert!(
         harness
@@ -716,7 +712,11 @@ fn assert_overflow_arrow_up_then_enter(discarded_passes: usize) {
             .unwrap()
             .is_selected()
     );
+    (harness, width, first_row)
+}
 
+fn assert_overflow_arrow_up_then_enter(discarded_passes: usize) {
+    let (mut harness, width, first_row) = overflow_menu_with_first_row_focused();
     harness.context.options_mut(|options| {
         options.max_passes = std::num::NonZeroUsize::new(discarded_passes + 1).unwrap();
     });
@@ -744,7 +744,8 @@ fn assert_overflow_arrow_up_then_enter(discarded_passes: usize) {
         enter.platform_output.num_completed_passes,
         discarded_passes + 1
     );
-    for _ in 0..3 {
+    let mut output = harness.run(width, Vec::new());
+    for _ in 0..2 {
         output = harness.run(width, Vec::new());
     }
     assert_eq!(
@@ -780,6 +781,402 @@ fn overflow_arrow_up_then_enter_keeps_the_first_menu_row() {
 #[test]
 fn overflow_arrow_up_then_enter_keeps_the_first_menu_row_across_late_discards() {
     assert_overflow_arrow_up_then_enter(2);
+}
+
+fn assert_overflow_tab_then_enter(discarded_passes: usize, reverse: bool) {
+    let (mut harness, width, _) = overflow_menu_with_first_row_focused();
+    if reverse {
+        let output = harness.run(width, vec![key(Key::Tab)]);
+        let second_row = nodes(&output)
+            .iter()
+            .find(|(_, node)| node.role() == Role::MenuItem && node.label() == Some("B"))
+            .unwrap()
+            .0;
+        assert_eq!(
+            harness
+                .context
+                .memory(egui::Memory::focused)
+                .map(|id| id.value()),
+            Some(second_row.0),
+            "Shift+Tab must start from the second row reached by real Tab traversal"
+        );
+    }
+    harness.context.options_mut(|options| {
+        options.max_passes = std::num::NonZeroUsize::new(discarded_passes + 1).unwrap();
+    });
+    harness.context.add_plugin(OverflowNavigationLateDiscard {
+        remaining: discarded_passes,
+    });
+    let traversal = harness.run(
+        width,
+        vec![Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                shift: reverse,
+                ..Default::default()
+            },
+        }],
+    );
+    assert_eq!(
+        traversal.platform_output.num_completed_passes,
+        discarded_passes + 1
+    );
+    if !reverse {
+        let second_row = nodes(&traversal)
+            .iter()
+            .find(|(_, node)| node.role() == Role::MenuItem && node.label() == Some("B"))
+            .unwrap()
+            .0;
+        assert_eq!(
+            harness
+                .context
+                .memory(egui::Memory::focused)
+                .map(|id| id.value()),
+            Some(second_row.0),
+            "Tab must reach B without a discarded pass restoring A, discarded_passes={discarded_passes}"
+        );
+    }
+    assert!(
+        harness
+            .dockspace
+            .view()
+            .item(ItemId::new(2))
+            .unwrap()
+            .is_selected(),
+        "Tab traversal must not activate a row, reverse={reverse}, discarded_passes={discarded_passes}"
+    );
+
+    harness
+        .context
+        .with_plugin(|plugin: &mut OverflowNavigationLateDiscard| {
+            plugin.remaining = discarded_passes;
+        })
+        .unwrap();
+    // Enter follows immediately. egui applies Shift+Tab's deferred destination
+    // at its start; no idle pass may silently restore the former row.
+    let enter = harness.run(width, vec![key(Key::Enter)]);
+    assert_eq!(
+        enter.platform_output.num_completed_passes,
+        discarded_passes + 1
+    );
+    for _ in 0..3 {
+        harness.run(width, Vec::new());
+    }
+    let expected = ItemId::new(if reverse { 1 } else { 2 });
+    assert!(
+        harness
+            .dockspace
+            .view()
+            .item(expected)
+            .unwrap()
+            .is_selected(),
+        "Enter must activate the row reached by Tab traversal, reverse={reverse}, discarded_passes={discarded_passes}"
+    );
+    assert_eq!(
+        harness.context.memory(egui::Memory::focused),
+        harness.panes.focus_target(expected),
+        "the activated row must focus its content"
+    );
+}
+
+#[test]
+fn overflow_tab_then_enter_activates_the_terminal_framework_target() {
+    assert_overflow_tab_then_enter(0, false);
+}
+
+#[test]
+fn overflow_tab_then_enter_activates_the_terminal_framework_target_across_late_discards() {
+    assert_overflow_tab_then_enter(2, false);
+}
+
+#[test]
+fn overflow_shift_tab_then_enter_activates_the_terminal_framework_target() {
+    assert_overflow_tab_then_enter(0, true);
+}
+
+#[test]
+fn overflow_shift_tab_then_enter_activates_the_terminal_framework_target_across_late_discards() {
+    assert_overflow_tab_then_enter(2, true);
+}
+
+fn overflow_with_external_buttons(
+    harness: &mut Harness,
+    width: f32,
+    events: Vec<Event>,
+    clicks: &mut [usize; 2],
+) -> FullOutput {
+    overflow_with_external_buttons_and_focus(harness, width, events, clicks, None)
+}
+
+fn overflow_with_external_buttons_and_focus(
+    harness: &mut Harness,
+    width: f32,
+    events: Vec<Event>,
+    clicks: &mut [usize; 2],
+    request_focus: Option<usize>,
+) -> FullOutput {
+    let Harness {
+        context,
+        dockspace,
+        panes,
+        frame,
+        ..
+    } = harness;
+    *frame += 1;
+    let raw = RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 600.0))),
+        time: Some(f64::from(*frame) * 0.1),
+        events,
+        ..Default::default()
+    };
+    let output = crate::run_ui(context, raw, |ui| {
+        dockspace.show_single_surface(SURFACE, ui, panes).unwrap();
+        for (index, (label, top)) in [("External first", 500.0), ("External second", 540.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let response = ui.put(
+                Rect::from_min_size(egui::pos2(width - 160.0, top), vec2(140.0, 28.0)),
+                egui::Button::new(label),
+            );
+            if response.clicked() {
+                clicks[index] += 1;
+            }
+            if request_focus == Some(index) {
+                response.request_focus();
+            }
+        }
+    });
+    let (mut output, receipt) = output.into_parts();
+    output.textures_delta.clear();
+    receipt.report(SurfacePresentationResult::Presented);
+    output
+}
+
+#[test]
+fn overflow_consecutive_tabs_leave_for_real_buttons_without_activating_the_old_row() {
+    for discarded_passes in [0, 2] {
+        let (mut harness, width, _) = overflow_menu_with_first_row_focused();
+        let mut clicks = [0, 0];
+        overflow_with_external_buttons(&mut harness, width, Vec::new(), &mut clicks);
+        harness.context.options_mut(|options| {
+            options.max_passes = std::num::NonZeroUsize::new(discarded_passes + 1).unwrap();
+        });
+        harness
+            .context
+            .add_plugin(OverflowNavigationLateDiscard { remaining: 0 });
+        for (role, label) in [
+            (Role::MenuItem, "B"),
+            (Role::Button, "External first"),
+            (Role::Button, "External second"),
+        ] {
+            harness
+                .context
+                .with_plugin(|plugin: &mut OverflowNavigationLateDiscard| {
+                    plugin.remaining = discarded_passes;
+                })
+                .unwrap();
+            let output = overflow_with_external_buttons(
+                &mut harness,
+                width,
+                vec![key(Key::Tab)],
+                &mut clicks,
+            );
+            assert_eq!(
+                output.platform_output.num_completed_passes,
+                discarded_passes + 1
+            );
+            let target = nodes(&output)
+                .iter()
+                .find(|(_, node)| node.role() == role && node.label() == Some(label))
+                .unwrap()
+                .0;
+            assert_eq!(
+                harness
+                    .context
+                    .memory(egui::Memory::focused)
+                    .map(|id| id.value()),
+                Some(target.0),
+                "consecutive Tab must reach {label}, discarded_passes={discarded_passes}"
+            );
+        }
+        // A new core focus edge for B must not pull focus back from the buttons.
+        overflow_with_external_buttons(&mut harness, width, vec![key(Key::Enter)], &mut clicks);
+        assert_eq!(clicks, [0, 1]);
+        for _ in 0..3 {
+            overflow_with_external_buttons(&mut harness, width, Vec::new(), &mut clicks);
+        }
+        assert!(
+            harness
+                .dockspace
+                .view()
+                .item(ItemId::new(2))
+                .unwrap()
+                .is_selected()
+        );
+        assert!(
+            !harness
+                .dockspace
+                .view()
+                .item(ItemId::new(1))
+                .unwrap()
+                .is_selected()
+        );
+    }
+}
+
+#[test]
+fn overflow_focus_confirmation_preserves_a_new_accesskit_focus_request() {
+    for discarded_passes in [0, 2] {
+        let (mut harness, width, _) = overflow_menu_with_first_row_focused();
+        let mut clicks = [0, 0];
+        let output = overflow_with_external_buttons(&mut harness, width, Vec::new(), &mut clicks);
+        let external = nodes(&output)
+            .iter()
+            .find(|(_, node)| node.role() == Role::Button && node.label() == Some("External first"))
+            .unwrap()
+            .0;
+        overflow_with_external_buttons(&mut harness, width, vec![key(Key::Tab)], &mut clicks);
+        harness.context.options_mut(|options| {
+            options.max_passes = std::num::NonZeroUsize::new(discarded_passes + 1).unwrap();
+        });
+        harness.context.add_plugin(OverflowNavigationLateDiscard {
+            remaining: discarded_passes,
+        });
+        let output = overflow_with_external_buttons(
+            &mut harness,
+            width,
+            vec![Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Focus,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: external,
+                    data: None,
+                },
+            )],
+            &mut clicks,
+        );
+        assert_eq!(
+            output.platform_output.num_completed_passes,
+            discarded_passes + 1
+        );
+        assert_eq!(
+            harness
+                .context
+                .memory(egui::Memory::focused)
+                .map(|id| id.value()),
+            Some(external.0),
+            "the old core confirmation must preserve the new AccessKit focus, discarded_passes={discarded_passes}"
+        );
+        overflow_with_external_buttons(&mut harness, width, vec![key(Key::Enter)], &mut clicks);
+        assert_eq!(clicks, [1, 0]);
+        assert!(
+            harness
+                .dockspace
+                .view()
+                .item(ItemId::new(2))
+                .unwrap()
+                .is_selected()
+        );
+    }
+}
+
+#[test]
+fn overflow_focus_confirmation_preserves_before_docking_application_focus() {
+    for discarded_passes in [0, 2] {
+        let (mut harness, width, _) = overflow_menu_with_first_row_focused();
+        harness.run(width, vec![key(Key::Tab)]);
+        harness.context.options_mut(|options| {
+            options.max_passes = std::num::NonZeroUsize::new(discarded_passes + 1).unwrap();
+        });
+        harness.context.add_plugin(OverflowNavigationLateDiscard {
+            remaining: discarded_passes,
+        });
+        harness.frame += 1;
+        let mut request_focus = true;
+        let mut external = None;
+        let (output, _) = harness
+            .dockspace
+            .run_single_surface_with_ui(
+                &harness.context,
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 600.0))),
+                    time: Some(f64::from(harness.frame) * 0.1),
+                    ..Default::default()
+                },
+                SURFACE,
+                &mut harness.panes,
+                |ui| {
+                    let response = ui.put(
+                        Rect::from_min_size(egui::pos2(width - 160.0, 540.0), vec2(140.0, 28.0)),
+                        egui::Button::new("Application focus"),
+                    );
+                    external = Some(response.id);
+                    if request_focus {
+                        response.request_focus();
+                        request_focus = false;
+                    }
+                },
+            )
+            .unwrap();
+        let (mut output, receipt) = output.into_parts();
+        receipt.report(SurfacePresentationResult::Presented);
+        output.textures_delta.clear();
+        assert_eq!(
+            output.platform_output.num_completed_passes,
+            discarded_passes + 1
+        );
+        assert_eq!(
+            harness.context.memory(egui::Memory::focused),
+            external,
+            "core acknowledgement must preserve a new before_docking focus request, discarded_passes={discarded_passes}"
+        );
+    }
+}
+
+#[test]
+fn overflow_focus_confirmation_preserves_application_focus_from_the_previous_run() {
+    for discarded_passes in [0, 2] {
+        let (mut harness, width, _) = overflow_menu_with_first_row_focused();
+        let mut clicks = [0, 0];
+        overflow_with_external_buttons(&mut harness, width, Vec::new(), &mut clicks);
+        let output = overflow_with_external_buttons_and_focus(
+            &mut harness,
+            width,
+            vec![key(Key::Tab)],
+            &mut clicks,
+            Some(0),
+        );
+        let external = nodes(&output)
+            .iter()
+            .find(|(_, node)| node.role() == Role::Button && node.label() == Some("External first"))
+            .unwrap()
+            .0;
+        harness.context.options_mut(|options| {
+            options.max_passes = std::num::NonZeroUsize::new(discarded_passes + 1).unwrap();
+        });
+        harness.context.add_plugin(OverflowNavigationLateDiscard {
+            remaining: discarded_passes,
+        });
+        let output = overflow_with_external_buttons(&mut harness, width, Vec::new(), &mut clicks);
+        assert_eq!(
+            output.platform_output.num_completed_passes,
+            discarded_passes + 1
+        );
+        assert_eq!(
+            harness
+                .context
+                .memory(egui::Memory::focused)
+                .map(|id| id.value()),
+            Some(external.0),
+            "core confirmation must not reclaim focus moved after docking, discarded_passes={discarded_passes}"
+        );
+        overflow_with_external_buttons(&mut harness, width, vec![key(Key::Enter)], &mut clicks);
+        assert_eq!(clicks, [1, 0]);
+    }
 }
 
 #[test]

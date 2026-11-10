@@ -1,9 +1,9 @@
 //! Tab-strip overflow controls and the core-owned tab-list popup.
 
 use dockspace::runtime::{
-    DockspaceVisualId, SurfacePaintDisposition, SurfaceTabListNavigation,
-    TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
-    TabStripControlKind, TabStripControlPaintRecord,
+    DockspaceVisualId, SurfacePaintDisposition, TabListMenuBackdropPaintRecord,
+    TabListMenuPaintRecord, TabListMenuRowPaintRecord, TabStripControlKind,
+    TabStripControlPaintRecord,
 };
 use egui::accesskit::{Action, HasPopup, Role};
 use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, pos2, vec2};
@@ -300,11 +300,52 @@ pub(crate) fn paint_menu(
     context.register_scroll_receiver(scroll_id, scroll_receiver);
 
     let rows = menu.rows().collect::<Vec<_>>();
+    if enabled {
+        // One instance slot observes semantic focus edges, without retaining popup history.
+        // Ordinary passes must leave Tab traversal and external focus intact.
+        let marker = context.instance_id.with("tab-list-menu-focus-edge");
+        let edge = (
+            menu.visual_id(),
+            rows.iter()
+                .copied()
+                .find(|row| row.focused())
+                .map(|row| tab_list_menu_row_id(context, row)),
+        );
+        let previous = context.ui.ctx().data_mut(|data| {
+            let previous = data.get_temp::<(DockspaceVisualId, Option<Id>)>(marker);
+            if previous != Some(edge) {
+                data.insert_temp(marker, edge);
+            }
+            previous
+        });
+        if previous != Some(edge)
+            && let Some(target) = edge.1
+        {
+            let can_retarget = context.ui.memory(|memory| {
+                let focused = memory.focused();
+                let newly_focused = focused.is_some_and(|id| !memory.had_focus_last_frame(id));
+                let still_on_previous = previous.is_none_or(|(menu_id, row_id)| {
+                    menu_id != edge.0 || focused.is_none() || focused == row_id
+                });
+                !newly_focused && still_on_previous
+            });
+            if can_retarget {
+                // A core acknowledgement must not reclaim focus already moved by the host.
+                context.ui.memory_mut(|memory| memory.request_focus(target));
+            }
+        }
+    }
     for row in rows.iter().copied() {
         paint_menu_row(context, menu, row, viewport, paint);
     }
     paint_scrollbar(context, menu, viewport, bounds, paint);
     capture_menu_keyboard(context, menu, frame_id, &rows);
+}
+
+fn tab_list_menu_row_id(context: &RenderContext<'_, '_, '_>, row: TabListMenuRowPaintRecord) -> Id {
+    context
+        .ui
+        .make_persistent_id((context.instance_id, "tab-list-menu-row", row.visual_id()))
 }
 
 fn paint_menu_row(
@@ -317,10 +358,7 @@ fn paint_menu_row(
     let Some(bounds) = egui_rect(row.bounds()) else {
         return;
     };
-    let id =
-        context
-            .ui
-            .make_persistent_id((context.instance_id, "tab-list-menu-row", row.visual_id()));
+    let id = tab_list_menu_row_id(context, row);
     let enabled = effective_enabled(context.ui, true);
     let (click, focus, reveal) = if enabled {
         context.ui.input(|input| {
@@ -414,16 +452,6 @@ fn paint_menu_row(
             node.set_disabled();
         }
     });
-    if enabled && row.focused() {
-        // Escape may already have returned focus during an earlier pass of this run.
-        let trigger = tab_list_menu_trigger_id(context, menu.tab_bar_visual_id());
-        let focus_returned = context.ui.ctx().current_pass_index() > 0
-            && context.ui.memory(|memory| memory.has_focus(trigger));
-        if !focus_returned {
-            context.ui.memory_mut(|memory| memory.request_focus(id));
-        }
-    }
-
     let pointer = pointer_operable
         && context.pointer_authority.accepts_local_pointer_actions()
         && response
@@ -636,42 +664,59 @@ fn capture_menu_keyboard(
     if !effective_enabled(context.ui, true) {
         return;
     }
-    let navigation = context.ui.input_mut(|input| {
-        if input.consume_key(egui::Modifiers::NONE, Key::ArrowUp) {
-            Some((Key::ArrowUp, SurfaceTabListNavigation::Previous))
-        } else if input.consume_key(egui::Modifiers::NONE, Key::ArrowDown) {
-            Some((Key::ArrowDown, SurfaceTabListNavigation::Next))
-        } else if input.consume_key(egui::Modifiers::NONE, Key::Home) {
-            Some((Key::Home, SurfaceTabListNavigation::First))
-        } else if input.consume_key(egui::Modifiers::NONE, Key::End) {
-            Some((Key::End, SurfaceTabListNavigation::Last))
-        } else {
-            None
+    let focused = context.ui.memory(|memory| memory.focused());
+    let focused_index = rows
+        .iter()
+        .position(|row| Some(tab_list_menu_row_id(context, *row)) == focused);
+    if let Some(index) = focused_index {
+        let navigation = context.ui.input_mut(|input| {
+            if input.consume_key(egui::Modifiers::NONE, Key::ArrowUp) {
+                Some((Key::ArrowUp, index.saturating_sub(1)))
+            } else if input.consume_key(egui::Modifiers::NONE, Key::ArrowDown) {
+                Some((Key::ArrowDown, (index + 1).min(rows.len() - 1)))
+            } else if input.consume_key(egui::Modifiers::NONE, Key::Home) {
+                Some((Key::Home, 0))
+            } else if input.consume_key(egui::Modifiers::NONE, Key::End) {
+                Some((Key::End, rows.len() - 1))
+            } else {
+                None
+            }
+        });
+        if let Some((key, destination)) = navigation
+            && let Some(action) = context
+                .plan
+                .prepare_tab_list_menu_focus(menu, rows[destination].item())
+        {
+            let target = tab_list_menu_row_id(context, rows[destination]);
+            context.ui.memory_mut(|memory| {
+                memory.move_focus(egui::FocusDirection::None);
+                memory.request_focus(target);
+            });
+            context.push_local_action(id.with(("keyboard-navigation", key)), action);
+            return;
         }
-    });
-    if let Some((key, navigation)) = navigation
-        && let Some(action) = context
-            .plan
-            .prepare_tab_list_menu_navigation(menu, navigation)
-    {
-        context
-            .ui
-            .memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
-        context.push_local_action(id.with(("keyboard-navigation", key)), action);
-        return;
-    }
 
-    let activate = context.ui.input_mut(|input| {
-        [Key::Enter, Key::Space]
-            .into_iter()
-            .find(|&key| input.consume_key(egui::Modifiers::NONE, key))
-    });
-    if let Some(key) = activate
-        && let Some(row) = rows.iter().copied().find(|row| row.focused())
-        && let Some(action) = context.plan.prepare_tab_list_menu_row_activation(row)
-    {
-        context.push_local_action(id.with(("keyboard-activate", key)), action);
-        return;
+        let activate = context.ui.input_mut(|input| {
+            [Key::Enter, Key::Space]
+                .into_iter()
+                .find(|&key| input.consume_key(egui::Modifiers::NONE, key))
+        });
+        if let Some(key) = activate
+            && let Some(action) = context
+                .plan
+                .prepare_tab_list_menu_row_activation(rows[index])
+        {
+            context.push_local_action(id.with(("keyboard-activate", key)), action);
+            return;
+        }
+        if !rows[index].focused()
+            && let Some(action) = context
+                .plan
+                .prepare_tab_list_menu_focus(menu, rows[index].item())
+        {
+            let origin = tab_list_menu_row_id(context, rows[index]).with("framework-focus");
+            context.push_local_action(origin, action);
+        }
     }
 
     if context
