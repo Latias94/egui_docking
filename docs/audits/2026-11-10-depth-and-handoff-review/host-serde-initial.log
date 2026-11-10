@@ -1,0 +1,28 @@
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5m 08s
+────────────
+ Nextest run ID 1c5b02ad-7adb-4ee9-a687-1cd114c79207 with nextest profile: default
+    Starting 343 tests across 58 binaries
+        FAIL [   0.012s] ( 88/343) dockspace-host-harness::endpoint_stream_admission one_slot_defers_before_execution_preserves_authority_and_recovers_with_two_slots
+  stdout ───
+
+    running 1 test
+    test one_slot_defers_before_execution_preserves_authority_and_recovers_with_two_slots ... FAILED
+
+    failures:
+
+    failures:
+        one_slot_defers_before_execution_preserves_authority_and_recovers_with_two_slots
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'one_slot_defers_before_execution_preserves_authority_and_recovers_with_two_slots' (88051791) panicked at tests/endpoint_stream_admission.rs:188:5:
+    assertion failed: receipt.is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [  21.284s] 343 tests run: 342 passed, 1 failed, 0 skipped
+        FAIL [   0.012s] ( 88/343) dockspace-host-harness::endpoint_stream_admission one_slot_defers_before_execution_preserves_authority_and_recovers_with_two_slots
+error: test run failed

@@ -1,0 +1,163 @@
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.59s
+────────────
+ Nextest run ID ed5bd17e-d093-40a9-be3b-8ccc1d764856 with nextest profile: default
+    Starting 2 tests across 1 binary (165 tests skipped)
+        FAIL [   0.058s] (1/2) egui_dockspace facade::owned_run::tests::owned_touch_menu_escape_survives_late_discards_and_a_new_long_press_can_reopen
+  stdout ───
+
+    running 1 test
+    test facade::owned_run::tests::owned_touch_menu_escape_survives_late_discards_and_a_new_long_press_can_reopen ... FAILED
+
+    failures:
+
+    failures:
+        facade::owned_run::tests::owned_touch_menu_escape_survives_late_discards_and_a_new_long_press_can_reopen
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 166 filtered out; finished in 0.05s
+
+  stderr ───
+
+    thread 'facade::owned_run::tests::owned_touch_menu_escape_survives_late_discards_and_a_new_long_press_can_reopen' (88006355) panicked at crates/egui_dockspace/src/product_owned_run_tests.rs:1207:13:
+    assertion `left == right` failed: Escape must remain effective after 2 late discards
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+     SIGABRT [   4.594s] (2/2) egui_dockspace facade::owned_run::tests::owned_touch_menu_request_survives_an_output_hook_failure
+  stdout ───
+
+    running 1 test
+  stderr ───
+
+    thread 'facade::owned_run::tests::owned_touch_menu_request_survives_an_output_hook_failure' (88006358) panicked at crates/egui_dockspace/src/product_owned_run_tests.rs:1398:13:
+    owned run output hook panicked after pane painting
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+    thread 'facade::owned_run::tests::owned_touch_menu_request_survives_an_output_hook_failure' (88006358) panicked at /Users/frankorz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.37.0/src/textures.rs:337:9:
+    Dropped TexturesDelta with 1 unapplied deltas. Deltas need to be handled. If you want to drop this intentionally call `clear` before dropping.
+    stack backtrace:
+       0:        0x10447ccd8 - std[bb513d90a5cee88a]::backtrace_rs::backtrace::libunwind::trace
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+       1:        0x10447ccd8 - std[bb513d90a5cee88a]::backtrace_rs::backtrace::trace_unsynchronized::<std[bb513d90a5cee88a]::sys::backtrace::_print_fmt::{closure#1}>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+       2:        0x10447ccd8 - std[bb513d90a5cee88a]::sys::backtrace::_print_fmt
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/sys/backtrace.rs:74:9
+       3:        0x10447ccd8 - <<std[bb513d90a5cee88a]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[f63e075e1375d836]::fmt::Display>::fmt
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/sys/backtrace.rs:44:26
+       4:        0x10448f424 - <core[f63e075e1375d836]::fmt::rt::Argument>::fmt
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/fmt/rt.rs:152:76
+       5:        0x10448f424 - core[f63e075e1375d836]::fmt::write
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/fmt/mod.rs:1686:22
+       6:        0x1044815a0 - std[bb513d90a5cee88a]::io::default_write_fmt::<std[bb513d90a5cee88a]::sys::stdio::unix::Stderr>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/io/mod.rs:639:11
+       7:        0x1044815a0 - <std[bb513d90a5cee88a]::sys::stdio::unix::Stderr as std[bb513d90a5cee88a]::io::Write>::write_fmt
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/io/mod.rs:1994:13
+       8:        0x1044643a8 - <std[bb513d90a5cee88a]::sys::backtrace::BacktraceLock>::print
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/sys/backtrace.rs:47:25
+       9:        0x1044643a8 - std[bb513d90a5cee88a]::panicking::default_hook::{closure#0}
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:292:27
+      10:        0x104476894 - std[bb513d90a5cee88a]::panicking::default_hook
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:319:9
+      11:        0x104476bbc - std[bb513d90a5cee88a]::panicking::panic_with_hook
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:825:13
+      12:        0x104464454 - std[bb513d90a5cee88a]::panicking::panic_handler::{closure#0}
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:698:13
+      13:        0x10445bae0 - std[bb513d90a5cee88a]::sys::backtrace::__rust_end_short_backtrace::<std[bb513d90a5cee88a]::panicking::panic_handler::{closure#0}, !>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/sys/backtrace.rs:182:18
+      14:        0x104464b2c - __rustc[b7974e8690430dd9]::rust_begin_unwind
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:689:5
+      15:        0x1044c5df4 - core[f63e075e1375d836]::panicking::panic_fmt
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/panicking.rs:80:14
+      16:        0x10322cc74 - <epaint::textures::TexturesDelta as core::ops::drop::Drop>::drop::hd1699165a672cb03
+                                   at /Users/frankorz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/epaint-0.37.0/src/textures.rs:337:9
+      17:        0x10322696c - core::ptr::drop_in_place<epaint::textures::TexturesDelta>::h3635af8530a74d97
+                                   at /Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:805:1
+      18:        0x10315291c - core::ptr::drop_in_place<egui::data::output::FullOutput>::h33aa018b1ac6c068
+                                   at /Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:805:1
+      19:        0x103090690 - egui::context::Context::end_pass::h06f141d444b14fc8
+                                   at /Users/frankorz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:2952:5
+      20:        0x10308f534 - egui::context::Context::run_dyn::h4ea5a80b4a0f6cf2
+                                   at /Users/frankorz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:1113:32
+      21:        0x103068a28 - egui::context::Context::run_pass_dyn::hd1133ce3f3f3c299
+                                   at /Users/frankorz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:990:14
+      22:        0x102e20028 - egui::context::Context::run_pass::h3d608933e3e14bfd
+                                   at /Users/frankorz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:984:14
+      23:        0x102e0ca84 - egui::context::Context::run_ui::h0b793e68f2070525
+                                   at /Users/frankorz/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/egui-0.37.0/src/context.rs:951:14
+      24:        0x102eca2f4 - egui_dockspace::facade::owned_run::<impl egui_dockspace::facade::Dockspace>::run_single_surface_with_ui::ha638d04fa8c56aa1
+                                   at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_owned_run.rs:292:54
+      25:        0x102ebc83c - egui_dockspace::facade::owned_run::<impl egui_dockspace::facade::Dockspace>::run_single_surface::ha19444340ad83dc2
+                                   at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_owned_run.rs:239:14
+      26:        0x102f18004 - egui_dockspace::facade::owned_run::tests::owned_touch_menu_request_survives_an_output_hook_failure::{{closure}}::h4aff143aea242a35
+                                   at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_owned_run_tests.rs:1246:27
+      27:        0x102ee8f6c - core::ops::function::FnOnce::call_once::h15ac6834dad2917e
+                                   at /Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+      28:        0x102f08f94 - <core::panic::unwind_safe::AssertUnwindSafe<F> as core::ops::function::FnOnce<()>>::call_once::h262b20ce4d74a751
+                                   at /Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/panic/unwind_safe.rs:274:9
+      29:        0x102e7246c - std::panicking::catch_unwind::do_call::ha12470b3563b63f3
+                                   at /Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/std/src/panicking.rs:581:40
+      30:        0x102f35dd4 - ___rust_try
+      31:        0x102f2c5cc - std::panicking::catch_unwind::h3e07f65f13f21541
+                                   at /Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/std/src/panicking.rs:544:19
+      32:        0x102f2c5cc - std::panic::catch_unwind::h0495c66a7c329f53
+                                   at /Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+      33:        0x102f178a0 - egui_dockspace::facade::owned_run::tests::owned_touch_menu_request_survives_an_output_hook_failure::h579baa212e19375d
+                                   at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_owned_run_tests.rs:1245:23
+      34:        0x102f18034 - egui_dockspace::facade::owned_run::tests::owned_touch_menu_request_survives_an_output_hook_failure::{{closure}}::h8c29e9edfb3cbc15
+                                   at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace/src/product_owned_run_tests.rs:1239:62
+      35:        0x102eebcbc - core::ops::function::FnOnce::call_once::h82e4d0700f9564e4
+                                   at /Users/frankorz/.rustup/toolchains/1.95.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+      36:        0x102fea4f8 - <fn() -> core[f63e075e1375d836]::result::Result<(), alloc[1519c0c6343f008f]::string::String> as core[f63e075e1375d836]::ops::function::FnOnce<()>>::call_once
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/function.rs:250:5
+      37:        0x102fea4f8 - test[83d61c8db1bee592]::__rust_begin_short_backtrace::<core[f63e075e1375d836]::result::Result<(), alloc[1519c0c6343f008f]::string::String>, fn() -> core[f63e075e1375d836]::result::Result<(), alloc[1519c0c6343f008f]::string::String>>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/test/src/lib.rs:663:18
+      38:        0x102ff4704 - test[83d61c8db1bee592]::run_test_in_process::{closure#0}
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/test/src/lib.rs:686:74
+      39:        0x102ff4704 - <core[f63e075e1375d836]::panic::unwind_safe::AssertUnwindSafe<test[83d61c8db1bee592]::run_test_in_process::{closure#0}> as core[f63e075e1375d836]::ops::function::FnOnce<()>>::call_once
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/panic/unwind_safe.rs:274:9
+      40:        0x102ff4704 - std[bb513d90a5cee88a]::panicking::catch_unwind::do_call::<core[f63e075e1375d836]::panic::unwind_safe::AssertUnwindSafe<test[83d61c8db1bee592]::run_test_in_process::{closure#0}>, core[f63e075e1375d836]::result::Result<(), alloc[1519c0c6343f008f]::string::String>>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:581:40
+      41:        0x102ff4704 - std[bb513d90a5cee88a]::panicking::catch_unwind::<core[f63e075e1375d836]::result::Result<(), alloc[1519c0c6343f008f]::string::String>, core[f63e075e1375d836]::panic::unwind_safe::AssertUnwindSafe<test[83d61c8db1bee592]::run_test_in_process::{closure#0}>>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:544:19
+      42:        0x102ff4704 - std[bb513d90a5cee88a]::panic::catch_unwind::<core[f63e075e1375d836]::panic::unwind_safe::AssertUnwindSafe<test[83d61c8db1bee592]::run_test_in_process::{closure#0}>, core[f63e075e1375d836]::result::Result<(), alloc[1519c0c6343f008f]::string::String>>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panic.rs:359:14
+      43:        0x102ff4704 - test[83d61c8db1bee592]::run_test_in_process
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/test/src/lib.rs:686:27
+      44:        0x102ff4704 - test[83d61c8db1bee592]::run_test::{closure#0}
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/test/src/lib.rs:607:43
+      45:        0x102ff0148 - test[83d61c8db1bee592]::run_test::{closure#1}
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/test/src/lib.rs:637:41
+      46:        0x102ff0148 - std[bb513d90a5cee88a]::sys::backtrace::__rust_begin_short_backtrace::<test[83d61c8db1bee592]::run_test::{closure#1}, ()>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/sys/backtrace.rs:166:18
+      47:        0x102ff69dc - std[bb513d90a5cee88a]::thread::lifecycle::spawn_unchecked::<test[83d61c8db1bee592]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/thread/lifecycle.rs:91:13
+      48:        0x102ff69dc - <core[f63e075e1375d836]::panic::unwind_safe::AssertUnwindSafe<std[bb513d90a5cee88a]::thread::lifecycle::spawn_unchecked<test[83d61c8db1bee592]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core[f63e075e1375d836]::ops::function::FnOnce<()>>::call_once
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/panic/unwind_safe.rs:274:9
+      49:        0x102ff69dc - std[bb513d90a5cee88a]::panicking::catch_unwind::do_call::<core[f63e075e1375d836]::panic::unwind_safe::AssertUnwindSafe<std[bb513d90a5cee88a]::thread::lifecycle::spawn_unchecked<test[83d61c8db1bee592]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:581:40
+      50:        0x102ff69dc - std[bb513d90a5cee88a]::panicking::catch_unwind::<(), core[f63e075e1375d836]::panic::unwind_safe::AssertUnwindSafe<std[bb513d90a5cee88a]::thread::lifecycle::spawn_unchecked<test[83d61c8db1bee592]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panicking.rs:544:19
+      51:        0x102ff69dc - std[bb513d90a5cee88a]::panic::catch_unwind::<core[f63e075e1375d836]::panic::unwind_safe::AssertUnwindSafe<std[bb513d90a5cee88a]::thread::lifecycle::spawn_unchecked<test[83d61c8db1bee592]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/panic.rs:359:14
+      52:        0x102ff69dc - std[bb513d90a5cee88a]::thread::lifecycle::spawn_unchecked::<test[83d61c8db1bee592]::run_test::{closure#1}, ()>::{closure#1}
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/thread/lifecycle.rs:89:26
+      53:        0x102ff69dc - <std[bb513d90a5cee88a]::thread::lifecycle::spawn_unchecked<test[83d61c8db1bee592]::run_test::{closure#1}, ()>::{closure#1} as core[f63e075e1375d836]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/ops/function.rs:250:5
+      54:        0x10447c69c - <alloc[1519c0c6343f008f]::boxed::Box<dyn core[f63e075e1375d836]::ops::function::FnOnce<(), Output = ()> + core[f63e075e1375d836]::marker::Send> as core[f63e075e1375d836]::ops::function::FnOnce<()>>::call_once
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/alloc/src/boxed.rs:2240:9
+      55:        0x10447c69c - <std[bb513d90a5cee88a]::sys::thread::unix::Thread>::new::thread_start
+                                   at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/std/src/sys/thread/unix.rs:118:17
+      56:        0x184569d00 - __pthread_exit
+
+    thread 'facade::owned_run::tests::owned_touch_menu_request_survives_an_output_hook_failure' (88006358) panicked at /rustc/59807616e1fa2540724bfbac14d7976d7e4a3860/library/core/src/panicking.rs:233:5:
+    panic in a destructor during cleanup
+    thread caused non-unwinding panic. aborting.
+
+    (test aborted with signal 6: SIGABRT)
+
+────────────
+     Summary [   4.656s] 2 tests run: 0 passed, 2 failed, 165 skipped
+        FAIL [   0.058s] (1/2) egui_dockspace facade::owned_run::tests::owned_touch_menu_escape_survives_late_discards_and_a_new_long_press_can_reopen
+     SIGABRT [   4.594s] (2/2) egui_dockspace facade::owned_run::tests::owned_touch_menu_request_survives_an_output_hook_failure
+error: test run failed

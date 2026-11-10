@@ -1,0 +1,15 @@
+Successful correctness/suspicious Clippy gate. Verbose style diagnostics omitted.
+This is a final-output excerpt; the complete command and exit code are in workspace-gates.json.
+
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#too_many_lines
+
+warning: using `clone` on type `NativeReceiverPurpose` which implements the `Copy` trait
+    --> crates/dockspace_host_conformance/src/tests.rs:4256:27
+     |
+4256 |             purposes.push(query.purpose().clone());
+     |                           ^^^^^^^^^^^^^^^^^^^^^^^ help: try dereferencing it: `*query.purpose()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#clone_on_copy
+
+warning: `dockspace_host_conformance` (lib test) generated 48 warnings (run `cargo clippy --fix --lib -p dockspace_host_conformance --tests -- -D clippy::correctness -D clippy::suspicious` to apply 30 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 38s

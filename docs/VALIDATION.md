@@ -15,6 +15,37 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-10 deep-layout and endpoint-handoff review
+
+The [deep-layout and handoff review](audits/2026-11-10-depth-and-handoff-review.md)
+confirms and repairs four further P2 findings from baseline `1365536`, with
+implementation complete at `b6fc6e5`. Native captions traverse deep layouts
+without recursive calls, and borrowed-view diagnostics report split metadata
+without recursively expanding descendants. A bounded presentation host can
+hand a drained surface from headless to a native endpoint using one prepaid
+global stream slot, while outstanding outputs retain their original limit.
+Exact predecessor settlement, final admission and quiescence remain required.
+Owned egui runs consume a touch-menu opening intent on their first pass, so
+Escape remains effective after discarded passes and failed publication can
+still retry the request.
+
+All fifteen fresh serial gates pass: workspace 2,306 with three existing skips,
+independent persistence host 343, official consumer 24, product 114 default /
+119 persistence, and pinned native fork 593 with one existing skip. Workspace
+and native correctness/suspicious Clippy, strict documentation, eleven doctests,
+formatting and the core dependency boundary pass. Four independent host
+depth-10,000 regressions pass. The former test requiring an increase from one
+stream slot to two is migrated to fixed-capacity handoff and retains its strict
+in-flight backpressure and authority assertions.
+
+Actual Linux X11/Glow qualification passes seven isolated eframe processes,
+the 4 MiB create/first-live/redock/retirement profile, and both complete editor
+drivers. Twelve real focused edits, six destroyed child lifetimes and Root
+rebinding finish with the original Root preserved and final quiescence. Source
+matches `b6fc6e5` after qualification. Commands, failing reproductions and final
+logs are linked from the review. The tested platform scope and existing ImGui
+performance evidence retain their prior limits.
+
 ## 2026-11-10 follow-up ownership and interaction review
 
 The [follow-up review](audits/2026-11-10-followup-review.md) reproduces and repairs

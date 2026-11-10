@@ -1,0 +1,88 @@
+[
+  {
+    "name": "workspace-nextest",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--test-threads=1",
+      "--no-fail-fast"
+    ],
+    "started": "2026-11-10T04:50:06.434145+00:00",
+    "ended": "2026-11-10T04:52:52.176493+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "workspace-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "started": "2026-11-10T04:52:52.177911+00:00",
+    "ended": "2026-11-10T04:54:30.742560+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "workspace-doc",
+    "command": [
+      "cargo",
+      "doc",
+      "--workspace",
+      "--all-features",
+      "--no-deps",
+      "--locked"
+    ],
+    "started": "2026-11-10T04:54:30.747029+00:00",
+    "ended": "2026-11-10T04:55:02.951728+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "workspace-doctests",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--all-features",
+      "--doc",
+      "--locked"
+    ],
+    "started": "2026-11-10T04:55:02.952456+00:00",
+    "ended": "2026-11-10T04:55:50.628269+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "workspace-fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "started": "2026-11-10T04:55:50.629476+00:00",
+    "ended": "2026-11-10T04:55:52.324109+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "core-dependencies",
+    "command": [
+      "python3",
+      "scripts/check_core_dependencies.py"
+    ],
+    "started": "2026-11-10T04:55:52.324748+00:00",
+    "ended": "2026-11-10T04:55:52.498162+00:00",
+    "exit_code": 0
+  }
+]

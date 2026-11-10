@@ -1,0 +1,27 @@
+[
+  {
+    "name": "host-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "started": "2026-11-10T04:56:58.553096+00:00",
+    "ended": "2026-11-10T05:02:28.968721+00:00",
+    "exit_code": 100
+  }
+]

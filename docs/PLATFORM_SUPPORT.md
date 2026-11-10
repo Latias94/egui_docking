@@ -2,7 +2,7 @@
 title: "Dockspace Platform Support"
 status: "Qualified finite profiles; clean-checkout delivery reproduced"
 reviewed: "2026-11-10"
-baseline_source_revision: "116917b"
+baseline_source_revision: "b6fc6e5"
 ---
 
 # Dockspace Platform Support
@@ -37,6 +37,13 @@ The [follow-up review](VALIDATION.md#2026-11-10-follow-up-ownership-and-interact
 qualifies obsolete-output isolation, identity-scope sharing, finite geometry and
 overflow-menu keyboard focus at `116917b`. Seven actual eframe test processes,
 the bounded redock profile and complete editor journeys pass on Linux X11.
+
+The [deep-layout and handoff review](VALIDATION.md#2026-11-10-deep-layout-and-endpoint-handoff-review)
+qualifies stack-safe captions and borrowed-view diagnostics, fixed-capacity
+endpoint handoff and touch-menu cancellation across discarded passes at
+`b6fc6e5`. All fifteen serial gates, seven actual eframe processes, the 4 MiB
+redock profile and complete editor journeys pass. These repairs retain the
+platform scope below.
 
 ## Core and public engine-host contract
 

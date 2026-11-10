@@ -1,0 +1,96 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.48s
+────────────
+ Nextest run ID c7071292-96e2-49ef-8296-eace4f6368e5 with nextest profile: default
+    Starting 4 tests across 1 binary
+        PASS [   0.050s] (1/4) dockspace-host-harness::deep_layout deep_declaration_errors_release_unvisited_subtrees
+        PASS [   0.197s] (2/4) dockspace-host-harness::deep_layout deep_declarations_clone_compile_and_drop
+        PASS [  15.643s] (3/4) dockspace-host-harness::deep_layout deep_public_declaration_compiles_a_complete_measured_scene
+        PASS [   0.103s] (4/4) dockspace-host-harness::deep_layout deep_public_views_have_bounded_debug_output
+────────────
+     Summary [  15.994s] 4 tests run: 4 passed, 0 skipped
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+   Compiling egui_dockspace_native v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native)
+warning: method `request` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/close_control.rs:69:25
+   |
+64 | impl NativeViewportCloseCancellationRecord {
+   | ------------------------------------------ method in this implementation
+...
+69 |     pub(crate) const fn request(self) -> NativeViewportCloseRequest {
+   |                         ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `replace_viewport`, `report_inventory_unknown`, and `native_work_area` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator.rs:734:12
+     |
+ 367 | impl NativeCoordinator {
+     | ---------------------- methods in this implementation
+...
+ 734 |     pub fn replace_viewport(
+     |            ^^^^^^^^^^^^^^^^
+...
+2405 |     pub fn report_inventory_unknown(&mut self) -> Result<(), NativeRuntimeError> {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2412 |     pub fn native_work_area(
+     |            ^^^^^^^^^^^^^^^^
+
+warning: methods `pointer_capture_pending`, `record_pointer_capture_for_test`, and `retire_deferred_binding` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:3656:19
+     |
+3548 | impl NativeHostBridge {
+     | --------------------- methods in this implementation
+...
+3656 |     pub(crate) fn pointer_capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+3695 |     pub(crate) fn record_pointer_capture_for_test(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+4875 |     pub(crate) fn retire_deferred_binding(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `capture_pending` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/command_callback.rs:269:19
+    |
+140 | impl NativeCommandCallbacks {
+    | --------------------------- method in this implementation
+...
+269 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: methods `capture_pending` and `receive_capture_record` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/window_resource.rs:1087:19
+     |
+  96 | impl NativeWindowResources {
+     | -------------------------- methods in this implementation
+...
+1087 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^
+...
+1122 |     pub(super) fn receive_capture_record(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `for_test` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/pointer_capture.rs:79:25
+   |
+39 | impl NativePointerCaptureRecord {
+   | ------------------------------- associated function in this implementation
+...
+79 |     pub(crate) const fn for_test(
+   |                         ^^^^^^^^
+
+warning: `egui_dockspace_native` (lib test) generated 6 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.91s
+────────────
+ Nextest run ID 00adb4e1-968b-481b-83e2-54829cae714d with nextest profile: default
+    Starting 3 tests across 1 binary (570 tests skipped)
+        PASS [   0.116s] (1/3) egui_dockspace_native window_title::tests::deep_window_caption_preserves_leaf_order_without_call_stack_traversal
+        PASS [   0.011s] (2/3) egui_dockspace_native window_title::tests::selecting_another_pane_changes_the_caption_without_replacing_its_surface
+        PASS [   0.007s] (3/3) egui_dockspace_native window_title::tests::split_captions_include_selected_leaves_and_missing_content_has_a_fallback
+────────────
+     Summary [   0.135s] 3 tests run: 3 passed, 570 skipped
