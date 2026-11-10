@@ -101,6 +101,30 @@ themselves. See [`engine/native_projection.rs`](../crates/dockspace/src/engine/n
 [`engine/native_admission.rs`](../crates/dockspace/src/engine/native_admission.rs)
 and the [R15 qualification](VALIDATION.md#2026-10-30-r15-first-live-ownership-replacement).
 
+### Multiview composition limits
+
+The [docking and multiview responsibility review](audits/2026-11-10-docking-multiview-responsibility-review.md)
+distinguishes implemented capabilities from unsupported combinations:
+
+- HostLocal input supports several independent logical surfaces. Managed native
+  hosting currently binds one surface to one OS window lifetime. Several
+  independent SurfaceIds in one OS window, combined with managed native Child
+  docking, are not yet a supported composition. Multiple panes and groups inside
+  one surface remain supported.
+- Pointer-driven native tear-off handles partial payloads; public programmatic
+  native tear-off currently accepts a complete root. Moving a partial item/group
+  into a new contained root first is a separate published operation.
+- Automatic native document restore implements one external Root with declared
+  Children recovering to it. The document format and registry can represent
+  multiple Roots, but arbitrary multi-Root automatic hosting orchestration is
+  not implemented.
+- Default native placement is derived by core for paint-plan commands. The
+  session-level native command currently requires explicit placement.
+
+These limits do not change the physical-platform evidence below. Native endpoint
+identity, logical placement and shared-window close scope must be addressed
+together before the first composition can be advertised.
+
 ## Official egui reference adapter
 
 The official adapter baseline is egui/eframe `0.37.0`. Its output capability

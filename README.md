@@ -59,6 +59,15 @@ menu. Explicit Touch resize targets request at least 44 logical points before
 surface and protected-control clipping; mouse/pen/unknown-device geometry keeps
 its existing profile. Native Touch stationary capture remains unqualified.
 
+Several logical docking areas can share a HostLocal input producer. Managed
+native hosting currently binds one logical surface to one OS window; combining
+several independent surfaces inside a single OS window with managed native Child
+docking is not yet supported. Programmatic native tear-off currently targets a
+complete root, and automatic native document restoration uses one external Root
+plus its declared Children. See the
+[multiview composition limits](docs/PLATFORM_SUPPORT.md#multiview-composition-limits)
+for the distinction between supported journeys and remaining core interface work.
+
 Local drags use the same finite continuation for tab hover selection and
 overflow-edge scrolling. Each automatic scroll step waits for exact presentation
 of its new geometry, and explicit scrolling or menu actions take ownership

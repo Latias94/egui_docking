@@ -1,0 +1,31 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--manifest-path",
+    "integration/dockspace-host-harness/Cargo.toml",
+    "--features",
+    "serde",
+    "--test",
+    "root_float_availability",
+    "--test",
+    "direct_prepared_native",
+    "--test",
+    "native_surface_creation",
+    "--test",
+    "logical_surfaces",
+    "--test",
+    "layout_management",
+    "--test",
+    "migrated_receiver_inputs",
+    "--locked",
+    "--target-dir",
+    "target",
+    "--test-threads=1",
+    "--no-fail-fast"
+  ],
+  "started": "2026-11-10T10:40:12.658049+00:00",
+  "ended": "2026-11-10T10:41:15.970923+00:00",
+  "exit_code": 0
+}

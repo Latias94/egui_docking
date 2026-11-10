@@ -1,0 +1,55 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.24s
+────────────
+ Nextest run ID 7ac5e8b0-2368-46a9-8973-3eb1c9f0aa6b with nextest profile: default
+    Starting 48 tests across 1 binary (2048 tests skipped)
+        PASS [   0.011s] ( 1/48) dockspace behavior_tests::policy_transaction_authority::item_presentation_commands_enforce_surface_target_payload_kind_atomically
+        PASS [   0.008s] ( 2/48) dockspace behavior_tests::policy_transaction_authority::root_presentation_commands_enforce_surface_target_payload_kind_atomically
+        PASS [   0.016s] ( 3/48) dockspace behavior_tests::product_actions::changed_presentation_configuration_cancels_pending_native_rehome_only_on_commit
+        PASS [   0.010s] ( 4/48) dockspace behavior_tests::product_actions::complete_root_cross_surface_float_and_dock_back_use_current_surface
+        PASS [   0.009s] ( 5/48) dockspace behavior_tests::product_actions::contained_product_actions_fail_closed_at_the_product_boundary
+        PASS [   0.009s] ( 6/48) dockspace behavior_tests::product_actions::contained_stacking_is_item_centric
+        PASS [   0.010s] ( 7/48) dockspace behavior_tests::product_actions::cross_surface_split_root_dock_back_uses_current_surface_and_configured_fraction
+        PASS [   0.011s] ( 8/48) dockspace behavior_tests::product_actions::docked_contained_round_trip_preserves_items_selection_focus_and_placement_lineage
+        PASS [   0.009s] ( 9/48) dockspace behavior_tests::product_actions::docking_a_complete_contained_root_to_same_surface_main_preserves_root_identity
+        PASS [   0.008s] (10/48) dockspace behavior_tests::product_actions::docking_a_complete_main_root_across_surfaces_preserves_root_identity
+        PASS [   0.007s] (11/48) dockspace behavior_tests::product_actions::docking_a_complete_main_root_to_its_current_surface_is_a_noop
+        PASS [   0.007s] (12/48) dockspace behavior_tests::product_actions::docking_a_complete_root_across_surfaces_rehomes_the_existing_root
+        PASS [   0.009s] (13/48) dockspace behavior_tests::product_actions::docking_a_complete_root_preserves_group_order_and_selection
+        PASS [   0.008s] (14/48) dockspace behavior_tests::product_actions::docking_part_of_a_root_to_main_allocates_a_new_root
+        PASS [   0.010s] (15/48) dockspace behavior_tests::product_actions::equal_presentation_configuration_preserves_pending_native_rehome
+        PASS [   0.009s] (16/48) dockspace behavior_tests::product_actions::floating_a_singleton_main_root_preserves_root_identity
+        PASS [   0.010s] (17/48) dockspace behavior_tests::product_actions::floating_part_of_a_root_allocates_fresh_product_identities
+        PASS [   0.010s] (18/48) dockspace behavior_tests::product_actions::focus::cross_surface_dock_item_from_idle_focuses_the_exact_destination_pane
+        PASS [   0.010s] (19/48) dockspace behavior_tests::product_actions::focus::cross_surface_float_item_from_idle_focuses_the_exact_destination_pane
+        PASS [   0.015s] (20/48) dockspace behavior_tests::product_actions::focus::dock_back_after_focusing_a_and_selecting_b_focuses_b_instead_of_focus_history
+        PASS [   0.010s] (21/48) dockspace behavior_tests::product_actions::focus::native_activation_focus_request_waits_for_observation_commit_and_survives_frame_drop
+        PASS [   0.013s] (22/48) dockspace behavior_tests::product_actions::focus::public_select_changed_and_already_selected_both_request_pane_focus
+        PASS [   0.017s] (23/48) dockspace behavior_tests::product_actions::focus::root_float_and_dock_back_from_idle_focus_the_current_selected_pane
+        PASS [   0.012s] (24/48) dockspace behavior_tests::product_actions::live_native_root_rejects_stale_and_unknown_routes_without_starting_a_transfer
+        PASS [   0.010s] (25/48) dockspace behavior_tests::product_actions::live_native_root_to_contained_preserves_multi_item_product_state_until_exact_transfer
+        PASS [   0.008s] (26/48) dockspace behavior_tests::product_actions::native_root_tear_off_reports_an_unavailable_host_without_native_enrollment
+        PASS [   0.008s] (27/48) dockspace behavior_tests::product_actions::prepared_move_root_to_new_window_rejects_a_newer_workspace_revision
+        PASS [   0.007s] (28/48) dockspace behavior_tests::product_actions::prepared_product_actions_are_bound_to_the_preparing_session
+        PASS [   0.008s] (29/48) dockspace behavior_tests::product_actions::prepared_product_actions_reject_a_newer_same_frame_candidate
+        PASS [   0.010s] (30/48) dockspace behavior_tests::product_actions::prepared_root_docking_rejects_a_newer_workspace_revision
+        PASS [   0.008s] (31/48) dockspace behavior_tests::product_actions::prepared_root_float_rejects_an_unknown_surface_atomically
+        PASS [   0.009s] (32/48) dockspace behavior_tests::product_actions::presentation_commands_report_current_availability_before_submission
+        PASS [   0.007s] (33/48) dockspace behavior_tests::product_actions::product_action_policy_rejection_rolls_back_without_leaking_internal_errors
+        PASS [   0.007s] (34/48) dockspace behavior_tests::product_actions::product_actions_resolve_anchors_against_the_same_frame_candidate
+        PASS [   0.009s] (35/48) dockspace behavior_tests::product_actions::product_actions_select_open_and_dock_without_runtime_node_ids
+        PASS [   0.009s] (36/48) dockspace behavior_tests::product_actions::product_close_requests_are_revision_and_session_bound
+        PASS [   0.008s] (37/48) dockspace behavior_tests::product_actions::rejected_main_placement_does_not_consume_the_next_root_identity
+        PASS [   0.014s] (38/48) dockspace behavior_tests::product_actions::root_action_promotes_a_contained_root_without_item_inference
+        PASS [   0.009s] (39/48) dockspace behavior_tests::product_actions::same_frame_main_actions_receive_distinct_authoritative_root_identities
+        PASS [   0.008s] (40/48) dockspace behavior_tests::product_actions::same_main_noop_still_uses_transaction_policy_authority
+        PASS [   0.009s] (41/48) dockspace behavior_tests::product_actions::same_surface_split_root_float_and_dock_back_preserve_root_identity
+        PASS [   0.011s] (42/48) dockspace behavior_tests::product_actions::staged_native_rehome_rejects_inventory_loss_before_target_presentation
+        PASS [   0.009s] (43/48) dockspace behavior_tests::product_actions::submitted_action_token_does_not_cross_rollback_frame_attempts
+        PASS [   0.008s] (44/48) dockspace behavior_tests::product_actions::terminal_configuration_commits_after_semantic_actions
+        PASS [   0.007s] (45/48) dockspace behavior_tests::product_actions::terminal_configuration_is_rollbackable_and_rejects_later_semantic_input
+        PASS [   0.009s] (46/48) dockspace behavior_tests::runtime_surface_actions::candidate_bound_presentation_commands_report_truthful_availability_and_execute
+        PASS [   0.014s] (47/48) dockspace behavior_tests::runtime_surface_actions::directional_presentation_commands_are_core_derived_and_execute
+        PASS [   0.009s] (48/48) dockspace engine::tests::native_lifecycle::rootless_native_child_rehome_waits_for_target_presentation_before_release
+────────────
+     Summary [   0.470s] 48 tests run: 48 passed, 2048 skipped
