@@ -24,6 +24,52 @@ use crate::style::DockStyle;
 pub use crate::product_focus::{retain_skipped_pane_focus, sample_host_focus};
 pub use crate::product_render::EguiSurfaceAction;
 
+/// Validates every surface's exact encoded spans after all renderer output hooks.
+///
+/// Surfaces must be supplied in their synchronous paint order. Private markers
+/// are removed once, only after every proof and the complete layer order pass.
+/// A rejected output is left unchanged so the caller can inspect or retry it.
+pub fn validate_final_outputs<'a>(
+    paints: impl IntoIterator<Item = &'a NativeSurfacePaint>,
+    output: &mut egui::FullOutput,
+) -> bool {
+    let mut context = None;
+    let mut spans = Vec::new();
+    for (paint_order, paint) in paints.into_iter().enumerate() {
+        if !paint.had_ready_plan {
+            continue;
+        }
+        let Some(proof) = paint.output_proof.as_ref() else {
+            return false;
+        };
+        match context {
+            Some(previous) if previous != proof.context() => return false,
+            None => context = Some(proof.context()),
+            _ => {}
+        }
+        let Some(evidence) = proof.present_spans(output) else {
+            return false;
+        };
+        spans.extend(
+            evidence
+                .spans
+                .into_iter()
+                .enumerate()
+                .map(|(span_order, span)| (paint_order, span_order, span)),
+        );
+    }
+    if context.is_some_and(|context| {
+        !crate::output_proof::spans_follow_paint_order(
+            &mut spans,
+            &crate::output_proof::final_paint_layer_order(context),
+        )
+    }) {
+        return false;
+    }
+    crate::output_proof::scrub_private_markers(output);
+    true
+}
+
 /// Validates a native renderer style and diagnoses mismatched mapped settings.
 ///
 /// Only fields represented by the style are compared. Core-only settings and
@@ -312,17 +358,7 @@ impl NativeSurfacePaint {
     /// Validates the exact encoded span after all renderer output hooks.
     /// Private markers are removed only after a successful complete check.
     pub fn validate_final_output(&self, output: &mut egui::FullOutput) -> bool {
-        if self.had_ready_plan
-            && self
-                .output_proof
-                .as_ref()
-                .and_then(|proof| proof.is_present_once(output))
-                .is_none()
-        {
-            return false;
-        }
-        crate::output_proof::scrub_private_markers(output);
-        true
+        validate_final_outputs(std::iter::once(self), output)
     }
     /// Returns the logical surface painted by this pass.
     #[must_use]
@@ -546,6 +582,9 @@ pub fn defer_unpainted_surfaces(frame: &mut DockspaceHostFrame<'_>) -> Result<()
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .map_err(DockspaceError::from_detail)
 }
+
+#[cfg(test)]
+mod output_tests;
 
 #[cfg(test)]
 mod style_tests {

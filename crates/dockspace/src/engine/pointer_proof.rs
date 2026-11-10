@@ -65,11 +65,9 @@ pub(super) fn validated_native_local_route(
     if coordinates.coordinate_generation() != route.coordinate_generation() {
         return None;
     }
-    let expected = LogicalPoint::new(
-        route.client_position().x() / coordinates.presentation_scale_factor().get(),
-        route.client_position().y() / coordinates.presentation_scale_factor().get(),
-    )
-    .ok()?;
+    let expected = coordinates
+        .client_to_surface(route.client_position())
+        .ok()?;
     (expected == route.surface_position()).then_some(route)
 }
 
@@ -78,6 +76,17 @@ fn validated_native_local_hover(
     edge: &PointerEdge,
 ) -> Option<NativeLocalPointerRoute> {
     let route = validated_native_local_route(engine, edge)?;
+    let PointerProviderScope::NativeJoined(host) = engine.pointer_provider()?.scope() else {
+        return None;
+    };
+    let coordinates = engine.native_local_coordinate_snapshot(host, route.binding())?;
+    if !coordinates
+        .surface_client_geometry()
+        .clip()
+        .contains(route.client_position())
+    {
+        return None;
+    }
     let projection = engine.interaction_projection(route.binding().surface())?;
     (native_local_route_matches_authority(route, projection.authority())
         && projection

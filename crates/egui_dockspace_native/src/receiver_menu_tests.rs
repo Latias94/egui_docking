@@ -169,7 +169,7 @@ fn tab_list_menu_rows_route_native_click_and_drag_after_ui_zoom() {
                 vec![PresentedReceiverSet {
                     binding,
                     viewport: egui::ViewportId::ROOT,
-                    hit_authority,
+                    hit_authority: Arc::new(hit_authority),
                     artifact,
                     receivers,
                     scroll_receivers,
@@ -485,7 +485,7 @@ fn an_application_modal_blocks_native_menu_scroll_without_rejecting_input() {
             vec![PresentedReceiverSet {
                 binding,
                 viewport: egui::ViewportId::ROOT,
-                hit_authority,
+                hit_authority: Arc::new(hit_authority),
                 artifact,
                 receivers: paint.receivers().collect(),
                 scroll_receivers,

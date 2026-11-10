@@ -22,8 +22,8 @@ use crate::platform::{
 use crate::viewport::CloseObservationGeneration;
 use crate::viewport::{
     CoordinateGeneration, CoordinateObservationGeneration, InputObservationGeneration,
-    InventoryGeneration, ViewportBinding, ViewportRole, WindowIncarnation, WindowToken,
-    WorkAreaGeneration,
+    InventoryGeneration, ViewportBinding, ViewportRole, WindowBinding, WindowIncarnation,
+    WindowToken, WorkAreaGeneration,
 };
 
 /// Lifecycle state derived from authoritative inventory, never from callback timing.
@@ -84,68 +84,83 @@ pub(crate) enum NativeCloseEdgeDisposition {
     AuthorityUnavailable,
 }
 
-/// Queryable registry record for one logical surface.
+/// Window-owned facts, stored once for each exact native incarnation.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ViewportRecord {
-    binding: ViewportBinding,
+struct WindowRecord {
     role: ViewportRole,
     ownership: ViewportOwnership,
-    admission: ViewportAdmission,
     lifecycle: ViewportLifecycle,
-    coordinates: Option<CoordinateSnapshot>,
-    recovery_coordinates: Option<RecoveryCoordinateSnapshot>,
     coordinate_observations: WindowCoordinateObservationStream,
     input_observations: WindowInputObservationStream,
     presentation_observations: WindowPresentationObservationStream,
     create_preparation_observations: WindowCreatePreparationObservationStream,
     close_observations: WindowCloseObservationStream,
-    coordinate_generation: CoordinateGeneration,
     ever_observed: bool,
     pending_close_request: Option<WindowCloseObservation>,
 }
 
-impl ViewportRecord {
+/// Surface-local admission and projection authority for one native placement.
+#[derive(Debug, Clone, PartialEq)]
+struct SurfacePlacementRecord {
+    binding: ViewportBinding,
+    admission: ViewportAdmission,
+    coordinates: Option<CoordinateSnapshot>,
+    recovery_coordinates: Option<RecoveryCoordinateSnapshot>,
+    coordinate_generation: CoordinateGeneration,
+}
+
+/// Borrowed query joining one surface placement to its window-owned facts.
+///
+/// Copying this view copies references, never a second lifecycle owner. The
+/// registry alone mutates either record inside its publication candidate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewportRecord<'registry> {
+    placement: &'registry SurfacePlacementRecord,
+    window: &'registry WindowRecord,
+}
+
+impl ViewportRecord<'_> {
     #[must_use]
-    pub const fn binding(&self) -> ViewportBinding {
-        self.binding
+    pub const fn binding(self) -> ViewportBinding {
+        self.placement.binding
     }
 
     #[must_use]
-    pub const fn role(&self) -> ViewportRole {
-        self.role
+    pub const fn role(self) -> ViewportRole {
+        self.window.role
     }
 
     #[must_use]
-    pub const fn ownership(&self) -> ViewportOwnership {
-        self.ownership
+    pub const fn ownership(self) -> ViewportOwnership {
+        self.window.ownership
     }
 
     #[must_use]
-    pub const fn admission(&self) -> ViewportAdmission {
-        self.admission
+    pub const fn admission(self) -> ViewportAdmission {
+        self.placement.admission
     }
 
     #[must_use]
-    pub const fn lifecycle(&self) -> ViewportLifecycle {
-        self.lifecycle
+    pub const fn lifecycle(self) -> ViewportLifecycle {
+        self.window.lifecycle
     }
 
     #[must_use]
-    pub const fn is_ready(&self) -> bool {
-        matches!(self.lifecycle, ViewportLifecycle::Ready)
+    pub const fn is_ready(self) -> bool {
+        matches!(self.window.lifecycle, ViewportLifecycle::Ready)
     }
 
     /// Returns whether this live incarnation can still authorize its coordinate snapshot.
     ///
     /// A close-request edge disables new pointer routing, but the observed window and its
     /// geometry remain authoritative until close acceptance advances to `AwaitingDestroyed`.
-    pub(crate) const fn has_coordinate_authority(&self) -> bool {
+    pub(crate) const fn has_coordinate_authority(self) -> bool {
         matches!(
-            self.lifecycle,
+            self.window.lifecycle,
             ViewportLifecycle::Ready | ViewportLifecycle::CloseRequested
-        ) && self.coordinates.is_some()
+        ) && self.placement.coordinates.is_some()
             && matches!(
-                self.presentation_observations.current(),
+                self.window.presentation_observations.current(),
                 Some(observation)
                     if matches!(
                         observation.state(),
@@ -156,10 +171,11 @@ impl ViewportRecord {
 
     /// Returns whether the window is eligible for authoritative pointer routing.
     #[must_use]
-    pub(crate) fn is_routeable(&self) -> bool {
-        self.admission == ViewportAdmission::Admitted
+    pub(crate) fn is_routeable(self) -> bool {
+        self.placement.admission == ViewportAdmission::Admitted
             && self.is_ready()
             && self
+                .window
                 .presentation_observations
                 .current()
                 .is_some_and(|observation| {
@@ -172,15 +188,16 @@ impl ViewportRecord {
     /// A visible staging child may be focused by the OS before its first live
     /// docking output is admitted. That fact is structurally valid, but must
     /// remain isolated from pane restoration and interaction until admission.
-    pub(crate) fn can_report_focus_fact(&self) -> bool {
-        self.ever_observed
+    pub(crate) fn can_report_focus_fact(self) -> bool {
+        self.window.ever_observed
             && matches!(
-                self.lifecycle,
+                self.window.lifecycle,
                 ViewportLifecycle::AwaitingObservation
                     | ViewportLifecycle::Ready
                     | ViewportLifecycle::CloseRequested
             )
             && self
+                .window
                 .presentation_observations
                 .current()
                 .is_some_and(|observation| {
@@ -192,22 +209,23 @@ impl ViewportRecord {
     ///
     /// Focus authority is independent of geometry authority: an admitted live
     /// window remains observable while coordinate facts are temporarily unavailable.
-    pub(crate) fn can_observe_focus(&self) -> bool {
-        self.admission == ViewportAdmission::Admitted && self.can_report_focus_fact()
+    pub(crate) fn can_observe_focus(self) -> bool {
+        self.placement.admission == ViewportAdmission::Admitted && self.can_report_focus_fact()
     }
 
     /// Returns whether this exact incarnation may accept a new activation.
     ///
     /// A close-requested window may still report the focus it already owns,
     /// but new focus commands would race its terminal lifecycle.
-    pub(crate) fn can_accept_activation(&self) -> bool {
-        self.admission == ViewportAdmission::Admitted
-            && self.ever_observed
+    pub(crate) fn can_accept_activation(self) -> bool {
+        self.placement.admission == ViewportAdmission::Admitted
+            && self.window.ever_observed
             && matches!(
-                self.lifecycle,
+                self.window.lifecycle,
                 ViewportLifecycle::AwaitingObservation | ViewportLifecycle::Ready
             )
             && self
+                .window
                 .presentation_observations
                 .current()
                 .is_some_and(|observation| {
@@ -215,75 +233,75 @@ impl ViewportRecord {
                 })
     }
 
-    pub(crate) const fn coordinates(&self) -> Option<CoordinateSnapshot> {
-        self.coordinates
+    pub(crate) const fn coordinates(self) -> Option<CoordinateSnapshot> {
+        self.placement.coordinates
     }
 
     /// Returns the last exact-binding coordinates retained only for destruction recovery.
     ///
     /// This is historical placement data, not current route, hit-test, or scene authority.
-    pub(crate) const fn recovery_coordinates(&self) -> Option<RecoveryCoordinateSnapshot> {
-        self.recovery_coordinates
+    pub(crate) const fn recovery_coordinates(self) -> Option<RecoveryCoordinateSnapshot> {
+        self.placement.recovery_coordinates
     }
 
-    pub(crate) const fn coordinate_generation(&self) -> CoordinateGeneration {
-        self.coordinate_generation
+    pub(crate) const fn coordinate_generation(self) -> CoordinateGeneration {
+        self.placement.coordinate_generation
     }
 
     #[cfg(test)]
     pub(crate) const fn coordinate_observation_generation_watermark(
-        &self,
+        self,
     ) -> Option<CoordinateObservationGeneration> {
-        self.coordinate_observations.generation_watermark()
+        self.window.coordinate_observations.generation_watermark()
     }
 
     pub(crate) const fn coordinate_observation_generation(
-        &self,
+        self,
     ) -> Option<CoordinateObservationGeneration> {
-        match self.coordinates {
+        match self.placement.coordinates {
             Some(coordinates) => Some(coordinates.observation_generation()),
             None => None,
         }
     }
 
-    pub(crate) const fn input_observation(&self) -> Option<WindowInputObservation> {
-        self.input_observations.current()
+    pub(crate) const fn input_observation(self) -> Option<WindowInputObservation> {
+        self.window.input_observations.current()
     }
 
-    pub(crate) const fn input_observations(&self) -> WindowInputObservationStream {
-        self.input_observations
+    pub(crate) const fn input_observations(self) -> WindowInputObservationStream {
+        self.window.input_observations
     }
 
     pub(crate) const fn input_observation_generation_watermark(
-        &self,
+        self,
     ) -> Option<InputObservationGeneration> {
-        self.input_observations.generation_watermark()
+        self.window.input_observations.generation_watermark()
     }
 
-    pub(crate) const fn presentation_observation(&self) -> Option<WindowPresentationObservation> {
-        self.presentation_observations.current()
+    pub(crate) const fn presentation_observation(self) -> Option<WindowPresentationObservation> {
+        self.window.presentation_observations.current()
     }
 
-    pub(crate) const fn create_preparation(&self) -> Option<WindowCreatePreparationObservation> {
-        self.create_preparation_observations.current()
+    pub(crate) const fn create_preparation(self) -> Option<WindowCreatePreparationObservation> {
+        self.window.create_preparation_observations.current()
     }
 
-    pub(crate) const fn renderer_prepared_since(&self) -> Option<CoordinateObservationGeneration> {
-        self.create_preparation_observations.prepared_since()
+    pub(crate) const fn renderer_prepared_since(self) -> Option<CoordinateObservationGeneration> {
+        self.window.create_preparation_observations.prepared_since()
     }
 
-    pub(crate) const fn close_observations(&self) -> WindowCloseObservationStream {
-        self.close_observations
+    pub(crate) const fn close_observations(self) -> WindowCloseObservationStream {
+        self.window.close_observations
     }
 
-    pub(crate) const fn ever_observed(&self) -> bool {
-        self.ever_observed
+    pub(crate) const fn ever_observed(self) -> bool {
+        self.window.ever_observed
     }
 
-    pub(crate) const fn is_observed(&self) -> bool {
-        self.ever_observed
+    pub(crate) const fn is_observed(self) -> bool {
+        self.window.ever_observed
             && !matches!(
-                self.lifecycle,
+                self.window.lifecycle,
                 ViewportLifecycle::Missing | ViewportLifecycle::Destroyed
             )
     }
@@ -292,33 +310,36 @@ impl ViewportRecord {
     ///
     /// Matching the binding alone is intentionally insufficient: a clear followed by a new
     /// request on the same native window is a different close obligation.
-    pub(crate) fn matches_pending_close_edge(&self, edge: NativeCloseEdge) -> bool {
-        self.binding == edge.binding()
-            && self.pending_close_request.is_some_and(|observation| {
-                observation.binding() == edge.binding()
-                    && observation.generation() == edge.observed_at()
-                    && observation.inventory_generation() == edge.received_at()
-                    && observation.known_state() == Some(WindowCloseState::LiveRequested)
-            })
+    pub(crate) fn matches_pending_close_edge(self, edge: NativeCloseEdge) -> bool {
+        self.placement.binding == edge.binding()
+            && self
+                .window
+                .pending_close_request
+                .is_some_and(|observation| {
+                    observation.binding() == edge.binding()
+                        && observation.generation() == edge.observed_at()
+                        && observation.inventory_generation() == edge.received_at()
+                        && observation.known_state() == Some(WindowCloseState::LiveRequested)
+                })
     }
 
     /// Classifies current close facts against one frozen native close edge.
     pub(crate) fn native_close_edge_disposition(
-        &self,
+        self,
         edge: NativeCloseEdge,
     ) -> NativeCloseEdgeDisposition {
-        if self.binding != edge.binding() {
+        if self.placement.binding != edge.binding() {
             return NativeCloseEdgeDisposition::BindingRebound {
-                binding: self.binding,
+                binding: self.placement.binding,
             };
         }
         if self.matches_pending_close_edge(edge) {
             return NativeCloseEdgeDisposition::ExactPending;
         }
-        if matches!(self.lifecycle, ViewportLifecycle::Missing) {
+        if matches!(self.window.lifecycle, ViewportLifecycle::Missing) {
             return NativeCloseEdgeDisposition::InventoryMissing;
         }
-        let Some(observation) = self.close_observations.current() else {
+        let Some(observation) = self.window.close_observations.current() else {
             return NativeCloseEdgeDisposition::AuthorityUnavailable;
         };
         match observation.known_state() {
@@ -448,8 +469,9 @@ impl RegistryTransition {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewportRegistry {
     authority_domain: EngineAuthorityDomainId,
-    records: BTreeMap<SurfaceId, ViewportRecord>,
-    token_to_surface: BTreeMap<WindowToken, SurfaceId>,
+    records: BTreeMap<SurfaceId, SurfacePlacementRecord>,
+    windows: BTreeMap<WindowBinding, WindowRecord>,
+    token_to_window: BTreeMap<WindowToken, WindowBinding>,
     last_token: WindowToken,
     last_incarnation: WindowIncarnation,
     native_binding_allocation_budget: Option<usize>,
@@ -470,7 +492,8 @@ impl ViewportRegistry {
         Self {
             authority_domain,
             records: BTreeMap::new(),
-            token_to_surface: BTreeMap::new(),
+            windows: BTreeMap::new(),
+            token_to_window: BTreeMap::new(),
             last_token: WindowToken::managed(0),
             last_incarnation: WindowIncarnation::new(0),
             native_binding_allocation_budget: None,
@@ -549,7 +572,7 @@ impl ViewportRegistry {
         if self.records.contains_key(&surface) {
             return Err(ViewportRegistryError::SurfaceAlreadyRegistered { surface });
         }
-        if self.token_to_surface.contains_key(&token) {
+        if self.token_to_window.contains_key(&token) {
             return Err(ViewportRegistryError::TokenAlreadyRegistered { token });
         }
         if !self.native_binding_allocation_available() {
@@ -621,33 +644,38 @@ impl ViewportRegistry {
                 surface: binding.surface(),
             });
         }
-        if self.token_to_surface.contains_key(&binding.token()) {
+        if self.token_to_window.contains_key(&binding.token()) {
             return Err(ViewportRegistryError::TokenAlreadyRegistered {
                 token: binding.token(),
             });
         }
         let coordinate_generation = self.next_surface_authority(binding.surface())?;
-        self.token_to_surface
-            .insert(binding.token(), binding.surface());
-        self.records.insert(
-            binding.surface(),
-            ViewportRecord {
-                binding,
+        self.token_to_window
+            .insert(binding.token(), binding.window());
+        self.windows.insert(
+            binding.window(),
+            WindowRecord {
                 role,
                 ownership,
-                admission,
                 lifecycle: ViewportLifecycle::AwaitingObservation,
-                coordinates: None,
-                recovery_coordinates: None,
                 coordinate_observations: WindowCoordinateObservationStream::default(),
                 input_observations: WindowInputObservationStream::default(),
                 presentation_observations: WindowPresentationObservationStream::default(),
                 create_preparation_observations: WindowCreatePreparationObservationStream::default(
                 ),
                 close_observations: WindowCloseObservationStream::default(),
-                coordinate_generation,
                 ever_observed: false,
                 pending_close_request: None,
+            },
+        );
+        self.records.insert(
+            binding.surface(),
+            SurfacePlacementRecord {
+                binding,
+                admission,
+                coordinates: None,
+                recovery_coordinates: None,
+                coordinate_generation,
             },
         );
         Ok(binding)
@@ -736,25 +764,25 @@ impl ViewportRegistry {
             .checked_next()
             .ok_or(ViewportRegistryError::InventoryGenerationExhausted)?;
         let observation = observation.with_inventory_generation(generation);
-        let record = self.current_record_mut(binding)?;
-        if matches!(record.lifecycle, ViewportLifecycle::Destroyed) {
+        let (record, window) = self.current_record_mut(binding)?;
+        if matches!(window.lifecycle, ViewportLifecycle::Destroyed) {
             return Err(ViewportRegistryError::BindingAlreadyDestroyed { binding });
         }
 
-        record
+        window
             .close_observations
             .observe(binding, Some(observation));
         let mut events = Vec::new();
-        let destroyed = reduce_close_observation(record, &mut events);
+        let destroyed = reduce_close_observation(record, window, &mut events);
         debug_assert!(!destroyed, "narrow close ingress rejects destroyed facts");
-        if record.pending_close_request.is_some() {
-            record.lifecycle = ViewportLifecycle::CloseRequested;
+        if window.pending_close_request.is_some() {
+            window.lifecycle = ViewportLifecycle::CloseRequested;
         } else if record.admission == ViewportAdmission::Retiring {
-            record.lifecycle = ViewportLifecycle::AwaitingDestroyed;
+            window.lifecycle = ViewportLifecycle::AwaitingDestroyed;
         } else if record.coordinates.is_some() {
-            record.lifecycle = ViewportLifecycle::Ready;
+            window.lifecycle = ViewportLifecycle::Ready;
         } else {
-            record.lifecycle = ViewportLifecycle::AwaitingObservation;
+            window.lifecycle = ViewportLifecycle::AwaitingObservation;
         }
         self.inventory_generation = generation;
         Ok(RegistryTransition { generation, events })
@@ -788,7 +816,12 @@ impl ViewportRegistry {
         let mut coordinate_authority_lost = Vec::new();
 
         for (surface, record) in &mut self.records {
-            if matches!(record.lifecycle, ViewportLifecycle::Destroyed) {
+            let window = self.windows.get_mut(&record.binding.window()).ok_or(
+                ViewportRegistryError::StaleBinding {
+                    binding: record.binding,
+                },
+            )?;
+            if matches!(window.lifecycle, ViewportLifecycle::Destroyed) {
                 continue;
             }
 
@@ -797,43 +830,47 @@ impl ViewportRegistry {
             } else {
                 ViewportLifecycle::AwaitingObservation
             };
-            let record_changed = record.lifecycle != target_lifecycle
+            let record_changed = window.lifecycle != target_lifecycle
                 || record.coordinates.is_some()
-                || record.coordinate_observations != WindowCoordinateObservationStream::default()
-                || record.input_observations != WindowInputObservationStream::default()
-                || record.presentation_observations
+                || window.coordinate_observations != WindowCoordinateObservationStream::default()
+                || window.input_observations != WindowInputObservationStream::default()
+                || window.presentation_observations
                     != WindowPresentationObservationStream::default()
-                || record.create_preparation_observations
+                || window.create_preparation_observations
                     != WindowCreatePreparationObservationStream::default()
-                || record.close_observations != WindowCloseObservationStream::default()
-                || record.ever_observed
-                || record.pending_close_request.is_some();
+                || window.close_observations != WindowCloseObservationStream::default()
+                || window.ever_observed
+                || window.pending_close_request.is_some();
             if !record_changed {
                 continue;
             }
 
-            let coordinate_authority_was_live = record.has_coordinate_authority();
-            let live_semantics_changed = record.lifecycle != target_lifecycle
+            let coordinate_authority_was_live = ViewportRecord {
+                placement: record,
+                window,
+            }
+            .has_coordinate_authority();
+            let live_semantics_changed = window.lifecycle != target_lifecycle
                 || coordinate_authority_was_live
-                || record.ever_observed
-                || record.pending_close_request.is_some()
-                || record.coordinate_observations.current().is_some()
-                || record.input_observations.current().is_some()
-                || record.presentation_observations.current().is_some()
-                || record.close_observations.current().is_some();
+                || window.ever_observed
+                || window.pending_close_request.is_some()
+                || window.coordinate_observations.current().is_some()
+                || window.input_observations.current().is_some()
+                || window.presentation_observations.current().is_some()
+                || window.close_observations.current().is_some();
             if coordinate_authority_was_live {
                 coordinate_authority_lost.push(*surface);
             }
-            record.lifecycle = target_lifecycle;
+            window.lifecycle = target_lifecycle;
             record.coordinates = None;
-            record.coordinate_observations = WindowCoordinateObservationStream::default();
-            record.input_observations = WindowInputObservationStream::default();
-            record.presentation_observations = WindowPresentationObservationStream::default();
-            record.create_preparation_observations =
+            window.coordinate_observations = WindowCoordinateObservationStream::default();
+            window.input_observations = WindowInputObservationStream::default();
+            window.presentation_observations = WindowPresentationObservationStream::default();
+            window.create_preparation_observations =
                 WindowCreatePreparationObservationStream::default();
-            record.close_observations = WindowCloseObservationStream::default();
-            record.ever_observed = false;
-            record.pending_close_request = None;
+            window.close_observations = WindowCloseObservationStream::default();
+            window.ever_observed = false;
+            window.pending_close_request = None;
             if live_semantics_changed {
                 events.push(RegistryEvent::FactsUnavailable {
                     binding: record.binding,
@@ -893,9 +930,14 @@ impl ViewportRegistry {
         let mut surface_authority_generations = self.surface_authority_generations.clone();
 
         for (surface, record) in &mut self.records {
-            let previous_lifecycle = record.lifecycle;
+            let window = self.windows.get_mut(&record.binding.window()).ok_or(
+                ViewportRegistryError::StaleBinding {
+                    binding: record.binding,
+                },
+            )?;
+            let previous_lifecycle = window.lifecycle;
             let window_observation = observations.get(&record.binding).copied();
-            if matches!(record.lifecycle, ViewportLifecycle::Destroyed)
+            if matches!(window.lifecycle, ViewportLifecycle::Destroyed)
                 && window_observation.is_some()
             {
                 return Err(ViewportRegistryError::DestroyedBindingReappeared {
@@ -907,10 +949,10 @@ impl ViewportRegistry {
                 .get(&record.binding)
                 .copied()
                 .map(|observation| observation.with_inventory_generation(generation));
-            record
+            window
                 .close_observations
                 .observe(record.binding, close_observation);
-            if reduce_close_observation(record, &mut events) {
+            if reduce_close_observation(record, window, &mut events) {
                 let authority = last_coordinate_generation
                     .checked_next()
                     .ok_or(ViewportRegistryError::CoordinateGenerationExhausted)?;
@@ -922,13 +964,13 @@ impl ViewportRegistry {
 
             let Some(observation) = window_observation else {
                 if authoritative
-                    && record.ever_observed
+                    && window.ever_observed
                     && !matches!(
-                        record.lifecycle,
+                        window.lifecycle,
                         ViewportLifecycle::Missing | ViewportLifecycle::Destroyed
                     )
                 {
-                    record.lifecycle = ViewportLifecycle::Missing;
+                    window.lifecycle = ViewportLifecycle::Missing;
                     events.push(RegistryEvent::BindingMissing {
                         binding: record.binding,
                     });
@@ -942,18 +984,18 @@ impl ViewportRegistry {
                 continue;
             };
 
-            record.ever_observed = true;
+            window.ever_observed = true;
             let awaiting_destroyed = record.admission == ViewportAdmission::Retiring;
             let was_ready = matches!(previous_lifecycle, ViewportLifecycle::Ready);
             let previous_coordinates = record.coordinates;
-            let previous_presentation = record.presentation_observations.current();
-            record
+            let previous_presentation = window.presentation_observations.current();
+            window
                 .coordinate_observations
                 .observe(record.binding, observation.coordinate_observation());
-            record
+            window
                 .input_observations
                 .observe(record.binding, observation.input_observation());
-            record.create_preparation_observations.observe(
+            window.create_preparation_observations.observe(
                 record.binding,
                 observation
                     .create_preparation()
@@ -962,12 +1004,12 @@ impl ViewportRegistry {
             let presentation_observation = observation
                 .presentation_observation()
                 .map(|observation| observation.with_inventory_generation(generation));
-            record
+            window
                 .presentation_observations
                 .observe(record.binding, presentation_observation);
             let presentation_changed =
-                previous_presentation != record.presentation_observations.current();
-            let coordinates = record
+                previous_presentation != window.presentation_observations.current();
+            let coordinates = window
                 .coordinate_observations
                 .current()
                 .and_then(|observation| {
@@ -985,19 +1027,19 @@ impl ViewportRegistry {
             };
             record.coordinates = coordinates;
             if awaiting_destroyed {
-                record.lifecycle = ViewportLifecycle::AwaitingDestroyed;
+                window.lifecycle = ViewportLifecycle::AwaitingDestroyed;
             } else {
-                if record.pending_close_request.is_some() {
-                    record.lifecycle = ViewportLifecycle::CloseRequested;
+                if window.pending_close_request.is_some() {
+                    window.lifecycle = ViewportLifecycle::CloseRequested;
                 } else if record.coordinates.is_some() {
-                    record.lifecycle = ViewportLifecycle::Ready;
+                    window.lifecycle = ViewportLifecycle::Ready;
                     if !was_ready || facts_changed {
                         events.push(RegistryEvent::Ready {
                             binding: record.binding,
                         });
                     }
                 } else {
-                    record.lifecycle = ViewportLifecycle::AwaitingObservation;
+                    window.lifecycle = ViewportLifecycle::AwaitingObservation;
                     if was_ready || facts_changed {
                         events.push(RegistryEvent::FactsUnavailable {
                             binding: record.binding,
@@ -1015,7 +1057,11 @@ impl ViewportRegistry {
                         Authority::Known(WindowPresentationState::Visible)
                     )
                 });
-            let current_coordinate_authority = record.has_coordinate_authority();
+            let current_coordinate_authority = ViewportRecord {
+                placement: record,
+                window,
+            }
+            .has_coordinate_authority();
             if facts_changed || previous_coordinate_authority != current_coordinate_authority {
                 let authority = last_coordinate_generation
                     .checked_next()
@@ -1032,7 +1078,11 @@ impl ViewportRegistry {
                     binding: record.binding,
                 });
             }
-            if record.has_coordinate_authority()
+            if (ViewportRecord {
+                placement: record,
+                window,
+            })
+            .has_coordinate_authority()
                 && let Some(coordinates) = record.coordinates
             {
                 record.recovery_coordinates = Some(record.recovery_coordinates.map_or_else(
@@ -1103,14 +1153,14 @@ impl ViewportRegistry {
         binding: ViewportBinding,
     ) -> Result<(), ViewportRegistryError> {
         if matches!(
-            self.current_record(binding)?.lifecycle,
+            self.current_record(binding)?.lifecycle(),
             ViewportLifecycle::Destroyed
         ) {
             return Err(ViewportRegistryError::BindingAlreadyDestroyed { binding });
         }
         let generation = self.next_surface_authority(binding.surface())?;
-        let record = self.current_record_mut(binding)?;
-        record.lifecycle = ViewportLifecycle::AwaitingDestroyed;
+        let (record, window) = self.current_record_mut(binding)?;
+        window.lifecycle = ViewportLifecycle::AwaitingDestroyed;
         record.admission = ViewportAdmission::Retiring;
         record.coordinate_generation = generation;
         record.coordinates = record
@@ -1125,20 +1175,21 @@ impl ViewportRegistry {
     ) -> Result<(), ViewportRegistryError> {
         let lifecycle = {
             let record = self.current_record(binding)?;
-            if matches!(record.lifecycle, ViewportLifecycle::Destroyed) {
+            let window = record.window;
+            if matches!(window.lifecycle, ViewportLifecycle::Destroyed) {
                 return Err(ViewportRegistryError::BindingAlreadyDestroyed { binding });
             }
-            if record.pending_close_request.is_some() {
+            if window.pending_close_request.is_some() {
                 ViewportLifecycle::CloseRequested
-            } else if record.coordinates.is_some() {
+            } else if record.coordinates().is_some() {
                 ViewportLifecycle::Ready
             } else {
                 ViewportLifecycle::AwaitingObservation
             }
         };
         let generation = self.next_surface_authority(binding.surface())?;
-        let record = self.current_record_mut(binding)?;
-        record.lifecycle = lifecycle;
+        let (record, window) = self.current_record_mut(binding)?;
+        window.lifecycle = lifecycle;
         record.admission = ViewportAdmission::Admitted;
         record.coordinate_generation = generation;
         record.coordinates = record
@@ -1159,10 +1210,11 @@ impl ViewportRegistry {
     ) -> Result<bool, ViewportRegistryError> {
         let resumable = {
             let record = self.current_record(binding)?;
-            record.admission == ViewportAdmission::Retiring
-                && matches!(record.lifecycle, ViewportLifecycle::AwaitingDestroyed)
-                && record.pending_close_request.is_none()
-                && record
+            let window = record.window;
+            record.admission() == ViewportAdmission::Retiring
+                && matches!(window.lifecycle, ViewportLifecycle::AwaitingDestroyed)
+                && window.pending_close_request.is_none()
+                && window
                     .close_observations
                     .current()
                     .is_some_and(|observation| {
@@ -1173,8 +1225,8 @@ impl ViewportRegistry {
             return Ok(false);
         }
         let generation = self.next_surface_authority(binding.surface())?;
-        let record = self.current_record_mut(binding)?;
-        record.lifecycle = if record.coordinates.is_some() {
+        let (record, window) = self.current_record_mut(binding)?;
+        window.lifecycle = if record.coordinates.is_some() {
             ViewportLifecycle::Ready
         } else {
             ViewportLifecycle::AwaitingObservation
@@ -1189,10 +1241,10 @@ impl ViewportRegistry {
 
     /// Admits one proven runtime-owned binding after topology commit.
     pub(crate) fn admit(&mut self, binding: ViewportBinding) -> Result<(), ViewportRegistryError> {
-        let record = self.current_record_mut(binding)?;
+        let (record, window) = self.current_record_mut(binding)?;
         if record.admission != ViewportAdmission::Pending
-            || !matches!(record.lifecycle, ViewportLifecycle::Ready)
-            || record
+            || !matches!(window.lifecycle, ViewportLifecycle::Ready)
+            || window
                 .presentation_observations
                 .current()
                 .and_then(WindowPresentationObservation::known_state)
@@ -1217,15 +1269,19 @@ impl ViewportRegistry {
             .records
             .remove(&surface)
             .ok_or(ViewportRegistryError::MissingSurface { surface })?;
-        self.token_to_surface.remove(&binding.token());
+        let window = self
+            .windows
+            .remove(&binding.window())
+            .ok_or(ViewportRegistryError::StaleBinding { binding })?;
+        self.token_to_window.remove(&binding.token());
         Ok(DetachedViewportFacts {
             binding: record.binding,
-            role: record.role,
-            ownership: record.ownership,
-            lifecycle: record.lifecycle,
-            input_observations: record.input_observations,
-            close_observations: record.close_observations,
-            ever_observed: record.ever_observed,
+            role: window.role,
+            ownership: window.ownership,
+            lifecycle: window.lifecycle,
+            input_observations: window.input_observations,
+            close_observations: window.close_observations,
+            ever_observed: window.ever_observed,
         })
     }
 
@@ -1234,12 +1290,14 @@ impl ViewportRegistry {
         binding: ViewportBinding,
     ) -> Result<(), ViewportRegistryError> {
         let record = self.current_record(binding)?;
-        if !matches!(record.lifecycle, ViewportLifecycle::Destroyed) {
+        let window = record.window;
+        if !matches!(window.lifecycle, ViewportLifecycle::Destroyed) {
             return Err(ViewportRegistryError::BindingNotDestroyed { binding });
         }
         self.next_surface_authority(binding.surface())?;
         self.records.remove(&binding.surface());
-        self.token_to_surface.remove(&binding.token());
+        self.windows.remove(&binding.window());
+        self.token_to_window.remove(&binding.token());
         Ok(())
     }
 
@@ -1251,12 +1309,14 @@ impl ViewportRegistry {
         binding: ViewportBinding,
     ) -> Result<(), ViewportRegistryError> {
         let record = self.current_record(binding)?;
-        if record.ever_observed {
+        let window = record.window;
+        if window.ever_observed {
             return Err(ViewportRegistryError::BindingAlreadyObserved { binding });
         }
         self.next_surface_authority(binding.surface())?;
         self.records.remove(&binding.surface());
-        self.token_to_surface.remove(&binding.token());
+        self.windows.remove(&binding.window());
+        self.token_to_window.remove(&binding.token());
         Ok(())
     }
 
@@ -1310,11 +1370,15 @@ impl ViewportRegistry {
                 .records
                 .remove(&surface)
                 .ok_or(ViewportRegistryError::MissingSurface { surface })?;
-            continuing.push((before, target, record));
+            let window = self
+                .windows
+                .remove(&before.window())
+                .ok_or(ViewportRegistryError::StaleBinding { binding: before })?;
+            continuing.push((before, target, record, window));
         }
         // Vacate every source before installing successors. A cycle such as
         // A -> B -> A must never overwrite a predecessor still being read.
-        for (before, target, mut record) in continuing {
+        for (before, target, mut record, mut window) in continuing {
             let incarnation = self.next_incarnation()?;
             let generation = self.next_surface_authority(target)?;
             let after = ViewportBinding::new(
@@ -1325,19 +1389,20 @@ impl ViewportRegistry {
                 incarnation,
             );
             record.binding = after;
-            record.lifecycle = ViewportLifecycle::AwaitingObservation;
+            window.lifecycle = ViewportLifecycle::AwaitingObservation;
             record.coordinates = None;
             record.recovery_coordinates = None;
-            record.coordinate_observations = WindowCoordinateObservationStream::default();
+            window.coordinate_observations = WindowCoordinateObservationStream::default();
             record.coordinate_generation = generation;
-            record.input_observations = WindowInputObservationStream::default();
-            record.presentation_observations = WindowPresentationObservationStream::default();
-            record.create_preparation_observations =
+            window.input_observations = WindowInputObservationStream::default();
+            window.presentation_observations = WindowPresentationObservationStream::default();
+            window.create_preparation_observations =
                 WindowCreatePreparationObservationStream::default();
-            record.close_observations = WindowCloseObservationStream::default();
-            record.ever_observed = false;
-            record.pending_close_request = None;
-            self.token_to_surface.insert(before.token(), target);
+            window.close_observations = WindowCloseObservationStream::default();
+            window.ever_observed = false;
+            window.pending_close_request = None;
+            self.token_to_window.insert(before.token(), after.window());
+            self.windows.insert(after.window(), window);
             self.records.insert(target, record);
             retained.push((before, after));
         }
@@ -1350,8 +1415,10 @@ impl ViewportRegistry {
     }
 
     #[must_use]
-    pub fn record(&self, surface: SurfaceId) -> Option<&ViewportRecord> {
-        self.records.get(&surface)
+    pub fn record(&self, surface: SurfaceId) -> Option<ViewportRecord<'_>> {
+        let placement = self.records.get(&surface)?;
+        let window = self.windows.get(&placement.binding.window())?;
+        Some(ViewportRecord { placement, window })
     }
 
     /// Classifies current registry facts against one frozen native close edge.
@@ -1389,10 +1456,11 @@ impl ViewportRegistry {
         self.surface_authority_generations.len()
     }
 
-    pub fn records(&self) -> impl Iterator<Item = (SurfaceId, &ViewportRecord)> {
-        self.records
-            .iter()
-            .map(|(surface, record)| (*surface, record))
+    pub fn records(&self) -> impl Iterator<Item = (SurfaceId, ViewportRecord<'_>)> {
+        self.records.iter().filter_map(|(surface, placement)| {
+            let window = self.windows.get(&placement.binding.window())?;
+            Some((*surface, ViewportRecord { placement, window }))
+        })
     }
 
     pub(crate) fn placement(
@@ -1403,8 +1471,7 @@ impl ViewportRegistry {
         work_area_generation: WorkAreaGeneration,
     ) -> Result<ViewportPlacementProof, CoordinateUnavailable> {
         let record = self
-            .records
-            .get(&surface)
+            .record(surface)
             .ok_or(CoordinateUnavailable::FactUnavailable {
                 fact: crate::coordinates::CoordinateFact::ContentBounds,
                 reason: crate::intent::AuthorityUnavailableReason::SurfaceUnavailable,
@@ -1430,13 +1497,12 @@ impl ViewportRegistry {
         proof: &ViewportPlacementProof,
         work_area_generation: WorkAreaGeneration,
     ) -> bool {
-        self.records
-            .get(&proof.binding().surface())
+        self.record(proof.binding().surface())
             .is_some_and(|record| {
-                record.binding == proof.binding()
+                record.binding() == proof.binding()
                     && proof.is_current(
-                        record.binding,
-                        record.coordinate_generation,
+                        record.binding(),
+                        record.coordinate_generation(),
                         work_area_generation,
                     )
                     && record.has_coordinate_authority()
@@ -1446,14 +1512,13 @@ impl ViewportRegistry {
     fn current_record(
         &self,
         binding: ViewportBinding,
-    ) -> Result<&ViewportRecord, ViewportRegistryError> {
+    ) -> Result<ViewportRecord<'_>, ViewportRegistryError> {
         let record =
-            self.records
-                .get(&binding.surface())
+            self.record(binding.surface())
                 .ok_or(ViewportRegistryError::MissingSurface {
                     surface: binding.surface(),
                 })?;
-        if record.binding != binding {
+        if record.binding() != binding {
             return Err(ViewportRegistryError::StaleBinding { binding });
         }
         Ok(record)
@@ -1462,7 +1527,7 @@ impl ViewportRegistry {
     fn current_record_mut(
         &mut self,
         binding: ViewportBinding,
-    ) -> Result<&mut ViewportRecord, ViewportRegistryError> {
+    ) -> Result<(&mut SurfacePlacementRecord, &mut WindowRecord), ViewportRegistryError> {
         let record = self.records.get_mut(&binding.surface()).ok_or(
             ViewportRegistryError::MissingSurface {
                 surface: binding.surface(),
@@ -1471,7 +1536,11 @@ impl ViewportRegistry {
         if record.binding != binding {
             return Err(ViewportRegistryError::StaleBinding { binding });
         }
-        Ok(record)
+        let window = self
+            .windows
+            .get_mut(&binding.window())
+            .ok_or(ViewportRegistryError::StaleBinding { binding })?;
+        Ok((record, window))
     }
 
     #[cfg(test)]
@@ -1489,17 +1558,21 @@ impl ViewportRegistry {
 ///
 /// The pending request stores the provider observation that opened the edge. Authority gaps,
 /// stale envelopes, and repeated generations therefore cannot synthesize a second request.
-fn reduce_close_observation(record: &mut ViewportRecord, events: &mut Vec<RegistryEvent>) -> bool {
-    let Some(observation) = record.close_observations.current() else {
+fn reduce_close_observation(
+    record: &mut SurfacePlacementRecord,
+    window: &mut WindowRecord,
+    events: &mut Vec<RegistryEvent>,
+) -> bool {
+    let Some(observation) = window.close_observations.current() else {
         return false;
     };
     match observation.known_state() {
-        Some(WindowCloseState::LiveRequested) if record.pending_close_request.is_none() => {
-            record.pending_close_request = Some(observation);
+        Some(WindowCloseState::LiveRequested) if window.pending_close_request.is_none() => {
+            window.pending_close_request = Some(observation);
             events.push(RegistryEvent::CloseRequested { observation });
         }
-        Some(WindowCloseState::LiveClear) if record.pending_close_request.is_some() => {
-            let requested = record
+        Some(WindowCloseState::LiveClear) if window.pending_close_request.is_some() => {
+            let requested = window
                 .pending_close_request
                 .take()
                 .expect("guarded pending close request must exist");
@@ -1509,12 +1582,12 @@ fn reduce_close_observation(record: &mut ViewportRecord, events: &mut Vec<Regist
             });
         }
         Some(WindowCloseState::Destroyed)
-            if !matches!(record.lifecycle, ViewportLifecycle::Destroyed) =>
+            if !matches!(window.lifecycle, ViewportLifecycle::Destroyed) =>
         {
-            record.pending_close_request = None;
-            record.lifecycle = ViewportLifecycle::Destroyed;
+            window.pending_close_request = None;
+            window.lifecycle = ViewportLifecycle::Destroyed;
             record.admission = ViewportAdmission::Retiring;
-            record.ever_observed = true;
+            window.ever_observed = true;
             events.push(RegistryEvent::Destroyed { observation });
             return true;
         }
@@ -1579,6 +1652,91 @@ pub enum ViewportRegistryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_owners_follow_continuations_and_retirement_without_surface_keys() {
+        let mut registry = ViewportRegistry::default();
+        let a = SurfaceId::new(1);
+        let b = SurfaceId::new(2);
+        let first = registry
+            .register_existing(
+                WorkspaceEpoch::new(0),
+                a,
+                WindowToken::new(10),
+                ViewportRole::Root,
+            )
+            .unwrap();
+        let second = registry
+            .register_existing(
+                WorkspaceEpoch::new(0),
+                b,
+                WindowToken::new(20),
+                ViewportRole::Root,
+            )
+            .unwrap();
+        registry
+            .apply_snapshot_for_test(&snapshot(
+                1,
+                vec![
+                    ready_window_with_presentation(first, 1, WindowPresentationState::Visible),
+                    ready_window_with_presentation(second, 1, WindowPresentationState::Visible),
+                ],
+            ))
+            .unwrap();
+        let view = registry.record(a).unwrap();
+        let copied_view = view;
+        assert!(std::ptr::eq(view.window, copied_view.window));
+        assert!(std::ptr::eq(
+            view.window,
+            &registry.windows[&first.window()]
+        ));
+        assert!(view.has_coordinate_authority());
+
+        let unchanged = registry.clone();
+        assert_eq!(
+            registry.register_existing(
+                WorkspaceEpoch::new(0),
+                SurfaceId::new(3),
+                first.token(),
+                ViewportRole::Root,
+            ),
+            Err(ViewportRegistryError::TokenAlreadyRegistered {
+                token: first.token()
+            })
+        );
+        assert_eq!(registry, unchanged);
+
+        let continuation = registry
+            .reconcile_restore(
+                WorkspaceEpoch::new(1),
+                &BTreeMap::from([(first, b), (second, a)]),
+            )
+            .unwrap();
+        assert!(continuation.retired().is_empty());
+        assert_eq!(registry.windows.len(), 2);
+        assert!(!registry.windows.contains_key(&first.window()));
+        assert!(!registry.windows.contains_key(&second.window()));
+        let successor_a = registry.record(a).unwrap().binding();
+        let successor_b = registry.record(b).unwrap().binding();
+        for binding in [successor_a, successor_b] {
+            assert_eq!(registry.token_to_window[&binding.token()], binding.window());
+            assert_live_provider_streams_are_revoked(registry.record(binding.surface()).unwrap());
+        }
+        assert_eq!(successor_a.token(), second.token());
+        assert_eq!(successor_b.token(), first.token());
+
+        let surviving = registry.windows[&successor_b.window()].clone();
+        let retired = registry.detach(successor_a).unwrap();
+        assert_eq!(retired.binding(), successor_a);
+        assert_eq!(registry.windows.len(), 1);
+        assert!(!registry.windows.contains_key(&successor_a.window()));
+        assert!(!registry.token_to_window.contains_key(&successor_a.token()));
+        assert_eq!(registry.windows[&successor_b.window()], surviving);
+        registry.discard_unobserved(successor_b).unwrap();
+        assert!(registry.records.is_empty());
+        assert!(registry.windows.is_empty());
+        assert!(registry.token_to_window.is_empty());
+    }
 
     #[test]
     fn external_resource_values_do_not_control_or_alias_managed_window_allocation() {
@@ -1750,26 +1908,26 @@ mod tests {
         )
     }
 
-    fn assert_live_provider_streams_are_revoked(record: &ViewportRecord) {
-        assert!(record.coordinates.is_none());
+    fn assert_live_provider_streams_are_revoked(record: ViewportRecord<'_>) {
+        assert!(record.placement.coordinates.is_none());
         assert_eq!(
-            record.coordinate_observations,
+            record.window.coordinate_observations,
             WindowCoordinateObservationStream::default()
         );
         assert_eq!(
-            record.input_observations,
+            record.window.input_observations,
             WindowInputObservationStream::default()
         );
         assert_eq!(
-            record.presentation_observations,
+            record.window.presentation_observations,
             WindowPresentationObservationStream::default()
         );
         assert_eq!(
-            record.close_observations,
+            record.window.close_observations,
             WindowCloseObservationStream::default()
         );
-        assert!(!record.ever_observed);
-        assert!(record.pending_close_request.is_none());
+        assert!(!record.window.ever_observed);
+        assert!(record.window.pending_close_request.is_none());
     }
 
     #[test]
@@ -2511,14 +2669,11 @@ mod tests {
             .mark_awaiting_destroyed(retiring)
             .expect("retirement obligation must be established");
 
-        let live_before = registry
-            .record(live_surface)
-            .expect("live record must exist")
-            .clone();
-        let retiring_before = registry
+        let before = registry.clone();
+        let live_before = before.record(live_surface).expect("live record must exist");
+        let retiring_before = before
             .record(retiring_surface)
-            .expect("retiring record must exist")
-            .clone();
+            .expect("retiring record must exist");
         let inventory_before = registry.inventory_generation();
 
         let transition = registry
@@ -2631,16 +2786,16 @@ mod tests {
             Authority::Unknown(AuthorityUnavailableReason::NotReported),
             Authority::Unknown(AuthorityUnavailableReason::NotReported),
         );
-        let record = registry
-            .records
-            .get_mut(&surface)
-            .expect("record must remain registered");
-        record
+        let window = registry
+            .windows
+            .get_mut(&binding.window())
+            .expect("window must remain registered");
+        window
             .coordinate_observations
             .observe(binding, Some(coordinate_tombstone));
-        assert!(record.coordinate_observations.current().is_none());
+        assert!(window.coordinate_observations.current().is_none());
         assert_ne!(
-            record.coordinate_observations,
+            window.coordinate_observations,
             WindowCoordinateObservationStream::default()
         );
         let inventory_before = registry.inventory_generation();
@@ -2659,7 +2814,7 @@ mod tests {
             .record(surface)
             .expect("record must remain registered");
         assert_eq!(
-            record.coordinate_observations,
+            record.window.coordinate_observations,
             WindowCoordinateObservationStream::default()
         );
         assert_eq!(record.coordinate_generation(), coordinate_before);
@@ -3123,19 +3278,22 @@ mod tests {
             .expect("unique unoccupied targets must retain exact windows");
         assert!(reconciliation.retired().is_empty());
         assert!(registry.record(first.surface()).is_none());
-        assert_eq!(registry.token_to_surface.get(&first.token()), Some(&target));
         assert_eq!(
-            registry.token_to_surface.get(&peer.token()),
-            Some(&peer.surface())
+            registry.token_to_window.get(&first.token()),
+            Some(&registry.record(target).unwrap().binding().window())
+        );
+        assert_eq!(
+            registry.token_to_window.get(&peer.token()),
+            Some(&registry.record(peer.surface()).unwrap().binding().window())
         );
         let continued = registry
             .record(target)
             .expect("continued root must move to its target");
         assert_eq!(reconciliation.retained()[0], (first, continued.binding()));
         assert_live_provider_streams_are_revoked(continued);
-        assert!(continued.recovery_coordinates.is_none());
+        assert!(continued.recovery_coordinates().is_none());
         assert_eq!(
-            continued.create_preparation_observations,
+            continued.window.create_preparation_observations,
             WindowCreatePreparationObservationStream::default()
         );
     }
@@ -3213,10 +3371,13 @@ mod tests {
             .record(surface)
             .expect("retained record must remain current");
         assert_eq!(record.binding(), *retained_after);
-        assert_eq!(record.lifecycle, ViewportLifecycle::AwaitingObservation);
-        assert!(record.coordinates.is_none());
-        assert!(record.recovery_coordinates.is_none());
-        assert!(!record.ever_observed);
+        assert_eq!(
+            record.window.lifecycle,
+            ViewportLifecycle::AwaitingObservation
+        );
+        assert!(record.placement.coordinates.is_none());
+        assert!(record.placement.recovery_coordinates.is_none());
+        assert!(!record.window.ever_observed);
 
         let before_delayed_old = registry.clone();
         assert_eq!(

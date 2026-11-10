@@ -43,7 +43,7 @@ pub(crate) struct NativeUiActionAcknowledgement {
 pub(crate) struct NativePassActions {
     local_actions: BTreeMap<SurfaceId, Vec<PendingLocalAction>>,
     pane_focus: BTreeMap<SurfaceId, PendingPaneFocus>,
-    output_surfaces: BTreeMap<NativeOutputToken, SurfaceId>,
+    output_surfaces: BTreeMap<NativeOutputToken, Vec<SurfaceId>>,
     staged: BTreeMap<NativeOutputToken, NativeFinalPass>,
 }
 
@@ -69,7 +69,7 @@ impl NativePassActions {
         if self
             .output_surfaces
             .get(&token)
-            .is_some_and(|expected| *expected != surface)
+            .is_some_and(|expected| !expected.contains(&surface))
         {
             return Err(NativePassActionError::OutputChanged);
         }
@@ -250,8 +250,32 @@ impl NativePassActions {
         token: NativeOutputToken,
         paint: NativeSurfacePaint,
     ) -> Result<(), NativePassActionError> {
-        self.remember_output_surface(token, paint.surface())?;
-        self.stage(token, NativeFinalPass::Semantic(paint))
+        if paint.viewport_id() != token.viewport_id() {
+            return Err(NativePassActionError::OutputChanged);
+        }
+        if let Some(staged) = self.staged.get_mut(&token) {
+            let NativeFinalPass::Semantic(paints) = staged else {
+                return Err(NativePassActionError::OutputChanged);
+            };
+            if paints.iter().any(|previous| {
+                previous.surface() == paint.surface()
+                    || previous.viewport_id() != paint.viewport_id()
+                    || previous.cumulative_pass_nr() != paint.cumulative_pass_nr()
+            }) {
+                return Err(NativePassActionError::OutputChanged);
+            }
+            paints
+                .try_reserve(1)
+                .map_err(|_| NativePassActionError::OutputChanged)?;
+            paints.push(paint);
+            return Ok(());
+        }
+        let mut paints = Vec::new();
+        paints
+            .try_reserve_exact(1)
+            .map_err(|_| NativePassActionError::OutputChanged)?;
+        paints.push(paint);
+        self.stage(token, NativeFinalPass::Semantic(paints))
     }
 
     pub(crate) fn stage_retain_previous(
@@ -259,7 +283,7 @@ impl NativePassActions {
         token: NativeOutputToken,
         surface: SurfaceId,
     ) -> Result<(), NativePassActionError> {
-        self.remember_output_surface(token, surface)?;
+        self.remember_output_surfaces(token, &[surface])?;
         self.stage(token, NativeFinalPass::RetainPrevious)
     }
 
@@ -297,7 +321,9 @@ impl NativePassActions {
         &mut self,
         token: NativeOutputToken,
     ) -> Result<(), NativePassActionError> {
-        self.staged.remove(&token);
+        if let Some(NativeFinalPass::Semantic(paints)) = self.staged.remove(&token) {
+            self.remember_painted_surfaces(token, &paints)?;
+        }
         Ok(())
     }
 
@@ -306,6 +332,9 @@ impl NativePassActions {
         token: NativeOutputToken,
     ) -> Result<Option<NativeFinalPass>, NativePassActionError> {
         let pass = self.staged.remove(&token);
+        if let Some(NativeFinalPass::Semantic(paints)) = &pass {
+            self.remember_painted_surfaces(token, paints)?;
+        }
         self.output_surfaces.remove(&token);
         Ok(pass)
     }
@@ -314,7 +343,7 @@ impl NativePassActions {
         &mut self,
         token: NativeOutputToken,
     ) -> Result<(), NativePassActionError> {
-        self.discard_pass(token)?;
+        self.staged.remove(&token);
         self.output_surfaces.remove(&token);
         Ok(())
     }
@@ -336,17 +365,37 @@ impl NativePassActions {
         }
     }
 
-    fn remember_output_surface(
+    fn remember_painted_surfaces(
         &mut self,
         token: NativeOutputToken,
-        surface: SurfaceId,
+        paints: &[NativeSurfacePaint],
     ) -> Result<(), NativePassActionError> {
+        let surfaces = paints
+            .iter()
+            .map(|paint| paint.surface())
+            .collect::<Vec<_>>();
+        self.remember_output_surfaces(token, &surfaces)
+    }
+
+    fn remember_output_surfaces(
+        &mut self,
+        token: NativeOutputToken,
+        surfaces: &[SurfaceId],
+    ) -> Result<(), NativePassActionError> {
+        if surfaces.is_empty()
+            || surfaces
+                .iter()
+                .enumerate()
+                .any(|(index, surface)| surfaces[..index].contains(surface))
+        {
+            return Err(NativePassActionError::OutputChanged);
+        }
         if let Some(expected) = self.output_surfaces.get(&token) {
-            if *expected != surface {
+            if expected != surfaces {
                 return Err(NativePassActionError::OutputChanged);
             }
         } else {
-            self.output_surfaces.insert(token, surface);
+            self.output_surfaces.insert(token, surfaces.to_vec());
         }
         Ok(())
     }
@@ -358,5 +407,5 @@ mod tests;
 pub(crate) enum NativeFinalPass {
     RetainPrevious,
     RetainedOverlay,
-    Semantic(NativeSurfacePaint),
+    Semantic(Vec<NativeSurfacePaint>),
 }

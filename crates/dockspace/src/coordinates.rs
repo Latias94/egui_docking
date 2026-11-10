@@ -1,4 +1,4 @@
-//! Typed conversions between one surface's logical space and desktop physical pixels.
+//! Typed conversions between surface logical, window client, and desktop physical space.
 
 use thiserror::Error;
 
@@ -212,6 +212,61 @@ fn solve_tear_off_geometry(
     Ok((requested_rect, physical_rect))
 }
 
+/// Geometry mapping one surface's logical space into window-client physical pixels.
+///
+/// The origin and clip use the same client-physical coordinate space. The scale is
+/// physical pixels per surface logical unit, independent of the native DPI scale.
+/// The clip constrains hover coverage, not captured source motion or conversions.
+/// This geometry alone grants neither placement nor input authority.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SurfaceClientGeometry {
+    origin: PhysicalPoint,
+    scale_factor: ScaleFactor,
+    clip: PhysicalRect,
+}
+
+impl SurfaceClientGeometry {
+    pub(crate) const fn new(
+        origin: PhysicalPoint,
+        scale_factor: ScaleFactor,
+        clip: PhysicalRect,
+    ) -> Self {
+        Self {
+            origin,
+            scale_factor,
+            clip,
+        }
+    }
+
+    fn whole_client(size: PhysicalSize, scale_factor: ScaleFactor) -> Result<Self, GeometryError> {
+        let clip = PhysicalRect::from_min_size(PhysicalPoint::new(0.0, 0.0)?, size)?;
+        Ok(Self::new(clip.min(), scale_factor, clip))
+    }
+
+    pub(crate) const fn scale_factor(self) -> ScaleFactor {
+        self.scale_factor
+    }
+
+    pub(crate) const fn clip(self) -> PhysicalRect {
+        self.clip
+    }
+
+    /// Converts source motion without clipping or clamping the physical point.
+    pub(crate) fn client_to_surface(
+        self,
+        point: PhysicalPoint,
+    ) -> Result<LogicalPoint, GeometryError> {
+        point.to_target_logical(self.origin, self.scale_factor)
+    }
+
+    pub(crate) fn surface_to_client(
+        self,
+        point: LogicalPoint,
+    ) -> Result<PhysicalPoint, GeometryError> {
+        point.to_desktop_physical(self.origin, self.scale_factor)
+    }
+}
+
 /// Local coordinate facts and optional desktop bounds for one exact native-window binding.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CoordinateSnapshot {
@@ -222,7 +277,7 @@ pub(crate) struct CoordinateSnapshot {
     content_bounds: Authority<PhysicalRect>,
     outer_bounds: Option<PhysicalRect>,
     native_scale_factor: ScaleFactor,
-    presentation_scale_factor: ScaleFactor,
+    surface_client: SurfaceClientGeometry,
 }
 
 /// Exact-binding geometry retained only for destruction recovery.
@@ -275,7 +330,11 @@ impl CoordinateSnapshot {
     }
 
     pub(crate) const fn presentation_scale_factor(self) -> ScaleFactor {
-        self.presentation_scale_factor
+        self.surface_client.scale_factor()
+    }
+
+    pub(crate) const fn surface_client_geometry(self) -> SurfaceClientGeometry {
+        self.surface_client
     }
 
     pub(crate) const fn coordinate_generation(self) -> CoordinateGeneration {
@@ -314,7 +373,11 @@ impl CoordinateSnapshot {
             content_bounds: *observation.content_bounds(),
             outer_bounds: observation.outer_bounds().known().copied(),
             native_scale_factor,
-            presentation_scale_factor,
+            surface_client: SurfaceClientGeometry::whole_client(
+                content_size,
+                presentation_scale_factor,
+            )
+            .map_err(CoordinateUnavailable::Geometry)?,
         })
     }
 
@@ -344,7 +407,7 @@ impl CoordinateSnapshot {
             && self.content_bounds() == other.content_bounds()
             && self.outer_bounds == other.outer_bounds
             && self.native_scale_factor == other.native_scale_factor
-            && self.presentation_scale_factor == other.presentation_scale_factor
+            && self.surface_client == other.surface_client
     }
 
     pub(crate) fn same_projection_authority(self, other: Self) -> bool {
@@ -363,8 +426,19 @@ impl CoordinateSnapshot {
         self,
         point: PhysicalPoint,
     ) -> Result<LogicalPoint, CoordinateUnavailable> {
-        point
-            .to_target_logical(self.content_origin()?, self.presentation_scale_factor)
+        let origin = self.content_origin()?;
+        let client = PhysicalPoint::new(point.x() - origin.x(), point.y() - origin.y())
+            .map_err(CoordinateUnavailable::Geometry)?;
+        self.client_to_surface(client)
+    }
+
+    /// Converts a physical client point without constraining captured source motion.
+    pub(crate) fn client_to_surface(
+        self,
+        point: PhysicalPoint,
+    ) -> Result<LogicalPoint, CoordinateUnavailable> {
+        self.surface_client
+            .client_to_surface(point)
             .map_err(CoordinateUnavailable::Geometry)
     }
 
@@ -372,16 +446,33 @@ impl CoordinateSnapshot {
         self,
         rect: PhysicalRect,
     ) -> Result<LogicalRect, CoordinateUnavailable> {
-        rect.to_target_logical(self.content_origin()?, self.presentation_scale_factor)
-            .map_err(CoordinateUnavailable::Geometry)
+        LogicalRect::from_min_max(
+            self.desktop_to_surface(rect.min())?,
+            self.desktop_to_surface(rect.max())?,
+        )
+        .map_err(CoordinateUnavailable::Geometry)
     }
 
     pub(crate) fn surface_rect_to_desktop(
         self,
         rect: LogicalRect,
     ) -> Result<PhysicalRect, CoordinateUnavailable> {
-        rect.to_desktop_physical(self.content_origin()?, self.presentation_scale_factor)
-            .map_err(CoordinateUnavailable::Geometry)
+        let origin = self.content_origin()?;
+        if self.surface_client.origin.x() == 0.0 && self.surface_client.origin.y() == 0.0 {
+            // Preserve the whole-client projection's arithmetic, including signed zero.
+            return rect
+                .to_desktop_physical(origin, self.surface_client.scale_factor())
+                .map_err(CoordinateUnavailable::Geometry);
+        }
+        let to_desktop = |point| {
+            let client = self.surface_client.surface_to_client(point)?;
+            PhysicalPoint::new(origin.x() + client.x(), origin.y() + client.y())
+        };
+        PhysicalRect::from_min_max(
+            to_desktop(rect.min()).map_err(CoordinateUnavailable::Geometry)?,
+            to_desktop(rect.max()).map_err(CoordinateUnavailable::Geometry)?,
+        )
+        .map_err(CoordinateUnavailable::Geometry)
     }
 
     fn content_origin(self) -> Result<PhysicalPoint, CoordinateUnavailable> {
@@ -741,6 +832,175 @@ mod tests {
 
         assert_eq!(coordinates.desktop_rect_to_surface(desktop), Ok(local));
         assert_eq!(coordinates.surface_rect_to_desktop(local), Ok(desktop));
+    }
+
+    #[test]
+    fn whole_client_projection_preserves_signed_zero_desktop_endpoints() {
+        let coordinates = CoordinateSnapshot {
+            content_bounds: Authority::Known(rect(-0.0, -0.0, 1200.0, 900.0)),
+            ..snapshot_with_scales(2.0, 2.5, 0.0)
+        };
+        let local = logical_rect(-0.0, -0.0, 20.0, 10.0);
+        let expected = local
+            .to_desktop_physical(
+                coordinates.content_bounds().unwrap().min(),
+                coordinates.presentation_scale_factor(),
+            )
+            .unwrap();
+        let actual = coordinates.surface_rect_to_desktop(local).unwrap();
+        assert_eq!(actual.min().x().to_bits(), expected.min().x().to_bits());
+        assert_eq!(actual.min().y().to_bits(), expected.min().y().to_bits());
+        assert_eq!(actual.max().x().to_bits(), expected.max().x().to_bits());
+        assert_eq!(actual.max().y().to_bits(), expected.max().y().to_bits());
+        assert_eq!(actual.min().x().to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(actual.min().y().to_bits(), (-0.0_f64).to_bits());
+    }
+
+    #[test]
+    fn observations_initialize_the_whole_client_mapping_without_native_dpi_scaling() {
+        let coordinates = snapshot_with_scales(2.0, 2.5, -1600.0);
+        let mapping = coordinates.surface_client_geometry();
+        assert_eq!(mapping.origin, PhysicalPoint::new(0.0, 0.0).unwrap());
+        assert_eq!(mapping.clip(), rect(0.0, 0.0, 1200.0, 900.0));
+        assert_eq!(mapping.scale_factor(), ScaleFactor::new(2.5).unwrap());
+        assert_eq!(
+            coordinates.client_to_surface(PhysicalPoint::new(250.0, 125.0).unwrap()),
+            Ok(LogicalPoint::new(100.0, 50.0).unwrap())
+        );
+    }
+
+    #[test]
+    fn offset_client_mapping_is_shared_by_desktop_points_and_both_rect_conversions() {
+        let mapping = SurfaceClientGeometry::new(
+            PhysicalPoint::new(120.0, 60.0).unwrap(),
+            ScaleFactor::new(2.5).unwrap(),
+            rect(120.0, 60.0, 600.0, 450.0),
+        );
+        let coordinates = CoordinateSnapshot {
+            surface_client: mapping,
+            ..snapshot_with_scales(2.0, 2.5, -1600.0)
+        };
+        let expected = LogicalPoint::new(50.0, 50.0).unwrap();
+        assert_eq!(
+            coordinates.client_to_surface(PhysicalPoint::new(245.0, 185.0).unwrap()),
+            Ok(expected)
+        );
+        assert_eq!(
+            coordinates.desktop_to_surface(PhysicalPoint::new(-1355.0, -115.0).unwrap()),
+            Ok(expected)
+        );
+
+        let local = logical_rect(40.0, 20.0, 80.0, 60.0);
+        let desktop = rect(-1380.0, -190.0, 200.0, 150.0);
+        assert_eq!(coordinates.desktop_rect_to_surface(desktop), Ok(local));
+        assert_eq!(coordinates.surface_rect_to_desktop(local), Ok(desktop));
+        assert_eq!(
+            coordinates
+                .placement(
+                    logical_rect(100.0, 100.0, 200.0, 120.0),
+                    work_area(4, rect(-2000.0, -400.0, 4000.0, 1400.0), 2.0),
+                    WorkAreaGeneration::new(8),
+                )
+                .unwrap()
+                .physical_rect(),
+            rect(-1400.0, -100.0, 400.0, 240.0),
+            "native window placement retains its native-scale and work-area semantics"
+        );
+    }
+
+    #[test]
+    fn client_clip_constrains_hover_membership_without_clamping_source_coordinates() {
+        let mapping = SurfaceClientGeometry::new(
+            PhysicalPoint::new(120.0, 60.0).unwrap(),
+            ScaleFactor::new(2.5).unwrap(),
+            rect(130.0, 65.0, 200.0, 150.0),
+        );
+        for (client, logical, inside_clip) in [
+            ((145.0, 85.0), (10.0, 10.0), true),
+            ((130.0, 65.0), (4.0, 2.0), true),
+            ((110.0, 55.0), (-4.0, -2.0), false),
+            ((330.0, 215.0), (84.0, 62.0), false),
+        ] {
+            let client = PhysicalPoint::new(client.0, client.1).unwrap();
+            let logical = LogicalPoint::new(logical.0, logical.1).unwrap();
+            assert_eq!(mapping.clip().contains(client), inside_clip);
+            assert_eq!(mapping.client_to_surface(client), Ok(logical));
+            assert_eq!(mapping.surface_to_client(logical), Ok(client));
+        }
+    }
+
+    #[test]
+    fn changed_client_origin_scale_or_clip_revokes_projection_facts() {
+        let previous = snapshot_with_scales(2.0, 2.5, 100.0);
+        let mapping = previous.surface_client_geometry();
+        for surface_client in [
+            SurfaceClientGeometry::new(
+                PhysicalPoint::new(1.0, 0.0).unwrap(),
+                mapping.scale_factor(),
+                mapping.clip(),
+            ),
+            SurfaceClientGeometry::new(
+                mapping.origin,
+                ScaleFactor::new(3.0).unwrap(),
+                mapping.clip(),
+            ),
+            SurfaceClientGeometry::new(
+                mapping.origin,
+                mapping.scale_factor(),
+                rect(10.0, 10.0, 1000.0, 800.0),
+            ),
+        ] {
+            let current = CoordinateSnapshot {
+                surface_client,
+                ..previous
+            };
+            assert!(!previous.same_facts(current));
+            assert!(!previous.same_projection_authority(current));
+        }
+    }
+
+    #[test]
+    fn client_mapping_rejects_nonrepresentable_points_and_rect_spans() {
+        let clip = rect(0.0, 0.0, 100.0, 100.0);
+        let translated = SurfaceClientGeometry::new(
+            PhysicalPoint::new(-f64::MAX, 0.0).unwrap(),
+            ScaleFactor::new(1.0).unwrap(),
+            clip,
+        );
+        assert!(matches!(
+            translated.client_to_surface(PhysicalPoint::new(f64::MAX, 0.0).unwrap()),
+            Err(GeometryError::NonFinite { .. })
+        ));
+        let scaled = SurfaceClientGeometry::new(
+            PhysicalPoint::new(0.0, 0.0).unwrap(),
+            ScaleFactor::new(2.0).unwrap(),
+            clip,
+        );
+        assert!(matches!(
+            scaled.surface_to_client(LogicalPoint::new(f64::MAX, 0.0).unwrap()),
+            Err(GeometryError::NonFinite { .. })
+        ));
+        let coordinates = CoordinateSnapshot {
+            surface_client: scaled,
+            ..snapshot(2.0, 0.0)
+        };
+        let wide = LogicalRect::from_min_max(
+            LogicalPoint::new(-f64::MAX * 0.4, 0.0).unwrap(),
+            LogicalPoint::new(f64::MAX * 0.4, 1.0).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            coordinates.surface_rect_to_desktop(wide),
+            Err(CoordinateUnavailable::Geometry(
+                GeometryError::NonFinite { .. }
+            ))
+        ));
+        assert!(matches!(
+            snapshot(1.0, -f64::MAX).desktop_to_surface(PhysicalPoint::new(f64::MAX, 0.0).unwrap()),
+            Err(CoordinateUnavailable::Geometry(
+                GeometryError::NonFinite { .. }
+            ))
+        ));
     }
 
     #[test]

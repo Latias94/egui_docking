@@ -3633,7 +3633,7 @@ impl DockEngine {
 
     fn coordinate_capture_matches_current(
         capture: SurfaceCoordinateCapture,
-        current: Option<&crate::viewport_registry::ViewportRecord>,
+        current: Option<crate::viewport_registry::ViewportRecord<'_>>,
         current_authority: crate::viewport::CoordinateGeneration,
     ) -> bool {
         match capture {
@@ -3671,6 +3671,8 @@ impl DockEngine {
                                         == coordinates.native_scale_factor()
                                     && current.presentation_scale_factor()
                                         == coordinates.presentation_scale_factor()
+                                    && current.surface_client_geometry()
+                                        == coordinates.surface_client_geometry()
                             })
                     })
             }
@@ -3679,7 +3681,7 @@ impl DockEngine {
 
     fn coordinate_capture_incarnation_is_current(
         capture: SurfaceCoordinateCapture,
-        current: Option<&crate::viewport_registry::ViewportRecord>,
+        current: Option<crate::viewport_registry::ViewportRecord<'_>>,
         current_authority: crate::viewport::CoordinateGeneration,
     ) -> bool {
         match Self::coordinate_capture_binding(capture) {

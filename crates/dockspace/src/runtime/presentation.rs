@@ -191,6 +191,26 @@ impl super::DockspaceSession {
     ) -> Result<(), SurfacePresentationReportError> {
         self.presentation.report(output, result)
     }
+
+    /// Reports one renderer terminal for an owned collection of surface outputs.
+    ///
+    /// Every output is validated before any terminal slot changes. A foreign,
+    /// stale, duplicate or already retired output rejects the complete collection.
+    /// Success consumes all capabilities and records their common result under
+    /// one lock. An empty collection is a no-op. The ordinary host-frame
+    /// presentation protocol still determines when each exact artifact is admitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns the complete original collection, in its original order, when any
+    /// output cannot be reported. No valid prefix is consumed on failure.
+    pub fn report_surface_presentations(
+        &mut self,
+        outputs: Vec<PaintedSurfaceOutput>,
+        result: SurfacePresentationResult,
+    ) -> Result<(), SurfacePresentationBatchReportError> {
+        self.presentation.report_many(outputs, result)
+    }
 }
 
 /// Terminal result reported by the renderer for one exact output.
@@ -214,6 +234,21 @@ impl SurfacePresentationReportError {
     #[must_use]
     pub fn into_output(self) -> PaintedSurfaceOutput {
         self.output
+    }
+}
+
+/// Failed collection report with every original affine output preserved.
+#[derive(Debug, Error)]
+#[error("painted output collection contains a foreign, stale, duplicate or retired output")]
+pub struct SurfacePresentationBatchReportError {
+    outputs: Vec<PaintedSurfaceOutput>,
+}
+
+impl SurfacePresentationBatchReportError {
+    /// Recovers the complete unconsumed collection in the caller's original order.
+    #[must_use]
+    pub fn into_outputs(self) -> Vec<PaintedSurfaceOutput> {
+        self.outputs
     }
 }
 
@@ -312,6 +347,38 @@ impl PresentationOutputs {
 
     fn abandon(&self, output: HostPresentationOutput) {
         let _ = self.record(output, SurfacePresentationResult::Dropped);
+    }
+
+    fn report_all(
+        &self,
+        outputs: &mut [PaintedSurfaceOutput],
+        result: SurfacePresentationResult,
+    ) -> bool {
+        let mut pending = self.lock();
+        for (index, output) in outputs.iter().enumerate() {
+            if !output.armed
+                || !Arc::ptr_eq(&self.0, &output.abandoned.0)
+                || outputs[..index]
+                    .iter()
+                    .any(|earlier| earlier.output == output.output)
+                || !pending
+                    .iter()
+                    .any(|entry| entry.output == output.output && entry.result.is_none())
+            {
+                return false;
+            }
+        }
+        for output in outputs {
+            // The same lock covers preflight and settlement, so a concurrent
+            // affine Drop cannot change a validated terminal slot between them.
+            let entry = pending
+                .iter_mut()
+                .find(|entry| entry.output == output.output)
+                .expect("validated output remains in the locked terminal roster");
+            entry.result = Some(result);
+            output.disarm();
+        }
+        true
     }
 }
 
@@ -870,11 +937,23 @@ impl RuntimePresentationState {
         result: SurfacePresentationResult,
     ) -> Result<(), SurfacePresentationReportError> {
         let mut output = output;
-        let raw_output = output.output;
-        if !self.pending.record(raw_output, result) {
+        if !self
+            .pending
+            .report_all(std::slice::from_mut(&mut output), result)
+        {
             return Err(SurfacePresentationReportError { output });
         }
-        output.disarm();
+        Ok(())
+    }
+
+    pub(super) fn report_many(
+        &mut self,
+        mut outputs: Vec<PaintedSurfaceOutput>,
+        result: SurfacePresentationResult,
+    ) -> Result<(), SurfacePresentationBatchReportError> {
+        if !self.pending.report_all(&mut outputs, result) {
+            return Err(SurfacePresentationBatchReportError { outputs });
+        }
         Ok(())
     }
 
@@ -1144,6 +1223,216 @@ mod tests {
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .expect("presentation settlement retains the surface");
         frame.commit().expect("presentation settlement commits")
+    }
+
+    #[test]
+    fn a_renderer_terminal_reports_all_surface_artifacts_before_core_admission() {
+        let mut builder = Workspace::builder();
+        for value in [1, 2] {
+            let tabs = builder.insert_node(Node::tabs([ItemId::new(value)]));
+            builder.set_root(RootId::new(value), RootRecord::new(tabs).with_central(tabs));
+            builder.set_surface(
+                SurfaceId::new(value),
+                SurfacePresentation::with_main(RootId::new(value)),
+            );
+        }
+        let mut session = DockspaceSession::from_workspace_for_test(
+            builder.build().unwrap(),
+            DockPolicy::default(),
+        )
+        .unwrap();
+        let surfaces = [SurfaceId::new(1), SurfaceId::new(2)];
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+            LogicalSize::new(32.0, 24.0).unwrap(),
+            80.0,
+        )
+        .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        for surface in surfaces {
+            frame.measure_surface(surface, metrics).unwrap();
+        }
+        frame.commit().unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        for surface in surfaces {
+            let receipt = frame
+                .paint_plan(surface)
+                .unwrap()
+                .unwrap()
+                .execute_surface_program(|_| Ok::<(), ()>(()))
+                .unwrap();
+            frame.confirm_surface_painted(receipt).unwrap();
+        }
+        let outputs = frame.commit().unwrap().take_painted_outputs();
+        let artifacts = outputs
+            .iter()
+            .map(PaintedSurfaceOutput::presentation_artifact)
+            .collect::<Vec<_>>();
+        assert_eq!(artifacts.len(), 2);
+        session
+            .report_surface_presentations(outputs, SurfacePresentationResult::Presented)
+            .unwrap();
+        assert!(
+            surfaces
+                .into_iter()
+                .all(|surface| session.presented_surface(surface).is_none())
+        );
+        let report = settle_presentations(&mut session);
+        for artifact in artifacts {
+            assert!(
+                report
+                    .surface_presentation_commits()
+                    .iter()
+                    .any(|commit| commit.presents(artifact))
+            );
+            assert!(
+                session
+                    .presented_surface(artifact.output().surface())
+                    .unwrap()
+                    .matches_presentation_artifact(artifact)
+            );
+        }
+
+        let first = paint_single_surface(&mut session);
+        let second = paint_single_surface(&mut session);
+        let dropped = [
+            first.presentation_artifact(),
+            second.presentation_artifact(),
+        ];
+        session
+            .report_surface_presentations(vec![first, second], SurfacePresentationResult::Dropped)
+            .unwrap();
+        let report = settle_presentations(&mut session);
+        for artifact in dropped {
+            assert!(
+                report
+                    .surface_presentation_commits()
+                    .iter()
+                    .any(|commit| commit.retires(artifact))
+            );
+        }
+        assert!(
+            session
+                .report_surface_presentations(Vec::new(), SurfacePresentationResult::Presented)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn foreign_batch_output_preserves_the_complete_collection_and_valid_prefix() {
+        let mut session = single_surface_session();
+        let mut other = single_surface_session();
+        measure_single_surface(&mut session);
+        measure_single_surface(&mut other);
+        let first = paint_single_surface(&mut session);
+        let foreign = paint_single_surface(&mut other);
+        let second = paint_single_surface(&mut session);
+        let outputs = vec![first, foreign, second];
+        let artifacts = outputs
+            .iter()
+            .map(PaintedSurfaceOutput::presentation_artifact)
+            .collect::<Vec<_>>();
+        let backing = outputs.as_ptr();
+        let capacity = outputs.capacity();
+        let mut recovered = session
+            .report_surface_presentations(outputs, SurfacePresentationResult::Presented)
+            .unwrap_err()
+            .into_outputs();
+        assert_eq!(recovered.as_ptr(), backing);
+        assert_eq!(recovered.capacity(), capacity);
+        assert_eq!(
+            recovered
+                .iter()
+                .map(PaintedSurfaceOutput::presentation_artifact)
+                .collect::<Vec<_>>(),
+            artifacts
+        );
+        assert!(
+            session
+                .presentation
+                .pending
+                .lock()
+                .iter()
+                .all(|entry| entry.result.is_none())
+        );
+        assert!(
+            other
+                .presentation
+                .pending
+                .lock()
+                .iter()
+                .all(|entry| entry.result.is_none())
+        );
+        other
+            .report_surface_presentation(recovered.remove(1), SurfacePresentationResult::Presented)
+            .unwrap();
+        session
+            .report_surface_presentations(recovered, SurfacePresentationResult::Presented)
+            .unwrap();
+        let report = settle_presentations(&mut session);
+        assert!(
+            report
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.presents(artifacts[2]))
+        );
+        assert!(
+            settle_presentations(&mut other)
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.presents(artifacts[1]))
+        );
+    }
+
+    #[test]
+    fn duplicate_and_retired_batch_outputs_cannot_consume_an_unrelated_terminal_slot() {
+        let mut session = single_surface_session();
+        measure_single_surface(&mut session);
+        let first = paint_single_surface(&mut session);
+        let fresh = paint_single_surface(&mut session);
+        let duplicate = PaintedSurfaceOutput {
+            output: first.output,
+            abandoned: first.abandoned.clone(),
+            armed: true,
+        };
+        let mut recovered = session
+            .report_surface_presentations(
+                vec![first, duplicate],
+                SurfacePresentationResult::Presented,
+            )
+            .unwrap_err()
+            .into_outputs();
+        assert!(
+            session
+                .presentation
+                .pending
+                .lock()
+                .iter()
+                .all(|entry| entry.result.is_none())
+        );
+        let mut alias = recovered.pop().unwrap();
+        alias.disarm();
+        session
+            .report_surface_presentations(recovered, SurfacePresentationResult::Presented)
+            .unwrap();
+        alias.armed = true;
+        let mut recovered = session
+            .report_surface_presentations(vec![fresh, alias], SurfacePresentationResult::Dropped)
+            .unwrap_err()
+            .into_outputs();
+        let pending = session.presentation.pending.lock();
+        assert_eq!(
+            pending[0].result,
+            Some(SurfacePresentationResult::Presented)
+        );
+        assert!(pending[1].result.is_none());
+        drop(pending);
+        recovered.pop().unwrap().disarm();
+        session
+            .report_surface_presentations(recovered, SurfacePresentationResult::Dropped)
+            .unwrap();
+        settle_presentations(&mut session);
+        assert!(session.presentation.pending.is_empty());
     }
 
     #[test]

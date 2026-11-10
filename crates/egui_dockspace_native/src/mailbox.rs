@@ -5505,22 +5505,40 @@ impl NativeHostBridge {
         self.lock().output_resources.get_mut(&token)?.paint.take()
     }
 
-    pub(crate) fn bind_surface_output(
+    /// Prepays the complete semantic collection before any pane is painted.
+    /// Failed admission leaves the previous backing and token owner intact.
+    pub(crate) fn prepare_surface_outputs(
         &self,
         token: NativeOutputToken,
-        output: dockspace::runtime::PaintedSurfaceOutput,
-    ) -> Result<(), dockspace::runtime::PaintedSurfaceOutput> {
+        surfaces: usize,
+    ) -> bool {
+        let mut records = self.lock();
+        let Some(additional) = records
+            .output_resources
+            .get(&token)
+            .and_then(|resource| resource.output_capacity_growth(surfaces))
+        else {
+            return false;
+        };
+        if !records.can_reserve_input_data(additional) {
+            return false;
+        }
+        records
+            .output_resources
+            .get_mut(&token)
+            .is_some_and(|resource| resource.prepare_surface_capacity(surfaces))
+    }
+
+    pub(crate) fn bind_surface_outputs(
+        &self,
+        token: NativeOutputToken,
+        outputs: Vec<dockspace::runtime::PaintedSurfaceOutput>,
+    ) -> Result<(), Vec<dockspace::runtime::PaintedSurfaceOutput>> {
         let mut records = self.lock();
         let Some(resource) = records.output_resources.get_mut(&token) else {
-            return Err(output);
+            return Err(outputs);
         };
-        match resource.bind_paint(PendingNativeOutput::Surface(output)) {
-            Ok(()) => Ok(()),
-            Err(PendingNativeOutput::Surface(output)) => Err(output),
-            Err(PendingNativeOutput::Staging(_)) => {
-                unreachable!("binding returns its original paint")
-            }
-        }
+        resource.bind_surfaces(outputs)
     }
 
     pub(crate) fn attach_output_binding(

@@ -1,5 +1,7 @@
 //! Stable logical viewport identities and ephemeral native-window bindings.
 
+use std::hash::Hash;
+
 use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
 
 macro_rules! monotonic_id {
@@ -134,18 +136,103 @@ monotonic_id!(
     WorkAreaGeneration,
     "Generation of the complete canonical desktop work-area roster."
 );
-/// Complete identity of one native-window binding.
+/// Complete identity of one real native-window incarnation.
 ///
-/// `SurfaceId` remains stable across window recreation. The engine domain, epoch,
-/// and incarnation make callbacks from another engine, a previous workspace, or
-/// a recycled platform token harmless.
+/// Window lifetime is independent of the logical surfaces associated with it.
+/// The engine domain, epoch and incarnation distinguish another engine, a
+/// previous workspace and a recycled platform token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ViewportBinding {
+pub struct WindowBinding {
     authority_domain: EngineAuthorityDomainId,
     epoch: WorkspaceEpoch,
-    surface: SurfaceId,
     token: WindowToken,
     incarnation: WindowIncarnation,
+}
+
+impl WindowBinding {
+    pub(crate) const fn new(
+        authority_domain: EngineAuthorityDomainId,
+        epoch: WorkspaceEpoch,
+        token: WindowToken,
+        incarnation: WindowIncarnation,
+    ) -> Self {
+        Self {
+            authority_domain,
+            epoch,
+            token,
+            incarnation,
+        }
+    }
+
+    /// Returns the engine authority domain which minted this window binding.
+    #[must_use]
+    pub const fn authority_domain(self) -> EngineAuthorityDomainId {
+        self.authority_domain
+    }
+
+    /// Returns the workspace epoch which owns this window binding.
+    #[must_use]
+    pub const fn epoch(self) -> WorkspaceEpoch {
+        self.epoch
+    }
+
+    /// Returns the adapter-facing opaque window token.
+    #[must_use]
+    pub const fn token(self) -> WindowToken {
+        self.token
+    }
+
+    /// Returns the core-owned window incarnation.
+    #[must_use]
+    pub const fn incarnation(self) -> WindowIncarnation {
+        self.incarnation
+    }
+}
+
+/// Exact association of one logical surface with a native-window incarnation.
+///
+/// Surface identity does not participate in the underlying window lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewportBinding {
+    window: WindowBinding,
+    surface: SurfaceId,
+}
+
+impl Ord for ViewportBinding {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Surface order remains canonical even though window identity now has
+        // its own owner. Representation changes must not reorder protocol work.
+        (
+            self.authority_domain(),
+            self.epoch(),
+            self.surface(),
+            self.token(),
+            self.incarnation(),
+        )
+            .cmp(&(
+                other.authority_domain(),
+                other.epoch(),
+                other.surface(),
+                other.token(),
+                other.incarnation(),
+            ))
+    }
+}
+
+impl PartialOrd for ViewportBinding {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for ViewportBinding {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.authority_domain().hash(state);
+        self.epoch().hash(state);
+        self.surface().hash(state);
+        self.token().hash(state);
+        self.incarnation().hash(state);
+    }
 }
 
 /// Describes which lifecycle established the native surface currently being staged.
@@ -171,25 +258,32 @@ impl ViewportBinding {
         token: WindowToken,
         incarnation: WindowIncarnation,
     ) -> Self {
-        Self {
-            authority_domain,
-            epoch,
+        Self::from_window(
+            WindowBinding::new(authority_domain, epoch, token, incarnation),
             surface,
-            token,
-            incarnation,
-        }
+        )
+    }
+
+    pub(crate) const fn from_window(window: WindowBinding, surface: SurfaceId) -> Self {
+        Self { window, surface }
+    }
+
+    /// Returns the exact real-window identity associated with this surface.
+    #[must_use]
+    pub const fn window(self) -> WindowBinding {
+        self.window
     }
 
     /// Returns the engine authority domain which minted this binding.
     #[must_use]
     pub const fn authority_domain(self) -> EngineAuthorityDomainId {
-        self.authority_domain
+        self.window.authority_domain()
     }
 
     /// Returns the workspace epoch which owns this binding.
     #[must_use]
     pub const fn epoch(self) -> WorkspaceEpoch {
-        self.epoch
+        self.window.epoch()
     }
 
     /// Returns the stable logical surface.
@@ -201,13 +295,13 @@ impl ViewportBinding {
     /// Returns the adapter-facing opaque window token.
     #[must_use]
     pub const fn token(self) -> WindowToken {
-        self.token
+        self.window.token()
     }
 
     /// Returns the core-owned incarnation.
     #[must_use]
     pub const fn incarnation(self) -> WindowIncarnation {
-        self.incarnation
+        self.window.incarnation()
     }
 }
 
@@ -223,6 +317,54 @@ pub enum ViewportRole {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splitting_window_identity_preserves_complete_surface_order_and_hash_input() {
+        use std::hash::Hasher;
+
+        let mut bindings = Vec::new();
+        for domain in [1, 2] {
+            for epoch in [0, 1] {
+                for surface in [1, 2] {
+                    for token in [
+                        WindowToken::new(9),
+                        WindowToken::new(2),
+                        WindowToken::managed(1),
+                    ] {
+                        for incarnation in [1, 2] {
+                            bindings.push(ViewportBinding::new(
+                                EngineAuthorityDomainId::new_for_test(domain),
+                                WorkspaceEpoch::new(epoch),
+                                SurfaceId::new(surface),
+                                token,
+                                WindowIncarnation::new(incarnation),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        let flat = |binding: ViewportBinding| {
+            (
+                binding.authority_domain(),
+                binding.epoch(),
+                binding.surface(),
+                binding.token(),
+                binding.incarnation(),
+            )
+        };
+        for first in &bindings {
+            for second in &bindings {
+                assert_eq!(first.cmp(second), flat(*first).cmp(&flat(*second)));
+                assert_eq!(first == second, flat(*first) == flat(*second));
+            }
+            let mut current = std::hash::DefaultHasher::new();
+            let mut original = std::hash::DefaultHasher::new();
+            first.hash(&mut current);
+            flat(*first).hash(&mut original);
+            assert_eq!(current.finish(), original.finish());
+        }
+    }
 
     #[test]
     fn protocol_generations_never_wrap() {
@@ -281,5 +423,24 @@ mod tests {
         assert_eq!(binding.surface(), SurfaceId::new(5));
         assert_eq!(binding.token(), WindowToken::new(7));
         assert_eq!(binding.incarnation(), WindowIncarnation::new(11));
+    }
+
+    #[test]
+    fn surface_association_does_not_change_the_underlying_window_identity() {
+        let domain = EngineAuthorityDomainId::new_for_test(2);
+        let epoch = WorkspaceEpoch::new(3);
+        let token = WindowToken::new(7);
+        let incarnation = WindowIncarnation::new(11);
+        let window = WindowBinding::new(domain, epoch, token, incarnation);
+        let first = ViewportBinding::new(domain, epoch, SurfaceId::new(5), token, incarnation);
+        let second = ViewportBinding::from_window(window, SurfaceId::new(13));
+
+        assert_eq!(first.window(), window);
+        assert_eq!(second.window(), window);
+        assert_ne!(first, second);
+        assert_eq!(window.authority_domain(), domain);
+        assert_eq!(window.epoch(), epoch);
+        assert_eq!(window.token(), token);
+        assert_eq!(window.incarnation(), incarnation);
     }
 }

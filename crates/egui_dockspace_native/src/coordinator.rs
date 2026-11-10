@@ -31,8 +31,7 @@ use crate::effect_coordinator::{
     NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan,
 };
 use crate::error::{
-    NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
-    NativeViewportBindingError,
+    NativeHostProtocolError, NativeOutputBindingErrorKind, NativeViewportBindingError,
 };
 use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventClass, NativeWindowEventRecord};
 use crate::focus_control::{
@@ -2591,33 +2590,20 @@ impl NativeCoordinator {
         Ok(Some(frame))
     }
 
-    /// Binds one affine painted output and its final-pass receiver roster to the
-    /// token active while that viewport UI ran.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error carrying the output when the token was not announced,
-    /// the exact native binding differs, or the token is already pending.
-    pub fn bind_painted_surface(
+    /// Binds every contribution from one final pass as one affine token owner.
+    /// Refusal returns the complete collection and publishes no receiver set.
+    pub(crate) fn bind_painted_surfaces(
         &mut self,
         context: &eframe::egui::Context,
         token: NativeOutputToken,
-        output: PaintedSurfaceOutput,
-        paint: &crate::host_frame::NativeSurfacePaint,
-    ) -> Result<(), NativeOutputBindingError> {
+        outputs: Vec<PaintedSurfaceOutput>,
+        paints: &[crate::host_frame::NativeSurfacePaint],
+    ) -> Result<(), (NativeOutputBindingErrorKind, Vec<PaintedSurfaceOutput>)> {
         let Some(reservation) = self.bridge.output_reservation(token) else {
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::TokenNotReserved,
-                token,
-                output,
-            ));
+            return Err((NativeOutputBindingErrorKind::TokenNotReserved, outputs));
         };
         if self.bridge.has_pending_output(token) {
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::OutputAlreadyBound,
-                token,
-                output,
-            ));
+            return Err((NativeOutputBindingErrorKind::OutputAlreadyBound, outputs));
         }
         let current_binding = self.bridge.with_viewports(|viewports| {
             viewports.binding_for_output(
@@ -2628,65 +2614,48 @@ impl NativeCoordinator {
         });
         let binding = reservation.binding().or(current_binding);
         let Some(binding) = binding else {
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::RouteUnavailable,
-                token,
-                output,
-            ));
+            return Err((NativeOutputBindingErrorKind::RouteUnavailable, outputs));
         };
-        if reservation.binding().is_some() && current_binding != Some(binding) {
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::BindingMismatch,
-                token,
-                output,
-            ));
+        if reservation.binding().is_some()
+            && current_binding.map(NativeSurfaceBinding::window) != Some(binding.window())
+        {
+            return Err((NativeOutputBindingErrorKind::BindingMismatch, outputs));
         }
-        if !output.matches_native_binding(binding) {
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::BindingMismatch,
-                token,
-                output,
-            ));
+        if outputs.is_empty()
+            || outputs.iter().enumerate().any(|(index, output)| {
+                !output.matches_native_binding(binding)
+                    || outputs[..index]
+                        .iter()
+                        .any(|previous| previous.surface() == output.surface())
+            })
+        {
+            return Err((NativeOutputBindingErrorKind::BindingMismatch, outputs));
         }
-        let requires_commit_wake = self.session.presented_surface(output.surface()).is_none()
-            || self.session.surface_requires_presentation(output.surface())
-            || self
-                .session
-                .native_pointer_continuation_awaits_presentation(output.surface());
+        let requires_commit_wake = outputs.iter().any(|output| {
+            self.session.presented_surface(output.surface()).is_none()
+                || self.session.surface_requires_presentation(output.surface())
+                || self
+                    .session
+                    .native_pointer_continuation_awaits_presentation(output.surface())
+        });
         if self
             .receivers
-            .stage(context, token, binding, &output, paint)
+            .stage_outputs(context, token, binding, &outputs, paints)
             .is_err()
         {
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::ReceiverMismatch,
-                token,
-                output,
-            ));
+            return Err((NativeOutputBindingErrorKind::ReceiverMismatch, outputs));
         }
         if !self.bridge.attach_output_binding(token, binding) {
             self.receivers.abandon(token);
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::BindingMismatch,
-                token,
-                output,
-            ));
+            return Err((NativeOutputBindingErrorKind::BindingMismatch, outputs));
         }
         if requires_commit_wake && !self.bridge.require_output_wake_after_current(token) {
             self.receivers.abandon(token);
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::BindingMismatch,
-                token,
-                output,
-            ));
+            return Err((NativeOutputBindingErrorKind::BindingMismatch, outputs));
         }
-        if let Err(output) = self.bridge.bind_surface_output(token, output) {
+        if let Err(outputs) = self.bridge.bind_surface_outputs(token, outputs) {
             self.receivers.abandon(token);
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::OutputAlreadyBound,
-                token,
-                output,
-            ));
+            return Err((NativeOutputBindingErrorKind::OutputAlreadyBound, outputs));
         }
         Ok(())
     }
@@ -2876,7 +2845,7 @@ impl NativeCoordinator {
                 NativeOutputStatus::NotPresented => SurfacePresentationResult::Dropped,
             };
             match output {
-                PendingNativeOutput::Surface(output) => {
+                PendingNativeOutput::Surfaces(outputs) => {
                     if result.status() != NativeOutputStatus::Presented {
                         if let Some(binding) = binding {
                             self.bridge
@@ -2885,7 +2854,7 @@ impl NativeCoordinator {
                     }
                     if let Err(error) = self
                         .session
-                        .report_surface_presentation(output, presentation)
+                        .report_surface_presentations(outputs, presentation)
                     {
                         let abandoned = self.bridge.abandon_output(result.token());
                         debug_assert!(abandoned, "failed presentation was not submitted");

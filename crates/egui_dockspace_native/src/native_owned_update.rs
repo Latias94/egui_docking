@@ -16,11 +16,11 @@ pub(super) struct NativeOwnedUpdate {
 }
 
 pub(super) struct NativeUpdatePublication {
-    pub(super) surface: SurfaceId,
+    pub(super) surfaces: Vec<SurfaceId>,
     pub(super) no_frame_invalidations: Vec<PendingNoFrameInvalidation>,
     pub(super) retirements: Option<PreparedNativeRetirements>,
     pub(super) application_action: Option<NativeSubmittedApplicationAction>,
-    pub(super) ui_actions: Option<NativeUiActionAcknowledgement>,
+    pub(super) ui_actions: Vec<NativeUiActionAcknowledgement>,
     pub(super) native_input_pending: bool,
     pub(super) retain_previous: bool,
     pub(super) follow_up: bool,

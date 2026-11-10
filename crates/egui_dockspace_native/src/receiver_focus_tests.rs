@@ -137,9 +137,11 @@ fn minimized_surface_keeps_editor_focus_without_presented_receiver_authority() {
         vec![PresentedReceiverSet {
             binding,
             viewport: egui::ViewportId::ROOT,
-            hit_authority: context
-                .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
-                .unwrap(),
+            hit_authority: Arc::new(
+                context
+                    .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
+                    .unwrap(),
+            ),
             artifact,
             receivers: Vec::new(),
             scroll_receivers: Vec::new(),

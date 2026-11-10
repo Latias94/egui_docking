@@ -1,6 +1,7 @@
 //! Final-presentation-qualified egui receiver bindings.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use dockspace::geometry::LogicalPoint;
 use dockspace::model::{ItemId, SurfaceId};
@@ -21,6 +22,7 @@ pub(crate) enum NativeReceiverStageError {
     SemanticOutputMismatch,
     HitAuthorityMismatch,
     PassRegressed,
+    StorageUnavailable,
 }
 
 #[derive(Debug)]
@@ -28,7 +30,7 @@ struct PendingReceiverSet {
     surface: SurfaceId,
     binding: NativeSurfaceBinding,
     viewport: egui::ViewportId,
-    hit_authority: egui::CompletedPassHitAuthority,
+    hit_authority: Arc<egui::CompletedPassHitAuthority>,
     artifact: SurfacePresentationArtifact,
     receivers: Vec<NativePaintReceiver>,
     scroll_receivers: Vec<PresentedScrollReceiver>,
@@ -37,7 +39,7 @@ struct PendingReceiverSet {
 
 impl PendingReceiverSet {
     fn from_paint(
-        context: &egui::Context,
+        hit_authority: &Arc<egui::CompletedPassHitAuthority>,
         token: NativeOutputToken,
         binding: NativeSurfaceBinding,
         output: &PaintedSurfaceOutput,
@@ -52,15 +54,16 @@ impl PendingReceiverSet {
         let Some(semantic_output) = paint.semantic_output() else {
             return Err(NativeReceiverStageError::SemanticOutputMismatch);
         };
-        if !output.matches_semantic_output(semantic_output) {
+        if !output.matches_native_binding(binding)
+            || !output.matches_semantic_output(semantic_output)
+        {
             return Err(NativeReceiverStageError::SemanticOutputMismatch);
         }
         let viewport = paint.viewport_id();
         let cumulative_pass_nr = paint.cumulative_pass_nr();
-        let hit_authority = context
-            .capture_completed_pass_hit_authority(viewport)
-            .filter(|authority| authority.cumulative_pass_nr() == cumulative_pass_nr)
-            .ok_or(NativeReceiverStageError::HitAuthorityMismatch)?;
+        if hit_authority.cumulative_pass_nr() != cumulative_pass_nr {
+            return Err(NativeReceiverStageError::HitAuthorityMismatch);
+        }
         let receivers = paint.receivers().collect::<Vec<_>>();
         let scroll_receivers = paint
             .scroll_receivers()
@@ -71,7 +74,7 @@ impl PendingReceiverSet {
             surface: paint.surface(),
             binding,
             viewport,
-            hit_authority,
+            hit_authority: Arc::clone(hit_authority),
             artifact: output.presentation_artifact(),
             receivers,
             scroll_receivers,
@@ -84,7 +87,7 @@ impl PendingReceiverSet {
 struct PresentedReceiverSet {
     binding: NativeSurfaceBinding,
     viewport: egui::ViewportId,
-    hit_authority: egui::CompletedPassHitAuthority,
+    hit_authority: Arc<egui::CompletedPassHitAuthority>,
     artifact: SurfacePresentationArtifact,
     receivers: Vec<NativePaintReceiver>,
     scroll_receivers: Vec<PresentedScrollReceiver>,
@@ -99,7 +102,7 @@ struct PresentedScrollReceiver {
 
 #[derive(Debug, Default)]
 pub(crate) struct NativeReceiverStore {
-    pending: BTreeMap<NativeOutputToken, PendingReceiverSet>,
+    pending: BTreeMap<NativeOutputToken, Vec<PendingReceiverSet>>,
     awaiting_core: Vec<PendingReceiverSet>,
     presented: BTreeMap<SurfaceId, Vec<PresentedReceiverSet>>,
 }
@@ -133,24 +136,58 @@ impl NativeReceiverStore {
         !self.awaiting_core.is_empty()
     }
 
-    pub(crate) fn stage(
+    pub(crate) fn stage_outputs(
         &mut self,
         context: &egui::Context,
         token: NativeOutputToken,
         binding: NativeSurfaceBinding,
-        output: &PaintedSurfaceOutput,
-        paint: &NativeSurfacePaint,
+        outputs: &[PaintedSurfaceOutput],
+        paints: &[NativeSurfacePaint],
     ) -> Result<(), NativeReceiverStageError> {
-        let next = PendingReceiverSet::from_paint(context, token, binding, output, paint)?;
-        if let Some(current) = self.pending.get(&token)
-            && (current.surface != next.surface
-                || current.binding != next.binding
-                || current.viewport != next.viewport
-                || current.artifact != next.artifact
-                || next.hit_authority.cumulative_pass_nr()
-                    < current.hit_authority.cumulative_pass_nr())
-        {
-            return Err(NativeReceiverStageError::PassRegressed);
+        if outputs.is_empty() || outputs.len() != paints.len() {
+            return Err(NativeReceiverStageError::SemanticOutputMismatch);
+        }
+        let authority = Arc::new(
+            context
+                .capture_completed_pass_hit_authority(token.viewport_id())
+                .ok_or(NativeReceiverStageError::HitAuthorityMismatch)?,
+        );
+        let mut next = Vec::new();
+        next.try_reserve_exact(outputs.len())
+            .map_err(|_| NativeReceiverStageError::StorageUnavailable)?;
+        for output in outputs {
+            if next
+                .iter()
+                .any(|entry: &PendingReceiverSet| entry.surface == output.surface())
+            {
+                return Err(NativeReceiverStageError::SemanticOutputMismatch);
+            }
+            let mut matching = paints
+                .iter()
+                .filter(|paint| paint.surface() == output.surface());
+            let paint = matching
+                .next()
+                .ok_or(NativeReceiverStageError::SemanticOutputMismatch)?;
+            if matching.next().is_some() {
+                return Err(NativeReceiverStageError::SemanticOutputMismatch);
+            }
+            next.push(PendingReceiverSet::from_paint(
+                &authority, token, binding, output, paint,
+            )?);
+        }
+        if let Some(current) = self.pending.get(&token) {
+            if current.len() != next.len()
+                || current.iter().zip(&next).any(|(current, next)| {
+                    current.surface != next.surface
+                        || current.binding != next.binding
+                        || current.viewport != next.viewport
+                        || current.artifact != next.artifact
+                        || next.hit_authority.cumulative_pass_nr()
+                            < current.hit_authority.cumulative_pass_nr()
+                })
+            {
+                return Err(NativeReceiverStageError::PassRegressed);
+            }
         }
         self.pending.insert(token, next);
         Ok(())
@@ -162,32 +199,51 @@ impl NativeReceiverStore {
         binding: NativeSurfaceBinding,
     ) {
         let pending = self.pending.remove(&token);
-        self.finish_renderer_presented(pending, token.viewport_id(), binding);
+        self.finish_renderer_presented_outputs(pending, token.viewport_id(), binding);
     }
 
-    fn finish_renderer_presented(
+    fn finish_renderer_presented_outputs(
         &mut self,
-        pending: Option<PendingReceiverSet>,
+        pending: Option<Vec<PendingReceiverSet>>,
         viewport: egui::ViewportId,
         binding: NativeSurfaceBinding,
     ) {
         let Some(pending) = pending else {
             return;
         };
-        if pending.surface != binding.surface()
-            || pending.binding != binding
-            || pending.viewport != viewport
+        // Validate the whole token before promoting any receiver contribution.
+        if pending.is_empty()
+            || pending.iter().enumerate().any(|(index, entry)| {
+                entry.binding != binding
+                    || entry.surface != binding.surface()
+                    || entry.viewport != viewport
+                    || !Arc::ptr_eq(&pending[0].hit_authority, &entry.hit_authority)
+                    || pending[..index]
+                        .iter()
+                        .any(|previous| previous.surface == entry.surface)
+                    || self
+                        .awaiting_core
+                        .iter()
+                        .any(|candidate| candidate.artifact == entry.artifact)
+            })
         {
             return;
         }
-        if self
-            .awaiting_core
-            .iter()
-            .any(|candidate| candidate.artifact == pending.artifact)
-        {
-            return;
-        }
-        self.awaiting_core.push(pending);
+        self.awaiting_core.extend(pending);
+    }
+
+    #[cfg(test)]
+    fn finish_renderer_presented(
+        &mut self,
+        pending: Option<PendingReceiverSet>,
+        viewport: egui::ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
+        self.finish_renderer_presented_outputs(
+            pending.map(|pending| vec![pending]),
+            viewport,
+            binding,
+        );
     }
 
     pub(crate) fn dropped(&mut self, token: NativeOutputToken) {
@@ -199,7 +255,8 @@ impl NativeReceiverStore {
     }
 
     pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) {
-        self.pending.retain(|_, pending| pending.binding != binding);
+        self.pending
+            .retain(|_, pending| pending.iter().all(|entry| entry.binding != binding));
         self.awaiting_core
             .retain(|pending| pending.binding != binding);
         self.presented.retain(|_, presented| {
@@ -211,6 +268,7 @@ impl NativeReceiverStore {
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.pending
             .values()
+            .flatten()
             .any(|pending| pending.binding == binding)
             || self
                 .awaiting_core
@@ -233,25 +291,22 @@ impl NativeReceiverStore {
                 !presented.is_empty()
             });
 
-            let mut promoted = Vec::new();
-            self.awaiting_core.retain(|candidate| {
-                if !commit.settles(candidate.artifact) {
-                    return true;
+            for candidate in self
+                .awaiting_core
+                .extract_if(.., |candidate| commit.settles(candidate.artifact))
+            {
+                if !commit.presents(candidate.artifact) {
+                    continue;
                 }
-                if commit.presents(candidate.artifact) {
-                    promoted.push(PresentedReceiverSet {
-                        binding: candidate.binding,
-                        viewport: candidate.viewport,
-                        hit_authority: candidate.hit_authority.clone(),
-                        artifact: candidate.artifact,
-                        receivers: candidate.receivers.clone(),
-                        scroll_receivers: candidate.scroll_receivers.clone(),
-                        focus_bindings: candidate.focus_bindings.clone(),
-                    });
-                }
-                false
-            });
-            for candidate in promoted {
+                let candidate = PresentedReceiverSet {
+                    binding: candidate.binding,
+                    viewport: candidate.viewport,
+                    hit_authority: candidate.hit_authority,
+                    artifact: candidate.artifact,
+                    receivers: candidate.receivers,
+                    scroll_receivers: candidate.scroll_receivers,
+                    focus_bindings: candidate.focus_bindings,
+                };
                 let presented = self
                     .presented
                     .entry(candidate.binding.surface())
@@ -567,13 +622,15 @@ mod tests {
         output.presentation_artifact()
     }
 
-    fn empty_hit_authority() -> egui::CompletedPassHitAuthority {
+    fn empty_hit_authority() -> Arc<egui::CompletedPassHitAuthority> {
         let context = egui::Context::default();
         let mut output = context.run_ui(RawInput::default(), |_| {});
         output.textures_delta.clear();
-        context
-            .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
-            .expect("one completed root pass publishes hit authority")
+        Arc::new(
+            context
+                .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
+                .expect("one completed root pass publishes hit authority"),
+        )
     }
 
     fn empty_pending_receiver(
@@ -1319,7 +1376,7 @@ mod tests {
                 vec![PresentedReceiverSet {
                     binding,
                     viewport: egui::ViewportId::ROOT,
-                    hit_authority,
+                    hit_authority: Arc::new(hit_authority),
                     artifact,
                     receivers,
                     scroll_receivers: Vec::new(),
@@ -1544,6 +1601,47 @@ mod tests {
                 .any(|entry| entry.artifact == first_artifact && entry.binding == binding)
         }));
         assert!(store.awaiting_core.is_empty());
+    }
+
+    #[test]
+    fn receiver_collection_rejects_duplicate_and_foreign_members_without_partial_promotion() {
+        let exact = binding(31);
+        let foreign = binding(32);
+        let authority = empty_hit_authority();
+        let artifact = presentation_artifact();
+        let receiver = |binding| {
+            let mut entry = pending_receiver(binding, egui::ViewportId::ROOT, artifact);
+            entry.hit_authority = Arc::clone(&authority);
+            entry
+        };
+        let mut store = NativeReceiverStore::default();
+        for entries in [
+            vec![receiver(exact), receiver(exact)],
+            vec![receiver(exact), receiver(foreign)],
+        ] {
+            assert!(
+                entries
+                    .iter()
+                    .all(|entry| Arc::ptr_eq(&entry.hit_authority, &authority))
+            );
+            store.finish_renderer_presented_outputs(Some(entries), egui::ViewportId::ROOT, exact);
+            assert!(store.awaiting_core.is_empty());
+            assert!(store.presented.is_empty());
+        }
+        store.finish_renderer_presented_outputs(
+            Some(vec![receiver(exact)]),
+            egui::ViewportId::ROOT,
+            exact,
+        );
+        assert_eq!(store.awaiting_core.len(), 1);
+        assert!(Arc::ptr_eq(
+            &store.awaiting_core[0].hit_authority,
+            &authority
+        ));
+        assert!(
+            store.presented.is_empty(),
+            "renderer terminal still requires core commit"
+        );
     }
 
     #[test]
@@ -2025,7 +2123,7 @@ mod tests {
                 vec![PresentedReceiverSet {
                     binding,
                     viewport: egui::ViewportId::ROOT,
-                    hit_authority: hit_authority.clone(),
+                    hit_authority: Arc::new(hit_authority.clone()),
                     artifact,
                     receivers,
                     scroll_receivers: Vec::new(),
@@ -2407,7 +2505,7 @@ mod tests {
             vec![PresentedReceiverSet {
                 binding,
                 viewport: egui::ViewportId::ROOT,
-                hit_authority,
+                hit_authority: Arc::new(hit_authority),
                 artifact: presentation_artifact,
                 receivers: Vec::new(),
                 scroll_receivers,

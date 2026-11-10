@@ -553,6 +553,32 @@ fn actual_repeat_preserves_scrollbar_response_identity(token: NativeOutputToken)
 struct TokenHost;
 impl eframe::NativeHostHandler for TokenHost {}
 
+fn exact_surface_roster_survives_discard_and_abandon(tokens: &[NativeOutputToken]) {
+    let token = tokens[0];
+    let mut actions = NativePassActions::default();
+    actions
+        .remember_output_surfaces(token, &[SURFACE, CHILD])
+        .unwrap();
+    actions.discard_pass(token).unwrap();
+    actions
+        .remember_output_surfaces(token, &[SURFACE, CHILD])
+        .unwrap();
+    for rejected in [
+        &[CHILD, SURFACE][..],
+        &[SURFACE][..],
+        &[SURFACE, SURFACE][..],
+        &[][..],
+    ] {
+        assert_eq!(
+            actions.remember_output_surfaces(token, rejected),
+            Err(NativePassActionError::OutputChanged),
+        );
+        assert_eq!(actions.output_surfaces[&token], [SURFACE, CHILD]);
+    }
+    actions.abandon(token).unwrap();
+    assert!(!actions.output_surfaces.contains_key(&token));
+}
+
 struct Driver {
     tokens: Vec<NativeOutputToken>,
     completed: Arc<AtomicBool>,
@@ -576,6 +602,7 @@ impl eframe::App for Driver {
             capacity_and_conflicts_do_not_damage_accepted_events(&self.tokens);
             publication_retires_removed_surfaces_and_preserves_unpresented_owners(&self.tokens);
             actual_repeat_preserves_scrollbar_response_identity(token);
+            exact_surface_roster_survives_discard_and_abandon(&self.tokens);
             self.completed.store(true, Ordering::SeqCst);
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         } else {

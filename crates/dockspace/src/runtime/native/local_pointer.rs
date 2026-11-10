@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::NativeSurfaceBinding;
 use crate::backend_ingress::BackendIngressLease;
-use crate::coordinates::CoordinateSnapshot;
+use crate::coordinates::{CoordinateSnapshot, SurfaceClientGeometry};
 use crate::geometry::{GeometryError, LogicalPoint, PhysicalPoint, PhysicalSize, ScaleFactor};
 use crate::viewport::CoordinateGeneration;
 
@@ -108,7 +108,9 @@ pub struct NativeLocalCoordinates {
     backend: BackendIngressLease,
     binding: NativeSurfaceBinding,
     generation: CoordinateGeneration,
-    geometry: NativeLocalGeometry,
+    content_size: PhysicalSize,
+    native_scale_factor: ScaleFactor,
+    surface_client: SurfaceClientGeometry,
 }
 
 impl NativeLocalCoordinates {
@@ -121,11 +123,9 @@ impl NativeLocalCoordinates {
             backend,
             binding,
             generation: snapshot.coordinate_generation(),
-            geometry: NativeLocalGeometry::new(
-                snapshot.content_size(),
-                snapshot.native_scale_factor(),
-                snapshot.presentation_scale_factor(),
-            ),
+            content_size: snapshot.content_size(),
+            native_scale_factor: snapshot.native_scale_factor(),
+            surface_client: snapshot.surface_client_geometry(),
         }
     }
 
@@ -138,15 +138,20 @@ impl NativeLocalCoordinates {
     /// Returns the committed local geometry required at capture time.
     #[must_use]
     pub const fn geometry(self) -> NativeLocalGeometry {
-        self.geometry
+        NativeLocalGeometry::new(
+            self.content_size,
+            self.native_scale_factor,
+            self.surface_client.scale_factor(),
+        )
     }
 
     /// Captures one event using its original physical point and frozen geometry.
     ///
     /// Event and callback size/native scale must match exactly, and the callback
-    /// must match this capability's complete local geometry. Conversion divides
-    /// by the presentation scale once. Finite points outside the client area are
-    /// preserved without clamping and grant no desktop outside-all authority.
+    /// must match this capability's complete local geometry. Conversion uses the
+    /// frozen surface-to-client mapping once. Finite points outside its clip or
+    /// the client area are preserved without clamping and grant no desktop
+    /// outside-all authority.
     /// The reducer validates current coordinate authority again at its ordinal.
     ///
     /// # Errors
@@ -173,11 +178,9 @@ impl NativeLocalCoordinates {
         if callback != self.geometry() {
             return Err(NativeLocalCoordinateError::CallbackGeometryMismatch);
         }
-        let presentation_scale = self.geometry.presentation_scale_factor().get();
-        let surface_position = LogicalPoint::new(
-            event.client_position.x() / presentation_scale,
-            event.client_position.y() / presentation_scale,
-        )?;
+        let surface_position = self
+            .surface_client
+            .client_to_surface(event.client_position)?;
         Ok(NativeLocalPointerSample {
             coordinates: self,
             client_position: event.client_position,
@@ -221,7 +224,7 @@ impl NativeLocalPointerSample {
         self.client_position
     }
 
-    /// Returns the logical point computed using the captured presentation scale.
+    /// Returns the logical point computed using the captured surface-to-client mapping.
     #[must_use]
     pub const fn surface_position(self) -> LogicalPoint {
         self.surface_position
@@ -258,7 +261,7 @@ pub enum NativeLocalCoordinateError {
     /// The callback's local geometry differs from the committed capability.
     #[error("native local pointer callback geometry differs from committed geometry")]
     CallbackGeometryMismatch,
-    /// Dividing a finite physical point overflowed the logical coordinate range.
+    /// Mapping a finite physical point overflowed the logical coordinate range.
     #[error(transparent)]
     Geometry(#[from] GeometryError),
 }
@@ -266,6 +269,7 @@ pub enum NativeLocalCoordinateError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::PhysicalRect;
     use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
     use crate::intent::{Authority, AuthorityUnavailableReason};
     use crate::platform::WindowCoordinateObservation;
@@ -407,6 +411,68 @@ mod tests {
         );
         assert_eq!(sample.coordinates(), coordinates);
         assert_eq!(sample.coordinates().geometry(), coordinates.geometry());
+    }
+
+    #[test]
+    fn capture_preserves_source_motion_outside_an_offset_surface_clip() {
+        let coordinates = NativeLocalCoordinates {
+            surface_client: SurfaceClientGeometry::new(
+                point(120.0, 60.0),
+                scale(3.0),
+                PhysicalRect::new(120.0, 60.0, 300.0, 240.0).unwrap(),
+            ),
+            ..coordinates(2.0, 3.0)
+        };
+        let position = point(90.0, 420.0);
+        assert!(!coordinates.surface_client.clip().contains(position));
+        let sample = coordinates
+            .capture(
+                coordinates.binding(),
+                event(coordinates.geometry(), position),
+                coordinates.geometry(),
+            )
+            .expect("capture preserves finite source motion outside the hover clip");
+        assert_eq!(sample.client_position(), position);
+        assert_eq!(
+            sample.surface_position(),
+            LogicalPoint::new(-10.0, 120.0).unwrap()
+        );
+        assert_eq!(sample.coordinates(), coordinates);
+        assert_eq!(sample.coordinates().geometry(), coordinates.geometry());
+    }
+
+    #[test]
+    fn sample_compaction_does_not_cross_a_changed_client_mapping() {
+        let previous = coordinates(2.0, 3.0);
+        let moved = NativeLocalCoordinates {
+            surface_client: SurfaceClientGeometry::new(
+                point(1.0, 0.0),
+                scale(3.0),
+                previous.surface_client.clip(),
+            ),
+            ..previous
+        };
+        let clipped = NativeLocalCoordinates {
+            surface_client: SurfaceClientGeometry::new(
+                point(0.0, 0.0),
+                scale(3.0),
+                PhysicalRect::new(20.0, 0.0, 780.0, 600.0).unwrap(),
+            ),
+            ..previous
+        };
+        let capture = |coordinates: NativeLocalCoordinates, position| {
+            coordinates
+                .capture(
+                    coordinates.binding(),
+                    event(coordinates.geometry(), position),
+                    coordinates.geometry(),
+                )
+                .unwrap()
+        };
+        let old_sample = capture(previous, point(120.0, 60.0));
+        assert!(old_sample.same_coordinates(capture(previous, point(240.0, 60.0))));
+        assert!(!old_sample.same_coordinates(capture(moved, point(120.0, 60.0))));
+        assert!(!old_sample.same_coordinates(capture(clipped, point(120.0, 60.0))));
     }
 
     #[test]

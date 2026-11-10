@@ -106,7 +106,7 @@ pub use native::{
     NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
     NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
     NativeSurfaceCloseAction, NativeSurfaceCloseRejection, NativeSurfaceCloseRequest,
-    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+    NativeWindowBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
     NativeWorkAreaBinding, NativeWorkAreaFacts, NativeWorkAreaRoster,
 };
 pub use native::{NativePointerCaptureRequest, NativePointerContinuation};
@@ -144,8 +144,8 @@ pub use persistence::{
 };
 use presentation::PresentationObservationError;
 pub use presentation::{
-    PaintedSurfaceOutput, SurfacePresentationArtifact, SurfacePresentationCommit,
-    SurfacePresentationReportError, SurfacePresentationResult,
+    PaintedSurfaceOutput, SurfacePresentationArtifact, SurfacePresentationBatchReportError,
+    SurfacePresentationCommit, SurfacePresentationReportError, SurfacePresentationResult,
 };
 pub use presentation_commands::{DockspacePresentationCommand, DockspacePresentationCommands};
 

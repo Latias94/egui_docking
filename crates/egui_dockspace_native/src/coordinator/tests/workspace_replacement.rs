@@ -870,9 +870,10 @@ mod native_output {
             let Some((output, paint)) = fixture.paint.take() else {
                 return NativeHostWake::Wait;
             };
+            assert!(fixture.native.bridge.prepare_surface_outputs(token, 1));
             fixture
                 .native
-                .bind_painted_surface(context, token, output, &paint)
+                .bind_painted_surfaces(context, token, vec![output], std::slice::from_ref(&paint))
                 .unwrap();
             let root = fixture.root;
             assert!(fixture.native.receivers.references_binding(root));

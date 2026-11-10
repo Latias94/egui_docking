@@ -577,7 +577,10 @@ impl DockspaceSession {
             None
         };
         // Caller iteration and its destructor finish before maintenance or append.
-        let journals = native.prepare_pointer_journals(inputs, reclaimable)?;
+        let journals = {
+            let mut inputs = inputs.into_iter();
+            native.prepare_pointer_journals(&mut inputs, reclaimable)?
+        };
         if journals.is_empty() {
             return Ok(());
         }

@@ -786,7 +786,7 @@ impl RuntimeNativeState {
 
     pub(super) fn prepare_pointer_journals(
         &self,
-        inputs: impl IntoIterator<Item = NativePointerInput>,
+        inputs: &mut impl Iterator<Item = NativePointerInput>,
         reclaimable: Option<crate::backend_ingress::BackendIngressCommitWatermark>,
     ) -> Result<Vec<PointerEdgeJournal>, NativePlatformError> {
         if self.profile != NativeHostProfile::ManagedDesktop {

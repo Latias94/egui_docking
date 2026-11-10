@@ -282,7 +282,7 @@ struct FrozenSurfaceBinding {
 }
 
 impl SurfaceVacancyAuthority {
-    pub(crate) fn capture(surface: SurfaceId, record: Option<&ViewportRecord>) -> Self {
+    pub(crate) fn capture(surface: SurfaceId, record: Option<ViewportRecord<'_>>) -> Self {
         Self {
             surface,
             binding: record.map(|record| FrozenSurfaceBinding {
@@ -1047,7 +1047,7 @@ impl ViewportCoordinator {
 
     fn restore_binding_is_safe(
         target: SurfaceId,
-        record: &ViewportRecord,
+        record: ViewportRecord<'_>,
         desired_surfaces: &BTreeSet<SurfaceId>,
         creates: &BTreeMap<ViewportBinding, NativeCreateSaga>,
         replacements: &BTreeSet<ViewportBinding>,
@@ -3619,7 +3619,7 @@ impl ViewportCoordinator {
     }
 
     #[must_use]
-    pub fn viewport(&self, surface: SurfaceId) -> Option<&ViewportRecord> {
+    pub fn viewport(&self, surface: SurfaceId) -> Option<ViewportRecord<'_>> {
         self.registry.record(surface)
     }
 

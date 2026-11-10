@@ -738,7 +738,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 mut run,
                 publication,
             } = update;
-            if publication.surface != surface {
+            if publication.surfaces.as_slice() != [surface] {
                 return Err(NativeHostProtocolError::MultipassOutputChanged.into());
             }
             run.begin_repeated_pass(&context, token)?;
@@ -783,7 +783,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             };
             let native_input_pending = host_frame.native_input_pending();
             let control_output = bridge.is_control_output(token);
-            let mut ui_actions = None;
+            let mut ui_actions = Vec::new();
             if !native_input_pending && !control_output {
                 let dock_rect = ui.available_rect_before_wrap();
                 let focus_route_matches = token.viewport_id() == context.viewport_id()
@@ -828,7 +828,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 for action in actions {
                     host_frame.frame.submit_deferred_surface_action(action)?;
                 }
-                ui_actions = Some(acknowledgement);
+                ui_actions.push(acknowledgement);
             }
             let application_submission = if !native_input_pending
                 && !control_output
@@ -868,7 +868,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 host_frame,
                 NativeUpdateRun::begin(&context, token),
                 NativeUpdatePublication {
-                    surface,
+                    surfaces: vec![surface],
                     no_frame_invalidations: invalidations.ready,
                     retirements: if native_input_pending {
                         None
@@ -931,6 +931,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 dockspace::runtime::SurfaceWork::Ready(_)
             )
         {
+            retain_previous = true;
+        }
+        if !retain_previous && !bridge.prepare_surface_outputs(token, publication.surfaces.len()) {
             retain_previous = true;
         }
         if retain_previous {
@@ -1123,17 +1126,37 @@ impl<P: PaneView> NativeRuntimeState<P> {
             };
             return self.settle_retained_egui_output(context, output, token, kind);
         };
-        let surface = publication.surface;
-        let mut paint = match final_pass {
-            NativeFinalPass::Semantic(paint) => Some(paint),
-            NativeFinalPass::RetainPrevious | NativeFinalPass::RetainedOverlay => None,
+        let surface = *publication
+            .surfaces
+            .first()
+            .ok_or(NativeHostProtocolError::MultipassOutputChanged)?;
+        let mut paints = match final_pass {
+            NativeFinalPass::Semantic(paints) => paints,
+            NativeFinalPass::RetainPrevious | NativeFinalPass::RetainedOverlay => Vec::new(),
         };
+        if !paints.is_empty()
+            && (paints.len() != publication.surfaces.len()
+                || !paints
+                    .iter()
+                    .map(|paint| paint.surface())
+                    .eq(publication.surfaces.iter().copied()))
+        {
+            return Err(NativeHostProtocolError::MultipassOutputChanged.into());
+        }
         let mut host = self.coordinator.resume_host_update(host)?;
         let mut rejected_retention = None;
-        let confirmed = if let Some(paint) = paint.as_mut() {
-            if paint.validate_final_output(output) {
-                if !paint.confirm_into(&mut host.frame)? {
-                    return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
+        let confirmed = if !paints.is_empty() {
+            if egui_dockspace::native_support::validate_final_outputs(
+                paints.iter().map(|paint| &**paint),
+                output,
+            ) {
+                for paint in &mut paints {
+                    if !paint.confirm_into(&mut host.frame)? {
+                        return Err(NativeHostProtocolError::IncompleteTransientPaint(
+                            paint.surface(),
+                        )
+                        .into());
+                    }
                 }
                 true
             } else {
@@ -1163,7 +1186,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         // route replacement and core publication under the existing lock.
         let mut report = host.commit_publishing_root(&mut self.root_surface)?;
         self.publish_application_style(context, &mut publication.application_action, &report)?;
-        if let Some(acknowledged) = publication.ui_actions {
+        for acknowledged in publication.ui_actions {
             self.pass_actions.acknowledge(acknowledged);
         }
         self.pass_actions
@@ -1179,16 +1202,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     .map_err(map_pass_action_error)?;
             }
         }
-        let mut outputs = report.take_painted_outputs();
-        if outputs.len() != usize::from(confirmed) {
+        let outputs = report.take_painted_outputs();
+        let expected_outputs = if confirmed { paints.len() } else { 0 };
+        if outputs.len() != expected_outputs {
             return Err(NativeHostProtocolError::PaintedOutputCountMismatch {
-                expected: usize::from(confirmed),
+                expected: expected_outputs,
                 actual: outputs.len(),
             }
             .into());
         }
-        let painted_output = outputs.pop();
-        let repaint_surface = report.repaint_surfaces().contains(&surface);
+        let repaint_surface = publication
+            .surfaces
+            .iter()
+            .any(|surface| report.repaint_surfaces().contains(surface));
         self.settle_published_report(
             context,
             Some(token),
@@ -1199,29 +1225,38 @@ impl<P: PaneView> NativeRuntimeState<P> {
             true,
         )?;
         let mut focus_pending = false;
-        if let Some(painted_output) = painted_output {
-            let artifact = painted_output.presentation_artifact();
-            let paint = paint
-                .as_mut()
-                .expect("a confirmed pass owns its paint metadata");
-            if let Err(error) =
-                self.coordinator
-                    .bind_painted_surface(context, token, painted_output, paint)
+        if !outputs.is_empty() {
+            // Freeze each observation's exact artifact before transferring the
+            // complete affine output collection to the original token owner.
+            let artifacts = outputs
+                .iter()
+                .map(|output| (output.surface(), output.presentation_artifact()))
+                .collect::<Vec<_>>();
+            if let Err((kind, outputs)) = self
+                .coordinator
+                .bind_painted_surfaces(context, token, outputs, &paints)
             {
-                let kind = error.kind();
-                drop(error.into_output());
+                drop(outputs);
                 let _ = self.coordinator.abandon_output_token(token);
                 return Err(NativeHostProtocolError::OutputBindingFailed(kind).into());
             }
-            if let Some(observation) = paint.take_pane_focus_observation() {
-                self.pass_actions.retain_pane_focus(
-                    token,
-                    surface,
-                    self.coordinator.viewport_binding(token.viewport_id()),
-                    artifact,
-                    observation,
-                );
-                focus_pending = true;
+            for paint in &mut paints {
+                if let Some(observation) = paint.take_pane_focus_observation() {
+                    let artifact = artifacts
+                        .iter()
+                        .find_map(|(surface, artifact)| {
+                            (*surface == paint.surface()).then_some(*artifact)
+                        })
+                        .ok_or(NativeHostProtocolError::MultipassOutputChanged)?;
+                    self.pass_actions.retain_pane_focus(
+                        token,
+                        paint.surface(),
+                        self.coordinator.viewport_binding(token.viewport_id()),
+                        artifact,
+                        observation,
+                    );
+                    focus_pending = true;
+                }
             }
         } else {
             if let Some(retained) = rejected_retention {
@@ -1238,10 +1273,12 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         let semantic_retry = retained_pass_requires_semantic_retry(
             !confirmed,
-            self.coordinator
-                .session()
-                .presented_surface(surface)
-                .is_some(),
+            publication.surfaces.iter().all(|surface| {
+                self.coordinator
+                    .session()
+                    .presented_surface(*surface)
+                    .is_some()
+            }),
             self.application_actions.has_queued() || repaint_surface,
         );
         let follow_up = publication.follow_up

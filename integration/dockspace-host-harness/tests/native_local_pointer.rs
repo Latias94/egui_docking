@@ -991,6 +991,122 @@ fn outside_and_unknown_releases_cancel_without_poisoning_the_same_pointer() {
 }
 
 #[test]
+fn inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_continues() {
+    let (mut session, bindings, reference) = fixture();
+    let binding = bindings[0];
+    let inside_point = reference.insertion(SECOND, false);
+    let outside_point = reference.insertion(THIRD, false);
+    assert!(reference.tab(FIRST).receiver.center().x() < inside_point.x());
+    assert!(inside_point.x() < outside_point.x());
+    // Derive the client edge from the actual presented tab geometry instead of
+    // assuming the measured title width is the complete tab width.
+    let logical_edge = inside_point.x() + (outside_point.x() - inside_point.x()) * 0.5;
+    let local_geometry = NativeLocalGeometry::new(
+        size(
+            logical_edge * geometry().presentation_scale_factor().get(),
+            geometry().content_size().height(),
+        ),
+        geometry().native_scale_factor(),
+        geometry().presentation_scale_factor(),
+    );
+    snapshot(&mut session, bindings, local_geometry);
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    // The measured surface intentionally extends beyond the physical client.
+    // Its real tab receivers must not authorize hover outside the client clip.
+    measure(&mut frame, geometry());
+    finish(frame);
+    let (scene, exact) = paint(&mut session, binding, local_geometry);
+    present(&mut session, exact, Disposition::Presented);
+
+    let cap = session.native_local_coordinates(binding).unwrap();
+    assert_eq!(cap.geometry(), local_geometry);
+    let source = sample(
+        cap,
+        binding,
+        local_geometry,
+        scene.tab(FIRST).receiver.center(),
+    );
+    let outside = sample(cap, binding, local_geometry, scene.insertion(THIRD, false));
+    let client = PhysicalRect::from_min_size(
+        PhysicalPoint::new(0.0, 0.0).unwrap(),
+        local_geometry.content_size(),
+    )
+    .unwrap();
+    assert!(client.contains(source.client_position()));
+    assert!(!client.contains(outside.client_position()));
+    let inside_before_drag = sample(cap, binding, local_geometry, scene.insertion(SECOND, false));
+    assert!(client.contains(inside_before_drag.client_position()));
+    assert!(
+        scene
+            .tab(THIRD)
+            .receiver
+            .bounds()
+            .contains(outside.surface_position())
+    );
+
+    let version = session.version();
+    session
+        .record_native_pointer_batch([
+            located(binding, Event::ButtonPressed(Button::Primary), source),
+            located(binding, Event::Moved, outside),
+        ])
+        .unwrap();
+    let mut outside_hover_queries = 0;
+    let mut frame = session
+        .begin_native_host_frame(|query| {
+            if matches!(query.purpose(), NativeReceiverPurpose::HoverHit)
+                && query.point() == Some(outside.surface_position())
+            {
+                outside_hover_queries += 1;
+            }
+            scene.answer(query)
+        })
+        .unwrap();
+    let dragged = render(&mut frame, A, local_geometry);
+    assert_eq!(dragged.dragged_item, Some(FIRST));
+    dragged.assert_preview(false);
+    let mut report = finish(frame);
+    assert_eq!(outside_hover_queries, 0);
+    assert!(!report.workspace_changed());
+    assert!(report.manipulation_feedback().is_empty());
+    assert_eq!(session.version(), version);
+    assert_eq!(order(&session), [FIRST, SECOND, THIRD]);
+    assert!(session.has_active_gesture());
+    assert!(!session.has_pending_native_input());
+    let exact = output(&mut report, &dragged, binding);
+    present(&mut session, exact, Disposition::Presented);
+
+    // Returning inside the clip completes the same capture against the actual
+    // newly presented receivers, without restarting the source press.
+    let inside = sample(
+        session.native_local_coordinates(binding).unwrap(),
+        binding,
+        local_geometry,
+        dragged.insertion(SECOND, false),
+    );
+    assert!(client.contains(inside.client_position()));
+    session
+        .record_native_pointer_batch([
+            located(binding, Event::Moved, inside),
+            located(binding, Event::ButtonReleased(Button::Primary), inside),
+        ])
+        .unwrap();
+    let frame = session
+        .begin_native_host_frame(|query| dragged.answer(query))
+        .unwrap();
+    let report = finish(frame);
+    assert_eq!(
+        feedback(&report).status(),
+        Status::Delivered(Delivery::Dock)
+    );
+    assert!(report.workspace_changed());
+    assert_eq!(order(&session), [SECOND, FIRST, THIRD]);
+    assert_clean_idle(&mut session);
+}
+
+#[test]
 fn inactive_tab_selection_preserves_its_actual_output_until_the_successor_is_presented() {
     let (mut session, bindings, original) = fixture();
     let binding = bindings[0];

@@ -11,6 +11,7 @@ mod session;
 mod storage;
 #[cfg(test)]
 mod tests;
+mod window_binding;
 
 use thiserror::Error;
 
@@ -58,6 +59,7 @@ pub use pointer::{
     NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
 };
 pub use storage::{NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit};
+pub use window_binding::NativeWindowBinding;
 
 /// Opaque native-window resource key.
 ///
@@ -353,21 +355,31 @@ impl NativeSurfaceBinding {
         self.binding.surface()
     }
 
+    /// Returns the provider-bound real-window identity hosting this surface.
+    ///
+    /// This identifies the window lifetime without granting coordinate,
+    /// presentation or input authority for another logical surface.
+    #[must_use]
+    pub const fn window(self) -> NativeWindowBinding {
+        NativeWindowBinding::from_binding(self.provider, self.binding.window())
+    }
+
     /// Returns the opaque resource key in its original host or managed namespace.
     #[must_use]
     pub const fn window_token(self) -> HostWindowToken {
-        HostWindowToken(self.binding.token())
+        self.window().window_token()
     }
 
     /// Reports whether two provider-bound handles name the same native lifetime.
     ///
     /// A provider handoff may mint a new observation lease while retaining the
-    /// exact workspace, surface, window token, and incarnation. This comparison
+    /// exact engine domain, workspace, window token and incarnation. Surfaces
+    /// associated with that window do not change its lifetime. This comparison
     /// keeps those opaque lifetime details private while allowing a native host
     /// to rendezvous delayed cleanup results with the successor provider.
     #[must_use]
     pub fn same_window_lifetime(self, other: Self) -> bool {
-        self.binding == other.binding
+        self.window().same_window_lifetime(other.window())
     }
 
     pub(super) fn matches_viewport_binding(self, binding: ViewportBinding) -> bool {

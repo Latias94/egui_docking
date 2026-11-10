@@ -3,10 +3,10 @@
 use dockspace::model::SurfaceId;
 pub use dockspace::runtime::DockspaceRuntimeErrorKind as NativeRuntimeErrorKind;
 use dockspace::runtime::{
-    DockspaceRuntimeError, NativeHostErrorKind, PaintedSurfaceOutput,
+    DockspaceRuntimeError, NativeHostErrorKind, SurfacePresentationBatchReportError,
     SurfacePresentationReportError,
 };
-use eframe::{NativeOutputToken, egui::ViewportId};
+use eframe::egui::ViewportId;
 use egui_dockspace::{DockspaceError, DockspaceErrorKind};
 use thiserror::Error;
 use winit::window::WindowId;
@@ -21,6 +21,7 @@ pub struct NativeRuntimeError {
 enum NativeRuntimeErrorSource {
     Dockspace(Box<DockspaceRuntimeError>),
     Presentation(Box<SurfacePresentationReportError>),
+    PresentationBatch(Box<SurfacePresentationBatchReportError>),
     HostProtocol(NativeHostProtocolError),
     Adapter(Box<DockspaceError>),
 }
@@ -204,7 +205,10 @@ impl NativeRuntimeError {
     pub const fn kind(&self) -> NativeRuntimeErrorKind {
         match &self.source {
             NativeRuntimeErrorSource::Dockspace(source) => source.kind(),
-            NativeRuntimeErrorSource::Presentation(_) => NativeRuntimeErrorKind::HostProtocol,
+            NativeRuntimeErrorSource::Presentation(_)
+            | NativeRuntimeErrorSource::PresentationBatch(_) => {
+                NativeRuntimeErrorKind::HostProtocol
+            }
             NativeRuntimeErrorSource::HostProtocol(source) => source.kind(),
             NativeRuntimeErrorSource::Adapter(source) => adapter_error_kind(source.kind()),
         }
@@ -253,6 +257,7 @@ impl std::error::Error for NativeRuntimeError {
         Some(match &self.source {
             NativeRuntimeErrorSource::Dockspace(source) => source.as_ref(),
             NativeRuntimeErrorSource::Presentation(source) => source.as_ref(),
+            NativeRuntimeErrorSource::PresentationBatch(source) => source.as_ref(),
             NativeRuntimeErrorSource::HostProtocol(source) => source,
             NativeRuntimeErrorSource::Adapter(source) => source.as_ref(),
         })
@@ -271,6 +276,14 @@ impl From<SurfacePresentationReportError> for NativeRuntimeError {
     fn from(source: SurfacePresentationReportError) -> Self {
         Self {
             source: NativeRuntimeErrorSource::Presentation(Box::new(source)),
+        }
+    }
+}
+
+impl From<SurfacePresentationBatchReportError> for NativeRuntimeError {
+    fn from(source: SurfacePresentationBatchReportError) -> Self {
+        Self {
+            source: NativeRuntimeErrorSource::PresentationBatch(Box::new(source)),
         }
     }
 }
@@ -381,48 +394,6 @@ pub(crate) enum NativeOutputBindingErrorKind {
     /// The token already owns another pending painted output.
     OutputAlreadyBound,
 }
-
-/// Failed token-to-output binding which retains the affine output for recovery.
-#[derive(Debug)]
-pub(crate) struct NativeOutputBindingError {
-    kind: NativeOutputBindingErrorKind,
-    token: NativeOutputToken,
-    output: Box<PaintedSurfaceOutput>,
-}
-
-impl NativeOutputBindingError {
-    pub(crate) fn new(
-        kind: NativeOutputBindingErrorKind,
-        token: NativeOutputToken,
-        output: PaintedSurfaceOutput,
-    ) -> Self {
-        Self {
-            kind,
-            token,
-            output: Box::new(output),
-        }
-    }
-
-    pub(crate) const fn kind(&self) -> NativeOutputBindingErrorKind {
-        self.kind
-    }
-
-    pub(crate) fn into_output(self) -> PaintedSurfaceOutput {
-        *self.output
-    }
-}
-
-impl std::fmt::Display for NativeOutputBindingError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "cannot bind native output token {:?}: {:?}",
-            self.token, self.kind
-        )
-    }
-}
-
-impl std::error::Error for NativeOutputBindingError {}
 
 #[cfg(test)]
 mod tests {

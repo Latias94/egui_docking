@@ -1575,7 +1575,7 @@ impl DockEngine {
 
     fn focus_binding_snapshot(
         &self,
-        include: impl Fn(&crate::viewport_registry::ViewportRecord) -> bool,
+        include: impl Fn(crate::viewport_registry::ViewportRecord<'_>) -> bool,
     ) -> BTreeSet<crate::viewport::ViewportBinding> {
         self.viewport
             .registry()
@@ -1589,7 +1589,7 @@ impl DockEngine {
 
     fn focus_fact_binding_snapshot(
         &self,
-        include: impl Fn(&crate::viewport_registry::ViewportRecord) -> bool,
+        include: impl Fn(crate::viewport_registry::ViewportRecord<'_>) -> bool,
     ) -> BTreeSet<crate::viewport::ViewportBinding> {
         self.viewport
             .registry()

@@ -14,17 +14,14 @@ use crate::lifecycle_progress::NativeOutputBacklog;
 const ORDINARY_OUTPUT_CAPACITY: usize = 256;
 
 pub(crate) enum PendingNativeOutput {
-    Surface(PaintedSurfaceOutput),
+    Surfaces(Vec<PaintedSurfaceOutput>),
     Staging(super::NativePreparationPaint),
 }
 
 impl std::fmt::Debug for PendingNativeOutput {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Surface(output) => formatter
-                .debug_tuple("Surface")
-                .field(&output.surface())
-                .finish(),
+            Self::Surfaces(outputs) => formatter.debug_tuple("Surfaces").field(&outputs).finish(),
             Self::Staging(output) => formatter
                 .debug_tuple("Staging")
                 .field(&output.binding())
@@ -37,7 +34,15 @@ impl std::fmt::Debug for PendingNativeOutput {
 impl PendingNativeOutput {
     pub(super) fn matches_binding(&self, binding: NativeSurfaceBinding) -> bool {
         match self {
-            Self::Surface(output) => output.matches_native_binding(binding),
+            Self::Surfaces(outputs) => {
+                !outputs.is_empty()
+                    && outputs.iter().enumerate().all(|(index, output)| {
+                        output.matches_native_binding(binding)
+                            && !outputs[..index]
+                                .iter()
+                                .any(|previous| previous.surface() == output.surface())
+                    })
+            }
             Self::Staging(output) => output.binding() == binding,
         }
     }
@@ -45,7 +50,18 @@ impl PendingNativeOutput {
     pub(super) fn requires_lifecycle_settlement(&self, session: &DockspaceSession) -> bool {
         match self {
             Self::Staging(_) => true,
-            Self::Surface(output) => session.presented_surface(output.surface()).is_none(),
+            Self::Surfaces(outputs) => outputs
+                .iter()
+                .any(|output| session.presented_surface(output.surface()).is_none()),
+        }
+    }
+
+    fn owned_capacity_bytes(&self) -> usize {
+        match self {
+            Self::Surfaces(outputs) => outputs
+                .capacity()
+                .saturating_mul(size_of::<PaintedSurfaceOutput>()),
+            Self::Staging(_) => 0,
         }
     }
 }
@@ -54,6 +70,12 @@ impl PendingNativeOutput {
 pub(super) struct NativeOutputResource {
     pub(super) reservation: OutputReservation,
     pub(super) paint: Option<PendingNativeOutput>,
+    // Allocated before encoding. Attachment moves every contribution into this
+    // backing without allocating after the core publication.
+    surface_backing: Vec<PaintedSurfaceOutput>,
+    // Retain the promise while terminal settlement temporarily owns the Vec
+    // outside the mailbox lock, until the original token is fully committed.
+    surface_capacity: usize,
     pub(super) terminal: Option<NativeOutputResult>,
     // Keep the exact callback order and age through submission until full commit.
     terminal_ingress: Option<ReservedHostRecord>,
@@ -134,6 +156,11 @@ impl NativeOutputResources {
                 self.child_controls
                     .capacity()
                     .saturating_mul(size_of::<(NativeOutputToken, NativeOutputResource)>()),
+            )
+            .saturating_add(
+                self.values()
+                    .map(NativeOutputResource::owned_output_capacity_bytes)
+                    .fold(0, usize::saturating_add),
             )
     }
 
@@ -299,6 +326,8 @@ impl NativeOutputResource {
         Self {
             reservation,
             paint: None,
+            surface_backing: Vec::new(),
+            surface_capacity: 0,
             terminal: None,
             terminal_ingress: None,
             submitted: false,
@@ -327,7 +356,7 @@ impl NativeOutputResource {
     pub(super) fn terminal_requires_repaint(&self, status: eframe::NativeOutputStatus) -> bool {
         self.reservation.wakes_after_current()
             || status != eframe::NativeOutputStatus::Presented
-            || !matches!(self.paint, Some(PendingNativeOutput::Surface(_)))
+            || !matches!(self.paint, Some(PendingNativeOutput::Surfaces(_)))
     }
 
     pub(super) fn return_budget(&mut self, budget: NativeInputBudget) {
@@ -371,6 +400,11 @@ impl NativeOutputResource {
         &mut self,
         paint: PendingNativeOutput,
     ) -> Result<(), PendingNativeOutput> {
+        if let PendingNativeOutput::Surfaces(outputs) = paint {
+            return self
+                .bind_surfaces(outputs)
+                .map_err(PendingNativeOutput::Surfaces);
+        }
         if self.paint.is_some()
             || self.submitted
             || self.reservation.abandoned
@@ -383,6 +417,68 @@ impl NativeOutputResource {
         }
         self.paint = Some(paint);
         Ok(())
+    }
+
+    pub(super) fn output_capacity_growth(&self, surfaces: usize) -> Option<usize> {
+        if surfaces <= self.surface_backing.capacity() {
+            return Some(0);
+        }
+        // A larger replacement is prepared beside the retained empty backing.
+        surfaces.checked_mul(size_of::<PaintedSurfaceOutput>())
+    }
+
+    pub(super) fn prepare_surface_capacity(&mut self, surfaces: usize) -> bool {
+        if surfaces == 0 || self.paint.is_some() || self.submitted || self.reservation.abandoned {
+            return false;
+        }
+        if surfaces <= self.surface_backing.capacity() {
+            return true;
+        }
+        let mut backing = Vec::new();
+        if backing.try_reserve_exact(surfaces).is_err() || backing.capacity() > surfaces {
+            return false;
+        }
+        self.surface_capacity = backing.capacity();
+        self.surface_backing = backing;
+        true
+    }
+
+    pub(super) fn bind_surfaces(
+        &mut self,
+        outputs: Vec<PaintedSurfaceOutput>,
+    ) -> Result<(), Vec<PaintedSurfaceOutput>> {
+        if self.paint.is_some()
+            || self.submitted
+            || self.reservation.abandoned
+            || outputs.is_empty()
+            || outputs.len() > self.surface_backing.capacity()
+            || !self.reservation.binding().is_some_and(|binding| {
+                outputs.iter().enumerate().all(|(index, output)| {
+                    output.matches_native_binding(binding)
+                        && !outputs[..index]
+                            .iter()
+                            .any(|previous| previous.surface() == output.surface())
+                })
+            })
+        {
+            return Err(outputs);
+        }
+        self.surface_backing.extend(outputs);
+        self.paint = Some(PendingNativeOutput::Surfaces(std::mem::take(
+            &mut self.surface_backing,
+        )));
+        Ok(())
+    }
+
+    fn owned_output_capacity_bytes(&self) -> usize {
+        self.surface_capacity
+            .max(self.surface_backing.capacity())
+            .saturating_mul(size_of::<PaintedSurfaceOutput>())
+            .max(
+                self.paint
+                    .as_ref()
+                    .map_or(0, PendingNativeOutput::owned_capacity_bytes),
+            )
     }
 }
 
@@ -533,12 +629,13 @@ mod tests {
         let mut reservation = OutputReservation::unbound_for_test();
         assert!(reservation.attach(binding));
         let mut resource = NativeOutputResource::new(reservation, budget());
+        assert!(resource.prepare_surface_capacity(1));
         // Completion metadata is not an early presentation proof. Late paint
         // attachment remains possible until an exact core submission takes it.
         resource.reservation.terminal_recorded = true;
         assert!(
             resource
-                .bind_paint(PendingNativeOutput::Surface(output))
+                .bind_paint(PendingNativeOutput::Surfaces(vec![output]))
                 .is_ok()
         );
         assert!(
@@ -561,6 +658,117 @@ mod tests {
         );
         drop(rejected);
         drop(resource);
+    }
+
+    #[test]
+    fn output_collection_prepays_exact_capacity_and_keeps_it_through_terminal_take() {
+        for count in [1, 16, 128] {
+            let mut resource =
+                NativeOutputResource::new(OutputReservation::unbound_for_test(), budget());
+            assert_eq!(
+                resource.output_capacity_growth(count),
+                Some(count * size_of::<PaintedSurfaceOutput>()),
+            );
+            assert!(resource.prepare_surface_capacity(count));
+            assert_eq!(resource.surface_backing.capacity(), count);
+            assert_eq!(
+                resource.owned_output_capacity_bytes(),
+                count * size_of::<PaintedSurfaceOutput>(),
+            );
+            let backing = resource.surface_backing.as_ptr();
+            assert!(resource.prepare_surface_capacity(count));
+            assert_eq!(resource.surface_backing.as_ptr(), backing);
+            assert_eq!(resource.output_capacity_growth(count), Some(0));
+            assert!(!resource.prepare_surface_capacity(usize::MAX));
+            assert_eq!(resource.surface_backing.as_ptr(), backing);
+            assert_eq!(resource.surface_backing.capacity(), count);
+        }
+
+        let (_, binding, output) = painted_output();
+        let mut resource = NativeOutputResource::new(OutputReservation::bound(binding), budget());
+        assert!(resource.prepare_surface_capacity(16));
+        let backing = resource.surface_backing.as_ptr();
+        let reserved = resource.owned_output_capacity_bytes();
+        resource.bind_surfaces(vec![output]).unwrap();
+        let Some(PendingNativeOutput::Surfaces(outputs)) = resource.paint.take() else {
+            panic!("one token retains its complete affine collection");
+        };
+        assert_eq!(outputs.as_ptr(), backing);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs.capacity(), 16);
+        assert_eq!(resource.owned_output_capacity_bytes(), reserved);
+        assert!(resource.surface_backing.is_empty());
+    }
+
+    #[test]
+    fn output_collection_rejects_foreign_suffix_without_taking_any_contribution() {
+        let (mut session, binding, output) = painted_output();
+        let (mut foreign_session, foreign_binding, foreign_output) = painted_output();
+        assert_ne!(binding.window(), foreign_binding.window());
+        let artifacts = [
+            output.presentation_artifact(),
+            foreign_output.presentation_artifact(),
+        ];
+        let mut resource = NativeOutputResource::new(OutputReservation::bound(binding), budget());
+        assert!(resource.prepare_surface_capacity(2));
+        let outputs = resource
+            .bind_surfaces(vec![output, foreign_output])
+            .expect_err("one foreign member rejects the entire collection");
+        assert!(resource.paint.is_none());
+        assert_eq!(
+            outputs
+                .iter()
+                .map(PaintedSurfaceOutput::presentation_artifact)
+                .collect::<Vec<_>>(),
+            artifacts,
+        );
+        let mut outputs = outputs.into_iter();
+        session
+            .report_surface_presentation(
+                outputs.next().unwrap(),
+                dockspace::runtime::SurfacePresentationResult::Presented,
+            )
+            .unwrap();
+        foreign_session
+            .report_surface_presentation(
+                outputs.next().unwrap(),
+                dockspace::runtime::SurfacePresentationResult::Presented,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn output_collection_rejects_duplicate_surfaces_and_unprepaid_attachment() {
+        let (mut session, binding, first) = painted_output();
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let receipt = frame
+            .paint_plan(binding.surface())
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .unwrap();
+        frame.confirm_surface_painted(receipt).unwrap();
+        let second = frame.commit().unwrap().take_painted_outputs().remove(0);
+        assert!(second.matches_native_binding(binding));
+        let mut resource = NativeOutputResource::new(OutputReservation::bound(binding), budget());
+        let first = resource.bind_surfaces(vec![first]).unwrap_err().remove(0);
+        assert!(resource.prepare_surface_capacity(2));
+        let outputs = resource.bind_surfaces(vec![first, second]).unwrap_err();
+        assert_eq!(outputs.len(), 2);
+        assert!(
+            outputs
+                .iter()
+                .all(|output| output.matches_native_binding(binding))
+        );
+        assert!(resource.paint.is_none());
+        session
+            .report_surface_presentations(
+                outputs,
+                dockspace::runtime::SurfacePresentationResult::Dropped,
+            )
+            .unwrap();
     }
 
     #[test]
@@ -591,8 +799,9 @@ mod tests {
         let mut reservation = OutputReservation::unbound_for_test();
         assert!(reservation.attach(binding));
         let mut resource = NativeOutputResource::new(reservation, budget());
+        assert!(resource.prepare_surface_capacity(1));
         resource
-            .bind_paint(PendingNativeOutput::Surface(output))
+            .bind_paint(PendingNativeOutput::Surfaces(vec![output]))
             .unwrap();
         assert!(!resource.defer_before_input());
         assert!(!resource.reservation.abandoned);
@@ -608,9 +817,10 @@ mod tests {
         let mut reservation = OutputReservation::unbound_for_test();
         assert!(reservation.attach(binding));
         let mut resource = NativeOutputResource::new(reservation, budget());
+        assert!(resource.prepare_surface_capacity(1));
         assert!(resource.terminal_requires_repaint(Presented));
         resource
-            .bind_paint(PendingNativeOutput::Surface(output))
+            .bind_paint(PendingNativeOutput::Surfaces(vec![output]))
             .unwrap();
         assert!(!resource.terminal_requires_repaint(Presented));
         assert!(resource.terminal_requires_repaint(NotPresented));

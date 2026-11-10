@@ -471,20 +471,16 @@ impl std::fmt::Debug for SurfaceOutputProof {
 }
 
 impl SurfaceOutputProof {
-    /// Returns the enclosing half-open range for callers that own one surface.
     #[cfg(any(test, feature = "native-render-support"))]
-    pub(super) fn is_present_once(&self, output: &FullOutput) -> Option<(usize, usize)> {
-        let order = final_paint_layer_order(&self.context);
-        self.is_present_once_in_paint_order(output, &order)
+    pub(super) fn context(&self) -> &Context {
+        &self.context
     }
 
-    #[cfg(any(test, feature = "native-render-support"))]
-    pub(super) fn is_present_once_in_paint_order(
-        &self,
-        output: &FullOutput,
-        layer_order: &[LayerId],
-    ) -> Option<(usize, usize)> {
-        self.present_spans(output)?.enclosing_range(layer_order)
+    /// Returns the enclosing half-open range for callers that own one surface.
+    #[cfg(test)]
+    pub(super) fn is_present_once(&self, output: &FullOutput) -> Option<(usize, usize)> {
+        let order = final_paint_layer_order(&self.context);
+        self.present_spans(output)?.enclosing_range(&order)
     }
 
     /// Binds a complete descriptor check to this immutable capture identity.
