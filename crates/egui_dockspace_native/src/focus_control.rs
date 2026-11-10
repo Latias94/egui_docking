@@ -157,7 +157,6 @@ struct PendingNativeFocus<Request> {
 enum PendingNativeFocusState<Request> {
     Queued(Request),
     AwaitingCallback(Request),
-    AwaitingGlobalFocus(Request),
 }
 
 #[derive(Debug)]
@@ -280,59 +279,13 @@ impl<Request> NativeFocusControl<Request> {
         }
     }
 
-    pub(crate) fn mark_requested(&mut self, record: NativeViewportFocusRecord) -> bool {
-        if !matches!(
-            self.classify(record),
-            NativeFocusResultDisposition::Current {
-                status: NativeViewportFocusStatus::Requested,
-                ..
-            }
-        ) {
-            return false;
-        }
-        let Some(mut pending) = self.pending.take() else {
-            return false;
-        };
-        let changed = match pending.state {
-            PendingNativeFocusState::AwaitingCallback(request)
-            | PendingNativeFocusState::AwaitingGlobalFocus(request) => {
-                pending.state = PendingNativeFocusState::AwaitingGlobalFocus(request);
-                true
-            }
-            PendingNativeFocusState::Queued(request) => {
-                pending.state = PendingNativeFocusState::Queued(request);
-                false
-            }
-        };
-        self.pending = Some(pending);
-        changed
-    }
-
     pub(crate) fn take_callback(&mut self, record: NativeViewportFocusRecord) -> Option<Request> {
-        self.take_dispatched_if(
-            |pending| {
-                pending.viewport == record.viewport
-                    && pending.window == record.window
-                    && pending.token == Some(record.token)
-            },
-            |state| !matches!(state, PendingNativeFocusState::Queued(_)),
-        )
-    }
-
-    pub(crate) fn take_observed(&mut self, binding: NativeSurfaceBinding) -> Option<Request> {
-        self.take_dispatched_if(
-            |pending| pending.binding == binding,
-            |state| matches!(state, PendingNativeFocusState::AwaitingGlobalFocus(_)),
-        )
-    }
-
-    fn take_dispatched_if(
-        &mut self,
-        matches_pending: impl FnOnce(&PendingNativeFocus<Request>) -> bool,
-        matches_state: impl FnOnce(&PendingNativeFocusState<Request>) -> bool,
-    ) -> Option<Request> {
         let pending = self.pending.as_ref()?;
-        if !matches_pending(pending) || !matches_state(&pending.state) {
+        if pending.viewport != record.viewport
+            || pending.window != record.window
+            || pending.token != Some(record.token)
+            || !matches!(pending.state, PendingNativeFocusState::AwaitingCallback(_))
+        {
             return None;
         }
         let pending = self
@@ -340,8 +293,7 @@ impl<Request> NativeFocusControl<Request> {
             .take()
             .expect("the inspected focus request remains pending");
         match pending.state {
-            PendingNativeFocusState::AwaitingCallback(request)
-            | PendingNativeFocusState::AwaitingGlobalFocus(request) => Some(request),
+            PendingNativeFocusState::AwaitingCallback(request) => Some(request),
             PendingNativeFocusState::Queued(_) => {
                 unreachable!("the queued focus state was rejected before extraction")
             }
@@ -379,8 +331,7 @@ impl<Request> NativeFocusControl<Request> {
         let pending = self.pending.take()?;
         Some(match pending.state {
             PendingNativeFocusState::Queued(request) => NativeFocusTermination::Queued(request),
-            PendingNativeFocusState::AwaitingCallback(request)
-            | PendingNativeFocusState::AwaitingGlobalFocus(request) => {
+            PendingNativeFocusState::AwaitingCallback(request) => {
                 NativeFocusTermination::Dispatched(request)
             }
         })

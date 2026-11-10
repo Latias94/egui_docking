@@ -390,6 +390,8 @@ pub(crate) struct NativeViewportRosterEnvelope {
     pub(super) key: NativeViewportRosterKey,
     pub(super) commit_baseline: bool,
     pub(super) terminal_generation: Option<u64>,
+    /// The existing terminal roster backings already pay for this allocation.
+    pub(super) prepaid_payload: bool,
 }
 
 impl NativeViewportRosterEnvelope {
@@ -407,6 +409,7 @@ impl NativeViewportRosterEnvelope {
             key: NativeViewportRosterKey::from_shared(context, roster),
             commit_baseline,
             terminal_generation,
+            prepaid_payload: false,
         }
     }
 

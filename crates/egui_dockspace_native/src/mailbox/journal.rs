@@ -8,6 +8,7 @@ use dockspace::runtime::NativeMonotonicClock;
 
 use super::{HostRecord, admission::RECORD_LIMIT};
 use crate::error::NativeHostProtocolError;
+use crate::event::NativeWindowEventClass;
 
 #[derive(Debug)]
 pub(crate) struct ReservedHostRecord {
@@ -48,6 +49,9 @@ pub(crate) struct HostIngressJournal {
     last_ordinal: u64,
     transferred_count: usize,
     transferred_oldest: Option<Duration>,
+    raw_pointer_count: usize,
+    raw_pointer_payload_bytes: usize,
+    unprepaid_roster_count: usize,
 }
 
 impl HostIngressJournal {
@@ -71,6 +75,9 @@ impl HostIngressJournal {
             last_ordinal: 0,
             transferred_count: 0,
             transferred_oldest: None,
+            raw_pointer_count: 0,
+            raw_pointer_payload_bytes: 0,
+            unprepaid_roster_count: 0,
         })
     }
 
@@ -93,6 +100,18 @@ impl HostIngressJournal {
 
     pub(super) fn retained_record_count(&self) -> usize {
         self.queue.len().saturating_add(self.transferred_count)
+    }
+
+    pub(super) const fn raw_pointer_count(&self) -> usize {
+        self.raw_pointer_count
+    }
+
+    pub(super) const fn raw_pointer_payload_bytes(&self) -> usize {
+        self.raw_pointer_payload_bytes
+    }
+
+    pub(super) const fn has_unprepaid_roster(&self) -> bool {
+        self.unprepaid_roster_count != 0
     }
 
     /// Returns inline journal storage and the raw queue's backing capacity.
@@ -148,6 +167,19 @@ impl HostIngressJournal {
         if !self.can_push_raw() {
             return false;
         }
+        match &record {
+            HostRecord::WindowEvent(event)
+                if NativeWindowEventClass::classify(event.event())
+                    == NativeWindowEventClass::Pointer =>
+            {
+                self.raw_pointer_count += 1;
+                self.raw_pointer_payload_bytes += event.owned_descendant_capacity_bytes();
+            }
+            HostRecord::ViewportRoster(envelope) if !envelope.prepaid_payload => {
+                self.unprepaid_roster_count += 1;
+            }
+            _ => {}
+        }
         let record = self.reserve(record);
         self.queue.push_back(record);
         true
@@ -171,7 +203,25 @@ impl HostIngressJournal {
 
     /// Removes a superseded or already committed raw record.
     pub(super) fn pop_front(&mut self) -> Option<HostRecord> {
-        self.queue.pop_front().map(|entry| entry.record)
+        self.pop_front_reserved().map(|entry| entry.record)
+    }
+
+    fn pop_front_reserved(&mut self) -> Option<ReservedHostRecord> {
+        let entry = self.queue.pop_front()?;
+        match &entry.record {
+            HostRecord::WindowEvent(event)
+                if NativeWindowEventClass::classify(event.event())
+                    == NativeWindowEventClass::Pointer =>
+            {
+                self.raw_pointer_count -= 1;
+                self.raw_pointer_payload_bytes -= event.owned_descendant_capacity_bytes();
+            }
+            HostRecord::ViewportRoster(envelope) if !envelope.prepaid_payload => {
+                self.unprepaid_roster_count -= 1;
+            }
+            _ => {}
+        }
+        Some(entry)
     }
 
     /// Moves the exact raw prefix into the still-uncommitted core boundary.
@@ -179,8 +229,7 @@ impl HostIngressJournal {
         assert!(count <= self.queue.len(), "a claimed prefix remains queued");
         for _ in 0..count {
             let entry = self
-                .queue
-                .pop_front()
+                .pop_front_reserved()
                 .expect("a claimed prefix remains queued");
             self.transfer_reserved(entry);
         }

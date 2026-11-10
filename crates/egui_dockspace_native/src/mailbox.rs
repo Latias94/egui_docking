@@ -2278,8 +2278,13 @@ impl NativeHostState {
     }
 
     fn admit_ordinary(&mut self) -> bool {
+        self.admit_ordinary_with_data(0)
+    }
+
+    fn admit_ordinary_with_data(&mut self, additional: usize) -> bool {
         if !self.journal.can_push_raw()
-            || !self.can_reserve_output_data()
+            || !self.output_resources.can_reserve_ordinary()
+            || !self.can_reserve_input_data(additional)
             || self.retained_record_count() >= admission::RECORD_LIMIT
             || self
                 .oldest_record_age()
@@ -2289,6 +2294,16 @@ impl NativeHostState {
             return false;
         }
         self.mode.accepts_new_work() && matches!(self.admission, NativeAdmission::Running)
+    }
+
+    fn admit_pointer_callback(&mut self, payload_bytes: usize) -> bool {
+        let Some(additional) = payload_bytes
+            .checked_add(NativePointerTranslator::callback_translation_capacity_bytes())
+        else {
+            self.freeze_ordinary();
+            return false;
+        };
+        self.admit_ordinary_with_data(additional)
     }
 
     fn dispatch(&self) -> NativeDispatch {
@@ -3055,6 +3070,10 @@ impl NativeHostState {
     }
 
     fn capture_window_event(&mut self, mut record: NativeWindowEventRecord) -> bool {
+        if NativeWindowEventClass::classify(record.event()) == NativeWindowEventClass::Pointer {
+            return self.admit_pointer_callback(record.owned_descendant_capacity_bytes())
+                && self.record_window_event(record);
+        }
         if matches!(record.event(), winit::event::WindowEvent::CloseRequested)
             && record
                 .binding()
@@ -3070,12 +3089,6 @@ impl NativeHostState {
             && !reserved_close
             && !self.admit_ordinary()
         {
-            return false;
-        }
-        if NativeWindowEventClass::classify(record.event()) == NativeWindowEventClass::Pointer
-            && !self.can_reserve_pointer_capture(record.owned_descendant_capacity_bytes())
-        {
-            self.freeze_ordinary();
             return false;
         }
         if matches!(record.event(), winit::event::WindowEvent::CloseRequested)
@@ -3240,12 +3253,14 @@ impl NativeHostState {
         if !self.admit_ordinary() {
             return false;
         }
-        let envelope = NativeViewportRosterEnvelope::from_shared(
+        let prepaid_payload = self.terminal_roster.owns_payload(&roster);
+        let mut envelope = NativeViewportRosterEnvelope::from_shared(
             self.roster_context,
             roster,
             matches!(self.mode, HostIngressMode::Active),
             None,
         );
+        envelope.prepaid_payload = prepaid_payload;
         let already_known = self.committed_viewport_roster.as_ref() == Some(&envelope.key)
             || self.in_flight_viewport_roster.as_ref() == Some(&envelope.key)
             || self.journal.iter().any(
@@ -3265,15 +3280,16 @@ impl NativeHostState {
         if roster.observation_count() > self.terminal_roster.window_capacity() {
             return false;
         }
+        let prepaid_payload = self.terminal_roster.owns_payload(&roster);
         self.terminal_roster.capture(|generation| {
-            self.journal.reserve(HostRecord::ViewportRoster(
-                NativeViewportRosterEnvelope::from_shared(
-                    self.roster_context,
-                    roster,
-                    true,
-                    Some(generation),
-                ),
-            ))
+            let mut envelope = NativeViewportRosterEnvelope::from_shared(
+                self.roster_context,
+                roster,
+                true,
+                Some(generation),
+            );
+            envelope.prepaid_payload = prepaid_payload;
+            self.journal.reserve(HostRecord::ViewportRoster(envelope))
         })
     }
 
@@ -6228,10 +6244,20 @@ impl NativeHostHandler for NativeHostBridge {
         if !records.accepts_window_event(event.event()) {
             return NativeWindowEventDisposition::Continue;
         }
-        if NativeWindowEventClass::classify(event.event()) == NativeWindowEventClass::Pointer
-            && !records.can_capture_pointer_callback()
-        {
-            records.freeze_ordinary();
+        if NativeWindowEventClass::classify(event.event()) == NativeWindowEventClass::Pointer {
+            // The lock keeps this one complete admission valid through capture.
+            // No pointer payload is allocated before its growth is prepaid.
+            if records
+                .admit_pointer_callback(NativeWindowEventRecord::pointer_callback_capacity_bytes())
+            {
+                let record = NativeWindowEventRecord::from_eframe(event, &mut records.viewports);
+                debug_assert!(
+                    record.owned_descendant_capacity_bytes()
+                        <= NativeWindowEventRecord::pointer_callback_capacity_bytes()
+                );
+                let recorded = records.record_window_event(record);
+                debug_assert!(recorded, "the admitted pointer retains its raw slot");
+            }
             return NativeWindowEventDisposition::Continue;
         }
         let record = NativeWindowEventRecord::from_eframe(event, &mut records.viewports);

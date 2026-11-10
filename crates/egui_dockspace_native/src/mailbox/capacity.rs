@@ -7,7 +7,8 @@ use super::window_resource::NativeWindowResources;
 use super::{HostRecord, NativeHostBridge, NativeHostState, NativeSurfaceBinding};
 use crate::close_control::NativeCloseControl;
 use crate::error::NativeHostProtocolError;
-use crate::event::{NativeWindowEventClass, NativeWindowEventRecord};
+#[cfg(test)]
+use crate::event::NativeWindowEventRecord;
 use crate::pointer_event::NativePointerTranslator;
 use crate::retirement::NativeRetirementState;
 use crate::viewport_map::NativeViewportMap;
@@ -25,6 +26,7 @@ impl NativeHostState {
     fn roster_payloads<'state>(
         &'state self,
         external: Option<&'state Arc<NativeViewportRosterRecord>>,
+        for_admission: bool,
     ) -> impl Iterator<Item = &'state Arc<NativeViewportRosterRecord>> {
         self.committed_viewport_roster
             .iter()
@@ -33,9 +35,20 @@ impl NativeHostState {
             .chain(
                 self.journal
                     .iter()
+                    // Production rosters borrow the existing two backings.
+                    // External payloads retain the exact fallback accounting.
+                    .take(if for_admission && !self.journal.has_unprepaid_roster() {
+                        0
+                    } else {
+                        self.journal.len()
+                    })
                     .chain(self.owner_ingress().map(|ingress| ingress.record()))
-                    .filter_map(|record| match record {
-                        HostRecord::ViewportRoster(envelope) => Some(&envelope.key.roster),
+                    .filter_map(move |record| match record {
+                        HostRecord::ViewportRoster(envelope)
+                            if !for_admission || !envelope.prepaid_payload =>
+                        {
+                            Some(&envelope.key.roster)
+                        }
                         _ => None,
                     }),
             )
@@ -46,6 +59,14 @@ impl NativeHostState {
     fn owned_input_capacity_bytes(
         &self,
         external: Option<&Arc<NativeViewportRosterRecord>>,
+    ) -> usize {
+        self.input_capacity_bytes(external, false)
+    }
+
+    fn input_capacity_bytes(
+        &self,
+        external: Option<&Arc<NativeViewportRosterRecord>>,
+        for_admission: bool,
     ) -> usize {
         let mut bytes = size_of::<Self>()
             .saturating_add(
@@ -69,23 +90,32 @@ impl NativeHostState {
         // Each accepted pointer callback owns one immutable payload. Retries
         // borrow or clone that same record while it remains in this journal;
         // lifecycle owner slots never duplicate pointer callbacks.
-        bytes = bytes.saturating_add(
+        let pointer_payload = |record: &HostRecord| match record {
+            HostRecord::WindowEvent(event) => event.owned_descendant_capacity_bytes(),
+            _ => 0,
+        };
+        let raw_payload_bytes = if for_admission {
+            self.journal.raw_pointer_payload_bytes()
+        } else {
+            // Diagnostics independently recount the retained payloads so they
+            // can verify the incremental admission ledger after every boundary.
             self.journal
                 .iter()
-                .chain(self.owner_ingress().map(|ingress| ingress.record()))
-                .filter_map(|record| match record {
-                    HostRecord::WindowEvent(event) => Some(event.owned_descendant_capacity_bytes()),
-                    _ => None,
-                })
+                .map(pointer_payload)
+                .fold(0_usize, usize::saturating_add)
+        };
+        bytes = bytes.saturating_add(raw_payload_bytes).saturating_add(
+            self.owner_ingress()
+                .map(|ingress| pointer_payload(ingress.record()))
                 .fold(0_usize, usize::saturating_add),
         );
         // Production rosters always belong to the two backing owners. Tests may
         // inject external allocations; compare the existing handles without
         // keeping a persistent allocation-address registry.
-        for (index, payload) in self.roster_payloads(external).enumerate() {
+        for (index, payload) in self.roster_payloads(external, for_admission).enumerate() {
             if !self.terminal_roster.owns_payload(payload)
                 && !self
-                    .roster_payloads(external)
+                    .roster_payloads(external, for_admission)
                     .take(index)
                     .any(|previous| Arc::ptr_eq(previous, payload))
             {
@@ -104,7 +134,7 @@ impl NativeHostState {
     }
 
     fn reserved_input_data_bytes(&self) -> Option<usize> {
-        self.owned_input_capacity_bytes(None)
+        self.input_capacity_bytes(None, true)
             .checked_add(size_of::<NativeHostBridge>() - size_of::<NativeHostState>())?
             .checked_add(self.reserved_pointer_translation_capacity_bytes())?
             .checked_add(self.snapshot_storage_reserved_bytes)?
@@ -120,19 +150,14 @@ impl NativeHostState {
     /// capture. Transfer replaces that promise with two copies of current state;
     /// cancellation and binding/device retirement need no extra allocation.
     pub(super) fn reserved_pointer_translation_capacity_bytes(&self) -> usize {
-        let pending = self
-            .journal
-            .iter()
-            .filter(|record| {
-                matches!(record, HostRecord::WindowEvent(event)
-                    if NativeWindowEventClass::classify(event.event()) == NativeWindowEventClass::Pointer)
-            })
-            .count();
         self.pointer_translation_reserved_bytes.saturating_add(
-            pending.saturating_mul(NativePointerTranslator::callback_translation_capacity_bytes()),
+            self.journal
+                .raw_pointer_count()
+                .saturating_mul(NativePointerTranslator::callback_translation_capacity_bytes()),
         )
     }
 
+    #[cfg(test)]
     pub(super) fn can_reserve_pointer_capture(&self, payload_bytes: usize) -> bool {
         payload_bytes
             .checked_add(NativePointerTranslator::callback_translation_capacity_bytes())
@@ -140,6 +165,7 @@ impl NativeHostState {
     }
 
     /// Preflight the complete overlap before allocating callback payload data.
+    #[cfg(test)]
     pub(super) fn can_capture_pointer_callback(&self) -> bool {
         self.can_reserve_pointer_capture(NativeWindowEventRecord::pointer_callback_capacity_bytes())
     }
@@ -373,13 +399,37 @@ impl NativeHostBridge {
 mod tests {
     use super::super::roster::{NativeViewportRosterEnvelope, NativeViewportRosterKey};
     use super::*;
-    use crate::event::{NativeDeviceRemovalRecord, NativeWindowEventRecord};
+    use crate::event::{
+        NativeDeviceRemovalRecord, NativeWindowEventClass, NativeWindowEventRecord,
+    };
     use crate::pointer_event::NativePointerTranslation;
     use winit::dpi::PhysicalPosition;
     use winit::event::{
         DeviceId, MouseScrollDelta, PointerEventFacts, Touch, TouchPhase, WindowEvent,
     };
     use winit::window::WindowId;
+
+    fn assert_incremental_accounting_matches_recount(state: &NativeHostState) {
+        assert_eq!(
+            state.input_capacity_bytes(None, true),
+            state.owned_input_capacity_bytes(None),
+        );
+        let raw_pointers = state
+            .journal
+            .iter()
+            .filter(|record| {
+                matches!(record, HostRecord::WindowEvent(event)
+                    if NativeWindowEventClass::classify(event.event())
+                        == NativeWindowEventClass::Pointer)
+            })
+            .count();
+        assert_eq!(state.journal.raw_pointer_count(), raw_pointers);
+        assert_eq!(
+            state.reserved_pointer_translation_capacity_bytes(),
+            state.pointer_translation_reserved_bytes
+                + raw_pointers * NativePointerTranslator::callback_translation_capacity_bytes(),
+        );
+    }
 
     #[test]
     fn fresh_bridge_query_matches_all_initial_backing_before_any_owner_or_capture() {
@@ -480,6 +530,84 @@ mod tests {
         );
         assert_eq!(state.reserved_input_data_bytes(), Some(required));
         assert!(!state.can_reserve_input_data(1));
+        assert_incremental_accounting_matches_recount(&state);
+    }
+
+    #[test]
+    fn incremental_pointer_accounting_survives_retry_coalescing_transfer_and_commit() {
+        use super::super::admission::NativeAdmission;
+        use dockspace::runtime::{NativeInputBudget, NativeMonotonicClock};
+        use std::time::Duration;
+
+        let clock = NativeMonotonicClock::new(|| Duration::ZERO);
+        let bridge = NativeHostBridge::with_clock(NativeViewportMap::default(), clock.clone());
+        let baseline = bridge.lock().reserved_input_data_bytes().unwrap();
+        let payload = NativeWindowEventRecord::pointer_callback_capacity_bytes();
+        let translation = NativePointerTranslator::callback_translation_capacity_bytes();
+        let limit = baseline + 64 * (payload + translation);
+        assert!(bridge.configure_input_storage_allowance(limit, 0));
+        {
+            let mut state = bridge.lock();
+            for ordinal in 1..=64 {
+                let record = NativeWindowEventRecord::for_test_snapshot(
+                    ordinal,
+                    WindowId::from(1),
+                    None,
+                    WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: PhysicalPosition::new(ordinal as f64, 20.0),
+                        facts: PointerEventFacts::default(),
+                    },
+                    &state.viewports,
+                );
+                assert!(state.capture_window_event(record));
+                assert_incremental_accounting_matches_recount(&state);
+            }
+            assert_eq!(state.journal.raw_pointer_count(), 64);
+            assert_eq!(state.journal.raw_pointer_payload_bytes(), 64 * payload);
+            assert_eq!(state.journal.captured_through(), 64);
+        }
+
+        // A failed attempt only drops borrowed/cloned payload handles. The
+        // original queue still owns every byte and translation promise.
+        drop(bridge.claim_cursor_prefix(256).unwrap());
+        assert_incremental_accounting_matches_recount(&bridge.lock());
+        assert_eq!(bridge.lock().journal.raw_pointer_count(), 64);
+        {
+            let mut state = bridge.lock();
+            let rejected = NativeWindowEventRecord::for_test_snapshot(
+                65,
+                WindowId::from(1),
+                None,
+                WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(65.0, 20.0),
+                    facts: PointerEventFacts::default(),
+                },
+                &state.viewports,
+            );
+            assert!(!state.capture_window_event(rejected));
+            assert_eq!(state.journal.captured_through(), 64);
+            assert_eq!(state.admission, NativeAdmission::Draining { boundary: 64 });
+            assert_incremental_accounting_matches_recount(&state);
+        }
+
+        let mut budget = NativeInputBudget::new(&clock);
+        assert!(bridge.coalesce_idle_cursor_prefix(&mut budget));
+        let mut state = bridge.lock();
+        assert_eq!(state.journal.raw_pointer_count(), 1);
+        assert_eq!(state.journal.raw_pointer_payload_bytes(), payload);
+        assert_eq!(state.journal.front_ordinal(), Some(64));
+        assert_incremental_accounting_matches_recount(&state);
+        state.journal.transfer_front(1);
+        assert_eq!(state.journal.raw_pointer_count(), 0);
+        assert_eq!(state.journal.raw_pointer_payload_bytes(), 0);
+        assert_eq!(state.journal.retained_record_count(), 1);
+        assert_incremental_accounting_matches_recount(&state);
+        state.journal.commit_transferred();
+        assert_eq!(state.journal.retained_record_count(), 0);
+        assert_eq!(state.reserved_input_data_bytes(), Some(baseline));
+        assert_incremental_accounting_matches_recount(&state);
     }
 
     #[test]
@@ -507,9 +635,11 @@ mod tests {
         let retry = front.clone();
         assert_eq!(state.owned_input_capacity_bytes(None), baseline + payload);
         assert_eq!(retry.owned_descendant_capacity_bytes(), payload);
+        assert_incremental_accounting_matches_recount(&state);
         drop(retry);
         state.journal.transfer_front(1);
         assert_eq!(state.owned_input_capacity_bytes(None), baseline);
+        assert_incremental_accounting_matches_recount(&state);
         assert_eq!(state.journal.retained_record_count(), 1);
         assert!(state.journal.oldest_age().is_some());
         state.journal.commit_transferred();
@@ -709,6 +839,7 @@ mod tests {
             );
             assert!(!state.capture_window_event(touch(999)));
             assert_eq!(state.journal.captured_through(), accepted as u64);
+            assert_incremental_accounting_matches_recount(&state);
             accepted
         };
 
@@ -731,6 +862,7 @@ mod tests {
             translator.owned_data_capacity_bytes(),
             size_of::<NativePointerTranslator>()
         );
+        assert_incremental_accounting_matches_recount(&bridge.lock());
 
         for ordinal in 1..=accepted {
             let record = bridge.front_event().unwrap();
@@ -752,6 +884,7 @@ mod tests {
             assert!(
                 baseline + bridge.lock().reserved_pointer_translation_capacity_bytes() <= limit
             );
+            assert_incremental_accounting_matches_recount(&bridge.lock());
             bridge.commit_frame_boundary(false);
         }
         assert!(bridge.front_event().is_none());
@@ -915,6 +1048,8 @@ mod tests {
             assert!(state.journal.push_back(HostRecord::ViewportRoster(
                 NativeViewportRosterEnvelope::from_shared(1, Arc::clone(&payload), true, None),
             )));
+            assert!(state.journal.has_unprepaid_roster());
+            assert_incremental_accounting_matches_recount(&state);
         }
         assert_eq!(
             bridge.owned_input_capacity_bytes(Some(&payload)),
@@ -928,10 +1063,21 @@ mod tests {
             "equal facts in distinct allocations remain distinct resident data"
         );
         {
+            let state = bridge.lock();
+            for external in [&payload, &distinct] {
+                assert_eq!(
+                    state.input_capacity_bytes(Some(external), true),
+                    state.owned_input_capacity_bytes(Some(external)),
+                );
+            }
+        }
+        {
             let mut state = bridge.lock();
             state.journal.transfer_front(1);
             state.committed_viewport_roster = None;
             state.in_flight_viewport_roster = None;
+            assert!(!state.journal.has_unprepaid_roster());
+            assert_incremental_accounting_matches_recount(&state);
         }
         assert_eq!(
             bridge.owned_input_capacity_bytes(Some(&payload)),

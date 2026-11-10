@@ -1414,13 +1414,6 @@ impl NativeCoordinator {
         self.queue_focus_termination(termination);
     }
 
-    fn terminalize_queued_focus(&mut self, binding: NativeSurfaceBinding) {
-        let Some(termination) = self.focus_control.take_queued_terminal(binding) else {
-            return;
-        };
-        self.queue_focus_termination(termination);
-    }
-
     fn queue_focus_termination(&mut self, termination: NativeFocusTermination) {
         let result = match termination {
             NativeFocusTermination::Queued(request) => {
@@ -1931,12 +1924,6 @@ impl NativeCoordinator {
         if !self.bridge.acknowledge_global_focus(record) {
             return Err(NativeHostProtocolError::GlobalFocusAcknowledgementMismatch.into());
         }
-        if let NativeGlobalFocus::Dock(binding) = focus
-            && let Some(request) = self.focus_control.take_observed(binding)
-            && request.accepted().is_some()
-        {
-            return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
-        }
         Ok(true)
     }
 
@@ -1970,9 +1957,17 @@ impl NativeCoordinator {
                         }
                     }
                     NativeViewportFocusStatus::Requested => {
-                        if !self.focus_control.mark_requested(record) {
+                        let request = self
+                            .focus_control
+                            .take_callback(record)
+                            .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
+                        // The exact callback completes dispatch. Core owns the
+                        // pending semantic focus and any superseded hazards;
+                        // only a real focus observation can settle that state.
+                        if request.accepted().is_some() {
                             return Err(
-                                NativeHostProtocolError::NativeFocusCorrelationChanged.into()
+                                NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
+                                    .into(),
                             );
                         }
                     }
@@ -2963,7 +2958,7 @@ impl NativeCoordinator {
             drop(paint);
             notify(token);
         }
-        self.cancel_undispatched_control_commands();
+        self.cancel_quarantined_control_commands();
         self.cancel_unadmitted_viewport_effects();
     }
 
@@ -2982,10 +2977,12 @@ impl NativeCoordinator {
             || self.bridge.viewport_roster_dirty()
     }
 
-    fn cancel_undispatched_control_commands(&mut self) {
+    fn cancel_quarantined_control_commands(&mut self) {
         self.input_control.begin_quarantine();
         if let Some(binding) = self.focus_control.pending_binding() {
-            self.terminalize_queued_focus(binding);
+            // Keep the window resource's exact callback reservation until its
+            // terminal commits, even after releasing this dispatch owner.
+            self.terminalize_focus(binding);
         }
     }
 
