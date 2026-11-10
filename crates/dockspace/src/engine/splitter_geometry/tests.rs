@@ -659,7 +659,16 @@ fn rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes() {
             Axis::Vertical => Axis::Horizontal,
         };
         let across = builder.insert_node(Node::split(orthogonal, [b, inner], [0.5, 0.5]).unwrap());
-        let outer = builder.insert_node(Node::split(axis, [a, across], [0.9, 0.1]).unwrap());
+        // Pin valid complementary shares so rectangle rounding produces a positive
+        // nested minimum residual independently of constructor normalization.
+        let outer = builder.insert_node(Node::Split {
+            axis,
+            children: vec![a, across],
+            weights: vec![
+                SplitWeight::new(0.9).unwrap(),
+                SplitWeight::new(1.0_f32 - 0.9_f32).unwrap(),
+            ],
+        });
         let fixture = Fixture::new(
             finish(builder, outer, None),
             bounds_along(axis, 0.0, 1001.0),
