@@ -24,6 +24,7 @@ def main() -> int:
             "--exclude",
             "egui-native-smoke",
             "--all-targets",
+            "--all-features",
             "--no-fail-fast",
             "--locked",
             "-j1",

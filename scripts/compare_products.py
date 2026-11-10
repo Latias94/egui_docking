@@ -262,6 +262,17 @@ def main() -> int:
     write_csv(output / "summary.csv", list(summaries[0]), summaries)
     metadata["finished_utc"] = utc_now()
     metadata["results_sha256"] = {name: digest(output / name) for name in ["raw.csv", "summary.csv"]}
+    for source_group in ("benchmark_sources", "dockspace_sources"):
+        if any(digest(ROOT / name) != expected
+               for name, expected in metadata[source_group].items()):
+            raise RuntimeError("Source inputs changed during build or measurement")
+    if any(digest(reference / name) != expected
+           for name, expected in metadata["imgui_sources"].items()):
+        raise RuntimeError("Pinned reference inputs changed during measurement")
+    if any(digest(path) != metadata["binary_sha256"][name]
+           for name, path in binaries.items()):
+        raise RuntimeError("A product executable changed during measurement")
+    metadata["input_hashes_unchanged_after_run"] = True
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
     print(f"Wrote complete raw samples, summaries, build logs and provenance to {output}")
     return 0

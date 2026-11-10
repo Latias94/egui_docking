@@ -11,9 +11,9 @@ Current executable coverage:
   stale edge target is rejected without mutation.
 - `OGC-02`: merge and follow-up close preserve ownership, selection, and the
   target tabs' local MRU order.
-- `OGC-03`: first-hit, cached, and stale receiver facts remain inert; only a
-  release over the receiver bound to the current, exactly presented preview
-  commits the move.
+- `OGC-03`: an ordinary release over an eligible presented target commits on
+  its first hit without requiring a painted preview. Cached, stale and foreign
+  receiver facts cannot authorize that release.
 
 The OGC-03 driver captures opaque receiver descriptors while painting, consumes
 affine output capabilities only after an exact final-presentation result, and
