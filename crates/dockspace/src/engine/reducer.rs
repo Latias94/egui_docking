@@ -1774,6 +1774,33 @@ impl DockEngine {
             EngineInput::CancelActiveInteractionWithEscape { expected, delivery } => {
                 self.reduce_escape_input(input.sequence, *expected, *delivery, interaction_events)
             }
+            EngineInput::CancelPreparedInteractionWithEscape {
+                expected,
+                witness,
+                status,
+                delivery,
+            } => {
+                if *expected != self.version {
+                    return Ok(InputOutcome::StaleRejected {
+                        expected: *expected,
+                        accepted_base: self.version,
+                    });
+                }
+                self.reduce_deferred_surface_action(
+                    input.sequence,
+                    cause,
+                    focus_causal,
+                    *expected,
+                    witness,
+                    &LocalSurfaceAction::CancelWithEscape {
+                        status: *status,
+                        delivery: *delivery,
+                    },
+                    tick_start.policy,
+                    events,
+                    interaction_events,
+                )
+            }
             EngineInput::CancelNativeInputForOverload { provider } => self
                 .cancel_native_input_for_overload(
                     input.sequence,

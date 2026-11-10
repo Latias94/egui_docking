@@ -1013,6 +1013,16 @@ pub enum EngineInput {
         /// Authoritative endpoint which delivered the Escape press.
         delivery: EscapeDelivery,
     },
+    /// Cancel only the gesture captured by an exact current-candidate action.
+    ///
+    /// Unlike the raw Escape edge, this action retains its gesture identity and
+    /// frozen surface authority. Its workspace version must still match exactly.
+    CancelPreparedInteractionWithEscape {
+        expected: WorkspaceVersion,
+        witness: Arc<crate::scene::SurfacePlanScene>,
+        status: InteractionStatus,
+        delivery: EscapeDelivery,
+    },
     /// Resolve one exact provider-observed native close edge with a complete
     /// core-frozen surface operation. The request cannot name an arbitrary
     /// surface or rely on the current viewport; the edge carries the exact
@@ -1138,6 +1148,7 @@ impl EngineInput {
             | Self::NavigateTabListMenu { .. }
             | Self::ApplyContainedPlacement { .. }
             | Self::CancelActiveInteractionWithEscape { .. }
+            | Self::CancelPreparedInteractionWithEscape { .. }
             | Self::RequestSurfaceClose { .. }
             | Self::CancelSurfaceClose { .. }
             | Self::ResolveClose { .. }

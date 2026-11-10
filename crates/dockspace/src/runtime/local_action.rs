@@ -398,9 +398,11 @@ impl PreparedSurfaceAction {
                 direction,
                 delta,
             },
-            SurfaceAction::CancelWithEscape { delivery, .. } => {
-                EngineInput::CancelActiveInteractionWithEscape {
+            SurfaceAction::CancelWithEscape { status, delivery } => {
+                EngineInput::CancelPreparedInteractionWithEscape {
                     expected: self.expected,
+                    witness: self.witness,
+                    status,
                     delivery,
                 }
             }
