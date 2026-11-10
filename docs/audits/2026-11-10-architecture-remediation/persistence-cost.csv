@@ -1,0 +1,6 @@
+live_panes,historical_keys,mode,ns_per_frame_p50,allocations_per_frame,requested_bytes_per_frame
+1,0,unbound,10776,68,42496
+1,1,persistent,11452,70,42792
+1,128,persistent,11667,70,42792
+1,1024,persistent,11613,70,42792
+1,16384,persistent,11338,70,42792

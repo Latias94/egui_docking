@@ -277,7 +277,9 @@ After a runtime font or density change, queue
 reapplied. This shares the existing application command slot. Consume its
 `NativeActionStatus::StyleChanged` result before waiting for fresh presentation
 or quiescence. Core geometry and adapter styling publish together after the
-final root pass commits. Core-only configuration is preserved. Geometry changes
+final root pass commits. The first and repeated encoding passes already use the
+candidate style and its matching new core geometry; the public style remains
+unchanged until publication. Core-only configuration is preserved. Geometry changes
 cancel active gestures through core; visual-only and unchanged styles leave
 those gestures intact. Every live window is repainted. The native example's
 Appearance menu demonstrates font changes; egui still owns the font resources.

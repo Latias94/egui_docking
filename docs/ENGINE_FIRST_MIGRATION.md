@@ -48,6 +48,23 @@ candidate's compiled plan; it needs no measurement-only publication. Later
 semantic commands belong to a subsequent update after encoding starts.
 Unrelated surfaces may remain deferred.
 
+Submit `replace_policy` and `replace_presentation_config` after the accepted
+semantic input prefix and before measurement or encoding. They update the same
+private candidate immediately and close semantic input. Earlier pointer input
+keeps its original policy and visible facts; the resulting measurements and
+program use the new configuration in this update. A dropped update publishes
+neither input nor configuration. A restart retains both without replaying input.
+
+`SurfacePaintPlan::measurement_refresh` supplies the per-surface core decision.
+Keep measurements for that surface's gesture or exact preview; an unrelated
+surface can refresh title and minimum metadata during the gesture. An adapter
+may additionally defer measurement while it retains framework output resources.
+
+Pane minimum-size metadata is required for every open tab, including inactive
+or unloaded panes. Supply it independently of constructing the content UI.
+Missing metadata defers the surface contribution because potential drag layouts
+must be exact; it does not block an accepted semantic selection.
+
 `DockspaceHostFrame::suspend` transfers the same private candidate into an owned
 `DockspaceUpdate`. `DockspaceSession::resume_update` borrows its originating
 session again. An outstanding owned update excludes a second update; dropping it
@@ -107,6 +124,30 @@ fails. Query `surface_work` before invoking expensive content callbacks.
 `Deferred(Unmeasured)` requests measurement. A zero-output update may still
 publish accepted logical input and protected terminal progress. Wake rendering
 when the output owner releases capacity rather than continuously retrying panes.
+
+## Native readiness
+
+Remove `NativeCreateStrategy` from enrollment calls and effect matching. The
+core now has one preparation contract: the host reports creation correlation and
+current `NativeCreateReadiness` on the exact binding. Report `Prepared` only when
+window geometry, visibility and renderer resources are ready together. An engine
+can prepare them directly. The native egui adapter owns its hidden, pre-show,
+show acknowledgement, visible and post-show procedure inside its existing
+window-resource owner.
+
+The old core staging paint requests, painted placeholder outputs and ShowWindow
+effect are removed. A placeholder is host renderer work; it cannot publish
+docking topology or lend semantic input authority. Creation acknowledgement may
+settle before preparation. Current Prepared facts must remain continuous; loss
+of preparation, coordinates, visibility or provider authority revokes the ready
+basis. Re-preparation needs fresh exact first-live output rather than another
+non-idempotent create operation.
+
+Source reservation, binding generations, prospective semantic content, accepted
+first-live presentation, atomic source transfer, compensation and final
+retirement remain core responsibilities. A dropped output is neither a create
+cancellation nor proof of window destruction. Keep their original terminal
+owners until each obligation settles.
 
 ## Deferred UI actions
 
@@ -222,8 +263,15 @@ Current host focus, focus history and pending focus intent are separate. Hosts
 can report pane/workspace, external, absent or unknown focus explicitly.
 Removing a background target does not infer that it owned current focus.
 Egui samples actual pane/workspace ownership before semantic actions; reading
-`PaneView::focus_target` is an observation, not a focus-request counter. Exact
-request acknowledgements still require their final output and terminal report.
+`DockspaceSession::pane_focus_request` and the host-frame query read a committed
+pane-focus request without reserving renderer output. Prepare an observation
+through the request and submit it to the frame; exact intent, domain, epoch,
+target and native activation checks still apply. A new private intent cannot be
+read through this query until its publication commits.
+
+`PaneView::focus_target` is an observation, not a focus-request counter. The egui
+adapter still uses its final output and terminal report to prove the observed
+widget focus.
 Skipped UI passes retain an already focused target only through metadata owned
 by that exact presented output, without registering hit receivers or requesting
 focus. A same-window Root continuation carries a current physical focus fact to

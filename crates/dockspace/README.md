@@ -597,19 +597,18 @@ and physical OS behavior remain separate qualification work.
 
 ## Native creation failure and recovery
 
-Native enrollment takes an explicit `NativeCreateStrategy`, frozen for the
-provider lifetime and carried by CreateWindow and RequestReplacement. Select
-`DirectPrepared` when the engine prepares its own platform window, render target
-and renderer resources. Select `Staged` for the egui reference host's exact
-hidden/pre-show/show/post-show sequence. DirectPrepared requires no staging
-placeholder output or core ShowWindow request.
+The host owns window and renderer preparation. Native enrollment no longer
+selects a core preparation strategy. An engine may prepare its render target
+directly; the egui reference adapter privately drives its hidden/show/render
+sequence in the existing exact window-resource owner. Core receives the same
+revocable readiness facts from both hosts, without placeholder paint requests
+or a ShowWindow script.
 
-Creation requests return `NativeEffectAcknowledgement::Create`, independently
-of Show's `Presentation` acknowledgement. Dispatch acceptance is only the
-correlation capability. Report actual creation through
+Creation requests return `NativeEffectAcknowledgement::Create`. Dispatch
+acceptance supplies only the correlation capability. Report actual creation through
 `NativeWindowFacts::with_create_readiness(Created, Some(create_ack))`, or report
 `Prepared` immediately when both creation and renderer preparation are complete.
-Created is not a mandatory intermediate pass. DirectPrepared also requires
+Created is not a mandatory intermediate pass. Prepared also requires
 current Visible state, exact client size, and independent native and
 presentation scale factors. Report local geometry with `with_content_size`
 when the desktop origin is unavailable. Existing `with_content_bounds` facts
@@ -618,19 +617,20 @@ Content bounds with a desktop origin and outer bounds are separate
 placement/recovery facts; neither is invented from size or requested placement.
 Geometry observation and readiness are separate;
 an unchanged coordinate authority does not need a fabricated generation bump.
-Creation acknowledgement settles independently of visibility. A Staged host
-can report it while visibility is Unknown and later report Hidden without
-repeating the acknowledgement; its exact staging outputs are still required.
+Creation acknowledgement settles independently of visibility. A host can report
+it while visibility is Unknown and publish full readiness later without
+repeating the acknowledgement.
 
-Keep reporting current preparation facts in complete snapshots. In
-DirectPrepared, compatible Prepared observations preserve their readiness basis;
+Keep reporting current preparation facts in complete snapshots. Compatible
+Prepared observations preserve their readiness basis;
 Unknown, Created, failed preparation, coordinate/visibility authority loss and
 provider retirement revoke it.
 Re-preparation uses the original creation obligation and a fresh first-live
-output floor. It does not reissue a non-idempotent CreateWindow. Staged hosts
-retain their exact output evidence instead of using Prepared to bypass staging.
-Both strategies use the same source reservation, semantic child program,
-first-live publication and exact cleanup owners, including replacement windows.
+output floor. It does not reissue a non-idempotent CreateWindow. A host must
+publish a readiness loss before it re-establishes preparation, even when the
+window returns to identical geometry. Source reservation, the semantic child
+program, first-live publication and exact cleanup owners remain in core,
+including for replacement windows.
 A replacement with still-valid measurements receives a fresh semantic output
 ticket when readiness returns, so the next ordinary paint can satisfy its new
 first-live floor. Changed coordinate or requirement authority follows the normal
@@ -651,7 +651,7 @@ Drain accepted input before adding lifecycle cleanup. Do not append cleanup
 after an overload cancellation has closed the frame's semantic input phase.
 
 Source content retains its durable surface and root ownership until the exact
-first-live content output is accepted. Staged placeholders do not move
+first-live content output is accepted. Host preparation placeholders do not move
 it. A prospective child participates in the normal surface roster, measurement
 and complete semantic paint program through a checked transient projection.
 Measuring, painting, dropping or reporting failure for that projection does not
@@ -675,7 +675,7 @@ An existing logical surface can acquire a native window with
 `frame.create_native_surface_current(surface, recovery_host, placement)`.
 The recovery host must be a current application root. The request captures the
 surface's complete main root and contained forest in the existing recovery
-owner, emits `CreateWindow`, and uses the same strategy and first-live barrier.
+owner, emits `CreateWindow`, and uses the same host-readiness and first-live barrier.
 Admission preserves topology and workspace version. Logical content remains
 suspended while native preparation is incomplete; an output's `Presented`
 terminal must commit before the new binding gains input authority.
@@ -722,8 +722,8 @@ for fresh Root coordinates, known capabilities, exact predecessor quiescence
 or producer capacity appends no input. One successful call starts at most one
 initial attempt or records its definite rejection. The returned `true` consumes
 one unit of the host's shared dispatch budget; effect-report backpressure retains
-undelivered Create in the original ledger. Each created child still requires the
-enrolled preparation strategy and exact semantic first-live presentation.
+undelivered Create in the original ledger. Each created child still requires
+current host preparation and exact semantic first-live presentation.
 
 Undispatched intents own neither a native binding nor an effect. Shutdown uses
 `cancel_next_native_create` to stop them without Close. Cancelled/rejected intents
@@ -801,6 +801,9 @@ The lock is an independent policy restriction. It preserves operation filters
 and per-item rules, so unlocking restores their original behavior. Replacing
 policy is the frame's terminal configuration step: commit an unlocked policy
 before submitting layout edits or applying a saved layout in a later frame.
+The replacement immediately updates the private candidate, so measurements and
+encoding in that frame use the new policy. Earlier input retains its original
+policy and presentation facts. Configuration after encoding begins is rejected.
 `replace_policy` returns the same exact submission identifier; its
 `HostInputOutcome::PolicyReplaced { changed, version }` records the version at
 that input even when several configurations share one commit or a policy is

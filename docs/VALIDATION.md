@@ -15,6 +15,44 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-10 architecture remediation and host preparation
+
+The [architecture remediation record](audits/2026-11-10-architecture-remediation.md)
+implements all fifteen audit findings and the inactive-pane metadata contract.
+Core changes culminate in `98d33c5`; native host preparation and candidate-style
+encoding are in `68a2245`. The [migration guide](ENGINE_FIRST_MIGRATION.md)
+describes configuration before encoding, independent committed-focus queries,
+per-surface measurement retention and the single revocable Prepared interface.
+The core no longer drives an egui-specific hidden/show/placeholder protocol.
+Source conservation, exact first-live publication, compensation and quiescence
+remain core obligations.
+
+Fresh serial local gates pass workspace 2,293 with three existing skips,
+independent host 295 default / 339 persistence, official consumer 24 plus three
+caller-owned demo tests, product 114 default / 119 persistence, and pinned fork
+592 with one existing ignore. Native lifecycle without debug assertions passes
+560 with one ignore. Correctness/suspicious Clippy, strict core/adapter/native
+documentation, eleven doctests, formatting, dependency checks, verified core
+package and adapter package contents pass. The native full runner now enables
+all features so existing persistence regressions enter complete CI selection.
+
+Actual Linux X11/Glow runs pass six separate eframe test processes: owned repeat
+publication, same-update candidate style/geometry, output-capacity recovery,
+UI ingress retry/deduplication and both text-retention cases, including native
+resize. Programmatic native creation, exact first-live, redock and retirement
+pass unlimited and finite storage profiles; the finite profile selects 4 MiB.
+The actual eight-pane editor runner also passes physical docking and lifecycle
+journeys: twelve real focused edits, six child lifetimes, close/recovery,
+lock/reset/JSON restore, child replacement and Root rebinding with fresh editing.
+All child windows are destroyed, the original Root survives, and the final
+coordinator is quiescent.
+
+The frozen-source persistence probe removes the historical-key allocation slope;
+raw samples, source/binary hashes, run IDs and complete logs are linked from the
+remediation record. Pointer table sharing and packet-join tests supply structural
+evidence separately. These results do not establish a new ImGui ratio, physical
+focus-refusal coverage, mixed-DPI qualification or macOS/Windows physical parity.
+
 ## 2026-11-05 product cost attribution and ownership qualification
 
 The [cost-attribution record](performance/2026-11-05-product-cost-attribution-results.md)

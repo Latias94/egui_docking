@@ -1,0 +1,6 @@
+   Packaging dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Updating crates.io index
+    Packaged 327 files, 11.1MiB (1.8MiB compressed)
+   Verifying dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/target/package/dockspace-0.1.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.57s

@@ -1,8 +1,8 @@
 ---
 title: "Dockspace Platform Support"
 status: "Qualified finite profiles; clean-checkout delivery reproduced"
-reviewed: "2026-11-04"
-baseline_source_revision: "1d796d2"
+reviewed: "2026-11-10"
+baseline_source_revision: "68a2245"
 ---
 
 # Dockspace Platform Support
@@ -28,6 +28,11 @@ refreshes the public/egui/native update contracts and actual eight-pane editor
 journeys against the frozen implementation inventory. It does not extend the
 set of certified physical backends.
 
+The [2026-11-10 architecture remediation](VALIDATION.md#2026-11-10-architecture-remediation-and-host-preparation)
+qualifies the host-owned preparation interface, configuration before encoding
+and independent focus/measurement contracts. Fresh Linux X11 renderer, bounded
+redock and complete editor journeys pass; the platform limits below remain.
+
 ## Core and public engine-host contract
 
 | Boundary | Current contract and evidence | Host responsibility |
@@ -37,7 +42,7 @@ set of certified physical backends.
 | Immediate or deferred rendering | A host may execute the ordered program immediately or compile it into owned display-list/retained-node records that outlive the frame borrow. | Preserve composition, clipping, content slots and the snapshot's hit/semantic identities. |
 | Current-output authority | Complete sink acceptance yields an execution receipt; confirming it in a committed frame emits an exact affine output. A later committed acceptance of that output's terminal `Presented` result can promote current receiver authority. | Report the exact output as `Presented` or `Dropped` at the renderer boundary the host owns. Submission and traversal alone do not prove presentation or GPU scanout. |
 | Ordinary logical release | Accepted drag/move/resize release commits in the successful update and emits delivery once. Its exact visible source and target are revalidated against the current relevant semantic scope. | Preserve event-time presented routes and receiver facts. A dropped output requests later rendering rather than undoing accepted ordinary input. |
-| Optional native lifecycle | The same runtime accepts incarnation-bound window facts, effects, readiness, recovery and retirement. `DirectPrepared` and `Staged` share exact first-live publication. | Own OS windows/renderers, report real preparation and lifecycle facts, and retain terminal obligations. Fixed egui staging passes are a reference-host strategy. |
+| Optional native lifecycle | The same runtime accepts incarnation-bound window facts, effects, revocable Prepared readiness, recovery and retirement. Exact semantic first-live presentation gates source transfer. | Own OS windows/renderers and their preparation procedure, report current preparation and lifecycle facts, and retain terminal obligations. The egui hidden/show/render procedure stays inside its adapter. |
 
 The implementation boundary is documented in
 [`runtime.rs`](../crates/dockspace/src/runtime.rs),
@@ -56,7 +61,7 @@ completion dependencies.
 Native creation retains durable source ownership while compiling prospective
 child content. The accepted exact first valid interactive child output
 atomically publishes transfer, workspace revision and admission. Created,
-Prepared, Show dispatch and staging output cannot transfer ownership by
+Prepared, host show dispatch and preparation output cannot transfer ownership by
 themselves. See [`engine/native_projection.rs`](../crates/dockspace/src/engine/native_projection.rs),
 [`engine/native_admission.rs`](../crates/dockspace/src/engine/native_admission.rs)
 and the [R15 qualification](VALIDATION.md#2026-10-30-r15-first-live-ownership-replacement).

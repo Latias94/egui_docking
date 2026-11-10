@@ -1,0 +1,119 @@
+[
+  {
+    "gate": "native-final-tests",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--workspace",
+      "--exclude",
+      "egui-native-smoke",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "returncode": 0
+  },
+  {
+    "gate": "native-no-debug-tests",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--lib",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail",
+      "--config",
+      "profile.test.package.egui_dockspace_native.debug-assertions=false"
+    ],
+    "returncode": 0
+  },
+  {
+    "gate": "native-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--target-dir",
+      "target",
+      "--",
+      "-A",
+      "warnings",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "returncode": 0
+  },
+  {
+    "gate": "native-strict-docs",
+    "command": [
+      "cargo",
+      "doc",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--all-features",
+      "--no-deps",
+      "--locked",
+      "--target-dir",
+      "target"
+    ],
+    "returncode": 0
+  },
+  {
+    "gate": "core-package",
+    "command": [
+      "cargo",
+      "package",
+      "--package",
+      "dockspace",
+      "--all-features",
+      "--locked",
+      "--allow-dirty"
+    ],
+    "returncode": 0
+  },
+  {
+    "gate": "adapter-package-list",
+    "command": [
+      "cargo",
+      "package",
+      "--package",
+      "egui_dockspace",
+      "--all-features",
+      "--locked",
+      "--list",
+      "--allow-dirty"
+    ],
+    "returncode": 0
+  }
+]

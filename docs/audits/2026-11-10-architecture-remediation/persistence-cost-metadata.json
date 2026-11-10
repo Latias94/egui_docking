@@ -1,0 +1,30 @@
+{
+  "baseline_commit": "2289c889b30343bb705d9b6786f09dc09d633619",
+  "implementation_commit": "68a22452784007cbcfe404878acbdcbfc8425fb4",
+  "probe_sha256": "253a285a9cdbca9204c0292b2301e6bce0d1fd10bb0e6ceb47511b2b36f62ea4",
+  "binary_sha256": "4b15700e011f15dd7f9a9627922f04fe3f6313b8d805bf9b18798364f28c81e2",
+  "source_manifest_sha256": "9738c128d4953631762cd89a17bcfa8b46c5f2dc45553d45c2f58c1a5da24746",
+  "source_hashes_unchanged_after_run": true,
+  "measured_utc": "2026-11-10T02:34:55.523551+00:00",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "command": [
+    "cargo",
+    "run",
+    "--release",
+    "--manifest-path",
+    "integration/dockspace-host-harness/Cargo.toml",
+    "--features",
+    "serde",
+    "--example",
+    "architecture_document_cost",
+    "--locked",
+    "--target-dir",
+    "target"
+  ],
+  "environment": {
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_INCREMENTAL": "0"
+  },
+  "note": "One live pane. Setup excluded; 9 timing batches of 64 frames after 8 warmups; timing without active profiling; separate single-frame allocation count. Requested bytes are cumulative traffic."
+}

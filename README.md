@@ -83,11 +83,11 @@ parity has not been established.
 Native drag-out creation keeps source ownership through staging and prospective child
 painting. Only an accepted exact first-live content output publishes topology,
 workspace revision and admission together. A dropped frame or output and a
-cancelled pending create preserve source ownership. Native enrollment now selects
-`DirectPrepared` for an engine-prepared window and renderer, or `Staged` for the
-egui reference host. Both feed the same exact first-live publication and cleanup
-owners. This strategy cutover passes the current core, adapter and reference
-window gates. Native-local/Touch OS input, macOS/Windows physical cross-window
+cancelled pending create preserve source ownership. The host owns preparation of
+its window and renderer and reports exact, revocable `Prepared` readiness. The
+egui reference adapter drives its hidden/show/render sequence privately. Core
+retains first-live publication and cleanup ownership through the same interface
+an engine host uses. Native-local/Touch OS input, macOS/Windows physical cross-window
 input and arbitrary mixed-DPI profiles require their own evidence. See
 current evidence and capability limits in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
