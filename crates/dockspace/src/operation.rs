@@ -569,12 +569,11 @@ fn validate_close_requirement(
     .map_err(close_command_error)?;
     let actual = policy.pane_close_capability(requirement.item());
     if actual != requirement.capability() {
-        return Err(TransactionError::Command {
-            index: 0,
-            source: CommandError::Invariant {
-                stage: "validate frozen close policy capability",
-            },
-        });
+        return Err(close_command_error(CommandError::CloseCapabilityChanged {
+            item: requirement.item(),
+            expected: requirement.capability(),
+            actual,
+        }));
     }
     if !actual.allows_close() {
         return Err(TransactionError::Command {
@@ -4366,6 +4365,40 @@ mod tests {
     }
 
     #[test]
+    fn changed_close_capability_is_an_expected_frozen_surface_close_rejection() {
+        for (initial, replacement) in [
+            (CloseCapability::Immediate, CloseCapability::DeferredAllowed),
+            (CloseCapability::DeferredAllowed, CloseCapability::Immediate),
+        ] {
+            let workspace = workspace_with_surface(Some(MAIN));
+            let mut policy = DockPolicy::default();
+            policy.set_close_capability(initial);
+            let prepared =
+                capture_surface_close(&workspace, &policy.snapshot(PolicyRevision::new(1)));
+            policy.set_close_capability(replacement);
+
+            let error = prepare_surface_content_close(
+                &workspace,
+                &policy.snapshot(PolicyRevision::new(2)),
+                &prepared,
+            )
+            .expect_err(
+                "changed capabilities invalidate the exact approval without an invariant failure",
+            );
+
+            assert!(error.is_expected_rejection());
+            assert!(matches!(
+                error,
+                TransactionError::Command {
+                    index: 0,
+                    source: CommandError::CloseCapabilityChanged { item, expected, actual },
+                } if item == ItemId::new(1) && expected == initial && actual == replacement
+            ));
+            workspace.validate().unwrap();
+        }
+    }
+
+    #[test]
     fn changed_surface_close_policy_rejects_frozen_surface_close_with_typed_policy_error() {
         let workspace = workspace_with_surface(Some(MAIN));
         let prepared = capture_surface_close(&workspace, &default_policy());
@@ -4414,7 +4447,16 @@ mod tests {
         let error = prepare_surface_content_close(&workspace, &policy, &injected)
             .expect_err("injected item-order corruption must reject the close");
 
-        assert!(matches!(error, TransactionError::Command { .. }));
+        assert!(!error.is_expected_rejection());
+        assert!(matches!(
+            error,
+            TransactionError::Command {
+                source: CommandError::Invariant {
+                    stage: "validate frozen close-surface root item order",
+                },
+                ..
+            }
+        ));
         assert_eq!(workspace, unchanged);
     }
 }

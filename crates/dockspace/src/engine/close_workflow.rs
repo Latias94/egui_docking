@@ -538,11 +538,11 @@ impl DockEngine {
         CloseAuthority::new(self.authority_domain, self.version, self.policy.revision())
     }
 
-    /// Retires changed content scopes without cancelling unrelated approvals.
+    /// Revokes changed content scopes without cancelling unrelated approvals.
     ///
     /// Run after each semantic/policy change and before consuming a decision.
-    /// Once a scope becomes stale it stays terminal even if a later change
-    /// restores the same membership, owner or effective capability.
+    /// A later matching scope cannot revive approval. Ordinary content becomes
+    /// terminal; native content retains its external settlement obligation.
     pub(super) fn reconcile_close_scopes(&mut self) {
         let authority = self.close_authority();
         let workspace = self.workspace.as_ref();
@@ -550,9 +550,19 @@ impl DockEngine {
         self.close
             .invalidate_stale_with(authority, |prepared| match prepared {
                 PreparedCloseOperation::Content(scope) => scope.matches(workspace, policy),
+                PreparedCloseOperation::SurfaceContent { prepared, .. } => {
+                    matches!(
+                        policy.evaluate(&DockPolicyRequest::CloseSurface {
+                            surface: prepared.surface(),
+                        }),
+                        PolicyDecision::Allow
+                    ) && prepared.requirements().iter().all(|requirement| {
+                        let capability = policy.pane_close_capability(requirement.item());
+                        capability.allows_close() && capability == requirement.capability()
+                    })
+                }
                 PreparedCloseOperation::SurfaceRetain { .. }
-                | PreparedCloseOperation::SurfaceRehome { .. }
-                | PreparedCloseOperation::SurfaceContent { .. } => true,
+                | PreparedCloseOperation::SurfaceRehome { .. } => true,
             });
     }
 
@@ -1327,6 +1337,9 @@ impl DockEngine {
             SurfaceCloseRequest::CloseContent => {
                 let mut roots = Vec::new();
                 let requirements = self.capture_surface_close_requirements(&roster, policy)?;
+                if requirements.is_empty() {
+                    return Err(SurfaceCloseRequestRejection::CloseContentUnavailable);
+                }
                 for source in roster.roster().main_source().into_iter().chain(
                     roster
                         .contained()
@@ -1338,13 +1351,7 @@ impl DockEngine {
                         .root(source.root())
                         .ok_or(SurfaceCloseRequestRejection::CloseContentUnavailable)?;
                     let items = self.workspace.collect_items_in_subtree(root.node);
-                    if items.is_empty() {
-                        return Err(SurfaceCloseRequestRejection::CloseContentUnavailable);
-                    }
                     roots.push((source.clone(), items));
-                }
-                if roots.is_empty() {
-                    return Err(SurfaceCloseRequestRejection::CloseContentUnavailable);
                 }
                 let prepared = PreparedSurfaceContentClose::new(
                     roster.roster().clone(),

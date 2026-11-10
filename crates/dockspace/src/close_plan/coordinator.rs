@@ -72,6 +72,7 @@ struct NativeEffectCausality {
 pub(crate) struct PreparedClose<P> {
     plan: ClosePlan,
     prepared: P,
+    prepared_revoked: bool,
     native: Option<NativeCloseCausality>,
     terminal_published: bool,
 }
@@ -309,6 +310,7 @@ impl<P> CloseCoordinator<P> {
             PreparedClose {
                 plan: plan.clone(),
                 prepared,
+                prepared_revoked: false,
                 native: None,
                 terminal_published: false,
             },
@@ -330,13 +332,18 @@ impl<P> CloseCoordinator<P> {
         }
     }
 
-    /// Returns the exact core-private payload frozen for one known close plan.
+    /// Returns the exact core-private payload while its approval remains valid.
     ///
     /// Callers use this after an effect barrier or an authoritative native
     /// settlement to apply the already-validated transaction, never to
-    /// reconstruct a close operation from current workspace state.
+    /// reconstruct a close operation from current workspace state. Revocation
+    /// preserves the native obligation without allowing a later scope match to
+    /// revive the content-deletion approval.
     pub(crate) fn prepared(&self, request: CloseRequestId) -> Option<&P> {
-        self.requests.get(&request).map(PreparedClose::prepared)
+        self.requests
+            .get(&request)
+            .filter(|record| !record.prepared_revoked)
+            .map(PreparedClose::prepared)
     }
 
     /// Returns every retained plan in stable request order.
@@ -1496,7 +1503,8 @@ impl<P> CloseCoordinator<P> {
     /// Reconciles target scopes in the same candidate as their semantic changes.
     ///
     /// A scope failure is terminal for ordinary content. A native surface plan
-    /// retains its existing cancellation and effect-settlement obligations.
+    /// retains its existing cancellation and effect-settlement obligations, but
+    /// permanently loses permission to apply its prepared payload.
     pub(crate) fn invalidate_stale_with(
         &mut self,
         authority: CloseAuthority,
@@ -1507,10 +1515,15 @@ impl<P> CloseCoordinator<P> {
         }
         let mut invalidated = Vec::new();
         for (request, record) in &mut self.requests {
+            if !record.plan.is_terminal()
+                && !record.prepared_revoked
+                && !scope_matches(&record.prepared)
+            {
+                record.prepared_revoked = true;
+            }
             let cancels_on_authority_drift = Self::cancels_on_authority_drift(&record.plan);
             if (record.plan.phase.may_become_stale() || cancels_on_authority_drift)
-                && (!Self::authority_matches(&record.plan, authority)
-                    || !scope_matches(&record.prepared))
+                && (!Self::authority_matches(&record.plan, authority) || record.prepared_revoked)
             {
                 if cancels_on_authority_drift {
                     record.plan.cancellation = CloseCancellationState::Requested;

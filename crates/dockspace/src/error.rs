@@ -9,7 +9,7 @@ use crate::command::{EdgeTargetScope, RootReference};
 use crate::geometry::LogicalRect;
 use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
-use crate::policy::PolicyRejection;
+use crate::policy::{CloseCapability, PolicyRejection};
 use crate::validation::WorkspaceValidationErrors;
 
 /// Whether a frozen node reference is used as a source or target.
@@ -225,6 +225,16 @@ pub enum CommandError {
         captured_surface: SurfaceId,
         actual_surface: SurfaceId,
     },
+    /// An asynchronous close approval no longer has its frozen pane capability.
+    #[error("item {item} close capability changed from {expected:?} to {actual:?}")]
+    CloseCapabilityChanged {
+        /// Item whose close requirement changed.
+        item: ItemId,
+        /// Capability captured by the approved close plan.
+        expected: CloseCapability,
+        /// Capability allowed by the current policy.
+        actual: CloseCapability,
+    },
     /// Application policy rejects the mutation class.
     #[error(transparent)]
     Policy(#[from] PolicyRejection),
@@ -284,6 +294,7 @@ impl CommandError {
             | Self::ContainedAnchorOnDifferentSurface { .. }
             | Self::StaleContainedRoster { .. }
             | Self::ContainedRosterSurfaceMismatch { .. }
+            | Self::CloseCapabilityChanged { .. }
             | Self::Policy(_)
             | Self::InvalidEdgeWeight { .. } => true,
         }
