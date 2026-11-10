@@ -1,0 +1,86 @@
+   Compiling egui_dockspace_native v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native)
+warning: method `request` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/close_control.rs:69:25
+   |
+64 | impl NativeViewportCloseCancellationRecord {
+   | ------------------------------------------ method in this implementation
+...
+69 |     pub(crate) const fn request(self) -> NativeViewportCloseRequest {
+   |                         ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `replace_viewport`, `report_inventory_unknown`, and `native_work_area` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator.rs:765:12
+     |
+ 387 | impl NativeCoordinator {
+     | ---------------------- methods in this implementation
+...
+ 765 |     pub fn replace_viewport(
+     |            ^^^^^^^^^^^^^^^^
+...
+2585 |     pub fn report_inventory_unknown(&mut self) -> Result<(), NativeRuntimeError> {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2592 |     pub fn native_work_area(
+     |            ^^^^^^^^^^^^^^^^
+
+warning: methods `pointer_capture_pending` and `record_pointer_capture_for_test` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:3692:19
+     |
+3584 | impl NativeHostBridge {
+     | --------------------- methods in this implementation
+...
+3692 |     pub(crate) fn pointer_capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+3731 |     pub(crate) fn record_pointer_capture_for_test(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `capture_pending` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/command_callback.rs:269:19
+    |
+140 | impl NativeCommandCallbacks {
+    | --------------------------- method in this implementation
+...
+269 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: methods `capture_pending` and `receive_capture_record` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/window_resource.rs:1161:19
+     |
+ 156 | impl NativeWindowResources {
+     | -------------------------- methods in this implementation
+...
+1161 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^
+...
+1196 |     pub(super) fn receive_capture_record(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `for_test` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/pointer_capture.rs:79:25
+   |
+39 | impl NativePointerCaptureRecord {
+   | ------------------------------- associated function in this implementation
+...
+79 |     pub(crate) const fn for_test(
+   |                         ^^^^^^^^
+
+warning: `egui_dockspace_native` (lib test) generated 6 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.59s
+────────────
+ Nextest run ID faebb99f-1f31-4f0c-8aa9-07bca2b7d067 with nextest profile: default
+    Starting 10 tests across 1 binary (560 tests skipped)
+        PASS [   0.018s] ( 1/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::capture_and_external_restore_publish_known_and_new_keys_without_replacing_panes
+        PASS [   0.014s] ( 2/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::declared_child_restore_waits_for_fresh_facts_and_service_starts_it_once
+        PASS [   0.010s] ( 3/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::locked_restore_rejects_without_occupying_slot_and_unlock_allows_restore_and_save
+        PASS [   0.008s] ( 4/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::malformed_restore_keeps_typed_source_and_busy_rejects_before_decoding
+        PASS [   0.010s] ( 5/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::restore_rejects_an_undeclared_extra_surface_without_occupying_the_slot
+        PASS [   0.010s] ( 6/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::root_rebinding_conflicts_leave_the_host_running_and_release_the_command_slot
+        PASS [   0.009s] ( 7/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::root_rebinding_publishes_the_host_field_and_same_window_route_before_report_settlement
+        PASS [   0.021s] ( 8/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::service_deadline_tests::elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners
+        PASS [   0.030s] ( 9/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::service_refill_advances_close_and_ready_create_after_repeated_budget_exhaustion
+        PASS [   0.012s] (10/10) egui_dockspace_native surface_driver::application::layout_tests::persistence::shutdown_or_quarantined_service_does_not_start_a_queued_child_with_fresh_facts
+────────────
+     Summary [   0.142s] 10 tests run: 10 passed, 560 skipped
