@@ -7,7 +7,7 @@ use crate::viewport::{
     InventoryGeneration, NativeSurfaceEstablishmentOrigin, ViewportBinding, ViewportRole,
 };
 
-use super::super::native_bringup::{NativeBringupPhase, NativeReadyProof};
+use super::super::native_bringup::{NativePreparation, NativeReadyProof};
 
 /// Queryable native establishment phase of an existing logical surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,21 +32,6 @@ pub enum RecoveryPendingStatus {
     ReplacementCancelled {
         replacement: EffectId,
     },
-    AwaitingPreShowPresentation {
-        replacement: EffectId,
-    },
-    AwaitingShowAcknowledgement {
-        replacement: EffectId,
-        show: EffectId,
-    },
-    AwaitingVisible {
-        replacement: EffectId,
-        show: EffectId,
-    },
-    AwaitingPostShowPresentation {
-        replacement: EffectId,
-        show: EffectId,
-    },
     AwaitingFirstLivePresentation,
     AwaitingReplacementCleanup {
         replacement: EffectId,
@@ -60,16 +45,14 @@ pub(super) enum RecoveryReplacementPhase {
     ReplacementRequested {
         binding: ViewportBinding,
         create: EffectId,
-        strategy: crate::platform::NativeCreateStrategy,
     },
     ReplacementIndeterminate {
         binding: ViewportBinding,
         create: EffectId,
-        strategy: crate::platform::NativeCreateStrategy,
     },
     BringingUp {
         binding: ViewportBinding,
-        phase: NativeBringupPhase,
+        phase: NativePreparation,
     },
     Failed {
         binding: Option<ViewportBinding>,
@@ -99,9 +82,7 @@ impl RecoveryReplacementPhase {
         match self {
             Self::ReplacementRequested { create, .. }
             | Self::ReplacementIndeterminate { create, .. } => create == effect,
-            Self::BringingUp { phase, .. } => {
-                phase.create_effect() == effect || phase.show_effect() == Some(effect)
-            }
+            Self::BringingUp { phase, .. } => phase.create_effect() == effect,
             Self::Failed { failed_effect, .. } => failed_effect == effect,
             Self::AwaitingRecoveryHost
             | Self::ProviderLost { .. }
@@ -160,42 +141,8 @@ impl RecoveryReplacementPhase {
                     replacement: create,
                 }
             }
-            Self::BringingUp {
-                phase: NativeBringupPhase::AwaitingPrepared { create },
-                ..
-            } => RecoveryPendingStatus::ReplacementRequested {
-                replacement: create,
-            },
-            Self::BringingUp {
-                phase: NativeBringupPhase::AwaitingHidden { .. },
-                ..
-            } => unreachable!("initial recovery replacement phase has a dedicated state"),
-            Self::BringingUp {
-                phase: NativeBringupPhase::AwaitingPreShowPresentation { create, .. },
-                ..
-            } => RecoveryPendingStatus::AwaitingPreShowPresentation {
-                replacement: create,
-            },
-            Self::BringingUp {
-                phase: NativeBringupPhase::AwaitingShowAcknowledgement { create, show, .. },
-                ..
-            } => RecoveryPendingStatus::AwaitingShowAcknowledgement {
-                replacement: create,
-                show,
-            },
-            Self::BringingUp {
-                phase: NativeBringupPhase::AwaitingVisible { create, show, .. },
-                ..
-            } => RecoveryPendingStatus::AwaitingVisible {
-                replacement: create,
-                show,
-            },
-            Self::BringingUp {
-                phase: NativeBringupPhase::AwaitingPostShowPresentation { visibility, .. },
-                ..
-            } => RecoveryPendingStatus::AwaitingPostShowPresentation {
-                replacement: visibility.create,
-                show: visibility.show,
+            Self::BringingUp { phase, .. } => RecoveryPendingStatus::ReplacementRequested {
+                replacement: phase.create_effect(),
             },
             Self::AwaitingFirstLive { .. } => RecoveryPendingStatus::AwaitingFirstLivePresentation,
             Self::Failed {
@@ -307,65 +254,28 @@ impl RecoveryPending {
             | RecoveryReplacementPhase::ProviderLost { .. }
             | RecoveryReplacementPhase::Cancelled { .. } => true,
             RecoveryReplacementPhase::ReplacementRequested { .. }
-            | RecoveryReplacementPhase::ReplacementIndeterminate { .. } => {
-                matches!(
-                    self.origin,
-                    NativeSurfaceEstablishmentOrigin::Destroyed { .. }
-                )
-            }
-            RecoveryReplacementPhase::BringingUp {
-                phase: NativeBringupPhase::AwaitingPrepared { .. },
-                ..
-            } => matches!(
+            | RecoveryReplacementPhase::ReplacementIndeterminate { .. }
+            | RecoveryReplacementPhase::BringingUp { .. } => matches!(
                 self.origin,
                 NativeSurfaceEstablishmentOrigin::Destroyed { .. }
             ),
-            RecoveryReplacementPhase::BringingUp { .. }
-            | RecoveryReplacementPhase::AwaitingFirstLive { .. }
+            RecoveryReplacementPhase::AwaitingFirstLive { .. }
             | RecoveryReplacementPhase::AwaitingCleanup { .. } => false,
-        }
-    }
-
-    pub(in crate::frame) const fn bringup_phase(&self) -> Option<NativeBringupPhase> {
-        match self.phase {
-            RecoveryReplacementPhase::BringingUp { phase, .. } => Some(phase),
-            RecoveryReplacementPhase::AwaitingRecoveryHost
-            | RecoveryReplacementPhase::ReplacementRequested { .. }
-            | RecoveryReplacementPhase::ReplacementIndeterminate { .. }
-            | RecoveryReplacementPhase::Failed { .. }
-            | RecoveryReplacementPhase::ProviderLost { .. }
-            | RecoveryReplacementPhase::Cancelled { .. }
-            | RecoveryReplacementPhase::AwaitingFirstLive { .. }
-            | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
         }
     }
 
     pub(in crate::frame) const fn first_live_proof(&self) -> Option<NativeReadyProof> {
         match self.phase {
-            RecoveryReplacementPhase::AwaitingFirstLive { proof, .. } => Some(proof),
-            RecoveryReplacementPhase::AwaitingRecoveryHost
-            | RecoveryReplacementPhase::ReplacementRequested { .. }
-            | RecoveryReplacementPhase::ReplacementIndeterminate { .. }
-            | RecoveryReplacementPhase::BringingUp { .. }
-            | RecoveryReplacementPhase::Failed { .. }
-            | RecoveryReplacementPhase::ProviderLost { .. }
-            | RecoveryReplacementPhase::Cancelled { .. }
-            | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
+            RecoveryReplacementPhase::AwaitingFirstLive { proof } => Some(proof),
+            _ => None,
         }
     }
 
     pub(in crate::frame) const fn suspends_live_presentation(&self) -> bool {
-        match self.phase {
-            RecoveryReplacementPhase::AwaitingFirstLive { .. } => false,
-            RecoveryReplacementPhase::AwaitingRecoveryHost
-            | RecoveryReplacementPhase::ReplacementRequested { .. }
-            | RecoveryReplacementPhase::ReplacementIndeterminate { .. }
-            | RecoveryReplacementPhase::BringingUp { .. }
-            | RecoveryReplacementPhase::Failed { .. }
-            | RecoveryReplacementPhase::ProviderLost { .. }
-            | RecoveryReplacementPhase::Cancelled { .. }
-            | RecoveryReplacementPhase::AwaitingCleanup { .. } => true,
-        }
+        !matches!(
+            self.phase,
+            RecoveryReplacementPhase::AwaitingFirstLive { .. }
+        )
     }
 
     pub(in crate::frame) const fn admission_not_before(&self) -> Option<InventoryGeneration> {

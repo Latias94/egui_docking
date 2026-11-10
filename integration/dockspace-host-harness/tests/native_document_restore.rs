@@ -16,15 +16,15 @@ use dockspace::runtime::{
     DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceHostFrame,
     DockspaceNativeSurfaceHosting, DockspaceRuntimeErrorKind, DockspaceSession, HostFrameReport,
     HostInputOutcome, HostWindowToken, HostWorkAreaToken, NativeCreateEffectAcknowledgement,
-    NativeCreateReadiness, NativeCreateStrategy, NativeDesktopPointerLocation,
-    NativeDesktopPosition, NativeEffectAcknowledgement, NativeEffectOperation,
-    NativeHostCapabilities, NativeHostCapability, NativeInputBudget, NativeInputStorageLimit,
-    NativeMonotonicClock, NativePointerEvent, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeProducerStorageLimit,
-    NativeReceiverAnswer, NativeReportStorageLimit, NativeStagingPresentationPhase,
-    NativeSurfaceBinding, NativeSurfaceRole, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PaintedSurfaceOutput,
-    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    NativeCreateReadiness, NativeDesktopPointerLocation, NativeDesktopPosition,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeHostCapabilities,
+    NativeHostCapability, NativeInputBudget, NativeInputStorageLimit, NativeMonotonicClock,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativeProducerStorageLimit, NativeReceiverAnswer,
+    NativeReportStorageLimit, NativeSurfaceBinding, NativeSurfaceRole, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
+    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -207,7 +207,7 @@ fn window_facts(bounds: PhysicalRect) -> NativeWindowFacts {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
 }
 
 fn root_facts() -> NativeWindowFacts {
@@ -237,7 +237,6 @@ fn finish(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
 
 fn assert_no_effects(report: &mut HostFrameReport) {
     assert!(report.take_native_effects().is_empty());
-    assert!(report.take_painted_native_staging_outputs().is_empty());
 }
 
 fn idle(session: &mut DockspaceSession) -> HostFrameReport {
@@ -320,10 +319,7 @@ fn saved_document(hosting: SavedHosting) -> Vec<u8> {
             .unwrap();
     if !matches!(hosting, SavedHosting::Undeclared) {
         source
-            .enable_managed_native_host(
-                NativeCreateStrategy::DirectPrepared,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         source
             .configure_managed_native_capabilities(capabilities())
@@ -549,7 +545,6 @@ fn assert_content_on_root(view: DockspaceView<'_>, root_surface: SurfaceId) -> C
 }
 
 struct NativeDocumentHost {
-    strategy: NativeCreateStrategy,
     session: DockspaceSession,
     root: NativeSurfaceBinding,
     original_children: Vec<NativeSurfaceBinding>,
@@ -557,12 +552,7 @@ struct NativeDocumentHost {
 
 impl NativeDocumentHost {
     fn new(binding_slots: usize, retire_saved_children: bool) -> Self {
-        Self::with_host_storage(
-            binding_slots,
-            retire_saved_children,
-            NativeCreateStrategy::DirectPrepared,
-            None,
-        )
+        Self::with_host_storage(binding_slots, retire_saved_children, None)
     }
 
     fn with_retired_saved_root() -> Self {
@@ -616,7 +606,6 @@ impl NativeDocumentHost {
     fn with_host_storage(
         binding_slots: usize,
         retire_saved_children: bool,
-        strategy: NativeCreateStrategy,
         reports: Option<NativeReportStorageLimit>,
     ) -> Self {
         let mut session =
@@ -643,7 +632,6 @@ impl NativeDocumentHost {
         }
         session
             .enable_managed_native_host_with_input_storage_limit(
-                strategy,
                 NativePointerRoster::Exact(Vec::new()),
                 storage,
             )
@@ -693,7 +681,6 @@ impl NativeDocumentHost {
         idle(&mut session);
         assert!(session.native_local_coordinates(root).is_some());
         Self {
-            strategy,
             session,
             root,
             original_children,
@@ -772,10 +759,7 @@ impl NativeDocumentHost {
         index: usize,
         admitted: &[NativeSurfaceBinding],
     ) {
-        let readiness = match self.strategy {
-            NativeCreateStrategy::DirectPrepared => NativeCreateReadiness::Prepared,
-            NativeCreateStrategy::Staged => NativeCreateReadiness::Created,
-        };
+        let readiness = NativeCreateReadiness::Prepared;
         let mut observations = vec![(self.root, root_facts())];
         for &other in admitted {
             let index = ids
@@ -796,6 +780,10 @@ impl NativeDocumentHost {
             .report_managed_native_snapshot(observations, work_areas())
             .unwrap();
         assert!(idle(&mut self.session).native_admissions().is_empty());
+        self.present_first_live(binding, ids, index);
+    }
+
+    fn present_first_live(&mut self, binding: NativeSurfaceBinding, ids: ContentIds, index: usize) {
         let (output, recording) = paint(&mut self.session, binding);
         let roots = recording
             .records
@@ -874,7 +862,6 @@ fn take_create(
     assert!(
         matches!(create.operation(), NativeEffectOperation::CreateWindow {
         binding: actual, placement: bounds, role: NativeSurfaceRole::Child,
-        strategy: NativeCreateStrategy::DirectPrepared,
     } if *actual == binding && *bounds == placement(index))
     );
     let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
@@ -1815,10 +1802,7 @@ fn invalid_hosting_declarations_reject_atomically_and_ordinary_restore_remains_i
     )
     .unwrap();
     unregistered
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     unregistered
         .configure_managed_native_capabilities(capabilities())
@@ -2007,10 +1991,7 @@ fn incoming_child_cannot_replace_an_existing_external_root_and_failed_restore_is
         DockspaceSession::from_persistent_layout(document_layout(), policy(), bootstrap(false))
             .unwrap();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(capabilities())
@@ -2092,36 +2073,10 @@ fn incoming_child_cannot_replace_an_existing_external_root_and_failed_restore_is
     assert_eq!(session.next_document_generation(), generation);
 }
 
-fn paint_staging(
-    session: &mut DockspaceSession,
-    binding: NativeSurfaceBinding,
-    phase: NativeStagingPresentationPhase,
-) -> dockspace::runtime::PaintedNativeStagingOutput {
-    let mut frame = native_frame(session);
-    let requests = frame.native_staging_paints().collect::<Vec<_>>();
-    let [request] = requests.as_slice() else {
-        panic!("one exact staging request is required");
-    };
-    assert_eq!(request.binding(), binding);
-    assert_eq!(request.phase(), phase);
-    assert!(frame.paint_plan(binding.surface()).unwrap().is_none());
-    frame.confirm_native_staging_painted(*request).unwrap();
-    let mut report = finish(frame);
-    assert!(report.take_native_effects().is_empty());
-    assert!(report.take_painted_outputs().is_empty());
-    assert!(report.native_admissions().is_empty());
-    let [output] = report
-        .take_painted_native_staging_outputs()
-        .try_into()
-        .unwrap();
-    output
-}
-
 #[test]
-fn restored_staged_child_keeps_its_full_forest_through_placeholder_and_first_live_barriers() {
+fn restored_child_keeps_its_full_forest_through_preparation_and_first_live_barriers() {
     let bytes = saved_document(SavedHosting::Children);
-    let mut host =
-        NativeDocumentHost::with_host_storage(8, true, NativeCreateStrategy::Staged, None);
+    let mut host = NativeDocumentHost::with_host_storage(8, true, None);
     let old_root = host.root;
     let (ids, mut report) = host.restore(&bytes);
     assert_no_effects(&mut report);
@@ -2133,12 +2088,8 @@ fn restored_staged_child_keeps_its_full_forest_through_placeholder_and_first_liv
     let mut report = finish(frame);
     let [create] = report.take_native_effects().try_into().unwrap();
     let binding = match create.operation() {
-        NativeEffectOperation::CreateWindow {
-            binding,
-            strategy: NativeCreateStrategy::Staged,
-            ..
-        } => *binding,
-        operation => panic!("expected staged create, got {operation:?}"),
+        NativeEffectOperation::CreateWindow { binding, .. } => *binding,
+        operation => panic!("expected the exact CreateWindow request, got {operation:?}"),
     };
     let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
         panic!("exact create acknowledgement is required");
@@ -2150,7 +2101,7 @@ fn restored_staged_child_keeps_its_full_forest_through_placeholder_and_first_liv
                 (
                     binding,
                     window_facts(placement(0))
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_presentation(NativeWindowPresentationState::Hidden)
                         .with_create_readiness(NativeCreateReadiness::Created, Some(created)),
                 ),
             ],
@@ -2158,32 +2109,21 @@ fn restored_staged_child_keeps_its_full_forest_through_placeholder_and_first_liv
         )
         .unwrap();
     idle(&mut host.session);
-    let dropped = paint_staging(
-        &mut host.session,
-        binding,
-        NativeStagingPresentationPhase::PreShow,
-    );
-    host.session
-        .report_native_staging_presentation(dropped, SurfacePresentationResult::Dropped)
-        .unwrap();
-    idle(&mut host.session);
+    assert_suspended(&mut host.session, &[binding.surface()]);
     assert!(host.session.native_local_coordinates(binding).is_none());
-    let output = paint_staging(
-        &mut host.session,
-        binding,
-        NativeStagingPresentationPhase::PreShow,
-    );
     host.session
-        .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
+        .report_managed_native_snapshot(
+            [
+                (host.root, root_facts()),
+                (binding, window_facts(placement(0))),
+            ],
+            work_areas(),
+        )
         .unwrap();
-    let mut report = finish(native_frame(&mut host.session));
-    let [show] = report.take_native_effects().try_into().unwrap();
-    assert!(
-        matches!(show.operation(), NativeEffectOperation::ShowWindow { binding: actual } if *actual == binding)
-    );
-    let Some(NativeEffectAcknowledgement::Presentation(shown)) = show.accepted() else {
-        panic!("exact Show acknowledgement is required");
-    };
+    idle(&mut host.session);
+    assert_suspended(&mut host.session, &[binding.surface()]);
+    assert_eq!(host.session.version(), version);
+    assert_eq!(assert_content(host.session.view()), ids);
     host.session
         .report_managed_native_snapshot(
             [
@@ -2191,39 +2131,33 @@ fn restored_staged_child_keeps_its_full_forest_through_placeholder_and_first_liv
                 (
                     binding,
                     window_facts(placement(0))
-                        .with_presentation(NativeWindowPresentationState::Visible, Some(shown))
-                        .with_create_readiness(NativeCreateReadiness::Created, None),
+                        .with_create_readiness(NativeCreateReadiness::Prepared, None),
                 ),
             ],
             work_areas(),
         )
-        .unwrap();
-    idle(&mut host.session);
-    host.session
-        .report_managed_native_snapshot(
-            [
-                (host.root, root_facts()),
-                (
-                    binding,
-                    window_facts(placement(0))
-                        .with_create_readiness(NativeCreateReadiness::Created, None),
-                ),
-            ],
-            work_areas(),
-        )
-        .unwrap();
-    idle(&mut host.session);
-    let output = paint_staging(
-        &mut host.session,
-        binding,
-        NativeStagingPresentationPhase::PostShow,
-    );
-    host.session
-        .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
         .unwrap();
     assert!(idle(&mut host.session).native_admissions().is_empty());
+    assert_eq!(host.session.version(), version);
+    assert_eq!(assert_content(host.session.view()), ids);
     assert!(host.session.native_local_coordinates(binding).is_none());
-    host.admit(binding, created, ids, 0, &[]);
+    let (dropped, _) = paint(&mut host.session, binding);
+    let artifact = dropped.presentation_artifact();
+    host.session
+        .report_surface_presentation(dropped, SurfacePresentationResult::Dropped)
+        .unwrap();
+    let report = idle(&mut host.session);
+    assert!(report.native_admissions().is_empty());
+    assert!(
+        report
+            .surface_presentation_commits()
+            .iter()
+            .any(|commit| commit.retires(artifact))
+    );
+    assert!(host.session.native_local_coordinates(binding).is_none());
+    assert_eq!(host.session.version(), version);
+    assert_eq!(assert_content(host.session.view()), ids);
+    host.present_first_live(binding, ids, 0);
     let mut frame = native_frame(&mut host.session);
     assert!(frame.cancel_next_native_create().unwrap());
     assert!(!frame.cancel_next_native_create().unwrap());
@@ -2248,12 +2182,7 @@ fn automatic_create_survives_effect_report_backpressure_in_the_existing_ledger()
     let bytes = saved_document(SavedHosting::Children);
     let reports =
         NativeReportStorageLimit::new(NonZeroUsize::new(8).unwrap(), NonZeroUsize::MIN, 1 << 20);
-    let mut host = NativeDocumentHost::with_host_storage(
-        8,
-        true,
-        NativeCreateStrategy::DirectPrepared,
-        Some(reports),
-    );
+    let mut host = NativeDocumentHost::with_host_storage(8, true, Some(reports));
     let old_root = host.root;
     let (ids, mut report) = host.restore(&bytes);
     assert_no_effects(&mut report);

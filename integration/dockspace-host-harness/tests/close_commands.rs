@@ -417,10 +417,7 @@ fn current_close_decisions_wait_for_the_complete_native_prefix() {
     let request = plan.request();
     let first = plan.items()[0];
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     let movement = NativePointerInput::new(
         NativePointerId::new(9),

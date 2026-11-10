@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::model::{DockPlacement, DockspaceActionOutcome, DockspaceActionRejection};
-use crate::runtime::{DockspaceSession, SurfaceUnavailableReason};
+use crate::runtime::DockspaceSession;
 
 mod source_recovery;
 mod source_reservation;
@@ -539,7 +539,6 @@ fn background_platform_snapshot(
                 source_binding,
                 crate::viewport::PresentationObservationGeneration::new(focus_generation),
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ))
     });
     test_platform_snapshot(
@@ -1139,7 +1138,6 @@ fn background_native_window_snapshot_with_capabilities_and_acknowledgement(
             background_source_binding(fixture),
             crate::viewport::PresentationObservationGeneration::new(generation),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ));
     let native = ObservedWindow::new(request.binding())
         .with_coordinate_observation(WindowCoordinateObservation::new(
@@ -1160,12 +1158,15 @@ fn background_native_window_snapshot_with_capabilities_and_acknowledgement(
             request.binding(),
             crate::viewport::PresentationObservationGeneration::new(generation),
             Authority::Known(presentation),
-            PresentationEffectAcknowledgement::known(acknowledged_effect),
         ))
         .with_create_preparation(crate::platform::WindowCreatePreparationObservation::new(
             request.binding(),
             CoordinateObservationGeneration::new(generation),
-            Authority::Known(crate::platform::NativeCreateReadiness::Created),
+            Authority::Known(if presentation == WindowPresentationState::Visible {
+                crate::platform::NativeCreateReadiness::Prepared
+            } else {
+                crate::platform::NativeCreateReadiness::Created
+            }),
             acknowledged_effect.filter(|effect| {
                 fixture
                     .engine
@@ -1224,172 +1225,6 @@ fn publish_background_native_window(
     .expect("native create snapshot must reduce")
 }
 
-fn current_native_staging_presentation(
-    fixture: &BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
-    phase: crate::presentation_observation::NativeStagingPresentationPhase,
-) -> NativeStagingPresentation {
-    let saga = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .expect("native create saga must remain pending");
-    match saga.phase() {
-        crate::frame::NativeCreatePhase::AwaitingPreShowPresentation { presentation, .. }
-        | crate::frame::NativeCreatePhase::AwaitingPostShowPresentation { presentation, .. }
-            if presentation.phase() == phase =>
-        {
-            Some(presentation)
-        }
-        _ => None,
-    }
-    .unwrap_or_else(|| {
-        panic!(
-            "native create must request {phase:?}, actual phase was {:?}",
-            saga.phase()
-        )
-    })
-}
-
-fn emit_background_native_staging(
-    fixture: &mut BackgroundFixture,
-    presentation: NativeStagingPresentation,
-) -> crate::presentation_observation::HostPresentationOutput {
-    let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
-    assert!(
-        frame
-            .view()
-            .native_staging_presentations()
-            .any(|current| current == presentation)
-    );
-    for obligation in frame
-        .issue_presentation_obligations()
-        .expect("native staging frame must issue its exact physical roster")
-    {
-        let disposition = if obligation.slot().native_staging() == Some(presentation) {
-            HostPresentationDisposition::Painted(HostInteractionPresentation::default())
-        } else {
-            HostPresentationDisposition::Unavailable(
-                HostPresentationUnavailableReason::OutputNotProduced,
-            )
-        };
-        frame
-            .settle_presentation_obligation(obligation, disposition)
-            .expect("native staging physical obligation must resolve");
-    }
-    complete_surface_contribution_roster(&mut frame);
-    let emitted = frame
-        .finish(&mut fixture.engine)
-        .expect("native staging output must emit");
-    let outputs = emitted
-        .presentation_emissions()
-        .iter()
-        .filter_map(|emission| {
-            let output = emission.output();
-            matches!(
-                output.payload(),
-                HostPresentationOutputPayload::NativeStaging {
-                    presentation: actual,
-                } if actual == presentation
-            )
-            .then_some(output)
-        })
-        .collect::<Vec<_>>();
-    let [output] = outputs.as_slice() else {
-        panic!("one exact native staging output must emit, got {outputs:?}");
-    };
-    assert_eq!(
-        output.continuation(),
-        crate::presentation_observation::HostPresentationContinuation::Presented,
-        "native staging advances only after successful presentation",
-    );
-    *output
-}
-
-#[test]
-fn product_runtime_exposes_and_settles_exact_native_staging_outputs() {
-    let mut policy = DockPolicy::default();
-    policy.set_allow_native_surfaces(true);
-    let mut fixture = background_fixture(policy);
-    let request = install_pending_native_root_reservation(&mut fixture, RootId::new(194));
-    let create_effects = fixture.engine.viewport.take_new_effects();
-    assert!(create_effects.iter().any(|effect| {
-        effect.id() == request.effect()
-            && matches!(
-                effect.effect(),
-                crate::effect::PlatformEffect::CreateWindow { binding, .. }
-                    if *binding == request.binding()
-            )
-    }));
-    publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 2);
-    let expected = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-    );
-
-    let mut session =
-        DockspaceSession::from_engine_for_test(fixture.engine, fixture.presentation_host);
-    let mut frame = session
-        .begin_host_frame()
-        .expect("runtime staging frame begins");
-    let paints: Vec<_> = frame.native_staging_paints().collect();
-    assert_eq!(paints.len(), 1, "expected {expected:?}");
-    let paint = paints[0];
-    assert_eq!(paint.surface(), request.binding().surface());
-    assert_eq!(paint.binding().surface(), request.binding().surface());
-    assert_eq!(
-        paint.phase(),
-        crate::runtime::NativeStagingPresentationPhase::PreShow
-    );
-    frame
-        .confirm_native_staging_painted(paint)
-        .expect("the exact staging request is painted once");
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("semantic surfaces are explicitly deferred");
-    let mut report = frame.commit().expect("runtime staging frame commits");
-    assert!(report.take_painted_outputs().is_empty());
-    let mut staging = report.take_painted_native_staging_outputs();
-    assert_eq!(staging.len(), 1);
-    let output = staging.pop().expect("one staging output was emitted");
-    assert_eq!(output.surface(), paint.surface());
-    assert_eq!(output.binding(), paint.binding());
-    assert_eq!(output.phase(), paint.phase());
-    session
-        .report_native_staging_presentation(
-            output,
-            crate::runtime::SurfacePresentationResult::Presented,
-        )
-        .expect("the exact staging output is retained for observation");
-
-    let mut observed = session
-        .begin_host_frame()
-        .expect("staging presentation observation frame begins");
-    observed
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("the observation frame settles semantic surfaces");
-    let mut observed_report = observed
-        .commit()
-        .expect("presented staging output advances native bring-up");
-    let effects = observed_report.take_native_effects();
-    assert_eq!(effects.len(), 1);
-    let effect = effects
-        .into_iter()
-        .next()
-        .expect("pre-show presentation emits one show request");
-    assert_eq!(
-        effect.operation(),
-        &crate::runtime::NativeEffectOperation::ShowWindow {
-            binding: paint.binding(),
-        }
-    );
-    assert!(matches!(
-        effect.accepted(),
-        Some(crate::runtime::NativeEffectAcknowledgement::Presentation(_))
-    ));
-}
-
 fn observe_background_presentation_output(
     fixture: &mut BackgroundFixture,
     output: crate::presentation_observation::HostPresentationOutput,
@@ -1420,15 +1255,7 @@ fn observe_background_presentation_output(
     complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut frame);
     frame
         .finish(&mut fixture.engine)
-        .expect("native staging observation must reduce")
-}
-
-fn present_background_native_staging(
-    fixture: &mut BackgroundFixture,
-    presentation: NativeStagingPresentation,
-) -> EngineTransition {
-    let output = emit_background_native_staging(fixture, presentation);
-    observe_background_presentation_output(fixture, output)
+        .expect("native presentation observation must reduce")
 }
 
 fn advance_pending_native_root_to_awaiting_visible(
@@ -1437,29 +1264,10 @@ fn advance_pending_native_root_to_awaiting_visible(
 ) {
     let hidden =
         publish_background_native_window(fixture, request, WindowPresentationState::Hidden, 2);
-    assert!(hidden.platform_effects().iter().all(|effect| {
-        !matches!(
-            effect.effect(),
-            crate::effect::PlatformEffect::ShowWindow { binding, .. }
-                if *binding == request.binding()
-        )
-    }));
-    let pre_show = current_native_staging_presentation(
-        fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-    );
-    let pre_show_presented = present_background_native_staging(fixture, pre_show);
-    assert!(pre_show_presented.platform_effects().iter().any(|effect| {
-        matches!(
-            effect.effect(),
-            crate::effect::PlatformEffect::ShowWindow { binding, .. }
-                if *binding == request.binding()
-        )
-    }));
-    let acknowledged =
+    assert!(hidden.platform_effects().is_empty());
+    let later_created =
         publish_background_native_window(fixture, request, WindowPresentationState::Hidden, 3);
-    assert!(acknowledged.platform_effects().is_empty());
+    assert!(later_created.platform_effects().is_empty());
 }
 
 fn advance_pending_native_root_to_ownership_transfer(
@@ -1467,7 +1275,7 @@ fn advance_pending_native_root_to_ownership_transfer(
     request: crate::frame::NativeCreateRequest,
 ) -> EngineTransition {
     advance_pending_native_root_to_awaiting_visible(fixture, request);
-    let visible =
+    let prepared =
         publish_background_native_window(fixture, request, WindowPresentationState::Visible, 4);
     assert!(
         fixture
@@ -1476,19 +1284,7 @@ fn advance_pending_native_root_to_ownership_transfer(
             .surface(request.binding().surface())
             .is_none()
     );
-    let post_show = current_native_staging_presentation(
-        fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
-    );
-    let transferred = present_background_native_staging(fixture, post_show);
-    assert!(visible.platform_effects().iter().all(|effect| {
-        !matches!(
-            effect.effect(),
-            PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
-        )
-    }));
-    transferred
+    prepared
 }
 
 fn advance_pending_native_root_to_first_live(
@@ -1565,12 +1361,6 @@ fn auto_focused_native_window_waits_for_first_live_before_pane_focus_is_admitted
         None,
         "staging focus must not publish pane focus before first-live admission"
     );
-    let post_show = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
-    );
-    let _ = present_background_native_staging(&mut fixture, post_show);
     assert_eq!(
         fixture
             .engine
@@ -1656,18 +1446,6 @@ fn native_focus_reservation_replays_after_activation_control_becomes_available()
         4,
     );
     assert!(visible.platform_effects().iter().all(|effect| {
-        !matches!(
-            effect.effect(),
-            PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
-        )
-    }));
-    let post_show = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
-    );
-    let transferred = present_background_native_staging(&mut fixture, post_show);
-    assert!(transferred.platform_effects().iter().all(|effect| {
         !matches!(
             effect.effect(),
             PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
@@ -1802,12 +1580,6 @@ fn delayed_auto_focus_from_a_superseded_native_create_reasserts_the_current_winn
             .iter()
             .all(|effect| { !matches!(effect.effect(), PlatformEffect::RequestFocus { .. }) })
     );
-    let post_show = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
-    );
-    let _ = present_background_native_staging(&mut fixture, post_show);
     let bounds =
         LogicalRect::new(0.0, 0.0, 300.0, 220.0).expect("native target test bounds must be valid");
     let measurements = surface_measurements(&fixture.engine, request.binding().surface(), bounds);
@@ -1973,20 +1745,13 @@ fn tick_final_vacancy_suppresses_focus_for_a_newly_visible_native_binding() {
             snapshot,
         },
     )
-    .expect("visible native observation must reduce before post-show presentation");
+    .expect("Prepared native observation must reduce before first-live presentation");
     assert!(
         visible
             .platform_effects()
             .iter()
             .all(|effect| { !matches!(effect.effect(), PlatformEffect::RequestFocus { .. }) })
     );
-    let post_show = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
-    );
-    let post_show_output = emit_background_native_staging(&mut fixture, post_show);
-    let _ = observe_background_presentation_output(&mut fixture, post_show_output);
     let measurements = surface_measurements(&fixture.engine, NATIVE_SURFACE, background_bounds());
     let token = fixture
         .engine
@@ -3946,7 +3711,7 @@ fn indeterminate_create_survives_inventory_absence_and_its_origin_survives_resto
             .viewport()
             .native_create_saga(request.saga())
             .map(crate::frame::NativeCreateSaga::phase),
-        Some(crate::frame::NativeCreatePhase::AwaitingHidden { create })
+        Some(crate::frame::NativeCreatePhase::AwaitingPrepared { create })
             if create == request.effect()
     ));
 
@@ -4371,7 +4136,6 @@ fn rootless_native_child_rehome_waits_for_target_presentation_before_release() {
                 binding,
                 crate::viewport::PresentationObservationGeneration::new(1),
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ))
     };
     let snapshot = test_platform_snapshot(

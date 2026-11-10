@@ -159,15 +159,12 @@ fn native_root_session_with_profile(
     match profile {
         NativeHostProfile::ObservedRoots => {
             session
-                .enable_observed_native_roots(crate::runtime::NativeCreateStrategy::Staged)
+                .enable_observed_native_roots()
                 .expect("the observed-root provider enrolls");
         }
         NativeHostProfile::ManagedDesktop => {
             session
-                .enable_managed_native_host(
-                    crate::runtime::NativeCreateStrategy::Staged,
-                    NativePointerRoster::Exact(Vec::new()),
-                )
+                .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
                 .expect("the managed provider enrolls");
             session
                 .configure_managed_native_capabilities(full_managed_capabilities())
@@ -327,7 +324,7 @@ fn painted_output_matches_the_exact_native_binding() {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None);
     session
         .report_managed_native_snapshot(
@@ -364,7 +361,7 @@ fn native_receiver_query_binds_only_the_exact_presented_output_and_binding() {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None);
     session
         .report_managed_native_snapshot(
@@ -522,7 +519,7 @@ fn repeated_native_enable_never_reissues_live_bindings() {
     let (mut session, binding) = native_root_session();
 
     let error = session
-        .enable_observed_native_roots(crate::runtime::NativeCreateStrategy::Staged)
+        .enable_observed_native_roots()
         .expect_err("repeated enrollment cannot recapture the current binding roster");
     assert!(matches!(
         error.native_kind(),
@@ -554,10 +551,7 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("the child bootstrap session initializes");
     session
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed native provider enrolls");
     session
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -607,7 +601,7 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
             .with_close(NativeCloseState::Clear, None)
     };
     session
@@ -819,7 +813,7 @@ fn native_frame_distinguishes_missing_provider_from_wrong_profile() {
     assert_eq!(missing.native_kind(), Some(NativeHostErrorKind::NotEnabled));
 
     session
-        .enable_observed_native_roots(crate::runtime::NativeCreateStrategy::Staged)
+        .enable_observed_native_roots()
         .expect("the observed-root provider enrolls");
     let wrong_profile = match session.begin_native_host_frame(|_| NativeReceiverAnswer::Unknown) {
         Ok(_) => panic!("the observed-root profile cannot drive desktop pointer input"),
@@ -1180,8 +1174,7 @@ fn narrow_close_and_complete_snapshots_advance_independent_generations() {
         .report_managed_native_snapshot(
             [(
                 binding,
-                NativeWindowFacts::live()
-                    .with_presentation(NativeWindowPresentationState::Visible, None),
+                NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible),
             )],
             NativeWorkAreaRoster::Unknown,
         )
@@ -1222,7 +1215,7 @@ fn unknown_inventory_does_not_skip_per_binding_window_observations() {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None);
+        .with_presentation(NativeWindowPresentationState::Visible);
 
     session
         .report_managed_native_snapshot(
@@ -1285,8 +1278,7 @@ fn narrow_focus_lane_is_ordered_and_does_not_advance_with_unchanged_snapshots() 
         .report_managed_native_snapshot(
             [(
                 binding,
-                NativeWindowFacts::live()
-                    .with_presentation(NativeWindowPresentationState::Visible, None),
+                NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible),
             )],
             NativeWorkAreaRoster::Unknown,
         )
@@ -1321,8 +1313,7 @@ fn narrow_focus_lane_is_ordered_and_does_not_advance_with_unchanged_snapshots() 
         .report_managed_native_snapshot(
             [(
                 binding,
-                NativeWindowFacts::live()
-                    .with_presentation(NativeWindowPresentationState::Visible, None),
+                NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible),
             )],
             NativeWorkAreaRoster::Unknown,
         )
@@ -1355,8 +1346,7 @@ fn losing_inventory_revokes_dock_focus_without_guessing_a_successor() {
         .report_managed_native_snapshot(
             [(
                 binding,
-                NativeWindowFacts::live()
-                    .with_presentation(NativeWindowPresentationState::Visible, None),
+                NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible),
             )],
             NativeWorkAreaRoster::Unknown,
         )
@@ -1387,8 +1377,7 @@ fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_gene
         .report_managed_native_snapshot(
             [(
                 binding,
-                NativeWindowFacts::live()
-                    .with_presentation(NativeWindowPresentationState::Visible, None),
+                NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible),
             )],
             NativeWorkAreaRoster::Unknown,
         )
@@ -1580,8 +1569,8 @@ fn nonvisible_snapshots_revoke_dock_focus_once_and_visibility_needs_a_new_focus_
     ] {
         let (mut session, binding) =
             native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
-        let visible = NativeWindowFacts::live()
-            .with_presentation(NativeWindowPresentationState::Visible, None);
+        let visible =
+            NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible);
         session
             .report_managed_native_snapshot([(binding, visible)], NativeWorkAreaRoster::Unknown)
             .expect("the visible root snapshot records");
@@ -1597,7 +1586,7 @@ fn nonvisible_snapshots_revoke_dock_focus_once_and_visibility_needs_a_new_focus_
         );
 
         let unavailable = presentation.map_or_else(NativeWindowFacts::live, |state| {
-            NativeWindowFacts::live().with_presentation(state, None)
+            NativeWindowFacts::live().with_presentation(state)
         });
         // Repeating the same presentation must not fabricate another focus edge.
         for _ in 0..2 {
@@ -1663,8 +1652,7 @@ fn focus_before_the_initial_managed_snapshot_is_rejected_atomically() {
         .report_managed_native_snapshot(
             [(
                 binding,
-                NativeWindowFacts::live()
-                    .with_presentation(NativeWindowPresentationState::Visible, None),
+                NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible),
             )],
             NativeWorkAreaRoster::Unknown,
         )
@@ -1932,10 +1920,7 @@ fn managed_pointer_enrollment_accepts_explicit_unknown_authority() {
     )
     .expect("the native session initializes");
     session
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Unknown,
-        )
+        .enable_managed_native_host(NativePointerRoster::Unknown)
         .expect("explicit unavailable authority enrolls atomically");
     let input = NativePointerInput::new(
         NativePointerId::new(1),
@@ -1970,17 +1955,11 @@ fn invalid_native_pointer_roster_is_rejected_before_provider_enrollment() {
         NativePointerOwner::None,
     );
     let error = session
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(vec![duplicate]),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(vec![duplicate]))
         .expect_err("duplicate buttons cannot enroll a provider");
     assert_eq!(error.native_kind(), Some(NativeHostErrorKind::InvalidFacts));
 
     session
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("rejected facts leave provider enrollment available");
 }

@@ -14,7 +14,6 @@ use crate::presentation_observation::{
     HostPresentationObservation, HostPresentationObservationEntry,
     HostPresentationObservationOutcome, HostPresentationOutput, HostPresentationOutputPayload,
     HostPresentationProgress, HostPresentationStreamId, HostPresentationStreamObservation,
-    NativeStagingPresentation, NativeStagingPresentationPhase as CoreNativeStagingPhase,
     PresentationStreamQuiescence, PresentedSurfaceAuthority,
 };
 use crate::transition::EngineTransition;
@@ -112,140 +111,6 @@ impl SurfacePresentationCommit {
     }
 }
 
-/// Public lifecycle phase for a non-interactive native staging paint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NativeStagingPresentationPhase {
-    /// Paint the hidden window before the core requests it to be shown.
-    PreShow,
-    /// Paint the visible placeholder before ownership admission.
-    PostShow,
-}
-
-/// Opaque request to paint one exact native lifecycle staging output.
-///
-/// Staging is deliberately not a dock scene: it must not invoke pane UI or
-/// publish hit-test, focus, or accessibility authority. The request is still
-/// bound to the exact window incarnation and core lifecycle phase.
-#[must_use = "a native staging request must be painted or explicitly deferred"]
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NativeStagingPaintRequest {
-    binding: NativeSurfaceBinding,
-    phase: NativeStagingPresentationPhase,
-    core: NativeStagingPresentation,
-}
-
-impl std::fmt::Debug for NativeStagingPaintRequest {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("NativeStagingPaintRequest")
-            .field("surface", &self.binding.surface())
-            .field("phase", &self.phase)
-            .finish()
-    }
-}
-
-impl NativeStagingPaintRequest {
-    pub(super) const fn from_core(
-        binding: NativeSurfaceBinding,
-        core: NativeStagingPresentation,
-    ) -> Self {
-        let phase = match core.phase() {
-            CoreNativeStagingPhase::PreShow => NativeStagingPresentationPhase::PreShow,
-            CoreNativeStagingPhase::PostShow => NativeStagingPresentationPhase::PostShow,
-        };
-        Self {
-            binding,
-            phase,
-            core,
-        }
-    }
-
-    /// Returns the stable logical surface which owns this staging output.
-    #[must_use]
-    pub const fn surface(self) -> SurfaceId {
-        self.binding.surface()
-    }
-
-    /// Returns the exact native binding to which the host must attach the paint.
-    #[must_use]
-    pub const fn binding(self) -> NativeSurfaceBinding {
-        self.binding
-    }
-
-    /// Returns whether this is the pre-show or post-show lifecycle phase.
-    #[must_use]
-    pub const fn phase(self) -> NativeStagingPresentationPhase {
-        self.phase
-    }
-
-    pub(super) const fn core(self) -> NativeStagingPresentation {
-        self.core
-    }
-}
-
-/// Affine terminal-presentation capability for one painted native staging output.
-#[must_use = "a painted staging output must receive a Presented or Dropped result"]
-pub struct PaintedNativeStagingOutput {
-    output: HostPresentationOutput,
-    request: NativeStagingPaintRequest,
-    abandoned: PresentationOutputs,
-    armed: bool,
-}
-
-impl std::fmt::Debug for PaintedNativeStagingOutput {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PaintedNativeStagingOutput")
-            .field("surface", &self.request.surface())
-            .field("phase", &self.request.phase())
-            .finish()
-    }
-}
-
-impl PaintedNativeStagingOutput {
-    /// Returns the logical surface represented by this staging output.
-    #[must_use]
-    pub const fn surface(&self) -> SurfaceId {
-        self.request.surface()
-    }
-
-    /// Returns the exact native binding represented by this output.
-    #[must_use]
-    pub const fn binding(&self) -> NativeSurfaceBinding {
-        self.request.binding()
-    }
-
-    /// Returns the lifecycle phase represented by this output.
-    #[must_use]
-    pub const fn phase(&self) -> NativeStagingPresentationPhase {
-        self.request.phase()
-    }
-
-    pub(super) const fn raw_output(&self) -> HostPresentationOutput {
-        self.output
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl PartialEq for PaintedNativeStagingOutput {
-    fn eq(&self, other: &Self) -> bool {
-        self.output == other.output
-    }
-}
-
-impl Eq for PaintedNativeStagingOutput {}
-
-impl Drop for PaintedNativeStagingOutput {
-    fn drop(&mut self) {
-        if self.armed {
-            self.abandoned.abandon(self.output);
-        }
-    }
-}
-
 impl PaintedSurfaceOutput {
     /// Returns the logical surface represented by this output.
     #[must_use]
@@ -326,18 +191,6 @@ impl super::DockspaceSession {
     ) -> Result<(), SurfacePresentationReportError> {
         self.presentation.report(output, result)
     }
-
-    /// Reports the final renderer result for one native lifecycle staging output.
-    ///
-    /// A staging result advances lifecycle only when the exact output is
-    /// reported as [`SurfacePresentationResult::Presented`].
-    pub fn report_native_staging_presentation(
-        &mut self,
-        output: PaintedNativeStagingOutput,
-        result: SurfacePresentationResult,
-    ) -> Result<(), NativeStagingPresentationReportError> {
-        self.presentation.report_staging(output, result)
-    }
 }
 
 /// Terminal result reported by the renderer for one exact output.
@@ -360,21 +213,6 @@ impl SurfacePresentationReportError {
     /// Recovers the unconsumed affine output for caller-controlled handling.
     #[must_use]
     pub fn into_output(self) -> PaintedSurfaceOutput {
-        self.output
-    }
-}
-
-/// Failed staging presentation report with the original affine output preserved.
-#[derive(Debug, Error)]
-#[error("painted native staging output is foreign, stale, or already retired")]
-pub struct NativeStagingPresentationReportError {
-    output: PaintedNativeStagingOutput,
-}
-
-impl NativeStagingPresentationReportError {
-    /// Recovers the unconsumed affine staging output.
-    #[must_use]
-    pub fn into_output(self) -> PaintedNativeStagingOutput {
         self.output
     }
 }
@@ -482,7 +320,6 @@ pub(super) struct PreparedPresentationEmissions {
     entries: Vec<PendingPresentationOutput>,
     streams: Vec<RuntimePresentationStream>,
     surfaces: Vec<PaintedSurfaceOutput>,
-    staging: Vec<PaintedNativeStagingOutput>,
 }
 
 impl PreparedPresentationEmissions {
@@ -490,16 +327,13 @@ impl PreparedPresentationEmissions {
     pub(super) fn commit(
         mut self,
         state: &mut RuntimePresentationState,
-    ) -> (Vec<PaintedSurfaceOutput>, Vec<PaintedNativeStagingOutput>) {
+    ) -> Vec<PaintedSurfaceOutput> {
         state.streams.append(&mut self.streams);
         self.pending.lock().append(&mut self.entries);
         for output in &mut self.surfaces {
             output.armed = true;
         }
-        for output in &mut self.staging {
-            output.armed = true;
-        }
-        (self.surfaces, self.staging)
+        self.surfaces
     }
 }
 
@@ -718,7 +552,7 @@ impl RuntimePresentationState {
     /// and per-stream report construction/settlement alongside retained history.
     pub(super) fn reservation_bytes(slots: usize) -> Option<usize> {
         let per_slot = 2 * size_of::<PendingPresentationOutput>()
-            + size_of::<PaintedSurfaceOutput>().max(size_of::<PaintedNativeStagingOutput>())
+            + size_of::<PaintedSurfaceOutput>()
             + 4 * size_of::<HostPresentationStreamId>()
             + 2 * size_of::<RuntimePresentationStream>()
             + size_of::<(
@@ -984,28 +818,6 @@ impl RuntimePresentationState {
         Ok(())
     }
 
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "the painted-output capability is affine and must be consumed"
-    )]
-    pub(super) fn report_staging(
-        &mut self,
-        output: PaintedNativeStagingOutput,
-        result: SurfacePresentationResult,
-    ) -> Result<(), NativeStagingPresentationReportError> {
-        let mut output = output;
-        let raw_output = output.raw_output();
-        if !matches!(
-            raw_output.payload(),
-            HostPresentationOutputPayload::NativeStaging { .. }
-        ) || !self.pending.record(raw_output, result)
-        {
-            return Err(NativeStagingPresentationReportError { output });
-        }
-        output.disarm();
-        Ok(())
-    }
-
     pub(super) fn commit_observation(
         &mut self,
         engine: &DockEngine,
@@ -1141,7 +953,6 @@ impl RuntimePresentationState {
         drop(pending);
         let mut entries = Vec::new();
         let mut surfaces = Vec::new();
-        let mut staging = Vec::new();
         entries
             .try_reserve_exact(emissions.len())
             .map_err(|_| NativePlatformError::InputCapacity)?;
@@ -1157,9 +968,6 @@ impl RuntimePresentationState {
         surfaces
             .try_reserve_exact(surface_count)
             .map_err(|_| NativePlatformError::InputCapacity)?;
-        staging
-            .try_reserve_exact(emissions.len() - surface_count)
-            .map_err(|_| NativePlatformError::InputCapacity)?;
         for emission in emissions {
             let output = emission.output();
             entries.push(PendingPresentationOutput {
@@ -1174,23 +982,6 @@ impl RuntimePresentationState {
                         armed: false,
                     })
                 }
-                HostPresentationOutputPayload::NativeStaging { presentation } => {
-                    let HostPresentationEndpoint::Native(binding) = output.endpoint() else {
-                        return Err(NativePlatformError::ProtocolInvariant);
-                    };
-                    staging.push(PaintedNativeStagingOutput {
-                        output,
-                        request: NativeStagingPaintRequest::from_core(
-                            NativeSurfaceBinding::from_binding(
-                                presentation.basis().platform_provider(),
-                                binding,
-                            ),
-                            presentation,
-                        ),
-                        abandoned: self.pending.clone(),
-                        armed: false,
-                    });
-                }
                 HostPresentationOutputPayload::Bootstrap
                 | HostPresentationOutputPayload::Unavailable => {
                     return Err(NativePlatformError::ProtocolInvariant);
@@ -1202,7 +993,6 @@ impl RuntimePresentationState {
             entries,
             streams,
             surfaces,
-            staging,
         })
     }
 }
@@ -1389,10 +1179,7 @@ mod tests {
         )
         .unwrap();
         session
-            .enable_managed_native_host(
-                crate::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         let metrics = UniformSurfaceMetrics::new(
             LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
@@ -1602,10 +1389,7 @@ mod tests {
         assert_eq!(session.presentation.retained_capture_generation_count(), 1);
 
         session
-            .enable_managed_native_host(
-                crate::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("the managed native provider enrolls after headless painting");
         let mut reclaimed = session
             .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)

@@ -12,9 +12,9 @@ use dockspace::ids::{FloatingPresentationId, ItemId, RootId, StableInputSourceId
 use dockspace::intent::{Authority, AuthorityUnavailableReason};
 use dockspace::platform::{
     CloseEffectAcknowledgement, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
-    PlatformCapabilities, PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
-    WindowCloseObservation, WindowCloseState, WindowCoordinateObservation, WindowInputObservation,
-    WindowInputState, WindowPresentationObservation, WindowPresentationState,
+    PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
+    WindowCloseState, WindowCoordinateObservation, WindowInputObservation, WindowInputState,
+    WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::surface_recovery::{ConvertedMainRecovery, SurfaceRecoveryTarget};
@@ -273,7 +273,6 @@ fn ready_window(
             binding,
             PresentationObservationGeneration::new(generation),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ))
 }
 

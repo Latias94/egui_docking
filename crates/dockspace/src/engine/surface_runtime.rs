@@ -1883,7 +1883,7 @@ impl DockEngine {
                             current.phase(),
                             crate::frame::NativeCreatePhase::AwaitingFirstLivePreparation {
                                 correlation,
-                            } if correlation == proof.correlation_effect()
+                            } if correlation == proof.create()
                         )
                         || self.viewport.native_ready_basis(proof.binding()) != Some(proof.basis())
                     {

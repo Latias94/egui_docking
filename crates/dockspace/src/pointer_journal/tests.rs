@@ -9,10 +9,9 @@ use crate::ids::{SurfaceId, WorkspaceEpoch};
 use crate::intent::AuthorityUnavailableReason;
 use crate::platform::{
     CapabilityRosterObservation, InputEffectAcknowledgement, PlatformCapabilities,
-    PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
-    WindowCoordinateObservation, WindowInputObservation, WindowInputState,
-    WindowInventoryObservation, WindowPresentationObservation, WindowPresentationState,
-    WorkAreaRosterObservation,
+    PlatformCapability, PlatformSnapshot, WindowCoordinateObservation, WindowInputObservation,
+    WindowInputState, WindowInventoryObservation, WindowPresentationObservation,
+    WindowPresentationState, WorkAreaRosterObservation,
 };
 use crate::platform_provider::PlatformObservationAuthority;
 use crate::presentation_observation::PresentationLedger;
@@ -123,7 +122,6 @@ fn routeable_registry(
             binding,
             PresentationObservationGeneration::new(1),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ))
         .with_close_requested(Authority::Known(false));
     let snapshot = PlatformSnapshot::new(

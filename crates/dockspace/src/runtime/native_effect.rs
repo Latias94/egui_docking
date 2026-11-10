@@ -41,7 +41,7 @@ impl From<ViewportRole> for NativeSurfaceRole {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum NativeEffectOperation {
-    /// Create one native window with the enrolled preparation strategy.
+    /// Create one native window; report Prepared after native preparation completes.
     CreateWindow {
         /// Exact logical/native binding to create.
         binding: NativeSurfaceBinding,
@@ -49,13 +49,6 @@ pub enum NativeEffectOperation {
         placement: PhysicalRect,
         /// Requested ownership role.
         role: NativeSurfaceRole,
-        /// Window and renderer preparation required by the enrolled host.
-        strategy: super::NativeCreateStrategy,
-    },
-    /// Show a previously staged hidden native window.
-    ShowWindow {
-        /// Exact logical/native binding to show.
-        binding: NativeSurfaceBinding,
     },
     /// Destroy the exact window whose preparation was cancelled or failed.
     CompensatingClose {
@@ -102,8 +95,6 @@ pub enum NativeEffectOperation {
         placement: PhysicalRect,
         /// Requested ownership role.
         role: NativeSurfaceRole,
-        /// The same provider-frozen preparation strategy as initial creation.
-        strategy: super::NativeCreateStrategy,
     },
     /// Resolve one exact native close edge.
     ResolveNativeClose {
@@ -120,7 +111,6 @@ impl NativeEffectOperation {
     pub const fn binding(&self) -> NativeSurfaceBinding {
         match self {
             Self::CreateWindow { binding, .. }
-            | Self::ShowWindow { binding, .. }
             | Self::CompensatingClose { binding, .. }
             | Self::CancelRootClose { binding }
             | Self::RetainChild { binding }
@@ -156,7 +146,6 @@ impl From<NativeCloseResolution> for NativeCloseDisposition {
 enum NativeEffectCorrelationKind {
     Create,
     Input,
-    Presentation,
     Close,
     Cleanup,
     ExternalFact,
@@ -203,24 +192,14 @@ impl NativeEffectRequest {
         let native_binding = NativeSurfaceBinding::from_binding(emission.provider(), binding);
         let (operation, correlation) = match emission.effect() {
             PlatformEffect::CreateWindow {
-                placement,
-                role,
-                strategy,
-                ..
+                placement, role, ..
             } => (
                 NativeEffectOperation::CreateWindow {
                     binding: native_binding,
                     placement: *placement,
                     role: (*role).into(),
-                    strategy: *strategy,
                 },
                 NativeEffectCorrelationKind::Create,
-            ),
-            PlatformEffect::ShowWindow { .. } => (
-                NativeEffectOperation::ShowWindow {
-                    binding: native_binding,
-                },
-                NativeEffectCorrelationKind::Presentation,
             ),
             PlatformEffect::CompensatingClose { .. } => (
                 NativeEffectOperation::CompensatingClose {
@@ -266,16 +245,12 @@ impl NativeEffectRequest {
                 NativeEffectCorrelationKind::ExternalFact,
             ),
             PlatformEffect::RequestReplacement {
-                placement,
-                role,
-                strategy,
-                ..
+                placement, role, ..
             } => (
                 NativeEffectOperation::RequestReplacement {
                     binding: native_binding,
                     placement: *placement,
                     role: (*role).into(),
-                    strategy: *strategy,
                 },
                 NativeEffectCorrelationKind::Create,
             ),
@@ -353,15 +328,6 @@ impl NativeEffectRequest {
                     effect: self.effect,
                 },
             )),
-            NativeEffectCorrelationKind::Presentation => {
-                Some(NativeEffectAcknowledgement::Presentation(
-                    NativePresentationEffectAcknowledgement {
-                        provider: self.provider,
-                        binding: self.binding,
-                        effect: self.effect,
-                    },
-                ))
-            }
             NativeEffectCorrelationKind::Close => Some(NativeEffectAcknowledgement::Close(
                 NativeCloseEffectAcknowledgement {
                     provider: self.provider,
@@ -746,8 +712,6 @@ pub enum NativeEffectAcknowledgement {
     Create(NativeCreateEffectAcknowledgement),
     /// Correlate a later pointer-input property observation.
     Input(NativeInputEffectAcknowledgement),
-    /// Correlate a later window-presentation property observation.
-    Presentation(NativePresentationEffectAcknowledgement),
     /// Correlate a later close or destruction observation.
     Close(NativeCloseEffectAcknowledgement),
     /// Correlate one delayed destructive predecessor result.
@@ -765,14 +729,6 @@ pub struct NativeCreateEffectAcknowledgement {
 /// Exact pointer-input effect acknowledgement for one native observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeInputEffectAcknowledgement {
-    pub(super) provider: PlatformObservationLease,
-    pub(super) binding: ViewportBinding,
-    pub(super) effect: EffectId,
-}
-
-/// Exact presentation effect acknowledgement for one native observation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NativePresentationEffectAcknowledgement {
     pub(super) provider: PlatformObservationLease,
     pub(super) binding: ViewportBinding,
     pub(super) effect: EffectId,
@@ -1253,13 +1209,11 @@ mod tests {
                 binding,
                 placement,
                 role: ViewportRole::Child,
-                strategy: crate::platform::NativeCreateStrategy::Staged,
             },
             PlatformEffect::RequestReplacement {
                 binding,
                 placement,
                 role: ViewportRole::Child,
-                strategy: crate::platform::NativeCreateStrategy::Staged,
             },
         ] {
             let mut ledger = EffectLedger::default();

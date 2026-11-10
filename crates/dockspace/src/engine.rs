@@ -212,12 +212,11 @@ use crate::presentation_observation::{
     HostFrameKey, HostInteractionPresentation, HostPresentationEmission,
     HostPresentationEmissionRequest, HostPresentationEndpoint, HostPresentationObservation,
     HostPresentationObservationEntry, HostPresentationObservationOutcome,
-    HostPresentationOutputPayload, HostPresentationStreamId, NativeStagingPresentation,
-    NativeStagingResourceDescriptor, NativeStagingResourceId, PresentationHostLease,
-    PresentationHostRetirementReason, PresentationHostRetirementStatus, PresentationLedger,
-    PresentationLedgerDiagnostics, PresentationLedgerError, PresentationObservationReduction,
-    PresentationOutputSerial, PresentationStreamQuiescence, PresentedNativeStagingPresentation,
-    PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
+    HostPresentationOutputPayload, HostPresentationStreamId, NativeStagingResourceDescriptor,
+    NativeStagingResourceId, PresentationHostLease, PresentationHostRetirementReason,
+    PresentationHostRetirementStatus, PresentationLedger, PresentationLedgerDiagnostics,
+    PresentationLedgerError, PresentationObservationReduction, PresentationOutputSerial,
+    PresentationStreamQuiescence, PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
 };
 use crate::retention::{
     InputSourceRetentionManifest, PresentationRetentionManifest, RuntimeRetentionManifest,
@@ -501,10 +500,7 @@ pub enum CoreHostFrameError {
         surface: SurfaceId,
     },
     /// The supplied native staging request is not current for this frame.
-    #[error("native staging presentation {presentation:?} is not requested by this host frame")]
-    NativeStagingPresentationUnavailable {
-        presentation: NativeStagingPresentation,
-    },
+
     /// A host frame may stage only one actual presentation output for each
     /// frozen logical surface.
     #[error("a host frame already staged a presentation output for surface {surface}")]
@@ -1271,18 +1267,6 @@ pub enum EngineError {
     /// The engine-local retention revision cannot advance without wrapping.
     #[error("runtime retention revision is exhausted")]
     RuntimeRetentionRevisionExhausted,
-    /// One physical surface was derived as both semantic content and native staging.
-    #[error("physical surface {surface} appears in multiple host presentation slots")]
-    HostPresentationRosterCollision {
-        /// Surface whose lifecycle and semantic ownership overlap.
-        surface: SurfaceId,
-    },
-    /// A staging output referenced a resource absent from the exact retained roster.
-    #[error("native staging request references missing retained resource {resource:?}")]
-    HostPresentationStagingResourceMissing {
-        /// Resource which must stay pinned across this native-create saga.
-        resource: NativeStagingResourceId,
-    },
     /// The core-derived roster no longer matches the capability frozen at seal.
     #[error("core host-frame roster {submitted:?} no longer matches current roster {current:?}")]
     HostFrameRosterStale {

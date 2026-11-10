@@ -30,10 +30,7 @@ fn public_device_removal_records_one_retryable_fact_without_ending_the_input_pha
     .unwrap();
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     commit(
         session
@@ -102,10 +99,7 @@ fn public_budgeted_host_distinguishes_committable_prefixes_from_atomic_continuat
         assert_eq!(session.native_input_recorded_count(), 0);
         assert_eq!(session.native_input_owned_capacity_bytes().unwrap(), 0);
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("the native provider must enroll");
         commit(
             session

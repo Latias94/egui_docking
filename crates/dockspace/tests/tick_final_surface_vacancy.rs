@@ -21,9 +21,9 @@ use dockspace::interaction::{
 };
 use dockspace::platform::{
     CloseEffectAcknowledgement, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
-    PlatformCapabilities, PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
-    WindowCloseObservation, WindowCloseState, WindowCoordinateObservation, WindowInputObservation,
-    WindowInputState, WindowPresentationObservation, WindowPresentationState,
+    PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
+    WindowCloseState, WindowCoordinateObservation, WindowInputObservation, WindowInputState,
+    WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::pointer_journal::{
     DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, PointerCaptureOwner, PointerEdge,
@@ -169,7 +169,6 @@ impl NativeVacancyFixture {
                 source_binding,
                 PresentationObservationGeneration::new(generation),
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
         let target_binding = self
             .engine
@@ -182,7 +181,6 @@ impl NativeVacancyFixture {
                 target_binding,
                 PresentationObservationGeneration::new(generation),
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
         let mut windows = vec![source, target];
         if let Some((request, state)) = native {
@@ -206,21 +204,22 @@ impl NativeVacancyFixture {
                 PlatformEffect::CreateWindow { .. } | PlatformEffect::RequestReplacement { .. }
             )
             .then_some(acknowledged_effect);
-            let acknowledged_show =
-                matches!(effect, PlatformEffect::ShowWindow { .. }).then_some(acknowledged_effect);
             windows.push(
                 observed_native_window(request, generation)
                     .with_create_preparation(WindowCreatePreparationObservation::new(
                         request.binding(),
                         CoordinateObservationGeneration::new(generation),
-                        Authority::Known(NativeCreateReadiness::Created),
+                        Authority::Known(if state == WindowPresentationState::Visible {
+                            NativeCreateReadiness::Prepared
+                        } else {
+                            NativeCreateReadiness::Created
+                        }),
                         acknowledged_create,
                     ))
                     .with_presentation_observation(WindowPresentationObservation::new(
                         request.binding(),
                         PresentationObservationGeneration::new(generation),
                         Authority::Known(state),
-                        PresentationEffectAcknowledgement::known(acknowledged_show),
                     )),
             );
         }
@@ -345,7 +344,6 @@ fn source_snapshot(
                     binding,
                     PresentationObservationGeneration::new(generation),
                     Authority::Known(WindowPresentationState::Visible),
-                    PresentationEffectAcknowledgement::known(None),
                 ),
             ),
         ]
@@ -1066,7 +1064,7 @@ fn pending_native_reservation_is_not_settled_as_an_admitted_vacancy() {
             .native_create_saga(request.saga())
             .expect("pending native saga remains queryable")
             .phase(),
-        NativeCreatePhase::AwaitingHidden { .. }
+        NativeCreatePhase::AwaitingPrepared { .. }
     ));
     assert!(transition.platform_effects().iter().all(|effect| {
         !matches!(
@@ -1081,60 +1079,8 @@ fn same_tick_native_first_live_admission_then_vacancy_releases_the_child() {
     let mut fixture = NativeVacancyFixture::new();
     let request = start_pending_native_create(&mut fixture);
     fixture.publish_snapshot(Some((request, WindowPresentationState::Hidden)));
-    let pre_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPreShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("hidden native create must request pre-show staging");
-    let _ = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        pre_show,
-    );
-    fixture.publish_snapshot(Some((request, WindowPresentationState::Hidden)));
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .expect("native saga remains queryable")
-            .phase(),
-        NativeCreatePhase::AwaitingVisible { .. }
-    ));
-
     fixture.publish_snapshot(Some((request, WindowPresentationState::Visible)));
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .expect("transferred native saga remains queryable")
-            .phase(),
-        NativeCreatePhase::AwaitingPostShowPresentation { .. }
-    ));
     assert!(fixture.engine.workspace().surface(NATIVE_SURFACE).is_none());
-    let post_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPostShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("visible native create must request post-show staging");
-    let _ = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        post_show,
-    );
     assert!(matches!(
         fixture
             .engine

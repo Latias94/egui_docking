@@ -7,7 +7,7 @@ use dockspace::backend_ingress::BackendIngressRecorder;
 use dockspace::engine::{
     BackendIngressProgress, CoreHostFrame, CoreHostFrameError, CoreHostFramePrelude,
     CoreHostPresentationFrame, DockEngine, EngineError, EngineInput, HostPresentationDisposition,
-    HostPresentationSlot, HostPresentationUnavailableReason,
+    HostPresentationUnavailableReason,
 };
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
@@ -18,12 +18,10 @@ use dockspace::platform::{
 };
 use dockspace::pointer_journal::{PointerEdgeJournal, PointerEdgeSequence};
 use dockspace::pointer_receiver::PointerReceiverReceiptBatch;
-use dockspace::presentation_observation::NativeStagingPresentationPhase;
 use dockspace::presentation_observation::{
-    HostInteractionPresentation, HostPresentationCaptureGeneration, HostPresentationEmission,
-    HostPresentationObservation, HostPresentationObservationEntry,
-    HostPresentationObservationOutcome, HostPresentationOutput, HostPresentationProgress,
-    HostPresentationStreamId, HostPresentationStreamObservation, NativeStagingPresentation,
+    HostPresentationCaptureGeneration, HostPresentationEmission, HostPresentationObservation,
+    HostPresentationObservationEntry, HostPresentationObservationOutcome, HostPresentationOutput,
+    HostPresentationProgress, HostPresentationStreamId, HostPresentationStreamObservation,
     PresentationHostLease, PresentationHostRetirementReason,
 };
 use dockspace::scene::{PresentationPlan, SurfaceScene, SurfaceSceneStamp};
@@ -34,7 +32,6 @@ use dockspace::scene_manifest::{
 };
 use dockspace::transition::{EngineTransition, PresentationHostRetirementOutcome};
 use dockspace::transition::{InputPriority, SurfaceContributionOutcome};
-use dockspace::viewport::ViewportBinding;
 use dockspace::viewport::{
     CapabilityObservationGeneration, InventoryObservationGeneration, WorkAreaObservationGeneration,
 };
@@ -1228,88 +1225,6 @@ pub fn publish_surface(
     bounds: LogicalRect,
 ) -> SurfaceSceneStamp {
     publish_surface_with(engine, host, surface, bounds, MeasurementProfile::default())
-}
-
-/// Paints and then observes one exact core-requested native staging pass.
-pub fn present_native_staging(
-    engine: &mut DockEngine,
-    host: &mut TestPresentationHost,
-    presentation: NativeStagingPresentation,
-) -> EngineTransition {
-    let paint_frame = host.begin(engine);
-    present_native_staging_in_frame(engine, host, paint_frame, presentation)
-}
-
-/// Paints the current staging request for one exact native binding and phase.
-pub fn present_requested_native_staging(
-    engine: &mut DockEngine,
-    host: &mut TestPresentationHost,
-    binding: ViewportBinding,
-    phase: NativeStagingPresentationPhase,
-) -> EngineTransition {
-    let paint_frame = host.begin(engine);
-    let presentation = paint_frame
-        .view()
-        .native_staging_presentations()
-        .find(|presentation| presentation.binding() == binding && presentation.phase() == phase)
-        .expect("the exact native staging request must be current");
-    present_native_staging_in_frame(engine, host, paint_frame, presentation)
-}
-
-fn present_native_staging_in_frame(
-    engine: &mut DockEngine,
-    host: &mut TestPresentationHost,
-    mut paint_frame: CoreHostFrame,
-    presentation: NativeStagingPresentation,
-) -> EngineTransition {
-    assert!(
-        paint_frame
-            .view()
-            .native_staging_presentations()
-            .any(|current| current == presentation)
-    );
-    complete_retained_or_unavailable_contributions(&mut paint_frame);
-    let mut paint_frame = paint_frame
-        .into_presentation()
-        .expect("native staging frame enters its presentation phase");
-    for obligation in paint_frame
-        .take_presentation_obligations()
-        .expect("native staging frame must issue its exact physical roster")
-    {
-        let disposition = match obligation.slot() {
-            HostPresentationSlot::NativeStaging {
-                presentation: actual,
-            } if actual == presentation => {
-                HostPresentationDisposition::Painted(HostInteractionPresentation::default())
-            }
-            _ => HostPresentationDisposition::Unavailable(
-                HostPresentationUnavailableReason::OutputNotProduced,
-            ),
-        };
-        paint_frame
-            .resolve_presentation_obligation(obligation, disposition)
-            .expect("native staging obligation must resolve exactly once");
-    }
-    let emitted = host.finish_presentation(paint_frame, engine);
-    assert_eq!(
-        emitted
-            .presentation_emissions()
-            .iter()
-            .filter(|emission| {
-                matches!(
-                    emission.output().payload(),
-                    dockspace::presentation_observation::HostPresentationOutputPayload::NativeStaging {
-                        presentation: actual,
-                    } if actual == presentation
-                )
-            })
-            .count(),
-        1
-    );
-
-    let mut observation_frame = host.begin(engine);
-    complete_host_frame_with_retained_or_unavailable(engine, &mut observation_frame);
-    host.finish(observation_frame, engine)
 }
 
 pub fn publish_surfaces(

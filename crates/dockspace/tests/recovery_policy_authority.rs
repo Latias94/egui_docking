@@ -10,9 +10,9 @@ use dockspace::ids::{FloatingPresentationId, ItemId, RootId, StableInputSourceId
 use dockspace::intent::{Authority, AuthorityUnavailableReason};
 use dockspace::platform::{
     CloseEffectAcknowledgement, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
-    PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
-    WindowCloseObservation, WindowCloseState, WindowCoordinateObservation, WindowInputState,
-    WindowPresentationObservation, WindowPresentationState,
+    PlatformCapability, PlatformSnapshot, WindowCloseObservation, WindowCloseState,
+    WindowCoordinateObservation, WindowInputState, WindowPresentationObservation,
+    WindowPresentationState,
 };
 use dockspace::policy::{
     DockClassId, DockItemRule, DockPayloadKind, DockPolicy, DockPolicyRequest,
@@ -311,7 +311,6 @@ fn publish_platform(
                 binding,
                 PresentationObservationGeneration::new(generation),
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
     }
     let close_observations = destroyed.into_iter().map(|binding| {

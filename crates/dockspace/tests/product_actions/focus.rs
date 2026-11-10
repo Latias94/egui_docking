@@ -1,7 +1,7 @@
 use super::*;
 use crate::runtime::{
     DockspaceFocusTarget, DockspacePaneFocusObservation, DockspacePaneFocusRequest,
-    NativeCreateStrategy, NativeGlobalFocus,
+    NativeGlobalFocus,
 };
 
 const OTHER_SURFACE: SurfaceId = SurfaceId::new(40);
@@ -93,10 +93,7 @@ fn assert_pane_focus_lifecycle(
 fn native_activation_focus_request_waits_for_observation_commit_and_survives_frame_drop() {
     let mut session = root_focus_session(FIRST);
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the focus backend enrolls");
     session
         .configure_managed_native_capabilities(

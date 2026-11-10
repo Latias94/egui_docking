@@ -601,7 +601,6 @@ impl DockspaceSession {
             encoding_started: std::cell::Cell::new(false),
             encoding_checkpoint: None,
             encoding_pass: 0,
-            painted_native_staging: BTreeSet::new(),
             replacement_submitted: false,
             #[cfg(feature = "serde")]
             document_restore: None,

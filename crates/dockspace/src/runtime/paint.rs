@@ -1321,7 +1321,6 @@ impl DockspaceHostFrame<'_> {
             .ok_or(DockspaceInteractionError::EncodingPassExhausted)?;
         self.frame.restart_encoding_from(checkpoint)?;
         self.painted_surfaces.clear();
-        self.painted_native_staging.clear();
         self.encoding_surfaces.clear();
         self.encoding_pass = next;
         self.encoding_started.set(true);

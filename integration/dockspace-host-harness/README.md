@@ -59,23 +59,23 @@ This is public-contract and renderer-neutral input evidence. It does not prove
 physical OS event delivery or actual GPU presentation. The egui complete Burst
 and ordinary-content matrices are qualified separately in `docs/VALIDATION.md`.
 
-`tests/direct_prepared_native.rs` supplies DirectPrepared window and renderer
-readiness through public facts, without egui callbacks, staging paints or
-ShowWindow. Its recording sink verifies complete prospective child content,
-exact first-live publication, cancelled/failed/late output, readiness revocation,
-foreign create acknowledgements, source-version revalidation and replacement
-strategy. A replacement's readiness recovery refreshes its semantic output
-without redundant measurement. A separate Staged journey accepts creation
-before visibility is known while preserving its hidden/output barriers. These
+`tests/direct_prepared_native.rs` supplies window and renderer readiness through
+public `Created` and `Prepared` facts. Its recording sink verifies complete
+prospective child content, exact first-live publication, cancelled/failed/late
+output, readiness revocation, foreign create acknowledgements, source-version
+revalidation and replacement incarnations. A replacement's readiness recovery
+refreshes its semantic output without redundant measurement. Creation can be acknowledged before visibility
+is known while preserving preparation and semantic first-live barriers. These
 are host-contract traces; actual platform creation and presentation remain host
-responsibilities and have separately labelled native reference qualification.
+responsibilities. The native adapter owns any hidden/show renderer steps and
+has separately labelled native reference qualification.
 
 `tests/native_surface_creation.rs` creates a native window for a complete
-logical surface that already owns its main root and contained forest. Direct
-and Staged journeys require exact semantic first-live presentation while
-preserving topology and workspace version. Failed and cancelled initial
-attempts retry through the same recovery owner with a fresh binding; old Create
-acknowledgements, outputs, Destroyed observations and producer quiescence cannot
+logical surface that already owns its main root and contained forest. Reported
+preparation and exact semantic first-live presentation preserve topology and
+workspace version. Failed and cancelled initial attempts retry through the same
+recovery owner with a fresh binding; old Create acknowledgements, outputs,
+Destroyed observations and producer quiescence cannot
 admit or retire the successor. Finite producer storage, same-frame cancellation
 and dropped/failed-frame replay exercise the public boundary. These recording
 traces do not qualify automatic native document recreation or OS creation.
@@ -84,9 +84,10 @@ traces do not qualify automatic native document recreation or OS creation.
 boundary using only public APIs. It preserves complete split/selected-tab/
 contained forests with their declared identities, queues explicit Child intents,
 waits for fresh Root facts and all inherited exact predecessor guards, and
-advances creation under finite producer/effect-report storage. DirectPrepared
-and Staged use their existing first-live owners. Stopped intents stay suspended
-until explicit retry; invalid declarations and retained Root/Child conflicts
+advances creation under finite producer/effect-report storage. Created or unknown
+preparation retains the complete forest until a Prepared binding presents its
+exact first-live output. Stopped intents stay suspended until explicit retry;
+invalid declarations and retained Root/Child conflicts
 publish nothing. Recording results remain distinct from the native example's
 separate real-window restoration journey.
 

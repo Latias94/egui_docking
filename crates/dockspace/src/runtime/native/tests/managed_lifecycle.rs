@@ -20,7 +20,7 @@ use crate::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use crate::runtime::{
     DockspaceHostFrame, DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
     DockspaceReceiverDescriptor, HostFrameReport, NativeEffectAcknowledgement,
-    NativeEffectOperation, NativeStagingPresentationPhase, NativeWindowPlacement,
+    NativeEffectOperation, NativeWindowPlacement,
 };
 
 const SECOND_ITEM: ItemId = ItemId::new(2);
@@ -71,10 +71,7 @@ fn joined_document_restore_preserves_identities_after_a_workspace_mutating_nativ
     let (mut target, first, second) = persistent_session();
     assert_eq!((first, second), (source_first, source_second));
     target
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed native host enrolls");
     target
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -155,10 +152,7 @@ fn joined_layout_reset_retries_after_a_workspace_mutating_native_prefix() {
     let mut target = DockspaceSession::from_layout(layout(RootId::new(2)), DockPolicy::default())
         .expect("the layout-only session initializes");
     target
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed native host enrolls");
     target
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -545,9 +539,6 @@ fn native_create_cleanup_commits_under_report_backpressure_and_compensates_once(
     let mut report = frame.commit().expect("the native create publishes");
     let create = take_only_native_effect(&mut report);
     let child = create.operation().binding();
-    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
-        panic!("create must return its exact create acknowledgement");
-    };
     session
         .report_managed_native_snapshot(
             [
@@ -560,11 +551,8 @@ fn native_create_cleanup_commits_under_report_backpressure_and_compensates_once(
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
-                        .with_create_readiness(
-                            crate::runtime::NativeCreateReadiness::Created,
-                            Some(acknowledgement),
-                        )
+                        .with_presentation(NativeWindowPresentationState::Hidden)
+                        .with_create_readiness(crate::runtime::NativeCreateReadiness::Created, None)
                         .with_close(NativeCloseState::Clear, None),
                 ),
             ],
@@ -572,16 +560,6 @@ fn native_create_cleanup_commits_under_report_backpressure_and_compensates_once(
         )
         .expect("the hidden child snapshot records");
     commit_managed_frame(&mut session);
-    let pre_show = paint_staging(&mut session, child, NativeStagingPresentationPhase::PreShow);
-    session
-        .report_native_staging_presentation(pre_show, SurfacePresentationResult::Presented)
-        .expect("the pre-show terminal records");
-    let mut report = commit_managed_frame_report(&mut session);
-    let show = take_only_native_effect(&mut report);
-    assert!(matches!(
-        show.operation(),
-        NativeEffectOperation::ShowWindow { binding } if *binding == child
-    ));
     let (saga, before) = session
         .engine
         .viewport()
@@ -725,9 +703,10 @@ fn native_create_cleanup_commits_under_report_backpressure_and_compensates_once(
         .validate_native_staging_resource_conservation()
         .unwrap();
 
-    let Some(NativeEffectAcknowledgement::Presentation(_)) = show.accepted() else {
-        panic!("the show dispatch releases its original report slot");
-    };
+    assert!(matches!(
+        create.accepted(),
+        Some(NativeEffectAcknowledgement::Create(_))
+    ));
     assert_eq!(session.abandoned_native_effects.available_slots(), Some(1));
     let mut delivery_report = commit_managed_frame_report(&mut session);
     let compensation = take_only_native_effect(&mut delivery_report);
@@ -843,14 +822,14 @@ fn assert_first_live_preparation_is_cancellable_without_transferring_source(
             .native_create_saga(saga)
             .unwrap()
             .phase(),
-        crate::frame::NativeCreatePhase::AwaitingPostShowPresentation { .. }
+        crate::frame::NativeCreatePhase::AwaitingPrepared { .. }
     ));
     let source_sequence = session.committed_source_sequence;
     let version = session.version();
     let workspace = session.engine.workspace().clone();
     let mut candidate = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the post-show terminal prepares prospective content in this candidate");
+        .expect("the Prepared observation prepares prospective content in this candidate");
     assert!(matches!(
         candidate
             .frame
@@ -990,7 +969,7 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_presentation(NativeWindowPresentationState::Hidden)
                         .with_create_readiness(
                             crate::runtime::NativeCreateReadiness::Created,
                             Some(create_ack),
@@ -1003,25 +982,6 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         .expect("the exact hidden child roster records");
     commit_managed_frame(&mut session);
 
-    let pre_show = paint_staging(
-        &mut session,
-        child_binding,
-        NativeStagingPresentationPhase::PreShow,
-    );
-    session
-        .report_native_staging_presentation(pre_show, SurfacePresentationResult::Presented)
-        .expect("the pre-show staging result records");
-    let mut pre_show_report = commit_managed_frame_report(&mut session);
-    let show = take_only_native_effect(&mut pre_show_report);
-    assert!(matches!(
-        show.operation(),
-        NativeEffectOperation::ShowWindow { binding } if *binding == child_binding
-    ));
-    let show_ack = match show.accepted() {
-        Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
-        acknowledgement => panic!("show returned the wrong acknowledgement: {acknowledgement:?}"),
-    };
-
     session
         .report_managed_native_snapshot(
             [
@@ -1034,46 +994,17 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, Some(show_ack))
-                        .with_create_readiness(crate::runtime::NativeCreateReadiness::Created, None)
+                        .with_presentation(NativeWindowPresentationState::Visible)
+                        .with_create_readiness(
+                            crate::runtime::NativeCreateReadiness::Prepared,
+                            None,
+                        )
                         .with_close(NativeCloseState::Clear, None),
                 ),
             ],
             NativeWorkAreaRoster::Exact(vec![work_area(1)]),
         )
-        .expect("the exact show acknowledgement records while the child remains hidden");
-    commit_managed_frame(&mut session);
-
-    session
-        .report_managed_native_snapshot(
-            [
-                (root_binding, root_window_facts()),
-                (
-                    child_binding,
-                    NativeWindowFacts::live()
-                        .with_content_bounds(placement)
-                        .with_outer_bounds(placement)
-                        .with_native_scale_factor(native_scale())
-                        .with_presentation_scale_factor(native_scale())
-                        .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Visible, None)
-                        .with_create_readiness(crate::runtime::NativeCreateReadiness::Created, None)
-                        .with_close(NativeCloseState::Clear, None),
-                ),
-            ],
-            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
-        )
-        .expect("the later exact visible child roster records");
-    commit_managed_frame(&mut session);
-
-    let post_show = paint_staging(
-        &mut session,
-        child_binding,
-        NativeStagingPresentationPhase::PostShow,
-    );
-    session
-        .report_native_staging_presentation(post_show, SurfacePresentationResult::Presented)
-        .expect("the post-show staging result records");
+        .unwrap();
     assert_first_live_preparation_is_cancellable_without_transferring_source(&mut session);
 
     measure_all_surfaces(&mut session);
@@ -1292,7 +1223,7 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
                         .with_outer_bounds(placement)
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
-                        .with_presentation(NativeWindowPresentationState::Visible, None),
+                        .with_presentation(NativeWindowPresentationState::Visible),
                 ),
             ],
             NativeWorkAreaRoster::Exact(vec![work_area(1)]),
@@ -1790,17 +1721,13 @@ fn managed_session_from_workspace_with_storage_limit(
     if let Some(limit) = limit {
         session
             .enable_managed_native_host_with_input_storage_limit(
-                crate::runtime::NativeCreateStrategy::Staged,
                 NativePointerRoster::Exact(Vec::new()),
                 limit,
             )
             .expect("the finite managed native provider enrolls");
     } else {
         session
-            .enable_managed_native_host(
-                crate::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("the managed native provider enrolls");
     }
     session
@@ -1847,7 +1774,7 @@ fn root_window_facts() -> NativeWindowFacts {
         .with_native_scale_factor(native_scale())
         .with_presentation_scale_factor(native_scale())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None)
 }
 
@@ -1909,33 +1836,6 @@ fn present_surface_outputs(session: &mut DockspaceSession, report: &mut HostFram
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .expect("the exact painted output presentation records");
     }
-}
-
-fn paint_staging(
-    session: &mut DockspaceSession,
-    binding: NativeSurfaceBinding,
-    phase: NativeStagingPresentationPhase,
-) -> crate::runtime::PaintedNativeStagingOutput {
-    let mut frame = session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the staging frame begins");
-    let request = frame
-        .native_staging_paints()
-        .into_iter()
-        .find(|request| request.binding() == binding && request.phase() == phase)
-        .unwrap_or_else(|| panic!("the {phase:?} staging request must exist"));
-    frame
-        .confirm_native_staging_painted(request)
-        .expect("the exact staging placeholder is painted");
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("the staging frame retains semantic surfaces");
-    let mut report = frame.commit().expect("the staging frame commits");
-    let outputs = report.take_painted_native_staging_outputs();
-    let [output] = outputs.try_into().unwrap_or_else(|outputs: Vec<_>| {
-        panic!("expected one {phase:?} staging output, got {outputs:?}")
-    });
-    output
 }
 
 fn commit_managed_frame_report(session: &mut DockspaceSession) -> HostFrameReport {

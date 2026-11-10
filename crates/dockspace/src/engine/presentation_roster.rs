@@ -2,8 +2,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::presentation_observation::NativeStagingOwner;
-
 use super::*;
 
 /// One exact physical output slot frozen by the core.
@@ -14,11 +12,6 @@ pub enum HostPresentationSlot {
         /// Logical surface whose exact output is requested.
         surface: SurfaceId,
     },
-    /// A non-interactive native lifecycle staging placeholder.
-    NativeStaging {
-        /// Exact lifecycle request which must be painted without invoking pane UI.
-        presentation: NativeStagingPresentation,
-    },
 }
 
 impl HostPresentationSlot {
@@ -27,16 +20,6 @@ impl HostPresentationSlot {
     pub const fn surface(self) -> SurfaceId {
         match self {
             Self::Surface { surface } => surface,
-            Self::NativeStaging { presentation } => presentation.binding().surface(),
-        }
-    }
-
-    /// Returns the native staging descriptor when this is a staging slot.
-    #[must_use]
-    pub const fn native_staging(self) -> Option<NativeStagingPresentation> {
-        match self {
-            Self::Surface { .. } => None,
-            Self::NativeStaging { presentation } => Some(presentation),
         }
     }
 }
@@ -52,7 +35,6 @@ impl HostPresentationSlot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostPresentationSchedule {
     surfaces: Box<[SurfaceId]>,
-    native_staging: Box<[NativeStagingPresentation]>,
 }
 
 impl HostPresentationSchedule {
@@ -60,7 +42,6 @@ impl HostPresentationSchedule {
         let roster = HostPresentationRoster::capture(engine)?;
         Ok(Self {
             surfaces: roster.surfaces().collect(),
-            native_staging: roster.native_staging_presentations().collect(),
         })
     }
 
@@ -70,24 +51,11 @@ impl HostPresentationSchedule {
         self.surfaces.iter().copied()
     }
 
-    /// Returns the non-interactive native staging callbacks that may be scheduled.
-    #[must_use]
-    pub fn native_staging_presentations(
-        &self,
-    ) -> impl ExactSizeIterator<Item = NativeStagingPresentation> + '_ {
-        self.native_staging.iter().copied()
-    }
-
     /// Returns every scheduled physical slot in deterministic category order.
     #[must_use]
     pub fn slots(&self) -> impl Iterator<Item = HostPresentationSlot> + '_ {
-        let surfaces = self
-            .surfaces()
-            .map(|surface| HostPresentationSlot::Surface { surface });
-        let native_staging = self
-            .native_staging_presentations()
-            .map(|presentation| HostPresentationSlot::NativeStaging { presentation });
-        surfaces.chain(native_staging)
+        self.surfaces()
+            .map(|surface| HostPresentationSlot::Surface { surface })
     }
 }
 
@@ -112,8 +80,6 @@ pub enum HostPresentationUnavailableReason {
     OutputNotProduced,
     /// A causally newer projection superseded the output before publication.
     SupersededBeforePublication,
-    /// A retained staging resource was unavailable to the host renderer.
-    RetainedResourceUnavailable,
     /// The base surface painted, but one frozen transient interaction visual did not.
     TransientVisualNotPainted,
     /// The renderer or platform backend definitively failed this output.
@@ -303,25 +269,18 @@ impl FrozenSurfacePresentationOutput {
                     HostPresentationOutputPayload::Unavailable,
                     HostPresentationOutputPayload::Unavailable,
                 ) => true,
-                (
-                    HostPresentationOutputPayload::NativeStaging { .. },
-                    HostPresentationOutputPayload::NativeStaging { .. },
-                ) => false,
                 _ => false,
             }
     }
 }
 
-/// Exact physical output inventory derived from the semantic scene and native lifecycle.
+/// Exact semantic output inventory derived after native readiness reduction.
 ///
-/// A physical surface has exactly one slot at a boundary: either a live docking
-/// surface or a non-interactive native staging placeholder. Staging never enters
-/// the semantic measurement, hit-test, focus, or accessibility roster.
+/// Pending native surfaces enter this roster only when they can prepare their
+/// semantic first-live output. Native preparation callbacks belong to the host.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct HostPresentationRoster {
     surfaces: BTreeMap<SurfaceId, FrozenSurfacePresentationOutput>,
-    native_staging: BTreeMap<SurfaceId, NativeStagingPresentation>,
-    native_resources: BTreeMap<NativeStagingResourceId, NativeStagingResourceDescriptor>,
 }
 
 impl HostPresentationRoster {
@@ -341,45 +300,7 @@ impl HostPresentationRoster {
             .map(|(surface, _)| (surface, Self::freeze_surface(candidate, surface)))
             .collect::<BTreeMap<_, _>>();
 
-        let native_resources = candidate
-            .viewport
-            .retained_native_staging_resources()
-            .map(|descriptor| (descriptor.id(), descriptor.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let mut native_staging = BTreeMap::new();
-        for presentation in candidate.viewport.native_staging_presentations() {
-            let surface = presentation.binding().surface();
-            let owner_matches_roster = match presentation.owner() {
-                NativeStagingOwner::NativeCreate { .. } => {
-                    !surfaces.contains_key(&surface) && !suspended_surfaces.contains(&surface)
-                }
-                NativeStagingOwner::RecoveryReplacement { .. }
-                | NativeStagingOwner::InitialSurface { .. } => {
-                    suspended_surfaces.contains(&surface) && !surfaces.contains_key(&surface)
-                }
-            };
-            if !owner_matches_roster {
-                return Err(EngineError::HostPresentationRosterCollision { surface });
-            }
-            if let Some(resource) = presentation.retained_resource() {
-                if presentation
-                    .native_create_saga()
-                    .is_some_and(|saga| resource.saga() != saga)
-                    || !native_resources.contains_key(&resource)
-                {
-                    return Err(EngineError::HostPresentationStagingResourceMissing { resource });
-                }
-            }
-            if native_staging.insert(surface, presentation).is_some() {
-                return Err(EngineError::HostPresentationRosterCollision { surface });
-            }
-        }
-
-        Ok(Self {
-            surfaces,
-            native_staging,
-            native_resources,
-        })
+        Ok(Self { surfaces })
     }
 
     pub(super) fn try_refresh_surfaces(
@@ -403,10 +324,6 @@ impl HostPresentationRoster {
                 .viewport
                 .suspended_native_presentation_surfaces()
                 .any(|candidate| candidate == surface)
-                || candidate
-                    .viewport
-                    .native_staging_presentations()
-                    .any(|presentation| presentation.binding().surface() == surface)
             {
                 return None;
             }
@@ -428,17 +345,10 @@ impl HostPresentationRoster {
     }
 
     pub(super) fn slots(&self) -> impl Iterator<Item = HostPresentationSlot> + '_ {
-        let surfaces = self
-            .surfaces
+        self.surfaces
             .keys()
             .copied()
-            .map(|surface| HostPresentationSlot::Surface { surface });
-        let native_staging = self
-            .native_staging
-            .values()
-            .copied()
-            .map(|presentation| HostPresentationSlot::NativeStaging { presentation });
-        surfaces.chain(native_staging)
+            .map(|surface| HostPresentationSlot::Surface { surface })
     }
 
     pub(super) fn surface_scope(&self) -> BTreeSet<SurfaceId> {
@@ -456,36 +366,8 @@ impl HostPresentationRoster {
         self.surfaces.get(&surface).copied()
     }
 
-    pub(super) fn native_staging_presentations(
-        &self,
-    ) -> impl ExactSizeIterator<Item = NativeStagingPresentation> + '_ {
-        self.native_staging.values().copied()
-    }
-
-    pub(super) fn retained_native_staging_resources(
-        &self,
-    ) -> impl ExactSizeIterator<Item = &NativeStagingResourceDescriptor> {
-        self.native_resources.values()
-    }
-
-    pub(super) fn contains_native_staging(&self, presentation: NativeStagingPresentation) -> bool {
-        self.native_staging
-            .get(&presentation.binding().surface())
-            .is_some_and(|current| *current == presentation)
-    }
-
-    fn frozen_output(&self, slot: HostPresentationSlot) -> Option<FrozenHostPresentationOutput> {
-        match slot {
-            HostPresentationSlot::Surface { surface } => self
-                .surface_output(surface)
-                .map(FrozenHostPresentationOutput::Surface),
-            HostPresentationSlot::NativeStaging { presentation }
-                if self.contains_native_staging(presentation) =>
-            {
-                Some(FrozenHostPresentationOutput::NativeStaging(presentation))
-            }
-            HostPresentationSlot::NativeStaging { .. } => None,
-        }
+    fn frozen_output(&self, slot: HostPresentationSlot) -> Option<FrozenSurfacePresentationOutput> {
+        self.surface_output(slot.surface())
     }
 
     pub(super) fn same_semantic_projection(&self, other: &Self) -> bool {
@@ -546,27 +428,16 @@ impl HostPresentationRoster {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) enum FrozenHostPresentationOutput {
-    Surface(FrozenSurfacePresentationOutput),
-    NativeStaging(NativeStagingPresentation),
-}
-
-impl FrozenHostPresentationOutput {
+impl FrozenSurfacePresentationOutput {
     pub(super) const fn interaction(self) -> HostInteractionPresentation {
-        match self {
-            Self::Surface(output) => match output.payload() {
-                HostPresentationOutputPayload::Paint { interaction, .. } => interaction,
-                HostPresentationOutputPayload::NativeStaging { .. }
-                | HostPresentationOutputPayload::Bootstrap
-                | HostPresentationOutputPayload::Unavailable => {
-                    HostInteractionPresentation::new(None, None)
-                }
-            },
-            Self::NativeStaging(_) => HostInteractionPresentation::new(None, None),
+        match self.payload {
+            HostPresentationOutputPayload::Paint { interaction, .. } => interaction,
+            HostPresentationOutputPayload::Bootstrap
+            | HostPresentationOutputPayload::Unavailable => {
+                HostInteractionPresentation::new(None, None)
+            }
         }
     }
-
     pub(super) const fn into_parts(
         self,
     ) -> (
@@ -574,27 +445,7 @@ impl FrozenHostPresentationOutput {
         HostPresentationEndpoint,
         HostPresentationOutputPayload,
     ) {
-        match self {
-            Self::Surface(output) => {
-                let surface = match output.payload() {
-                    HostPresentationOutputPayload::Paint { scene, .. } => scene.surface(),
-                    HostPresentationOutputPayload::Bootstrap
-                    | HostPresentationOutputPayload::Unavailable => output.stamp().surface(),
-                    HostPresentationOutputPayload::NativeStaging { presentation } => {
-                        presentation.binding().surface()
-                    }
-                };
-                (surface, output.endpoint(), output.payload())
-            }
-            Self::NativeStaging(presentation) => {
-                let binding = presentation.binding();
-                (
-                    binding.surface(),
-                    HostPresentationEndpoint::Native(binding),
-                    HostPresentationOutputPayload::NativeStaging { presentation },
-                )
-            }
-        }
+        (self.stamp.surface(), self.endpoint, self.payload)
     }
 }
 
@@ -688,28 +539,13 @@ impl HostPresentationObligationSet {
     pub(super) fn frozen_output(
         &self,
         obligation: &HostPresentationObligation,
-    ) -> Result<FrozenHostPresentationOutput, CoreHostFrameError> {
+    ) -> Result<FrozenSurfacePresentationOutput, CoreHostFrameError> {
         self.validate(obligation)?;
         self.roster.frozen_output(obligation.slot).ok_or(
             CoreHostFrameError::PresentationObligationOutsideRoster {
                 slot: obligation.slot,
             },
         )
-    }
-
-    pub(super) fn frozen_surface_output(
-        &self,
-        obligation: &HostPresentationObligation,
-    ) -> Result<FrozenSurfacePresentationOutput, CoreHostFrameError> {
-        match self.frozen_output(obligation)? {
-            FrozenHostPresentationOutput::Surface(output) => Ok(output),
-            FrozenHostPresentationOutput::NativeStaging(_) => {
-                Err(CoreHostFrameError::PresentationObligationSurfaceMismatch {
-                    slot: obligation.slot,
-                    surface: obligation.slot.surface(),
-                })
-            }
-        }
     }
 
     pub(super) fn resolve(

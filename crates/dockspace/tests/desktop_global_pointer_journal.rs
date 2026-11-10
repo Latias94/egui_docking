@@ -19,9 +19,8 @@ use dockspace::interaction::{
 use dockspace::platform::{
     InputEffectAcknowledgement, NativeDragSourceInput, ObservedWindow, ObservedWorkArea,
     PlatformCapabilities, PlatformCapability, PlatformCapabilityReason, PlatformRequirement,
-    PlatformSnapshot, PresentationEffectAcknowledgement, WindowCoordinateObservation,
-    WindowInputObservation, WindowInputState, WindowPresentationObservation,
-    WindowPresentationState,
+    PlatformSnapshot, WindowCoordinateObservation, WindowInputObservation, WindowInputState,
+    WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::pointer_journal::{
     DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, PointerCaptureOwner, PointerEdge,
@@ -267,7 +266,6 @@ fn publish_native_snapshot_with_geometry_and_work_area_scale(
         source,
         presentation_generation,
         Authority::Known(WindowPresentationState::Visible),
-        PresentationEffectAcknowledgement::known(None),
     ));
     let target_window = observed_window_at(
         target,
@@ -280,7 +278,6 @@ fn publish_native_snapshot_with_geometry_and_work_area_scale(
         target,
         presentation_generation,
         Authority::Known(WindowPresentationState::Visible),
-        PresentationEffectAcknowledgement::known(None),
     ));
     let windows = vec![source_window, target_window];
     let inventory_observation = support::known_inventory_observation(generation, &windows);
@@ -404,7 +401,6 @@ fn publish_pointer_input_confirmation(
                 source,
                 presentation_generation,
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
     let target_window =
         observed_window(target, coordinate_generation, TARGET_ORIGIN_X, TARGET_SCALE)
@@ -418,7 +414,6 @@ fn publish_pointer_input_confirmation(
                 target,
                 presentation_generation,
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
     let windows = vec![source_window, target_window];
     let work_areas = engine
@@ -559,7 +554,6 @@ fn publish_capabilities_during_drag(
                 source,
                 presentation_generation,
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
     let target_window =
         observed_window(target, coordinate_generation, TARGET_ORIGIN_X, TARGET_SCALE)
@@ -573,7 +567,6 @@ fn publish_capabilities_during_drag(
                 target,
                 presentation_generation,
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
     let windows = vec![source_window, target_window];
     let work_areas = engine
@@ -652,7 +645,6 @@ fn publish_resized_source_snapshot(
             source,
             presentation_generation,
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ));
     let target_window =
         observed_window(target, coordinate_generation, TARGET_ORIGIN_X, TARGET_SCALE)
@@ -666,7 +658,6 @@ fn publish_resized_source_snapshot(
                 target,
                 presentation_generation,
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
     let windows = vec![source_window, target_window];
     let inventory_observation = support::known_inventory_observation(generation, &windows);
@@ -738,7 +729,6 @@ fn source_only_native_snapshot(generation: u64, source: ViewportBinding) -> Plat
         source,
         PresentationObservationGeneration::new(generation),
         Authority::Known(WindowPresentationState::Visible),
-        PresentationEffectAcknowledgement::known(None),
     ));
     let windows = vec![source_window];
     let inventory_observation = support::known_inventory_observation(generation, &windows);
@@ -779,7 +769,6 @@ fn resized_target_native_snapshot(
                 source,
                 presentation_generation,
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
     let target_window = observed_window(target, coordinate_generation, TARGET_ORIGIN_X, 1.5)
         .with_input_observation(WindowInputObservation::new(
@@ -792,7 +781,6 @@ fn resized_target_native_snapshot(
             target,
             presentation_generation,
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ));
     let windows = vec![source_window, target_window];
     let inventory_observation = support::known_inventory_observation(generation, &windows);

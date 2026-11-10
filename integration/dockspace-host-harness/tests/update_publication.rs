@@ -238,10 +238,9 @@ fn owned_update_rejects_competing_foreign_and_stale_session_authority_without_lo
         let update = frame.suspend();
         if native {
             stale
-                .enable_managed_native_host(
-                    dockspace::runtime::NativeCreateStrategy::Staged,
-                    dockspace::runtime::NativePointerRoster::Exact(Vec::new()),
-                )
+                .enable_managed_native_host(dockspace::runtime::NativePointerRoster::Exact(
+                    Vec::new(),
+                ))
                 .unwrap();
         } else {
             stale.enable_host_pointer().unwrap();

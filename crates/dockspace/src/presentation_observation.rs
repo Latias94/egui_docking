@@ -20,11 +20,10 @@ use crate::ids::{
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::interaction::{ContainedTransformPreviewToken, PreviewToken};
-use crate::platform_provider::PlatformObservationLease;
 use crate::retention::PresentationHostRetentionManifest;
 use crate::scene::{SurfacePlanScene, SurfaceSceneStamp};
 use crate::surface_recovery::SurfaceRecoveryObligationId;
-use crate::viewport::{CoordinateGeneration, PresentationObservationGeneration, ViewportBinding};
+use crate::viewport::{CoordinateGeneration, ViewportBinding};
 
 use self::retention::RetiredPresentationHostRanges;
 
@@ -418,18 +417,9 @@ pub enum HostPresentationEndpoint {
     Native(ViewportBinding),
 }
 
-/// Native bring-up staging pass which must be observed before lifecycle advance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum NativeStagingPresentationPhase {
-    /// Hidden-window output which must be presented before `ShowWindow` is requested.
-    PreShow,
-    /// Visible placeholder output which must be presented before owner-specific admission.
-    PostShow,
-}
-
-/// Core-private lifecycle owner of one native staging sequence.
+/// Core-private owner of exact native readiness and first-live admission.
 ///
-/// Initial surfaces and recovery replacements stage an established logical
+/// Initial surfaces and recovery replacements establish an existing logical
 /// surface without a retained create resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum NativeStagingOwner {
@@ -467,26 +457,9 @@ impl NativeStagingOwner {
         }
     }
 
-    pub(crate) const fn authority_domain(self) -> EngineAuthorityDomainId {
-        match self {
-            Self::NativeCreate { resource, .. } => resource.authority_domain(),
-            Self::RecoveryReplacement {
-                destroyed_binding, ..
-            } => destroyed_binding.authority_domain(),
-            Self::InitialSurface { binding, .. } => binding.authority_domain(),
-        }
-    }
-
     pub(crate) const fn retained_resource(self) -> Option<NativeStagingResourceId> {
         match self {
             Self::NativeCreate { resource, .. } => Some(resource),
-            Self::RecoveryReplacement { .. } | Self::InitialSurface { .. } => None,
-        }
-    }
-
-    pub(crate) const fn native_create_saga(self) -> Option<NativeCreateSagaId> {
-        match self {
-            Self::NativeCreate { resource } => Some(resource.saga()),
             Self::RecoveryReplacement { .. } | Self::InitialSurface { .. } => None,
         }
     }
@@ -494,9 +467,9 @@ impl NativeStagingOwner {
 
 /// Opaque identity of the retained source resource backing one native-create saga.
 ///
-/// The identity is minted by the core and remains stable across pre-show and
-/// post-show request reissues. Its private fields prevent a host from splicing
-/// staging output into another engine or native-create saga.
+/// The identity is minted by the core and remains stable across preparation,
+/// first-live admission, and exact compensation. Its private fields prevent a
+/// host from borrowing source ownership from another engine or create saga.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NativeStagingResourceId {
     authority_domain: EngineAuthorityDomainId,
@@ -567,184 +540,6 @@ impl NativeStagingResourceDescriptor {
     }
 }
 
-/// Exact platform facts which authorize one native staging presentation.
-///
-/// A request must be reissued when any member changes. In particular, retaining
-/// only a viewport binding is insufficient because provider replacement and a
-/// hidden-visible-hidden presentation ABA can leave the binding unchanged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NativeStagingBasis {
-    platform_provider: PlatformObservationLease,
-    presentation_observation_generation: PresentationObservationGeneration,
-    coordinate_generation: CoordinateGeneration,
-    owner: NativeStagingOwner,
-}
-
-impl NativeStagingBasis {
-    pub(crate) fn new(
-        platform_provider: PlatformObservationLease,
-        presentation_observation_generation: PresentationObservationGeneration,
-        coordinate_generation: CoordinateGeneration,
-        owner: NativeStagingOwner,
-    ) -> Option<Self> {
-        (platform_provider.authority_domain() == owner.authority_domain()).then_some(Self {
-            platform_provider,
-            presentation_observation_generation,
-            coordinate_generation,
-            owner,
-        })
-    }
-
-    /// Returns the exact platform-provider incarnation which observed this basis.
-    #[must_use]
-    pub const fn platform_provider(self) -> PlatformObservationLease {
-        self.platform_provider
-    }
-
-    /// Returns the exact binding-scoped presentation observation generation.
-    #[must_use]
-    pub const fn presentation_observation_generation(self) -> PresentationObservationGeneration {
-        self.presentation_observation_generation
-    }
-
-    /// Returns the exact canonical coordinate generation for staging placement.
-    #[must_use]
-    pub const fn coordinate_generation(self) -> CoordinateGeneration {
-        self.coordinate_generation
-    }
-
-    /// Returns the retained source resource used by this staging request, if any.
-    #[must_use]
-    pub const fn retained_resource(self) -> Option<NativeStagingResourceId> {
-        self.owner.retained_resource()
-    }
-}
-
-/// Opaque core-minted request to paint one exact native lifecycle staging window.
-///
-/// The request is not a dock scene and grants no interaction authority. It
-/// exists solely to join an actual host paint and final-presentation fact to
-/// one native bring-up owner and viewport incarnation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NativeStagingPresentation {
-    binding: ViewportBinding,
-    phase: NativeStagingPresentationPhase,
-    basis: NativeStagingBasis,
-}
-
-impl NativeStagingPresentation {
-    pub(crate) fn mint(
-        binding: ViewportBinding,
-        phase: NativeStagingPresentationPhase,
-        basis: NativeStagingBasis,
-    ) -> Option<Self> {
-        (binding.authority_domain() == basis.owner.authority_domain()).then_some(Self {
-            binding,
-            phase,
-            basis,
-        })
-    }
-
-    #[must_use]
-    pub const fn native_create_saga(self) -> Option<NativeCreateSagaId> {
-        self.basis.owner.native_create_saga()
-    }
-
-    #[must_use]
-    pub const fn binding(self) -> ViewportBinding {
-        self.binding
-    }
-
-    #[must_use]
-    pub const fn phase(self) -> NativeStagingPresentationPhase {
-        self.phase
-    }
-
-    /// Returns the exact platform facts authorizing this staging request.
-    #[must_use]
-    pub const fn basis(self) -> NativeStagingBasis {
-        self.basis
-    }
-
-    /// Returns the retained source resource used by this staging request, if any.
-    #[must_use]
-    pub const fn retained_resource(self) -> Option<NativeStagingResourceId> {
-        self.basis.owner.retained_resource()
-    }
-
-    pub(crate) const fn owner(self) -> NativeStagingOwner {
-        self.basis.owner
-    }
-
-    pub(crate) const fn authority_domain(self) -> EngineAuthorityDomainId {
-        self.basis.owner.authority_domain()
-    }
-}
-
-/// Exact final-presentation proof for one native staging request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PresentedNativeStagingPresentation {
-    request: NativeStagingPresentation,
-    stream: HostPresentationStreamId,
-    output: HostFrameKey,
-}
-
-impl PresentedNativeStagingPresentation {
-    pub(crate) const fn output_key(self) -> HostFrameKey {
-        self.output
-    }
-
-    pub(crate) const fn mint_observed(
-        request: NativeStagingPresentation,
-        stream: HostPresentationStreamId,
-        output: HostFrameKey,
-    ) -> Self {
-        Self {
-            request,
-            stream,
-            output,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn mint_observed_for_test(
-        request: NativeStagingPresentation,
-        ordinal: u64,
-    ) -> Self {
-        let stream = HostPresentationStreamId {
-            authority_domain: request.authority_domain(),
-            serial: PresentationStreamSerial(1),
-        };
-        Self::mint_observed(request, stream, HostFrameKey { stream, ordinal })
-    }
-
-    pub(crate) const fn request(self) -> NativeStagingPresentation {
-        self.request
-    }
-
-    /// Returns the retained source resource proven by this final presentation, if any.
-    #[must_use]
-    pub const fn retained_resource(self) -> Option<NativeStagingResourceId> {
-        self.request.retained_resource()
-    }
-
-    /// Returns whether this proof names the exact staging output.
-    ///
-    /// This keeps the proof's engine-private identities opaque while allowing
-    /// protocol adapters to correlate a lifecycle effect with an output they
-    /// previously retained.
-    #[must_use]
-    pub fn matches_output(self, output: HostPresentationOutput) -> bool {
-        self.stream == output.stream
-            && self.output == output.key
-            && matches!(
-                output.payload,
-                HostPresentationOutputPayload::NativeStaging { presentation }
-                    if presentation == self.request
-            )
-    }
-}
-
 /// Transient interaction visuals actually included in one host paint.
 ///
 /// These tokens are core-minted at frame begin. A later final-presentation
@@ -798,11 +593,6 @@ pub enum HostPresentationOutputPayload {
         /// Transient core-owned visuals painted above that scene.
         interaction: HostInteractionPresentation,
     },
-    /// One non-interactive native lifecycle staging placeholder was painted.
-    NativeStaging {
-        /// Exact lifecycle request represented by this paint.
-        presentation: NativeStagingPresentation,
-    },
     /// A bootstrap placeholder was actually painted.
     Bootstrap,
     /// An unavailable placeholder was actually painted.
@@ -815,7 +605,7 @@ impl HostPresentationOutputPayload {
     pub const fn scene(self) -> Option<SurfacePresentationOutputTicket> {
         match self {
             Self::Paint { scene, .. } => Some(scene),
-            Self::NativeStaging { .. } | Self::Bootstrap | Self::Unavailable => None,
+            Self::Bootstrap | Self::Unavailable => None,
         }
     }
 
@@ -827,7 +617,7 @@ impl HostPresentationOutputPayload {
                 coordinate_generation,
                 ..
             } => Some(coordinate_generation),
-            Self::NativeStaging { .. } | Self::Bootstrap | Self::Unavailable => None,
+            Self::Bootstrap | Self::Unavailable => None,
         }
     }
 
@@ -836,7 +626,7 @@ impl HostPresentationOutputPayload {
     pub const fn interaction(self) -> Option<HostInteractionPresentation> {
         match self {
             Self::Paint { interaction, .. } => Some(interaction),
-            Self::NativeStaging { .. } | Self::Bootstrap | Self::Unavailable => None,
+            Self::Bootstrap | Self::Unavailable => None,
         }
     }
 }
@@ -1385,14 +1175,7 @@ pub(crate) enum PresentationLedgerError {
         surface: SurfaceId,
         ticket_surface: SurfaceId,
     },
-    #[error(
-        "native staging output {presentation:?} does not match surface {surface} and endpoint {endpoint:?}"
-    )]
-    NativeStagingEndpointMismatch {
-        surface: SurfaceId,
-        endpoint: HostPresentationEndpoint,
-        presentation: NativeStagingPresentation,
-    },
+
     #[error("presentation observation batch omitted pending streams: {missing:?}")]
     BatchMissingStreams {
         missing: Vec<HostPresentationStreamId>,
@@ -2069,16 +1852,6 @@ impl PresentationLedger {
                 ticket_surface: scene.surface(),
             });
         }
-        if let HostPresentationOutputPayload::NativeStaging { presentation } = payload
-            && (presentation.binding().surface() != surface
-                || endpoint != HostPresentationEndpoint::Native(presentation.binding()))
-        {
-            return Err(PresentationLedgerError::NativeStagingEndpointMismatch {
-                surface,
-                endpoint,
-                presentation,
-            });
-        }
         let stream = self.active_stream_for(lease, surface, endpoint)?;
         let state = self
             .streams
@@ -2475,18 +2248,16 @@ impl PresentationLedger {
                     let active = active_stream.is_some_and(|active| active == stream)
                         && state.lifecycle == PresentationStreamLifecycle::Active;
                     match (active, output.payload) {
-                        (
-                            true,
-                            HostPresentationOutputPayload::Paint { .. }
-                            | HostPresentationOutputPayload::NativeStaging { .. },
-                        ) => Some(PresentationPromotionCandidate {
-                            stream,
-                            key,
-                            surface: state.surface,
-                            endpoint: state.endpoint,
-                            payload: output.payload,
-                            scene: output.scene,
-                        }),
+                        (true, HostPresentationOutputPayload::Paint { .. }) => {
+                            Some(PresentationPromotionCandidate {
+                                stream,
+                                key,
+                                surface: state.surface,
+                                endpoint: state.endpoint,
+                                payload: output.payload,
+                                scene: output.scene,
+                            })
+                        }
                         (false, _)
                         | (_, HostPresentationOutputPayload::Bootstrap)
                         | (_, HostPresentationOutputPayload::Unavailable) => None,

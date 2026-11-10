@@ -8,11 +8,11 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceSession, HostFrameReport, HostWindowToken, NativeCreateStrategy,
-    NativeHostCapabilities, NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
-    SurfaceUnavailableReason, SurfaceWork, SurfaceWorkDeferred, UniformSurfaceMetrics,
+    DockspaceHostFrame, DockspaceSession, HostFrameReport, HostWindowToken, NativeHostCapabilities,
+    NativeHostCapability, NativePointerRoster, NativeReceiverAnswer, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+    PaintedSurfaceOutput, SurfacePresentationResult, SurfaceUnavailableReason, SurfaceWork,
+    SurfaceWorkDeferred, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -81,10 +81,7 @@ fn fixture(capacity: usize) -> Fixture {
     assert!(previous_authority.matches_presentation_artifact(previous_artifact));
 
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(
@@ -109,7 +106,7 @@ fn fixture(capacity: usize) -> Fixture {
         .with_native_scale_factor(ScaleFactor::new(1.0).unwrap())
         .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None);
+        .with_presentation(NativeWindowPresentationState::Visible);
     session
         .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
         .unwrap();

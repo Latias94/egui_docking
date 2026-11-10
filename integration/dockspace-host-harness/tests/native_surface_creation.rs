@@ -14,14 +14,12 @@ use dockspace::policy::{
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceRuntimeErrorKind, DockspaceSession, DockspaceSubmittedAction,
     HostFrameReport, HostInputOutcome, HostWindowToken, HostWorkAreaToken, NativeCreateReadiness,
-    NativeCreateStrategy, NativeDispatchFailure, NativeEffectAcknowledgement,
-    NativeEffectOperation, NativeEffectRequest, NativeHostCapabilities, NativeHostCapability,
-    NativeHostErrorKind, NativeInputStorageLimit, NativePointerRoster, NativeProducerStorageLimit,
-    NativeReceiverAnswer, NativeStagingPresentationPhase, NativeSurfaceBinding, NativeSurfaceRole,
-    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
-    NativeWorkAreaRoster, PaintedNativeStagingOutput, PaintedSurfaceOutput,
-    SurfacePresentationArtifact, SurfacePresentationResult, SurfaceUnavailableReason,
-    UniformSurfaceMetrics,
+    NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
+    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativeInputStorageLimit,
+    NativePointerRoster, NativeProducerStorageLimit, NativeReceiverAnswer, NativeSurfaceBinding,
+    NativeSurfaceRole, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+    NativeWorkAreaFacts, NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationArtifact,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -43,31 +41,20 @@ const FRONT_ITEM: ItemId = ItemId::new(7);
 struct SurfaceHost {
     session: DockspaceSession,
     root: NativeSurfaceBinding,
-    strategy: NativeCreateStrategy,
     version: WorkspaceVersion,
     topology: String,
 }
 
 impl SurfaceHost {
-    fn new(strategy: NativeCreateStrategy) -> Self {
-        Self::configured(strategy, native_policy(), capabilities())
+    fn new() -> Self {
+        Self::configured(native_policy(), capabilities())
     }
 
-    fn configured(
-        strategy: NativeCreateStrategy,
-        policy: DockPolicy,
-        capabilities: NativeHostCapabilities,
-    ) -> Self {
-        Self::configured_with_binding_slots(
-            strategy,
-            policy,
-            capabilities,
-            NonZeroUsize::new(2).unwrap(),
-        )
+    fn configured(policy: DockPolicy, capabilities: NativeHostCapabilities) -> Self {
+        Self::configured_with_binding_slots(policy, capabilities, NonZeroUsize::new(2).unwrap())
     }
 
     fn configured_with_binding_slots(
-        strategy: NativeCreateStrategy,
         policy: DockPolicy,
         capabilities: NativeHostCapabilities,
         binding_slots: NonZeroUsize,
@@ -120,7 +107,6 @@ impl SurfaceHost {
         let producer = NativeProducerStorageLimit::new(binding_slots, NonZeroUsize::MIN, 1 << 20);
         session
             .enable_managed_native_host_with_input_storage_limit(
-                strategy,
                 NativePointerRoster::Exact(Vec::new()),
                 NativeInputStorageLimit::new(NonZeroUsize::new(16).unwrap(), 1 << 20)
                     .with_producer_storage_limit(producer),
@@ -154,7 +140,6 @@ impl SurfaceHost {
         let fixture = Self {
             session,
             root,
-            strategy,
             version,
             topology,
         };
@@ -181,7 +166,7 @@ impl SurfaceHost {
             .create_native_surface_current(TARGET, HOST, NativeWindowPlacement::new(placement()))
             .unwrap();
         let mut report = finish(frame);
-        let (binding, create) = take_create(&mut report, submitted, self.strategy);
+        let (binding, create) = take_create(&mut report, submitted);
         assert!(self.session.has_pending_native_create());
         self.assert_pending(binding);
         (binding, create)
@@ -217,8 +202,7 @@ impl SurfaceHost {
         assert_eq!(
             report.submitted_action_outcome(submitted),
             Some(&HostInputOutcome::NativeSurfaceCreateRejected { surface, reason }),
-            "strategy {:?}, policy {:?}",
-            self.strategy,
+            "policy {:?}",
             self.session.policy(),
         );
         assert!(!report.workspace_changed());
@@ -339,7 +323,7 @@ fn window_facts(bounds: PhysicalRect, state: NativeWindowPresentationState) -> N
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(state, None)
+        .with_presentation(state)
 }
 
 fn child_facts(state: NativeWindowPresentationState) -> NativeWindowFacts {
@@ -378,14 +362,12 @@ fn idle(session: &mut DockspaceSession) -> HostFrameReport {
     let mut report = finish(native_frame(session));
     assert!(report.take_native_effects().is_empty());
     assert!(report.take_painted_outputs().is_empty());
-    assert!(report.take_painted_native_staging_outputs().is_empty());
     report
 }
 
 fn take_create(
     report: &mut HostFrameReport,
     submitted: DockspaceSubmittedAction,
-    strategy: NativeCreateStrategy,
 ) -> (NativeSurfaceBinding, NativeEffectRequest) {
     let Some(HostInputOutcome::NativeSurfaceCreateRequested { binding }) =
         report.submitted_action_outcome(submitted)
@@ -404,8 +386,7 @@ fn take_create(
             binding: actual,
             placement: bounds,
             role: NativeSurfaceRole::Child,
-            strategy: actual_strategy,
-        } if *actual == binding && *bounds == placement() && *actual_strategy == strategy
+        } if *actual == binding && *bounds == placement()
     ));
     (binding, create)
 }
@@ -429,7 +410,6 @@ fn measure(session: &mut DockspaceSession) {
 fn paint(session: &mut DockspaceSession, binding: NativeSurfaceBinding) -> PaintedSurfaceOutput {
     measure(session);
     let mut frame = native_frame(session);
-    assert_eq!(frame.native_staging_paints().len(), 0);
     let plan = frame
         .paint_plan(binding.surface())
         .unwrap()
@@ -497,34 +477,6 @@ fn assert_unpaintable(session: &mut DockspaceSession) {
     assert!(report.take_painted_outputs().is_empty());
 }
 
-fn paint_staging(
-    session: &mut DockspaceSession,
-    binding: NativeSurfaceBinding,
-    phase: NativeStagingPresentationPhase,
-) -> PaintedNativeStagingOutput {
-    let mut frame = native_frame(session);
-    let requests = frame.native_staging_paints().collect::<Vec<_>>();
-    let [request] = requests.as_slice() else {
-        panic!("one exact {phase:?} placeholder must be requested");
-    };
-    assert_eq!(request.binding(), binding);
-    assert_eq!(request.phase(), phase);
-    assert!(frame.paint_plan(TARGET).unwrap().is_none());
-    // Accept the public placeholder callback; no pane program runs during staging.
-    frame.confirm_native_staging_painted(*request).unwrap();
-    let mut report = finish(frame);
-    assert!(report.native_admissions().is_empty());
-    assert!(report.take_native_effects().is_empty());
-    assert!(report.take_painted_outputs().is_empty());
-    let [output] = report
-        .take_painted_native_staging_outputs()
-        .try_into()
-        .unwrap();
-    assert_eq!(output.binding(), binding);
-    assert_eq!(output.phase(), phase);
-    output
-}
-
 fn assert_cancelled(
     fixture: &SurfaceHost,
     binding: NativeSurfaceBinding,
@@ -560,7 +512,7 @@ fn direct_prepared_first_live_admits_the_existing_surface_without_changing_its_t
         NativeCreateReadiness::Created,
         NativeCreateReadiness::Prepared,
     ] {
-        let mut fixture = SurfaceHost::new(NativeCreateStrategy::DirectPrepared);
+        let mut fixture = SurfaceHost::new();
         let (child, create) = fixture.request();
         let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
             panic!("creation must return its exact readiness acknowledgement");
@@ -575,7 +527,7 @@ fn direct_prepared_first_live_admits_the_existing_surface_without_changing_its_t
                 .with_create_readiness(NativeCreateReadiness::Prepared, None),
             NativeWindowFacts::live()
                 .with_input(NativeWindowInputState::ReceivesInput, None)
-                .with_presentation(NativeWindowPresentationState::Visible, None)
+                .with_presentation(NativeWindowPresentationState::Visible)
                 .with_create_readiness(NativeCreateReadiness::Prepared, None),
             child_facts(NativeWindowPresentationState::Visible)
                 .with_create_readiness(NativeCreateReadiness::Created, None),
@@ -599,119 +551,72 @@ fn direct_prepared_first_live_admits_the_existing_surface_without_changing_its_t
 }
 
 #[test]
-fn review_identical_hidden_snapshot_preserves_inflight_pre_show() {
-    let mut fixture = SurfaceHost::new(NativeCreateStrategy::Staged);
+fn identical_prepared_snapshot_preserves_inflight_first_live() {
+    let mut fixture = SurfaceHost::new();
     let (child, create) = fixture.request();
     let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
         panic!("creation must return its exact readiness acknowledgement");
     };
-    fixture.observe(
-        child,
-        child_facts(NativeWindowPresentationState::Hidden)
-            .with_create_readiness(NativeCreateReadiness::Created, Some(created)),
-    );
-    let pre_show = paint_staging(
-        &mut fixture.session,
-        child,
-        NativeStagingPresentationPhase::PreShow,
-    );
-
-    // Durable visibility, readiness, geometry and scale facts remain identical.
-    // The one-shot Create acknowledgement was consumed by the first observation.
-    fixture.observe(
-        child,
-        child_facts(NativeWindowPresentationState::Hidden)
-            .with_create_readiness(NativeCreateReadiness::Created, None),
-    );
-    fixture
-        .session
-        .report_native_staging_presentation(pre_show, SurfacePresentationResult::Presented)
-        .unwrap();
-    let mut report = finish(native_frame(&mut fixture.session));
-    assert!(
-        report.take_native_effects().iter().any(|request| matches!(
-            request.operation(),
-            NativeEffectOperation::ShowWindow { binding } if *binding == child
-        )),
-        "unchanged Hidden/Created facts must preserve the in-flight PreShow presentation"
-    );
-}
-
-#[test]
-fn staged_existing_surface_requires_pre_show_show_ack_post_show_and_semantic_first_live() {
-    complete_staged_surface(true, true);
-}
-
-#[test]
-fn staged_show_ack_survives_unknown_preparation_or_coordinates() {
-    complete_staged_surface(false, true);
-    complete_staged_surface(false, false);
-}
-
-fn complete_staged_surface(show_readiness: bool, show_geometry: bool) {
-    let mut fixture = SurfaceHost::new(NativeCreateStrategy::Staged);
-    let (child, create) = fixture.request();
-    let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
-        panic!("creation must return its exact readiness acknowledgement");
-    };
-    fixture.observe(
-        child,
-        child_facts(NativeWindowPresentationState::Hidden)
-            .with_create_readiness(NativeCreateReadiness::Created, Some(created)),
-    );
-    let pre_show = paint_staging(
-        &mut fixture.session,
-        child,
-        NativeStagingPresentationPhase::PreShow,
-    );
-    fixture.assert_pending(child);
-    fixture
-        .session
-        .report_native_staging_presentation(pre_show, SurfacePresentationResult::Presented)
-        .unwrap();
-    let mut report = finish(native_frame(&mut fixture.session));
-    assert!(report.native_admissions().is_empty());
-    fixture.assert_pending(child);
-    let [show] = report.take_native_effects().try_into().unwrap();
-    assert!(matches!(
-        show.operation(),
-        NativeEffectOperation::ShowWindow { binding } if *binding == child
-    ));
-    let Some(NativeEffectAcknowledgement::Presentation(shown)) = show.accepted() else {
-        panic!("Show must return its exact visibility acknowledgement");
-    };
-    let show_facts = if show_geometry {
-        child_facts(NativeWindowPresentationState::Hidden)
-    } else {
-        NativeWindowFacts::live()
-    };
-    let show_facts = if show_readiness {
-        show_facts.with_create_readiness(NativeCreateReadiness::Created, None)
-    } else {
-        show_facts
-    };
-    fixture.observe(
-        child,
-        show_facts.with_presentation(NativeWindowPresentationState::Hidden, Some(shown)),
-    );
-    assert_unpaintable(&mut fixture.session);
     fixture.observe(
         child,
         child_facts(NativeWindowPresentationState::Visible)
-            .with_create_readiness(NativeCreateReadiness::Created, None),
+            .with_create_readiness(NativeCreateReadiness::Prepared, Some(created)),
     );
-    let post_show = paint_staging(
-        &mut fixture.session,
+    let output = paint(&mut fixture.session, child);
+
+    // The one-shot acknowledgement is absent from the otherwise identical facts.
+    fixture.observe(
         child,
-        NativeStagingPresentationPhase::PostShow,
+        child_facts(NativeWindowPresentationState::Visible)
+            .with_create_readiness(NativeCreateReadiness::Prepared, None),
     );
-    fixture
-        .session
-        .report_native_staging_presentation(post_show, SurfacePresentationResult::Presented)
-        .unwrap();
-    let report = idle(&mut fixture.session);
-    assert!(report.native_admissions().is_empty());
-    fixture.assert_pending(child);
+    fixture.present(child, output);
+}
+
+#[test]
+fn prepared_existing_surface_requires_ready_geometry_and_semantic_first_live() {
+    complete_prepared_surface(true, true);
+}
+
+#[test]
+fn create_ack_survives_unknown_preparation_or_coordinates() {
+    complete_prepared_surface(false, true);
+    complete_prepared_surface(true, false);
+    complete_prepared_surface(false, false);
+}
+
+fn complete_prepared_surface(readiness_available: bool, geometry_available: bool) {
+    let mut fixture = SurfaceHost::new();
+    let (child, create) = fixture.request();
+    let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
+        panic!("creation must return its exact readiness acknowledgement");
+    };
+    fixture.observe(
+        child,
+        child_facts(NativeWindowPresentationState::Hidden)
+            .with_create_readiness(NativeCreateReadiness::Created, Some(created)),
+    );
+    assert_unpaintable(&mut fixture.session);
+
+    let facts = if geometry_available {
+        child_facts(NativeWindowPresentationState::Visible)
+    } else {
+        NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible)
+    };
+    let facts = if readiness_available {
+        facts.with_create_readiness(NativeCreateReadiness::Prepared, None)
+    } else {
+        facts
+    };
+    fixture.observe(child, facts);
+    if !readiness_available || !geometry_available {
+        assert_unpaintable(&mut fixture.session);
+    }
+    fixture.observe(
+        child,
+        child_facts(NativeWindowPresentationState::Visible)
+            .with_create_readiness(NativeCreateReadiness::Prepared, None),
+    );
     let output = paint(&mut fixture.session, child);
     fixture.assert_pending(child);
     fixture.present(child, output);
@@ -720,7 +625,7 @@ fn complete_staged_surface(show_readiness: bool, show_geometry: bool) {
 #[test]
 fn dropped_and_late_first_live_outputs_cannot_restore_revoked_native_readiness() {
     for (explicit_drop, revoked) in [(false, None), (true, Some(NativeCreateReadiness::Created))] {
-        let mut fixture = SurfaceHost::new(NativeCreateStrategy::DirectPrepared);
+        let mut fixture = SurfaceHost::new();
         let (child, create) = fixture.request();
         let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
             panic!("creation must return its exact readiness acknowledgement");
@@ -787,7 +692,6 @@ fn dropped_and_late_first_live_outputs_cannot_restore_revoked_native_readiness()
 #[test]
 fn typed_creation_rejections_and_dispatch_failure_preserve_the_complete_surface() {
     let mut fixture = SurfaceHost::configured_with_binding_slots(
-        NativeCreateStrategy::DirectPrepared,
         native_policy(),
         capabilities(),
         NonZeroUsize::new(3).unwrap(),
@@ -843,7 +747,6 @@ fn typed_creation_rejections_and_dispatch_failure_preserve_the_complete_surface(
     fixture.present(retry, output);
 
     let mut unsupported = SurfaceHost::configured(
-        NativeCreateStrategy::DirectPrepared,
         native_policy(),
         // Its snapshots still publish an exact work-area roster, even without creation support.
         NativeHostCapabilities::none_supported()
@@ -860,8 +763,7 @@ fn typed_creation_rejections_and_dispatch_failure_preserve_the_complete_surface(
         locked.set_arrangement_locked(true);
         locked
     }] {
-        let mut denied =
-            SurfaceHost::configured(NativeCreateStrategy::DirectPrepared, policy, capabilities());
+        let mut denied = SurfaceHost::configured(policy, capabilities());
         denied.reject(TARGET, HOST, DockspaceActionRejection::PolicyDenied);
         assert_eq!(idle(&mut denied.session).native_bindings(), &[denied.root]);
     }
@@ -869,96 +771,85 @@ fn typed_creation_rejections_and_dispatch_failure_preserve_the_complete_surface(
 
 #[test]
 fn initial_native_surface_creation_respects_surface_root_and_item_native_policy() {
-    for strategy in [
-        NativeCreateStrategy::DirectPrepared,
-        NativeCreateStrategy::Staged,
-    ] {
-        for policy in fine_grained_native_policy_denials() {
-            let mut fixture = SurfaceHost::configured(strategy, policy, capabilities());
-            fixture.reject(TARGET, HOST, DockspaceActionRejection::PolicyDenied);
-            assert!(!fixture.session.has_pending_native_create());
-            assert!(fixture.session.presented_surface(TARGET).is_none());
-            let mut report = idle(&mut fixture.session);
-            assert_eq!(report.native_bindings(), &[fixture.root]);
-            assert!(report.native_admissions().is_empty());
-            assert!(report.take_native_effects().is_empty());
-            fixture.assert_unchanged();
-        }
+    for policy in fine_grained_native_policy_denials() {
+        let mut fixture = SurfaceHost::configured(policy, capabilities());
+        fixture.reject(TARGET, HOST, DockspaceActionRejection::PolicyDenied);
+        assert!(!fixture.session.has_pending_native_create());
+        assert!(fixture.session.presented_surface(TARGET).is_none());
+        let mut report = idle(&mut fixture.session);
+        assert_eq!(report.native_bindings(), &[fixture.root]);
+        assert!(report.native_admissions().is_empty());
+        assert!(report.take_native_effects().is_empty());
+        fixture.assert_unchanged();
     }
 }
 
 #[test]
 fn failed_initial_retry_reauthorizes_native_policy_and_preserves_the_frozen_surface() {
-    for strategy in [
-        NativeCreateStrategy::DirectPrepared,
-        NativeCreateStrategy::Staged,
-    ] {
-        for policy in fine_grained_native_policy_denials() {
-            let mut fixture = SurfaceHost::configured_with_binding_slots(
-                strategy,
-                native_policy(),
-                capabilities(),
-                NonZeroUsize::new(3).unwrap(),
-            );
-            let (child, create) = fixture.request();
-            fixture
-                .session
-                .report_native_effect_result(
-                    create.dispatch_failed(NativeDispatchFailure::WindowUnavailable),
-                )
-                .unwrap();
-            let mut failed = finish(native_frame(&mut fixture.session));
-            assert!(failed.native_admissions().is_empty());
-            for cleanup in failed.take_native_effects() {
-                assert!(matches!(
-                    cleanup.operation(),
-                    NativeEffectOperation::CompensatingClose { binding } if *binding == child
-                ));
-                let Some(NativeEffectAcknowledgement::Close(_)) = cleanup.accepted() else {
-                    panic!("cleanup must retain only the failed binding's close acknowledgement");
-                };
-            }
-            assert!(!fixture.session.is_current_native_binding(child));
-            assert!(!fixture.session.has_pending_native_create());
-            fixture.assert_pending(child);
-            assert_unpaintable(&mut fixture.session);
-
-            // Replace policy through the public terminal configuration phase after failure.
-            let before = fixture.version;
-            let mut frame = native_frame(&mut fixture.session);
-            let submitted = frame.replace_policy(policy.clone()).unwrap();
-            let mut replaced = finish(frame);
-            assert_eq!(
-                replaced.submitted_action_outcome(submitted),
-                Some(&HostInputOutcome::PolicyReplaced {
-                    changed: true,
-                    version: replaced.after(),
-                })
-            );
-            assert_eq!(replaced.before(), before);
-            assert_ne!(replaced.after(), before);
-            assert_eq!(fixture.session.policy(), &policy);
-            assert!(replaced.native_admissions().is_empty());
-            assert!(replaced.take_native_effects().is_empty());
-            fixture.version = replaced.after();
-            fixture.assert_pending(child);
-
-            fixture.reject(TARGET, HOST, DockspaceActionRejection::PolicyDenied);
-            assert!(!fixture.session.is_current_native_binding(child));
-            assert!(!fixture.session.has_pending_native_create());
-            fixture.assert_pending(child);
-            assert_unpaintable(&mut fixture.session);
-            let report = idle(&mut fixture.session);
-            assert_eq!(report.native_bindings(), &[fixture.root]);
-            assert!(report.native_admissions().is_empty());
-            fixture.assert_pending(child);
+    for policy in fine_grained_native_policy_denials() {
+        let mut fixture = SurfaceHost::configured_with_binding_slots(
+            native_policy(),
+            capabilities(),
+            NonZeroUsize::new(3).unwrap(),
+        );
+        let (child, create) = fixture.request();
+        fixture
+            .session
+            .report_native_effect_result(
+                create.dispatch_failed(NativeDispatchFailure::WindowUnavailable),
+            )
+            .unwrap();
+        let mut failed = finish(native_frame(&mut fixture.session));
+        assert!(failed.native_admissions().is_empty());
+        for cleanup in failed.take_native_effects() {
+            assert!(matches!(
+                cleanup.operation(),
+                NativeEffectOperation::CompensatingClose { binding } if *binding == child
+            ));
+            let Some(NativeEffectAcknowledgement::Close(_)) = cleanup.accepted() else {
+                panic!("cleanup must retain only the failed binding's close acknowledgement");
+            };
         }
+        assert!(!fixture.session.is_current_native_binding(child));
+        assert!(!fixture.session.has_pending_native_create());
+        fixture.assert_pending(child);
+        assert_unpaintable(&mut fixture.session);
+
+        // Replace policy through the public terminal configuration phase after failure.
+        let before = fixture.version;
+        let mut frame = native_frame(&mut fixture.session);
+        let submitted = frame.replace_policy(policy.clone()).unwrap();
+        let mut replaced = finish(frame);
+        assert_eq!(
+            replaced.submitted_action_outcome(submitted),
+            Some(&HostInputOutcome::PolicyReplaced {
+                changed: true,
+                version: replaced.after(),
+            })
+        );
+        assert_eq!(replaced.before(), before);
+        assert_ne!(replaced.after(), before);
+        assert_eq!(fixture.session.policy(), &policy);
+        assert!(replaced.native_admissions().is_empty());
+        assert!(replaced.take_native_effects().is_empty());
+        fixture.version = replaced.after();
+        fixture.assert_pending(child);
+
+        fixture.reject(TARGET, HOST, DockspaceActionRejection::PolicyDenied);
+        assert!(!fixture.session.is_current_native_binding(child));
+        assert!(!fixture.session.has_pending_native_create());
+        fixture.assert_pending(child);
+        assert_unpaintable(&mut fixture.session);
+        let report = idle(&mut fixture.session);
+        assert_eq!(report.native_bindings(), &[fixture.root]);
+        assert!(report.native_admissions().is_empty());
+        fixture.assert_pending(child);
     }
 }
 
 #[test]
 fn dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_once() {
-    let mut fixture = SurfaceHost::new(NativeCreateStrategy::DirectPrepared);
+    let mut fixture = SurfaceHost::new();
     let recorded = fixture.session.native_input_recorded_count();
     let backing = fixture
         .session
@@ -1003,7 +894,7 @@ fn dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_onc
     let mut report = finish(frame);
     assert!(report.submitted_action_outcome(abandoned).is_none());
     assert!(report.submitted_action_outcome(failed).is_none());
-    let (child, create) = take_create(&mut report, committed, fixture.strategy);
+    let (child, create) = take_create(&mut report, committed);
     fixture.assert_pending(child);
     let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
         panic!("the sole committed create must return its exact readiness acknowledgement");
@@ -1090,49 +981,43 @@ fn dropped_and_failed_frames_retry_one_exact_binding_and_deliver_create_only_onc
 
 #[test]
 fn cancelling_initial_creation_in_its_request_frame_never_dispatches_the_window() {
-    for strategy in [
-        NativeCreateStrategy::DirectPrepared,
-        NativeCreateStrategy::Staged,
-    ] {
-        let mut fixture = SurfaceHost::new(strategy);
-        let recorded = fixture.session.native_input_recorded_count();
+    let mut fixture = SurfaceHost::new();
+    let recorded = fixture.session.native_input_recorded_count();
+    let mut frame = native_frame(&mut fixture.session);
+    assert!(!frame.cancel_next_native_create().unwrap());
+    let submitted = frame
+        .create_native_surface_current(TARGET, HOST, NativeWindowPlacement::new(placement()))
+        .unwrap();
+    assert!(frame.cancel_next_native_create().unwrap());
+    assert!(!frame.cancel_next_native_create().unwrap());
+    let mut report = finish(frame);
+    let Some(HostInputOutcome::NativeSurfaceCreateRequested { binding }) =
+        report.submitted_action_outcome(submitted)
+    else {
+        panic!("the cancelled request must still report its exact proposed binding");
+    };
+    let binding = *binding;
+    assert_eq!(binding.surface(), TARGET);
+    assert_cancelled(&fixture, binding, &report);
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(report.native_bindings(), &[fixture.root]);
+    assert!(!fixture.session.has_pending_native_create());
+    assert_eq!(fixture.session.native_input_recorded_count(), recorded);
+
+    for _ in 0..2 {
         let mut frame = native_frame(&mut fixture.session);
         assert!(!frame.cancel_next_native_create().unwrap());
-        let submitted = frame
-            .create_native_surface_current(TARGET, HOST, NativeWindowPlacement::new(placement()))
-            .unwrap();
-        assert!(frame.cancel_next_native_create().unwrap());
-        assert!(!frame.cancel_next_native_create().unwrap());
         let mut report = finish(frame);
-        let Some(HostInputOutcome::NativeSurfaceCreateRequested { binding }) =
-            report.submitted_action_outcome(submitted)
-        else {
-            panic!("the cancelled request must still report its exact proposed binding");
-        };
-        let binding = *binding;
-        assert_eq!(binding.surface(), TARGET);
-        assert_cancelled(&fixture, binding, &report);
+        assert!(report.native_admissions().is_empty());
         assert!(report.take_native_effects().is_empty());
         assert_eq!(report.native_bindings(), &[fixture.root]);
-        assert!(!fixture.session.has_pending_native_create());
-        assert_eq!(fixture.session.native_input_recorded_count(), recorded);
-
-        for _ in 0..2 {
-            let mut frame = native_frame(&mut fixture.session);
-            assert!(!frame.cancel_next_native_create().unwrap());
-            let mut report = finish(frame);
-            assert!(report.native_admissions().is_empty());
-            assert!(report.take_native_effects().is_empty());
-            assert_eq!(report.native_bindings(), &[fixture.root]);
-            fixture.assert_unchanged();
-        }
+        fixture.assert_unchanged();
     }
 }
 
 #[test]
 fn cancellation_retry_keeps_its_owner_and_rejects_a_late_create_ack_for_the_new_incarnation() {
     let mut fixture = SurfaceHost::configured_with_binding_slots(
-        NativeCreateStrategy::DirectPrepared,
         native_policy(),
         capabilities(),
         NonZeroUsize::new(3).unwrap(),
@@ -1278,7 +1163,6 @@ fn cancellation_retry_keeps_its_owner_and_rejects_a_late_create_ack_for_the_new_
 #[test]
 fn late_presented_and_destroyed_results_for_a_cancelled_initial_owner_cannot_admit_a_new_binding() {
     let mut fixture = SurfaceHost::configured_with_binding_slots(
-        NativeCreateStrategy::DirectPrepared,
         native_policy(),
         capabilities(),
         NonZeroUsize::new(3).unwrap(),

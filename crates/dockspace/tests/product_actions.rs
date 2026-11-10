@@ -178,7 +178,7 @@ fn managed_native_window_facts(bounds: PhysicalRect) -> NativeWindowFacts {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
 }
 
 fn managed_native_work_areas() -> NativeWorkAreaRoster {
@@ -222,10 +222,7 @@ fn live_managed_native_root() -> (DockspaceSession, NativeSurfaceBinding) {
     let mut session =
         DockspaceSession::from_layout(layout, policy).expect("native rehome session initializes");
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("managed native host enrolls");
     session
         .configure_managed_native_capabilities(managed_native_capabilities())
@@ -1306,7 +1303,23 @@ fn changed_presentation_configuration_cancels_pending_native_rehome_only_on_comm
             .replace_presentation_config(changed.clone())
             .expect("changed presentation configuration stages");
         if publish {
-            let report = commit(frame);
+            for surface in [MAIN_SURFACE, NATIVE_SOURCE_SURFACE] {
+                frame
+                    .measure_surface(surface, presentation_metrics())
+                    .expect("the configuration frame measures new geometry");
+            }
+            for surface in [MAIN_SURFACE, NATIVE_SOURCE_SURFACE] {
+                let receipt = frame
+                    .paint_plan(surface)
+                    .expect("the new-configuration paint plan resolves")
+                    .expect("the measured surface is paintable")
+                    .execute_surface_program(|_| Ok::<(), ()>(()))
+                    .expect("the complete new-configuration program executes");
+                frame
+                    .confirm_surface_painted(receipt)
+                    .expect("the new-configuration output confirms");
+            }
+            let mut report = commit(frame);
             assert!(matches!(
                 report.inputs(),
                 [HostInputOutcome::PresentationConfigReplaced { changed: true, .. }]
@@ -1319,6 +1332,50 @@ fn changed_presentation_configuration_cancels_pending_native_rehome_only_on_comm
             assert_eq!(session.presentation_config(), &changed);
             assert!(!session.has_pending_presentation());
             assert!(session.is_current_native_binding(child_binding));
+            assert!(
+                session
+                    .view()
+                    .item(NATIVE_SECOND)
+                    .is_some_and(|item| item.surface() == NATIVE_SOURCE_SURFACE)
+            );
+
+            let outputs = report.take_painted_outputs();
+            assert_eq!(outputs.len(), 2);
+            let artifacts = outputs
+                .iter()
+                .map(|output| (output.surface(), output.presentation_artifact()))
+                .collect::<Vec<_>>();
+            for output in outputs {
+                session
+                    .report_surface_presentation(output, SurfacePresentationResult::Presented)
+                    .expect("the exact new-configuration output is reported presented");
+            }
+            let settled = commit_managed_native_frame(&mut session);
+            assert!(settled.presentation_transitions().is_empty());
+            for (surface, artifact) in artifacts {
+                assert!(
+                    settled
+                        .surface_presentation_commits()
+                        .iter()
+                        .any(|commit| commit.presents(artifact))
+                );
+                assert!(
+                    session
+                        .presented_surface(surface)
+                        .is_some_and(|presented| presented.matches_presentation_artifact(artifact))
+                );
+            }
+            assert_eq!(session.presentation_config(), &changed);
+            assert!(!session.has_pending_presentation());
+            assert!(session.is_current_native_binding(child_binding));
+            for item in [NATIVE_FIRST, NATIVE_SECOND] {
+                let source = session.view().item(item).expect("the source pane survives");
+                assert_eq!(source.surface(), NATIVE_SOURCE_SURFACE);
+                assert_eq!(source.root(), NATIVE_SOURCE_ROOT);
+                assert_eq!(source.contained(), None);
+                assert_eq!(source.tabs().items(), &[NATIVE_FIRST, NATIVE_SECOND]);
+                assert_eq!(source.is_selected(), item == NATIVE_SECOND);
+            }
         } else {
             drop(frame);
             assert_eq!(session.presentation_config(), &original);

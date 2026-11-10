@@ -7,8 +7,7 @@ use dockspace::ids::{ItemId, RootId, StableInputSourceId, SurfaceId};
 use dockspace::intent::{Authority, AuthorityUnavailableReason};
 use dockspace::platform::{
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
-    PresentationEffectAcknowledgement, WindowCoordinateObservation, WindowPresentationObservation,
-    WindowPresentationState,
+    WindowCoordinateObservation, WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::viewport::{
@@ -151,7 +150,6 @@ fn publish_snapshot(
                 binding,
                 PresentationObservationGeneration::new(observation_generation),
                 Authority::Known(WindowPresentationState::Visible),
-                PresentationEffectAcknowledgement::known(None),
             ));
     }
     let inventory_observation =

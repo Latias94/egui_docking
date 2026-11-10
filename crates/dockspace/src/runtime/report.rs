@@ -9,8 +9,8 @@ use super::{
     DockspacePresentationTransitionResult, DockspaceSubmittedAction, DockspaceTouchEvent,
     HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostSurfaceCommit,
     NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRejection,
-    NativeSurfaceCloseRequest, PaintedNativeStagingOutput, PaintedSurfaceOutput, SurfacePointerId,
-    SurfacePresentationCommit, WorkspaceVersion,
+    NativeSurfaceCloseRequest, PaintedSurfaceOutput, SurfacePointerId, SurfacePresentationCommit,
+    WorkspaceVersion,
 };
 use crate::command::CloseCommitOutcome;
 use crate::error::CommandError;
@@ -48,7 +48,6 @@ impl HostFrameReport {
         frame_attempt: crate::ids::HostPresentationAttemptId,
         transition: &crate::transition::EngineTransition,
         painted_outputs: Vec<PaintedSurfaceOutput>,
-        painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
         surface_presentation_commits: Vec<SurfacePresentationCommit>,
         native_commit: Option<super::native::NativeHostCommit>,
         native_effects: Vec<NativeEffectRequest>,
@@ -411,7 +410,6 @@ impl HostFrameReport {
             presentation_transitions,
             manipulation_feedback,
             painted_outputs,
-            painted_native_staging_outputs,
             surface_presentation_commits,
             native_admissions,
             native_bindings,

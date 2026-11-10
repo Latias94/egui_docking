@@ -232,6 +232,8 @@ fn identical_tab_measurements_reuse_the_scene_across_three_pending_outputs() {
 fn configuration_replacement_retains_the_encoded_scene_without_reviving_its_input() {
     for replace_geometry in [false, true] {
         let mut session = session();
+        let (old_receiver, old_output) = paint(&mut session);
+        let old_artifact = old_output.presentation_artifact();
         let mut frame = session.begin_host_frame().unwrap();
         if replace_geometry {
             let config = dockspace::runtime::DockPresentationConfig::builder()
@@ -244,6 +246,17 @@ fn configuration_replacement_retains_the_encoded_scene_without_reviving_its_inpu
             policy.set_arrangement_locked(true);
             frame.replace_policy(policy).unwrap();
         }
+        frame
+            .measure_surface(
+                SURFACE,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+                    LogicalSize::new(64.0, 48.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
         let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
         let receiver = plan.tab_receiver(FIRST).unwrap();
         let (_, receipt) = RecordingRenderer::execute(plan).unwrap();
@@ -255,10 +268,23 @@ fn configuration_replacement_retains_the_encoded_scene_without_reviving_its_inpu
             .pop()
             .unwrap();
         session
+            .report_surface_presentation(old_output, SurfacePresentationResult::Presented)
+            .unwrap();
+        let old_settlement = settle(&mut session);
+        assert!(
+            old_settlement
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.settles(old_artifact)),
+            "the old encoded output keeps its own terminal owner"
+        );
+        assert!(session.bind_presented_receiver(&old_receiver).is_none());
+        session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .unwrap();
         settle(&mut session);
-        assert!(session.bind_presented_receiver(&receiver).is_none());
+        assert!(session.bind_presented_receiver(&old_receiver).is_none());
+        assert!(session.bind_presented_receiver(&receiver).is_some());
     }
 }
 

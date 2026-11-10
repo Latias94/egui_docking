@@ -51,7 +51,7 @@ fn pending_first_live_native_create()
                 (
                     child,
                     facts
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_presentation(NativeWindowPresentationState::Hidden)
                         .with_create_readiness(
                             crate::runtime::NativeCreateReadiness::Created,
                             Some(created),
@@ -67,42 +67,24 @@ fn pending_first_live_native_create()
             .is_empty()
     );
 
-    let pre_show = paint_staging(&mut session, child, NativeStagingPresentationPhase::PreShow);
     session
-        .report_native_staging_presentation(pre_show, SurfacePresentationResult::Presented)
-        .expect("the exact pre-show placeholder presentation records");
-    let mut report = commit_managed_frame_report(&mut session);
-    assert!(report.native_admissions().is_empty());
-    let show = take_only_native_effect(&mut report);
-    assert!(matches!(
-        show.operation(),
-        NativeEffectOperation::ShowWindow { binding } if *binding == child
-    ));
-    let Some(NativeEffectAcknowledgement::Presentation(shown)) = show.accepted() else {
-        panic!("the show request must return a presentation acknowledgement");
-    };
-    // Visibility must arrive after the exact show acknowledgement's boundary.
-    for (state, acknowledgement) in [
-        (NativeWindowPresentationState::Hidden, Some(shown)),
-        (NativeWindowPresentationState::Visible, None),
-    ] {
-        session
-            .report_managed_native_snapshot(
-                [
-                    (root, root_window_facts()),
-                    (child, facts.with_presentation(state, acknowledgement)),
-                ],
-                NativeWorkAreaRoster::Exact(vec![work_area(1)]),
-            )
-            .expect("the exact child presentation facts record");
-        assert!(
-            commit_managed_frame_report(&mut session)
-                .native_admissions()
-                .is_empty()
-        );
-    }
-
-    let before_post_show = session.version();
+        .report_managed_native_snapshot(
+            [
+                (root, root_window_facts()),
+                (
+                    child,
+                    facts
+                        .with_presentation(NativeWindowPresentationState::Visible)
+                        .with_create_readiness(
+                            crate::runtime::NativeCreateReadiness::Prepared,
+                            None,
+                        ),
+                ),
+            ],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("exact host Prepared facts record");
+    let before_prepared = session.version();
     let source_ownership = [ITEM, SECOND_ITEM].map(|item| {
         let view = session.view();
         let source = view.item(item).expect("the source item exists");
@@ -114,29 +96,20 @@ fn pending_first_live_native_create()
             (ITEM, ROOT, root.surface()),
             (SECOND_ITEM, ROOT, root.surface()),
         ],
-        "both items must still belong to the source before PostShow"
+        "both items must still belong to the source before first-live admission"
     );
 
-    // Staging presents a placeholder; no semantic child output is presented here.
-    let post_show = paint_staging(
-        &mut session,
-        child,
-        NativeStagingPresentationPhase::PostShow,
-    );
-    session
-        .report_native_staging_presentation(post_show, SurfacePresentationResult::Presented)
-        .expect("the exact post-show placeholder presentation records");
     let mut candidate = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the post-show presentation candidate begins");
+        .expect("the readiness observation candidate begins");
     candidate
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("the dropped placeholder candidate settles every surface");
+        .expect("the dropped readiness candidate settles every surface");
     drop(candidate);
     assert_eq!(
         session.version(),
-        before_post_show,
-        "dropping the placeholder candidate must preserve the workspace version"
+        before_prepared,
+        "dropping the readiness candidate must preserve the workspace version"
     );
     for (item, source_root, source_surface) in source_ownership {
         let view = session.view();
@@ -144,14 +117,14 @@ fn pending_first_live_native_create()
         assert_eq!(
             (current.root(), current.surface()),
             (source_root, source_surface),
-            "dropping the placeholder candidate must preserve source ownership for {item:?}"
+            "dropping the readiness candidate must preserve source ownership for {item:?}"
         );
     }
 
     let report = commit_managed_frame_report(&mut session);
     assert!(
         report.native_admissions().is_empty(),
-        "the placeholder must not admit the child before its first interactive output"
+        "Prepared readiness must not admit the child before its first interactive output"
     );
     for (item, source_root, source_surface) in source_ownership {
         let view = session.view();
@@ -159,20 +132,20 @@ fn pending_first_live_native_create()
         assert_eq!(
             (current.root(), current.surface()),
             (source_root, source_surface),
-            "PostShow placeholder presentation must preserve source ownership for {item:?}"
+            "Prepared readiness must preserve source ownership for {item:?}"
         );
     }
     assert_eq!(
         session.version(),
-        before_post_show,
-        "PostShow placeholder presentation must not advance the workspace version"
+        before_prepared,
+        "Prepared readiness must not advance the workspace version"
     );
-    assert_pending_first_live_source(&session, root, child, before_post_show);
+    assert_pending_first_live_source(&session, root, child, before_prepared);
     (session, root, child)
 }
 
 #[test]
-fn post_show_placeholder_cannot_publish_native_item_ownership_or_workspace_revision() {
+fn prepared_host_cannot_publish_native_item_ownership_or_workspace_revision() {
     let _ = pending_first_live_native_create();
 }
 
@@ -1163,6 +1136,103 @@ fn dropped_first_live_output_requires_new_measured_exact_presented_output() {
             .matches_presentation_artifact(replacement_artifact)
     );
     assert_eq!(session.committed_source_sequence, sequence);
+}
+
+#[test]
+fn revoked_prepared_readiness_rejects_old_first_live_output_after_identical_geometry_returns() {
+    for revoked_readiness in [None, Some(crate::runtime::NativeCreateReadiness::Created)] {
+        let (mut session, root, child) = pending_first_live_native_create();
+        let version = session.version();
+        let resources = session
+            .engine
+            .viewport()
+            .retained_native_staging_resources()
+            .cloned()
+            .collect::<Vec<_>>();
+        let old_output = emit_first_live_child_output(&mut session, root, child);
+        let old_artifact = old_output.presentation_artifact();
+        let placement = PhysicalRect::new(920.0, 120.0, 420.0, 320.0).unwrap();
+        let facts = NativeWindowFacts::live()
+            .with_content_bounds(placement)
+            .with_outer_bounds(placement)
+            .with_native_scale_factor(native_scale())
+            .with_presentation_scale_factor(native_scale())
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
+            .with_close(NativeCloseState::Clear, None);
+        let revoked = revoked_readiness.map_or(facts, |readiness| {
+            facts.with_create_readiness(readiness, None)
+        });
+        session
+            .report_managed_native_snapshot(
+                [(root, root_window_facts()), (child, revoked)],
+                NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+            )
+            .unwrap();
+        let report = commit_managed_frame_report(&mut session);
+        assert!(report.native_admissions().is_empty());
+        assert_eq!(session.version(), version);
+        for item in [ITEM, SECOND_ITEM] {
+            let source = session.view().item(item).unwrap();
+            assert_eq!((source.root(), source.surface()), (ROOT, root.surface()));
+        }
+        assert!(
+            session
+                .engine
+                .viewport()
+                .native_ready_basis(child.binding)
+                .is_none()
+        );
+        session
+            .report_managed_native_snapshot(
+                [
+                    (root, root_window_facts()),
+                    (
+                        child,
+                        facts.with_create_readiness(
+                            crate::runtime::NativeCreateReadiness::Prepared,
+                            None,
+                        ),
+                    ),
+                ],
+                NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+            )
+            .unwrap();
+        assert!(
+            commit_managed_frame_report(&mut session)
+                .native_admissions()
+                .is_empty()
+        );
+        assert_pending_first_live_source(&session, root, child, version);
+        assert_eq!(
+            session
+                .engine
+                .viewport()
+                .retained_native_staging_resources()
+                .cloned()
+                .collect::<Vec<_>>(),
+            resources
+        );
+        session
+            .report_surface_presentation(old_output, SurfacePresentationResult::Presented)
+            .unwrap();
+        let report = commit_managed_frame_report(&mut session);
+        assert!(
+            report.native_admissions().is_empty(),
+            "restoring the same geometry must not revive an output from a revoked Prepared interval"
+        );
+        assert_pending_first_live_source(&session, root, child, version);
+        let fresh = emit_first_live_child_output(&mut session, root, child);
+        assert_ne!(fresh.presentation_artifact(), old_artifact);
+        session
+            .report_surface_presentation(fresh, SurfacePresentationResult::Presented)
+            .unwrap();
+        assert_eq!(
+            commit_managed_frame_report(&mut session).native_admissions(),
+            &[child]
+        );
+        assert_first_live_child_admitted(&session, child, version);
+    }
 }
 
 #[test]

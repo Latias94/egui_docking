@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::document::PendingRuntimeDocumentRestore;
 use crate::engine::CoreHostFrame;
 use crate::ids::SurfaceId;
-use crate::presentation_observation::{NativeStagingPresentation, PresentationHostLease};
+use crate::presentation_observation::PresentationHostLease;
 
 use super::presentation::SubmittedPresentationObservation;
 use super::{
@@ -38,7 +38,6 @@ pub struct DockspaceUpdate {
     encoding_started: Cell<bool>,
     encoding_checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
     encoding_pass: u64,
-    painted_native_staging: BTreeSet<NativeStagingPresentation>,
     replacement_submitted: bool,
     #[cfg(feature = "serde")]
     document_restore: Option<PendingRuntimeDocumentRestore>,
@@ -86,7 +85,6 @@ impl DockspaceUpdate {
             encoding_started,
             encoding_checkpoint,
             encoding_pass,
-            painted_native_staging,
             replacement_submitted,
             #[cfg(feature = "serde")]
             document_restore,
@@ -105,7 +103,6 @@ impl DockspaceUpdate {
             encoding_started,
             encoding_checkpoint,
             encoding_pass,
-            painted_native_staging,
             replacement_submitted,
             #[cfg(feature = "serde")]
             document_restore,
@@ -134,7 +131,6 @@ impl DockspaceHostFrame<'_> {
             encoding_started,
             encoding_checkpoint,
             encoding_pass,
-            painted_native_staging,
             replacement_submitted,
             #[cfg(feature = "serde")]
             document_restore,
@@ -156,7 +152,6 @@ impl DockspaceHostFrame<'_> {
             encoding_started,
             encoding_checkpoint,
             encoding_pass,
-            painted_native_staging,
             replacement_submitted,
             #[cfg(feature = "serde")]
             document_restore,

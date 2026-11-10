@@ -535,10 +535,7 @@ fn pending_query_retires_target_scope_after_effective_close_policy_changes() {
 fn pending_content_query_excludes_native_surface_decisions() {
     let mut session = session();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(vec![]),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(vec![]))
         .unwrap();
     session
         .configure_managed_native_capabilities(

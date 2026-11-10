@@ -6,13 +6,12 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceManipulationRejection, DockspaceManipulationStatus, DockspaceSession, HostFrameReport,
-    HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeCreateStrategy,
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostCapabilities,
-    NativeHostCapability, NativePointerButton, NativePointerEvent, NativePointerHover,
-    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
-    NativeReceiverAnswer, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PaintedSurfaceOutput,
-    SurfacePresentationResult, UniformSurfaceMetrics,
+    HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeDesktopPointerLocation,
+    NativeDesktopPosition, NativeHostCapabilities, NativeHostCapability, NativePointerButton,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
+    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -35,7 +34,7 @@ fn facts() -> NativeWindowFacts {
         .with_native_scale_factor(ScaleFactor::new(1.0).expect("valid scale"))
         .with_presentation_scale_factor(ScaleFactor::new(1.0).expect("valid scale"))
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None)
 }
 
@@ -81,10 +80,7 @@ fn session() -> (DockspaceSession, NativeSurfaceBinding) {
     policy.set_allow_native_surfaces(true);
     let mut session = DockspaceSession::from_layout(layout, policy).expect("session initializes");
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("managed host enrolls");
     let capabilities = [
         NativeHostCapability::NativeWindowLifecycle,

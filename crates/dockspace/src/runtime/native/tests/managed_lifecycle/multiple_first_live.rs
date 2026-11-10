@@ -48,39 +48,6 @@ fn observe_all(
 }
 
 #[inline(never)]
-fn present_both_staging(
-    session: &mut DockspaceSession,
-    children: [NativeSurfaceBinding; 2],
-    phase: NativeStagingPresentationPhase,
-) -> HostFrameReport {
-    let mut frame = session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    let requests = frame.native_staging_paints().collect::<Vec<_>>();
-    assert_eq!(requests.len(), 2);
-    for request in requests {
-        assert!(children.contains(&request.binding()));
-        assert_eq!(request.phase(), phase);
-        frame.confirm_native_staging_painted(request).unwrap();
-    }
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    let mut report = frame.commit().unwrap();
-    assert!(report.native_admissions().is_empty());
-    let outputs = report.take_painted_native_staging_outputs();
-    assert_eq!(outputs.len(), 2);
-    for output in outputs {
-        session
-            .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
-            .unwrap();
-    }
-    let report = commit_managed_frame_report(session);
-    assert!(report.native_admissions().is_empty());
-    report
-}
-
-#[inline(never)]
 fn multiple_pending_children() -> (
     DockspaceSession,
     [NativeSurfaceBinding; 2],
@@ -181,7 +148,7 @@ fn multiple_pending_children() -> (
                 .with_presentation_scale_factor(native_scale())
                 .with_input(NativeWindowInputState::ReceivesInput, None)
                 .with_close(NativeCloseState::Clear, None)
-                .with_presentation(NativeWindowPresentationState::Hidden, None)
+                .with_presentation(NativeWindowPresentationState::Hidden)
                 .with_create_readiness(
                     crate::runtime::NativeCreateReadiness::Created,
                     Some(created),
@@ -191,38 +158,12 @@ fn multiple_pending_children() -> (
     let mut observed: [_; 2] = observed.try_into().unwrap();
     let children = observed.map(|(binding, _)| binding);
     observe_all(&mut session, hosts, host_facts, &observed);
-    let mut report = present_both_staging(
-        &mut session,
-        children,
-        NativeStagingPresentationPhase::PreShow,
-    );
-    let shows = report.take_native_effects();
-    assert_eq!(shows.len(), 2);
-    for show in shows {
-        let NativeEffectOperation::ShowWindow { binding } = show.operation() else {
-            panic!("both real pre-show receipts must request ShowWindow");
-        };
-        let index = children.iter().position(|child| child == binding).unwrap();
-        let Some(NativeEffectAcknowledgement::Presentation(shown)) = show.accepted() else {
-            panic!("each show must return its exact acknowledgement");
-        };
-        observed[index].1 = observed[index]
-            .1
-            .with_create_readiness(crate::runtime::NativeCreateReadiness::Created, None)
-            .with_presentation(NativeWindowPresentationState::Hidden, Some(shown));
-    }
-    // Exact show acknowledgements precede the later visibility boundary.
-    observe_all(&mut session, hosts, host_facts, &observed);
     for (_, facts) in &mut observed {
-        *facts = facts.with_presentation(NativeWindowPresentationState::Visible, None);
+        *facts = facts
+            .with_presentation(NativeWindowPresentationState::Visible)
+            .with_create_readiness(crate::runtime::NativeCreateReadiness::Prepared, None);
     }
     observe_all(&mut session, hosts, host_facts, &observed);
-    let mut report = present_both_staging(
-        &mut session,
-        children,
-        NativeStagingPresentationPhase::PostShow,
-    );
-    assert!(report.take_native_effects().is_empty());
     assert_eq!(session.engine.workspace(), &source);
     assert_eq!(session.version(), version);
     assert_eq!(session.committed_source_sequence, sequence + 2);

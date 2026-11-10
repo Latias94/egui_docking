@@ -1078,7 +1078,6 @@ const fn presentation_unavailability_is_terminal(
         HostPresentationUnavailableReason::OutputNotProduced
         | HostPresentationUnavailableReason::SupersededBeforePublication => false,
         HostPresentationUnavailableReason::FinalPresentationUnobservable
-        | HostPresentationUnavailableReason::RetainedResourceUnavailable
         | HostPresentationUnavailableReason::TransientVisualNotPainted
         | HostPresentationUnavailableReason::BackendFailure => true,
     }

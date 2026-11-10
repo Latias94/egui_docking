@@ -36,7 +36,6 @@ fn input_limit(producer: NativeProducerStorageLimit) -> NativeInputStorageLimit 
 fn enroll(session: &mut DockspaceSession, producer: NativeProducerStorageLimit) {
     session
         .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             input_limit(producer),
         )
@@ -85,7 +84,6 @@ fn producer_enrollment_prepays_the_complete_peak_and_one_byte_short_is_inert() {
     for bytes in [0, required - 1] {
         let error = session
             .enable_managed_native_host_with_input_storage_limit(
-                crate::runtime::NativeCreateStrategy::Staged,
                 NativePointerRoster::Exact(Vec::new()),
                 input_limit(producer_limit(3, 2, bytes)),
             )
@@ -148,10 +146,7 @@ fn producer_enrollment_prepays_the_complete_peak_and_one_byte_short_is_inert() {
 fn initial_registry_over_bound_rejects_before_publishing_any_provider() {
     let mut session = DockspaceSession::from_layout(layout(2), DockPolicy::default()).unwrap();
     session
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session.register_native_root(SURFACE, WINDOW).unwrap();
     session
@@ -178,7 +173,6 @@ fn initial_registry_over_bound_rejects_before_publishing_any_provider() {
     let version = session.version();
     let error = session
         .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             input_limit(producer_limit(1, 1, WORK_BYTES)),
         )
@@ -354,7 +348,6 @@ fn retired_slots_reject_new_registration_and_quiescence_restores_public_progress
         .with_producer_storage_limit(producer_limit(1, 1, WORK_BYTES));
     session
         .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             limit,
         )
@@ -659,10 +652,7 @@ fn default_unlimited_producer_exceeds_a_selected_binding_and_work_area_bound() {
     let mut session =
         DockspaceSession::from_layout(layout(selected_bound + 1), DockPolicy::default()).unwrap();
     session
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(full_managed_capabilities())

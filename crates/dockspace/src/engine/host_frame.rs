@@ -264,40 +264,6 @@ impl CoreHostFramePrelude {
 }
 
 impl DockEngine {
-    fn presentation_lifecycle_focus_causal(
-        &mut self,
-        actions: &[crate::frame::ViewportLifecycleAction],
-        presentation_cause: ReductionCause,
-    ) -> Result<FocusCausalStamp, EngineError> {
-        let mut native_create_causal = None;
-        for action in actions {
-            match action {
-                crate::frame::ViewportLifecycleAction::NativeSurfaceReady { .. } => {
-                    let generation = self.last_focus_reducer_generation.checked_next().ok_or(
-                        EngineError::ViewportFocus {
-                            input: self.last_input,
-                            source: ViewportFocusError::ReducerGenerationExhausted,
-                        },
-                    )?;
-                    self.last_focus_reducer_generation = generation;
-                    return Ok(FocusCausalStamp::new(generation, presentation_cause));
-                }
-                crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive {
-                    prepared,
-                    ..
-                } => {
-                    native_create_causal.get_or_insert(prepared.focus_causal());
-                }
-                crate::frame::ViewportLifecycleAction::SurfaceDestroyed { .. }
-                | crate::frame::ViewportLifecycleAction::NativeSurfaceLost { .. }
-                | crate::frame::ViewportLifecycleAction::RetryRecovery { .. } => {}
-            }
-        }
-        native_create_causal.ok_or(EngineError::ReductionCauseInvariant {
-            detail: "presentation observation produced no native lifecycle cause",
-        })
-    }
-
     /// Begins the observation-only prelude of one core-owned host frame.
     ///
     /// The returned capability freezes only domain, predecessor, host identity,
@@ -440,7 +406,7 @@ impl DockEngine {
         candidate
             .viewport
             .set_native_binding_allocation_budget(prelude.native_binding_allocation_budget);
-        let mut vacancy_ledger = TickVacancyLedger::capture(&candidate);
+        let vacancy_ledger = TickVacancyLedger::capture(&candidate);
         let tick = candidate
             .last_reducer_tick
             .checked_next()
@@ -448,11 +414,10 @@ impl DockEngine {
         candidate.last_reducer_tick = tick;
         let mut presentation_observation_outcomes = Vec::new();
         let mut changed_surfaces = BTreeSet::new();
-        let mut presentation_lifecycle_actions = Vec::new();
         let mut observation_events = Vec::new();
         let mut observation_interaction_events = Vec::new();
         for (host, scope, observation) in observation_batches {
-            let (mut outcomes, changed, mut lifecycle_actions, mut lifecycle_events) = candidate
+            let (mut outcomes, changed, mut lifecycle_events) = candidate
                 .reduce_presentation_observation(
                     ReductionCause::SurfacePresentationObservationBatch { tick },
                     host,
@@ -461,39 +426,7 @@ impl DockEngine {
                 )?;
             presentation_observation_outcomes.append(&mut outcomes);
             changed_surfaces.extend(changed);
-            presentation_lifecycle_actions.append(&mut lifecycle_actions);
             observation_events.append(&mut lifecycle_events);
-        }
-        if !presentation_lifecycle_actions.is_empty() {
-            let provider = candidate.platform_provider().ok_or(EngineError::Viewport {
-                input: candidate.last_input,
-                source: crate::frame::ViewportCoordinatorError::PlatformProviderUnavailable,
-            })?;
-            let focus_causal = candidate.presentation_lifecycle_focus_causal(
-                &presentation_lifecycle_actions,
-                ReductionCause::SurfacePresentationObservationBatch { tick },
-            )?;
-            let recovery_batch = candidate.freeze_surface_recovery_batch(
-                candidate.last_input,
-                &presentation_lifecycle_actions,
-            )?;
-            let mut activations = Vec::new();
-            candidate.reduce_viewport_actions(
-                candidate.last_input,
-                provider,
-                focus_causal,
-                &presentation_lifecycle_actions,
-                &recovery_batch,
-                &mut activations,
-                &mut observation_events,
-                &mut observation_interaction_events,
-            )?;
-            if !activations.is_empty() {
-                return Err(EngineError::ReductionCauseInvariant {
-                    detail: "native staging presentation unexpectedly started an activation",
-                });
-            }
-            vacancy_ledger.observe_bindings(&candidate);
         }
         if candidate.settle_presented_pending_mutation(
             &mut observation_events,
@@ -626,22 +559,14 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.presentation_requirements()
     }
 
-    /// Returns non-interactive native staging passes requested by core.
-    pub fn native_staging_presentations(
-        &self,
-    ) -> impl ExactSizeIterator<Item = NativeStagingPresentation> + 'frame + use<'frame> {
-        self.presentation_roster.native_staging_presentations()
-    }
-
-    /// Returns the exact immutable source resources retained for native staging.
+    /// Returns the exact immutable source resources retained for native admission.
     ///
-    /// This roster is independent of the current output slots: resources stay
-    /// pinned through ownership transfer and compensating cleanup even when no
-    /// staging placeholder is presently requested.
+    /// This roster is independent of output slots. Resources stay pinned until
+    /// exact first-live ownership transfer or the completion of native cleanup.
     pub fn retained_native_staging_resources(
         &self,
     ) -> impl ExactSizeIterator<Item = &NativeStagingResourceDescriptor> + '_ {
-        self.presentation_roster.retained_native_staging_resources()
+        self.engine.viewport.retained_native_staging_resources()
     }
 
     /// Returns the post-observation authoritative scene state.
@@ -1854,65 +1779,13 @@ impl CoreHostFrame {
         let reduction = self
             .candidate
             .reduce_presentation_observation_entry(cause, host, entry);
-        let (mut outcomes, changed_surfaces, lifecycle_actions, mut lifecycle_events) =
-            match reduction {
-                Ok(reduction) => reduction,
-                Err(error) => {
-                    self.input_prefix_error = Some(error);
-                    return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-                }
-            };
-
-        if !lifecycle_actions.is_empty() {
-            let Some(provider) = self.candidate.platform_provider() else {
-                self.input_prefix_error = Some(EngineError::Viewport {
-                    input: self.candidate.last_input,
-                    source: crate::frame::ViewportCoordinatorError::PlatformProviderUnavailable,
-                });
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-            };
-            let focus_causal = match self
-                .candidate
-                .presentation_lifecycle_focus_causal(&lifecycle_actions, cause)
-            {
-                Ok(causal) => causal,
-                Err(error) => {
-                    self.input_prefix_error = Some(error);
-                    return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-                }
-            };
-            let recovery_batch = match self
-                .candidate
-                .freeze_surface_recovery_batch(self.candidate.last_input, &lifecycle_actions)
-            {
-                Ok(batch) => batch,
-                Err(error) => {
-                    self.input_prefix_error = Some(error);
-                    return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-                }
-            };
-            let mut activations = Vec::new();
-            if let Err(error) = self.candidate.reduce_viewport_actions(
-                self.candidate.last_input,
-                provider,
-                focus_causal,
-                &lifecycle_actions,
-                &recovery_batch,
-                &mut activations,
-                &mut lifecycle_events,
-                &mut self.interaction_events,
-            ) {
+        let (mut outcomes, changed_surfaces, mut lifecycle_events) = match reduction {
+            Ok(reduction) => reduction,
+            Err(error) => {
                 self.input_prefix_error = Some(error);
                 return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
             }
-            if !activations.is_empty() {
-                self.input_prefix_error = Some(EngineError::ReductionCauseInvariant {
-                    detail: "ordered native staging presentation unexpectedly started an activation",
-                });
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-            }
-            self.vacancy_ledger.observe_bindings(&self.candidate);
-        }
+        };
 
         self.events.append(&mut lifecycle_events);
         let pending_settled = match self
@@ -2771,10 +2644,7 @@ impl CoreHostFrame {
         if !self.frozen_presentation_roster.contains_surface(surface) {
             return self.reject_value(CoreHostFrameError::SurfaceOutsideRoster { surface });
         }
-        let frozen = match self
-            .presentation_obligations
-            .frozen_surface_output(&obligation)
-        {
+        let frozen = match self.presentation_obligations.frozen_output(&obligation) {
             Ok(frozen) => frozen,
             Err(error) => return self.reject_value(error),
         };

@@ -287,14 +287,73 @@ fn workspace_restore_preserves_a_transferred_recovery_compensation() {
     );
 }
 
+fn report_failed_replacement_preparation(pending: &mut PendingFixture) -> EngineTransition {
+    let generation = pending
+        .fixture
+        .presentation_host
+        .next_platform_observation_generation();
+    let binding = pending.replacement_binding;
+    let observed = platform_snapshot_with_facts_at_generation(
+        &pending.fixture.engine,
+        generation,
+        vec![
+            unavailable_host_window(pending.fixture.host_binding),
+            replacement_window(binding),
+        ],
+        Authority::Known(WindowPresentationState::Visible),
+        &[],
+        &[],
+        platform_capabilities(),
+    );
+    let windows = observed
+        .window_observations()
+        .iter()
+        .cloned()
+        .map(|window| {
+            if window.binding() == binding {
+                window.with_create_preparation(WindowCreatePreparationObservation::new(
+                    binding,
+                    CoordinateObservationGeneration::new(generation),
+                    Authority::Known(NativeCreateReadiness::Failed),
+                    None,
+                ))
+            } else {
+                window
+            }
+        })
+        .collect();
+    let snapshot = PlatformSnapshot::new(
+        observed.generation(),
+        observed.capability_observation().clone(),
+        observed.focus(),
+        observed.inventory_observation().clone(),
+        windows,
+        observed.close_observations().to_vec(),
+        observed.work_area_observation().clone(),
+    )
+    .expect("the exact renderer-failure observation validates");
+    let expected_epoch = pending.fixture.engine.version().epoch();
+    let provider = pending.fixture.presentation_host.platform_provider();
+    submit_test_input(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        EngineInput::PublishPlatformSnapshot {
+            provider,
+            expected_epoch,
+            snapshot,
+        },
+    )
+    .expect("the exact replacement preparation failure reduces")
+}
+
 #[test]
-fn pre_admission_cleanup_migrates_when_recovery_show_fails() {
+fn pre_admission_cleanup_migrates_when_prepared_replacement_fails() {
     let mut pending = pending_fixture();
-    let show = present_replacement_pre_show(&mut pending);
+    advance_replacement_to_first_live(&mut pending);
     let cleanup = request_pre_admission_close(&mut pending);
 
-    let failed_show = report_dispatch_failure(&mut pending, show);
-    assert_no_new_effects(&failed_show);
+    let failed_preparation = report_failed_replacement_preparation(&mut pending);
+    assert_no_new_effects(&failed_preparation);
     assert_eq!(
         effect_count(&pending.fixture.engine, |effect| matches!(
             effect,
@@ -302,7 +361,7 @@ fn pre_admission_cleanup_migrates_when_recovery_show_fails() {
                 if *binding == pending.replacement_binding
         )),
         1,
-        "show failure must transfer the existing cleanup instead of minting another"
+        "preparation failure must transfer the existing cleanup instead of minting another"
     );
     let retirement = pending
         .fixture
@@ -363,7 +422,7 @@ fn failed_pre_admission_cleanup_remains_explicitly_retryable() {
 #[test]
 fn resumed_pre_admission_close_does_not_transfer_its_revoked_cleanup() {
     let mut pending = pending_fixture();
-    let show = present_replacement_pre_show(&mut pending);
+    advance_replacement_to_first_live(&mut pending);
     let revoked_cleanup = request_pre_admission_close(&mut pending);
     let failed_cleanup = report_dispatch_failure(&mut pending, revoked_cleanup);
     assert_no_new_effects(&failed_cleanup);
@@ -385,8 +444,8 @@ fn resumed_pre_admission_close_does_not_transfer_its_revoked_cleanup() {
     );
     assert_no_new_effects(&cleared);
 
-    let failed_show = report_dispatch_failure(&mut pending, show);
-    let migrated_cleanup = replacement_cleanup(&failed_show, &pending);
+    let failed_preparation = report_failed_replacement_preparation(&mut pending);
+    let migrated_cleanup = replacement_cleanup(&failed_preparation, &pending);
     assert_ne!(migrated_cleanup, revoked_cleanup);
     let retirement = pending
         .fixture
@@ -396,7 +455,7 @@ fn resumed_pre_admission_close_does_not_transfer_its_revoked_cleanup() {
         .find_map(|(binding, retirement)| {
             (binding == pending.replacement_binding).then_some(retirement)
         })
-        .expect("show failure must create an independent retirement owner");
+        .expect("preparation failure must create an independent retirement owner");
     assert_eq!(
         retirement.status(),
         BindingRetirementStatus::CleanupRequested {

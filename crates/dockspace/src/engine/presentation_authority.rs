@@ -1822,7 +1822,6 @@ impl DockEngine {
         (
             Vec<HostPresentationObservationOutcome>,
             BTreeSet<crate::ids::SurfaceId>,
-            Vec<crate::frame::ViewportLifecycleAction>,
             Vec<crate::event::WorkspaceEvent>,
         ),
         EngineError,
@@ -1844,7 +1843,6 @@ impl DockEngine {
         (
             Vec<HostPresentationObservationOutcome>,
             BTreeSet<crate::ids::SurfaceId>,
-            Vec<crate::frame::ViewportLifecycleAction>,
             Vec<crate::event::WorkspaceEvent>,
         ),
         EngineError,
@@ -1865,14 +1863,12 @@ impl DockEngine {
         (
             Vec<HostPresentationObservationOutcome>,
             BTreeSet<crate::ids::SurfaceId>,
-            Vec<crate::frame::ViewportLifecycleAction>,
             Vec<crate::event::WorkspaceEvent>,
         ),
         EngineError,
     > {
         let outcomes = reduction.outcomes().to_vec();
         let mut changed_surfaces = BTreeSet::new();
-        let mut lifecycle_actions = Vec::new();
         let mut lifecycle_events = Vec::new();
         let invalidated_streams = outcomes
             .iter()
@@ -1900,28 +1896,6 @@ impl DockEngine {
             self.invalidate_interaction_authority_for_current_streams(&invalidated_streams),
         );
         for promotion in reduction.promotions() {
-            if let HostPresentationOutputPayload::NativeStaging { presentation } =
-                promotion.payload()
-            {
-                if promotion.endpoint() == HostPresentationEndpoint::Native(presentation.binding())
-                    && let Some(action) = self
-                        .viewport
-                        .observe_native_staging_presentation(
-                            PresentedNativeStagingPresentation::mint_observed(
-                                presentation,
-                                promotion.stream(),
-                                promotion.key(),
-                            ),
-                        )
-                        .map_err(|source| EngineError::Viewport {
-                            input: self.last_input,
-                            source,
-                        })?
-                {
-                    lifecycle_actions.push(action);
-                }
-                continue;
-            }
             let HostPresentationOutputPayload::Paint {
                 scene: ticket,
                 interaction,
@@ -2070,12 +2044,7 @@ impl DockEngine {
             }
         }
         self.observe_pending_mutation_retirements(&outcomes);
-        Ok((
-            outcomes,
-            changed_surfaces,
-            lifecycle_actions,
-            lifecycle_events,
-        ))
+        Ok((outcomes, changed_surfaces, lifecycle_events))
     }
 
     fn observe_pending_mutation_retirements(

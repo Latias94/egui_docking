@@ -36,9 +36,9 @@ use dockspace::interaction::{
 };
 use dockspace::platform::{
     CloseEffectAcknowledgement, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
-    PlatformCapabilities, PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
-    WindowCloseObservation, WindowCloseState, WindowCoordinateObservation, WindowInputObservation,
-    WindowInputState, WindowPresentationObservation, WindowPresentationState,
+    PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
+    WindowCloseState, WindowCoordinateObservation, WindowInputObservation, WindowInputState,
+    WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::pointer_journal::{
     DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, PointerCaptureOwner, PointerEdge,
@@ -54,7 +54,6 @@ use dockspace::policy::DockPolicy;
 use dockspace::presentation_hit::PresentationHitRegionKind;
 use dockspace::presentation_observation::{
     HostPresentationObservationOutcome, HostPresentationOutputPayload,
-    NativeStagingPresentationPhase,
 };
 use dockspace::scene::SurfaceScene;
 use dockspace::scene_manifest::{Measurement, SurfaceMeasurements, TabIntrinsic, TabStripMetrics};
@@ -533,50 +532,6 @@ fn publish_windows_impl(fixture: &mut Fixture, windows: Vec<ObservedWindow>) -> 
     publish_windows_with_focus_observation(fixture, windows, focus)
 }
 
-fn publish_windows_with_baseline_presentation_ack(
-    fixture: &mut Fixture,
-    mut windows: Vec<ObservedWindow>,
-) -> EngineTransition {
-    fixture.input_generation += 1;
-    let generation = fixture.input_generation;
-    for window in &mut windows {
-        let binding = window.binding();
-        let state = window
-            .presentation_observation()
-            .and_then(WindowPresentationObservation::known_state)
-            .unwrap_or(WindowPresentationState::Visible);
-        *window = window
-            .clone()
-            .with_create_preparation(WindowCreatePreparationObservation::new(
-                binding,
-                window
-                    .coordinate_observation()
-                    .map(WindowCoordinateObservation::generation)
-                    .unwrap_or(CoordinateObservationGeneration::new(generation)),
-                Authority::Known(NativeCreateReadiness::Created),
-                None,
-            ))
-            .with_presentation_observation(WindowPresentationObservation::new(
-                binding,
-                PresentationObservationGeneration::new(generation),
-                Authority::Known(state),
-                PresentationEffectAcknowledgement::known(None),
-            ));
-    }
-    let focus = unknown_focus_observation(
-        FocusObservationGeneration::new(generation),
-        AuthorityUnavailableReason::NotReported,
-    );
-    let snapshot = platform_snapshot_at_generation(generation, focus, windows, Vec::new());
-    let transition = submit_test_input(fixture, platform_snapshot_input(&fixture.engine, snapshot))
-        .expect("platform snapshot must reduce");
-    assert!(matches!(
-        transition.reduced_inputs()[0].outcome(),
-        InputOutcome::PlatformSnapshotPublished { .. }
-    ));
-    transition
-}
-
 fn publish_windows_with_close_observations_impl(
     fixture: &mut Fixture,
     windows: Vec<ObservedWindow>,
@@ -838,6 +793,23 @@ fn current_platform_snapshot(
     }
     for window in &mut windows {
         let binding = window.binding();
+        // Zero marks default fixture facts. Complete snapshots issue a fresh
+        // envelope; explicit generations remain available for conflict tests.
+        if let Some(coordinates) = window.coordinate_observation()
+            && coordinates.generation() == CoordinateObservationGeneration::new(0)
+        {
+            *window = window.clone().with_coordinate_observation(
+                WindowCoordinateObservation::new(
+                    binding,
+                    CoordinateObservationGeneration::new(fixture.input_generation),
+                    *coordinates.content_bounds(),
+                    *coordinates.outer_bounds(),
+                    *coordinates.native_scale_factor(),
+                    *coordinates.presentation_scale_factor(),
+                )
+                .with_content_size(*coordinates.content_size()),
+            );
+        }
         let state = window
             .presentation_observation()
             .and_then(WindowPresentationObservation::known_state)
@@ -857,14 +829,8 @@ fn current_platform_snapshot(
                 (pending.replacement_binding() == Some(binding))
                     .then(|| match pending.status() {
                         RecoveryPendingStatus::ReplacementRequested { replacement }
-                        | RecoveryPendingStatus::ReplacementIndeterminate { replacement }
-                        | RecoveryPendingStatus::AwaitingPreShowPresentation { replacement } => {
+                        | RecoveryPendingStatus::ReplacementIndeterminate { replacement } => {
                             Some(replacement)
-                        }
-                        RecoveryPendingStatus::AwaitingShowAcknowledgement { show, .. }
-                        | RecoveryPendingStatus::AwaitingVisible { show, .. }
-                        | RecoveryPendingStatus::AwaitingPostShowPresentation { show, .. } => {
-                            Some(show)
                         }
                         RecoveryPendingStatus::AwaitingRecoveryHost
                         | RecoveryPendingStatus::ReplacementFailed { .. }
@@ -902,16 +868,6 @@ fn current_platform_snapshot(
                 .filter(|previous| previous.generation() == generation)
                 .and_then(WindowCreatePreparationObservation::acknowledged_create)
         });
-        let acknowledged_show = acknowledged_effect.filter(|effect| {
-            fixture
-                .engine
-                .viewport()
-                .effects()
-                .record(*effect)
-                .is_some_and(|record| {
-                    matches!(record.request().effect(), PlatformEffect::ShowWindow { .. })
-                })
-        });
         *window = window
             .clone()
             .with_create_preparation(WindowCreatePreparationObservation::new(
@@ -922,14 +878,22 @@ fn current_platform_snapshot(
                     .unwrap_or(CoordinateObservationGeneration::new(
                         fixture.input_generation,
                     )),
-                Authority::Known(NativeCreateReadiness::Created),
+                Authority::Known(
+                    window
+                        .create_preparation()
+                        .and_then(WindowCreatePreparationObservation::known_readiness)
+                        .unwrap_or(if state == WindowPresentationState::Visible {
+                            NativeCreateReadiness::Prepared
+                        } else {
+                            NativeCreateReadiness::Created
+                        }),
+                ),
                 acknowledged_create,
             ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 binding,
                 PresentationObservationGeneration::new(fixture.input_generation),
                 Authority::Known(state),
-                PresentationEffectAcknowledgement::known(acknowledged_show),
             ));
     }
     platform_snapshot_at_generation(fixture.input_generation, focus, windows, close_observations)
@@ -1813,7 +1777,7 @@ fn native_window_with_presentation(
     native_window_with_coordinate_generation(
         request,
         presentation,
-        CoordinateObservationGeneration::new(1),
+        CoordinateObservationGeneration::new(0),
     )
 }
 
@@ -1832,7 +1796,6 @@ fn native_window_with_coordinate_generation(
         request.binding(),
         PresentationObservationGeneration::new(0),
         Authority::Known(presentation),
-        PresentationEffectAcknowledgement::known(None),
     ))
 }
 
@@ -1842,7 +1805,7 @@ fn recovery_replacement_window(
 ) -> ObservedWindow {
     observed_window(
         binding,
-        CoordinateObservationGeneration::new(1),
+        CoordinateObservationGeneration::new(0),
         1_800.0,
         WindowInputState::ReceivesInput,
     )
@@ -1850,7 +1813,6 @@ fn recovery_replacement_window(
         binding,
         PresentationObservationGeneration::new(0),
         Authority::Known(presentation),
-        PresentationEffectAcknowledgement::known(None),
     ))
 }
 
@@ -1918,80 +1880,28 @@ fn advance_native_create_to_content_readiness(
         vec![
             source_window(&fixture),
             host_window(&fixture),
-            native_window_with_presentation(request, WindowPresentationState::Hidden),
-        ],
+            native_window_with_presentation(request, WindowPresentationState::Hidden)
+        ]
     );
-    assert!(platform_effects(fixture, &hidden).iter().all(|effect| {
-        !matches!(effect.effect(), PlatformEffect::ShowWindow { binding, .. } if *binding == request.binding())
-    }));
-    let pre_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPreShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("hidden proof must request pre-show staging");
-    let pre_show_presented = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        pre_show,
-    );
-    assert!(
-        platform_effects(fixture, &pre_show_presented)
-            .iter()
-            .any(|effect| {
-                matches!(
-                    effect.effect(),
-                    PlatformEffect::ShowWindow {
-                        binding,
-                        after_pre_show,
-                        ..
-                    } if *binding == request.binding()
-                        && after_pre_show.retained_resource() == pre_show.retained_resource()
-                )
-            })
-    );
-    let acknowledged = publish_windows!(
+    assert!(platform_effects(fixture, &hidden).is_empty());
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .unwrap()
+            .phase(),
+        NativeCreatePhase::AwaitingPrepared { .. }
+    ));
+    let ready = publish_windows!(
         fixture,
         vec![
             source_window(&fixture),
             host_window(&fixture),
-            native_window_with_presentation(request, WindowPresentationState::Hidden),
-        ],
+            native_window_with_presentation(request, WindowPresentationState::Visible)
+        ]
     );
-    assert!(platform_effects(fixture, &acknowledged).is_empty());
-    let visible = publish_windows!(
-        fixture,
-        vec![
-            source_window(&fixture),
-            host_window(&fixture),
-            native_window_with_presentation(request, WindowPresentationState::Visible),
-        ],
-    );
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
-    let post_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPostShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("visible proof must request post-show staging");
-    let ready = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        post_show,
-    );
-    assert!(visible.platform_effects().iter().all(|effect| {
-        !matches!(effect.effect(), PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding())
-    }));
+    assert!(ready.platform_effects().iter().all(|effect| !matches!(effect.effect(), PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding())));
     assert_eq!(fixture.engine.workspace(), &before);
     assert_eq!(fixture.engine.version(), version);
     assert!(
@@ -2282,49 +2192,31 @@ fn child_viewport_registration_uses_an_engine_issued_root_recovery_anchor() {
 }
 
 #[test]
-fn staged_create_acknowledgement_does_not_bypass_hidden_staging() {
+fn create_acknowledgement_and_visibility_do_not_replace_prepared_readiness() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let before = fixture.engine.workspace().clone();
     let request = start_native_create(&mut fixture);
-    assert_eq!(fixture.engine.workspace(), &before);
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .expect("create saga must be queryable")
-            .phase(),
-        NativeCreatePhase::AwaitingHidden { create } if create == request.effect()
-    ));
-
-    let visible_without_hidden = publish_windows!(
+    let created =
+        native_window(request).with_create_preparation(WindowCreatePreparationObservation::new(
+            request.binding(),
+            CoordinateObservationGeneration::new(1),
+            Authority::Known(NativeCreateReadiness::Created),
+            None,
+        ));
+    let observed = publish_windows!(
         &mut fixture,
-        vec![
-            source_window(&fixture),
-            host_window(&fixture),
-            native_window(request),
-        ],
+        vec![source_window(&fixture), host_window(&fixture), created]
     );
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .expect("pending saga must remain queryable")
-            .phase(),
-        NativeCreatePhase::AwaitingHidden { create } if create == request.effect()
-    ));
+    assert!(
+        matches!(fixture.engine.viewport().native_create_saga(request.saga()).unwrap().phase(),
+        NativeCreatePhase::AwaitingPrepared { create } if create == request.effect())
+    );
     assert_eq!(fixture.engine.workspace(), &before);
     assert!(
-        platform_effects(&fixture, &visible_without_hidden)
+        platform_effects(&fixture, &observed)
             .iter()
-            .all(|request| {
-                !matches!(
-                    request.effect(),
-                    PlatformEffect::ShowWindow { .. } | PlatformEffect::RequestFocus { .. }
-                )
-            })
+            .all(|effect| !matches!(effect.effect(), PlatformEffect::RequestFocus { .. }))
     );
     assert!(matches!(
         fixture
@@ -2332,216 +2224,36 @@ fn staged_create_acknowledgement_does_not_bypass_hidden_staging() {
             .viewport()
             .effects()
             .record(request.effect())
-            .expect("create effect must remain queryable")
+            .unwrap()
             .phase(),
-        EffectPhase::ObservedApplied { inventory_generation }
-            if inventory_generation == fixture.engine.viewport().registry().inventory_generation()
+        EffectPhase::ObservedApplied { .. }
     ));
 }
 
 #[test]
-fn hidden_native_create_requests_show_only_after_pre_show_presentation() {
-    let mut fixture = fixture();
-    prepare_base_platform(&mut fixture, ViewportRole::Child);
-    let request = start_native_create(&mut fixture);
-
-    let hidden = publish_windows_with_global_focus!(
-        &mut fixture,
-        vec![
-            source_window(&fixture),
-            host_window(&fixture),
-            native_window_with_presentation(request, WindowPresentationState::Hidden),
-        ],
-        GlobalFocusedWindow::None,
-        None,
-    );
-    assert!(platform_effects(&fixture, &hidden).iter().all(|effect| {
-        !matches!(
-            effect.effect(),
-            PlatformEffect::ShowWindow { binding, .. } if *binding == request.binding()
-        )
-    }));
-    assert!(!platform_effects(&fixture, &hidden).iter().any(|effect| {
-        matches!(
-            effect.effect(),
-            PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
-        )
-    }));
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .expect("hidden create saga must remain queryable")
-            .phase(),
-        NativeCreatePhase::AwaitingPreShowPresentation { .. }
-    ));
-    let pre_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPreShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("hidden create must expose an exact pre-show staging request");
-    let presented = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        pre_show,
-    );
-    let show = effect_of_kind(&fixture, &presented, |effect| {
-        matches!(
-            effect,
-            PlatformEffect::ShowWindow { binding, .. } if *binding == request.binding()
-        )
-    });
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .expect("pre-show-presented saga remains queryable")
-            .phase(),
-        NativeCreatePhase::AwaitingShowAcknowledgement { show: actual, .. } if actual == show.id()
-    ));
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .effects()
-            .record(show.id())
-            .expect("show effect must remain queryable")
-            .phase(),
-        EffectPhase::Requested
-    ));
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
-    assert!(fixture.engine.workspace().root(ROOT_NATIVE).is_none());
-}
-
-#[test]
-fn show_acknowledgement_and_visible_in_one_generation_do_not_transfer_topology() {
+fn prepared_first_observation_does_not_transfer_topology_before_first_live() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
     let before = fixture.engine.workspace().clone();
     let version = fixture.engine.version();
-
-    let _ = publish_windows!(
+    let ready = publish_windows!(
         &mut fixture,
         vec![
             source_window(&fixture),
             host_window(&fixture),
-            native_window_with_coordinate_generation(
-                request,
-                WindowPresentationState::Hidden,
-                CoordinateObservationGeneration::new(1),
-            ),
-        ],
+            native_window(request)
+        ]
     );
-    assert_eq!(
-        fixture
-            .engine
-            .viewport()
-            .viewport(SURFACE_NATIVE)
-            .and_then(|record| record.coordinate_observation_generation()),
-        Some(CoordinateObservationGeneration::new(1))
-    );
-    let pre_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPreShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("hidden observation must request pre-show staging");
-    let _ = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        pre_show,
-    );
-
-    let acknowledged_visible = publish_windows!(
-        &mut fixture,
-        vec![
-            source_window(&fixture),
-            host_window(&fixture),
-            native_window_with_coordinate_generation(
-                request,
-                WindowPresentationState::Visible,
-                CoordinateObservationGeneration::new(2),
-            ),
-        ],
-    );
-    assert!(platform_effects(&fixture, &acknowledged_visible).is_empty());
-    assert_eq!(fixture.engine.workspace(), &before);
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
+    assert!(platform_effects(&fixture, &ready).is_empty());
     assert!(matches!(
         fixture
             .engine
             .viewport()
             .native_create_saga(request.saga())
-            .expect("show-acknowledged saga must remain queryable")
+            .unwrap()
             .phase(),
-        NativeCreatePhase::AwaitingVisible { .. }
-    ));
-    assert_eq!(
-        fixture
-            .engine
-            .viewport()
-            .viewport(SURFACE_NATIVE)
-            .and_then(|record| record.coordinate_observation_generation()),
-        Some(CoordinateObservationGeneration::new(2))
-    );
-
-    let later_visible_windows = vec![
-        source_window(&fixture),
-        host_window(&fixture),
-        native_window_with_coordinate_generation(
-            request,
-            WindowPresentationState::Visible,
-            CoordinateObservationGeneration::new(3),
-        ),
-    ];
-    let later_visible =
-        publish_windows_with_baseline_presentation_ack(&mut fixture, later_visible_windows);
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingPostShowPresentation { .. })
-    ));
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
-    let post_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPostShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("later visible observation must request post-show staging");
-    let _ = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        post_show,
-    );
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
+        NativeCreatePhase::AwaitingFirstLivePresentation { .. }
     ));
     assert_eq!(fixture.engine.workspace(), &before);
     assert_eq!(fixture.engine.version(), version);
@@ -2551,29 +2263,10 @@ fn show_acknowledgement_and_visible_in_one_generation_do_not_transfer_topology()
             .engine
             .viewport()
             .viewport(SURFACE_NATIVE)
-            .map(|record| record.admission()),
-        Some(dockspace::viewport_registry::ViewportAdmission::Pending)
+            .unwrap()
+            .admission(),
+        ViewportAdmission::Pending
     );
-    assert!(
-        platform_effects(&fixture, &later_visible)
-            .iter()
-            .all(|effect| {
-                !matches!(
-                    effect.effect(),
-                    PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
-                )
-            })
-    );
-    let InputOutcome::PlatformSnapshotPublished { activations, .. } =
-        later_visible.reduced_inputs()[0].outcome()
-    else {
-        panic!("visible observation must publish its activation outcome");
-    };
-    assert!(
-        activations.is_empty(),
-        "an unavailable focus baseline must defer the owner-bound activation instead of consuming it"
-    );
-
     publish_scene(&mut fixture);
     assert!(
         fixture
@@ -2587,8 +2280,9 @@ fn show_acknowledgement_and_visible_in_one_generation_do_not_transfer_topology()
             .engine
             .viewport()
             .viewport(SURFACE_NATIVE)
-            .map(|record| record.admission()),
-        Some(dockspace::viewport_registry::ViewportAdmission::Admitted)
+            .unwrap()
+            .admission(),
+        ViewportAdmission::Admitted
     );
 }
 
@@ -3248,45 +2942,14 @@ fn admitted_native_replacement_waits_for_exact_first_live_without_a_create_resou
         ],
     );
     assert!(platform_effects(&fixture, &hidden).is_empty());
-    let pre_show = support::present_requested_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        replacement_binding,
-        NativeStagingPresentationPhase::PreShow,
-    );
-    assert!(
-        platform_effects(&fixture, &pre_show)
-            .iter()
-            .any(|emission| {
-                matches!(
-                    emission.effect(),
-                    PlatformEffect::ShowWindow { binding, .. } if *binding == replacement_binding
-                )
-            })
-    );
-    let acknowledged = publish_windows!(
-        &mut fixture,
-        vec![
-            unavailable_host_window(&fixture),
-            recovery_replacement_window(replacement_binding, WindowPresentationState::Hidden,),
-        ],
-    );
-    assert!(platform_effects(&fixture, &acknowledged).is_empty());
     let visible = publish_windows!(
         &mut fixture,
         vec![
             unavailable_host_window(&fixture),
-            recovery_replacement_window(replacement_binding, WindowPresentationState::Visible,),
-        ],
+            recovery_replacement_window(replacement_binding, WindowPresentationState::Visible)
+        ]
     );
     assert!(platform_effects(&fixture, &visible).is_empty());
-    let post_show = support::present_requested_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        replacement_binding,
-        NativeStagingPresentationPhase::PostShow,
-    );
-    assert!(platform_effects(&fixture, &post_show).is_empty());
     let pending = fixture
         .engine
         .viewport()
@@ -3376,103 +3039,11 @@ fn admitted_native_replacement_waits_for_exact_first_live_without_a_create_resou
 }
 
 #[test]
-fn hidden_native_create_activates_after_first_live_presentation_without_known_focus() {
+fn prepared_native_create_activates_after_first_live_presentation_without_known_focus() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
-    let _ = publish_windows!(
-        &mut fixture,
-        vec![
-            source_window(&fixture),
-            host_window(&fixture),
-            native_window_with_presentation(request, WindowPresentationState::Hidden),
-        ],
-    );
-
-    let pre_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPreShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("hidden observation must request pre-show staging");
-    let _ = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        pre_show,
-    );
-
-    let acknowledged = publish_windows!(
-        &mut fixture,
-        vec![
-            source_window(&fixture),
-            host_window(&fixture),
-            native_window_with_presentation(request, WindowPresentationState::Hidden),
-        ],
-    );
-    assert!(platform_effects(&fixture, &acknowledged).is_empty());
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .expect("show-acknowledged saga must remain queryable")
-            .phase(),
-        NativeCreatePhase::AwaitingVisible { .. }
-    ));
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
-
-    let visible = publish_windows!(
-        &mut fixture,
-        vec![
-            source_window(&fixture),
-            host_window(&fixture),
-            native_window_with_presentation(request, WindowPresentationState::Visible),
-        ],
-    );
-    assert!(platform_effects(&fixture, &visible).iter().all(|effect| {
-        !matches!(
-            effect.effect(),
-            PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
-        )
-    }));
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingPostShowPresentation { .. })
-    ));
-    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
-    let post_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPostShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("visible observation must request post-show staging");
-    let _ = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        post_show,
-    );
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
-    ));
+    let _ = advance_native_create_to_content_readiness(&mut fixture, request);
     publish_scene(&mut fixture);
     let focus = requested_focus_effect(&fixture, request.binding());
     assert!(
@@ -3562,38 +3133,16 @@ fn focus_generation_gap_does_not_orphan_native_create_activation() {
             Authority::Known(None),
         ),
     );
-    assert!(platform_effects(&fixture, &gap).iter().all(|effect| {
-        !matches!(
-            effect.effect(),
-            PlatformEffect::ShowWindow { binding, .. } if *binding == request.binding()
-        )
-    }));
-    let pre_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPreShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("hidden gap observation must request pre-show staging");
-    let pre_show_presented = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        pre_show,
-    );
-    assert!(
-        platform_effects(&fixture, &pre_show_presented)
-            .iter()
-            .any(|effect| {
-                matches!(
-                    effect.effect(),
-                    PlatformEffect::ShowWindow { binding, .. } if *binding == request.binding()
-                )
-            })
-    );
+    assert!(platform_effects(&fixture, &gap).is_empty());
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .unwrap()
+            .phase(),
+        NativeCreatePhase::AwaitingPrepared { .. }
+    ));
 
     fixture.input_generation += 1;
     let tombstone_windows = vec![
@@ -3660,32 +3209,9 @@ fn focus_generation_gap_does_not_orphan_native_create_activation() {
             .engine
             .viewport()
             .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingPostShowPresentation { .. })
-    ));
-    let post_show = fixture
-        .engine
-        .viewport()
-        .native_create_saga(request.saga())
-        .and_then(|saga| match saga.phase() {
-            NativeCreatePhase::AwaitingPostShowPresentation { presentation, .. } => {
-                Some(presentation)
-            }
-            _ => None,
-        })
-        .expect("visible focus observation must request post-show staging");
-    let _ = support::present_native_staging(
-        &mut fixture.engine,
-        &mut fixture.presentation_host,
-        post_show,
-    );
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .native_create_saga(request.saga())
-            .map(|saga| saga.phase()),
-        Some(NativeCreatePhase::AwaitingFirstLivePresentation { .. })
+            .unwrap()
+            .phase(),
+        NativeCreatePhase::AwaitingFirstLivePresentation { .. }
     ));
     publish_scene(&mut fixture);
     let _ = requested_focus_effect(&fixture, request.binding());
@@ -4346,7 +3872,7 @@ fn pending_complete_root_create_rejects_fingerprint_changes_atomically() {
             .engine
             .workspace()
             .capture_node_source(ROOT_SOURCE, fixture.source_tabs)
-            .expect("PostShow readiness preserves the exact complete source"),
+            .expect("Prepared readiness preserves the exact complete source"),
         source_before
     );
     assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
@@ -4550,7 +4076,7 @@ fn indeterminate_create_survives_authoritative_inventory_absence() {
             .native_create_saga(request.saga())
             .expect("indeterminate saga must remain queryable")
             .phase(),
-        NativeCreatePhase::AwaitingHidden { create } if create == request.effect()
+        NativeCreatePhase::AwaitingPrepared { create } if create == request.effect()
     ));
 
     let absence = publish_windows!(

@@ -10,9 +10,9 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockPresentationConfig, DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceSession,
-    HostFrameReport, HostPointerInput, HostPointerRoute, HostWindowToken, NativeCreateStrategy,
-    NativeHostCapabilities, NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
-    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+    HostFrameReport, HostPointerInput, HostPointerRoute, HostWindowToken, NativeHostCapabilities,
+    NativeHostCapability, NativePointerRoster, NativeReceiverAnswer, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
     PaintedSurfaceOutput, SurfacePointerButton, SurfacePointerCapture, SurfacePointerEvent,
     SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult,
     SurfaceUnavailableReason, UniformSurfaceMetrics,
@@ -120,10 +120,7 @@ fn native_session_with_headless_authority() -> (
     let (_, _, pending_headless) = emit(&mut session, 400.0);
 
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(
@@ -148,7 +145,7 @@ fn native_session_with_headless_authority() -> (
         .with_native_scale_factor(ScaleFactor::new(1.0).unwrap())
         .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None);
+        .with_presentation(NativeWindowPresentationState::Visible);
     session
         .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
         .unwrap();

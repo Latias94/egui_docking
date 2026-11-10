@@ -25,8 +25,8 @@ use dockspace::interaction::{
 };
 use dockspace::platform::{
     ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
-    PresentationEffectAcknowledgement, WindowCoordinateObservation, WindowInputState,
-    WindowPresentationObservation, WindowPresentationState,
+    WindowCoordinateObservation, WindowInputState, WindowPresentationObservation,
+    WindowPresentationState,
 };
 use dockspace::pointer_journal::{
     FiniteScrollVector, PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind,
@@ -228,7 +228,6 @@ fn native_snapshot(generation: u64, binding: ViewportBinding) -> PlatformSnapsho
             binding,
             PresentationObservationGeneration::new(generation),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ));
     let windows = vec![observed];
     let inventory_observation = support::known_inventory_observation(generation, &windows);

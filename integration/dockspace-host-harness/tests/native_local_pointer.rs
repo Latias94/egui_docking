@@ -12,17 +12,16 @@ use dockspace::runtime::{
     DockspaceHostFrame, DockspaceManipulationDelivery as Delivery, DockspaceManipulationFeedback,
     DockspaceManipulationId, DockspaceManipulationStatus as Status, DockspacePreviewVisual,
     DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, HostFrameReport,
-    HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
-    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativeLocalCoordinateError,
-    NativeLocalCoordinates, NativeLocalGeometry, NativeLocalPointerFact,
-    NativeLocalPointerLocation, NativeLocalPointerSample, NativePointerButton as Button,
-    NativePointerEvent as Event, NativePointerHover, NativePointerId, NativePointerInput,
-    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose,
-    NativeReceiverQuery, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaRoster, PaintedSurfaceOutput,
-    SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
-    SurfacePresentationResult as Disposition, SurfaceUnavailableReason, SurfaceWork,
-    SurfaceWorkDeferred, UniformSurfaceMetrics,
+    HostWindowToken, NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostCapabilities,
+    NativeHostCapability, NativeHostErrorKind, NativeLocalCoordinateError, NativeLocalCoordinates,
+    NativeLocalGeometry, NativeLocalPointerFact, NativeLocalPointerLocation,
+    NativeLocalPointerSample, NativePointerButton as Button, NativePointerEvent as Event,
+    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
+    NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
+    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePaintProgramOperation as Operation,
+    SurfacePaintProgramStep as Step, SurfacePresentationResult as Disposition,
+    SurfaceUnavailableReason, SurfaceWork, SurfaceWorkDeferred, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -57,11 +56,10 @@ fn facts(geometry: NativeLocalGeometry) -> NativeWindowFacts {
         .with_native_scale_factor(geometry.native_scale_factor())
         .with_presentation_scale_factor(geometry.presentation_scale_factor())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
 }
 
 fn finish(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
-    assert_eq!(frame.native_staging_paints().len(), 0);
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
@@ -99,10 +97,7 @@ fn registered_with_desktop(desktop: bool) -> (DockspaceSession, [NativeSurfaceBi
     policy.set_allow_native_surfaces(true);
     let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     let mut capabilities = NativeHostCapabilities::none_supported()
         .with(NativeHostCapability::AuthoritativeInventory)

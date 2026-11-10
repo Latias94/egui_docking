@@ -10,11 +10,10 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceRuntimeErrorKind, DockspaceSession, HostFrameReport,
-    HostInputOutcome, HostWindowToken, NativeCreateStrategy, NativeHostCapabilities,
-    NativeHostCapability, NativeInputBudget, NativeMonotonicClock, NativePointerRoster,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
-    UniformSurfaceMetrics,
+    HostInputOutcome, HostWindowToken, NativeHostCapabilities, NativeHostCapability,
+    NativeInputBudget, NativeMonotonicClock, NativePointerRoster, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::RecordingRenderer;
 
@@ -44,10 +43,7 @@ fn policy() -> DockPolicy {
 
 fn enable_native(session: &mut DockspaceSession) {
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(
@@ -131,7 +127,7 @@ fn local_facts() -> NativeWindowFacts {
         .with_native_scale_factor(ScaleFactor::new(2.0).unwrap())
         .with_presentation_scale_factor(ScaleFactor::new(1.5).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
 }
 
 #[test]

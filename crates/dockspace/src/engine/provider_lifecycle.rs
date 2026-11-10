@@ -34,7 +34,6 @@ impl DockEngine {
         self.create_backend_ingress_provider_initialized(
             presentation_host,
             pointer_committed_through,
-            crate::platform::NativeCreateStrategy::Staged,
             |_| Ok(()),
         )
     }
@@ -45,7 +44,7 @@ impl DockEngine {
         &mut self,
         presentation_host: PresentationHostLease,
         pointer_committed_through: PointerEdgeSequence,
-        native_create_strategy: crate::platform::NativeCreateStrategy,
+
         initialize: impl FnOnce(&mut BackendIngressRecorder) -> Result<(), BackendIngressError>,
     ) -> Result<BackendIngressRecorder, EngineError> {
         if let Some(provider) = self.pointer_journal.abandoned_surface_local_provider() {
@@ -61,9 +60,6 @@ impl DockEngine {
             .viewport
             .create_platform_provider()
             .map_err(|source| platform_enrollment_error(candidate.last_input, source))?;
-        candidate
-            .viewport
-            .freeze_native_create_strategy(native_create_strategy);
         let pointer = candidate
             .pointer_journal
             .create_provider(
@@ -1234,7 +1230,6 @@ mod host_local_tests {
             engine.create_backend_ingress_provider_initialized(
                 host,
                 PointerEdgeSequence::new(0),
-                crate::platform::NativeCreateStrategy::Staged,
                 |_| Err(BackendIngressError::OrdinalExhausted),
             ),
             Err(EngineError::BackendIngress {

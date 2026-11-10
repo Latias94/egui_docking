@@ -13,11 +13,9 @@ use crate::close_plan::{CloseRequestId, NativeCloseEdge};
 use crate::geometry::PhysicalRect;
 use crate::ids::WorkspaceEpoch;
 use crate::platform_provider::PlatformObservationLease;
-use crate::presentation_observation::PresentedNativeStagingPresentation;
 use crate::retention::EffectRetentionManifest;
 use crate::viewport::{
-    CloseObservationGeneration, InventoryGeneration, PresentationObservationGeneration,
-    ViewportBinding, ViewportRole,
+    CloseObservationGeneration, InventoryGeneration, ViewportBinding, ViewportRole,
 };
 
 /// Monotonic identity of one exact platform side effect.
@@ -122,20 +120,11 @@ impl EffectDelivery {
 /// Exact adapter operation requested by the core.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlatformEffect {
-    /// Create one native window using the provider's frozen preparation strategy.
+    /// Create one native window; the provider reports exact Prepared readiness.
     CreateWindow {
         binding: ViewportBinding,
         placement: PhysicalRect,
         role: ViewportRole,
-        strategy: crate::platform::NativeCreateStrategy,
-    },
-    /// Show a previously created hidden window after its exact retained staging output.
-    ShowWindow {
-        binding: ViewportBinding,
-        /// Exact hidden observation which must causally precede this show.
-        after_hidden: PresentationObservationGeneration,
-        /// Exact pre-show output which proved the retained staging resource was presented.
-        after_pre_show: PresentedNativeStagingPresentation,
     },
     CompensatingClose {
         binding: ViewportBinding,
@@ -184,7 +173,6 @@ pub enum PlatformEffect {
         binding: ViewportBinding,
         placement: PhysicalRect,
         role: ViewportRole,
-        strategy: crate::platform::NativeCreateStrategy,
     },
     /// Resolve one exact native close edge after it becomes authoritative.
     ResolveNativeClose {
@@ -203,7 +191,6 @@ impl PlatformEffect {
     pub const fn binding(&self) -> ViewportBinding {
         match self {
             Self::CreateWindow { binding, .. }
-            | Self::ShowWindow { binding, .. }
             | Self::CompensatingClose { binding, .. }
             | Self::CancelRootClose { binding }
             | Self::RetainChild { binding }
@@ -1764,7 +1751,6 @@ mod tests {
             placement: PhysicalRect::new(0.0, 0.0, 100.0, 80.0)
                 .expect("test placement must be valid"),
             role: ViewportRole::Child,
-            strategy: crate::platform::NativeCreateStrategy::Staged,
         }
     }
 

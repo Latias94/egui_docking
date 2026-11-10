@@ -264,14 +264,6 @@ impl ViewportRecord {
         self.presentation_observations.current()
     }
 
-    pub(crate) fn staging_presentation_is_continuous_since(
-        &self,
-        generation: crate::viewport::PresentationObservationGeneration,
-    ) -> bool {
-        self.presentation_observations
-            .is_continuous_since(generation)
-    }
-
     pub(crate) const fn create_preparation(&self) -> Option<WindowCreatePreparationObservation> {
         self.create_preparation_observations.current()
     }
@@ -961,23 +953,12 @@ impl ViewportRegistry {
             record
                 .input_observations
                 .observe(record.binding, observation.input_observation());
-            let previous_readiness = record
-                .create_preparation()
-                .and_then(WindowCreatePreparationObservation::known_readiness);
             record.create_preparation_observations.observe(
                 record.binding,
                 observation
                     .create_preparation()
                     .map(|preparation| preparation.with_inventory_generation(generation)),
             );
-            let readiness = record
-                .create_preparation()
-                .and_then(WindowCreatePreparationObservation::known_readiness);
-            // A consumed ACK is not a readiness change. Unknown or changed
-            // preparation cuts the interval before accepting a new presentation.
-            if readiness.is_none() || previous_readiness != readiness {
-                record.presentation_observations.revoke_continuity();
-            }
             let presentation_observation = observation
                 .presentation_observation()
                 .map(|observation| observation.with_inventory_generation(generation));
@@ -1646,10 +1627,9 @@ mod tests {
     use crate::intent::AuthorityUnavailableReason;
     use crate::platform::{
         CapabilityRosterObservation, CloseEffectAcknowledgement, ObservedWorkArea,
-        PlatformCapabilities, PlatformCapability, PresentationEffectAcknowledgement,
-        WindowCloseObservation, WindowCloseState, WindowCoordinateObservation, WindowInputState,
-        WindowInventoryObservation, WindowPresentationObservation, WindowPresentationState,
-        WorkAreaRosterObservation,
+        PlatformCapabilities, PlatformCapability, WindowCloseObservation, WindowCloseState,
+        WindowCoordinateObservation, WindowInputState, WindowInventoryObservation,
+        WindowPresentationObservation, WindowPresentationState, WorkAreaRosterObservation,
     };
     use crate::viewport::{
         CapabilityObservationGeneration, CoordinateObservationGeneration,
@@ -1710,7 +1690,6 @@ mod tests {
             binding,
             crate::viewport::PresentationObservationGeneration::new(generation),
             state,
-            PresentationEffectAcknowledgement::known(None),
         )
     }
 

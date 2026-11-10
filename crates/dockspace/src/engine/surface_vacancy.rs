@@ -14,7 +14,7 @@ pub(super) struct TickVacancyLedger {
     start: BTreeMap<SurfaceId, SurfaceVacancyAuthority>,
     /// Latest exact binding observed while a surface belonged to the logical roster.
     ///
-    /// This includes pending native-create bindings. A post-show transfer can
+    /// This includes pending native-create bindings. A first-live transfer can
     /// add and vacate a surface in one reducer tick before first-live
     /// admission; that physical resource is still a tick-final obligation.
     observed: BTreeMap<SurfaceId, SurfaceVacancyAuthority>,

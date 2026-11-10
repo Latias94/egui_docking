@@ -31,7 +31,6 @@ pub(super) const fn host_frame_error_kind(error: &CoreHostFrameError) -> Dockspa
         | Error::PresentationObligationSurfaceMismatch { .. }
         | Error::PresentationInteractionMismatch { .. }
         | Error::PresentationOutputUnavailable { .. }
-        | Error::NativeStagingPresentationUnavailable { .. }
         | Error::DuplicatePresentationOutput { .. }
         | Error::RetainedContributionNotPaintable { .. }
         | Error::RetainedContributionStampMismatch { .. }
@@ -421,8 +420,6 @@ pub(super) const fn engine_error_kind(error: &EngineError) -> DockspaceRuntimeEr
         | EngineError::SurfaceRecoveryObligationExhausted { .. }
         | EngineError::RootRecoveryAnchorExhausted { .. }
         | EngineError::RuntimeRetentionRevisionExhausted
-        | EngineError::HostPresentationRosterCollision { .. }
-        | EngineError::HostPresentationStagingResourceMissing { .. }
         | EngineError::ReductionCauseInvariant { .. }
         | EngineError::WorkspaceEpochExhausted { .. }
         | EngineError::WorkspaceRevisionExhausted { .. }

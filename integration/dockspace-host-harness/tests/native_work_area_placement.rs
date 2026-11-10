@@ -8,12 +8,11 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
-    DockspaceSession, HostFrameReport, HostWindowToken, HostWorkAreaToken, NativeCreateStrategy,
-    NativeEffectOperation, NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind,
-    NativePointerRoster, NativeReceiverAnswer, NativeSurfaceBinding, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
-    NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
-    UniformSurfaceMetrics,
+    DockspaceSession, HostFrameReport, HostWindowToken, HostWorkAreaToken, NativeEffectOperation,
+    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativePointerRoster,
+    NativeReceiverAnswer, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::RecordingRenderer;
 
@@ -50,10 +49,7 @@ impl NativeHost {
         policy.set_allow_native_surfaces(true);
         let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
         session
-            .enable_managed_native_host(
-                NativeCreateStrategy::DirectPrepared,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         let capabilities = [
             NativeHostCapability::NativeWindowLifecycle,
@@ -141,10 +137,7 @@ impl NativeHost {
         let [create] = report.take_native_effects().try_into().unwrap();
         let (child, placement) = match create.operation() {
             NativeEffectOperation::CreateWindow {
-                binding,
-                placement,
-                strategy: NativeCreateStrategy::DirectPrepared,
-                ..
+                binding, placement, ..
             } => (*binding, *placement),
             operation => panic!("expected the default native create request, got {operation:?}"),
         };
@@ -195,7 +188,7 @@ fn local_facts(native_scale: f64) -> NativeWindowFacts {
         .with_native_scale_factor(ScaleFactor::new(native_scale).unwrap())
         .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
 }
 
 fn area(token: u64, bounds: PhysicalRect) -> NativeWorkAreaFacts {
@@ -217,7 +210,6 @@ fn native_frame(session: &mut DockspaceSession) -> DockspaceHostFrame<'_> {
 }
 
 fn finish(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
-    assert_eq!(frame.native_staging_paints().len(), 0);
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();

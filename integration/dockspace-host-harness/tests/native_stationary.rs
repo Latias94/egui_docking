@@ -14,7 +14,7 @@ use dockspace::runtime::{
     DockspaceHostFrame, DockspaceManipulationDelivery as Delivery,
     DockspaceManipulationStatus as Status, DockspacePaneFocusRequest, DockspaceReceiverDescriptor,
     DockspaceReceiverRole, DockspaceSession, DockspaceTouchEvent, HostFrameReport,
-    HostInputOutcome, HostPointerInput, HostPointerRoute, HostWindowToken, NativeCreateStrategy,
+    HostInputOutcome, HostPointerInput, HostPointerRoute, HostWindowToken,
     NativeDesktopPointerLocation, NativeDesktopPosition, NativeDragSourceInput,
     NativeHostCapabilities, NativeHostCapability, NativeLocalCoordinates, NativeLocalGeometry,
     NativeLocalPointerFact, NativeLocalPointerLocation, NativeLocalPointerSample,
@@ -64,7 +64,7 @@ fn window_facts(with_origin: bool) -> NativeWindowFacts {
         .with_native_scale_factor(geometry.native_scale_factor())
         .with_presentation_scale_factor(geometry.presentation_scale_factor())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None);
+        .with_presentation(NativeWindowPresentationState::Visible);
     if with_origin {
         facts.with_content_bounds(PhysicalRect::new(400.0, -300.0, 1200.0, 900.0).unwrap())
     } else {
@@ -87,7 +87,6 @@ fn measure(frame: &mut DockspaceHostFrame<'_>, width: f64) {
 }
 
 fn finish(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
-    assert_eq!(frame.native_staging_paints().len(), 0);
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
@@ -298,10 +297,7 @@ fn fixture(with_origin: bool) -> (DockspaceSession, NativeSurfaceBinding, Scene)
     .unwrap();
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     let mut capabilities = NativeHostCapabilities::none_supported()
         .with(NativeHostCapability::AuthoritativeInventory)

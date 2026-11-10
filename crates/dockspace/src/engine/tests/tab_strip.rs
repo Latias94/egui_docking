@@ -1234,7 +1234,6 @@ fn prepared_menu_end_then_enter_binds_the_event_cause_and_requests_pane_focus() 
                             binding,
                             crate::viewport::PresentationObservationGeneration::new(1),
                             Authority::Known(WindowPresentationState::Visible),
-                            PresentationEffectAcknowledgement::known(None),
                         )),
                 ],
                 Vec::new(),

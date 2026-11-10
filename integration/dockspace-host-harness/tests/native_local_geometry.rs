@@ -10,12 +10,12 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSemanticOutput, DockspaceSession, HostFrameReport,
-    HostInputOutcome, HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation,
-    NativeDesktopPosition, NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind,
-    NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePaintDisposition, SurfacePresentationResult,
+    HostInputOutcome, HostWindowToken, NativeDesktopPointerLocation, NativeDesktopPosition,
+    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativePointerButton,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+    PaintedSurfaceOutput, SurfacePaintDisposition, SurfacePresentationResult,
     SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
@@ -117,10 +117,7 @@ fn managed_root_with_capabilities(
     policy.set_allow_native_surfaces(true);
     let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(capabilities)
@@ -142,7 +139,7 @@ fn local_facts() -> NativeWindowFacts {
         .with_native_scale_factor(ScaleFactor::new(2.0).unwrap())
         .with_presentation_scale_factor(ScaleFactor::new(1.5).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
 }
 
 fn local_bounds() -> LogicalRect {
@@ -161,14 +158,12 @@ fn measure(frame: &mut DockspaceHostFrame<'_>) {
 }
 
 fn finish(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
-    assert_eq!(frame.native_staging_paints().len(), 0);
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     let mut report = frame.commit().unwrap();
     assert!(report.native_admissions().is_empty());
     assert!(report.take_native_effects().is_empty());
-    assert!(report.take_painted_native_staging_outputs().is_empty());
     report
 }
 

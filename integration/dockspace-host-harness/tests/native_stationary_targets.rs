@@ -13,13 +13,13 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockPresentationConfig, DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole,
     DockspaceSession, DockspaceTouchEvent, HostFrameReport, HostInputOutcome, HostWindowToken,
-    NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
-    NativeHostCapabilities, NativeHostCapability, NativeLocalGeometry, NativeLocalPointerFact,
-    NativeLocalPointerLocation, NativePointerButton as Button, NativePointerEvent as Event,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-    NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaRoster, PaintedSurfaceOutput, PointerDeviceKind, PointerEventMetadata,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostCapabilities,
+    NativeHostCapability, NativeLocalGeometry, NativeLocalPointerFact, NativeLocalPointerLocation,
+    NativePointerButton as Button, NativePointerEvent as Event, NativePointerHover,
+    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
+    NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+    PaintedSurfaceOutput, PointerDeviceKind, PointerEventMetadata,
     SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
     SurfacePresentationResult as Disposition, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
@@ -231,10 +231,7 @@ fn fixture(desktop: bool, split: bool) -> (DockspaceSession, NativeSurfaceBindin
     )
     .unwrap();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     let mut capabilities = NativeHostCapabilities::none_supported()
         .with(NativeHostCapability::AuthoritativeInventory)
@@ -258,7 +255,7 @@ fn fixture(desktop: bool, split: bool) -> (DockspaceSession, NativeSurfaceBindin
         .with_native_scale_factor(geometry.native_scale_factor())
         .with_presentation_scale_factor(geometry.presentation_scale_factor())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None);
+        .with_presentation(NativeWindowPresentationState::Visible);
     if desktop {
         facts = facts.with_content_bounds(PhysicalRect::new(400.0, -200.0, width, 600.0).unwrap());
     }

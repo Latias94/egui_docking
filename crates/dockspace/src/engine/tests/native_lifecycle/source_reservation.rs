@@ -306,7 +306,7 @@ fn partial_native_source_edits_are_typed_rejections_while_awaiting_hidden() {
                 .native_create_saga(request.saga())
                 .expect("the hidden child must retain its create saga")
                 .phase(),
-            NativeCreatePhase::AwaitingHidden { .. }
+            NativeCreatePhase::AwaitingPrepared { .. }
         ));
         assert_source_edits_are_frozen(&mut fixture, request);
     }
@@ -512,7 +512,6 @@ fn native_drag_reservation_fixture() -> (BackgroundFixture, PointerInputLease, D
             binding,
             crate::viewport::PresentationObservationGeneration::new(2),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ));
     let snapshot = test_platform_snapshot(
         capabilities,

@@ -1030,7 +1030,7 @@ fn overload_cancel_preserves_an_accepted_native_create_lifecycle() {
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_presentation(NativeWindowPresentationState::Hidden)
                         .with_create_readiness(
                             crate::runtime::NativeCreateReadiness::Created,
                             Some(created),
@@ -1041,15 +1041,19 @@ fn overload_cancel_preserves_an_accepted_native_create_lifecycle() {
         )
         .unwrap();
     commit_managed_frame(&mut session);
-    let frame = session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
     assert!(
-        frame
-            .native_staging_paints()
-            .any(|paint| paint.binding() == child_binding
-                && paint.phase() == NativeStagingPresentationPhase::PreShow),
-        "overload cancellation must not turn the accepted create into shutdown"
+        session
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .any(|(_, saga)| {
+                saga.binding() == child_binding.binding
+                    && matches!(
+                        saga.phase(),
+                        crate::frame::NativeCreatePhase::AwaitingPrepared { .. }
+                    )
+            }),
+        "overload cancellation must preserve the accepted native create"
     );
 }
 

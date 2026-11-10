@@ -17,7 +17,6 @@ use thiserror::Error;
 use super::native_effect::{
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeEffectResult,
     NativeEffectSubmissionError, NativeInputEffectAcknowledgement,
-    NativePresentationEffectAcknowledgement,
 };
 use super::{DockspaceRuntimeError, DockspaceSession};
 use crate::backend_ingress::{
@@ -31,7 +30,7 @@ use crate::platform::{
     CloseEffectAcknowledgement, ObservedWindow, WindowCloseObservation, WindowCloseState,
     WindowInputState, WindowPresentationState,
 };
-pub use crate::platform::{NativeCreateReadiness, NativeCreateStrategy, NativeDragSourceInput};
+pub use crate::platform::{NativeCreateReadiness, NativeDragSourceInput};
 use crate::platform_provider::PlatformObservationLease;
 use crate::viewport::{
     CloseObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaGeneration,
@@ -583,7 +582,6 @@ struct NativeInputFact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativePresentationFact {
     state: NativeWindowPresentationState,
-    acknowledgement: Option<NativePresentationEffectAcknowledgement>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -669,15 +667,8 @@ impl NativeWindowFacts {
 
     /// Adds one exact presentation property observation.
     #[must_use]
-    pub const fn with_presentation(
-        mut self,
-        state: NativeWindowPresentationState,
-        acknowledgement: Option<NativePresentationEffectAcknowledgement>,
-    ) -> Self {
-        self.presentation = Some(NativePresentationFact {
-            state,
-            acknowledgement,
-        });
+    pub const fn with_presentation(mut self, state: NativeWindowPresentationState) -> Self {
+        self.presentation = Some(NativePresentationFact { state });
         self
     }
 
@@ -685,6 +676,11 @@ impl NativeWindowFacts {
     ///
     /// Omission explicitly leaves preparation Unknown in this complete snapshot.
     /// Prepared may be the first observation; Created is not a mandatory pass.
+    /// Withdraw Prepared after renderer loss or an incompatible visibility or
+    /// drawable-geometry change, then re-establish it after native preparation.
+    /// Accepting dispatch alone does not acknowledge an observed window. The
+    /// optional capability correlates an actual creation fact with its request;
+    /// later compatible snapshots need not repeat that acknowledgement.
     #[must_use]
     pub const fn with_create_readiness(
         mut self,

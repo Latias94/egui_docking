@@ -64,7 +64,6 @@ fn platform_snapshot_for_binding(binding: ViewportBinding) -> PlatformSnapshot {
                     binding,
                     PresentationObservationGeneration::new(1),
                     Authority::Known(WindowPresentationState::Visible),
-                    PresentationEffectAcknowledgement::known(None),
                 )),
         ],
         Vec::new(),

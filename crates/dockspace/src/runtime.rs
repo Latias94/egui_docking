@@ -92,14 +92,14 @@ pub use measurement::{
 };
 pub use native::{
     HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeCreateReadiness,
-    NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
-    NativeDragSourceInput, NativeGlobalFocus, NativeHostCapabilities, NativeHostCapability,
-    NativeHostErrorKind, NativeInputBudget, NativeInputStorageLimit, NativeLocalCoordinateError,
-    NativeLocalCoordinates, NativeLocalGeometry, NativeLocalPointerFact,
-    NativeLocalPointerLocation, NativeLocalPointerSample, NativeLocalToDesktopHandoff,
-    NativeMonotonicClock, NativePointerButton, NativePointerCancelReason, NativePointerEvent,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerLocation,
-    NativePointerOwner, NativePointerRoster, NativePointerState, NativeProducerStorageLimit,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeDragSourceInput, NativeGlobalFocus,
+    NativeHostCapabilities, NativeHostCapability, NativeHostErrorKind, NativeInputBudget,
+    NativeInputStorageLimit, NativeLocalCoordinateError, NativeLocalCoordinates,
+    NativeLocalGeometry, NativeLocalPointerFact, NativeLocalPointerLocation,
+    NativeLocalPointerSample, NativeLocalToDesktopHandoff, NativeMonotonicClock,
+    NativePointerButton, NativePointerCancelReason, NativePointerEvent, NativePointerHover,
+    NativePointerId, NativePointerInput, NativePointerLocation, NativePointerOwner,
+    NativePointerRoster, NativePointerState, NativeProducerStorageLimit,
     NativeProjectedScrollDelta, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
     NativeReportStorageLimit, NativeRootContinuation, NativeScrollCancelReason, NativeScrollDelta,
     NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
@@ -114,8 +114,7 @@ pub use native_effect::{
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeDispatchFailure,
     NativeEffectAcknowledgement, NativeEffectDispatch, NativeEffectOperation, NativeEffectRequest,
     NativeEffectResult, NativeEffectSubmissionError, NativeIndeterminateReason,
-    NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement, NativeSurfaceRole,
-    NativeUnsupportedReason,
+    NativeInputEffectAcknowledgement, NativeSurfaceRole, NativeUnsupportedReason,
 };
 pub use paint::{
     ContainedPaintRecord, ContainedResizeDirection, ContainedResizePaintRecord,
@@ -144,10 +143,8 @@ pub use persistence::{
 };
 use presentation::PresentationObservationError;
 pub use presentation::{
-    NativeStagingPaintRequest, NativeStagingPresentationPhase,
-    NativeStagingPresentationReportError, PaintedNativeStagingOutput, PaintedSurfaceOutput,
-    SurfacePresentationArtifact, SurfacePresentationCommit, SurfacePresentationReportError,
-    SurfacePresentationResult,
+    PaintedSurfaceOutput, SurfacePresentationArtifact, SurfacePresentationCommit,
+    SurfacePresentationReportError, SurfacePresentationResult,
 };
 pub use presentation_commands::{DockspacePresentationCommand, DockspacePresentationCommands};
 
@@ -612,7 +609,6 @@ pub struct HostFrameReport {
     presentation_transitions: Vec<DockspacePresentationTransition>,
     manipulation_feedback: Vec<DockspaceManipulationFeedback>,
     painted_outputs: Vec<PaintedSurfaceOutput>,
-    painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
     surface_presentation_commits: Vec<SurfacePresentationCommit>,
     native_admissions: Vec<NativeSurfaceBinding>,
     native_bindings: Vec<NativeSurfaceBinding>,
@@ -717,14 +713,6 @@ impl HostFrameReport {
     /// reports whether that exact output was presented or dropped.
     pub fn take_painted_outputs(&mut self) -> Vec<PaintedSurfaceOutput> {
         std::mem::take(&mut self.painted_outputs)
-    }
-
-    /// Takes affine capabilities for native lifecycle staging outputs painted by this frame.
-    ///
-    /// The host must attach each output to the exact native callback and later
-    /// consume it through [`DockspaceSession::report_native_staging_presentation`].
-    pub fn take_painted_native_staging_outputs(&mut self) -> Vec<PaintedNativeStagingOutput> {
-        std::mem::take(&mut self.painted_native_staging_outputs)
     }
 
     /// Returns exact surface-presentation prefixes accepted by this core

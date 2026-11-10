@@ -36,7 +36,6 @@ fn report_storage_is_promised_before_provider_enrollment_and_rejected_configurat
     assert_eq!(
         session
             .enable_managed_native_host_with_input_storage_limit(
-                crate::runtime::NativeCreateStrategy::Staged,
                 NativePointerRoster::Exact(Vec::new()),
                 rejected,
             )
@@ -62,7 +61,6 @@ fn report_storage_is_promised_before_provider_enrollment_and_rejected_configurat
     assert_eq!(
         session
             .enable_managed_native_host_with_input_storage_limit(
-                crate::runtime::NativeCreateStrategy::Staged,
                 NativePointerRoster::Exact(Vec::new()),
                 one_byte_short,
             )
@@ -75,7 +73,6 @@ fn report_storage_is_promised_before_provider_enrollment_and_rejected_configurat
     let reports = NativeReportStorageLimit::new(slots, slots, report_bytes);
     session
         .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             limit(4, WORK_BYTES).with_report_storage_limit(reports),
         )
@@ -101,7 +98,6 @@ fn preparation_capacity_reclaims_only_committed_input_and_reports_a_full_prefix(
     let mut session = unenrolled_session();
     session
         .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             limit(2, WORK_BYTES),
         )
@@ -180,7 +176,6 @@ fn preparation_capacity_reports_an_empty_transport_that_cannot_hold_one_pointer_
     let mut probe = unenrolled_session();
     probe
         .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             limit(1, WORK_BYTES),
         )
@@ -195,7 +190,6 @@ fn preparation_capacity_reports_an_empty_transport_that_cannot_hold_one_pointer_
     let mut session = unenrolled_session();
     session
         .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             limit(1, checkpoint_bytes),
         )
@@ -231,11 +225,7 @@ fn bounded_enrollment_rejects_fixed_and_checkpoint_cost_without_publishing_a_pro
     };
     let mut probe = unenrolled_session();
     probe
-        .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
-            roster(),
-            limit(2, WORK_BYTES),
-        )
+        .enable_managed_native_host_with_input_storage_limit(roster(), limit(2, WORK_BYTES))
         .unwrap();
     let required = probe
         .native
@@ -251,11 +241,7 @@ fn bounded_enrollment_rejects_fixed_and_checkpoint_cost_without_publishing_a_pro
     let source = session.committed_source_sequence;
     for bytes in [0, required - 1] {
         let error = session
-            .enable_managed_native_host_with_input_storage_limit(
-                crate::runtime::NativeCreateStrategy::Staged,
-                roster(),
-                limit(2, bytes),
-            )
+            .enable_managed_native_host_with_input_storage_limit(roster(), limit(2, bytes))
             .expect_err("neither fixed storage nor checkpoint overflow may partially enroll");
         assert_eq!(
             error.native_kind(),
@@ -272,11 +258,7 @@ fn bounded_enrollment_rejects_fixed_and_checkpoint_cost_without_publishing_a_pro
     }
 
     session
-        .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
-            roster(),
-            limit(2, required),
-        )
+        .enable_managed_native_host_with_input_storage_limit(roster(), limit(2, required))
         .expect("a failed enrollment leaves the same session retryable");
     assert_eq!(session.native_input_recorded_count(), 1);
     assert_eq!(
@@ -303,7 +285,6 @@ fn bounded_pointer_batch_rejects_the_whole_append_before_advancing_accepted_inpu
     let mut session = unenrolled_session();
     session
         .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             limit(2, WORK_BYTES),
         )
@@ -377,7 +358,6 @@ fn full_input_slot_drains_before_retrying_the_same_pending_presentation_once() {
     let mut session = unenrolled_session();
     session
         .enable_managed_native_host_with_input_storage_limit(
-            crate::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             limit(1, WORK_BYTES),
         )
@@ -412,7 +392,7 @@ fn full_input_slot_drains_before_retrying_the_same_pending_presentation_once() {
                     .with_native_scale_factor(scale)
                     .with_presentation_scale_factor(scale)
                     .with_input(NativeWindowInputState::ReceivesInput, None)
-                    .with_presentation(NativeWindowPresentationState::Visible, None)
+                    .with_presentation(NativeWindowPresentationState::Visible)
                     .with_close(NativeCloseState::Clear, None),
             )],
             NativeWorkAreaRoster::Exact(vec![work_area(1)]),

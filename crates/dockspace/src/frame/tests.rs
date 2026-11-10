@@ -8,12 +8,10 @@ use crate::ids::{EngineAuthorityDomainId, WorkspaceRevision};
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
-    ObservedWindow, PlatformSnapshotError, PresentationEffectAcknowledgement, WindowCloseState,
-    WindowCoordinateObservation, WindowInputObservation, WindowInputState,
-    WindowInventoryObservation, WindowPresentationObservation, WindowPresentationState,
-    WorkAreaRosterObservation,
+    ObservedWindow, PlatformSnapshotError, WindowCloseState, WindowCoordinateObservation,
+    WindowInputObservation, WindowInputState, WindowInventoryObservation,
+    WindowPresentationObservation, WindowPresentationState, WorkAreaRosterObservation,
 };
-use crate::presentation_observation::PresentedNativeStagingPresentation;
 use crate::scene_manifest::PolicyRevision;
 use crate::transition::WorkspaceVersion;
 use crate::viewport::{
@@ -54,7 +52,6 @@ fn observed_window_at(binding: ViewportBinding, generation: u64) -> ObservedWind
             binding,
             PresentationObservationGeneration::new(generation),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ))
 }
 
@@ -414,7 +411,6 @@ fn routing_snapshot_with_batch_and_generations(
             binding,
             PresentationObservationGeneration::new(observation_generation),
             Authority::Known(presentation),
-            PresentationEffectAcknowledgement::known(None),
         ));
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
@@ -461,12 +457,15 @@ fn recovery_presentation_snapshot(
             binding,
             PresentationObservationGeneration::new(generation),
             Authority::Known(state),
-            PresentationEffectAcknowledgement::known(acknowledges),
         ))
         .with_create_preparation(crate::platform::WindowCreatePreparationObservation::new(
             binding,
             CoordinateObservationGeneration::new(generation),
-            Authority::Known(crate::platform::NativeCreateReadiness::Created),
+            Authority::Known(if state == WindowPresentationState::Visible {
+                crate::platform::NativeCreateReadiness::Prepared
+            } else {
+                crate::platform::NativeCreateReadiness::Created
+            }),
             acknowledges,
         ));
     let mut capabilities = PlatformCapabilities::default();
@@ -666,7 +665,6 @@ fn ready_recovery_replacement() -> (
             placement: PhysicalRect::new(5.0, 0.0, 310.0, 225.0)
                 .expect("test replacement placement must be valid"),
             role: ViewportRole::Child,
-            strategy: crate::platform::NativeCreateStrategy::Staged,
         })
         .expect("test replacement effect must enter the ledger");
     coordinator
@@ -677,7 +675,6 @@ fn ready_recovery_replacement() -> (
             obligation,
             replacement,
             replacement_effect,
-            crate::platform::NativeCreateStrategy::Staged,
         ))
         .expect("test recovery replacement must register");
     coordinator
@@ -697,72 +694,43 @@ fn ready_recovery_replacement() -> (
             Some(replacement_effect),
         ))
         .expect("hidden replacement acknowledgement must publish");
-    assert!(hidden.actions().is_empty());
-    let pre_show = coordinator
-        .native_staging_presentations()
-        .next()
-        .expect("hidden replacement must request pre-show staging");
     assert_eq!(
-        pre_show.owner(),
-        NativeStagingOwner::recovery_replacement(destroyed, obligation)
+        hidden.actions(),
+        &[ViewportLifecycleAction::RetryRecovery {
+            source_binding: destroyed,
+            recovery_obligation: obligation,
+        }],
+        "waiting for Prepared retains the opportunity to recover into a ready host"
     );
-    assert_eq!(pre_show.native_create_saga(), None);
-    assert_eq!(pre_show.retained_resource(), None);
-    let pre_show_transition = coordinator
-        .observe_native_staging_presentation(
-            PresentedNativeStagingPresentation::mint_observed_for_test(pre_show, 1),
-        )
-        .expect("pre-show staging must reduce");
-    assert!(pre_show_transition.is_none());
-    let emitted = coordinator.take_new_effects();
-    let show = emitted
-        .iter()
-        .find_map(|request| match request.effect() {
-            PlatformEffect::ShowWindow { binding, .. } if *binding == replacement => {
-                Some(request.id())
-            }
-            _ => None,
-        })
-        .expect("pre-show staging must emit ShowWindow");
-    let acknowledged = coordinator
+    let later_created = coordinator
         .publish_snapshot(&recovery_presentation_snapshot(
             replacement,
             2,
             WindowPresentationState::Hidden,
-            Some(show),
+            None,
         ))
-        .expect("exact ShowWindow acknowledgement must publish");
-    assert!(acknowledged.actions().is_empty());
-    let visible = coordinator
+        .expect("later compatible Created facts preserve one-shot creation acknowledgement");
+    assert_eq!(
+        later_created.actions(),
+        &[ViewportLifecycleAction::RetryRecovery {
+            source_binding: destroyed,
+            recovery_obligation: obligation,
+        }]
+    );
+    let ready = coordinator
         .publish_snapshot(&recovery_presentation_snapshot(
             replacement,
             3,
             WindowPresentationState::Visible,
             None,
         ))
-        .expect("later visible replacement must publish");
-    assert!(visible.actions().is_empty());
-    let post_show = coordinator
-        .native_staging_presentations()
-        .next()
-        .expect("visible replacement must request post-show staging");
-    assert_eq!(post_show.owner(), pre_show.owner());
-    assert_eq!(post_show.retained_resource(), None);
-    let action = coordinator
-        .observe_native_staging_presentation(
-            PresentedNativeStagingPresentation::mint_observed_for_test(post_show, 2),
-        )
-        .expect("post-show staging must reduce");
-    assert!(matches!(
-        action,
-        Some(ViewportLifecycleAction::NativeSurfaceReady {
-            origin,
-            binding,
-            recovery_obligation,
-        }) if origin == NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed }
-            && binding == replacement
-            && recovery_obligation == obligation
-    ));
+        .expect("the host's exact Prepared visible replacement must publish");
+    assert!(
+        matches!(ready.actions(), [ViewportLifecycleAction::NativeSurfaceReady {
+        origin, binding, recovery_obligation,
+    }] if *origin == NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed }
+        && *binding == replacement && *recovery_obligation == obligation)
+    );
     assert_eq!(coordinator.retained_native_staging_resources().len(), 0);
     assert_eq!(coordinator.native_create_sagas().count(), 0);
     assert_eq!(
@@ -919,7 +887,14 @@ fn pre_admission_close_revokes_first_live_once_before_destruction_returns_to_hos
     let close = coordinator
         .publish_snapshot(&snapshot_with_close_at(
             4,
-            vec![observed_window_at(replacement, 4)],
+            vec![observed_window_at(replacement, 4).with_create_preparation(
+                crate::platform::WindowCreatePreparationObservation::new(
+                    replacement,
+                    CoordinateObservationGeneration::new(4),
+                    Authority::Known(crate::platform::NativeCreateReadiness::Prepared),
+                    None,
+                ),
+            )],
             vec![requested],
         ))
         .expect("pre-admission close must publish");
@@ -2478,7 +2453,6 @@ fn terminal_tombstone_is_idempotent_after_same_token_aba_rebinding() {
             new_binding,
             PresentationObservationGeneration::new(1),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ));
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
@@ -2873,7 +2847,6 @@ fn wrong_effect_and_stale_capture_cannot_attribute_a_late_enable() {
             binding,
             PresentationObservationGeneration::new(3),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ));
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
@@ -5049,7 +5022,6 @@ fn cross_epoch_create_failure_settles_only_its_exact_unobserved_retirement() {
                     binding,
                     placement: PhysicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
                     role: ViewportRole::Child,
-                    strategy: crate::platform::NativeCreateStrategy::Staged,
                 })
                 .unwrap();
             let _ = coordinator.take_new_effects();

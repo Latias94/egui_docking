@@ -24,9 +24,9 @@ use super::native::NativePlatformError;
 use super::presentation;
 use super::{
     DockPresentationConfig, DockspaceCloseItem, DockspaceRuntimeError, DockspaceSession,
-    DockspaceSubmittedAction, HostFrameReport, NativeStagingPaintRequest, NativeSurfaceBinding,
-    NativeWindowPlacement, PreparedDockAction, PreparedPaneFocusObservation,
-    SurfaceProgramExecutionReceipt, SurfaceUnavailableReason,
+    DockspaceSubmittedAction, HostFrameReport, NativeSurfaceBinding, NativeWindowPlacement,
+    PreparedDockAction, PreparedPaneFocusObservation, SurfaceProgramExecutionReceipt,
+    SurfaceUnavailableReason,
 };
 
 pub(super) const APPLICATION_INPUT_SOURCE: StableInputSourceId =
@@ -82,8 +82,7 @@ pub struct DockspaceHostFrame<'session> {
     pub(super) encoding_started: std::cell::Cell<bool>,
     pub(super) encoding_checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
     pub(super) encoding_pass: u64,
-    pub(super) painted_native_staging:
-        BTreeSet<crate::presentation_observation::NativeStagingPresentation>,
+
     pub(super) replacement_submitted: bool,
     #[cfg(feature = "serde")]
     pub(super) document_restore: Option<PendingRuntimeDocumentRestore>,
@@ -869,60 +868,6 @@ impl DockspaceHostFrame<'_> {
         Ok(())
     }
 
-    /// Returns the non-interactive native staging paints required by this frame.
-    ///
-    /// These requests are lifecycle placeholders, not dock scenes. Hosts must
-    /// paint only adapter-owned background or loading chrome and must not invoke
-    /// pane UI, publish receivers, or infer focus authority from the callback.
-    #[must_use]
-    pub fn native_staging_paints(
-        &self,
-    ) -> impl ExactSizeIterator<Item = NativeStagingPaintRequest> + '_ {
-        self.frame
-            .view()
-            .native_staging_presentations()
-            .map(|presentation| {
-                NativeStagingPaintRequest::from_core(
-                    NativeSurfaceBinding::from_binding(
-                        presentation.basis().platform_provider(),
-                        presentation.binding(),
-                    ),
-                    presentation,
-                )
-            })
-    }
-
-    /// Records that the renderer painted one exact native staging placeholder.
-    ///
-    /// The request must belong to the current frame and may be answered once.
-    /// Final renderer presentation is reported later through
-    /// [`DockspaceSession::report_native_staging_presentation`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the request is stale, foreign, or duplicated.
-    pub fn confirm_native_staging_painted(
-        &mut self,
-        request: NativeStagingPaintRequest,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.complete_pointer_input()?;
-        if !self
-            .frame
-            .view()
-            .native_staging_presentations()
-            .any(|presentation| presentation == request.core())
-        {
-            return Err(NativePlatformError::StaleSurface {
-                surface: request.surface(),
-            }
-            .into());
-        }
-        if !self.painted_native_staging.insert(request.core()) {
-            return Err(NativePlatformError::ProtocolInvariant.into());
-        }
-        Ok(())
-    }
-
     /// Atomically publishes the frame after every surface received an explicit
     /// contribution disposition.
     ///
@@ -946,7 +891,6 @@ impl DockspaceHostFrame<'_> {
             encoding_started: _,
             encoding_checkpoint: _,
             encoding_pass: _,
-            painted_native_staging,
             replacement_submitted: _,
             #[cfg(feature = "serde")]
             document_restore,
@@ -967,21 +911,6 @@ impl DockspaceHostFrame<'_> {
                 .ok_or_else(|| DockspaceRuntimeError::paint_obligation_unavailable(surface))?;
             let (token, interaction) = receipt.into_presentation_parts();
             frame.record_painted_surface_contribution(obligation, token, interaction)?;
-        }
-        for presentation in painted_native_staging {
-            let obligation = obligations
-                .remove(&HostPresentationSlot::NativeStaging { presentation })
-                .ok_or_else(|| {
-                    DockspaceRuntimeError::paint_obligation_unavailable(
-                        presentation.binding().surface(),
-                    )
-                })?;
-            frame.resolve_presentation_obligation(
-                obligation,
-                crate::engine::HostPresentationDisposition::Painted(
-                    crate::presentation_observation::HostInteractionPresentation::default(),
-                ),
-            )?;
         }
         for obligation in obligations.into_values() {
             frame.resolve_presentation_obligation(
@@ -1120,8 +1049,7 @@ impl DockspaceHostFrame<'_> {
             &transition,
             &submitted_presentation,
         );
-        let (painted_outputs, painted_native_staging_outputs) =
-            presentation.commit(&mut session.presentation);
+        let painted_outputs = presentation.commit(&mut session.presentation);
         let native_effects = effects.commit();
         if let Some(committed) = native_commit.as_mut() {
             committed.input_pending |= session.abandoned_native_effects.has_pending()
@@ -1131,7 +1059,6 @@ impl DockspaceHostFrame<'_> {
             frame_attempt,
             &transition,
             painted_outputs,
-            painted_native_staging_outputs,
             surface_presentation_commits,
             native_commit,
             native_effects,

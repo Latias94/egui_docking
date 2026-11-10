@@ -48,7 +48,7 @@ impl DockspaceHostFrame<'_> {
         let committed = self.session.pane_focus_request(surface)?;
         (view.version().epoch() == committed.expected_epoch
             && view.published_pane_focus_intent() == Some(committed.intent))
-            .then_some(committed)
+        .then_some(committed)
     }
 
     /// Reports actual framework focus within this host's current surface scope.

@@ -31,9 +31,8 @@ use dockspace::ids::{
 use dockspace::intent::{Authority, AuthorityUnavailableReason};
 use dockspace::platform::{
     CloseEffectAcknowledgement, ObservedWindow, PlatformCapabilities, PlatformCapability,
-    PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot,
-    PresentationEffectAcknowledgement, WindowCloseObservation, WindowCloseState,
-    WindowCoordinateObservation, WindowInputState, WindowPresentationObservation,
+    PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, WindowCloseObservation,
+    WindowCloseState, WindowCoordinateObservation, WindowInputState, WindowPresentationObservation,
     WindowPresentationState,
 };
 use dockspace::policy::{
@@ -349,7 +348,6 @@ fn live_window(binding: ViewportBinding) -> ObservedWindow {
             binding,
             PresentationObservationGeneration::new(1),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ))
 }
 

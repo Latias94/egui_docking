@@ -69,8 +69,6 @@ use crate::platform_provider::{
     PlatformObservationAuthority, PlatformObservationAuthorityError, PlatformObservationLease,
     PlatformProviderAuthorityFrontier, PlatformProviderReservation,
 };
-#[cfg(test)]
-use crate::presentation_observation::NativeStagingOwner;
 use crate::presentation_observation::NativeStagingResourceId;
 use crate::retention::{BindingRetentionManifest, EffectRetentionManifest};
 use crate::surface_recovery::SurfaceRecoveryObligationId;
@@ -236,7 +234,6 @@ impl ViewportFrameTransition {
 /// Deep core module owning capabilities, bindings, coordinate facts, and effects.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewportCoordinator {
-    native_create_strategy: crate::platform::NativeCreateStrategy,
     authority_domain: EngineAuthorityDomainId,
     workspace_epoch: WorkspaceEpoch,
     platform_provider: PlatformObservationAuthority,
@@ -392,7 +389,6 @@ impl ViewportCoordinator {
 
     pub(crate) fn new(authority_domain: EngineAuthorityDomainId) -> Self {
         Self {
-            native_create_strategy: crate::platform::NativeCreateStrategy::Staged,
             authority_domain,
             workspace_epoch: WorkspaceEpoch::new(0),
             platform_provider: PlatformObservationAuthority::new(authority_domain),
@@ -430,13 +426,6 @@ impl ViewportCoordinator {
         Ok(provider)
     }
 
-    pub(crate) fn freeze_native_create_strategy(
-        &mut self,
-        strategy: crate::platform::NativeCreateStrategy,
-    ) {
-        self.native_create_strategy = strategy;
-    }
-
     /// Returns the current platform observation provider, when enrolled.
     pub(crate) const fn platform_provider(&self) -> Option<PlatformObservationLease> {
         self.platform_provider.active()
@@ -464,9 +453,6 @@ impl ViewportCoordinator {
             let replacement_may_have_executed = self.effect_may_have_executed(replacement);
             let invalidation = EffectInvalidation::PlatformProviderReplaced { provider };
             let _ = self.effects.invalidate_unemitted(replacement, invalidation);
-            if let Some(show) = phase.show_effect() {
-                let _ = self.effects.invalidate_unemitted(show, invalidation);
-            }
             let binding_was_discarded =
                 !replacement_may_have_executed && self.registry.discard_unobserved(binding).is_ok();
             let surface = self
@@ -553,8 +539,7 @@ impl ViewportCoordinator {
                     && matches!(record.phase(), EffectPhase::Requested)
                     && matches!(
                         record.request().effect(),
-                        PlatformEffect::ShowWindow { .. }
-                            | PlatformEffect::SetPointerPassthrough { .. }
+                        PlatformEffect::SetPointerPassthrough { .. }
                             | PlatformEffect::RequestFocus { .. }
                             | PlatformEffect::ResolveNativeClose { .. }
                     ))
@@ -2366,14 +2351,8 @@ impl ViewportCoordinator {
             )?;
             return Ok(actions);
         }
-        match self.reduce_ready_native_bringup(provider, binding, owner, phase)? {
+        match self.reduce_ready_native_preparation(provider, binding, owner, phase)? {
             native_bringup::NativePreparationOutcome::Ignored => Ok(actions),
-            native_bringup::NativePreparationOutcome::Advanced(next) => {
-                self.recovery_replacements
-                    .update_bringup(binding, phase, next)
-                    .map_err(recovery_replacement_error)?;
-                Ok(actions)
-            }
             native_bringup::NativePreparationOutcome::Ready(proof) => {
                 if !self.replacement_is_admissible(binding) {
                     return Ok(actions);
@@ -3902,18 +3881,12 @@ impl ViewportCoordinator {
                 binding,
                 placement,
                 role: ViewportRole::Child,
-                strategy: candidate.native_create_strategy,
             })
             .map_err(ViewportCoordinatorError::Effect)?;
         if retry_initial {
             candidate
                 .recovery_replacements
-                .retry_initial(
-                    binding,
-                    recovery_obligation,
-                    create,
-                    candidate.native_create_strategy,
-                )
+                .retry_initial(binding, recovery_obligation, create)
                 .map_err(recovery_replacement_error)?;
         } else {
             candidate
@@ -3923,7 +3896,6 @@ impl ViewportCoordinator {
                     ViewportRole::Child,
                     recovery_obligation,
                     create,
-                    candidate.native_create_strategy,
                 ))
                 .map_err(recovery_replacement_error)?;
         }
@@ -3960,14 +3932,7 @@ impl ViewportCoordinator {
         let effects = candidate
             .effects
             .records()
-            .filter_map(|(effect, record)| {
-                (effect == create
-                    || matches!(
-                        record.request().effect(),
-                        PlatformEffect::ShowWindow { binding: owned, .. } if *owned == binding
-                    ))
-                .then_some(effect)
-            })
+            .filter_map(|(effect, _)| (effect == create).then_some(effect))
             .collect::<Vec<_>>();
         for effect in effects {
             let _ = candidate
@@ -4057,7 +4022,6 @@ impl ViewportCoordinator {
                     binding: replacement,
                     placement,
                     role,
-                    strategy: candidate.native_create_strategy,
                 })
                 .map_err(ViewportCoordinatorError::Effect)?;
             RecoveryPendingRequest::replacement(
@@ -4066,7 +4030,6 @@ impl ViewportCoordinator {
                 recovery_obligation,
                 replacement,
                 effect,
-                candidate.native_create_strategy,
             )
         } else {
             RecoveryPendingRequest::awaiting_host(binding, role, recovery_obligation)
@@ -4472,8 +4435,6 @@ pub enum ViewportCoordinatorError {
     CreateSagaNotReady { saga: NativeCreateSagaId },
     #[error("native create saga {saga:?} cannot mint a valid retained staging resource")]
     InvalidNativeStagingResource { saga: NativeCreateSagaId },
-    #[error("native binding {binding:?} cannot mint a valid staging presentation")]
-    InvalidNativeStagingPresentation { binding: ViewportBinding },
     #[error("retained native staging resource {resource:?} already exists")]
     DuplicateNativeStagingResource { resource: NativeStagingResourceId },
     #[error("retained native staging resource {resource:?} does not exist")]

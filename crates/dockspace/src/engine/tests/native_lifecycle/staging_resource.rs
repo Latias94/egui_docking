@@ -52,7 +52,7 @@ fn assert_pending_first_live_resource(
 }
 
 #[test]
-fn retained_resource_spans_staging_until_atomic_first_live_transfer() {
+fn retained_resource_spans_preparation_until_atomic_first_live_transfer() {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let mut fixture = background_fixture(policy);
@@ -73,64 +73,17 @@ fn retained_resource_spans_staging_until_atomic_first_live_transfer() {
     assert_eq!(descriptor.payload(), &payload);
     let _ = fixture.engine.viewport.take_new_effects();
 
-    let _ =
-        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 2);
-    let pre_show = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-    );
-    assert_eq!(pre_show.retained_resource(), Some(resource));
-    assert_eq!(
-        pre_show.basis().platform_provider(),
-        fixture
-            .engine
-            .viewport()
-            .platform_provider()
-            .expect("platform provider must remain active")
-    );
-
-    let shown = present_background_native_staging(&mut fixture, pre_show);
-    let pre_show_proof = shown
-        .platform_effects()
-        .iter()
-        .find_map(|emission| match emission.effect() {
-            PlatformEffect::ShowWindow {
-                binding,
-                after_pre_show,
-                ..
-            } if *binding == request.binding() => Some(*after_pre_show),
-            _ => None,
-        })
-        .expect("show must carry the exact pre-show proof");
-    assert_eq!(pre_show_proof.request(), pre_show);
-    assert_eq!(pre_show_proof.retained_resource(), Some(resource));
-
-    let _ =
-        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 3);
-    let _ = publish_background_native_window(
-        &mut fixture,
-        request,
-        WindowPresentationState::Visible,
-        4,
-    );
-    let post_show = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
-    );
-    assert_eq!(post_show.retained_resource(), Some(resource));
-    let _ = present_background_native_staging(&mut fixture, post_show);
+    advance_pending_native_root_to_ownership_transfer(&mut fixture, request);
 
     assert_eq!(
         fixture.engine.workspace(),
         &workspace,
-        "PostShow placeholder presentation must preserve durable source ownership"
+        "Prepared native readiness must preserve durable source ownership"
     );
     assert_eq!(
         fixture.engine.version(),
         version,
-        "PostShow placeholder presentation must preserve the workspace version"
+        "Prepared native readiness must preserve the workspace version"
     );
     assert_pending_first_live_resource(&fixture, request, &descriptor);
 
@@ -209,82 +162,7 @@ fn retained_resource_spans_staging_until_atomic_first_live_transfer() {
 }
 
 #[test]
-fn delayed_pre_show_output_cannot_cross_a_reissued_basis() {
-    let mut policy = DockPolicy::default();
-    policy.set_allow_native_surfaces(true);
-    let mut fixture = background_fixture(policy);
-    let request = install_pending_native_root_reservation(&mut fixture, RootId::new(195));
-    let _ = fixture.engine.viewport.take_new_effects();
-
-    let _ =
-        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 2);
-    let first = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-    );
-    let delayed_output = emit_background_native_staging(&mut fixture, first);
-
-    let _ = publish_background_native_window(
-        &mut fixture,
-        request,
-        WindowPresentationState::Minimized,
-        3,
-    );
-    let _ =
-        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 4);
-    let reissued = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-    );
-    assert_ne!(reissued, first);
-    assert_eq!(reissued.retained_resource(), first.retained_resource());
-    assert_ne!(
-        reissued.basis().presentation_observation_generation(),
-        first.basis().presentation_observation_generation()
-    );
-
-    let delayed = observe_background_presentation_output(&mut fixture, delayed_output);
-    assert!(delayed.platform_effects().iter().all(|emission| {
-        !matches!(
-            emission.effect(),
-            PlatformEffect::ShowWindow { binding, .. } if *binding == request.binding()
-        )
-    }));
-    assert_eq!(
-        current_native_staging_presentation(
-            &fixture,
-            request,
-            crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-        ),
-        reissued
-    );
-
-    let current_output = emit_background_native_staging(&mut fixture, reissued);
-    let current = observe_background_presentation_output(&mut fixture, current_output);
-    let current_proof = current
-        .platform_effects()
-        .iter()
-        .find_map(|emission| match emission.effect() {
-            PlatformEffect::ShowWindow {
-                binding,
-                after_pre_show,
-                ..
-            } if *binding == request.binding() => Some(*after_pre_show),
-            _ => None,
-        })
-        .expect("current pre-show output must authorize showing the window");
-    assert_eq!(current_proof.request(), reissued);
-    assert!(current_proof.matches_output(current_output));
-    assert!(
-        !current_proof.matches_output(delayed_output),
-        "a reissued proof must reject an older output for the same retained resource"
-    );
-}
-
-#[test]
-fn pre_show_survives_later_hidden_observation_without_repeated_create_ack() {
+fn prepared_continuity_survives_later_observation_without_repeated_create_ack() {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let mut fixture = background_fixture(policy);
@@ -293,21 +171,18 @@ fn pre_show_survives_later_hidden_observation_without_repeated_create_ack() {
         .engine
         .viewport()
         .native_create_saga(request.saga())
-        .expect("the create saga must retain its source resource")
+        .unwrap()
         .resource();
     let descriptor = retained_resource(&fixture, resource);
     let workspace = fixture.engine.workspace().clone();
     let version = fixture.engine.version();
     let _ = fixture.engine.viewport.take_new_effects();
-
-    let _ =
-        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 2);
-    let first = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-    );
-
+    publish_background_native_window(&mut fixture, request, WindowPresentationState::Visible, 2);
+    let basis = fixture
+        .engine
+        .viewport()
+        .native_ready_basis(request.binding())
+        .unwrap();
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
@@ -317,7 +192,7 @@ fn pre_show_survives_later_hidden_observation_without_repeated_create_ack() {
     let snapshot = background_native_window_snapshot_with_capabilities_and_acknowledgement(
         &mut fixture,
         request,
-        WindowPresentationState::Hidden,
+        WindowPresentationState::Visible,
         3,
         GlobalFocusedWindow::Foreign,
         capabilities,
@@ -334,125 +209,39 @@ fn pre_show_survives_later_hidden_observation_without_repeated_create_ack() {
             snapshot,
         },
     )
-    .expect("the later hidden observation must reduce without repeating the create ack");
-
-    let reissued = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-    );
-    assert_eq!(reissued, first);
-    assert_eq!(reissued.retained_resource(), first.retained_resource());
+    .unwrap();
     assert_eq!(
-        reissued.basis().presentation_observation_generation(),
-        crate::viewport::PresentationObservationGeneration::new(2)
+        fixture
+            .engine
+            .viewport()
+            .native_ready_basis(request.binding()),
+        Some(basis)
     );
-    let frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
-    assert!(
-        frame
-            .view()
-            .native_staging_presentations()
-            .any(|presentation| presentation == reissued),
-        "the later one-shot-ack observation must leave a current pre-show slot"
-    );
-
-    let pre_show_presented = present_background_native_staging(&mut fixture, reissued);
-    assert!(pre_show_presented.platform_effects().iter().any(|effect| {
-        matches!(
-            effect.effect(),
-            PlatformEffect::ShowWindow { binding, .. } if *binding == request.binding()
-        )
-    }));
-    let _ =
-        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 4);
-    let _ = publish_background_native_window(
-        &mut fixture,
-        request,
-        WindowPresentationState::Visible,
-        5,
-    );
-    let post_show = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
-    );
-    let staged = present_background_native_staging(&mut fixture, post_show);
-
-    assert!(
-        staged.platform_effects().iter().all(|effect| {
-            !matches!(
-                effect.effect(),
-                PlatformEffect::CompensatingClose { binding, .. }
-                    if *binding == request.binding()
-            )
-        }),
-        "a later compatible hidden basis must not invalidate the one-shot create acknowledgement"
-    );
-    assert_eq!(
-        fixture.engine.workspace(),
-        &workspace,
-        "a reissued pre-show basis must preserve source ownership through PostShow"
-    );
+    assert_eq!(fixture.engine.workspace(), &workspace);
     assert_eq!(fixture.engine.version(), version);
     assert_pending_first_live_resource(&fixture, request, &descriptor);
 }
 
 #[test]
-fn unavailable_staging_slot_preserves_phase_and_resource() {
+fn unavailable_first_live_output_preserves_phase_and_resource() {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     let mut fixture = background_fixture(policy);
     let request = install_pending_native_root_reservation(&mut fixture, RootId::new(196));
     let _ = fixture.engine.viewport.take_new_effects();
-    let _ =
-        publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 2);
-    let presentation = current_native_staging_presentation(
-        &fixture,
-        request,
-        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-    );
-
+    advance_pending_native_root_to_ownership_transfer(&mut fixture, request);
+    let resource = fixture
+        .engine
+        .viewport()
+        .native_create_saga(request.saga())
+        .unwrap()
+        .resource();
+    let descriptor = retained_resource(&fixture, resource);
     let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
-    for obligation in frame
-        .issue_presentation_obligations()
-        .expect("host frame must issue its exact physical roster")
-    {
-        let disposition = if obligation.slot().native_staging() == Some(presentation) {
-            HostPresentationDisposition::Unavailable(
-                HostPresentationUnavailableReason::RetainedResourceUnavailable,
-            )
-        } else {
-            HostPresentationDisposition::Unavailable(
-                HostPresentationUnavailableReason::OutputNotProduced,
-            )
-        };
-        frame
-            .settle_presentation_obligation(obligation, disposition)
-            .expect("every affine presentation obligation must settle exactly once");
-    }
-    complete_surface_contribution_roster(&mut frame);
-    let transition = frame
-        .finish(&mut fixture.engine)
-        .expect("explicit unavailable staging output must reduce");
-
-    assert!(transition.platform_effects().iter().all(|emission| {
-        !matches!(
-            emission.effect(),
-            PlatformEffect::ShowWindow { binding, .. } if *binding == request.binding()
-        )
-    }));
-    assert_eq!(
-        current_native_staging_presentation(
-            &fixture,
-            request,
-            crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
-        ),
-        presentation
-    );
-    let resource = presentation
-        .retained_resource()
-        .expect("native create staging must retain its source resource");
-    assert_eq!(retained_resource(&fixture, resource).id(), resource);
+    complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut frame);
+    let transition = frame.finish(&mut fixture.engine).unwrap();
+    assert!(transition.platform_effects().is_empty());
+    assert_pending_first_live_resource(&fixture, request, &descriptor);
 }
 
 #[test]
@@ -499,8 +288,8 @@ fn cancelling_an_unemitted_create_releases_its_retained_resource() {
 }
 
 #[test]
-fn cancelling_post_show_or_first_live_retains_cleanup_resource_despite_late_output() {
-    for first_live in [false, true] {
+fn cancelling_first_live_retains_cleanup_resource_despite_late_output() {
+    {
         let mut policy = DockPolicy::default();
         policy.set_allow_native_surfaces(true);
         let mut fixture = background_fixture(policy);
@@ -516,20 +305,8 @@ fn cancelling_post_show_or_first_live_retains_cleanup_resource_despite_late_outp
         let version = fixture.engine.version();
         let source_binding = background_source_binding(&fixture);
         let _ = fixture.engine.viewport.take_new_effects();
-        advance_pending_native_root_to_awaiting_visible(&mut fixture, request);
-        let _ = publish_background_native_window(
-            &mut fixture,
-            request,
-            WindowPresentationState::Visible,
-            4,
-        );
-        let post_show = current_native_staging_presentation(
-            &fixture,
-            request,
-            crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
-        );
-        let delayed_output = if first_live {
-            let _ = present_background_native_staging(&mut fixture, post_show);
+        advance_pending_native_root_to_ownership_transfer(&mut fixture, request);
+        let delayed_output = {
             assert_pending_first_live_resource(&fixture, request, &descriptor);
             let surface = request.binding().surface();
             let contribution =
@@ -574,8 +351,6 @@ fn cancelling_post_show_or_first_live_retains_cleanup_resource_despite_late_outp
             ));
             assert_pending_first_live_resource(&fixture, request, &descriptor);
             output
-        } else {
-            emit_background_native_staging(&mut fixture, post_show)
         };
         assert_eq!(
             delayed_output.endpoint(),
@@ -647,7 +422,7 @@ fn cancelling_post_show_or_first_live_retains_cleanup_resource_despite_late_outp
                     (binding == request.binding()).then_some(current)
                 }),
             Some(&retirement),
-            "late staging or semantic presentation must not consume or reissue cleanup ownership"
+            "late semantic presentation must not consume or reissue cleanup ownership"
         );
         assert!(
             fixture

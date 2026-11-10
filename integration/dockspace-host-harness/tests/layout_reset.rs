@@ -610,10 +610,7 @@ fn managed_native_prefix_and_reset_retry_share_one_publication_boundary() {
 
     let mut session = session(single_pane_layout(FIRST));
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .register_native_root(SURFACE, HostWindowToken::new(7))
@@ -686,19 +683,16 @@ fn managed_native_prefix_and_reset_retry_share_one_publication_boundary() {
 #[test]
 fn budgeted_native_prefix_rejects_reset_until_the_final_poll() {
     use dockspace::runtime::{
-        NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
-        NativeHostErrorKind, NativeInputBudget, NativeMonotonicClock, NativePointerEvent,
-        NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-        NativePointerRoster, NativeReceiverAnswer,
+        NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostErrorKind,
+        NativeInputBudget, NativeMonotonicClock, NativePointerEvent, NativePointerHover,
+        NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
+        NativeReceiverAnswer,
     };
     use std::time::Duration;
 
     let mut session = session(single_pane_layout(FIRST));
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     commit_deferred(
         session
@@ -772,7 +766,7 @@ fn budgeted_native_prefix_rejects_reset_until_the_final_poll() {
 fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_boundary() {
     use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
     use dockspace::runtime::{
-        HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
+        HostWindowToken, NativeDesktopPointerLocation, NativeDesktopPosition,
         NativeHostCapabilities, NativeHostCapability, NativeInputBudget, NativeMonotonicClock,
         NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
         NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
@@ -785,10 +779,7 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
     for synchronous_wrapper in [false, true] {
         let mut session = session(default_layout());
         session
-            .enable_managed_native_host(
-                NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         let capabilities = [
             NativeHostCapability::AuthoritativeInventory,
@@ -824,7 +815,7 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None);
+            .with_presentation(NativeWindowPresentationState::Visible);
         session
             .report_managed_native_snapshot([(old, facts)], NativeWorkAreaRoster::Unknown)
             .unwrap();

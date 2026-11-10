@@ -16,10 +16,9 @@ use crate::interaction::{
 };
 use crate::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
-    PlatformCapabilities, PlatformCapability, PresentationEffectAcknowledgement,
-    WindowCloseObservation, WindowCloseState, WindowCoordinateObservation,
-    WindowInventoryObservation, WindowPresentationObservation, WindowPresentationState,
-    WorkAreaRosterObservation,
+    PlatformCapabilities, PlatformCapability, WindowCloseObservation, WindowCloseState,
+    WindowCoordinateObservation, WindowInventoryObservation, WindowPresentationObservation,
+    WindowPresentationState, WorkAreaRosterObservation,
 };
 use crate::pointer_journal::{
     PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,

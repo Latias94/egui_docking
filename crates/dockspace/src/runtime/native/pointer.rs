@@ -1278,9 +1278,9 @@ mod handoff_tests {
     use crate::platform::WindowCoordinateObservation;
     use crate::policy::DockPolicy;
     use crate::runtime::{
-        DockspaceSession, HostInputOutcome, HostWindowToken, NativeCreateStrategy,
-        NativeHostErrorKind, NativeLocalCoordinates, NativeLocalPointerFact, PointerDeviceKind,
-        PointerEventMetadata, SurfaceUnavailableReason,
+        DockspaceSession, HostInputOutcome, HostWindowToken, NativeHostErrorKind,
+        NativeLocalCoordinates, NativeLocalPointerFact, PointerDeviceKind, PointerEventMetadata,
+        SurfaceUnavailableReason,
     };
     use crate::viewport::{CoordinateGeneration, CoordinateObservationGeneration};
     use std::time::Duration;
@@ -1302,10 +1302,7 @@ mod handoff_tests {
         )
         .unwrap();
         session
-            .enable_managed_native_host(
-                NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         session
             .register_native_root(surface, HostWindowToken::new(41))

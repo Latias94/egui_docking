@@ -8,9 +8,8 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceSession, HostFrameReport, HostWindowToken, HostWorkAreaToken, NativeCreateReadiness,
     NativeEffectAcknowledgement, NativeEffectOperation, NativeHostCapabilities,
-    NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
-    NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
+    NativeHostCapability, NativePointerRoster, NativeReceiverAnswer, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
     NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
     UniformSurfaceMetrics,
 };
@@ -44,10 +43,7 @@ fn managed_capabilities() -> NativeHostCapabilities {
 fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
     let mut session = session();
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed native host enrolls");
     session
         .configure_managed_native_capabilities(managed_capabilities())
@@ -107,61 +103,19 @@ fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
         .expect("the hidden child snapshot records the create acknowledgement");
     commit_native_frame(&mut session);
 
-    let pre_show = paint_staging(
-        &mut session,
-        child_binding,
-        NativeStagingPresentationPhase::PreShow,
-    );
-    session
-        .report_native_staging_presentation(pre_show, SurfacePresentationResult::Presented)
-        .expect("the pre-show staging output presents");
-    let mut pre_show_report = commit_native_frame(&mut session);
-    let show = take_only_effect(&mut pre_show_report);
-    assert!(matches!(
-        show.operation(),
-        NativeEffectOperation::ShowWindow { binding } if *binding == child_binding
-    ));
-    let show_ack = match show.accepted() {
-        Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
-        acknowledgement => panic!("show returned {acknowledgement:?}"),
-    };
-
     session
         .report_managed_native_snapshot(
             [
                 (root_binding, root_window_facts()),
                 (
                     child_binding,
-                    child_window_facts(requested_placement, NativeWindowPresentationState::Hidden)
-                        .with_presentation(NativeWindowPresentationState::Hidden, Some(show_ack)),
+                    child_window_facts(requested_placement, NativeWindowPresentationState::Visible)
+                        .with_create_readiness(NativeCreateReadiness::Prepared, None),
                 ),
             ],
             exact_work_areas(),
         )
-        .expect("the hidden child snapshot records the show acknowledgement");
-    commit_native_frame(&mut session);
-    session
-        .report_managed_native_snapshot(
-            [
-                (root_binding, root_window_facts()),
-                (
-                    child_binding,
-                    child_window_facts(requested_placement, NativeWindowPresentationState::Visible),
-                ),
-            ],
-            exact_work_areas(),
-        )
-        .expect("the exact visible child snapshot records");
-    commit_native_frame(&mut session);
-
-    let post_show = paint_staging(
-        &mut session,
-        child_binding,
-        NativeStagingPresentationPhase::PostShow,
-    );
-    session
-        .report_native_staging_presentation(post_show, SurfacePresentationResult::Presented)
-        .expect("the post-show staging output presents");
+        .expect("the host reports exact Prepared readiness");
     commit_native_frame(&mut session);
 
     measure_all_surfaces(&mut session);
@@ -290,7 +244,7 @@ fn root_window_facts() -> NativeWindowFacts {
         .with_native_scale_factor(scale())
         .with_presentation_scale_factor(scale())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
 }
 
 fn child_window_facts(
@@ -304,7 +258,7 @@ fn child_window_facts(
         .with_native_scale_factor(scale())
         .with_presentation_scale_factor(scale())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(presentation, None)
+        .with_presentation(presentation)
 }
 
 fn exact_work_areas() -> NativeWorkAreaRoster {
@@ -402,33 +356,6 @@ fn paint_and_present_all_surfaces(session: &mut DockspaceSession) -> HostFrameRe
             .expect("the exact complete output presents");
     }
     commit_native_frame(session)
-}
-
-fn paint_staging(
-    session: &mut DockspaceSession,
-    binding: NativeSurfaceBinding,
-    phase: NativeStagingPresentationPhase,
-) -> dockspace::runtime::PaintedNativeStagingOutput {
-    let mut frame = session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the staging frame begins");
-    let request = frame
-        .native_staging_paints()
-        .into_iter()
-        .find(|request| request.binding() == binding && request.phase() == phase)
-        .unwrap_or_else(|| panic!("the {phase:?} staging request must exist"));
-    frame
-        .confirm_native_staging_painted(request)
-        .expect("the exact staging output is painted");
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("semantic surfaces retain their current presentation");
-    let mut report = frame.commit().expect("the staging paint commits");
-    let [output] = report
-        .take_painted_native_staging_outputs()
-        .try_into()
-        .unwrap_or_else(|outputs: Vec<_>| panic!("expected one staging output, got {outputs:?}"));
-    output
 }
 
 fn take_only_effect(report: &mut HostFrameReport) -> dockspace::runtime::NativeEffectRequest {

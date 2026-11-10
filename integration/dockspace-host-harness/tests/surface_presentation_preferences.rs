@@ -16,12 +16,10 @@ use dockspace::runtime::{
     DockspaceNativeSurfaceHosting, DockspacePersistenceErrorKind, DockspaceSession,
     DockspaceSurfacePresentationPreference, DockspaceWindowPresentationPreference, HostFrameReport,
     HostInputOutcome, HostWindowToken, HostWorkAreaToken, NativeCloseState,
-    NativeCreateEffectAcknowledgement, NativeCreateReadiness, NativeCreateStrategy,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativeHostCapabilities,
-    NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
-    NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
-    NativeWorkAreaRoster, PaintedNativeStagingOutput, PaintedSurfaceOutput,
+    NativeCreateEffectAcknowledgement, NativeCreateReadiness, NativeEffectAcknowledgement,
+    NativeEffectOperation, NativeHostCapabilities, NativeHostCapability, NativePointerRoster,
+    NativeReceiverAnswer, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PaintedSurfaceOutput,
     SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 
@@ -144,10 +142,7 @@ fn register_windows_with_capabilities(
 ) -> [NativeSurfaceBinding; 2] {
     assert!(
         session
-            .enable_managed_native_host(
-                NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap()
             .is_empty()
     );
@@ -226,7 +221,7 @@ fn observe_windows(session: &mut DockspaceSession, bindings: [NativeSurfaceBindi
                 .with_native_scale_factor(native_scale)
                 .with_presentation_scale_factor(presentation_scale)
                 .with_input(NativeWindowInputState::ReceivesInput, None)
-                .with_presentation(NativeWindowPresentationState::Visible, None)
+                .with_presentation(NativeWindowPresentationState::Visible)
                 .with_close(NativeCloseState::Clear, None),
         )
     });
@@ -422,7 +417,6 @@ fn assert_no_native_outputs(report: &mut HostFrameReport) {
     assert!(report.native_bindings().is_empty());
     assert!(report.native_admissions().is_empty());
     assert!(report.take_native_effects().is_empty());
-    assert!(report.take_painted_native_staging_outputs().is_empty());
 }
 
 #[test]
@@ -887,7 +881,7 @@ fn native_preference_frame(session: &mut DockspaceSession) -> DockspaceHostFrame
 fn native_preference_snapshot(
     session: &mut DockspaceSession,
     bindings: [NativeSurfaceBinding; 2],
-    staging: Option<(NativeSurfaceBinding, NativeWindowFacts)>,
+    pending: Option<(NativeSurfaceBinding, NativeWindowFacts)>,
 ) -> HostFrameReport {
     let mut observations = bindings
         .map(|binding| {
@@ -900,11 +894,11 @@ fn native_preference_snapshot(
                     .with_native_scale_factor(native_scale)
                     .with_presentation_scale_factor(presentation_scale)
                     .with_input(NativeWindowInputState::ReceivesInput, None)
-                    .with_presentation(NativeWindowPresentationState::Visible, None),
+                    .with_presentation(NativeWindowPresentationState::Visible),
             )
         })
         .to_vec();
-    observations.extend(staging);
+    observations.extend(pending);
     session
         .report_managed_native_snapshot(
             observations,
@@ -945,27 +939,6 @@ fn native_preference_paint(
     frame.confirm_surface_painted(receipt).unwrap();
     let mut report = commit_deferred(frame);
     let [output] = report.take_painted_outputs().try_into().unwrap();
-    output
-}
-
-fn native_preference_staging_paint(
-    session: &mut DockspaceSession,
-    binding: NativeSurfaceBinding,
-    phase: NativeStagingPresentationPhase,
-) -> PaintedNativeStagingOutput {
-    let mut frame = native_preference_frame(session);
-    let requests = frame.native_staging_paints().collect::<Vec<_>>();
-    let [request] = requests.as_slice() else {
-        panic!("one exact staging output must be requested");
-    };
-    assert_eq!(request.binding(), binding);
-    assert_eq!(request.phase(), phase);
-    frame.confirm_native_staging_painted(*request).unwrap();
-    let mut report = commit_deferred(frame);
-    let [output] = report
-        .take_painted_native_staging_outputs()
-        .try_into()
-        .unwrap();
     output
 }
 
@@ -1019,12 +992,8 @@ fn pending_native_preference_tear_off() -> (
     assert!(!report.workspace_changed());
     let [create] = report.take_native_effects().try_into().unwrap();
     let binding = match create.operation() {
-        NativeEffectOperation::CreateWindow {
-            binding,
-            strategy: NativeCreateStrategy::Staged,
-            ..
-        } => *binding,
-        operation => panic!("expected a staged native create, got {operation:?}"),
+        NativeEffectOperation::CreateWindow { binding, .. } => *binding,
+        operation => panic!("expected the exact CreateWindow request, got {operation:?}"),
     };
     let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
         panic!("creation must retain its exact readiness acknowledgement");
@@ -1048,31 +1017,27 @@ fn native_preference_child_facts() -> NativeWindowFacts {
         .with_native_scale_factor(ScaleFactor::new(1.0).unwrap())
         .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_create_readiness(NativeCreateReadiness::Created, None)
+        .with_create_readiness(NativeCreateReadiness::Prepared, None)
 }
 
 #[test]
-fn persistent_native_staging_can_be_cancelled_without_publishing_a_surface_preference() {
-    let (mut session, bindings, staging, created) = pending_native_preference_tear_off();
+fn persistent_native_preparation_can_be_cancelled_without_publishing_a_surface_preference() {
+    let (mut session, bindings, pending, created) = pending_native_preference_tear_off();
     let version = session.version();
     let preferences = read_preferences(&session);
     native_preference_snapshot(
         &mut session,
         bindings,
         Some((
-            staging,
+            pending,
             native_preference_child_facts()
-                .with_presentation(NativeWindowPresentationState::Hidden, None)
-                .with_create_readiness(NativeCreateReadiness::Created, Some(created)),
+                .with_presentation(NativeWindowPresentationState::Visible)
+                .with_create_readiness(NativeCreateReadiness::Prepared, Some(created)),
         )),
     );
-    let output = native_preference_staging_paint(
-        &mut session,
-        staging,
-        NativeStagingPresentationPhase::PreShow,
-    );
+    let output = native_preference_paint(&mut session, pending.surface());
     session
-        .report_native_staging_presentation(output, SurfacePresentationResult::Dropped)
+        .report_surface_presentation(output, SurfacePresentationResult::Dropped)
         .unwrap();
     let mut report = commit_deferred(native_preference_frame(&mut session));
     assert!(report.take_native_effects().is_empty());
@@ -1092,9 +1057,9 @@ fn persistent_native_staging_can_be_cancelled_without_publishing_a_surface_prefe
     let mut report = commit_deferred(frame);
     let [close] = report.take_native_effects().try_into().unwrap();
     assert!(matches!(close.operation(),
-        NativeEffectOperation::CompensatingClose { binding } if *binding == staging));
+        NativeEffectOperation::CompensatingClose { binding } if *binding == pending));
     let Some(NativeEffectAcknowledgement::Close(closed)) = close.accepted() else {
-        panic!("staging cancellation must retain its exact close acknowledgement");
+        panic!("pending creation cancellation must retain its exact close acknowledgement");
     };
     assert!(!session.has_pending_native_create());
     assert_eq!(session.version(), version);
@@ -1104,77 +1069,45 @@ fn persistent_native_staging_can_be_cancelled_without_publishing_a_surface_prefe
     native_preference_snapshot(
         &mut session,
         bindings,
-        Some((staging, NativeWindowFacts::destroyed_after(closed))),
+        Some((pending, NativeWindowFacts::destroyed_after(closed))),
     );
-    session.report_native_binding_quiescence(staging).unwrap();
+    session.report_native_binding_quiescence(pending).unwrap();
     commit_deferred(native_preference_frame(&mut session));
     assert_eq!(read_preferences(&session), preferences);
     session.save_document_json().unwrap();
 }
 
 #[test]
-fn persistent_native_staging_publishes_hosting_only_with_exact_first_live_output() {
-    let (mut session, bindings, staging, created) = pending_native_preference_tear_off();
+fn persistent_native_preparation_publishes_hosting_only_with_exact_first_live_output() {
+    let (mut session, bindings, pending, created) = pending_native_preference_tear_off();
     let before = session.version();
     let preferences = read_preferences(&session);
     native_preference_snapshot(
         &mut session,
         bindings,
         Some((
-            staging,
+            pending,
             native_preference_child_facts()
-                .with_presentation(NativeWindowPresentationState::Hidden, None)
-                .with_create_readiness(NativeCreateReadiness::Created, Some(created)),
-        )),
-    );
-    let output = native_preference_staging_paint(
-        &mut session,
-        staging,
-        NativeStagingPresentationPhase::PreShow,
-    );
-    session
-        .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
-        .unwrap();
-    let mut report = commit_deferred(native_preference_frame(&mut session));
-    let [show] = report.take_native_effects().try_into().unwrap();
-    assert!(matches!(show.operation(),
-        NativeEffectOperation::ShowWindow { binding } if *binding == staging));
-    let Some(NativeEffectAcknowledgement::Presentation(shown)) = show.accepted() else {
-        panic!("staging visibility needs its exact Show acknowledgement");
-    };
-    native_preference_snapshot(
-        &mut session,
-        bindings,
-        Some((
-            staging,
-            native_preference_child_facts()
-                .with_presentation(NativeWindowPresentationState::Visible, Some(shown)),
+                .with_presentation(NativeWindowPresentationState::Visible)
+                .with_create_readiness(NativeCreateReadiness::Prepared, Some(created)),
         )),
     );
     native_preference_snapshot(
         &mut session,
         bindings,
         Some((
-            staging,
+            pending,
             native_preference_child_facts()
-                .with_presentation(NativeWindowPresentationState::Visible, None),
+                .with_presentation(NativeWindowPresentationState::Visible),
         )),
     );
-    let output = native_preference_staging_paint(
-        &mut session,
-        staging,
-        NativeStagingPresentationPhase::PostShow,
-    );
-    session
-        .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
-        .unwrap();
     let report = commit_deferred(native_preference_frame(&mut session));
     assert!(report.native_admissions().is_empty());
     assert_eq!(session.version(), before);
     assert_eq!(read_preferences(&session), preferences);
     session.save_document_json().unwrap();
 
-    let dropped = native_preference_paint(&mut session, staging.surface());
+    let dropped = native_preference_paint(&mut session, pending.surface());
     session
         .report_surface_presentation(dropped, SurfacePresentationResult::Dropped)
         .unwrap();
@@ -1184,14 +1117,14 @@ fn persistent_native_staging_publishes_hosting_only_with_exact_first_live_output
     assert_eq!(read_preferences(&session), preferences);
     session.save_document_json().unwrap();
 
-    let output = native_preference_paint(&mut session, staging.surface());
+    let output = native_preference_paint(&mut session, pending.surface());
     session
         .report_surface_presentation(output, SurfacePresentationResult::Presented)
         .unwrap();
     let mut dropped = native_preference_frame(&mut session);
     assert_eq!(
         dropped.view().item(BACK_ITEM).unwrap().surface(),
-        staging.surface()
+        pending.surface()
     );
     dropped
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -1201,14 +1134,14 @@ fn persistent_native_staging_publishes_hosting_only_with_exact_first_live_output
     assert_eq!(read_preferences(&session), preferences);
     assert_eq!(session.view().item(BACK_ITEM).unwrap().surface(), CHILD);
     let report = commit_deferred(native_preference_frame(&mut session));
-    assert_eq!(report.native_admissions(), &[staging]);
+    assert_eq!(report.native_admissions(), &[pending]);
     assert_eq!(
         session.view().item(BACK_ITEM).unwrap().surface(),
-        staging.surface()
+        pending.surface()
     );
     assert_eq!(
         session.view().item(BACK_DETAIL).unwrap().surface(),
-        staging.surface()
+        pending.surface()
     );
     assert!(!session.has_pending_native_create());
     let published = read_preferences(&session);
@@ -1216,7 +1149,7 @@ fn persistent_native_staging_publishes_hosting_only_with_exact_first_live_output
     assert_eq!(
         published
             .iter()
-            .find(|value| value.surface() == staging.surface())
+            .find(|value| value.surface() == pending.surface())
             .unwrap()
             .native_hosting(),
         Some(DockspaceNativeSurfaceHosting::Child {
@@ -1228,7 +1161,7 @@ fn persistent_native_staging_publishes_hosting_only_with_exact_first_live_output
         DockspaceSession::from_document_json(&saved, DockPolicy::default(), recognize).unwrap();
     assert_eq!(
         restored.view().item(BACK_ITEM).unwrap().surface(),
-        staging.surface()
+        pending.surface()
     );
     assert_eq!(read_preferences(&restored).len(), 3);
 }

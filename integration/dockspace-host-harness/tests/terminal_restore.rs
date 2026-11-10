@@ -14,10 +14,10 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockPresentationConfig, DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceHostFrame,
     DockspaceRuntimeErrorKind, DockspaceSession, HostFrameReport, HostInputOutcome,
-    HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation, NativeDesktopPosition,
-    NativeInputBudget, NativeMonotonicClock, NativePointerEvent, NativePointerHover,
-    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
-    NativeReceiverAnswer, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    HostWindowToken, NativeDesktopPointerLocation, NativeDesktopPosition, NativeInputBudget,
+    NativeMonotonicClock, NativePointerEvent, NativePointerHover, NativePointerId,
+    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 
 const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x74; 16]);
@@ -262,10 +262,7 @@ fn bounded_native_prefix_and_terminal_restore_share_retry_watermarks_and_root_su
     let bytes = saved_document();
     let mut session = target();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .register_native_root(SURFACE, HostWindowToken::new(7))

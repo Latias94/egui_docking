@@ -977,9 +977,6 @@ impl DockEngine {
         };
 
         match payload {
-            HostPresentationOutputPayload::NativeStaging { .. } => {
-                Ok(HostPresentationContinuation::Presented)
-            }
             HostPresentationOutputPayload::Paint {
                 scene,
                 coordinate_generation,

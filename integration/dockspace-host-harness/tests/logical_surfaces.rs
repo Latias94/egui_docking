@@ -10,9 +10,9 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceSession, DockspaceSubmittedAction,
     HostFrameReport, HostInputOutcome, HostPointerInput, HostPointerRoute, HostWindowToken,
-    NativeCreateStrategy, NativeHostCapabilities, NativeHostCapability, NativePointerRoster,
-    NativeReceiverAnswer, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaRoster, PaintedSurfaceOutput, PresentedDockReceiver, PresentedDockspaceSurface,
+    NativeHostCapabilities, NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+    PaintedSurfaceOutput, PresentedDockReceiver, PresentedDockspaceSurface,
     SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
     SurfacePointerButton, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
     SurfacePointerReceiverFacts, SurfacePresentationResult, SurfaceUnavailableReason,
@@ -477,10 +477,7 @@ fn logical_surface_refusals_and_frame_rollback_are_atomic() {
     policy.set_allow_native_surfaces(true);
     let mut native = DockspaceSession::from_layout(layout, policy).unwrap();
     native
-        .enable_managed_native_host(
-            NativeCreateStrategy::DirectPrepared,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     native
         .configure_managed_native_capabilities(
@@ -514,7 +511,7 @@ fn logical_surface_refusals_and_frame_rollback_are_atomic() {
                     .with_native_scale_factor(scale)
                     .with_presentation_scale_factor(scale)
                     .with_input(NativeWindowInputState::ReceivesInput, None)
-                    .with_presentation(NativeWindowPresentationState::Visible, None),
+                    .with_presentation(NativeWindowPresentationState::Visible),
             )],
             NativeWorkAreaRoster::Unknown,
         )

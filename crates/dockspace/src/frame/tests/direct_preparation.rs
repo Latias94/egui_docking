@@ -1,7 +1,5 @@
 use super::*;
-use crate::platform::{
-    NativeCreateReadiness, NativeCreateStrategy, WindowCreatePreparationObservation,
-};
+use crate::platform::{NativeCreateReadiness, WindowCreatePreparationObservation};
 
 #[test]
 fn never_created_replacement_retains_the_exact_provider_guard_until_quiescence() {
@@ -25,7 +23,6 @@ fn never_created_replacement_retains_the_exact_provider_guard_until_quiescence()
             binding: replacement,
             placement: PhysicalRect::new(5.0, 0.0, 310.0, 225.0).unwrap(),
             role: ViewportRole::Child,
-            strategy: NativeCreateStrategy::Staged,
         })
         .unwrap();
     coordinator
@@ -36,7 +33,6 @@ fn never_created_replacement_retains_the_exact_provider_guard_until_quiescence()
             recovery(712),
             replacement,
             create,
-            NativeCreateStrategy::Staged,
         ))
         .unwrap();
     let [request]: [_; 1] = coordinator.take_new_effects().try_into().unwrap();
@@ -93,7 +89,7 @@ fn never_created_replacement_retains_the_exact_provider_guard_until_quiescence()
 }
 
 #[test]
-fn staged_replacement_failed_before_first_live_revokes_readiness_and_closes_exact_binding() {
+fn prepared_replacement_failed_before_first_live_revokes_readiness_and_closes_exact_binding() {
     let (mut coordinator, destroyed, replacement, obligation) = ready_recovery_replacement();
     let create = coordinator
         .recovery_pending(destroyed.surface())
@@ -111,7 +107,7 @@ fn staged_replacement_failed_before_first_live_revokes_readiness_and_closes_exac
     );
     let transition = coordinator
         .publish_snapshot(&snapshot_at(4, vec![failed]))
-        .expect("a renderer failure after post-show must publish");
+        .expect("a renderer failure after Prepared must publish");
 
     assert_eq!(coordinator.native_ready_basis(replacement), None);
     assert!(
@@ -193,7 +189,6 @@ fn staged_replacement_failed_before_first_live_revokes_readiness_and_closes_exac
 #[test]
 fn direct_replacement_provider_handoff_before_first_live_compensates_with_successor() {
     let mut coordinator = ViewportCoordinator::default();
-    coordinator.freeze_native_create_strategy(NativeCreateStrategy::DirectPrepared);
     let surface = SurfaceId::new(810);
     let epoch = WorkspaceEpoch::default();
     let destroyed = ViewportBinding::new(
@@ -215,7 +210,6 @@ fn direct_replacement_provider_handoff_before_first_live_compensates_with_succes
             placement: PhysicalRect::new(5.0, 0.0, 310.0, 225.0)
                 .expect("replacement placement must be valid"),
             role: ViewportRole::Child,
-            strategy: NativeCreateStrategy::DirectPrepared,
         })
         .expect("the direct replacement create effect must enter the ledger");
     coordinator
@@ -226,7 +220,6 @@ fn direct_replacement_provider_handoff_before_first_live_compensates_with_succes
             obligation,
             replacement,
             create,
-            NativeCreateStrategy::DirectPrepared,
         ))
         .expect("the original recovery must own the direct replacement");
     let emitted = coordinator.take_new_effects();
@@ -327,7 +320,6 @@ fn direct_replacement_provider_handoff_before_first_live_compensates_with_succes
         Some(provider_lost)
     );
     assert_eq!(coordinator.native_ready_basis(replacement), None);
-    assert!(coordinator.native_staging_presentations().next().is_none());
     assert_eq!(
         coordinator.admit_native_surface_first_live(
             NativeSurfaceEstablishmentOrigin::Destroyed { binding: destroyed },
@@ -361,19 +353,16 @@ fn direct_replacement_provider_handoff_before_first_live_compensates_with_succes
 }
 
 #[test]
-fn staged_replacement_first_live_survives_terminal_effect_compaction() {
+fn prepared_replacement_first_live_survives_terminal_effect_compaction() {
     let (mut coordinator, destroyed, replacement, obligation) = ready_recovery_replacement();
     let basis = coordinator
         .native_ready_basis(replacement)
         .expect("completed staging must authorize the first-live output");
-    let show = coordinator
-        .effects()
-        .records()
-        .find_map(|(effect, record)| {
-            matches!(record.request().effect(), PlatformEffect::ShowWindow { binding, .. } if *binding == replacement)
-                .then_some(effect)
-        })
-        .expect("the staged replacement must have an applied ShowWindow effect");
+    let create = coordinator
+        .recovery_pending(destroyed.surface())
+        .unwrap()
+        .replacement_effect()
+        .unwrap();
     let mut retained = BTreeSet::new();
     coordinator.extend_referenced_effects(&mut retained);
     coordinator.mark_effect_boundary_published();
@@ -389,7 +378,6 @@ fn staged_replacement_first_live_survives_terminal_effect_compaction() {
         ))
         .expect("compatible visible facts after compaction must preserve readiness");
     assert!(transition.actions().is_empty());
-    assert!(coordinator.native_staging_presentations().next().is_none());
     assert_eq!(coordinator.native_ready_basis(replacement), Some(basis));
     coordinator
         .admit_native_surface_first_live(
@@ -408,5 +396,5 @@ fn staged_replacement_first_live_survives_terminal_effect_compaction() {
     retained.clear();
     coordinator.extend_referenced_effects(&mut retained);
     coordinator.compact_published_terminal_effects(&retained);
-    assert!(coordinator.effects().record(show).is_none());
+    assert!(coordinator.effects().record(create).is_none());
 }

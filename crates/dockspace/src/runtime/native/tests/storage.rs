@@ -18,7 +18,7 @@ fn pending_report_capacity_tracks_exact_emissions_and_shared_abandonment_once() 
                     .with_native_scale_factor(scale)
                     .with_presentation_scale_factor(scale)
                     .with_input(NativeWindowInputState::ReceivesInput, None)
-                    .with_presentation(NativeWindowPresentationState::Visible, None)
+                    .with_presentation(NativeWindowPresentationState::Visible)
                     .with_close(NativeCloseState::Clear, None),
             )],
             NativeWorkAreaRoster::Exact(vec![work_area(1)]),

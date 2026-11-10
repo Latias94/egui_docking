@@ -1361,8 +1361,7 @@ mod tests {
     use crate::model::DockspaceView;
     use crate::platform::{
         ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
-        PresentationEffectAcknowledgement, WindowCoordinateObservation,
-        WindowPresentationObservation, WindowPresentationState,
+        WindowCoordinateObservation, WindowPresentationObservation, WindowPresentationState,
     };
     use crate::policy::DockPolicy;
     use crate::surface_recovery::SurfaceRecoveryBootstrap;
@@ -2028,7 +2027,6 @@ mod tests {
                     *root,
                     PresentationObservationGeneration::new(1),
                     Authority::Known(WindowPresentationState::Visible),
-                    PresentationEffectAcknowledgement::known(None),
                 )),
             ObservedWindow::new(*child),
         ];

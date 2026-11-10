@@ -5,7 +5,6 @@ use super::*;
 use crate::frame::NativeCreatePhase;
 use crate::presentation_observation::{
     HostPresentationContinuation, HostPresentationEndpoint, HostPresentationOutput,
-    NativeStagingPresentationPhase,
 };
 use crate::runtime::{
     DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
@@ -20,7 +19,6 @@ fn observed_source_window(
     generation: u64,
     x: f64,
     presentation: WindowPresentationState,
-    acknowledgement: Option<crate::effect::EffectId>,
 ) -> ObservedWindow {
     let scale = ScaleFactor::new(1.0).expect("the native scale must be valid");
     ObservedWindow::new(binding)
@@ -42,7 +40,6 @@ fn observed_source_window(
             binding,
             PresentationObservationGeneration::new(generation),
             Authority::Known(presentation),
-            PresentationEffectAcknowledgement::known(acknowledgement),
         ))
 }
 
@@ -135,8 +132,8 @@ fn native_child_source_fixture() -> BackgroundFixture {
         &mut fixture,
         1,
         vec![
-            observed_source_window(host, 1, 0.0, WindowPresentationState::Visible, None),
-            observed_source_window(source, 1, 500.0, WindowPresentationState::Visible, None),
+            observed_source_window(host, 1, 0.0, WindowPresentationState::Visible),
+            observed_source_window(source, 1, 500.0, WindowPresentationState::Visible),
         ],
         Vec::new(),
     );
@@ -283,79 +280,36 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
             && matches!(effect.effect(), PlatformEffect::CreateWindow { binding: actual, .. } if *actual == binding)
     }));
 
-    let mut show = None;
-    for (generation, presentation) in [
-        (2, WindowPresentationState::Hidden),
-        (3, WindowPresentationState::Hidden),
-        (4, WindowPresentationState::Visible),
+    for (generation, presentation, readiness) in [
+        (
+            2,
+            WindowPresentationState::Hidden,
+            crate::platform::NativeCreateReadiness::Created,
+        ),
+        (
+            3,
+            WindowPresentationState::Visible,
+            crate::platform::NativeCreateReadiness::Prepared,
+        ),
     ] {
-        let acknowledgement = if generation == 2 {
-            Some(create)
-        } else {
-            show.take()
-        };
         publish_source_windows(
             &mut fixture,
             generation,
             vec![
-                observed_source_window(
-                    host,
-                    generation,
-                    0.0,
-                    WindowPresentationState::Visible,
-                    None,
-                ),
-                observed_source_window(
-                    source,
-                    generation,
-                    500.0,
-                    WindowPresentationState::Visible,
-                    None,
-                ),
-                observed_source_window(binding, generation, 1000.0, presentation, acknowledgement)
+                observed_source_window(host, generation, 0.0, WindowPresentationState::Visible),
+                observed_source_window(source, generation, 500.0, WindowPresentationState::Visible),
+                observed_source_window(binding, generation, 1000.0, presentation)
                     .with_create_preparation(
                         crate::platform::WindowCreatePreparationObservation::new(
                             binding,
                             CoordinateObservationGeneration::new(generation),
-                            Authority::Known(crate::platform::NativeCreateReadiness::Created),
-                            acknowledgement.filter(|effect| *effect == create),
+                            Authority::Known(readiness),
+                            (generation == 2).then_some(create),
                         ),
                     ),
             ],
             Vec::new(),
         );
-        let staging = begin_test_host_frame(&fixture.engine, fixture.presentation_host)
-            .view()
-            .native_staging_presentations()
-            .find(|presentation| presentation.binding() == binding);
-        if generation == 3 {
-            assert!(
-                staging.is_none(),
-                "show acknowledgement must precede visibility"
-            );
-            continue;
-        }
-        let staging =
-            staging.expect("the real native lifecycle must request an exact staging output");
-        assert_eq!(
-            staging.phase(),
-            if generation == 2 {
-                NativeStagingPresentationPhase::PreShow
-            } else {
-                NativeStagingPresentationPhase::PostShow
-            },
-        );
-        let presented = present_background_native_staging(&mut fixture, staging);
-        if generation == 2 {
-            show = presented.platform_effects().iter().find_map(|effect| {
-                matches!(effect.effect(), PlatformEffect::ShowWindow { binding: actual, .. } if *actual == binding)
-                    .then_some(effect.id())
-            });
-            assert!(
-                show.is_some(),
-                "exact pre-show presentation must emit the real show effect"
-            );
-        }
     }
     assert!(matches!(
         fixture
@@ -390,7 +344,7 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
     let unavailable_host =
         ObservedWindow::new(host).with_coordinate_observation(WindowCoordinateObservation::new(
             host,
-            CoordinateObservationGeneration::new(5),
+            CoordinateObservationGeneration::new(4),
             Authority::Unknown(AuthorityUnavailableReason::NotReported),
             Authority::Unknown(AuthorityUnavailableReason::NotReported),
             Authority::Unknown(AuthorityUnavailableReason::NotReported),
@@ -398,10 +352,16 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
         ));
     let destroyed = publish_source_windows(
         &mut fixture,
-        5,
+        4,
         vec![
             unavailable_host,
-            observed_source_window(binding, 5, 1000.0, WindowPresentationState::Visible, None),
+            observed_source_window(binding, 4, 1000.0, WindowPresentationState::Visible)
+                .with_create_preparation(crate::platform::WindowCreatePreparationObservation::new(
+                    binding,
+                    CoordinateObservationGeneration::new(4),
+                    Authority::Known(crate::platform::NativeCreateReadiness::Prepared),
+                    None,
+                )),
         ],
         vec![WindowCloseObservation::new(
             source,
@@ -544,10 +504,6 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
 #[test]
 fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
     let mut fixture = native_child_source_fixture();
-    fixture
-        .engine
-        .viewport
-        .freeze_native_create_strategy(crate::platform::NativeCreateStrategy::DirectPrepared);
     let expected = fixture.engine.version();
     submit_test_input(
         &mut fixture.engine,
@@ -619,7 +575,7 @@ fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
                     effect.effect(),
                     PlatformEffect::CreateWindow {
                         binding,
-                        strategy: crate::platform::NativeCreateStrategy::DirectPrepared,
+
                         ..
                     } if *binding == request.1
                 )
@@ -633,16 +589,15 @@ fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
     assert!(source.surface() < b_binding.surface());
     assert!(b_binding.surface() < a_binding.surface());
 
-    let unavailable_host =
-        observed_source_window(host, 2, 0.0, WindowPresentationState::Visible, None)
-            .with_coordinate_observation(WindowCoordinateObservation::new(
-                host,
-                CoordinateObservationGeneration::new(2),
-                Authority::Unknown(AuthorityUnavailableReason::NotReported),
-                Authority::Unknown(AuthorityUnavailableReason::NotReported),
-                Authority::Unknown(AuthorityUnavailableReason::NotReported),
-                Authority::Unknown(AuthorityUnavailableReason::NotReported),
-            ));
+    let unavailable_host = observed_source_window(host, 2, 0.0, WindowPresentationState::Visible)
+        .with_coordinate_observation(WindowCoordinateObservation::new(
+            host,
+            CoordinateObservationGeneration::new(2),
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        ));
     let mut windows = vec![unavailable_host];
     windows.extend(
         requests
@@ -654,7 +609,6 @@ fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
                     2,
                     1000.0 + index as f64 * 400.0,
                     WindowPresentationState::Visible,
-                    None,
                 )
                 .with_create_preparation(
                     crate::platform::WindowCreatePreparationObservation::new(

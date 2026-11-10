@@ -23,10 +23,7 @@ fn overload_terminal_remains_available_after_the_entire_ordinary_input_budget_is
     .unwrap();
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     let mut enrollment = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)

@@ -428,10 +428,7 @@ fn uncommitted_roster_change_stays_unsettled_after_an_earlier_prefix_commit() {
     )
     .expect("the unregistered workspace must initialize");
     session
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the native host must enroll before registration");
     commit_managed_frame(&mut session);
     session
@@ -591,10 +588,7 @@ fn split_presentation_reports_settle_only_the_stream_in_each_exact_prefix() {
     )
     .expect("the session must initialize");
     session
-        .enable_managed_native_host(
-            crate::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the native host must enroll");
     session
         .configure_managed_native_capabilities(full_managed_capabilities())
@@ -614,7 +608,7 @@ fn split_presentation_reports_settle_only_the_stream_in_each_exact_prefix() {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None);
     let observations = session
         .native

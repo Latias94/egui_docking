@@ -11,15 +11,15 @@ use crate::policy::DockPolicy;
 use crate::runtime::{
     DockspaceHostFrame, DockspacePreviewVisual, DockspaceSession, HostFrameReport,
     HostInputOutcome, HostPointerInput, HostPointerRoute, HostWindowToken, NativeCloseState,
-    NativeCreateStrategy, NativeGlobalFocus, NativeHostCapabilities, NativeHostCapability,
-    NativeLocalPointerFact, NativeLocalPointerLocation, NativePointerButton, NativePointerEvent,
-    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
-    NativeReceiverAnswer, NativeReceiverPurpose, NativeSurfaceBinding, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
-    SurfacePaintDisposition, SurfacePaintProgramOperation as Operation,
-    SurfacePaintProgramStep as Step, SurfacePointerButton, SurfacePointerCapture,
-    SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    NativeGlobalFocus, NativeHostCapabilities, NativeHostCapability, NativeLocalPointerFact,
+    NativeLocalPointerLocation, NativePointerButton, NativePointerEvent, NativePointerId,
+    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
+    NativeReceiverPurpose, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaRoster, SurfacePaintDisposition,
+    SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
+    SurfacePointerButton, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerReceiverFacts, SurfacePresentationResult, SurfaceUnavailableReason,
+    UniformSurfaceMetrics,
 };
 
 const HOST: SurfaceId = SurfaceId::new(1);
@@ -317,10 +317,7 @@ fn focused_root_controls_child_magnetism_but_unfocused_binding_is_inert() {
     policy.set_allow_native_surfaces(true);
     let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(
@@ -358,7 +355,7 @@ fn focused_root_controls_child_magnetism_but_unfocused_binding_is_inert() {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None);
     session
         .report_managed_native_snapshot(

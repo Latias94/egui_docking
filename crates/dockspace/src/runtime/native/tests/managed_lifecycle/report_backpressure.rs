@@ -4,7 +4,7 @@ use super::*;
 use crate::effect::{DispatchFailureReason, EffectPhase};
 use std::num::NonZeroUsize;
 
-fn pending_staging_show() -> (
+fn pending_created_window() -> (
     DockspaceSession,
     NativeSurfaceBinding,
     crate::runtime::NativeEffectRequest,
@@ -31,10 +31,6 @@ fn pending_staging_show() -> (
         NativeEffectOperation::CreateWindow { binding, .. } => *binding,
         operation => panic!("expected the create request, got {operation:?}"),
     };
-    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
-        panic!("create must return its exact create acknowledgement");
-    };
-    assert!(session.abandoned_native_effects.is_quiescent());
     session
         .report_managed_native_snapshot(
             [
@@ -47,11 +43,8 @@ fn pending_staging_show() -> (
                         .with_native_scale_factor(native_scale())
                         .with_presentation_scale_factor(native_scale())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
-                        .with_create_readiness(
-                            crate::runtime::NativeCreateReadiness::Created,
-                            Some(acknowledgement),
-                        )
+                        .with_presentation(NativeWindowPresentationState::Hidden)
+                        .with_create_readiness(crate::runtime::NativeCreateReadiness::Created, None)
                         .with_close(NativeCloseState::Clear, None),
                 ),
             ],
@@ -59,22 +52,6 @@ fn pending_staging_show() -> (
         )
         .expect("the exact hidden staging window records");
     commit_managed_frame(&mut session);
-    let pre_show = paint_staging(
-        &mut session,
-        binding,
-        NativeStagingPresentationPhase::PreShow,
-    );
-    assert_eq!(pre_show.binding(), binding);
-    session
-        .report_native_staging_presentation(pre_show, SurfacePresentationResult::Presented)
-        .expect("the exact pre-show output records its terminal presentation");
-    let mut report = commit_managed_frame_report(&mut session);
-    let show = take_only_native_effect(&mut report);
-    assert!(matches!(
-        show.operation(),
-        NativeEffectOperation::ShowWindow { binding: target } if *target == binding
-    ));
-    assert!(!session.abandoned_native_effects.is_quiescent());
     let native = session
         .native
         .as_mut()
@@ -86,15 +63,15 @@ fn pending_staging_show() -> (
         .recorder_mut()
         .configure_native_transport_capacity(NonZeroUsize::new(1).unwrap(), 4 << 20)
         .expect("the single input-record slot configures");
-    (session, binding, show)
+    (session, binding, create)
 }
 
 #[test]
 fn retired_cleanup_observations_keep_window_generation_without_restoring_admission() {
-    let (mut session, binding, show) = pending_staging_show();
+    let (mut session, binding, create_delivery) = pending_created_window();
     assert!(matches!(
-        show.accepted(),
-        Some(NativeEffectAcknowledgement::Presentation(_))
+        create_delivery.accepted(),
+        Some(NativeEffectAcknowledgement::Create(_))
     ));
     let root = session
         .native
@@ -141,7 +118,7 @@ fn retired_cleanup_observations_keep_window_generation_without_restoring_admissi
                     (
                         binding,
                         NativeWindowFacts::live()
-                            .with_presentation(NativeWindowPresentationState::Hidden, None),
+                            .with_presentation(NativeWindowPresentationState::Hidden),
                     ),
                 ],
                 NativeWorkAreaRoster::Exact(vec![work_area(1)]),
@@ -199,8 +176,8 @@ fn retired_cleanup_observations_keep_window_generation_without_restoring_admissi
     assert_eq!(state.window_generation, 0);
 }
 
-fn assert_staging_close_backpressure(abandon_show: bool) {
-    let (mut session, binding, show) = pending_staging_show();
+fn assert_pending_close_backpressure(abandon_create: bool) {
+    let (mut session, binding, create_delivery) = pending_created_window();
     let version = session.version();
     let source_sequence = session.committed_source_sequence;
     let committed_before = session.engine.backend_ingress_committed_through();
@@ -212,7 +189,7 @@ fn assert_staging_close_backpressure(abandon_show: bool) {
         .map(|(id, saga)| (id, saga.create(), saga.resource()))
         .next()
         .expect("the staging window retains its original create saga");
-    let show_effect = session
+    let held_create_effect = session
         .engine
         .viewport()
         .effects()
@@ -220,11 +197,11 @@ fn assert_staging_close_backpressure(abandon_show: bool) {
         .find_map(|(id, record)| {
             matches!(
                 record.request().effect(),
-                PlatformEffect::ShowWindow { binding: target, .. } if *target == binding.binding
+                PlatformEffect::CreateWindow { binding: target, .. } if *target == binding.binding
             )
             .then_some(id)
         })
-        .expect("the held show request has one core identity");
+        .expect("the held create request has one core identity");
     let retained = session
         .engine
         .viewport()
@@ -255,15 +232,15 @@ fn assert_staging_close_backpressure(abandon_show: bool) {
 
     session
         .publish_native_close(binding, NativeCloseState::Requested, None)
-        .expect("the staging close is accepted before the show failure");
+        .expect("the staging close is accepted before the create dispatch failure");
     let close_recorded = session.native_input_recorded_count();
     assert_eq!(close_recorded, committed_before.get() + 1);
-    let mut retry = if abandon_show {
-        drop(show);
+    let mut retry = if abandon_create {
+        drop(create_delivery);
         assert!(session.abandoned_native_effects.has_pending());
         None
     } else {
-        let failed = show.dispatch_failed(NativeDispatchFailure::WindowUnavailable);
+        let failed = create_delivery.dispatch_failed(NativeDispatchFailure::WindowUnavailable);
         let rejected = session
             .report_native_effect_result(failed)
             .expect_err("the accepted close fills the only input-record slot");
@@ -304,7 +281,7 @@ fn assert_staging_close_backpressure(abandon_show: bool) {
             assert_eq!(rejected.kind(), NativeHostErrorKind::InputCapacity);
             let (_, failed) = rejected.into_parts();
             assert_eq!(failed.binding(), binding);
-            assert_eq!(failed.result.effect(), show_effect);
+            assert_eq!(failed.result.effect(), held_create_effect);
             retry = Some(failed);
         }
     }
@@ -312,7 +289,6 @@ fn assert_staging_close_backpressure(abandon_show: bool) {
     let mut prefix = commit_managed_frame_report(&mut session);
     assert!(prefix.take_native_effects().is_empty());
     assert!(prefix.native_admissions().is_empty());
-    assert!(prefix.take_painted_native_staging_outputs().is_empty());
     assert_eq!(
         session.engine.backend_ingress_committed_through().get(),
         close_recorded
@@ -364,7 +340,7 @@ fn assert_staging_close_backpressure(abandon_show: bool) {
     }
     let mut settlement = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the original show failure enters the next accepted prefix");
+        .expect("the original create dispatch failure enters the next accepted prefix");
     assert_eq!(
         settlement.frame.backend_ingress_through().get(),
         close_recorded + 1
@@ -397,7 +373,6 @@ fn assert_staging_close_backpressure(abandon_show: bool) {
         NativeEffectOperation::CompensatingClose { binding: target } if *target == binding
     ));
     assert!(settlement.native_admissions().is_empty());
-    assert!(settlement.take_painted_native_staging_outputs().is_empty());
     assert_eq!(
         session.engine.backend_ingress_committed_through().get(),
         close_recorded + 1
@@ -406,11 +381,11 @@ fn assert_staging_close_backpressure(abandon_show: bool) {
         .engine
         .viewport()
         .effects()
-        .record(show_effect)
+        .record(held_create_effect)
         .unwrap();
     assert_eq!(
         failure.phase(),
-        EffectPhase::DispatchFailed(if abandon_show {
+        EffectPhase::DispatchFailed(if abandon_create {
             DispatchFailureReason::ProviderStopped
         } else {
             DispatchFailureReason::WindowUnavailable
@@ -463,10 +438,10 @@ fn assert_staging_close_backpressure(abandon_show: bool) {
 
 #[test]
 fn abandoned_show_does_not_block_an_accepted_staging_close() {
-    assert_staging_close_backpressure(true);
+    assert_pending_close_backpressure(true);
 }
 
 #[test]
 fn rejected_show_result_retries_after_an_accepted_staging_close() {
-    assert_staging_close_backpressure(false);
+    assert_pending_close_backpressure(false);
 }

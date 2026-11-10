@@ -10,19 +10,17 @@ use crate::geometry::{PhysicalRect, ScaleFactor};
 use crate::ids::{EngineAuthorityDomainId, WorkspaceEpoch};
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
-    CapabilityRosterObservation, CloseEffectAcknowledgement, NativeCreateReadiness,
-    NativeCreateStrategy, ObservedWindow, PlatformCapability, PlatformSnapshot,
-    PresentationEffectAcknowledgement, WindowCloseObservation, WindowCloseState,
+    CapabilityRosterObservation, CloseEffectAcknowledgement, NativeCreateReadiness, ObservedWindow,
+    PlatformCapability, PlatformSnapshot, WindowCloseObservation, WindowCloseState,
     WindowCoordinateObservation, WindowCreatePreparationObservation, WindowInputState,
     WindowInventoryObservation, WindowPresentationObservation, WindowPresentationState,
     WorkAreaRosterObservation,
 };
 use crate::presentation_observation::NativeStagingOwner;
 use crate::viewport::{
-    CapabilityObservationGeneration, CloseObservationGeneration, CoordinateGeneration,
-    CoordinateObservationGeneration, InventoryGeneration, InventoryObservationGeneration,
-    PlatformSnapshotGeneration, PresentationObservationGeneration, WindowIncarnation, WindowToken,
-    WorkAreaObservationGeneration,
+    CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
+    InventoryObservationGeneration, PlatformSnapshotGeneration, PresentationObservationGeneration,
+    WindowIncarnation, WindowToken, WorkAreaObservationGeneration,
 };
 use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 use crate::viewport_registry::{ViewportAdmission, ViewportRegistryError};
@@ -44,7 +42,6 @@ fn request(destroyed: ViewportBinding, replacement: ViewportBinding) -> Recovery
         SurfaceRecoveryObligationId::new_for_test(1),
         replacement,
         EffectId::new(7),
-        crate::platform::NativeCreateStrategy::Staged,
     )
 }
 
@@ -126,18 +123,11 @@ fn native_snapshot(
 }
 
 fn direct_ready_proof(binding: ViewportBinding, owner: NativeStagingOwner) -> NativeReadyProof {
-    NativeReadyProof::Direct {
+    NativeReadyProof::for_test(
         binding,
         owner,
-        provider: ViewportCoordinator::default()
-            .platform_provider()
-            .expect("the test provider must be enrolled"),
-        create: EffectId::new(7),
-        create_emitted: InventoryGeneration::new(1),
-        create_applied: InventoryGeneration::new(2),
-        coordinate_generation: CoordinateGeneration::new(1),
-        prepared_since: CoordinateObservationGeneration::new(1),
-    }
+        ViewportCoordinator::default().platform_provider().unwrap(),
+    )
 }
 
 #[test]
@@ -146,20 +136,13 @@ fn initial_and_destroyed_establishment_cannot_borrow_each_others_owner_or_origin
     let replacement = binding(1, 2);
     let obligation = SurfaceRecoveryObligationId::new_for_test(1);
     let requests = [
-        RecoveryPendingRequest::initial(
-            source,
-            ViewportRole::Child,
-            obligation,
-            EffectId::new(7),
-            NativeCreateStrategy::DirectPrepared,
-        ),
+        RecoveryPendingRequest::initial(source, ViewportRole::Child, obligation, EffectId::new(7)),
         RecoveryPendingRequest::replacement(
             source,
             ViewportRole::Child,
             obligation,
             replacement,
             EffectId::new(7),
-            NativeCreateStrategy::DirectPrepared,
         ),
     ];
     for request in requests {
@@ -265,7 +248,7 @@ fn initial_start_requires_exact_capability_and_preserves_atomic_ownership() {
             binding: target,
             placement: placement(),
             role: ViewportRole::Child,
-            strategy: NativeCreateStrategy::Staged,
+
         }
     ));
 
@@ -589,12 +572,8 @@ fn initial_cancel_before_dispatch_is_typed_exact_and_retains_the_published_bindi
 
 #[test]
 fn initial_retry_after_dispatch_failure_uses_a_fresh_binding_and_existing_obligation() {
-    for strategy in [
-        NativeCreateStrategy::DirectPrepared,
-        NativeCreateStrategy::Staged,
-    ] {
+    {
         let mut coordinator = native_coordinator();
-        coordinator.freeze_native_create_strategy(strategy);
         let surface = SurfaceId::new(1);
         let obligation = SurfaceRecoveryObligationId::new_for_test(1);
         let predecessor = coordinator
@@ -669,7 +648,6 @@ fn initial_retry_after_dispatch_failure_uses_a_fresh_binding_and_existing_obliga
                 binding: successor,
                 placement: requested,
                 role: ViewportRole::Child,
-                strategy,
             }
         ));
         assert!(coordinator.take_new_effects().is_empty());
@@ -913,7 +891,6 @@ fn initial_retry_allocation_failure_keeps_the_terminal_attempt_unchanged() {
 #[test]
 fn initial_retry_cannot_replace_first_live_or_pending_cleanup() {
     let mut coordinator = native_coordinator();
-    coordinator.freeze_native_create_strategy(NativeCreateStrategy::DirectPrepared);
     let surface = SurfaceId::new(1);
     let obligation = SurfaceRecoveryObligationId::new_for_test(1);
     let binding = coordinator
@@ -935,7 +912,6 @@ fn initial_retry_cannot_replace_first_live_or_pending_cleanup() {
             binding,
             PresentationObservationGeneration::new(1),
             Authority::Known(WindowPresentationState::Visible),
-            PresentationEffectAcknowledgement::known(None),
         ))
         .with_create_preparation(WindowCreatePreparationObservation::new(
             binding,

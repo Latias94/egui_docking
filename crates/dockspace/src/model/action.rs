@@ -255,7 +255,7 @@ pub enum DockspaceActionOutcome {
     },
     /// A complete root entered the native create lifecycle without moving its content yet.
     NativeRootTearOffRequested {
-        /// Stable root reserved for transfer after post-show staging.
+        /// Stable root reserved for transfer after exact first-live presentation.
         root: RootId,
         /// Surface currently presenting the root.
         source_surface: SurfaceId,

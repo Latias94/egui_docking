@@ -1,4 +1,4 @@
-//! Public native preparation and first-live ownership without staging placeholders.
+//! Public native preparation facts and exact first-live ownership.
 
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use dockspace::model::{
@@ -10,10 +10,10 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSemanticOutput, DockspaceSession, HostFrameReport,
     HostWindowToken, HostWorkAreaToken, NativeCreateEffectAcknowledgement, NativeCreateReadiness,
-    NativeCreateStrategy, NativeEffectAcknowledgement, NativeEffectOperation,
-    NativeHostCapabilities, NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaFacts, NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeHostCapabilities,
+    NativeHostCapability, NativePointerRoster, NativeReceiverAnswer, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
+    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
     SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
@@ -36,14 +36,10 @@ struct PendingDirect {
 
 impl PendingDirect {
     fn new() -> Self {
-        Self::with_strategy(NativeCreateStrategy::DirectPrepared)
+        Self::with_root_token(HostWindowToken::new(1))
     }
 
-    fn with_strategy(strategy: NativeCreateStrategy) -> Self {
-        Self::with_root_token(strategy, HostWindowToken::new(1))
-    }
-
-    fn with_root_token(strategy: NativeCreateStrategy, root_token: HostWindowToken) -> Self {
+    fn with_root_token(root_token: HostWindowToken) -> Self {
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             HOST,
             DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::central_tabs([MAIN_ITEM])),
@@ -58,7 +54,7 @@ impl PendingDirect {
         policy.set_allow_native_surfaces(true);
         let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
         session
-            .enable_managed_native_host(strategy, NativePointerRoster::Exact(Vec::new()))
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         let capabilities = [
             NativeHostCapability::NativeWindowLifecycle,
@@ -107,11 +103,10 @@ impl PendingDirect {
             NativeEffectOperation::CreateWindow {
                 binding,
                 placement: actual,
-                strategy: actual_strategy,
                 ..
-            } if *actual == placement && *actual_strategy == strategy => *binding,
+            } if *actual == placement => *binding,
             operation => {
-                panic!("expected CreateWindow with the enrolled strategy, got {operation:?}")
+                panic!("expected the exact CreateWindow request, got {operation:?}")
             }
         };
         let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
@@ -186,10 +181,7 @@ fn contained_bounds() -> LogicalRect {
 
 #[test]
 fn review_external_root_token_cannot_exhaust_core_child_identity_space() {
-    let pending = PendingDirect::with_root_token(
-        NativeCreateStrategy::DirectPrepared,
-        HostWindowToken::new(u64::MAX),
-    );
+    let pending = PendingDirect::with_root_token(HostWindowToken::new(u64::MAX));
     assert!(pending.session.has_pending_native_create());
 }
 
@@ -234,7 +226,7 @@ fn window_facts(bounds: PhysicalRect) -> NativeWindowFacts {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
 }
 
 fn root_facts() -> NativeWindowFacts {
@@ -251,17 +243,10 @@ fn work_areas() -> NativeWorkAreaRoster {
 }
 
 fn finish(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
-    assert_eq!(
-        frame.native_staging_paints().len(),
-        0,
-        "direct creation cannot request staging"
-    );
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
-    let mut report = frame.commit().unwrap();
-    assert!(report.take_painted_native_staging_outputs().is_empty());
-    report
+    frame.commit().unwrap()
 }
 
 fn idle(session: &mut DockspaceSession) -> HostFrameReport {
@@ -272,7 +257,7 @@ fn idle(session: &mut DockspaceSession) -> HostFrameReport {
     );
     assert!(
         report.take_native_effects().is_empty(),
-        "direct readiness/presentation must not emit ShowWindow"
+        "readiness and presentation alone must not emit additional platform effects"
     );
     assert!(report.take_painted_outputs().is_empty());
     report
@@ -369,7 +354,7 @@ fn assert_admitted(fixture: &PendingDirect, report: &HostFrameReport) {
 }
 
 #[test]
-fn first_created_or_prepared_snapshot_can_ack_create_without_staging_or_show() {
+fn first_created_or_prepared_snapshot_can_ack_create_before_first_live() {
     for first in [
         NativeCreateReadiness::Created,
         NativeCreateReadiness::Prepared,
@@ -429,7 +414,7 @@ fn direct_prepared_child_can_present_with_local_size_and_no_desktop_origin() {
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
             .with_create_readiness(NativeCreateReadiness::Prepared, Some(acknowledgement)),
     );
     fixture.assert_source();
@@ -453,8 +438,8 @@ fn direct_prepared_child_can_present_with_local_size_and_no_desktop_origin() {
 }
 
 #[test]
-fn staged_creation_acknowledgement_precedes_visibility_without_bypassing_staging() {
-    let mut fixture = PendingDirect::with_strategy(NativeCreateStrategy::Staged);
+fn create_acknowledgement_precedes_visibility_without_bypassing_first_live() {
+    let mut fixture = PendingDirect::new();
     let acknowledgement = fixture.acknowledgement.take().unwrap();
     let scale = ScaleFactor::new(1.0).unwrap();
     let not_yet_visible = NativeWindowFacts::live()
@@ -466,8 +451,7 @@ fn staged_creation_acknowledgement_precedes_visibility_without_bypassing_staging
         .with_create_readiness(NativeCreateReadiness::Prepared, Some(acknowledgement));
     fixture.observe_facts(not_yet_visible);
     fixture.assert_source();
-    fixture.observe(Some(NativeCreateReadiness::Prepared));
-    fixture.assert_source();
+    measure(&mut fixture.session);
     let mut inspect = fixture
         .session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -479,46 +463,12 @@ fn staged_creation_acknowledgement_precedes_visibility_without_bypassing_staging
             .is_none()
     );
     drop(inspect);
-
-    fixture
-        .session
-        .report_managed_native_snapshot(
-            [
-                (fixture.root, root_facts()),
-                (
-                    fixture.child,
-                    window_facts(fixture.placement)
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
-                        .with_create_readiness(NativeCreateReadiness::Created, None),
-                ),
-            ],
-            work_areas(),
-        )
-        .unwrap();
-    let mut frame = fixture
-        .session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    let requests = frame.native_staging_paints().collect::<Vec<_>>();
-    assert_eq!(
-        requests.len(),
-        1,
-        "the earlier creation fact must survive until hidden staging becomes possible"
-    );
-    assert_eq!(
-        requests[0].phase(),
-        dockspace::runtime::NativeStagingPresentationPhase::PreShow
-    );
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    let mut report = frame.commit().unwrap();
-    assert!(report.native_admissions().is_empty());
-    assert!(
-        report.take_native_effects().is_empty(),
-        "Show still requires its exact pre-show renderer output"
-    );
+    fixture.observe(Some(NativeCreateReadiness::Prepared));
     fixture.assert_source();
+    let output = paint(&mut fixture.session, fixture.child);
+    fixture.assert_source();
+    let report = fixture.present(output);
+    assert_admitted(&fixture, &report);
 }
 
 #[test]
@@ -533,8 +483,8 @@ fn prepared_alone_cannot_start_first_live_without_visible_complete_coordinates()
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None);
     let not_ready = [
-        coordinates.with_presentation(NativeWindowPresentationState::Hidden, None),
-        coordinates.with_presentation(NativeWindowPresentationState::Minimized, None),
+        coordinates.with_presentation(NativeWindowPresentationState::Hidden),
+        coordinates.with_presentation(NativeWindowPresentationState::Minimized),
         coordinates,
         window_facts(PhysicalRect::new(bounds.min().x(), bounds.min().y(), 0.0, 320.0).unwrap()),
         window_facts(PhysicalRect::new(bounds.min().x(), bounds.min().y(), 420.0, 0.0).unwrap()),
@@ -543,19 +493,19 @@ fn prepared_alone_cannot_start_first_live_without_visible_complete_coordinates()
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None),
+            .with_presentation(NativeWindowPresentationState::Visible),
         NativeWindowFacts::live()
             .with_content_bounds(bounds)
             .with_outer_bounds(bounds)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None),
+            .with_presentation(NativeWindowPresentationState::Visible),
         NativeWindowFacts::live()
             .with_content_bounds(bounds)
             .with_outer_bounds(bounds)
             .with_native_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None),
+            .with_presentation(NativeWindowPresentationState::Visible),
     ];
     for facts in not_ready {
         let acknowledgement = fixture.acknowledgement.take();
@@ -787,12 +737,9 @@ fn pending_direct_replacement() -> (PendingDirect, NativeSurfaceBinding) {
     let [replacement] = report.take_native_effects().try_into().unwrap();
     let (successor, placement) = match replacement.operation() {
         NativeEffectOperation::RequestReplacement {
-            binding,
-            placement,
-            strategy: NativeCreateStrategy::DirectPrepared,
-            ..
+            binding, placement, ..
         } => (*binding, *placement),
-        operation => panic!("expected a direct RequestReplacement, got {operation:?}"),
+        operation => panic!("expected the exact RequestReplacement, got {operation:?}"),
     };
     assert_ne!(successor, predecessor);
     assert_eq!(successor.surface(), predecessor.surface());
@@ -812,7 +759,7 @@ fn pending_direct_replacement() -> (PendingDirect, NativeSurfaceBinding) {
 }
 
 #[test]
-fn destroyed_child_replacement_keeps_the_enrolled_direct_strategy() {
+fn destroyed_child_replacement_requires_fresh_prepared_first_live() {
     let (mut fixture, predecessor) = pending_direct_replacement();
     let successor = fixture.child;
     let version = fixture.session.version();

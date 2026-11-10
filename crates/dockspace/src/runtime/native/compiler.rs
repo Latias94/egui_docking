@@ -3,17 +3,17 @@
 use super::{
     CompiledNativeWindow, NativeCloseEffectAcknowledgement, NativeCloseFact, NativeCloseState,
     NativeGlobalFocus, NativeHostCapabilities, NativeHostCapability, NativeHostProfile,
-    NativeInputFact, NativePlatformError, NativePresentationFact, NativeWindowFacts,
-    NativeWindowLifecycleFact, NativeWorkAreaRoster,
+    NativeInputFact, NativePlatformError, NativeWindowFacts, NativeWindowLifecycleFact,
+    NativeWorkAreaRoster,
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
-    PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot,
-    PresentationEffectAcknowledgement, WindowCloseObservation, WindowCloseState,
-    WindowCoordinateObservation, WindowCreatePreparationObservation, WindowInputObservation,
-    WindowInventoryObservation, WindowPresentationObservation, WorkAreaRosterObservation,
+    PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, WindowCloseObservation,
+    WindowCloseState, WindowCoordinateObservation, WindowCreatePreparationObservation,
+    WindowInputObservation, WindowInventoryObservation, WindowPresentationObservation,
+    WorkAreaRosterObservation,
 };
 use crate::platform_provider::PlatformObservationLease;
 use crate::viewport::{
@@ -328,12 +328,6 @@ pub(super) fn compile_window_fact(
                             .map_or(Authority::Unknown(reason), |presentation| {
                                 Authority::Known(presentation.state.into())
                             }),
-                        presentation_acknowledgement(
-                            provider,
-                            binding,
-                            facts.presentation,
-                            reason,
-                        )?,
                     ))
                     .with_create_preparation(WindowCreatePreparationObservation::new(
                         binding,
@@ -436,33 +430,6 @@ fn create_acknowledgement(
         }
         Some(acknowledgement) => Ok(Some(acknowledgement.effect)),
         None => Ok(None),
-    }
-}
-
-fn presentation_acknowledgement(
-    provider: PlatformObservationLease,
-    binding: ViewportBinding,
-    fact: Option<NativePresentationFact>,
-    reason: AuthorityUnavailableReason,
-) -> Result<PresentationEffectAcknowledgement, NativePlatformError> {
-    let Some(fact) = fact else {
-        return Ok(PresentationEffectAcknowledgement::unknown(reason));
-    };
-    match fact.acknowledgement {
-        Some(acknowledgement) if acknowledgement.provider != provider => {
-            Err(NativePlatformError::EffectAcknowledgementProviderMismatch {
-                surface: binding.surface(),
-            })
-        }
-        Some(acknowledgement) if acknowledgement.binding != binding => {
-            Err(NativePlatformError::EffectAcknowledgementBindingMismatch {
-                surface: binding.surface(),
-            })
-        }
-        Some(acknowledgement) => Ok(PresentationEffectAcknowledgement::known(Some(
-            acknowledgement.effect,
-        ))),
-        None => Ok(PresentationEffectAcknowledgement::known(None)),
     }
 }
 

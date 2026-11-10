@@ -6,8 +6,8 @@ use crate::geometry::PhysicalRect;
 use crate::ids::{NativeCreateSagaId, RootId, SurfaceId, WorkspaceEpoch};
 use crate::platform_provider::PlatformObservationLease;
 use crate::presentation_observation::{
-    NativeStagingOwner, NativeStagingPresentation, NativeStagingResourceDescriptor,
-    NativeStagingResourceId, PresentedNativeStagingPresentation, PresentedSurfaceAuthority,
+    NativeStagingOwner, NativeStagingResourceDescriptor, NativeStagingResourceId,
+    PresentedSurfaceAuthority,
 };
 use crate::surface_recovery::{ConvertedMainRecovery, SurfaceRecoveryObligation};
 use crate::viewport::{ViewportBinding, ViewportRole};
@@ -15,7 +15,7 @@ use crate::viewport_focus::FocusCausalStamp;
 use crate::viewport_registry::{ViewportLifecycle, ViewportRecord};
 
 use super::binding_cleanup::{BindingCleanupPurpose, BindingCleanupRequest};
-use super::native_bringup::{NativeBringupPhase, NativePreparationOutcome};
+use super::native_bringup::{NativePreparation, NativePreparationOutcome};
 use super::native_staging_resource::NativeStagingResourceOwner;
 use super::{
     BindingCleanupAction, BindingRetirementOrigin, BindingRetirementStatus, NativeReadyProof,
@@ -134,136 +134,53 @@ impl PreparedNativeCreate {
     }
 }
 
-/// Queryable owner-specific phase of one native create saga.
-///
-/// This projection exposes effect identities and staging requests. Exact bringup
-/// and first-live proofs remain in the saga's private lifecycle state.
+/// Queryable lifecycle of an exact host-prepared native create.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeCreatePhase {
-    AwaitingPrepared {
-        create: EffectId,
-    },
-    AwaitingHidden {
-        create: EffectId,
-    },
-    AwaitingPreShowPresentation {
-        create: EffectId,
-        presentation: NativeStagingPresentation,
-    },
-    AwaitingShowAcknowledgement {
-        create: EffectId,
-        show: EffectId,
-    },
-    AwaitingVisible {
-        create: EffectId,
-        show: EffectId,
-    },
-    AwaitingPostShowPresentation {
-        show: EffectId,
-        presentation: NativeStagingPresentation,
-    },
-    /// The selected preparation strategy completed; prospective child content may be prepared.
-    AwaitingFirstLivePreparation {
-        correlation: EffectId,
-    },
-    /// The child may render prospective content; source ownership is unchanged.
-    AwaitingFirstLivePresentation {
-        correlation: EffectId,
-    },
+    AwaitingPrepared { create: EffectId },
+    AwaitingFirstLivePreparation { correlation: EffectId },
+    AwaitingFirstLivePresentation { correlation: EffectId },
 }
-
 impl NativeCreatePhase {
-    /// Returns the lifecycle effect which correlates presentation facts for this phase.
     #[must_use]
     pub const fn presentation_correlation_effect(self) -> EffectId {
         match self {
-            Self::AwaitingPrepared { create }
-            | Self::AwaitingHidden { create }
-            | Self::AwaitingPreShowPresentation { create, .. } => create,
-            Self::AwaitingShowAcknowledgement { show, .. }
-            | Self::AwaitingVisible { show, .. }
-            | Self::AwaitingPostShowPresentation { show, .. } => show,
+            Self::AwaitingPrepared { create } => create,
             Self::AwaitingFirstLivePreparation { correlation }
             | Self::AwaitingFirstLivePresentation { correlation } => correlation,
         }
     }
 }
 
-/// Owns the shared bringup phase or the proof retained for first-live admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum NativeCreateLifecycle {
-    BringingUp(NativeBringupPhase),
+    Preparing(NativePreparation),
     AwaitingFirstLivePreparation { proof: NativeReadyProof },
     AwaitingFirstLivePresentation { proof: NativeReadyProof },
 }
-
 impl NativeCreateLifecycle {
-    const fn bringup(self) -> Option<NativeBringupPhase> {
+    const fn preparation(self) -> Option<NativePreparation> {
         match self {
-            Self::BringingUp(phase) => Some(phase),
+            Self::Preparing(preparation) => Some(preparation),
             Self::AwaitingFirstLivePreparation { .. }
             | Self::AwaitingFirstLivePresentation { .. } => None,
         }
     }
-
-    fn show_effect(self) -> Option<EffectId> {
-        match self {
-            Self::BringingUp(phase) => phase.show_effect(),
-            Self::AwaitingFirstLivePreparation { proof }
-            | Self::AwaitingFirstLivePresentation { proof } => proof.show(),
-        }
-    }
-
-    const fn staging_presentation(self) -> Option<NativeStagingPresentation> {
-        match self {
-            Self::BringingUp(phase) => phase.staging_presentation(),
-            Self::AwaitingFirstLivePreparation { .. }
-            | Self::AwaitingFirstLivePresentation { .. } => None,
-        }
-    }
-
     const fn query(self) -> NativeCreatePhase {
-        let phase = match self {
-            Self::BringingUp(phase) => phase,
+        match self {
+            Self::Preparing(preparation) => NativeCreatePhase::AwaitingPrepared {
+                create: preparation.create_effect(),
+            },
             Self::AwaitingFirstLivePreparation { proof } => {
-                return NativeCreatePhase::AwaitingFirstLivePreparation {
-                    correlation: proof.correlation_effect(),
-                };
+                NativeCreatePhase::AwaitingFirstLivePreparation {
+                    correlation: proof.create(),
+                }
             }
             Self::AwaitingFirstLivePresentation { proof } => {
-                return NativeCreatePhase::AwaitingFirstLivePresentation {
-                    correlation: proof.correlation_effect(),
-                };
+                NativeCreatePhase::AwaitingFirstLivePresentation {
+                    correlation: proof.create(),
+                }
             }
-        };
-        match phase {
-            NativeBringupPhase::AwaitingPrepared { create } => {
-                NativeCreatePhase::AwaitingPrepared { create }
-            }
-            NativeBringupPhase::AwaitingHidden { create } => {
-                NativeCreatePhase::AwaitingHidden { create }
-            }
-            NativeBringupPhase::AwaitingPreShowPresentation {
-                create,
-                presentation,
-                ..
-            } => NativeCreatePhase::AwaitingPreShowPresentation {
-                create,
-                presentation,
-            },
-            NativeBringupPhase::AwaitingShowAcknowledgement { create, show, .. } => {
-                NativeCreatePhase::AwaitingShowAcknowledgement { create, show }
-            }
-            NativeBringupPhase::AwaitingVisible { create, show, .. } => {
-                NativeCreatePhase::AwaitingVisible { create, show }
-            }
-            NativeBringupPhase::AwaitingPostShowPresentation {
-                visibility,
-                presentation,
-            } => NativeCreatePhase::AwaitingPostShowPresentation {
-                show: visibility.show,
-                presentation,
-            },
         }
     }
 }
@@ -313,7 +230,6 @@ impl NativeCreateState {
     ) {
         for saga in self.sagas.values() {
             effects.insert(saga.create);
-            effects.extend(saga.phase.show_effect());
         }
     }
 }
@@ -409,7 +325,6 @@ impl ViewportCoordinator {
                 binding,
                 placement: proposal.physical_placement(),
                 role: ViewportRole::Child,
-                strategy: candidate.native_create_strategy,
             })
             .map_err(ViewportCoordinatorError::Effect)?;
         candidate.native_creates.last_saga = saga;
@@ -425,10 +340,7 @@ impl ViewportCoordinator {
                 create: effect,
                 resource,
                 prepared,
-                phase: NativeCreateLifecycle::BringingUp(NativeBringupPhase::initial(
-                    effect,
-                    candidate.native_create_strategy,
-                )),
+                phase: NativeCreateLifecycle::Preparing(NativePreparation::initial(effect)),
             },
         );
         *self = candidate;
@@ -437,24 +349,6 @@ impl ViewportCoordinator {
             effect,
             binding,
         })
-    }
-
-    /// Returns every exact native staging pass currently requested by core.
-    pub(crate) fn native_staging_presentations(
-        &self,
-    ) -> impl Iterator<Item = NativeStagingPresentation> + '_ {
-        let native_create = self
-            .native_creates
-            .sagas
-            .values()
-            .filter_map(|saga| saga.phase.staging_presentation());
-        let recovery = self
-            .recovery_replacements
-            .values()
-            .filter_map(|pending| pending.bringup_phase()?.staging_presentation());
-        native_create
-            .chain(recovery)
-            .filter(|presentation| self.native_staging_presentation_is_current(*presentation))
     }
 
     /// Returns recovery surfaces whose live presentation and interaction authority is suspended.
@@ -469,41 +363,6 @@ impl ViewportCoordinator {
         &self,
     ) -> impl ExactSizeIterator<Item = &NativeStagingResourceDescriptor> {
         self.native_staging_resources.iter()
-    }
-
-    pub(super) fn native_staging_presentation_is_current(
-        &self,
-        presentation: NativeStagingPresentation,
-    ) -> bool {
-        let owner_is_current = match presentation.owner() {
-            NativeStagingOwner::NativeCreate { resource } => {
-                let saga = resource.saga();
-                self.native_creates.sagas.get(&saga).is_some_and(|create| {
-                    create.binding == presentation.binding()
-                        && create.resource == resource
-                        && create.phase.staging_presentation() == Some(presentation)
-                })
-            }
-            NativeStagingOwner::RecoveryReplacement {
-                destroyed_binding: source_binding,
-                ..
-            }
-            | NativeStagingOwner::InitialSurface {
-                binding: source_binding,
-                ..
-            } => self
-                .recovery_replacements
-                .pending(source_binding.surface())
-                .is_some_and(|pending| {
-                    pending.staging_owner() == presentation.owner()
-                        && pending.replacement_binding() == Some(presentation.binding())
-                        && pending
-                            .bringup_phase()
-                            .and_then(NativeBringupPhase::staging_presentation)
-                            == Some(presentation)
-                }),
-        };
-        owner_is_current && self.native_staging_basis_matches_current(presentation)
     }
 
     pub(super) fn reduce_ready_native_create(
@@ -560,26 +419,18 @@ impl ViewportCoordinator {
                     NativeStagingResourceOwner::NativeCreateSaga(saga_id),
                 )?;
             }
-            phase = NativeCreateLifecycle::BringingUp(proof.resume_preparation());
+            phase = NativeCreateLifecycle::Preparing(proof.resume_preparation());
             self.native_creates
                 .sagas
                 .get_mut(&saga_id)
                 .expect("the saga remains owned")
                 .phase = phase;
         }
-        let Some(preparation) = phase.bringup() else {
+        let Some(preparation) = phase.preparation() else {
             return Ok(None);
         };
-        match self.reduce_ready_native_bringup(provider, binding, owner, preparation)? {
+        match self.reduce_ready_native_preparation(provider, binding, owner, preparation)? {
             NativePreparationOutcome::Ignored => Ok(None),
-            NativePreparationOutcome::Advanced(next) => {
-                self.native_creates
-                    .sagas
-                    .get_mut(&saga_id)
-                    .expect("the saga remains owned")
-                    .phase = NativeCreateLifecycle::BringingUp(next);
-                Ok(None)
-            }
             NativePreparationOutcome::Ready(proof) => self
                 .complete_native_create_preparation(saga_id, proof)
                 .map(Some),
@@ -619,7 +470,7 @@ impl ViewportCoordinator {
             .and_then(|saga| match saga.phase {
                 NativeCreateLifecycle::AwaitingFirstLivePreparation { proof }
                 | NativeCreateLifecycle::AwaitingFirstLivePresentation { proof } => Some(proof),
-                NativeCreateLifecycle::BringingUp(_) => None,
+                NativeCreateLifecycle::Preparing(_) => None,
             });
         let proof = create_proof.or_else(|| {
             self.recovery_replacements
@@ -628,112 +479,6 @@ impl ViewportCoordinator {
         })?;
         (proof.binding() == binding && self.native_ready_proof_is_current(proof))
             .then_some(proof.basis())
-    }
-
-    /// Applies one exact final-presentation proof for a native staging pass.
-    pub(crate) fn observe_native_staging_presentation(
-        &mut self,
-        presented: PresentedNativeStagingPresentation,
-    ) -> Result<Option<ViewportLifecycleAction>, ViewportCoordinatorError> {
-        let request = presented.request();
-        if request.authority_domain() != self.authority_domain {
-            return Ok(None);
-        }
-        match request.owner() {
-            NativeStagingOwner::NativeCreate { .. } => {
-                self.observe_native_create_staging_presentation(presented)
-            }
-            NativeStagingOwner::RecoveryReplacement { .. }
-            | NativeStagingOwner::InitialSurface { .. } => {
-                self.observe_recovery_staging_presentation(presented)
-            }
-        }
-    }
-
-    fn observe_native_create_staging_presentation(
-        &mut self,
-        presented: PresentedNativeStagingPresentation,
-    ) -> Result<Option<ViewportLifecycleAction>, ViewportCoordinatorError> {
-        let request = presented.request();
-        if !self.native_staging_presentation_is_current(request) {
-            return Ok(None);
-        }
-        let NativeStagingOwner::NativeCreate { resource } = request.owner() else {
-            return Ok(None);
-        };
-        let saga_id = resource.saga();
-        let Some(saga) = self.native_creates.sagas.get(&saga_id) else {
-            return Ok(None);
-        };
-        let Some(phase) = saga.phase.bringup() else {
-            return Ok(None);
-        };
-        let binding = saga.binding;
-        let owner = request.owner();
-        match self.observe_native_bringup_presentation(binding, owner, phase, presented)? {
-            NativePreparationOutcome::Ignored => Ok(None),
-            NativePreparationOutcome::Advanced(next) => {
-                self.native_creates
-                    .sagas
-                    .get_mut(&saga_id)
-                    .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                    .phase = NativeCreateLifecycle::BringingUp(next);
-                Ok(None)
-            }
-            NativePreparationOutcome::Ready(proof) => self
-                .complete_native_create_preparation(saga_id, proof)
-                .map(Some),
-        }
-    }
-
-    fn observe_recovery_staging_presentation(
-        &mut self,
-        presented: PresentedNativeStagingPresentation,
-    ) -> Result<Option<ViewportLifecycleAction>, ViewportCoordinatorError> {
-        let request = presented.request();
-        if !self.native_staging_presentation_is_current(request) {
-            return Ok(None);
-        }
-        let surface = request.binding().surface();
-        let Some(pending) = self.recovery_replacements.pending(surface) else {
-            return Ok(None);
-        };
-        if pending.staging_owner() != request.owner() {
-            return Ok(None);
-        }
-        let Some(phase) = pending.bringup_phase() else {
-            return Ok(None);
-        };
-        let origin = pending.origin();
-        let recovery_obligation = pending.recovery_obligation();
-        let binding = request.binding();
-        match self.observe_native_bringup_presentation(
-            binding,
-            request.owner(),
-            phase,
-            presented,
-        )? {
-            NativePreparationOutcome::Ignored => Ok(None),
-            NativePreparationOutcome::Advanced(next) => {
-                self.recovery_replacements
-                    .update_bringup(binding, phase, next)
-                    .map_err(super::recovery_replacement_error)?;
-                Ok(None)
-            }
-            NativePreparationOutcome::Ready(proof) => {
-                if !self.replacement_is_admissible(binding) {
-                    return Ok(None);
-                }
-                self.recovery_replacements
-                    .mark_awaiting_first_live(binding, phase, proof)
-                    .map_err(super::recovery_replacement_error)?;
-                Ok(Some(ViewportLifecycleAction::NativeSurfaceReady {
-                    origin,
-                    binding,
-                    recovery_obligation,
-                }))
-            }
-        }
     }
 
     pub(crate) fn prepare_native_create_first_live(
@@ -861,11 +606,6 @@ impl ViewportCoordinator {
                 .effects
                 .invalidate_unemitted(create, EffectInvalidation::NativeCreateAborted);
         }
-        if let Some(show) = saga.phase.show_effect() {
-            let _ = self
-                .effects
-                .invalidate_unemitted(show, EffectInvalidation::NativeCreateAborted);
-        }
         let facts = self
             .registry
             .detach(binding)
@@ -971,9 +711,10 @@ impl ViewportCoordinator {
     }
 
     pub(super) fn native_create_for_effect(&self, effect: EffectId) -> Option<NativeCreateSagaId> {
-        self.native_creates.sagas.iter().find_map(|(id, saga)| {
-            (saga.create == effect || saga.phase.show_effect() == Some(effect)).then_some(*id)
-        })
+        self.native_creates
+            .sagas
+            .iter()
+            .find_map(|(id, saga)| (saga.create == effect).then_some(*id))
     }
 
     pub(super) fn settle_destroyed_native_create(
@@ -997,11 +738,6 @@ impl ViewportCoordinator {
         let _ = self
             .effects
             .mark_destroyed(saga.create, binding, inventory_generation);
-        if let Some(show) = saga.phase.show_effect() {
-            let _ = self
-                .effects
-                .mark_destroyed(show, binding, inventory_generation);
-        }
         let owner = if matches!(
             saga.phase,
             NativeCreateLifecycle::AwaitingFirstLivePresentation { .. }

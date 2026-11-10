@@ -5,7 +5,7 @@ use crate::intent::Authority;
 use crate::pointer_journal::PointerEdgeSequence;
 
 impl DockspaceSession {
-    /// Returns whether native creation still owns a staging or first-live obligation.
+    /// Returns whether native creation still owns a preparation or first-live obligation.
     ///
     /// The answer is derived from the existing lifecycle coordinator. Source
     /// ownership stays unchanged until exact first-live presentation admits the
@@ -115,7 +115,7 @@ impl DockspaceSession {
 
     /// Returns whether this exact binding may currently report a global focus fact.
     ///
-    /// Visible staging children may report focus before first-live admission.
+    /// Visible pending children may report focus before first-live admission.
     /// A callback captured before hiding, closing or retirement must revalidate
     /// this query before recording its formerly known docking focus.
     #[must_use]
@@ -175,7 +175,6 @@ impl DockspaceSession {
     /// The method enrolls exactly once and never reissues existing surface
     /// bindings. Provider replacement remains an internal core concern until a
     /// real native coordinator defines a product-level restart operation.
-    /// The selected preparation strategy is frozen for this provider lifetime.
     ///
     /// # Errors
     ///
@@ -185,9 +184,8 @@ impl DockspaceSession {
     /// be retained by the host for future asynchronous facts.
     pub fn enable_observed_native_roots(
         &mut self,
-        strategy: NativeCreateStrategy,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
-        self.enroll_native_host(NativeHostProfile::ObservedRoots, strategy, None, None)
+        self.enroll_native_host(NativeHostProfile::ObservedRoots, None, None)
     }
 
     /// Enrolls the sole joined coordinator for managed native windows.
@@ -198,9 +196,9 @@ impl DockspaceSession {
     /// [`Self::native_local_coordinates`]. The initial pointer roster is enrolled
     /// in the same operation; no platform or pointer record can precede it.
     ///
-    /// Preparation is selected independently from input capabilities. DirectPrepared
-    /// hosts report explicit renderer readiness; Staged hosts accept exact staging
-    /// requests. Both retain source ownership until semantic first-live presentation.
+    /// The host owns its native preparation process and reports exact, revocable
+    /// [`NativeCreateReadiness::Prepared`] facts. Source ownership remains published
+    /// until the exact semantic first-live output is observed as presented.
     ///
     /// # Errors
     ///
@@ -209,16 +207,10 @@ impl DockspaceSession {
     /// platform/input authority.
     pub fn enable_managed_native_host(
         &mut self,
-        strategy: NativeCreateStrategy,
         initial_pointer_roster: NativePointerRoster,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
         let checkpoint = pointer::compile_initial_pointer_authority(initial_pointer_roster)?;
-        self.enroll_native_host(
-            NativeHostProfile::ManagedDesktop,
-            strategy,
-            Some(checkpoint),
-            None,
-        )
+        self.enroll_native_host(NativeHostProfile::ManagedDesktop, Some(checkpoint), None)
     }
 
     /// Enrolls a managed coordinator with bounded recorded-input storage.
@@ -236,7 +228,6 @@ impl DockspaceSession {
     /// initial pointer checkpoint. A failed enrollment publishes no provider.
     pub fn enable_managed_native_host_with_input_storage_limit(
         &mut self,
-        strategy: NativeCreateStrategy,
         initial_pointer_roster: NativePointerRoster,
         limit: NativeInputStorageLimit,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
@@ -256,7 +247,6 @@ impl DockspaceSession {
         let checkpoint = pointer::compile_initial_pointer_authority(initial_pointer_roster)?;
         self.enroll_native_host(
             NativeHostProfile::ManagedDesktop,
-            strategy,
             Some(checkpoint),
             Some(limit),
         )
@@ -326,7 +316,7 @@ impl DockspaceSession {
     fn enroll_native_host(
         &mut self,
         profile: NativeHostProfile,
-        strategy: NativeCreateStrategy,
+
         pointer_checkpoint: Option<crate::pointer_journal::PointerAuthorityCheckpoint>,
         storage_limit: Option<NativeInputStorageLimit>,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
@@ -380,7 +370,6 @@ impl DockspaceSession {
             .create_backend_ingress_provider_initialized(
                 self.presentation_host,
                 watermark,
-                strategy,
                 |recorder| {
                     if let Some(limit) = storage_limit {
                         recorder.configure_native_transport_capacity(
