@@ -24,10 +24,12 @@ use crate::style::DockStyle;
 pub use crate::product_focus::{retain_skipped_pane_focus, sample_host_focus};
 pub use crate::product_render::EguiSurfaceAction;
 
-/// Validates a native renderer style and returns its first mismatched core field.
+/// Validates a native renderer style and diagnoses mismatched mapped settings.
 ///
 /// Only fields represented by the style are compared. Core-only settings and
 /// adapter-only visuals remain independently owned; neither input is changed.
+/// The complete mapped configuration decides agreement. The field list only
+/// names a mismatch; an unlisted mismatch uses `presentation_config`.
 ///
 /// # Errors
 ///
@@ -37,7 +39,7 @@ pub use crate::product_render::EguiSurfaceAction;
 #[allow(
     clippy::float_cmp,
     clippy::too_many_lines,
-    reason = "one field list checks exact agreement with the existing style conversion"
+    reason = "the field list diagnoses a mismatch after complete configuration comparison"
 )]
 pub fn style_presentation_mismatch(
     style: &DockStyle,
@@ -45,9 +47,12 @@ pub fn style_presentation_mismatch(
 ) -> Result<Option<&'static str>, DockspaceError> {
     style.validate().map_err(DockspaceError::from_detail)?;
     let mapped = style
-        .presentation_config()
+        .presentation_config_with(accepted)
         .map_err(DockspaceError::from_detail)?;
-    Ok([
+    if mapped == *accepted {
+        return Ok(None);
+    }
+    let field = [
         (
             "hover_selection_delay",
             mapped.hover_selection_delay() != accepted.hover_selection_delay(),
@@ -147,7 +152,9 @@ pub fn style_presentation_mismatch(
         ),
     ]
     .into_iter()
-    .find_map(|(field, mismatch)| mismatch.then_some(field)))
+    .find_map(|(field, mismatch)| mismatch.then_some(field))
+    .unwrap_or("presentation_config");
+    Ok(Some(field))
 }
 
 /// Result of painting one surface against a core-owned host frame.
@@ -538,4 +545,81 @@ pub fn defer_unpainted_surfaces(frame: &mut DockspaceHostFrame<'_>) -> Result<()
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .map_err(DockspaceError::from_detail)
+}
+
+#[cfg(test)]
+mod style_tests {
+    use std::error::Error as _;
+    use std::time::Duration;
+
+    use super::{DockPresentationConfig, DockStyle, style_presentation_mismatch};
+    use crate::error::{DockspaceErrorKind, DockspaceErrorSource};
+    use crate::style::DockStyleError;
+
+    #[test]
+    fn complete_style_comparison_preserves_core_only_settings_and_visual_overrides() {
+        let accepted = DockPresentationConfig::builder()
+            .pointer_drag_start_distance(12.25)
+            .magnetic_center_fraction(0.6)
+            .target_release_hysteresis(8.0)
+            .build()
+            .unwrap();
+        let mut style = DockStyle {
+            ghost_offset: egui::vec2(32.0, 48.0),
+            ..DockStyle::default()
+        };
+        style.visuals.tab_fill = Some(egui::Color32::RED);
+        assert_eq!(
+            style_presentation_mismatch(&style, &accepted).unwrap(),
+            None
+        );
+        assert_eq!(style.presentation_config_with(&accepted).unwrap(), accepted);
+    }
+
+    #[test]
+    fn mapped_geometry_and_timing_mismatches_still_report_their_field() {
+        let accepted = DockPresentationConfig::default();
+        for (field, style) in [
+            (
+                "tab_bar_height",
+                DockStyle {
+                    tab_bar_height: 44.0,
+                    ..DockStyle::default()
+                },
+            ),
+            (
+                "touch_long_press_delay",
+                DockStyle {
+                    touch_long_press_delay: Duration::from_millis(500),
+                    ..DockStyle::default()
+                },
+            ),
+        ] {
+            assert_eq!(
+                style_presentation_mismatch(&style, &accepted).unwrap(),
+                Some(field)
+            );
+        }
+    }
+
+    #[test]
+    fn adapter_only_style_validation_precedes_equal_mapped_configuration() {
+        let accepted = DockPresentationConfig::default();
+        let style = DockStyle {
+            ghost_offset: egui::vec2(f32::NAN, 0.0),
+            ..DockStyle::default()
+        };
+        assert_eq!(style.presentation_config_with(&accepted).unwrap(), accepted);
+        let error = style_presentation_mismatch(&style, &accepted).unwrap_err();
+        assert_eq!(error.kind(), DockspaceErrorKind::InvalidConfiguration);
+        assert!(matches!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<DockspaceErrorSource>(),
+            Some(DockspaceErrorSource::Style(DockStyleError::NonFinite {
+                field: "ghost_offset.x"
+            }))
+        ));
+    }
 }

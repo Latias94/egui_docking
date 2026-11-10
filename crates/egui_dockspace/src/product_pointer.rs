@@ -1,6 +1,8 @@
 //! Ordered transport for the official host-local pointer lane.
 
-use std::collections::HashSet;
+use std::cell::OnceCell;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use dockspace::geometry::LogicalPoint;
@@ -21,6 +23,9 @@ mod touch;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ownership_tests;
 
 use touch::TouchContacts;
 
@@ -73,6 +78,62 @@ impl ProductPointerInputSnapshot {
     fn identity_layer(&self, layer: LayerId) -> bool {
         !self.transformed_layers.contains(&layer)
     }
+
+    /// Subtracts exact owned registrations once for this packet's frozen output.
+    fn unowned_interactive_rects(&self, scene: &PointerScene) -> Vec<Rect> {
+        #[cfg(test)]
+        ownership_tests::record_join(scene.receivers.len(), self.interactive.len());
+
+        let mut credited_widgets = HashSet::new();
+        let mut owned_rectangles = HashMap::<[u32; 4], usize>::new();
+        for binding in scene.receivers.iter().filter(|binding| {
+            binding.interactive
+                && binding.layer_id == scene.layer
+                && self.widgets.get(binding.widget_id).is_some_and(|widget| {
+                    widget.enabled
+                        && widget.sense.interactive()
+                        && widget.layer_id == binding.layer_id
+                        && widget.interact_rect == binding.interact_rect
+                })
+                && credited_widgets.insert(binding.widget_id)
+        }) {
+            if let Some(key) = rectangle_key(binding.interact_rect) {
+                *owned_rectangles.entry(key).or_default() += 1;
+            }
+        }
+        self.interactive
+            .iter()
+            .copied()
+            .filter(|rect| {
+                let count = rectangle_key(*rect).and_then(|key| owned_rectangles.get_mut(&key));
+                if let Some(count) = count
+                    && *count > 0
+                {
+                    *count -= 1;
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect()
+    }
+}
+
+fn rectangle_key(rect: Rect) -> Option<[u32; 4]> {
+    let values = [rect.min.x, rect.min.y, rect.max.x, rect.max.y];
+    // Rect uses float PartialEq: NaNs never match and both signed zeros are equal.
+    // Keep those semantics instead of treating raw float bits as Rect equality.
+    if values.iter().any(|value| value.is_nan()) {
+        return None;
+    }
+    Some(values.map(|value| {
+        let bits = value.to_bits();
+        if bits == (-0.0_f32).to_bits() {
+            0
+        } else {
+            bits
+        }
+    }))
 }
 
 #[derive(Clone)]
@@ -81,8 +142,8 @@ struct PointerScene {
     layer: LayerId,
     completed_pass: u64,
     coordinates_supported: bool,
-    receivers: Vec<ProductReceiverBinding>,
-    focus_bindings: Vec<(dockspace::model::ItemId, Id)>,
+    receivers: Arc<[ProductReceiverBinding]>,
+    focus_bindings: Arc<[(dockspace::model::ItemId, Id)]>,
 }
 
 #[derive(Clone, Default)]
@@ -240,8 +301,8 @@ impl ProductPointer {
             layer,
             completed_pass,
             coordinates_supported,
-            receivers,
-            focus_bindings,
+            receivers: receivers.into(),
+            focus_bindings: focus_bindings.into(),
         });
     }
 
@@ -257,7 +318,7 @@ impl ProductPointer {
             .iter()
             .chain(self.pending.iter())
             .find(|scene| current.matches_presentation_artifact(scene.artifact))
-            .map_or(&[], |scene| scene.focus_bindings.as_slice())
+            .map_or(&[], |scene| scene.focus_bindings.as_ref())
     }
 
     pub(crate) fn observe(&mut self, commits: &[SurfacePresentationCommit]) {
@@ -503,6 +564,9 @@ impl ProductPointer {
                 records.push(PointerSample::generic(event, position, magnetic_targeting));
             }
         }
+        // Empty packets and blocked layers need no join. All qualified edges
+        // and stationary probes in this packet share the same frozen result.
+        let blockers = OnceCell::new();
         let edge_at = |sample: PointerSample| {
             if matches!(
                 sample.event,
@@ -531,44 +595,14 @@ impl ProductPointer {
             let hit = point
                 .and_then(|point| frame.host_pointer_hit_for_device(surface, point, sample.device));
             let qualified = scene.zip(position).is_some_and(|(scene, position)| {
-                if !ui.is_enabled()
-                    || snapshot.completed_pass != scene.completed_pass
-                    || (snapshot.layer_at)(position) != Some(scene.layer)
-                    || !coordinates_supported
-                {
-                    return false;
-                }
-                // Unknown interactive widgets are blockers. Remove only exact
-                // registrations owned by this output's interactive dock chrome.
-                let mut unknown = snapshot
-                    .interactive
-                    .iter()
-                    .copied()
-                    .filter(|rect| rect.contains(position))
-                    .collect::<Vec<_>>();
-                let mut credited_widgets = std::collections::HashSet::new();
-                for binding in scene.receivers.iter().filter(|binding| {
-                    binding.interactive
-                        && binding.layer_id == scene.layer
-                        && snapshot
-                            .widgets
-                            .get(binding.widget_id)
-                            .is_some_and(|widget| {
-                                widget.enabled
-                                    && widget.sense.interactive()
-                                    && widget.layer_id == binding.layer_id
-                                    && widget.interact_rect == binding.interact_rect
-                            })
-                        && credited_widgets.insert(binding.widget_id)
-                }) {
-                    if let Some(index) = unknown
+                ui.is_enabled()
+                    && snapshot.completed_pass == scene.completed_pass
+                    && (snapshot.layer_at)(position) == Some(scene.layer)
+                    && coordinates_supported
+                    && !blockers
+                        .get_or_init(|| snapshot.unowned_interactive_rects(scene))
                         .iter()
-                        .position(|rect| *rect == binding.interact_rect)
-                    {
-                        unknown.remove(index);
-                    }
-                }
-                unknown.is_empty()
+                        .any(|rect| rect.contains(position))
             });
             Edge {
                 pointer: sample.pointer,
