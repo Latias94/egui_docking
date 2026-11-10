@@ -77,11 +77,11 @@ fn wheel_translation_preserves_event_time_routes_position_and_modifiers() {
             NativeDesktopPosition::Exact(
                 PhysicalPoint::new(110.0, 220.0).expect("test point validates"),
             ),
-            NativePointerHover::Dock(hover),
+            NativePointerHover::Dock(hover.window()),
             None,
         ),
-        NativePointerOwner::Native(delivery),
-        NativePointerOwner::Native(delivery),
+        NativePointerOwner::Native(delivery.window()),
+        NativePointerOwner::Native(delivery.window()),
     );
 
     assert_eq!(actual, NativePointerTranslation::Input(expected));
@@ -148,7 +148,7 @@ fn device_removal_forgets_mouse_and_scroll_without_reusing_their_identities() {
     ));
     translator.forget_removed_devices();
     assert!(translator.can_coalesce_idle_cursor_moves());
-    assert!(!translator.references_binding(binding));
+    assert!(!translator.references_binding(binding.window()));
     assert_eq!(
         translator.translate_for_test_device(&press, 303, |_| None),
         NativePointerTranslation::Input(NativePointerInput::new(
@@ -159,7 +159,7 @@ fn device_removal_forgets_mouse_and_scroll_without_reusing_their_identities() {
                 NativePointerHover::Unknown,
                 None,
             ),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
             NativePointerOwner::Unknown,
         )),
     );
@@ -236,13 +236,13 @@ fn destroyed_delivery_binding_suppresses_tails_before_a_successor_sequence() {
         translator.translate(&first_record, |_| None),
         NativePointerTranslation::Input(expected_first)
     );
-    assert!(translator.references_binding(first));
-    assert!(!translator.references_binding(second));
+    assert!(translator.references_binding(first.window()));
+    assert!(!translator.references_binding(second.window()));
 
-    translator.retire_binding(first);
-    assert!(!translator.references_binding(first));
+    translator.retire_binding(first.window());
+    assert!(!translator.references_binding(first.window()));
     let retired = format!("{translator:?}");
-    translator.retire_binding(first);
+    translator.retire_binding(first.window());
     assert_eq!(format!("{translator:?}"), retired);
     for phase in [TouchPhase::Moved, TouchPhase::Ended, TouchPhase::Cancelled] {
         let tail = phaseful_scroll_record(4, first_window, first, phase, 2.0);
@@ -320,9 +320,9 @@ fn destroying_one_binding_preserves_another_devices_live_scroll_sequence() {
         ))
     );
 
-    translator.retire_binding(first);
-    assert!(!translator.references_binding(first));
-    assert!(translator.references_binding(second));
+    translator.retire_binding(first.window());
+    assert!(!translator.references_binding(first.window()));
+    assert!(translator.references_binding(second.window()));
 
     let second_update = phaseful_scroll_record(3, second_window, second, TouchPhase::Moved, 3.0);
     assert_eq!(
@@ -394,9 +394,9 @@ fn destroying_mouse_binding_preserves_same_devices_scroll_on_another_binding() {
         NativePointerTranslation::Input(_)
     ));
 
-    translator.retire_binding(mouse_binding);
-    assert!(!translator.references_binding(mouse_binding));
-    assert!(translator.references_binding(scroll_binding));
+    translator.retire_binding(mouse_binding.window());
+    assert!(!translator.references_binding(mouse_binding.window()));
+    assert!(translator.references_binding(scroll_binding.window()));
 
     let scroll_update = native.bridge.with_viewports(|routes| {
         phaseful_scroll_record_with_routes(
@@ -436,11 +436,11 @@ fn destroyed_binding_retires_mouse_and_scroll_before_reuse() {
         NativePointerTranslation::Input(_)
     ));
 
-    translator.retire_binding(binding);
+    translator.retire_binding(binding.window());
     let retired = format!("{translator:?}");
-    translator.retire_binding(binding);
+    translator.retire_binding(binding.window());
     assert_eq!(format!("{translator:?}"), retired);
-    assert!(!translator.references_binding(binding));
+    assert!(!translator.references_binding(binding.window()));
 }
 
 #[test]
@@ -524,7 +524,9 @@ fn destroyed_input_retirement_survives_a_later_close_correlation_failure() {
         .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
         .expect_err("the unrelated window cannot settle the accepted close");
     assert!(
-        !native.pointer_translator.references_binding(binding),
+        !native
+            .pointer_translator
+            .references_binding(binding.window()),
         "local suppression publishes before the later lifecycle failure"
     );
     assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
@@ -659,7 +661,9 @@ fn phaseful_scroll_input_for_device(
             NativePointerHover::Unknown,
             None,
         ),
-        delivery.map_or(NativePointerOwner::Unknown, NativePointerOwner::Native),
+        delivery.map_or(NativePointerOwner::Unknown, |binding| {
+            NativePointerOwner::Native(binding.window())
+        }),
         NativePointerOwner::Unknown,
     )
 }

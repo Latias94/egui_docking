@@ -62,7 +62,7 @@ fn assert_native_escape_cancels_drag(keyboard_surface: SurfaceId) {
     };
     native
         .session
-        .report_native_global_focus(NativeGlobalFocus::Dock(keyboard_binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(keyboard_binding.window()))
         .unwrap();
     commit_boundary(&mut native);
     assert_eq!(

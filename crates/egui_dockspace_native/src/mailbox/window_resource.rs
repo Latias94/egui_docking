@@ -1,8 +1,10 @@
-//! One exact binding owns creation, staging, callbacks and pending observations.
+//! One exact window owns creation, staging, callbacks and pending observations.
 
 use std::mem::size_of;
 
-use dockspace::runtime::{NativeCreateEffectAcknowledgement, NativeSurfaceBinding};
+use dockspace::runtime::{
+    NativeCreateEffectAcknowledgement, NativeSurfaceBinding, NativeWindowBinding,
+};
 use eframe::{
     NativePhysicalRect, NativeViewportFocusCommandToken,
     NativeViewportPointerPassthroughCommandToken, NativeViewportPropertyCommandRetirement,
@@ -30,6 +32,9 @@ pub(crate) use preparation::{
 #[derive(Debug)]
 struct NativeWindowResource {
     viewport: ViewportId,
+    owner: NativeWindowBinding,
+    // Correlation for already dispatched callbacks and singleton Child creation;
+    // surface placement generations never identify the physical resource.
     binding: NativeSurfaceBinding,
     retired: bool,
     retained_by_host: bool,
@@ -48,7 +53,7 @@ struct NativeWindowResource {
 enum WorkspaceReplacementResource {
     None,
     Prepared,
-    Predecessor { successor: NativeSurfaceBinding },
+    Predecessor { successor: NativeWindowBinding },
 }
 
 impl NativeWindowResource {
@@ -151,7 +156,7 @@ impl NativeWindowResources {
 
     pub(super) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.entries.iter().any(|resource| {
-            resource.binding == binding || resource.callbacks.references_binding(binding)
+            resource.owner == binding.window() || resource.callbacks.references_binding(binding)
         })
     }
 
@@ -209,7 +214,9 @@ impl NativeWindowResources {
     ) {
         self.resource_mut(viewport, binding)
             .expect("the attached predecessor retains its host resource")
-            .workspace_replacement = WorkspaceReplacementResource::Predecessor { successor };
+            .workspace_replacement = WorkspaceReplacementResource::Predecessor {
+            successor: successor.window(),
+        };
     }
 
     pub(super) fn workspace_predecessor(
@@ -218,7 +225,9 @@ impl NativeWindowResources {
     ) -> Option<(ViewportId, NativeSurfaceBinding)> {
         self.entries.iter().find_map(|resource| {
             (resource.workspace_replacement
-                == WorkspaceReplacementResource::Predecessor { successor })
+                == WorkspaceReplacementResource::Predecessor {
+                    successor: successor.window(),
+                })
             .then_some((resource.viewport, resource.binding))
         })
     }
@@ -267,10 +276,10 @@ impl NativeWindowResources {
     /// an output-only pin does not identify the currently active route.
     pub(super) fn refresh_host_references(
         &mut self,
-        mut retained: impl FnMut(ViewportId, NativeSurfaceBinding) -> bool,
+        mut retained: impl FnMut(ViewportId, NativeWindowBinding) -> bool,
     ) {
         self.entries.retain_mut(|resource| {
-            resource.retained_by_host = retained(resource.viewport, resource.binding);
+            resource.retained_by_host = retained(resource.viewport, resource.owner);
             !resource.is_empty()
         });
     }
@@ -373,7 +382,7 @@ impl NativeWindowResources {
         if self
             .entries
             .iter()
-            .any(|resource| resource.binding == binding && resource.no_frame.is_some())
+            .any(|resource| resource.owner == binding.window() && resource.no_frame.is_some())
         {
             return Ok(());
         }
@@ -386,7 +395,7 @@ impl NativeWindowResources {
 
     pub(super) fn clear_no_frame_if(&mut self, record: PendingNoFrameInvalidation) -> bool {
         let Some(resource) = self.entries.iter_mut().find(|resource| {
-            resource.binding == record.binding && resource.no_frame == Some(record)
+            resource.owner == record.binding.window() && resource.no_frame == Some(record)
         }) else {
             return false;
         };
@@ -403,7 +412,7 @@ impl NativeWindowResources {
     ) -> Option<&NativeWindowResource> {
         self.entries
             .iter()
-            .find(|resource| resource.viewport == viewport && resource.binding == binding)
+            .find(|resource| resource.viewport == viewport && resource.owner == binding.window())
     }
 
     fn resource_mut(
@@ -413,7 +422,7 @@ impl NativeWindowResources {
     ) -> Option<&mut NativeWindowResource> {
         self.entries
             .iter_mut()
-            .find(|resource| resource.viewport == viewport && resource.binding == binding)
+            .find(|resource| resource.viewport == viewport && resource.owner == binding.window())
     }
 
     fn active_resource(&self, viewport: ViewportId) -> Option<&NativeWindowResource> {
@@ -428,7 +437,7 @@ impl NativeWindowResources {
             .is_some_and(|resource| resource.retired)
             && self
                 .active_resource(viewport)
-                .is_none_or(|resource| resource.binding == binding)
+                .is_none_or(|resource| resource.owner == binding.window())
     }
 
     fn can_add_entries(&self, additional: usize) -> bool {
@@ -451,6 +460,7 @@ impl NativeWindowResources {
         debug_assert!(self.entries.len() < self.entries.capacity());
         self.entries.push(NativeWindowResource {
             viewport,
+            owner: binding.window(),
             binding,
             retired: false,
             retained_by_host: false,
@@ -797,13 +807,16 @@ impl NativeWindowResources {
         enabled: bool,
     ) -> bool {
         if self.entries.iter().any(|owner| {
-            (owner.viewport, owner.binding) != (viewport, binding)
+            (owner.viewport, owner.owner) != (viewport, binding.window())
                 && owner.callbacks.has_pointer_token(token)
         }) {
             return false;
         }
-        self.command_owner(viewport, binding)
-            .is_some_and(|owner| owner.callbacks.reserve_pointer(token, window, enabled))
+        self.command_owner(viewport, binding).is_some_and(|owner| {
+            owner
+                .callbacks
+                .reserve_pointer(token, window, enabled, binding)
+        })
     }
 
     pub(super) fn accept_pointer_callback(
@@ -816,7 +829,9 @@ impl NativeWindowResources {
         }) else {
             return CommandCallbackAdmission::Unreserved;
         };
-        let binding = owner.binding;
+        let Some(binding) = owner.callbacks.pointer_binding() else {
+            return CommandCallbackAdmission::Unreserved;
+        };
         owner
             .callbacks
             .accept_pointer(record, || make_ingress(binding))
@@ -830,7 +845,7 @@ impl NativeWindowResources {
         token: NativeViewportFocusCommandToken,
     ) -> bool {
         if self.entries.iter().any(|owner| {
-            (owner.viewport, owner.binding) != (viewport, binding)
+            (owner.viewport, owner.owner) != (viewport, binding.window())
                 && owner.callbacks.has_focus_token(token)
         }) {
             return false;
@@ -945,7 +960,7 @@ impl NativeWindowResources {
             .find(|owner| owner.callbacks.has_observation_token(key.token))
         {
             return owner.viewport == key.viewport
-                && owner.binding == binding
+                && owner.callbacks.observation_binding() == Some(binding)
                 && owner.callbacks.matches_observation(key);
         }
         if self
@@ -956,7 +971,7 @@ impl NativeWindowResources {
             return false;
         }
         self.command_owner(key.viewport, binding)
-            .is_some_and(|owner| owner.callbacks.reserve_observation(key))
+            .is_some_and(|owner| owner.callbacks.reserve_observation(key, binding))
     }
 
     pub(super) fn observation_pending(&self, key: NativePointerObservationKey) -> bool {
@@ -988,7 +1003,10 @@ impl NativeWindowResources {
         else {
             return CommandCallbackAdmission::Unreserved;
         };
-        let record = NativePointerObservationRecord::capture(result, owner.binding, viewports);
+        let Some(binding) = owner.callbacks.observation_binding() else {
+            return CommandCallbackAdmission::Unreserved;
+        };
+        let record = NativePointerObservationRecord::capture(result, binding, viewports);
         owner
             .callbacks
             .accept_observation(record, || make_ingress(HostRecord::PointerObservation(key)))
@@ -1002,7 +1020,8 @@ impl NativeWindowResources {
     ) -> CommandCallbackAdmission {
         let key = record.key();
         let Some(owner) = self.entries.iter_mut().find(|owner| {
-            owner.binding == record.binding() && owner.callbacks.matches_observation(key)
+            owner.callbacks.observation_binding() == Some(record.binding())
+                && owner.callbacks.matches_observation(key)
         }) else {
             return CommandCallbackAdmission::Unreserved;
         };
@@ -1026,8 +1045,12 @@ impl NativeWindowResources {
             .callbacks
             .awaiting_observation()
             .expect("the single pending observation was checked");
+        let binding = owner
+            .callbacks
+            .observation_binding()
+            .expect("an awaiting observation retains its exact source");
         owner.callbacks.accept_observation(
-            NativePointerObservationRecord::retired(key, owner.binding),
+            NativePointerObservationRecord::retired(key, binding),
             || make_ingress(HostRecord::PointerObservation(key)),
         );
     }
@@ -1044,7 +1067,7 @@ impl NativeWindowResources {
             .find(|owner| owner.callbacks.has_capture_token(key.token))
         {
             return owner.viewport == key.viewport
-                && owner.binding == binding
+                && owner.callbacks.capture_binding() == Some(binding)
                 && owner.callbacks.matches_capture(key);
         }
         if self
@@ -1061,11 +1084,11 @@ impl NativeWindowResources {
             // Cleanup reuses the exact retained owner, including after retirement.
             return self
                 .resource_mut(key.viewport, binding)
-                .is_some_and(|owner| owner.callbacks.reserve_capture(key));
+                .is_some_and(|owner| owner.callbacks.reserve_capture(key, binding));
         }
         self.command_owner(key.viewport, binding)
             .is_some_and(|owner| {
-                if !owner.callbacks.reserve_capture(key) {
+                if !owner.callbacks.reserve_capture(key, binding) {
                     return false;
                 }
                 owner.capture_duty_held = true;
@@ -1077,7 +1100,7 @@ impl NativeWindowResources {
         if let Some(owner) = self
             .entries
             .iter_mut()
-            .find(|owner| owner.binding == binding)
+            .find(|owner| owner.owner == binding.window())
         {
             owner.capture_duty_held = false;
         }
@@ -1112,7 +1135,10 @@ impl NativeWindowResources {
         else {
             return CommandCallbackAdmission::Unreserved;
         };
-        let record = NativePointerCaptureRecord::capture(result, owner.binding);
+        let Some(binding) = owner.callbacks.capture_binding() else {
+            return CommandCallbackAdmission::Unreserved;
+        };
+        let record = NativePointerCaptureRecord::capture(result, binding);
         owner
             .callbacks
             .accept_capture(record, || make_ingress(HostRecord::PointerCapture(key)))
@@ -1126,7 +1152,8 @@ impl NativeWindowResources {
     ) -> CommandCallbackAdmission {
         let key = record.key();
         let Some(owner) = self.entries.iter_mut().find(|owner| {
-            owner.binding == record.binding() && owner.callbacks.matches_capture(key)
+            owner.callbacks.capture_binding() == Some(record.binding())
+                && owner.callbacks.matches_capture(key)
         }) else {
             return CommandCallbackAdmission::Unreserved;
         };
@@ -1151,10 +1178,15 @@ impl NativeWindowResources {
             .awaiting_capture()
             .expect("the single pending capture was checked");
         // Detachment settles dispatch only; it does not prove native release.
-        owner.callbacks.accept_capture(
-            NativePointerCaptureRecord::retired(key, owner.binding),
-            || make_ingress(HostRecord::PointerCapture(key)),
-        );
+        let binding = owner
+            .callbacks
+            .capture_binding()
+            .expect("an awaiting capture retains its exact source");
+        owner
+            .callbacks
+            .accept_capture(NativePointerCaptureRecord::retired(key, binding), || {
+                make_ingress(HostRecord::PointerCapture(key))
+            });
     }
 
     pub(super) fn callback_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
@@ -1178,7 +1210,9 @@ impl NativeWindowResources {
 
     fn prune(&mut self, viewport: ViewportId, binding: NativeSurfaceBinding) {
         if let Some(index) = self.entries.iter().position(|resource| {
-            resource.viewport == viewport && resource.binding == binding && resource.is_empty()
+            resource.viewport == viewport
+                && resource.owner == binding.window()
+                && resource.is_empty()
         }) {
             self.entries.remove(index);
         }
@@ -1389,7 +1423,9 @@ mod tests {
             resources.retire(viewport, predecessor);
             resources.commit_host_reference(viewport, successor);
         }
-        resources.refresh_host_references(|_, binding| binding == third || binding == first);
+        resources.refresh_host_references(|_, window| {
+            window == third.window() || window == first.window()
+        });
 
         assert_eq!(
             resources.workspace_predecessor(second),
@@ -1412,7 +1448,7 @@ mod tests {
         assert!(resources.resource(viewport, first).is_some());
         resources.finish_workspace_predecessor(viewport, second);
         assert!(resources.resource(viewport, second).is_none());
-        resources.refresh_host_references(|_, binding| binding == third);
+        resources.refresh_host_references(|_, window| window == third.window());
         assert!(resources.resource(viewport, first).is_none());
         assert!(!resources.resource(viewport, third).unwrap().retired);
         assert_eq!(resources.owned_data_capacity_bytes(), bytes);

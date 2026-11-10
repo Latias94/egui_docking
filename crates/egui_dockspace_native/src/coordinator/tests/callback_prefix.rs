@@ -380,7 +380,12 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
         )
         .unwrap();
     commit_boundary(&mut native);
-    paint_and_present_all_surfaces(&mut native);
+    let (_, artifacts) = paint_and_present_all_surfaces_with_artifacts(&mut native);
+    let artifact = artifacts
+        .iter()
+        .find(|(source, _)| *source == binding)
+        .unwrap()
+        .1;
     let mut inspection = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
@@ -418,6 +423,15 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
     let mut press_queries = 0;
     let mut press = native
         .begin_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(query) => {
+                    assert_eq!(query.window(), binding.window());
+                    return NativeReceiverAnswer::WindowHit(
+                        dockspace::runtime::NativeWindowHit::Surface(artifact),
+                    );
+                }
+                NativeReceiverQuery::Surface(query) => query,
+            };
             assert_eq!(
                 query.metadata(),
                 PointerEventMetadata::new(PointerDeviceKind::Mouse, Duration::from_micros(5)),
@@ -469,6 +483,15 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
         let mut observed = Vec::new();
         let mut frame = native
             .begin_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(query) => {
+                        assert_eq!(query.window(), binding.window());
+                        return NativeReceiverAnswer::WindowHit(
+                            dockspace::runtime::NativeWindowHit::Surface(artifact),
+                        );
+                    }
+                    NativeReceiverQuery::Surface(query) => query,
+                };
                 assert_eq!(query.purpose(), &NativeReceiverPurpose::HoverHit);
                 assert_eq!(query.surface(), FIRST_SURFACE);
                 observed.push((query.point().unwrap(), query.metadata()));

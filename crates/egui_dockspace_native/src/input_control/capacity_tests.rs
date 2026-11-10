@@ -183,8 +183,10 @@ fn input_fixture(effect_slots: usize) -> InputFixture {
     let mut report = complete(painted);
     let mut outputs = report.take_painted_outputs();
     assert_eq!(outputs.len(), 1);
+    let output = outputs.pop().unwrap();
+    let artifact = output.presentation_artifact();
     session
-        .report_surface_presentation(outputs.pop().unwrap(), SurfacePresentationResult::Presented)
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
         .unwrap();
     commit(&mut session);
 
@@ -194,7 +196,7 @@ fn input_fixture(effect_slots: usize) -> InputFixture {
         (
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             PhysicalPoint::new(center.x(), center.y()).unwrap(),
-            NativePointerHover::Dock(binding),
+            NativePointerHover::Dock(binding.window()),
             None,
         ),
         (
@@ -209,17 +211,27 @@ fn input_fixture(effect_slots: usize) -> InputFixture {
                 NativePointerId::new(1),
                 event,
                 NativeDesktopPointerLocation::new(NativeDesktopPosition::Exact(point), hover, area),
-                NativePointerOwner::Native(binding),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
+                NativePointerOwner::Native(binding.window()),
             ))
             .unwrap();
     }
     let mut report = complete(
         session
-            .begin_native_host_frame(|query| {
-                query
+            .begin_native_host_frame(|query| match query {
+                dockspace::runtime::NativeReceiverQuery::WindowHit(query)
+                    if query.window() == binding.window() =>
+                {
+                    NativeReceiverAnswer::WindowHit(dockspace::runtime::NativeWindowHit::Surface(
+                        artifact,
+                    ))
+                }
+                dockspace::runtime::NativeReceiverQuery::WindowHit(_) => {
+                    NativeReceiverAnswer::Unknown
+                }
+                dockspace::runtime::NativeReceiverQuery::Surface(query) => query
                     .bind_receiver(&receiver)
-                    .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
+                    .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock),
             })
             .unwrap(),
     );

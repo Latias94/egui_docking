@@ -6,6 +6,7 @@ use dockspace::geometry::{PhysicalPoint, PhysicalSize, ScaleFactor};
 use dockspace::runtime::{
     NativeLocalCoordinates, NativeLocalGeometry, NativeLocalPointerFact,
     NativeLocalPointerLocation, NativeLocalPointerSample, NativeSurfaceBinding,
+    NativeWindowBinding,
 };
 use eframe::{NativeDeviceRemoval, egui::ViewportId};
 use winit::event::{PointerEventFacts, PointerWindowRoute, WindowEvent};
@@ -63,7 +64,7 @@ impl NativeWindowEventClass {
 pub(crate) enum NativePointerRouteSnapshot {
     Unknown,
     None,
-    Dock(NativeSurfaceBinding),
+    Dock(NativeWindowBinding),
     Foreign,
 }
 
@@ -79,7 +80,7 @@ impl NativePointerRouteSnapshot {
         }
     }
 
-    fn references_binding(self, binding: NativeSurfaceBinding) -> bool {
+    fn references_binding(self, binding: NativeWindowBinding) -> bool {
         matches!(self, Self::Dock(current) if current == binding)
     }
 }
@@ -92,7 +93,7 @@ pub(crate) struct NativePointerRoutes {
 }
 
 impl NativePointerRoutes {
-    pub(crate) const fn from_binding(binding: Option<NativeSurfaceBinding>) -> Self {
+    pub(crate) const fn from_binding(binding: Option<NativeWindowBinding>) -> Self {
         let delivery = match binding {
             Some(binding) => NativePointerRouteSnapshot::Dock(binding),
             None => NativePointerRouteSnapshot::Unknown,
@@ -116,7 +117,7 @@ impl NativePointerRoutes {
         self.capture
     }
 
-    pub(crate) fn references_binding(self, binding: NativeSurfaceBinding) -> bool {
+    pub(crate) fn references_binding(self, binding: NativeWindowBinding) -> bool {
         self.delivery.references_binding(binding)
             || self.hover.references_binding(binding)
             || self.capture.references_binding(binding)
@@ -150,7 +151,7 @@ struct NativePointerLocalCapture {
 impl NativePointerLocalCapture {
     fn capture(
         self,
-        binding: Option<NativeSurfaceBinding>,
+        binding: Option<NativeWindowBinding>,
         facts: &PointerEventFacts,
     ) -> NativeLocalPointerLocation {
         let sample = (|| {
@@ -181,7 +182,6 @@ fn local_geometry(geometry: eframe::NativeWindowLocalGeometry) -> Option<NativeL
     Some(NativeLocalGeometry::new(
         PhysicalSize::new(f64::from(width), f64::from(height)).ok()?,
         ScaleFactor::new(geometry.native_scale_factor()).ok()?,
-        ScaleFactor::new(geometry.presentation_scale_factor()).ok()?,
     ))
 }
 
@@ -282,7 +282,7 @@ impl NativeWindowEventRecord {
         self.binding == Some(binding)
             || self
                 .pointer_routes()
-                .is_some_and(|routes| routes.references_binding(binding))
+                .is_some_and(|routes| routes.references_binding(binding.window()))
     }
 
     pub(crate) fn shares_cursor_lane(&self, newer: &Self) -> bool {
@@ -496,7 +496,7 @@ impl NativeWindowEventRecord {
                                 && touch.facts.surface_position == Some(touch.location)
                         })
                         .map_or(NativeLocalPointerLocation::Unknown, |capture| {
-                            capture.capture(binding, &touch.facts)
+                            capture.capture(pointer_binding, &touch.facts)
                         });
                     CapturedNativePointerLocation::NativeLocal(location)
                 }
@@ -506,7 +506,7 @@ impl NativeWindowEventRecord {
                             .desktop_position
                             .is_some_and(|point| point.x.is_finite() && point.y.is_finite()) =>
                 {
-                    match local_capture.capture(binding, facts) {
+                    match local_capture.capture(pointer_binding, facts) {
                         NativeLocalPointerLocation::Exact(sample) => {
                             CapturedNativePointerLocation::LocalToDesktop(sample)
                         }
@@ -526,7 +526,7 @@ impl NativeWindowEventRecord {
                         .is_some_and(|point| point.x.is_finite() && point.y.is_finite()) =>
                 {
                     CapturedNativePointerLocation::NativeLocal(
-                        local_capture.capture(binding, facts),
+                        local_capture.capture(pointer_binding, facts),
                     )
                 }
                 _ => CapturedNativePointerLocation::Desktop,
@@ -551,7 +551,6 @@ mod tests {
 
     use super::*;
     use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
-    use dockspace::geometry::LogicalPoint;
     use dockspace::model::{
         DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
         RootId, SurfaceId,
@@ -578,7 +577,6 @@ mod tests {
         NativeLocalGeometry::new(
             PhysicalSize::new(800.0, 600.0).unwrap(),
             ScaleFactor::new(scale).unwrap(),
-            ScaleFactor::new(scale).unwrap(),
         )
     }
 
@@ -594,7 +592,7 @@ mod tests {
                     NativeWindowFacts::live()
                         .with_content_size(geometry.content_size())
                         .with_native_scale_factor(geometry.native_scale_factor())
-                        .with_presentation_scale_factor(geometry.presentation_scale_factor())
+                        .with_presentation_scale_factor(geometry.native_scale_factor())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
                         .with_presentation(NativeWindowPresentationState::Visible),
                 )],
@@ -924,8 +922,8 @@ mod tests {
                     NativePointerId::new(1),
                     expected_event,
                     NativeLocalPointerLocation::Unknown,
-                    NativePointerOwner::Native(binding),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
+                    NativePointerOwner::Native(binding.window()),
                 ))
             );
         }
@@ -960,7 +958,7 @@ mod tests {
                     NativePointerHover::Unknown,
                     None,
                 ),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
                 NativePointerOwner::Unknown,
             )),
         );
@@ -982,8 +980,8 @@ mod tests {
             panic!("the original callback has exact local coordinates");
         };
         assert_eq!(
-            original.surface_position(),
-            LogicalPoint::new(20.0, 40.0).unwrap()
+            original.client_position(),
+            PhysicalPoint::new(20.0, 40.0).unwrap()
         );
 
         commit_geometry(&mut session, binding, geometry(2.0));
@@ -1002,8 +1000,8 @@ mod tests {
         };
         assert!(!original.same_coordinates(current));
         assert_eq!(
-            current.surface_position(),
-            LogicalPoint::new(10.0, 20.0).unwrap()
+            current.client_position(),
+            PhysicalPoint::new(20.0, 40.0).unwrap()
         );
 
         let captured_at = std::time::Duration::from_millis(37);
@@ -1017,8 +1015,8 @@ mod tests {
                     NativePointerId::new(1),
                     NativePointerEvent::Moved,
                     NativeLocalPointerLocation::Exact(original),
-                    NativePointerOwner::Native(binding),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
+                    NativePointerOwner::Native(binding.window()),
                 )
                 .with_metadata(dockspace::runtime::PointerEventMetadata::new(
                     dockspace::runtime::PointerDeviceKind::Mouse,
@@ -1049,8 +1047,8 @@ mod tests {
             PhysicalPoint::new(20.0, 40.0).unwrap()
         );
         assert_eq!(
-            original.surface_position(),
-            LogicalPoint::new(20.0, 40.0).unwrap()
+            original.client_position(),
+            PhysicalPoint::new(20.0, 40.0).unwrap()
         );
 
         commit_geometry(&mut session, binding, geometry(2.0));
@@ -1069,8 +1067,8 @@ mod tests {
         };
         assert!(!original.same_coordinates(current));
         assert_eq!(
-            current.surface_position(),
-            LogicalPoint::new(10.0, 20.0).unwrap()
+            current.client_position(),
+            PhysicalPoint::new(20.0, 40.0).unwrap()
         );
         assert!(viewports.suppress_pointer_route(ViewportId::ROOT, binding));
 
@@ -1087,8 +1085,8 @@ mod tests {
                         None,
                     ),
                 ),
-                NativePointerOwner::Native(binding),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
+                NativePointerOwner::Native(binding.window()),
             )
             .with_metadata(PointerEventMetadata::new(
                 PointerDeviceKind::Mouse,
@@ -1174,11 +1172,11 @@ mod tests {
                     NativePointerEvent::Moved,
                     NativeDesktopPointerLocation::new(
                         NativeDesktopPosition::Exact(PhysicalPoint::new(420.0, -260.0).unwrap()),
-                        NativePointerHover::Dock(binding),
+                        NativePointerHover::Dock(binding.window()),
                         None,
                     ),
-                    NativePointerOwner::Native(binding),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
+                    NativePointerOwner::Native(binding.window()),
                 )),
             );
         }
@@ -1208,8 +1206,8 @@ mod tests {
                 panic!("unavailable desktop facts must retain the original local sample");
             };
             assert_eq!(
-                sample.surface_position(),
-                LogicalPoint::new(20.0, 40.0).unwrap()
+                sample.client_position(),
+                PhysicalPoint::new(20.0, 40.0).unwrap()
             );
             let NativePointerTranslation::Input(input) = NativePointerTranslator::default()
                 .translate(&record, |_| panic!("local input cannot select a work area"))
@@ -1506,7 +1504,7 @@ mod tests {
                     NativePointerHover::Unknown,
                     None,
                 ),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
                 NativePointerOwner::Unknown,
             ))
         );
@@ -1514,7 +1512,7 @@ mod tests {
             translator.translate(&start, |_| None),
             NativePointerTranslation::Ignored
         );
-        translator.retire_binding(binding);
+        translator.retire_binding(binding.window());
         for phase in [TouchPhase::Moved, TouchPhase::Ended, TouchPhase::Cancelled] {
             assert_eq!(
                 translator.translate(&touch(phase), |_| None),

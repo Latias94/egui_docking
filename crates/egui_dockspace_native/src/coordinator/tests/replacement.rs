@@ -130,6 +130,17 @@ fn request_replacement_on_existing_viewport() -> (
     };
     assert_ne!(successor, predecessor);
     assert_eq!(successor.surface(), predecessor.surface());
+    assert_eq!(
+        native.session.native_replacement_predecessor(successor),
+        Some(predecessor)
+    );
+    assert_eq!(
+        native.session.native_replacement_predecessor(predecessor),
+        None
+    );
+    assert!(native.session.is_current_native_binding(successor));
+    assert!(native.surface_viewport(successor.surface()).is_none());
+    assert_eq!(native.viewport_binding(child_viewport), Some(predecessor));
 
     native
         .accept_native_effects(&egui::Context::default(), effects)

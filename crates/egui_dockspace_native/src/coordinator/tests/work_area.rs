@@ -111,8 +111,8 @@ fn outside_all_translation_uses_the_exact_committed_work_area() {
             NativePointerHover::OutsideAll,
             Some(work_area),
         ),
-        NativePointerOwner::Native(first),
-        NativePointerOwner::Native(first),
+        NativePointerOwner::Native(first.window()),
+        NativePointerOwner::Native(first.window()),
     );
 
     assert_eq!(actual, NativePointerTranslation::Input(expected));

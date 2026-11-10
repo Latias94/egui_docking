@@ -72,7 +72,7 @@ pub(crate) fn paint_pane(
         // accessibility state survive the temporary source gap.
         child.set_opacity(0.0);
     }
-    child.set_clip_rect(pane_rect);
+    child.set_clip_rect(context.ui.clip_rect().intersect(pane_rect));
     let mut paint_audit = context.paint_audit.take();
     let painter = child.painter().clone();
     // Keep ownership outside the callback so an unwind releases the append

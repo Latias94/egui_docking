@@ -15,6 +15,9 @@ use super::RenderContext;
 use super::actions::{clicked_response_origin, effective_enabled};
 use super::geometry::{accesskit_bounds, egui_rect};
 
+mod popup;
+pub(crate) use popup::prepare_layer;
+
 const COMMANDS: [DockspacePresentationCommandKind; 8] = [
     DockspacePresentationCommandKind::Float,
     DockspacePresentationCommandKind::MoveToNewWindow,
@@ -106,78 +109,88 @@ pub(super) fn paint(
         .collect::<Vec<_>>();
     let mut activated = None;
     let mut close_group = None;
-    let popup = Popup::menu(&response).id(popup_id);
-    let popup = if touch_requested {
-        popup.open_memory(None)
-    } else {
-        popup
-    };
-    let popup = popup.show(|ui| {
-        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-            node.set_role(Role::Menu);
-            node.set_label("Presentation commands");
-        });
-        for command in commands {
-            let label = command_label(command.kind());
-            let enabled = ui_enabled && command.is_ready();
+    let popup = popup::show(
+        context.ui,
+        context.instance_id,
+        context.plan.surface(),
+        popup_id,
+        &response,
+        touch_requested,
+        |ui| {
+            let mut entries = Vec::with_capacity(COMMANDS.len() + 1);
+            ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                node.set_role(Role::Menu);
+                node.set_label("Presentation commands");
+            });
+            for command in commands {
+                let label = command_label(command.kind());
+                let enabled = ui_enabled && command.is_ready();
+                let response = ui
+                    .scope_builder(
+                        UiBuilder::new().scope_id(popup_id.with(("command", command.kind()))),
+                        |ui| ui.add_enabled(enabled, Button::new(label)),
+                    )
+                    .inner;
+                ui.ctx().accesskit_node_builder(response.id, |node| {
+                    node.set_role(Role::MenuItem);
+                    node.set_label(label);
+                    node.clear_actions();
+                    if enabled {
+                        node.add_action(Action::Click);
+                        node.add_action(Action::Focus);
+                    } else {
+                        node.set_disabled();
+                        if let Some(reason) = command.unavailable_reason() {
+                            node.set_description(unavailable_text(reason));
+                        }
+                    }
+                });
+                let response = if let Some(reason) = command.unavailable_reason() {
+                    response.on_disabled_hover_text(unavailable_text(reason))
+                } else {
+                    response
+                };
+                if enabled {
+                    entries.push(response.id);
+                }
+                if let Some(origin) = clicked_response_origin(ui, &response) {
+                    activated = Some((origin, command));
+                    ui.close();
+                }
+            }
+            ui.separator();
             let response = ui
                 .scope_builder(
-                    UiBuilder::new().scope_id(popup_id.with(("command", command.kind()))),
-                    |ui| ui.add_enabled(enabled, Button::new(label)),
+                    UiBuilder::new().scope_id(popup_id.with("close-group")),
+                    |ui| {
+                        ui.add_enabled(
+                            ui_enabled && context.plan.prepare_root_close(anchor.root()).is_some(),
+                            Button::new("Close Group"),
+                        )
+                    },
                 )
                 .inner;
             ui.ctx().accesskit_node_builder(response.id, |node| {
                 node.set_role(Role::MenuItem);
-                node.set_label(label);
-                node.clear_actions();
-                if enabled {
+                node.set_label("Close Group");
+                if response.enabled() {
                     node.add_action(Action::Click);
                     node.add_action(Action::Focus);
                 } else {
                     node.set_disabled();
-                    if let Some(reason) = command.unavailable_reason() {
-                        node.set_description(unavailable_text(reason));
-                    }
+                    node.clear_actions();
                 }
             });
-            let response = if let Some(reason) = command.unavailable_reason() {
-                response.on_disabled_hover_text(unavailable_text(reason))
-            } else {
-                response
-            };
             if let Some(origin) = clicked_response_origin(ui, &response) {
-                activated = Some((origin, command));
+                close_group = Some(origin);
                 ui.close();
             }
-        }
-        ui.separator();
-        let response = ui
-            .scope_builder(
-                UiBuilder::new().scope_id(popup_id.with("close-group")),
-                |ui| {
-                    ui.add_enabled(
-                        ui_enabled && context.plan.prepare_root_close(anchor.root()).is_some(),
-                        Button::new("Close Group"),
-                    )
-                },
-            )
-            .inner;
-        ui.ctx().accesskit_node_builder(response.id, |node| {
-            node.set_role(Role::MenuItem);
-            node.set_label("Close Group");
             if response.enabled() {
-                node.add_action(Action::Click);
-                node.add_action(Action::Focus);
-            } else {
-                node.set_disabled();
-                node.clear_actions();
+                entries.push(response.id);
             }
-        });
-        if let Some(origin) = clicked_response_origin(ui, &response) {
-            close_group = Some(origin);
-            ui.close();
-        }
-    });
+            entries
+        },
+    );
 
     if ui_enabled
         && activated.is_none()

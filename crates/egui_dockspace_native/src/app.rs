@@ -7,7 +7,7 @@ use dockspace::model::{
     SurfaceId,
 };
 use dockspace::runtime::DockspaceClosePlan;
-use dockspace::runtime::DockspaceSession;
+use dockspace::runtime::{DockspaceSession, NativeSurfacePlacement};
 use eframe::egui::{self, Id, ViewportClass, ViewportId};
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputPassFinalization, NativeOutputPassFinalizer,
@@ -405,7 +405,8 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
 
     /// Queues an application-owned default or preset layout in the existing slot.
     ///
-    /// The layout must contain only this application's logical host surface.
+    /// The layout must preserve this application's representative host surface.
+    /// Other surfaces already placed in that same Root window may also survive.
     /// Native input and final-pass local actions precede the terminal replacement.
     /// Root bindings rejoin their existing physical windows with fresh authority;
     /// retired child windows finish their existing cleanup. New logical surfaces
@@ -415,7 +416,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// # Errors
     ///
     /// Returns the original queue or core preparation error, a missing host
-    /// error, or `Unsupported` for additional logical surfaces. A layout made
+    /// error, or `Unsupported` for surfaces outside the current Root roster. A layout made
     /// stale before execution reports `Stale` as its queued terminal result
     /// without stopping the native runtime.
     pub fn request_layout_reset(
@@ -427,10 +428,11 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
 
     /// Queues a layout reset that continues the external Root on an incoming surface.
     ///
-    /// The layout must contain only `incoming_root`. Its old logical host surface
-    /// may disappear; the same OS window continues under a fresh binding. The
-    /// logical host field and native route change with the core commit. Wait for
-    /// fresh presentation before interacting with the replacement layout.
+    /// The layout must contain `incoming_root` and may preserve the current
+    /// shared siblings. Its old representative surface may disappear; the same
+    /// OS window continues under fresh bindings. The logical host field and
+    /// complete native roster change with the core commit. Wait for fresh
+    /// presentation before interacting with the replacement layout.
     ///
     /// # Errors
     ///
@@ -444,10 +446,40 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).request_layout_reset_rebinding_root(layout, incoming_root)
     }
 
-    /// Returns the logical surface currently bound to the application's Root window.
+    /// Returns the representative logical surface of the application's Root window.
+    ///
+    /// A shared Root may host additional placements. A committed explicit
+    /// continuation updates this representative together with the native route.
     #[must_use]
     pub fn root_surface(&self) -> SurfaceId {
         lock_state(&self.state).root_surface()
+    }
+
+    /// Composes independent logical surfaces inside the real Root viewport.
+    ///
+    /// Call once from the Root application's UI callback instead of invoking
+    /// this application's `eframe::App::ui`. The complete borrowed roster owns
+    /// this pass's layout; each surface's logical size is independent of its
+    /// physical clip. Native DPI is already represented by each placement's
+    /// physical-pixels-per-logical-unit scale and is not multiplied again.
+    /// The roster must be nonempty, contain [`Self::root_surface`], and name
+    /// existing logical surfaces. Runtime-owned Child windows keep their
+    /// ordinary whole-client placement.
+    ///
+    /// Every contribution uses the current output token, one candidate and one
+    /// final publication. Deferred native children keep using that same host.
+    /// Dockspace-owned menus retain their source placement scale and use the
+    /// viewport's full bounds. A pane's independent framework popup keeps egui's
+    /// ordinary viewport-point overlay semantics.
+    /// Repeated passes must supply the same roster. Errors enter the existing
+    /// native shutdown path and preserve the last committed workspace.
+    ///
+    /// When this run already owns raw input, it paints the complete roster
+    /// admitted before that input was taken. A different roster announced here
+    /// is eligible on the next run, whose complete output allowance is checked
+    /// before taking more input. Text and IME events are never replayed.
+    pub fn show_root_surfaces(&self, ui: &mut egui::Ui, placements: &[NativeSurfacePlacement]) {
+        self.update_root_with_placements(ui, Some(placements));
     }
 
     /// Captures JSON for the current committed document without taking pane data.
@@ -470,9 +502,10 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     ///
     /// Identity recognition includes closed and temporarily unloaded panes. A
     /// recognized missing pane may render an application-owned placeholder. The
-    /// document must preserve the configured host surface and current lineage.
-    /// Additional surfaces require explicit Child hosting declarations and saved
-    /// placement. They resume through budgeted creation after predecessor
+    /// document must preserve the representative host surface and current lineage.
+    /// Shared siblings already placed in its Root window are continued in the
+    /// same atomic roster. Other surfaces require explicit Child hosting declarations
+    /// and saved placement. They resume through budgeted creation after predecessor
     /// quiescence; undeclared surfaces do not implicitly create OS windows.
     /// Keys and declared identities remain core-owned; current presentation and
     /// focus require fresh native binding and output observations after restore.
@@ -494,9 +527,11 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
 
     /// Restores a document and continues the external Root on its declared incoming surface.
     ///
-    /// Core preserves declared Root/Child identities and placement together. Explicit Child
-    /// declarations resume through normal budgeted creation after predecessor
-    /// quiescence. The physical Root window survives the logical replacement.
+    /// Core preserves declared Root/Child identities and placement together.
+    /// Shared siblings present in the document continue with the representative
+    /// in one atomic roster. Explicit Child declarations resume through normal
+    /// budgeted creation after predecessor quiescence. The physical Root window
+    /// survives the logical replacement.
     ///
     /// # Errors
     ///
@@ -525,6 +560,14 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     }
 
     fn update_root(&self, ui: &mut egui::Ui) {
+        self.update_root_with_placements(ui, None);
+    }
+
+    fn update_root_with_placements(
+        &self,
+        ui: &mut egui::Ui,
+        placements: Option<&[NativeSurfacePlacement]>,
+    ) {
         let context = ui.ctx().clone();
         let token = eframe::current_native_output_token();
         let (specs, request_repaint) = {
@@ -538,7 +581,11 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
                 progress
             } else {
                 let root_surface = state.root_surface();
-                match state.update_surface(ui, root_surface) {
+                let update = match placements {
+                    Some(placements) => state.update_root_surfaces(ui, placements),
+                    None => state.update_surface(ui, root_surface),
+                };
+                match update {
                     Ok(NativeSurfaceUpdate::Semantic) => false,
                     Ok(NativeSurfaceUpdate::RetainPrevious) => {
                         paint_root_waiting(ui);

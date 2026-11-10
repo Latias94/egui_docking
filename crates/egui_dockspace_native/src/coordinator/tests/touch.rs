@@ -141,7 +141,10 @@ fn touch_snapshots_freeze_exact_delivery_and_preserve_terminal_semantics() {
             });
             assert_eq!(record.binding(), Some(binding));
             let routes = record.pointer_routes().expect("touch routes are frozen");
-            assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Dock(binding));
+            assert_eq!(
+                routes.delivery(),
+                NativePointerRouteSnapshot::Dock(binding.window())
+            );
             assert_eq!(routes.hover(), NativePointerRouteSnapshot::Unknown);
             assert_eq!(routes.capture(), NativePointerRouteSnapshot::Unknown);
 
@@ -155,7 +158,7 @@ fn touch_snapshots_freeze_exact_delivery_and_preserve_terminal_semantics() {
                 NativePointerTranslation::Input(expected)
             );
         }
-        assert!(!translator.references_binding(binding));
+        assert!(!translator.references_binding(binding.window()));
     }
 }
 
@@ -230,7 +233,7 @@ fn destroyed_touch_snapshots_never_recover_retained_lifecycle_binding() {
         assert_eq!(destroyed.binding(), Some(binding));
         assert_eq!(
             started.pointer_routes().unwrap().delivery(),
-            NativePointerRouteSnapshot::Dock(binding),
+            NativePointerRouteSnapshot::Dock(binding.window()),
             "suppression cannot rewrite an earlier touch snapshot"
         );
 
@@ -258,8 +261,8 @@ fn destroyed_touch_snapshots_never_recover_retained_lifecycle_binding() {
         }
 
         let mut retired = translator.clone();
-        retired.retire_binding(binding);
-        assert!(!retired.references_binding(binding));
+        retired.retire_binding(binding.window());
+        assert!(!retired.references_binding(binding.window()));
         for record in [&moved, &terminated, &late_move] {
             assert_eq!(
                 retired.translate(record, |_| None),
@@ -293,7 +296,7 @@ fn destroyed_touch_snapshots_never_recover_retained_lifecycle_binding() {
                 )),
                 "an explicit start gets a fresh identity without recovering lifecycle authority"
             );
-            assert!(!translator.references_binding(binding));
+            assert!(!translator.references_binding(binding.window()));
         }
     }
 }
@@ -505,8 +508,8 @@ fn destroyed_touch_binding_tombstones_late_terminal_before_contact_id_reuse() {
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
         ))
     );
-    translator.retire_binding(binding);
-    assert!(!translator.references_binding(binding));
+    translator.retire_binding(binding.window());
+    assert!(!translator.references_binding(binding.window()));
     assert_eq!(
         translator.translate(
             &touch_record(2, window, binding, device, 10, TouchPhase::Ended),
@@ -577,8 +580,8 @@ fn uncorrelated_raw_removal_forgets_all_window_input_identity_shapes() {
 
     translator.forget_removed_devices();
     assert!(translator.can_coalesce_idle_cursor_moves());
-    assert!(!translator.references_binding(first));
-    assert!(!translator.references_binding(second));
+    assert!(!translator.references_binding(first.window()));
+    assert!(!translator.references_binding(second.window()));
 
     let late_release = NativeWindowEventRecord::for_test(
         4,
@@ -804,7 +807,11 @@ fn assert_device_removal_commits(quarantined: bool) {
     assert!(!native.bridge.has_pending_callback_records());
     assert!(!native.session.has_active_gesture());
     assert!(native.pointer_translator.can_coalesce_idle_cursor_moves());
-    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(binding.window())
+    );
 }
 
 fn touch_record(
@@ -844,7 +851,7 @@ fn pointer_input(
             NativePointerHover::Unknown,
             None,
         ),
-        NativePointerOwner::Native(binding),
+        NativePointerOwner::Native(binding.window()),
         NativePointerOwner::Unknown,
     )
 }

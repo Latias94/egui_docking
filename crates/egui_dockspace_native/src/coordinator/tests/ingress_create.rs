@@ -166,7 +166,7 @@ fn publish_desktop_roster(native: &mut NativeCoordinator, roster: NativeViewport
 fn pointer_passthrough_fixture() -> (
     NativeCoordinator,
     NativeSurfaceBinding,
-    dockspace::runtime::DockspaceReceiverDescriptor,
+    RecordedSourceReceiver,
 ) {
     let layout = DockspaceLayout::new([
         DockspaceSurfaceLayout::new(
@@ -283,9 +283,21 @@ fn pointer_passthrough_roster(
     )
 }
 
-fn measure_and_present_source(
-    native: &mut NativeCoordinator,
-) -> dockspace::runtime::DockspaceReceiverDescriptor {
+#[derive(Clone, Copy)]
+struct RecordedSourceReceiver {
+    descriptor: dockspace::runtime::DockspaceReceiverDescriptor,
+    window: dockspace::runtime::NativeWindowBinding,
+    artifact: dockspace::runtime::SurfacePresentationArtifact,
+}
+
+impl std::ops::Deref for RecordedSourceReceiver {
+    type Target = dockspace::runtime::DockspaceReceiverDescriptor;
+    fn deref(&self) -> &Self::Target {
+        &self.descriptor
+    }
+}
+
+fn measure_and_present_source(native: &mut NativeCoordinator) -> RecordedSourceReceiver {
     measure_and_present_source_in_bounds(
         native,
         LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("logical bounds validate"),
@@ -295,7 +307,33 @@ fn measure_and_present_source(
 fn measure_and_present_source_in_bounds(
     native: &mut NativeCoordinator,
     bounds: LogicalRect,
-) -> dockspace::runtime::DockspaceReceiverDescriptor {
+) -> RecordedSourceReceiver {
+    let (descriptor, artifact) = measure_and_present_source_with_artifact(native, bounds);
+    let window = native
+        .session
+        .native_window_bindings()
+        .find_map(|window| {
+            native
+                .session
+                .native_surface_bindings_for_window(window)
+                .find(|binding| binding.surface() == SOURCE_SURFACE)
+        })
+        .expect("the source has an exact native window")
+        .window();
+    RecordedSourceReceiver {
+        descriptor,
+        window,
+        artifact,
+    }
+}
+
+fn measure_and_present_source_with_artifact(
+    native: &mut NativeCoordinator,
+    bounds: LogicalRect,
+) -> (
+    dockspace::runtime::DockspaceReceiverDescriptor,
+    dockspace::runtime::SurfacePresentationArtifact,
+) {
     let metrics = UniformSurfaceMetrics::new(
         bounds,
         LogicalSize::new(0.0, 0.0).expect("logical minimum validates"),
@@ -339,6 +377,7 @@ fn measure_and_present_source_in_bounds(
     let [output] = outputs.try_into().unwrap_or_else(|outputs: Vec<_>| {
         panic!("expected one source output, got {}", outputs.len())
     });
+    let artifact = output.presentation_artifact();
     native
         .session
         .report_surface_presentation(output, SurfacePresentationResult::Presented)
@@ -353,7 +392,10 @@ fn measure_and_present_source_in_bounds(
         .commit()
         .expect("source presentation frame commits");
     assert!(observed_report.take_native_effects().is_empty());
-    descriptor.expect("source tab exposes a drag receiver")
+    (
+        descriptor.expect("source tab exposes a drag receiver"),
+        artifact,
+    )
 }
 
 fn push_window_event(native: &mut NativeCoordinator, ordinal: u64, event: WindowEvent) {
@@ -374,12 +416,22 @@ fn push_window_event(native: &mut NativeCoordinator, ordinal: u64, event: Window
 
 fn pointer_frame(
     native: &mut NativeCoordinator,
-    receiver: dockspace::runtime::DockspaceReceiverDescriptor,
+    receiver: RecordedSourceReceiver,
 ) -> dockspace::runtime::HostFrameReport {
     let mut frame = native
         .begin_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(query) => {
+                    return NativeReceiverAnswer::WindowHit(if query.window() == receiver.window {
+                        dockspace::runtime::NativeWindowHit::Surface(receiver.artifact)
+                    } else {
+                        dockspace::runtime::NativeWindowHit::Unknown
+                    });
+                }
+                NativeReceiverQuery::Surface(query) => query,
+            };
             query
-                .bind_receiver(&receiver)
+                .bind_receiver(&receiver.descriptor)
                 .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
         })
         .expect("pointer callback frame begins");
@@ -406,7 +458,7 @@ fn pointer_facts(
 
 fn begin_outside_native_drag(
     native: &mut NativeCoordinator,
-    receiver: dockspace::runtime::DockspaceReceiverDescriptor,
+    receiver: RecordedSourceReceiver,
 ) -> PhysicalPoint {
     let press = receiver.center();
     let press_physical = PhysicalPoint::new(press.x(), press.y())
@@ -458,7 +510,7 @@ fn begin_outside_native_drag(
 
 fn begin_outside_pointer_passthrough_drag(
     native: &mut NativeCoordinator,
-    receiver: dockspace::runtime::DockspaceReceiverDescriptor,
+    receiver: RecordedSourceReceiver,
 ) {
     let viewport = native
         .surface_viewport(SOURCE_SURFACE)
@@ -485,7 +537,7 @@ fn assert_root_preserves_pointer_input(native: &NativeCoordinator, source: Nativ
 
 fn request_native_child(
     native: &mut NativeCoordinator,
-    receiver: dockspace::runtime::DockspaceReceiverDescriptor,
+    receiver: RecordedSourceReceiver,
 ) -> NativeSurfaceBinding {
     let source = native
         .viewport_binding(ViewportId::ROOT)
@@ -625,12 +677,20 @@ fn destroyed_scroll_retires_in_one_boundary_without_a_future_pointer_event() {
         },
     );
     drop(pointer_frame(&mut native, receiver));
-    assert!(native.pointer_translator.references_binding(binding));
+    assert!(
+        native
+            .pointer_translator
+            .references_binding(binding.window())
+    );
 
     let recorded = native.session.native_input_recorded_count();
     push_window_event(&mut native, 71, WindowEvent::Destroyed);
     assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
-    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(binding.window())
+    );
     drop(pointer_frame(&mut native, receiver));
     assert!(
         native

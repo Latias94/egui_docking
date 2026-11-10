@@ -1091,7 +1091,7 @@ fn assert_close_create_and_output_pressure(
     drop(commit_boundary(&mut native));
     native
         .session
-        .report_native_global_focus(NativeGlobalFocus::Dock(bindings[2]))
+        .report_native_global_focus(NativeGlobalFocus::Dock(bindings[2].window()))
         .expect("the active release model starts in its input window");
     drop(commit_boundary(&mut native));
     let presented = paint_and_present_all_surfaces(&mut native);
@@ -1264,7 +1264,7 @@ fn assert_close_create_and_output_pressure(
             .items()
             .to_vec()
     };
-    let (receivers, points, mut unrelated_output) = if with_accepted_release {
+    let (receivers, points, mut unrelated_output, input_artifact) = if with_accepted_release {
         // Repaint after close/create enrollment so receiver facts come from the
         // actual current output, independently of the pending native owners.
         let mut paint = native
@@ -1326,23 +1326,38 @@ fn assert_close_create_and_output_pressure(
                 assert!(unrelated.replace(output).is_none());
             }
         }
+        let source_output = source_output.unwrap();
+        let input_artifact = source_output.presentation_artifact();
         native
             .session
-            .report_surface_presentation(
-                source_output.unwrap(),
-                SurfacePresentationResult::Presented,
-            )
+            .report_surface_presentation(source_output, SurfacePresentationResult::Presented)
             .unwrap();
         drop(commit_boundary(&mut native));
         (
             Some(receivers),
             Some(points.map(Option::unwrap)),
             Some(unrelated.unwrap()),
+            Some(input_artifact),
         )
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
     let resolve = |query: NativeReceiverQuery| {
+        let query = match query {
+            NativeReceiverQuery::WindowHit(query) => {
+                return NativeReceiverAnswer::WindowHit(
+                    if query.window() == input_binding.window() {
+                        input_artifact.map_or(
+                            dockspace::runtime::NativeWindowHit::Unknown,
+                            dockspace::runtime::NativeWindowHit::Surface,
+                        )
+                    } else {
+                        dockspace::runtime::NativeWindowHit::Unknown
+                    },
+                );
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         let Some([source, target]) = receivers else {
             return NativeReceiverAnswer::Unknown;
         };
@@ -1372,7 +1387,7 @@ fn assert_close_create_and_output_pressure(
                 .native_local_coordinates(input_binding)
                 .unwrap();
             let geometry = coordinates.geometry();
-            let scale = geometry.presentation_scale_factor().get();
+            let scale = geometry.native_scale_factor().get();
             let position = PhysicalPosition::new(point.x() * scale, point.y() * scale);
             let facts = PointerEventFacts {
                 surface_position: Some(position),

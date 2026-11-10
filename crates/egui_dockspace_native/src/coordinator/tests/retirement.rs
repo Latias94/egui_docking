@@ -43,11 +43,11 @@ fn captured_drag_ignores_target_cursor_notification_until_owner_callback() {
                 NativeDesktopPosition::Exact(
                     PhysicalPoint::new(330.0, 440.0).expect("test point validates"),
                 ),
-                NativePointerHover::Dock(target),
+                NativePointerHover::Dock(target.window()),
                 None,
             ),
-            NativePointerOwner::Native(source),
-            NativePointerOwner::Native(source),
+            NativePointerOwner::Native(source.window()),
+            NativePointerOwner::Native(source.window()),
         )),
         "the capture-owner callback keeps source delivery with target hover"
     );
@@ -223,7 +223,7 @@ fn destroyed_binding_retires_pressed_pointer_before_successor_press() {
             .expect("one binding-retirement fact records with the destroyed callback")
             .is_some()
     );
-    assert!(!native.pointer_translator.references_binding(first));
+    assert!(!native.pointer_translator.references_binding(first.window()));
     assert!(native.next_window_event().unwrap().is_none());
     commit_pending_pointer_frame(&mut native);
 
@@ -275,8 +275,12 @@ fn destroyed_binding_retires_pressed_pointer_before_successor_press() {
     );
     commit_pending_pointer_frame(&mut native);
 
-    assert!(!native.pointer_translator.references_binding(first));
-    assert!(native.pointer_translator.references_binding(second));
+    assert!(!native.pointer_translator.references_binding(first.window()));
+    assert!(
+        native
+            .pointer_translator
+            .references_binding(second.window())
+    );
 }
 
 #[test]
@@ -299,9 +303,13 @@ fn idle_delivery_does_not_become_a_persistent_pointer_owner() {
         native.pointer_translator.translate(&moved, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(binding.window())
+    );
     let before = format!("{:?}", native.pointer_translator);
-    native.pointer_translator.retire_binding(binding);
+    native.pointer_translator.retire_binding(binding.window());
     assert_eq!(format!("{:?}", native.pointer_translator), before);
 }
 
@@ -331,9 +339,13 @@ fn released_button_no_longer_keeps_its_press_binding_live() {
         ));
     }
 
-    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(binding.window())
+    );
     let before = format!("{:?}", native.pointer_translator);
-    native.pointer_translator.retire_binding(binding);
+    native.pointer_translator.retire_binding(binding.window());
     assert_eq!(format!("{:?}", native.pointer_translator), before);
 }
 
@@ -373,8 +385,16 @@ fn pressed_delivery_and_capture_bindings_remain_independent() {
         native.pointer_translator.translate(&press, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert!(native.pointer_translator.references_binding(delivery));
-    assert!(native.pointer_translator.references_binding(captured));
+    assert!(
+        native
+            .pointer_translator
+            .references_binding(delivery.window())
+    );
+    assert!(
+        native
+            .pointer_translator
+            .references_binding(captured.window())
+    );
 
     let capture_released = native.bridge.with_viewports(|routes| {
         NativeWindowEventRecord::for_test_snapshot(
@@ -394,10 +414,22 @@ fn pressed_delivery_and_capture_bindings_remain_independent() {
             .translate(&capture_released, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert!(native.pointer_translator.references_binding(delivery));
-    assert!(!native.pointer_translator.references_binding(captured));
-    native.pointer_translator.retire_binding(delivery);
-    assert!(!native.pointer_translator.references_binding(delivery));
+    assert!(
+        native
+            .pointer_translator
+            .references_binding(delivery.window())
+    );
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(captured.window())
+    );
+    native.pointer_translator.retire_binding(delivery.window());
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(delivery.window())
+    );
 }
 
 #[test]
@@ -433,7 +465,11 @@ fn capture_retirement_swallows_release_from_unknown_delivery() {
         native.pointer_translator.translate(&press, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert!(native.pointer_translator.references_binding(captured));
+    assert!(
+        native
+            .pointer_translator
+            .references_binding(captured.window())
+    );
     let unknown_capture = native.bridge.with_viewports(|routes| {
         NativeWindowEventRecord::for_test_snapshot(
             2,
@@ -452,9 +488,17 @@ fn capture_retirement_swallows_release_from_unknown_delivery() {
             .translate(&unknown_capture, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert!(native.pointer_translator.references_binding(captured));
-    native.pointer_translator.retire_binding(captured);
-    assert!(!native.pointer_translator.references_binding(captured));
+    assert!(
+        native
+            .pointer_translator
+            .references_binding(captured.window())
+    );
+    native.pointer_translator.retire_binding(captured.window());
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(captured.window())
+    );
 
     let late_release = NativeWindowEventRecord::for_test(
         3,
@@ -494,9 +538,9 @@ fn binding_retirement_keeps_button_tombstones_isolated_by_device() {
         NativePointerTranslation::Input(_)
     ));
 
-    translator.retire_binding(first);
-    assert!(!translator.references_binding(first));
-    assert!(translator.references_binding(second));
+    translator.retire_binding(first.window());
+    assert!(!translator.references_binding(first.window()));
+    assert!(translator.references_binding(second.window()));
 
     let second_release = pointer_button_record(3, second_window, second, ElementState::Released);
     assert!(matches!(
@@ -530,8 +574,8 @@ fn binding_retirement_preserves_device_identities_in_any_device_key_order() {
         NativePointerTranslation::Input(_)
     ));
 
-    translator.retire_binding(binding);
-    assert!(!translator.references_binding(binding));
+    translator.retire_binding(binding.window());
+    assert!(!translator.references_binding(binding.window()));
     for (record, device, pointer) in [
         (&first_press, 901, NativePointerId::new(1)),
         (&second_press, 303, NativePointerId::new(2)),
@@ -546,7 +590,7 @@ fn binding_retirement_preserves_device_identities_in_any_device_key_order() {
                     NativePointerHover::Unknown,
                     None,
                 ),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
                 NativePointerOwner::Unknown,
             )),
         );
@@ -595,7 +639,11 @@ fn destroyed_callback_records_one_binding_fact_for_all_devices() {
             .is_some()
     );
     assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
-    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(binding.window())
+    );
     assert!(native.next_window_event().unwrap().is_none());
     commit_pending_pointer_frame(&mut native);
 }
@@ -648,7 +696,7 @@ fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {
     assert!(initially_presented.take_native_effects().is_empty());
     native
         .session
-        .report_native_global_focus(NativeGlobalFocus::Dock(root))
+        .report_native_global_focus(NativeGlobalFocus::Dock(root.window()))
         .expect("the redock destination is already the active root");
     super::callback_prefix::commit_boundary(&mut native);
 
@@ -702,11 +750,19 @@ fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {
         .expect("the child release is accepted");
 
     assert!(
-        native.pointer_translator.references_binding(child_binding),
+        native
+            .pointer_translator
+            .references_binding(child_binding.window()),
         "ReleaseChild cannot replace the provider's terminal scroll edge"
     );
-    native.pointer_translator.retire_binding(child_binding);
-    assert!(!native.pointer_translator.references_binding(child_binding));
+    native
+        .pointer_translator
+        .retire_binding(child_binding.window());
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(child_binding.window())
+    );
     let late_terminal = NativeWindowEventRecord::for_test(
         10,
         child_window,
@@ -748,7 +804,7 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     assert!(initially_presented.take_native_effects().is_empty());
     native
         .session
-        .report_native_global_focus(NativeGlobalFocus::Dock(first))
+        .report_native_global_focus(NativeGlobalFocus::Dock(first.window()))
         .expect("the redock destination is already the active root");
     super::callback_prefix::commit_boundary(&mut native);
     let point = PhysicalPoint::new(10.0, 20.0).unwrap();
@@ -756,7 +812,7 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     let geometry = coordinates.geometry();
     let retained_local = coordinates
         .capture(
-            second,
+            second.window(),
             NativeLocalPointerFact::new(
                 point,
                 geometry.content_size(),
@@ -819,15 +875,15 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     let historical_routes = historical_pointer.pointer_routes().unwrap();
     assert_eq!(
         historical_routes.delivery(),
-        NativePointerRouteSnapshot::Dock(first)
+        NativePointerRouteSnapshot::Dock(first.window())
     );
     assert_eq!(
         historical_routes.hover(),
-        NativePointerRouteSnapshot::Dock(second)
+        NativePointerRouteSnapshot::Dock(second.window())
     );
     assert_eq!(
         historical_routes.capture(),
-        NativePointerRouteSnapshot::Dock(second)
+        NativePointerRouteSnapshot::Dock(second.window())
     );
     native
         .bridge
@@ -861,7 +917,7 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         .report_native_pointer_roster(NativePointerRoster::Exact(vec![NativePointerState::new(
             NativePointerId::new(1),
             [NativePointerButton::Primary],
-            NativePointerOwner::Native(second),
+            NativePointerOwner::Native(second.window()),
         )]))
         .expect_err("a retained retired binding cannot authorize current roster capture");
     assert_eq!(error.native_kind(), Some(NativeHostErrorKind::InvalidFacts));
@@ -874,18 +930,18 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             NativeDesktopPointerLocation::new(
                 NativeDesktopPosition::Exact(point),
-                NativePointerHover::Dock(first),
+                NativePointerHover::Dock(first.window()),
                 None,
             ),
-            NativePointerOwner::Native(second),
-            NativePointerOwner::Native(second),
+            NativePointerOwner::Native(second.window()),
+            NativePointerOwner::Native(second.window()),
         ),
         NativePointerInput::new_local(
             NativePointerId::new(71),
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             NativeLocalPointerLocation::Exact(retained_local),
-            NativePointerOwner::Native(second),
-            NativePointerOwner::Native(second),
+            NativePointerOwner::Native(second.window()),
+            NativePointerOwner::Native(second.window()),
         ),
     ] {
         native
@@ -940,7 +996,10 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     let routes = late_pointer
         .pointer_routes()
         .expect("the late event retains explicit pointer authority");
-    assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Dock(first));
+    assert_eq!(
+        routes.delivery(),
+        NativePointerRouteSnapshot::Dock(first.window())
+    );
     assert_eq!(routes.hover(), NativePointerRouteSnapshot::Unknown);
     assert_eq!(routes.capture(), NativePointerRouteSnapshot::Unknown);
     assert!(!late_pointer.references_binding(second));
@@ -980,7 +1039,11 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         HostInputOutcome::NativeInputBindingRetired { binding } if *binding == second
     )));
     assert!(!native.session.has_active_gesture());
-    assert!(!native.pointer_translator.references_binding(second));
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(second.window())
+    );
 
     assert_eq!(native.viewport_binding(child), Some(second));
     assert!(!native.session.is_current_native_binding(second));
@@ -1111,11 +1174,11 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
             NativePointerEvent::Moved,
             NativeDesktopPointerLocation::new(
                 NativeDesktopPosition::Unknown,
-                NativePointerHover::Dock(rejected_binding),
+                NativePointerHover::Dock(rejected_binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(first),
-            NativePointerOwner::Native(rejected_binding),
+            NativePointerOwner::Native(first.window()),
+            NativePointerOwner::Native(rejected_binding.window()),
         );
         let error = native
             .session

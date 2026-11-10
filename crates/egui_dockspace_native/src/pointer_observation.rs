@@ -79,9 +79,9 @@ impl NativePointerObservationRecord {
     pub(crate) fn references_binding(self, binding: NativeSurfaceBinding) -> bool {
         self.binding == binding
             || self.sample.is_some_and(|sample| {
-                sample.hover == NativePointerHover::Dock(binding)
-                    || sample.delivery == NativePointerOwner::Native(binding)
-                    || sample.capture == NativePointerOwner::Native(binding)
+                sample.hover == NativePointerHover::Dock(binding.window())
+                    || sample.delivery == NativePointerOwner::Native(binding.window())
+                    || sample.capture == NativePointerOwner::Native(binding.window())
             })
     }
 
@@ -275,7 +275,7 @@ mod tests {
             record.sample,
             Some(NativePointerObservationSample {
                 position: NativeDesktopPosition::Exact(PhysicalPoint::new(-200.75, 300.5).unwrap()),
-                hover: NativePointerHover::Dock(source),
+                hover: NativePointerHover::Dock(source.window()),
                 delivery: NativePointerOwner::Unknown,
                 capture: NativePointerOwner::Unknown,
             }),
@@ -331,17 +331,17 @@ mod tests {
                 Some(NativePointerObservationSample {
                     position: NativeDesktopPosition::Unknown,
                     hover: if hover == observed {
-                        NativePointerHover::Dock(target)
+                        NativePointerHover::Dock(target.window())
                     } else {
                         NativePointerHover::Unknown
                     },
                     delivery: if delivery == observed {
-                        NativePointerOwner::Native(target)
+                        NativePointerOwner::Native(target.window())
                     } else {
                         NativePointerOwner::Unknown
                     },
                     capture: if capture == observed {
-                        NativePointerOwner::Native(target)
+                        NativePointerOwner::Native(target.window())
                     } else {
                         NativePointerOwner::Unknown
                     },
@@ -357,7 +357,7 @@ mod tests {
 
             assert_eq!(
                 viewports.pointer_binding_for_window(target_window),
-                Some(successor),
+                Some(successor.window()),
             );
             assert_eq!(record.sample, frozen);
             assert!(record.references_binding(source));

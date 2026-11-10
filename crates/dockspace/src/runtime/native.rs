@@ -71,7 +71,8 @@ pub use window_hit::{NativeWindowHit, NativeWindowHitPurpose, NativeWindowHitQue
 /// receive opaque keys in a separate namespace, so any adapter value is valid
 /// without advancing or colliding with the managed-window allocator.
 /// A key may be reused after exact destruction. It is not sufficient input
-/// authority by itself; every observation also carries a core-minted
+/// authority by itself; every physical observation also carries a core-minted
+/// [`NativeWindowBinding`]. Surface evidence retains its exact
 /// [`NativeSurfaceBinding`].
 /// Managed keys cannot be imported through external registration. Equality is
 /// meaningful only within its issuing session; route callbacks by the full binding.
@@ -94,10 +95,12 @@ impl HostWindowToken {
     }
 }
 
-/// Opaque exact-incarnation binding for one native docking surface.
+/// Opaque exact-placement binding for one native docking surface.
 ///
 /// The value is copyable so asynchronous callbacks may retain it. No accessor
-/// exposes the core incarnation, workspace epoch, or authority domain.
+/// exposes the core incarnation, workspace epoch, or authority domain. Geometry
+/// changes can replace this binding without changing its real window lifetime;
+/// use [`Self::window`] for physical resource and callback correlation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NativeSurfaceBinding {
     provider: PlatformObservationLease,

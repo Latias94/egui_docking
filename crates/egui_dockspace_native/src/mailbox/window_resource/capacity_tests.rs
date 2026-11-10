@@ -6,6 +6,140 @@ use super::tests::bindings;
 use super::*;
 
 #[test]
+fn shared_placements_reuse_one_window_slot_without_retagging_pending_callbacks() {
+    use dockspace::geometry::{LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
+    };
+    use dockspace::runtime::{
+        DockspaceSession, HostWindowToken, NativePointerRoster, NativeSurfacePlacement,
+        SurfaceUnavailableReason,
+    };
+
+    let layout = DockspaceLayout::new([1, 2].map(|id| {
+        DockspaceSurfaceLayout::new(
+            SurfaceId::new(id),
+            DockspaceRootLayout::new(
+                RootId::new(id),
+                DockspaceNode::central_tabs([ItemId::new(id)]),
+            ),
+        )
+    }))
+    .unwrap();
+    let mut session =
+        DockspaceSession::from_layout(layout.clone(), dockspace::policy::DockPolicy::default())
+            .unwrap();
+    session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .unwrap();
+    session
+        .register_native_root(SurfaceId::new(1), HostWindowToken::new(1))
+        .unwrap();
+    let mut registration = session.begin_host_frame().unwrap();
+    registration
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let original = registration.commit().unwrap().native_bindings()[0];
+    let viewport = ViewportId::ROOT;
+    let window = WindowId::from(61);
+    let context = egui::Context::default();
+    let callback = eframe::queue_native_viewport_pointer_passthrough(&context, viewport, false);
+    let mut resources = NativeWindowResources::with_capacity_limit(1).unwrap();
+    let bytes = resources.owned_data_capacity_bytes();
+    resources
+        .prepare_host_reference(viewport, original)
+        .unwrap();
+    resources.commit_host_reference(viewport, original);
+    assert!(resources.reserve_pointer_callback(viewport, original, window, callback, false));
+
+    let placements = [1, 2].map(|id| {
+        let x = if id == 1 { 0.0 } else { 320.0 };
+        NativeSurfacePlacement::new(
+            SurfaceId::new(id),
+            LogicalSize::new(300.0, 240.0).unwrap(),
+            PhysicalPoint::new(x, 0.0).unwrap(),
+            ScaleFactor::new(1.0).unwrap(),
+            PhysicalRect::new(x, 0.0, 300.0, 240.0).unwrap(),
+        )
+    });
+    let mut candidate = session.begin_host_frame().unwrap();
+    candidate
+        .set_native_surface_placements(original.window(), &placements)
+        .unwrap();
+    candidate
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    candidate.commit().unwrap();
+    for binding in session.native_surface_bindings_for_window(original.window()) {
+        resources.prepare_host_reference(viewport, binding).unwrap();
+        resources.commit_host_reference(viewport, binding);
+        assert!(resources.references_viewport_binding(viewport, binding));
+    }
+    assert_eq!(resources.entries.len(), 1);
+    assert_eq!(resources.entries[0].binding, original);
+    assert_eq!(resources.owned_data_capacity_bytes(), bytes);
+    let current = session
+        .native_surface_bindings_for_window(original.window())
+        .next()
+        .unwrap();
+    let no_frame = PendingNoFrameInvalidation {
+        terminal: crate::coordinator::NoFrameTerminal::Observed,
+        viewport,
+        window,
+        create_attempt: None,
+        binding: current,
+    };
+    resources
+        .retain_no_frame(viewport, current, no_frame)
+        .unwrap();
+    assert!(resources.clear_no_frame_if(no_frame));
+    assert_eq!(resources.pending_no_frame().count(), 0);
+    let mut replacement_resources = NativeWindowResources::with_capacity_limit(2).unwrap();
+    replacement_resources
+        .prepare_host_reference(viewport, original)
+        .unwrap();
+    replacement_resources.commit_host_reference(viewport, original);
+    let reset = session.prepare_layout_reset(layout).unwrap();
+    let mut replacement = session.begin_host_frame().unwrap();
+    replacement.submit_layout_reset(&reset).unwrap();
+    assert_eq!(replacement.proposed_native_root_continuations().count(), 2);
+    for continuation in replacement.proposed_native_root_continuations() {
+        replacement_resources
+            .prepare_workspace_replacement(viewport, continuation.successor())
+            .unwrap();
+    }
+    assert_eq!(
+        replacement_resources.entries.len(),
+        2,
+        "the complete shared successor prepays one additional physical owner"
+    );
+    replacement_resources.abort_workspace_replacement();
+    drop(replacement);
+    assert_eq!(replacement_resources.entries.len(), 1);
+    assert!(replacement_resources.references_viewport_binding(viewport, original));
+
+    let record = NativePointerPassthroughRecord::for_test(
+        callback,
+        viewport,
+        window,
+        None,
+        false,
+        NativeViewportPointerPassthroughStatus::Applied,
+    );
+    let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
+    assert_eq!(
+        resources.accept_pointer_callback(record, |binding| {
+            assert_eq!(binding, original);
+            journal.reserve(HostRecord::ViewportPointerPassthrough(
+                record.qualified_for_binding(binding),
+            ))
+        }),
+        CommandCallbackAdmission::First,
+    );
+}
+
+#[test]
 fn one_entry_limit_charges_the_same_binding_on_another_viewport() {
     let (binding, _) = bindings();
     let viewport = ViewportId::ROOT;

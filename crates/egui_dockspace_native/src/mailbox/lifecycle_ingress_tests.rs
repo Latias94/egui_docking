@@ -388,7 +388,10 @@ fn retired_window_terminal_cannot_replace_or_release_the_active_successor() {
     bridge.with_viewports(|routes| {
         assert_eq!(routes.binding(viewport), Some(next));
         assert_eq!(routes.window(viewport), Some(new_window));
-        assert_eq!(routes.pointer_binding_for_window(new_window), Some(next));
+        assert_eq!(
+            routes.pointer_binding_for_window(new_window),
+            Some(next.window())
+        );
         assert!(routes.has_window_receipt(viewport, next));
     });
 }

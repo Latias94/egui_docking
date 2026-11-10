@@ -113,7 +113,7 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
             routes,
         )
     });
-    assert_eq!(committed.focus(), NativeGlobalFocus::Dock(first));
+    assert_eq!(committed.focus(), NativeGlobalFocus::Dock(first.window()));
 
     native
         .bridge
@@ -209,7 +209,7 @@ fn captured_dock_focus_is_unknown_after_hiding_and_preserves_the_foreign_success
             routes,
         )
     });
-    assert_eq!(captured.focus(), NativeGlobalFocus::Dock(binding));
+    assert_eq!(captured.focus(), NativeGlobalFocus::Dock(binding.window()));
 
     native
         .report_snapshot(

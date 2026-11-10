@@ -63,6 +63,9 @@ struct Probe {
     text_input_admission: Option<eframe::NativeOutputInputAdmission>,
     release_on_service: bool,
     text_reached_retained_ui: bool,
+    expand_roster_on_text: bool,
+    ordinary_entry_on_text: bool,
+    final_text: Option<String>,
 }
 
 /// Delays one real terminal and its ordered suffix; every other callback is forwarded.
@@ -121,16 +124,25 @@ impl NativeHostHandler for DelayedTerminalHost {
         let admission = self.inner.before_output_input(context, token, has_input);
         let mut probe = lock(&self.probe);
         if probe.text_mode
-            && probe.holding
+            && (probe.holding || probe.ordinary_entry_on_text)
             && probe.native_text_seen
             && has_input
-            && probe.text_input_token.is_none()
+            && if probe.ordinary_entry_on_text {
+                !matches!(
+                    probe.text_input_admission,
+                    Some(eframe::NativeOutputInputAdmission::Proceed)
+                )
+            } else {
+                probe.text_input_token.is_none()
+            }
         {
             probe.text_input_token = Some(token);
             probe.text_input_admission = Some(admission);
             // Release only after this real output attempts input admission. A
             // deferred pass has no App callback, so recovery belongs to service.
-            probe.release_on_service = true;
+            probe.release_on_service = !probe.ordinary_entry_on_text
+                && (!probe.expand_roster_on_text
+                    || matches!(admission, eframe::NativeOutputInputAdmission::Defer(_)));
         }
         admission
     }
@@ -154,7 +166,7 @@ impl NativeHostHandler for DelayedTerminalHost {
             && event.text.as_deref() == Some("a")
         {
             let mut probe = lock(&self.probe);
-            if probe.text_mode && probe.holding {
+            if probe.text_mode && (probe.holding || probe.ordinary_entry_on_text) {
                 probe.native_text_seen = true;
             }
         }
@@ -242,6 +254,7 @@ impl NativeHostHandler for DelayedTerminalHost {
             probe.resumed_presented = true;
         }
         if probe.holding || (probe.hold_token == Some(terminal.token()) && !probe.released) {
+            let send_expansion_key = !probe.holding && probe.expand_roster_on_text;
             if !probe.holding {
                 assert_eq!(terminal.status(), NativeOutputStatus::Presented);
             }
@@ -250,7 +263,20 @@ impl NativeHostHandler for DelayedTerminalHost {
                 "the test retains a bounded suffix"
             );
             probe.holding = true;
+            let token = terminal.token();
             probe.buffered.push(terminal);
+            if send_expansion_key {
+                // Queue the real key before another idle repaint can consume
+                // the one output slot left by this held renderer terminal.
+                drop(probe);
+                let window = u64::from(token.window_id()).to_string();
+                let result = Command::new("xdotool")
+                    .args(["windowactivate", "--sync", &window, "key", "a"])
+                    .output()
+                    .expect("the X11 roster expansion regression requires xdotool");
+                assert!(result.status.success(), "{result:?}");
+                return NativeHostWake::Wait;
+            }
             return if probe.release_on_service {
                 NativeHostWake::ServiceAfterCurrent
             } else {
@@ -264,6 +290,7 @@ impl NativeHostHandler for DelayedTerminalHost {
 
 struct EditorPanes {
     text: String,
+    editor_item: dockspace::model::ItemId,
     target: egui::Id,
     calls: Arc<AtomicUsize>,
 }
@@ -275,9 +302,13 @@ impl PaneView for EditorPanes {
 
     fn ui(
         &mut self,
-        _: dockspace::model::ItemId,
+        item: dockspace::model::ItemId,
         ui: &mut egui::Ui,
     ) -> egui_dockspace::PaneResponse {
+        if item != self.editor_item {
+            ui.label("This independent surface shares the same renderer terminal.");
+            return egui_dockspace::PaneResponse::default();
+        }
         let response = ui.add(egui::TextEdit::singleline(&mut self.text).id(self.target));
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             response.request_focus();
@@ -285,8 +316,8 @@ impl PaneView for EditorPanes {
         egui_dockspace::PaneResponse::default().with_content(&response)
     }
 
-    fn focus_target(&self, _: dockspace::model::ItemId) -> Option<egui::Id> {
-        Some(self.target)
+    fn focus_target(&self, item: dockspace::model::ItemId) -> Option<egui::Id> {
+        (item == self.editor_item).then_some(self.target)
     }
 }
 
@@ -296,6 +327,7 @@ struct RetainedTextApp {
     calls: Arc<AtomicUsize>,
     key_sent: bool,
     resize_before_key: bool,
+    shared: bool,
     started: Instant,
 }
 
@@ -307,7 +339,25 @@ impl eframe::App for RetainedTextApp {
             lock(&self.host.probe)
         );
         let before = self.calls.load(Ordering::SeqCst);
-        eframe::App::ui(&mut self.app, ui, frame);
+        if self.shared {
+            use dockspace::geometry::{LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
+            use dockspace::runtime::NativeSurfacePlacement;
+
+            let scale = f64::from(ui.ctx().pixels_per_point());
+            let placements = [1, 2].map(|id| {
+                let x = if id == 1 { 0.0 } else { 320.0 };
+                NativeSurfacePlacement::new(
+                    dockspace::model::SurfaceId::new(id),
+                    LogicalSize::new(300.0, 440.0).unwrap(),
+                    PhysicalPoint::new(x * scale, 0.0).unwrap(),
+                    ScaleFactor::new(scale).unwrap(),
+                    PhysicalRect::new(x * scale, 0.0, 300.0 * scale, 440.0 * scale).unwrap(),
+                )
+            });
+            self.app.show_root_surfaces(ui, &placements);
+        } else {
+            eframe::App::ui(&mut self.app, ui, frame);
+        }
         assert!(self.app.error_kind().is_none());
         let after = self.calls.load(Ordering::SeqCst);
         let retained = self.app.current_output_is_retained();
@@ -354,6 +404,10 @@ impl eframe::App for RetainedTextApp {
             probe.calls_at_hold = after;
         } else if probe.hold_token.is_none()
             && self.app.is_surface_presented(SURFACE)
+            && (!self.shared
+                || self
+                    .app
+                    .is_surface_presented(dockspace::model::SurfaceId::new(2)))
             && after > before
             && !retained
         {
@@ -377,20 +431,48 @@ impl eframe::App for RetainedTextApp {
 #[test]
 #[ignore = "requires isolated X11/XTest renderer, an EWMH WM, and xdotool"]
 fn real_eframe_output_capacity_preserves_text_until_the_editor_resumes() {
-    assert_retained_text_delivery_after_backpressure(false);
+    assert_retained_text_delivery_after_backpressure(false, false);
 }
 
 #[test]
 #[ignore = "requires isolated X11/XTest renderer, an EWMH WM, and xdotool"]
 fn real_eframe_output_capacity_preserves_text_after_native_resize() {
-    assert_retained_text_delivery_after_backpressure(true);
+    assert_retained_text_delivery_after_backpressure(true, false);
 }
 
-fn assert_retained_text_delivery_after_backpressure(resize_before_key: bool) {
+#[test]
+#[ignore = "requires isolated X11/XTest renderer, an EWMH WM, and xdotool"]
+fn real_eframe_shared_output_capacity_defers_text_until_both_surface_slots_are_available() {
+    assert_retained_text_delivery_after_backpressure(false, true);
+}
+
+fn assert_retained_text_delivery_after_backpressure(resize_before_key: bool, shared: bool) {
     assert!(std::env::var_os("DISPLAY").is_some());
-    let mut session = test_session();
+    let mut session = if shared {
+        use dockspace::model::{
+            DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+            RootId, SurfaceId,
+        };
+
+        dockspace::runtime::DockspaceSession::from_layout(
+            DockspaceLayout::new([1, 2].map(|id| {
+                DockspaceSurfaceLayout::new(
+                    SurfaceId::new(id),
+                    DockspaceRootLayout::new(
+                        RootId::new(id),
+                        DockspaceNode::central_tabs([ItemId::new(id)]),
+                    ),
+                )
+            }))
+            .unwrap(),
+            dockspace::policy::DockPolicy::default(),
+        )
+        .unwrap()
+    } else {
+        test_session()
+    };
     session
-        .configure_output_capacity(NonZeroUsize::new(1).unwrap())
+        .configure_output_capacity(NonZeroUsize::new(if shared { 3 } else { 1 }).unwrap())
         .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let app = NativeDockspaceApp::new_with_close_policy(
@@ -399,6 +481,7 @@ fn assert_retained_text_delivery_after_backpressure(resize_before_key: bool) {
         SURFACE,
         EditorPanes {
             text: String::new(),
+            editor_item: dockspace::model::ItemId::new(1),
             target: egui::Id::unique("real-retained-text-editor"),
             calls: Arc::clone(&calls),
         },
@@ -434,6 +517,7 @@ fn assert_retained_text_delivery_after_backpressure(resize_before_key: bool) {
                 calls,
                 key_sent: false,
                 resize_before_key,
+                shared,
                 started: Instant::now(),
             }))
         }),
@@ -458,6 +542,403 @@ fn assert_retained_text_delivery_after_backpressure(resize_before_key: bool) {
     );
     assert!(probe.released && probe.resumed_presented && probe.done);
     assert!(probe.buffered.is_empty());
+}
+
+struct ExpandingRosterTextApp {
+    app: NativeDockspaceApp<EditorPanes>,
+    host: Arc<DelayedTerminalHost>,
+    calls: Arc<AtomicUsize>,
+    expanded: bool,
+    recovered_passes: usize,
+    started: Instant,
+}
+
+impl eframe::App for ExpandingRosterTextApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        use dockspace::geometry::{LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
+        use dockspace::model::SurfaceId;
+        use dockspace::runtime::NativeSurfacePlacement;
+
+        assert!(
+            self.started.elapsed() < Duration::from_secs(15),
+            "the expanding roster must recover: {:?}",
+            lock(&self.host.probe)
+        );
+        let token = eframe::current_native_output_token().unwrap();
+        let text_input = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Text(text) if text == "a"))
+        });
+        if text_input && !self.expanded {
+            let probe = lock(&self.host.probe);
+            assert!(probe.native_text_seen && probe.holding && !probe.released);
+            assert_eq!(probe.buffered.len(), 1, "only one real output is withheld");
+            assert_eq!(probe.text_input_token, Some(token));
+            assert!(matches!(
+                probe.text_input_admission,
+                Some(eframe::NativeOutputInputAdmission::Proceed)
+            ));
+            assert!(!self.app.is_surface_presented(SurfaceId::new(2)));
+            self.expanded = true;
+        }
+        let before = self.calls.load(Ordering::SeqCst);
+        let scale = f64::from(ui.ctx().pixels_per_point());
+        let placements = [1, 2].map(|id| {
+            let x = if id == 1 { 0.0 } else { 320.0 };
+            NativeSurfacePlacement::new(
+                SurfaceId::new(id),
+                LogicalSize::new(300.0, 440.0).unwrap(),
+                PhysicalPoint::new(x * scale, 0.0).unwrap(),
+                ScaleFactor::new(scale).unwrap(),
+                PhysicalRect::new(x * scale, 0.0, 300.0 * scale, 440.0 * scale).unwrap(),
+            )
+        });
+        let roster = if self.expanded {
+            &placements[..]
+        } else {
+            &placements[..1]
+        };
+        self.app.show_root_surfaces(ui, roster);
+        self.app.with_errors(|primary, cleanup| {
+            assert!(
+                primary.is_none() && cleanup.is_empty(),
+                "roster expansion must not enter shutdown: primary={primary:?}; cleanup={cleanup:?}"
+            );
+        });
+        let after = self.calls.load(Ordering::SeqCst);
+        let retained = self.app.current_output_is_retained();
+        let mut probe = lock(&self.host.probe);
+        if probe.holding {
+            if retained && !probe.retained.contains(&token) {
+                probe.retained.push(token);
+            }
+            if text_input {
+                probe.text_reached_retained_ui |= retained;
+                // The input admission must happen while only A is committed.
+                // Release after this same App run requests the larger roster.
+                probe.release_on_service = true;
+            }
+        } else if probe.released {
+            if after > before && !retained && probe.resumed.is_none() {
+                probe.resumed = Some(token);
+            }
+            if probe.resumed_presented
+                && !retained
+                && self.app.is_surface_presented(SURFACE)
+                && self.app.is_surface_presented(SurfaceId::new(2))
+            {
+                self.recovered_passes += 1;
+                if self.recovered_passes == 3 {
+                    probe.done = true;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        } else if probe.hold_token.is_none()
+            && self.app.is_surface_presented(SURFACE)
+            && after > before
+            && !retained
+            && self
+                .app
+                .with_panes(|panes| ui.memory(|memory| memory.focused()) == Some(panes.target))
+        {
+            probe.hold_token = Some(token);
+            probe.calls_at_hold = after;
+        }
+        if probe.hold_token.is_none() || probe.released {
+            ui.ctx().request_repaint_after(Duration::from_millis(5));
+        }
+    }
+
+    fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
+        lock(&self.host.probe).final_text = Some(self.app.with_panes(|panes| panes.text.clone()));
+    }
+}
+
+#[test]
+#[ignore = "requires isolated X11/XTest renderer, an EWMH WM, and xdotool"]
+fn real_eframe_output_capacity_preserves_text_when_the_root_roster_expands_after_admission() {
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
+    };
+
+    assert!(std::env::var_os("DISPLAY").is_some());
+    let mut session = dockspace::runtime::DockspaceSession::from_layout(
+        DockspaceLayout::new([1, 2].map(|id| {
+            DockspaceSurfaceLayout::new(
+                SurfaceId::new(id),
+                DockspaceRootLayout::new(
+                    RootId::new(id),
+                    DockspaceNode::central_tabs([ItemId::new(id)]),
+                ),
+            )
+        }))
+        .unwrap(),
+        dockspace::policy::DockPolicy::default(),
+    )
+    .unwrap();
+    session
+        .configure_output_capacity(NonZeroUsize::new(2).unwrap())
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = NativeDockspaceApp::new_with_close_policy(
+        egui::Id::unique("real-expanding-roster-text"),
+        session,
+        SURFACE,
+        EditorPanes {
+            text: String::new(),
+            editor_item: ItemId::new(1),
+            target: egui::Id::unique("real-expanding-roster-editor"),
+            calls: Arc::clone(&calls),
+        },
+        DockStyle::default(),
+        NativeWindowClosePolicy::RetainLayout,
+    )
+    .unwrap();
+    let probe = Arc::new(Mutex::new(Probe {
+        text_mode: true,
+        expand_roster_on_text: true,
+        ..Probe::default()
+    }));
+    let host = Arc::new(DelayedTerminalHost {
+        inner: app.native_host_handler(),
+        probe: Arc::clone(&probe),
+    });
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([640.0, 480.0]),
+        native_host: Some(host.clone()),
+        renderer: eframe::Renderer::Glow,
+        event_loop_builder: Some(Box::new(|builder| {
+            builder.with_x11().with_any_thread(true);
+        })),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Dockspace roster expansion text regression",
+        options,
+        Box::new(move |_| {
+            Ok(Box::new(ExpandingRosterTextApp {
+                app,
+                host,
+                calls,
+                expanded: false,
+                recovered_passes: 0,
+                started: Instant::now(),
+            }))
+        }),
+    )
+    .unwrap();
+    let probe = lock(&probe);
+    assert!(probe.native_text_seen && probe.text_input_token.is_some());
+    assert!(matches!(
+        probe.text_input_admission,
+        Some(eframe::NativeOutputInputAdmission::Proceed)
+    ));
+    assert!(
+        probe.released && probe.resumed_presented && probe.done,
+        "{probe:?}"
+    );
+    assert!(probe.buffered.is_empty());
+    assert_eq!(
+        probe.final_text.as_deref(),
+        Some("a"),
+        "the admitted native Text event must survive expansion and reach the editor exactly once: {probe:?}"
+    );
+}
+
+struct SwitchingRootEntryTextApp {
+    app: NativeDockspaceApp<EditorPanes>,
+    host: Arc<DelayedTerminalHost>,
+    calls: Arc<AtomicUsize>,
+    key_sent: bool,
+    switched: bool,
+    recovered_passes: usize,
+    started: Instant,
+}
+
+impl eframe::App for SwitchingRootEntryTextApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        use dockspace::geometry::{LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
+        use dockspace::model::SurfaceId;
+        use dockspace::runtime::NativeSurfacePlacement;
+
+        assert!(
+            self.started.elapsed() < Duration::from_secs(15),
+            "the ordinary Root entry must preserve admitted sibling input: {:?}",
+            lock(&self.host.probe)
+        );
+        let token = eframe::current_native_output_token().unwrap();
+        let text_input = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Text(text) if text == "a"))
+        });
+        if text_input && !self.switched {
+            let probe = lock(&self.host.probe);
+            assert!(self.key_sent && probe.native_text_seen);
+            assert!(!probe.holding && probe.buffered.is_empty());
+            assert_eq!(probe.text_input_token, Some(token));
+            assert!(matches!(
+                probe.text_input_admission,
+                Some(eframe::NativeOutputInputAdmission::Proceed)
+            ));
+            self.switched = true;
+        }
+        let before = self.calls.load(Ordering::SeqCst);
+        if self.switched {
+            eframe::App::ui(&mut self.app, ui, frame);
+        } else {
+            let scale = f64::from(ui.ctx().pixels_per_point());
+            let placements = [1, 2].map(|id| {
+                let x = if id == 1 { 0.0 } else { 320.0 };
+                NativeSurfacePlacement::new(
+                    SurfaceId::new(id),
+                    LogicalSize::new(300.0, 440.0).unwrap(),
+                    PhysicalPoint::new(x * scale, 0.0).unwrap(),
+                    ScaleFactor::new(scale).unwrap(),
+                    PhysicalRect::new(x * scale, 0.0, 300.0 * scale, 440.0 * scale).unwrap(),
+                )
+            });
+            self.app.show_root_surfaces(ui, &placements);
+        }
+        self.app.with_errors(|primary, cleanup| {
+            assert!(
+                primary.is_none() && cleanup.is_empty(),
+                "switching the Root entry must not enter shutdown: primary={primary:?}; cleanup={cleanup:?}"
+            );
+        });
+        let after = self.calls.load(Ordering::SeqCst);
+        let retained = self.app.current_output_is_retained();
+        let focused = ui.memory(|memory| memory.focused());
+        let editor_focused = self.app.with_panes(|panes| focused == Some(panes.target));
+        let mut probe = lock(&self.host.probe);
+        if self.switched {
+            if text_input && probe.resumed.is_none() {
+                assert!(!retained, "the fully prepaid roster can paint this input");
+                probe.resumed = Some(token);
+            }
+            if probe.resumed_presented && !retained && self.app.is_surface_presented(SURFACE) {
+                self.recovered_passes += 1;
+                if self.recovered_passes == 3 {
+                    probe.done = true;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        } else if !self.key_sent
+            && editor_focused
+            && after > before
+            && !retained
+            && self.app.is_surface_presented(SURFACE)
+            && self.app.is_surface_presented(SurfaceId::new(2))
+        {
+            self.key_sent = true;
+            drop(probe);
+            let window = u64::from(token.window_id()).to_string();
+            let result = Command::new("xdotool")
+                .args(["windowactivate", "--sync", &window, "key", "a"])
+                .output()
+                .expect("the X11 ordinary Root entry regression requires xdotool");
+            assert!(result.status.success(), "{result:?}");
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(5));
+    }
+
+    fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
+        lock(&self.host.probe).final_text = Some(self.app.with_panes(|panes| panes.text.clone()));
+    }
+}
+
+#[test]
+#[ignore = "requires isolated X11/XTest renderer, an EWMH WM, and xdotool"]
+fn real_eframe_output_capacity_preserves_text_when_shared_root_switches_to_the_ordinary_entry() {
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
+    };
+
+    assert!(std::env::var_os("DISPLAY").is_some());
+    let mut session = dockspace::runtime::DockspaceSession::from_layout(
+        DockspaceLayout::new([1, 2].map(|id| {
+            DockspaceSurfaceLayout::new(
+                SurfaceId::new(id),
+                DockspaceRootLayout::new(
+                    RootId::new(id),
+                    DockspaceNode::central_tabs([ItemId::new(id)]),
+                ),
+            )
+        }))
+        .unwrap(),
+        dockspace::policy::DockPolicy::default(),
+    )
+    .unwrap();
+    session
+        .configure_output_capacity(NonZeroUsize::new(3).unwrap())
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = NativeDockspaceApp::new_with_close_policy(
+        egui::Id::unique("real-ordinary-root-text"),
+        session,
+        SURFACE,
+        EditorPanes {
+            text: String::new(),
+            editor_item: ItemId::new(2),
+            target: egui::Id::unique("real-ordinary-root-sibling-editor"),
+            calls: Arc::clone(&calls),
+        },
+        DockStyle::default(),
+        NativeWindowClosePolicy::RetainLayout,
+    )
+    .unwrap();
+    let probe = Arc::new(Mutex::new(Probe {
+        text_mode: true,
+        ordinary_entry_on_text: true,
+        ..Probe::default()
+    }));
+    let host = Arc::new(DelayedTerminalHost {
+        inner: app.native_host_handler(),
+        probe: Arc::clone(&probe),
+    });
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([640.0, 480.0]),
+        native_host: Some(host.clone()),
+        renderer: eframe::Renderer::Glow,
+        event_loop_builder: Some(Box::new(|builder| {
+            builder.with_x11().with_any_thread(true);
+        })),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Dockspace ordinary Root entry text regression",
+        options,
+        Box::new(move |_| {
+            Ok(Box::new(SwitchingRootEntryTextApp {
+                app,
+                host,
+                calls,
+                key_sent: false,
+                switched: false,
+                recovered_passes: 0,
+                started: Instant::now(),
+            }))
+        }),
+    )
+    .unwrap();
+    let probe = lock(&probe);
+    assert!(probe.native_text_seen && probe.text_input_token.is_some());
+    assert!(matches!(
+        probe.text_input_admission,
+        Some(eframe::NativeOutputInputAdmission::Proceed)
+    ));
+    assert!(probe.resumed_presented && probe.done, "{probe:?}");
+    assert!(!probe.holding && probe.buffered.is_empty());
+    assert_eq!(
+        probe.final_text.as_deref(),
+        Some("a"),
+        "the ordinary Root entry must deliver the admitted sibling Text event exactly once: {probe:?}"
+    );
 }
 
 struct BackpressureApp {

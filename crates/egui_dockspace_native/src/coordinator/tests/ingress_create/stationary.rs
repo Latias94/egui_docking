@@ -12,7 +12,8 @@ use std::time::Duration;
 use dockspace::model::DockspaceActionOutcome;
 use dockspace::runtime::{
     DockspaceReceiverDescriptor, NativeMonotonicClock, NativePointerContinuation,
-    NativeReceiverPurpose, NativeReceiverQuery,
+    NativeReceiverPurpose, NativeReceiverQuery, NativeWindowBinding, NativeWindowHit,
+    SurfacePresentationArtifact,
 };
 use eframe::NativeViewportPointerObservation;
 
@@ -26,12 +27,24 @@ type PreparedObservation =
 
 #[derive(Clone, Copy)]
 struct Receivers {
+    window: NativeWindowBinding,
+    artifact: SurfacePresentationArtifact,
     source: DockspaceReceiverDescriptor,
     target: DockspaceReceiverDescriptor,
 }
 
 impl Receivers {
     fn answer(self, query: NativeReceiverQuery) -> NativeReceiverAnswer {
+        let query = match query {
+            NativeReceiverQuery::WindowHit(query) => {
+                return NativeReceiverAnswer::WindowHit(if query.window() == self.window {
+                    NativeWindowHit::Surface(self.artifact)
+                } else {
+                    NativeWindowHit::Unknown
+                });
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
             query.clear_hover_lane(&self.target).map_or(
                 NativeReceiverAnswer::Unknown,
@@ -82,7 +95,10 @@ impl Fixture {
         .expect("the model shares its clock with native ingress");
         let binding = register_source(&mut native);
         publish_desktop_authority(&mut native, binding);
-        let source = measure_and_present_source(&mut native);
+        let (source, artifact) = measure_and_present_source_with_artifact(
+            &mut native,
+            LogicalRect::new(0.0, 0.0, 640.0, 360.0).unwrap(),
+        );
         let target = {
             let mut frame = native
                 .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -118,7 +134,12 @@ impl Fixture {
         let mut fixture = Self {
             native,
             binding,
-            receivers: Receivers { source, target },
+            receivers: Receivers {
+                source,
+                target,
+                window: binding.window(),
+                artifact,
+            },
             context: egui::Context::default(),
             clock,
             milliseconds,
@@ -806,7 +827,7 @@ fn model_stationary_unproven_press_terminal_retries_after_artifact_replacement()
         fixture
             .native
             .session
-            .bind_presented_receiver(&source)
+            .bind_presented_receiver(&source.descriptor)
             .is_some()
     );
     assert!(fixture.receive(

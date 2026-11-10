@@ -9,7 +9,7 @@ use dockspace::runtime::{
     NativePointerButton, NativePointerCancelReason, NativePointerEvent, NativePointerHover,
     NativePointerId, NativePointerInput, NativePointerOwner, NativeScrollCancelReason,
     NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
-    NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding,
+    NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId, NativeWindowBinding,
     NativeWorkAreaBinding, PointerDeviceKind, PointerEventMetadata,
 };
 use winit::event::{
@@ -68,13 +68,13 @@ struct NativePointerDeviceState {
 #[derive(Debug, Clone, Default)]
 struct NativeMouseState {
     buttons: BTreeMap<NativePointerButton, NativeMouseButtonState>,
-    capture: Option<NativeSurfaceBinding>,
+    capture: Option<NativeWindowBinding>,
 }
 
 #[derive(Debug, Clone)]
 enum NativeMouseButtonState {
     Active {
-        origin: Option<NativeSurfaceBinding>,
+        origin: Option<NativeWindowBinding>,
         primary_press: Option<PointerPressToken>,
     },
     Cancelled,
@@ -87,7 +87,7 @@ enum NativeScrollState {
     /// One winit phaseful sequence still maps to a live core sequence.
     Live {
         sequence: NativeScrollSequenceId,
-        delivery: Option<NativeSurfaceBinding>,
+        delivery: Option<NativeWindowBinding>,
     },
     /// Core closed the provider tail; ignore late phases until an explicit start.
     Retired,
@@ -210,7 +210,7 @@ impl NativePointerTranslator {
     ///
     /// Touch tombstones and cancelled mouse buttons reuse their original slots;
     /// destruction never needs new adapter storage after the fact is accepted.
-    pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) {
+    pub(crate) fn retire_binding(&mut self, binding: NativeWindowBinding) {
         for (key, entry) in &mut self.devices {
             if let NativePointerDeviceEntry::Live(device) = entry
                 && device.retire_binding(binding)
@@ -232,7 +232,7 @@ impl NativePointerTranslator {
         }
     }
 
-    pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+    pub(crate) fn references_binding(&self, binding: NativeWindowBinding) -> bool {
         self.devices.values().any(|entry| {
             matches!(entry, NativePointerDeviceEntry::Live(device) if device.references_binding(binding))
         })
@@ -316,9 +316,9 @@ impl NativePointerTranslator {
         device: NativeInputDeviceKey,
         mut resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
-        let routes = record
-            .pointer_routes()
-            .unwrap_or_else(|| NativePointerRoutes::from_binding(record.binding()));
+        let routes = record.pointer_routes().unwrap_or_else(|| {
+            NativePointerRoutes::from_binding(record.binding().map(|binding| binding.window()))
+        });
         if matches!(
             self.devices.get(&device),
             Some(NativePointerDeviceEntry::Removed | NativePointerDeviceEntry::ScrollTail)
@@ -630,7 +630,7 @@ fn translate_scroll_phase(
     state: NativeScrollState,
     phase: TouchPhase,
     delta: NativeScrollDelta,
-    event_delivery: Option<NativeSurfaceBinding>,
+    event_delivery: Option<NativeWindowBinding>,
     next_scroll_sequence: &mut u64,
 ) -> Option<(NativeScrollPhase, NativeScrollState)> {
     match (state, phase) {
@@ -711,7 +711,7 @@ impl NativePointerDeviceState {
             )
     }
 
-    fn retire_binding(&mut self, binding: NativeSurfaceBinding) -> bool {
+    fn retire_binding(&mut self, binding: NativeWindowBinding) -> bool {
         let mouse_retired = self.mouse.retire_binding(binding);
         let scroll_retired = matches!(
             self.scroll,
@@ -726,7 +726,7 @@ impl NativePointerDeviceState {
         mouse_retired || scroll_retired
     }
 
-    fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+    fn references_binding(&self, binding: NativeWindowBinding) -> bool {
         self.mouse.references_binding(binding)
             || matches!(
                 self.scroll,
@@ -840,7 +840,7 @@ impl NativeMouseState {
         self.capture = updated_binding(self.capture, routes.capture());
     }
 
-    fn retire_binding(&mut self, binding: NativeSurfaceBinding) -> bool {
+    fn retire_binding(&mut self, binding: NativeWindowBinding) -> bool {
         if !self.references_binding(binding) {
             return false;
         }
@@ -851,7 +851,7 @@ impl NativeMouseState {
         true
     }
 
-    fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+    fn references_binding(&self, binding: NativeWindowBinding) -> bool {
         self.buttons
             .values()
             .any(|state| {
@@ -862,9 +862,9 @@ impl NativeMouseState {
 }
 
 fn updated_binding(
-    current: Option<NativeSurfaceBinding>,
+    current: Option<NativeWindowBinding>,
     route: NativePointerRouteSnapshot,
-) -> Option<NativeSurfaceBinding> {
+) -> Option<NativeWindowBinding> {
     match route {
         NativePointerRouteSnapshot::Dock(binding) => Some(binding),
         NativePointerRouteSnapshot::None | NativePointerRouteSnapshot::Foreign => None,
@@ -923,7 +923,7 @@ fn starts_reused_device_stream(event: &WindowEvent) -> bool {
     )
 }
 
-fn exact_delivery_binding(route: NativePointerRouteSnapshot) -> Option<NativeSurfaceBinding> {
+fn exact_delivery_binding(route: NativePointerRouteSnapshot) -> Option<NativeWindowBinding> {
     match route {
         NativePointerRouteSnapshot::Dock(binding) => Some(binding),
         NativePointerRouteSnapshot::Unknown
@@ -1189,14 +1189,14 @@ mod tests {
         mouse.mouse.buttons.insert(
             NativePointerButton::Primary,
             NativeMouseButtonState::Active {
-                origin: Some(binding),
+                origin: Some(binding.window()),
                 primary_press: None,
             },
         );
         let retired_pointer = mouse.pointer;
         assert_read_only_mouse_device_lookup(&translator, retired_pointer, Some(device));
 
-        translator.retire_binding(binding);
+        translator.retire_binding(binding.window());
         assert!(matches!(
             translator.devices.get(&key),
             Some(NativePointerDeviceEntry::Live(state))

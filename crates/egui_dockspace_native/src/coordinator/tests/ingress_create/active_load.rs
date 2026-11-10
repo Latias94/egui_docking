@@ -25,12 +25,24 @@ const CADENCE: u64 = 16;
 
 #[derive(Clone, Copy)]
 struct Receivers {
+    window: dockspace::runtime::NativeWindowBinding,
+    artifact: SurfacePresentationArtifact,
     source: DockspaceReceiverDescriptor,
     target: DockspaceReceiverDescriptor,
 }
 
 impl Receivers {
     fn resolve(self, query: NativeReceiverQuery) -> NativeReceiverAnswer {
+        let query = match query {
+            NativeReceiverQuery::WindowHit(query) => {
+                return NativeReceiverAnswer::WindowHit(if query.window() == self.window {
+                    dockspace::runtime::NativeWindowHit::Surface(self.artifact)
+                } else {
+                    dockspace::runtime::NativeWindowHit::Unknown
+                });
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
             let descriptor = if query
                 .point()
@@ -77,7 +89,7 @@ fn fixture(clock: NativeMonotonicClock) -> (NativeCoordinator, Receivers) {
     publish_desktop_authority(&mut native, binding);
     native
         .session
-        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
         .expect("the local input model starts in its focused source window");
     let mut painted = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -117,6 +129,7 @@ fn fixture(clock: NativeMonotonicClock) -> (NativeCoordinator, Receivers) {
     let mut report = painted.commit().unwrap();
     assert!(report.take_native_effects().is_empty());
     let [output] = report.take_painted_outputs().try_into().unwrap();
+    let artifact = output.presentation_artifact();
     native
         .session
         .report_surface_presentation(output, SurfacePresentationResult::Presented)
@@ -131,6 +144,8 @@ fn fixture(clock: NativeMonotonicClock) -> (NativeCoordinator, Receivers) {
     (
         native,
         Receivers {
+            window: binding.window(),
+            artifact,
             source,
             target: target.unwrap(),
         },
@@ -487,9 +502,17 @@ fn wall_time_active_prefix_and_receiver_deadline_preserve_exact_release() {
                 let inject_delay = phase == "receiver-deadline" && !receiver_delayed;
                 let frame = native
                     .poll_host_frame(&mut budget, |query| {
+                        if matches!(query, NativeReceiverQuery::WindowHit(_)) {
+                            return receivers.resolve(query);
+                        }
+                        let NativeReceiverQuery::Surface(surface_query) = query else {
+                            unreachable!()
+                        };
                         receiver_queries += 1;
                         if phase == "receiver-deadline" {
-                            let point = query.point().expect("active motion must have a point");
+                            let point = surface_query
+                                .point()
+                                .expect("active motion must have a point");
                             receiver_points.push((point.x(), point.y()));
                         }
                         if inject_delay && !receiver_delayed {

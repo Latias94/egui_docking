@@ -111,7 +111,10 @@ fn full_route_store_attaches_and_replaces_before_moving_only_the_exact_receipt()
     routes.reserve(viewport, first).unwrap();
     routes.attach(viewport, first, window).unwrap();
     routes.set_focus_reportable(&[first]);
-    assert_eq!(routes.focus_binding_for_event(window, None), Some(first));
+    assert_eq!(
+        routes.focus_binding_for_event(window, None),
+        Some(first.window())
+    );
     assert!(
         routes
             .replace(viewport, first, window, other_surface)
@@ -298,7 +301,10 @@ fn capture_preserves_fallback_without_publishing_or_recreating_the_window_receip
     assert!(!routes.route(viewport).unwrap().window_published);
     assert_eq!(routes.binding_for_event(window, None), Some(binding));
     assert_eq!(routes.binding_for_roster(viewport, window), Some(binding));
-    assert_eq!(routes.pointer_binding_for_window(window), Some(binding));
+    assert_eq!(
+        routes.pointer_binding_for_window(window),
+        Some(binding.window())
+    );
     assert_eq!(
         routes.binding_for_output(viewport, window, None),
         Some(binding)
@@ -385,7 +391,7 @@ fn foreign_provider_handles_with_reused_public_ids_do_not_match_exact_guards() {
     assert!(routes.set_focus_reportable(&[successor]));
     assert_eq!(
         routes.focus_binding_for_event(window, None),
-        Some(successor)
+        Some(successor.window())
     );
     routes.commit_retirements(&committed);
     assert_eq!(routes.binding(viewport), Some(successor));

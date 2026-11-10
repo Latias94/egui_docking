@@ -169,6 +169,7 @@ fn tab_list_menu_rows_route_native_click_and_drag_after_ui_zoom() {
                 vec![PresentedReceiverSet {
                     binding,
                     viewport: egui::ViewportId::ROOT,
+                    pixels_per_point: f64::from(context.pixels_per_point()),
                     hit_authority: Arc::new(hit_authority),
                     artifact,
                     receivers,
@@ -209,11 +210,11 @@ fn tab_list_menu_rows_route_native_click_and_drag_after_ui_zoom() {
                             )
                             .unwrap(),
                         ),
-                        NativePointerHover::Dock(binding),
+                        NativePointerHover::Dock(binding.window()),
                         None,
                     ),
-                    NativePointerOwner::Native(binding),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
+                    NativePointerOwner::Native(binding.window()),
                 ))
                 .unwrap();
             let mut frame = session
@@ -223,16 +224,18 @@ fn tab_list_menu_rows_route_native_click_and_drag_after_ui_zoom() {
                         NativeReceiverAnswer::Dock(receiver) => Some(receiver.descriptor().role()),
                         _ => None,
                     };
-                    match query.purpose() {
-                        NativeReceiverPurpose::ClickDelivery => {
-                            click_queried = true;
-                            click_role = role;
+                    if let NativeReceiverQuery::Surface(query) = query {
+                        match query.purpose() {
+                            NativeReceiverPurpose::ClickDelivery => {
+                                click_queried = true;
+                                click_role = role;
+                            }
+                            NativeReceiverPurpose::DragDelivery => {
+                                drag_queried = true;
+                                drag_role = role;
+                            }
+                            _ => {}
                         }
-                        NativeReceiverPurpose::DragDelivery => {
-                            drag_queried = true;
-                            drag_role = role;
-                        }
-                        _ => {}
                     }
                     answer
                 })
@@ -485,6 +488,7 @@ fn an_application_modal_blocks_native_menu_scroll_without_rejecting_input() {
             vec![PresentedReceiverSet {
                 binding,
                 viewport: egui::ViewportId::ROOT,
+                pixels_per_point: f64::from(context.pixels_per_point()),
                 hit_authority: Arc::new(hit_authority),
                 artifact,
                 receivers: paint.receivers().collect(),
@@ -542,19 +546,26 @@ fn an_application_modal_blocks_native_menu_scroll_without_rejecting_input() {
                     PhysicalPoint::new(point.x() * f64::from(zoom), point.y() * f64::from(zoom))
                         .unwrap(),
                 ),
-                NativePointerHover::Dock(binding),
+                NativePointerHover::Dock(binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
             NativePointerOwner::None,
         ))
         .unwrap();
+    let mut window_answer = None;
     let mut scroll_answer = None;
     let mut frame = session
         .begin_native_host_frame(|query| {
             let answer = store.resolve(query);
-            if matches!(query.purpose(), NativeReceiverPurpose::ScrollDelivery(_)) {
-                scroll_answer = Some(answer);
+            match query {
+                NativeReceiverQuery::WindowHit(_) => window_answer = Some(answer),
+                NativeReceiverQuery::Surface(query)
+                    if matches!(query.purpose(), NativeReceiverPurpose::ScrollDelivery(_)) =>
+                {
+                    scroll_answer = Some(answer);
+                }
+                NativeReceiverQuery::Surface(_) => {}
             }
             answer
         })
@@ -581,9 +592,13 @@ fn an_application_modal_blocks_native_menu_scroll_without_rejecting_input() {
     frame.commit().unwrap();
     assert_eq!(scroll_hit, egui::WidgetScrollHit::Blocked);
     assert!(matches!(
-        scroll_answer,
-        Some(NativeReceiverAnswer::Blocked(_))
+        window_answer,
+        Some(NativeReceiverAnswer::WindowHit(NativeWindowHit::Blocked))
     ));
+    assert!(
+        scroll_answer.is_none(),
+        "the modal blocks placement selection before a surface may answer"
+    );
 }
 
 fn managed_session(zoom: f32) -> (DockspaceSession, NativeSurfaceBinding) {

@@ -1,6 +1,7 @@
 //! The single unpublished native update and its exact egui run boundary.
 
 use dockspace::model::SurfaceId;
+use dockspace::runtime::NativeSurfacePlacement;
 use eframe::{NativeOutputToken, egui};
 
 use crate::application_action::NativeSubmittedApplicationAction;
@@ -17,6 +18,7 @@ pub(super) struct NativeOwnedUpdate {
 
 pub(super) struct NativeUpdatePublication {
     pub(super) surfaces: Vec<SurfaceId>,
+    pub(super) placements: Option<Vec<NativeSurfacePlacement>>,
     pub(super) no_frame_invalidations: Vec<PendingNoFrameInvalidation>,
     pub(super) retirements: Option<PreparedNativeRetirements>,
     pub(super) application_action: Option<NativeSubmittedApplicationAction>,

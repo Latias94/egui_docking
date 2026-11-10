@@ -351,7 +351,11 @@ fn five_pressed_devices_retire_with_one_fact_in_four_slots_and_replay_a_dropped_
     assert!(native.session.has_pending_native_input());
     assert!(native.bridge.callback_boundary_pending());
     assert!(native.next_window_event().unwrap().is_none());
-    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(binding.window())
+    );
     let translator = format!("{:?}", native.pointer_translator);
 
     {
@@ -457,7 +461,11 @@ fn full_transport_keeps_destroyed_callback_and_translator_retryable_until_capaci
     );
     assert!(native.next_window_event().unwrap().is_none());
     assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
-    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(
+        !native
+            .pointer_translator
+            .references_binding(binding.window())
+    );
     commit_boundary(&mut native);
     assert!(!native.session.has_pending_native_input());
     assert_eq!(native.session.native_input_recorded_count(), recorded + 1);

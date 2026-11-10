@@ -17,7 +17,7 @@ use crate::mailbox::NativePreparationObservation;
 pub(crate) struct CompiledWindowObservation {
     binding: NativeSurfaceBinding,
     facts: NativeWindowFacts,
-    input_acknowledged: bool,
+    input_acknowledgement: Option<NativeSurfaceBinding>,
     create_acknowledged: bool,
     focus_reportable: bool,
     preparation: Option<NativePreparationObservation>,
@@ -28,7 +28,7 @@ impl CompiledWindowObservation {
         Self {
             binding,
             facts,
-            input_acknowledged: false,
+            input_acknowledgement: None,
             create_acknowledged: false,
             focus_reportable: false,
             preparation: None,
@@ -47,8 +47,8 @@ impl CompiledWindowObservation {
         self.create_acknowledged
     }
 
-    pub(crate) const fn input_acknowledged(self) -> bool {
-        self.input_acknowledged
+    pub(crate) const fn input_acknowledgement(self) -> Option<NativeSurfaceBinding> {
+        self.input_acknowledgement
     }
 
     pub(crate) const fn focus_reportable(self) -> bool {
@@ -76,13 +76,27 @@ impl CompiledWindowObservation {
         self
     }
 
+    #[cfg(test)]
     pub(crate) const fn with_input(
+        self,
+        state: NativeWindowInputState,
+        acknowledgement: Option<NativeInputEffectAcknowledgement>,
+    ) -> Self {
+        let source = self.binding;
+        self.with_input_from(source, state, acknowledgement)
+    }
+
+    pub(crate) const fn with_input_from(
         mut self,
+        source: NativeSurfaceBinding,
         state: NativeWindowInputState,
         acknowledgement: Option<NativeInputEffectAcknowledgement>,
     ) -> Self {
         self.facts = self.facts.with_input(state, acknowledgement);
-        self.input_acknowledged = acknowledgement.is_some();
+        self.input_acknowledgement = match acknowledgement {
+            Some(_) => Some(source),
+            None => None,
+        };
         self
     }
 
@@ -141,7 +155,7 @@ pub(crate) fn compile_window_observation(
     compile_window_facts(snapshot).map(|facts| CompiledWindowObservation {
         binding,
         facts,
-        input_acknowledged: false,
+        input_acknowledgement: None,
         create_acknowledged: false,
         focus_reportable,
         preparation: None,

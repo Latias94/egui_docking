@@ -1,5 +1,7 @@
 //! Layout commands use the native application's bounded command and result slot.
 
+mod shared_window;
+
 use crate::NativeCommand;
 use std::error::Error;
 
@@ -948,6 +950,9 @@ mod persistence {
             root_surface: SURFACE,
             instance_id: egui::Id::unique("service-refill-close-create"),
             owned_update: None,
+            root_placement_request: None,
+            root_input_placements: None,
+            invalid_root_placement_request: false,
             pending_service: false,
             style: DockStyle::default(),
             panes: Panes(Vec::new()),

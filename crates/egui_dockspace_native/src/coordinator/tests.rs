@@ -372,6 +372,18 @@ fn register_root_and_child(
 }
 
 fn paint_and_present_all_surfaces(coordinator: &mut NativeCoordinator) -> HostFrameReport {
+    paint_and_present_all_surfaces_with_artifacts(coordinator).0
+}
+
+fn paint_and_present_all_surfaces_with_artifacts(
+    coordinator: &mut NativeCoordinator,
+) -> (
+    HostFrameReport,
+    Vec<(
+        NativeSurfaceBinding,
+        dockspace::runtime::SurfacePresentationArtifact,
+    )>,
+) {
     let metrics = UniformSurfaceMetrics::new(
         LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
         LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
@@ -403,7 +415,19 @@ fn paint_and_present_all_surfaces(coordinator: &mut NativeCoordinator) -> HostFr
     assert!(paint_report.take_native_effects().is_empty());
     let outputs = paint_report.take_painted_outputs();
     assert_eq!(outputs.len(), surfaces.len());
+    let mut artifacts = Vec::new();
     for output in outputs {
+        let binding = coordinator
+            .session
+            .native_window_bindings()
+            .flat_map(|window| {
+                coordinator
+                    .session
+                    .native_surface_bindings_for_window(window)
+            })
+            .find(|binding| output.matches_native_binding(*binding))
+            .expect("each painted output has its current exact window");
+        artifacts.push((binding, output.presentation_artifact()));
         coordinator
             .session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
@@ -422,7 +446,7 @@ fn paint_and_present_all_surfaces(coordinator: &mut NativeCoordinator) -> HostFr
     coordinator
         .settle_native_admissions(report.native_admissions())
         .expect("native roster admissions settle");
-    report
+    (report, artifacts)
 }
 
 fn presented_local_coordinate_routes() -> (
@@ -466,6 +490,7 @@ fn local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_s
     let (mut native, first, second) = presented_local_coordinate_routes();
     let window = WindowId::from(11);
     let original = native.session.native_local_coordinates(first).unwrap();
+    let original_presented = native.session.presented_surface(first.surface()).unwrap();
     let route_coordinates = |native: &NativeCoordinator| {
         native.bridge.with_viewports(|routes| {
             routes.local_coordinates_for_event(window, Some(ViewportId::ROOT))
@@ -501,6 +526,7 @@ fn local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_s
                 (
                     first,
                     ready_window_facts(0.0)
+                        .with_native_scale_factor(ScaleFactor::new(2.0).unwrap())
                         .with_presentation_scale_factor(ScaleFactor::new(2.0).unwrap()),
                 ),
                 (second, ready_window_facts(720.0)),
@@ -511,6 +537,7 @@ fn local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_s
         .unwrap();
     native.refresh_local_coordinates();
     assert_eq!(route_coordinates(&native), Some(original));
+
     let mut dropped = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
@@ -524,6 +551,11 @@ fn local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_s
         Some(original)
     );
     assert_eq!(route_coordinates(&native), Some(original));
+    assert_eq!(
+        native.session.presented_surface(first.surface()),
+        Some(original_presented),
+        "a dropped geometry candidate cannot revoke the published placement",
+    );
 
     let mut retry = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -534,6 +566,7 @@ fn local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_s
     let report = retry.commit().unwrap();
     let updated = native.session.native_local_coordinates(first).unwrap();
     assert_ne!(updated, original);
+    assert!(native.session.presented_surface(first.surface()).is_none());
     assert_eq!(route_coordinates(&native), Some(original));
     assert!(native.queued_snapshot.is_none());
     assert!(!native.settle_host_frame_report(&report).unwrap());
@@ -631,7 +664,7 @@ fn local_route_coordinates_are_cleared_by_exact_suppression_and_every_successor_
         }
         assert_eq!(
             routes.pointer_binding_for_event(successor_window, None),
-            Some(successor)
+            Some(successor.window())
         );
         assert_eq!(
             routes.local_coordinates_for_event(successor_window, None),
@@ -761,7 +794,12 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
     snapshot
         .commit()
         .expect("the native snapshot frame commits");
-    paint_and_present_all_surfaces(&mut native);
+    let (_, artifacts) = paint_and_present_all_surfaces_with_artifacts(&mut native);
+    let artifact = artifacts
+        .iter()
+        .find(|(source, _)| *source == binding)
+        .map(|(_, artifact)| *artifact)
+        .expect("the source retains its actual painted artifact");
 
     let metrics = UniformSurfaceMetrics::new(
         LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
@@ -809,18 +847,24 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
                     PhysicalPoint::new(point.x(), point.y())
                         .expect("the unit-scale source desktop point validates"),
                 ),
-                NativePointerHover::Dock(binding),
+                NativePointerHover::Dock(binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(binding),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
+            NativePointerOwner::Native(binding.window()),
         ))
         .expect("the native press enters the active desktop journal");
     let mut gesture = native
-        .begin_host_frame(|query| {
-            query
+        .begin_host_frame(|query| match query {
+            NativeReceiverQuery::WindowHit(query) if query.window() == binding.window() => {
+                NativeReceiverAnswer::WindowHit(dockspace::runtime::NativeWindowHit::Surface(
+                    artifact,
+                ))
+            }
+            NativeReceiverQuery::WindowHit(_) => NativeReceiverAnswer::Unknown,
+            NativeReceiverQuery::Surface(query) => query
                 .bind_receiver(&receiver)
-                .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
+                .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock),
         })
         .expect("the native gesture frame begins from the presented source");
     gesture
@@ -1921,12 +1965,21 @@ fn pointer_routes_are_frozen_before_viewport_replacement() {
         .expect("test viewport replacement succeeds");
 
     let routes = record.pointer_routes().expect("pointer routes are frozen");
-    assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Dock(first));
-    assert_eq!(routes.hover(), NativePointerRouteSnapshot::Dock(second));
-    assert_eq!(routes.capture(), NativePointerRouteSnapshot::Dock(first));
+    assert_eq!(
+        routes.delivery(),
+        NativePointerRouteSnapshot::Dock(first.window())
+    );
+    assert_eq!(
+        routes.hover(),
+        NativePointerRouteSnapshot::Dock(second.window())
+    );
+    assert_eq!(
+        routes.capture(),
+        NativePointerRouteSnapshot::Dock(first.window())
+    );
     assert_ne!(
         routes.delivery(),
-        NativePointerRouteSnapshot::Dock(successor)
+        NativePointerRouteSnapshot::Dock(successor.window())
     );
 }
 
@@ -1989,11 +2042,11 @@ fn pointer_translation_preserves_delivery_hover_and_capture() {
             NativeDesktopPosition::Exact(
                 PhysicalPoint::new(110.0, 220.0).expect("test point validates"),
             ),
-            NativePointerHover::Dock(second),
+            NativePointerHover::Dock(second.window()),
             None,
         ),
-        NativePointerOwner::Native(first),
-        NativePointerOwner::Native(first),
+        NativePointerOwner::Native(first.window()),
+        NativePointerOwner::Native(first.window()),
     );
     assert_eq!(actual, NativePointerTranslation::Input(expected));
 }

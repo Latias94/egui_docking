@@ -79,7 +79,7 @@ fn reset_rebinds_every_retained_root_on_its_current_physical_window() {
             routes,
         )
     });
-    assert_eq!(old_focus.focus(), NativeGlobalFocus::Dock(first));
+    assert_eq!(old_focus.focus(), NativeGlobalFocus::Dock(first.window()));
 
     let report = reset(&mut native);
     let next_first = successor(&report, first);
@@ -104,7 +104,7 @@ fn reset_rebinds_every_retained_root_on_its_current_physical_window() {
         native.session.native_local_coordinates(next_first),
         Some(old_coordinates)
     );
-    assert_eq!(old_focus.focus(), NativeGlobalFocus::Dock(first));
+    assert_eq!(old_focus.focus(), NativeGlobalFocus::Dock(first.window()));
     assert!(native.bridge.viewport_roster_dirty());
     assert!(native.bridge.retirement_destroyed_observations().is_empty());
     assert!(native.prepare_committed_retirements().unwrap().is_none());
@@ -133,7 +133,7 @@ fn reset_rebinds_every_retained_root_on_its_current_physical_window() {
     native.bridge.with_viewports(|routes| {
         assert_eq!(
             routes.focus_binding_for_event(WindowId::from(11), None),
-            Some(next_first)
+            Some(next_first.window())
         );
         assert_eq!(
             routes.local_coordinates_for_event(WindowId::from(11), None),
@@ -312,9 +312,17 @@ fn reset_retires_owned_children_through_the_existing_effect_and_destroyed_snapsh
 }
 
 fn bounded(resources: usize, window: Option<WindowId>) -> NativeCoordinator {
+    bounded_with_binding_slots(resources, window, 2)
+}
+
+fn bounded_with_binding_slots(
+    resources: usize,
+    window: Option<WindowId>,
+    binding_slots: usize,
+) -> NativeCoordinator {
     let input = NativeInputStorageLimit::new(NonZeroUsize::new(16).unwrap(), 1 << 20)
         .with_producer_storage_limit(NativeProducerStorageLimit::new(
-            NonZeroUsize::new(2).unwrap(),
+            NonZeroUsize::new(binding_slots).unwrap(),
             NonZeroUsize::MIN,
             1 << 20,
         ))
@@ -326,7 +334,8 @@ fn bounded(resources: usize, window: Option<WindowId>) -> NativeCoordinator {
     let owners = NativeOwnerStorageLimit {
         resource_slots: resources,
         close_slots: 2,
-        byte_limit: NativeOwnerStorageLimit::required_bytes(2, 2, resources, 2).unwrap(),
+        byte_limit: NativeOwnerStorageLimit::required_bytes(binding_slots, 2, resources, 2)
+            .unwrap(),
     };
     let mut native = NativeCoordinator::new_with_storage_limits(
         DockspaceSession::from_layout(layout(), DockPolicy::default()).unwrap(),
@@ -345,6 +354,151 @@ fn bounded(resources: usize, window: Option<WindowId>) -> NativeCoordinator {
             .unwrap();
     }
     native
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression publishes a shared-window roster, queues sibling focus and atomically replaces both exact placements"
+)]
+fn shared_root_reset_settles_one_window_resource_and_every_exact_predecessor() {
+    // Two exact old/new placement pairs overlap during publication. They share
+    // just one old/new physical window pair, whose resource budget remains two.
+    let mut native = bounded_with_binding_slots(2, Some(WindowId::from(11)), 4);
+    let original = native.viewport_binding(ViewportId::ROOT).unwrap();
+    native
+        .report_snapshot(
+            [(original, ready_window_facts(0.0))],
+            NativeWorkAreaRoster::Unknown,
+            crate::capabilities::capabilities_for_backend(eframe::NativeWindowingBackend::Windows),
+        )
+        .unwrap();
+    commit(&mut native);
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .frame
+        .set_native_surface_placements(
+            original.window(),
+            &[FIRST_SURFACE, SECOND_SURFACE].map(|surface| {
+                let x = if surface == FIRST_SURFACE { 0.0 } else { 320.0 };
+                dockspace::runtime::NativeSurfacePlacement::new(
+                    surface,
+                    LogicalSize::new(320.0, 480.0).unwrap(),
+                    dockspace::geometry::PhysicalPoint::new(x, 0.0).unwrap(),
+                    ScaleFactor::new(1.0).unwrap(),
+                    PhysicalRect::new(x, 0.0, 320.0, 480.0).unwrap(),
+                )
+            }),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    native.settle_host_frame_report(&report).unwrap();
+    let predecessors = native
+        .session
+        .native_surface_bindings_for_window(original.window())
+        .collect::<Vec<_>>();
+    assert_eq!(predecessors.len(), 2);
+    let sibling = *predecessors
+        .iter()
+        .find(|binding| binding.surface() == SECOND_SURFACE)
+        .unwrap();
+    let mut paint = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    for surface in [FIRST_SURFACE, SECOND_SURFACE] {
+        paint
+            .frame
+            .measure_surface(
+                surface,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 320.0, 480.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    80.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let receipt = paint
+            .frame
+            .paint_plan(surface)
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .unwrap();
+        paint.frame.confirm_surface_painted(receipt).unwrap();
+    }
+    let outputs = paint.commit().unwrap().take_painted_outputs();
+    assert_eq!(outputs.len(), 2);
+    native
+        .session
+        .report_surface_presentations(outputs, SurfacePresentationResult::Presented)
+        .unwrap();
+    commit(&mut native);
+    let mut selection = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    selection
+        .frame
+        .select_item_current(ItemId::new(SECOND_SURFACE.get()))
+        .unwrap();
+    selection
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut selected = selection.commit().unwrap();
+    let effects = selected.take_native_effects();
+    assert!(matches!(effects.as_slice(), [request]
+        if request.operation() == &NativeEffectOperation::RequestFocus { binding: sibling }));
+    native
+        .accept_native_effects(&egui::Context::default(), effects)
+        .unwrap();
+    assert_eq!(native.focus_control.pending_binding(), Some(sibling));
+
+    let report = reset(&mut native);
+    assert_eq!(report.native_root_continuations().len(), 2);
+    assert!(
+        report
+            .native_root_continuations()
+            .iter()
+            .all(|continuation| {
+                predecessors.contains(&continuation.predecessor())
+                    && continuation.predecessor().window() == original.window()
+            })
+    );
+    let successors = report.native_bindings();
+    assert_eq!(successors.len(), 2);
+    assert_eq!(successors[0].window(), successors[1].window());
+    for &binding in successors {
+        assert!(
+            native
+                .bridge
+                .workspace_replacement_predecessor(binding)
+                .is_some()
+        );
+    }
+    assert!(native.settle_host_frame_report(&report).unwrap());
+    assert!(native.focus_control.pending_binding().is_none());
+    assert!(
+        native
+            .pending_effect_results
+            .iter()
+            .any(|result| result.result.binding() == sibling)
+    );
+    for &binding in successors {
+        assert_eq!(
+            native.bridge.workspace_replacement_predecessor(binding),
+            None
+        );
+        assert!(native.bridge.references_binding(binding));
+    }
+    for binding in predecessors {
+        assert!(!native.bridge.references_binding(binding));
+    }
+    assert!(!native.settle_workspace_replacement(&report).unwrap());
 }
 
 fn continuation_layout(surface: SurfaceId) -> DockspaceLayout {

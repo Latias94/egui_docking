@@ -69,16 +69,32 @@ impl<P: PaneView> NativeRuntimeState<P> {
     fn existing_root_for_continuation(
         &self,
     ) -> Result<NativeSurfaceBinding, NativeLayoutRequestError> {
-        self.coordinator
+        let route = self
+            .coordinator
             .viewport_binding(egui::ViewportId::ROOT)
-            .filter(|binding| binding.surface() == self.root_surface)
             .filter(|binding| {
                 self.coordinator.dispatch_bridge().with_viewports(|routes| {
                     routes.window(egui::ViewportId::ROOT).is_some()
                         && routes.has_window_receipt(egui::ViewportId::ROOT, *binding)
                 })
             })
+            .ok_or_else(|| {
+                NativeLayoutRequestError::new_root_window_unavailable(self.root_surface)
+            })?;
+        self.coordinator
+            .session()
+            .native_surface_bindings_for_window(route.window())
+            .find(|binding| binding.surface() == self.root_surface)
             .ok_or_else(|| NativeLayoutRequestError::new_root_window_unavailable(self.root_surface))
+    }
+
+    fn current_root_binding(&self) -> Option<NativeSurfaceBinding> {
+        let session = self.coordinator.session();
+        session.native_window_bindings().find_map(|window| {
+            session
+                .native_surface_bindings_for_window(window)
+                .find(|binding| binding.surface() == self.root_surface)
+        })
     }
 
     fn validate_root_continuation_target(
@@ -117,13 +133,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .coordinator
             .session()
             .prepare_document_restore_json(bytes, recognize)?;
-        restore.validate_native_surface_hosting(incoming_root)?;
+        let root_mappings =
+            self.prepare_document_root_mappings(&restore, Some(existing_root), incoming_root)?;
         let action = NativeApplicationAction::new(
             self.coordinator.session().version(),
             NativeApplicationCommand::DocumentRestore {
                 restore: Box::new(restore),
                 root_surface: incoming_root,
-                existing_root: Some(existing_root),
+                root_mappings,
             },
         );
         self.enqueue_application_action(action)?;
@@ -159,17 +176,49 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .coordinator
             .session()
             .prepare_document_restore_json(bytes, recognize)?;
-        restore.validate_native_surface_hosting(self.root_surface)?;
+        let root_mappings = self.prepare_document_root_mappings(
+            &restore,
+            self.current_root_binding(),
+            self.root_surface,
+        )?;
         let action = NativeApplicationAction::new(
             self.coordinator.session().version(),
             NativeApplicationCommand::DocumentRestore {
                 restore: Box::new(restore),
                 root_surface: self.root_surface,
-                existing_root: None,
+                root_mappings,
             },
         );
         self.enqueue_application_action(action)?;
         Ok(())
+    }
+
+    #[cfg(feature = "serde")]
+    fn prepare_document_root_mappings(
+        &self,
+        restore: &dockspace::runtime::PreparedDockspaceDocumentRestore,
+        existing_root: Option<NativeSurfaceBinding>,
+        incoming_root: SurfaceId,
+    ) -> Result<Vec<(NativeSurfaceBinding, SurfaceId)>, NativeLayoutRequestError> {
+        let mut mappings = Vec::new();
+        if let Some(existing_root) = existing_root {
+            // Keep the representative first for an exact command rejection.
+            // Siblings come only from the core's current window roster.
+            mappings.push((existing_root, incoming_root));
+            mappings.extend(
+                self.coordinator
+                    .session()
+                    .native_surface_bindings_for_window(existing_root.window())
+                    .filter(|binding| *binding != existing_root)
+                    .filter(|binding| restore.view().surface(binding.surface()).is_some())
+                    .map(|binding| (binding, binding.surface())),
+            );
+        }
+        restore.validate_native_surface_hosting_for_roots(
+            std::iter::once(incoming_root)
+                .chain(mappings.iter().skip(1).map(|(_, target)| *target)),
+        )?;
+        Ok(mappings)
     }
 
     #[cfg(feature = "serde")]
@@ -205,7 +254,20 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 root_surface,
             ));
         }
-        if let Some(unhosted) = view.surfaces().find(|surface| surface.id() != root_surface) {
+        let window = self
+            .current_root_binding()
+            .map(NativeSurfaceBinding::window);
+        if let Some(unhosted) = view.surfaces().find(|surface| {
+            let surface = surface.id();
+            surface != root_surface
+                && (surface == self.root_surface
+                    || !window.is_some_and(|window| {
+                        self.coordinator
+                            .session()
+                            .native_surface_bindings_for_window(window)
+                            .any(|binding| binding.surface() == surface)
+                    }))
+        }) {
             return Err(NativeLayoutRequestError::new_unhosted_surface(
                 unhosted.id(),
             ));

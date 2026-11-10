@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use dockspace::runtime::{
     NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectRequest, NativeEffectResult,
     NativeIndeterminateReason, NativeInputEffectAcknowledgement, NativeSurfaceBinding,
-    NativeUnsupportedReason, NativeWindowInputState,
+    NativeUnsupportedReason, NativeWindowBinding, NativeWindowInputState,
 };
 use eframe::{
     NativeViewportPointerPassthroughCommandToken, NativeViewportPointerPassthroughResult,
@@ -127,6 +127,7 @@ impl NativePointerPassthroughRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativePointerPassthroughCommand {
     viewport: ViewportId,
+    window: WindowId,
     binding: NativeSurfaceBinding,
     enabled: bool,
 }
@@ -138,6 +139,10 @@ impl NativePointerPassthroughCommand {
 
     pub(crate) const fn enabled(self) -> bool {
         self.enabled
+    }
+
+    pub(crate) const fn window(self) -> WindowId {
+        self.window
     }
 
     pub(crate) const fn binding(self) -> NativeSurfaceBinding {
@@ -180,6 +185,7 @@ impl PendingNativeInput {
     const fn command(&self) -> NativePointerPassthroughCommand {
         NativePointerPassthroughCommand {
             viewport: self.viewport,
+            window: self.window,
             binding: self.binding,
             enabled: self.enabled,
         }
@@ -453,7 +459,7 @@ impl NativeInputControl {
             || self
                 .pending
                 .iter()
-                .any(|pending| pending.binding == binding)
+                .any(|pending| pending.binding.window() == binding.window())
         {
             return Ok(false);
         }
@@ -472,7 +478,9 @@ impl NativeInputControl {
     ) -> Result<(), NativeHostProtocolError> {
         if self
             .observations
-            .binary_search_by_key(&binding, |observation| observation.binding)
+            .binary_search_by_key(&binding.window(), |observation| {
+                observation.binding.window()
+            })
             .is_ok()
         {
             return Ok(());
@@ -495,8 +503,9 @@ impl NativeInputControl {
     fn store_observation(&mut self, observation: NativeInputObservation) {
         match self
             .observations
-            .binary_search_by_key(&observation.binding, |entry| entry.binding)
-        {
+            .binary_search_by_key(&observation.binding.window(), |entry| {
+                entry.binding.window()
+            }) {
             Ok(index) => self.observations[index] = observation,
             Err(index) => self.observations.insert(index, observation),
         }
@@ -566,6 +575,18 @@ impl NativeInputControl {
         self.pending.front().is_some_and(|pending| {
             matches!(pending.state, PendingNativeInputState::AwaitingSnapshot)
                 && acknowledged == pending.binding
+                && self
+                    .snapshot_observation(acknowledged.window())
+                    .is_some_and(|(source, state, acknowledgement)| {
+                        source == acknowledged
+                            && acknowledgement.is_some()
+                            && state
+                                == if pending.enabled {
+                                    NativeWindowInputState::PassThrough
+                                } else {
+                                    NativeWindowInputState::ReceivesInput
+                                }
+                    })
         })
     }
 
@@ -578,7 +599,9 @@ impl NativeInputControl {
         };
         if let Ok(index) = self
             .observations
-            .binary_search_by_key(&binding, |observation| observation.binding)
+            .binary_search_by_key(&binding.window(), |observation| {
+                observation.binding.window()
+            })
         {
             self.observations[index].acknowledgement = None;
         }
@@ -586,6 +609,7 @@ impl NativeInputControl {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn snapshot_fact(
         &self,
         binding: NativeSurfaceBinding,
@@ -593,11 +617,31 @@ impl NativeInputControl {
         NativeWindowInputState,
         Option<NativeInputEffectAcknowledgement>,
     )> {
+        self.snapshot_observation(binding.window())
+            .map(|(_, state, acknowledgement)| (state, acknowledgement))
+    }
+
+    /// Physical state is shared by the window; an ACK keeps the command's
+    /// original exact source until its published snapshot settles that owner.
+    pub(crate) fn snapshot_observation(
+        &self,
+        window: NativeWindowBinding,
+    ) -> Option<(
+        NativeSurfaceBinding,
+        NativeWindowInputState,
+        Option<NativeInputEffectAcknowledgement>,
+    )> {
         self.observations
-            .binary_search_by_key(&binding, |observation| observation.binding)
+            .binary_search_by_key(&window, |observation| observation.binding.window())
             .ok()
             .and_then(|index| self.observations.get(index))
-            .map(|observation| (observation.state, observation.acknowledgement))
+            .map(|observation| {
+                (
+                    observation.binding,
+                    observation.state,
+                    observation.acknowledgement,
+                )
+            })
     }
 
     pub(crate) fn retire_binding_into(
@@ -606,7 +650,7 @@ impl NativeInputControl {
         mut emit: impl FnMut(NativeEffectResult),
     ) {
         self.observations
-            .retain(|observation| observation.binding != binding);
+            .retain(|observation| observation.binding.window() != binding.window());
         // Visit the original queue exactly once. Survivors return to the same
         // backing in order; affine results move directly into the prepaid sink.
         let count = self.pending.len();
@@ -615,7 +659,7 @@ impl NativeInputControl {
                 .pending
                 .pop_front()
                 .expect("each original input entry is visited once");
-            if pending.binding != binding {
+            if pending.binding.window() != binding.window() {
                 self.pending.push_back(pending);
                 continue;
             }
@@ -633,8 +677,11 @@ impl NativeInputControl {
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.observations
-            .binary_search_by_key(&binding, |observation| observation.binding)
-            .is_ok()
+            .binary_search_by_key(&binding.window(), |observation| {
+                observation.binding.window()
+            })
+            .ok()
+            .is_some_and(|index| self.observations[index].binding == binding)
             || self
                 .pending
                 .iter()

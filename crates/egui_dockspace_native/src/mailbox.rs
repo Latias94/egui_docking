@@ -12,7 +12,8 @@ use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, NativeCleanupObservation,
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeEffectResult,
-    NativeInputBudget, NativeMonotonicClock, NativeSurfaceBinding, NativeWindowFacts,
+    NativeInputBudget, NativeMonotonicClock, NativeSurfaceBinding, NativeWindowBinding,
+    NativeWindowFacts,
 };
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
@@ -64,6 +65,8 @@ mod pointer_observation_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod preparation_output_tests;
 mod roster;
+#[cfg(test)]
+mod shared_command_tests;
 mod terminal_roster;
 mod window_resource;
 #[cfg(test)]
@@ -214,7 +217,9 @@ impl OutputReservation {
 
     pub(crate) fn attach(&mut self, binding: NativeSurfaceBinding) -> bool {
         if let Some(existing) = self.binding {
-            return existing == binding;
+            // The token owns a real-window callback, while each semantic
+            // contribution validates its own exact surface placement.
+            return existing.window() == binding.window();
         }
         self.binding = Some(binding);
         true
@@ -418,7 +423,7 @@ mod tests {
         );
         assert_eq!(
             bridge.with_viewports(|routes| routes.pointer_binding_for_window(new_window)),
-            Some(successor)
+            Some(successor.window())
         );
         assert!(bridge.with_viewports(|routes| routes.has_window_receipt(viewport, successor)));
     }
@@ -1065,7 +1070,7 @@ mod tests {
                 );
                 assert_eq!(
                     routes.focus_binding_for_event(WindowId::from(91), None),
-                    Some(predecessor)
+                    Some(predecessor.window())
                 );
                 if target_conflict {
                     assert_eq!(routes.binding(peer), Some(peer_binding));
@@ -1947,6 +1952,7 @@ struct NativeHostState {
     snapshot_storage_reserved_bytes: usize,
     window_resource_staging_reserved_bytes: usize,
     host_owner_external_reserved_bytes: usize,
+    root_placement_capacity_bytes: usize,
     window_resources: NativeWindowResources,
     retirements: NativeRetirementState,
     close_control: NativeCloseControl,
@@ -2037,8 +2043,12 @@ impl NativeHostState {
         frame: &DockspaceHostFrame<'_>,
     ) -> Result<(), NativeRuntimeError> {
         self.viewports
-            .validate_workspace_root_continuations(|| frame.proposed_native_root_continuations())?;
+            .validate_workspace_root_continuation_rosters(
+                || frame.proposed_native_root_continuations(),
+                |window| frame.committed_native_surface_bindings_for_window(window),
+            )?;
         self.refresh_window_resource_references();
+        let mut detached_placements = 0_usize;
         for continuation in frame.proposed_native_root_continuations() {
             let predecessor = continuation.predecessor();
             let successor = continuation.successor();
@@ -2052,7 +2062,7 @@ impl NativeHostState {
                 .viewports
                 .window(viewport)
                 .expect("validated same-window replacement retains its physical window");
-            if self.retirements.has_quiescence_owner(predecessor)
+            if !self.retirements.can_detach_binding(predecessor)
                 || self.retirements.has_quiescence_owner(successor)
                 || self.retirements.owns_window(window, None)
             {
@@ -2060,6 +2070,44 @@ impl NativeHostState {
                     successor.surface(),
                 )
                 .into());
+            }
+            detached_placements = detached_placements
+                .checked_add(1)
+                .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        }
+        // One physical continuation can retire several exact placements. Pay
+        // the complete batch before publication, independently of window slots.
+        if detached_placements > 0 {
+            let required = self
+                .retirements
+                .bindings()
+                .count()
+                .checked_add(detached_placements)
+                .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+            let growth = NativeRetirementState::reservation_bytes(required)
+                .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?
+                .saturating_sub(self.retirements.owned_data_capacity_bytes());
+            if !self.can_reserve_input_data(growth) {
+                return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+            }
+            self.retirements
+                .prepare_capacity_for_retained_lifetimes(required)?;
+        }
+        for (index, continuation) in frame.proposed_native_root_continuations().enumerate() {
+            let predecessor = continuation.predecessor();
+            let successor = continuation.successor();
+            let Some(viewport) = self
+                .viewports
+                .workspace_root_continuation_viewport(continuation)?
+            else {
+                continue;
+            };
+            if frame
+                .proposed_native_root_continuations()
+                .take(index)
+                .any(|previous| previous.predecessor().window() == predecessor.window())
+            {
+                continue;
             }
             if !self.can_admit_binding(successor) {
                 return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
@@ -2078,22 +2126,32 @@ impl NativeHostState {
         }
         self.viewports
             .commit_workspace_root_continuations(report.native_root_continuations());
-        for &continuation in report.native_root_continuations() {
+        for (index, &continuation) in report.native_root_continuations().iter().enumerate() {
             let predecessor = continuation.predecessor();
             let successor = continuation.successor();
-            let Some(viewport) = self.viewports.viewport(successor.surface()) else {
+            let Some(viewport) = self.viewports.viewport_for_window(successor.window()) else {
                 continue;
             };
             assert_eq!(
-                self.viewports.binding(viewport),
-                Some(successor),
-                "the prepaid exact successor retains its viewport"
+                self.viewports.window_binding(viewport),
+                Some(successor.window()),
+                "the prepaid exact successor window retains its viewport"
             );
-            self.window_resources
-                .retain_workspace_predecessor(viewport, predecessor, successor);
-            self.window_resources.retire(viewport, predecessor);
-            self.window_resources
-                .commit_host_reference(viewport, successor);
+            if !report.native_root_continuations()[..index]
+                .iter()
+                .any(|previous| previous.successor().window() == successor.window())
+            {
+                self.window_resources.retain_workspace_predecessor(
+                    viewport,
+                    predecessor,
+                    successor,
+                );
+                self.window_resources.retire(viewport, predecessor);
+                self.window_resources
+                    .commit_host_reference(viewport, successor);
+            }
+            // The physical receipt moves once; every exact predecessor keeps
+            // its own independently drainable core terminal guard.
             self.retirements.commit_detachment(predecessor);
         }
         self.refresh_window_resource_references();
@@ -2107,11 +2165,14 @@ impl NativeHostState {
             window_resources,
             ..
         } = self;
-        window_resources.refresh_host_references(|viewport, binding| {
-            viewports.binding(viewport) == Some(binding)
+        window_resources.refresh_host_references(|viewport, window| {
+            viewports.window_binding(viewport) == Some(window)
                 || output_resources.iter().any(|(token, resource)| {
                     token.viewport_id() == viewport
-                        && resource.reservation.binding() == Some(binding)
+                        && resource
+                            .reservation
+                            .binding()
+                            .is_some_and(|binding| binding.window() == window)
                 })
         });
     }
@@ -2176,6 +2237,7 @@ impl NativeHostState {
             snapshot_storage_reserved_bytes: 0,
             window_resource_staging_reserved_bytes: 0,
             host_owner_external_reserved_bytes: 0,
+            root_placement_capacity_bytes: 0,
             window_resources: NativeWindowResources::default(),
             retirements: NativeRetirementState::default(),
             close_control: NativeCloseControl::default(),
@@ -3570,7 +3632,7 @@ impl NativeHostBridge {
             || records
                 .viewports
                 .binding_for_event(key.window, Some(key.viewport))
-                != Some(binding)
+                .is_none_or(|route| route.window() != binding.window())
             || !records.admit_ordinary()
         {
             return false;
@@ -3629,7 +3691,7 @@ impl NativeHostBridge {
                 || records
                     .viewports
                     .binding_for_event(key.window, Some(key.viewport))
-                    != Some(binding)
+                    .is_none_or(|route| route.window() != binding.window())
                 || !records.admit_ordinary())
         {
             return false;
@@ -4008,14 +4070,11 @@ impl NativeHostBridge {
             .copied()
     }
 
-    pub(crate) fn has_pending_no_frame_invalidation(
-        &self,
-        surface: dockspace::model::SurfaceId,
-    ) -> bool {
+    pub(crate) fn has_pending_no_frame_invalidation(&self, window: NativeWindowBinding) -> bool {
         self.lock()
             .window_resources
             .pending_no_frame()
-            .any(|record| record.binding.surface() == surface)
+            .any(|record| record.binding.window() == window)
     }
 
     pub(crate) fn finish_no_frame_invalidations(&self, committed: &[PendingNoFrameInvalidation]) {
@@ -4079,8 +4138,10 @@ impl NativeHostBridge {
             };
             match no_frame_invalidation_readiness(
                 terminal_pending,
-                binding == Some(invalidation.binding),
-                session.is_current_native_binding(invalidation.binding),
+                binding.is_some_and(|binding| binding.window() == invalidation.binding.window()),
+                session
+                    .native_window_bindings()
+                    .any(|window| window == invalidation.binding.window()),
             ) {
                 NoFrameInvalidationReadiness::WaitingForTerminal => true,
                 NoFrameInvalidationReadiness::Stale => false,
@@ -4227,16 +4288,30 @@ impl NativeHostBridge {
         let root_continuation = frame
             .proposed_native_root_continuations()
             .find(|continuation| {
-                records.viewports.binding(ViewportId::ROOT) == Some(continuation.predecessor())
+                records.viewports.window_binding(ViewportId::ROOT)
+                    == Some(continuation.predecessor().window())
+                    && root_surface.as_deref().map_or_else(
+                        || {
+                            records
+                                .viewports
+                                .binding(ViewportId::ROOT)
+                                .is_some_and(|binding| {
+                                    binding.surface() == continuation.predecessor().surface()
+                                })
+                        },
+                        |surface| *surface == continuation.predecessor().surface(),
+                    )
             });
-        if let (Some(root_surface), Some(continuation)) =
-            (root_surface.as_deref(), root_continuation)
-            && *root_surface != continuation.predecessor().surface()
+        if root_continuation.is_none()
+            && let Some(root_surface) = root_surface.as_deref()
+            && frame
+                .proposed_native_root_continuations()
+                .any(|continuation| {
+                    records.viewports.window_binding(ViewportId::ROOT)
+                        == Some(continuation.predecessor().window())
+                })
         {
-            return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
-                continuation.predecessor().surface(),
-            )
-            .into());
+            return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(*root_surface).into());
         }
         if let Err(error) = records.prepare_workspace_replacement(&frame) {
             records.window_resources.abort_workspace_replacement();
@@ -4984,7 +5059,11 @@ impl NativeHostBridge {
         enabled: bool,
     ) -> bool {
         let mut records = self.lock();
-        if records.viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
+        if records
+            .viewports
+            .binding_for_event(window, Some(viewport))
+            .is_none_or(|route| route.window() != binding.window())
+        {
             return false;
         }
         (matches!(records.mode, HostIngressMode::Quarantined) || records.admit_ordinary())
@@ -5001,7 +5080,11 @@ impl NativeHostBridge {
         token: eframe::NativeViewportFocusCommandToken,
     ) -> bool {
         let mut records = self.lock();
-        if records.viewports.binding_for_event(window, Some(viewport)) != Some(binding) {
+        if records
+            .viewports
+            .binding_for_event(window, Some(viewport))
+            .is_none_or(|route| route.window() != binding.window())
+        {
             return false;
         }
         (matches!(records.mode, HostIngressMode::Quarantined) || records.admit_ordinary())
@@ -5541,6 +5624,37 @@ impl NativeHostBridge {
         resource.bind_surfaces(outputs)
     }
 
+    /// Attaches the real callback window without selecting a semantic placement.
+    /// Each contribution was checked against its own exact endpoint by the coordinator.
+    pub(crate) fn attach_output_window_binding(
+        &self,
+        token: NativeOutputToken,
+        window: NativeWindowBinding,
+    ) -> bool {
+        let mut records = self.lock();
+        let Some(binding) = records
+            .viewports
+            .binding_for_output(
+                token.viewport_id(),
+                token.window_id(),
+                token.create_attempt(),
+            )
+            .filter(|binding| binding.window() == window)
+        else {
+            return false;
+        };
+        if records.output_resources.get(&token).is_none_or(|resource| {
+            resource
+                .reservation
+                .binding()
+                .is_some_and(|binding| binding.window() != window)
+        }) {
+            return false;
+        }
+        records.attach_output_binding(token, binding)
+    }
+
+    #[cfg(test)]
     pub(crate) fn attach_output_binding(
         &self,
         token: NativeOutputToken,

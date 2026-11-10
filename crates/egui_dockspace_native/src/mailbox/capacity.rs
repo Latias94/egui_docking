@@ -86,6 +86,7 @@ impl NativeHostState {
                 self.close_control.owned_data_capacity_bytes() - size_of::<NativeCloseControl>(),
             )
             .saturating_add(self.output_resources.owned_descendant_capacity_bytes())
+            .saturating_add(self.root_placement_capacity_bytes)
             .saturating_add(self.terminal_roster.reserved_payload_capacity_bytes());
         // Each accepted pointer callback owns one immutable payload. Retries
         // borrow or clone that same record while it remains in this journal;
@@ -221,6 +222,19 @@ impl NativeHostState {
 }
 
 impl NativeHostBridge {
+    /// Pays for the one pending layout and its exact admitted-run snapshot,
+    /// including replacement overlap before either backing is allocated.
+    pub(crate) fn prepare_root_placement_storage(&self, bytes: usize) -> bool {
+        let mut state = self.lock();
+        if bytes > state.root_placement_capacity_bytes
+            && !state.can_reserve_input_data(bytes - state.root_placement_capacity_bytes)
+        {
+            return false;
+        }
+        state.root_placement_capacity_bytes = bytes;
+        true
+    }
+
     pub(crate) fn selected_storage_reserved_bytes(&self) -> Option<usize> {
         let state = self.lock();
         state.input_storage_allowance?;

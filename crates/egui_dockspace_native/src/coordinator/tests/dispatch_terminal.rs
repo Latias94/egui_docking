@@ -112,7 +112,7 @@ fn invalid_work_areas_preserve_destroyed_settlement_and_exact_child_quiescence()
     assert!(presented.take_native_effects().is_empty());
     native
         .session
-        .report_native_global_focus(NativeGlobalFocus::Dock(root))
+        .report_native_global_focus(NativeGlobalFocus::Dock(root.window()))
         .unwrap();
     callback_prefix::commit_boundary(&mut native);
 

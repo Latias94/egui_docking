@@ -64,13 +64,13 @@ fn exact_touch_pair_uses_one_local_lane_even_with_finite_desktop_facts() {
                 PhysicalPoint::new(20.0, 40.0).unwrap()
             );
             assert_eq!(
-                sample.surface_position(),
-                LogicalPoint::new(20.0, 40.0).unwrap()
+                sample.client_position(),
+                PhysicalPoint::new(20.0, 40.0).unwrap()
             );
             let delivery = if phase == TouchPhase::Cancelled {
                 NativePointerOwner::Unknown
             } else {
-                NativePointerOwner::Native(binding)
+                NativePointerOwner::Native(binding.window())
             };
             assert_eq!(
                 translator.translate(&record, |_| panic!(
@@ -85,7 +85,7 @@ fn exact_touch_pair_uses_one_local_lane_even_with_finite_desktop_facts() {
                 )),
             );
         }
-        assert!(!translator.references_binding(binding));
+        assert!(!translator.references_binding(binding.window()));
     }
 }
 
@@ -97,12 +97,12 @@ fn touch_routes_come_from_facts_while_delivery_keeps_the_callback_binding() {
             PointerWindowRoute::Foreign,
             PointerWindowRoute::Window(WindowId::from(WINDOW)),
             NativePointerRouteSnapshot::Foreign,
-            NativePointerRouteSnapshot::Dock(binding),
+            NativePointerRouteSnapshot::Dock(binding.window()),
         ),
         (
             PointerWindowRoute::Window(WindowId::from(WINDOW)),
             PointerWindowRoute::None,
-            NativePointerRouteSnapshot::Dock(binding),
+            NativePointerRouteSnapshot::Dock(binding.window()),
             NativePointerRouteSnapshot::None,
         ),
         (
@@ -128,7 +128,10 @@ fn touch_routes_come_from_facts_while_delivery_keeps_the_callback_binding() {
             geometry(1.0),
         );
         let routes = record.pointer_routes().unwrap();
-        assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Dock(binding));
+        assert_eq!(
+            routes.delivery(),
+            NativePointerRouteSnapshot::Dock(binding.window())
+        );
         assert_eq!(routes.hover(), expected_hover);
         assert_eq!(routes.capture(), expected_capture);
     }
@@ -179,8 +182,8 @@ fn touch_local_pair_rejects_mismatched_or_non_finite_points_without_desktop_fall
                 NativePointerId::new(1),
                 NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
                 NativeLocalPointerLocation::Unknown,
-                NativePointerOwner::Native(binding),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
+                NativePointerOwner::Native(binding.window()),
             )),
         );
     }
@@ -281,7 +284,7 @@ fn touch_without_event_geometry_preserves_the_unknown_desktop_lane() {
                 NativePointerHover::Unknown,
                 None
             ),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
             NativePointerOwner::Unknown,
         )),
     );
@@ -335,12 +338,12 @@ fn cloned_touch_retains_source_contact_time_and_pair_across_route_refresh() {
     };
     assert!(!original.same_coordinates(current));
     assert_eq!(
-        original.surface_position(),
-        LogicalPoint::new(20.0, 40.0).unwrap()
+        original.client_position(),
+        PhysicalPoint::new(20.0, 40.0).unwrap()
     );
     assert_eq!(
-        current.surface_position(),
-        LogicalPoint::new(10.0, 20.0).unwrap()
+        current.client_position(),
+        PhysicalPoint::new(20.0, 40.0).unwrap()
     );
     assert!(viewports.suppress_pointer_route(ViewportId::ROOT, binding));
     facts.surface_position = Some(PhysicalPosition::new(90.0, 100.0));
@@ -358,8 +361,8 @@ fn cloned_touch_retains_source_contact_time_and_pair_across_route_refresh() {
             NativePointerId::new(1),
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             NativeLocalPointerLocation::Exact(original),
-            NativePointerOwner::Native(binding),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
+            NativePointerOwner::Native(binding.window()),
         )
         .with_metadata(PointerEventMetadata::new(
             PointerDeviceKind::Touch,
@@ -432,14 +435,14 @@ fn old_touch_pair_after_rebase_stays_unknown_and_contact_end_still_terminates() 
                 NativePointerId::new(1),
                 event,
                 NativeLocalPointerLocation::Unknown,
-                NativePointerOwner::Native(binding),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
+                NativePointerOwner::Native(binding.window()),
             ))
         );
         let retry = record.clone();
         assert_eq!(retry.pointer_location(), record.pointer_location());
     }
-    assert!(!translator.references_binding(binding));
+    assert!(!translator.references_binding(binding.window()));
     assert!(translator.can_coalesce_idle_cursor_moves());
     let late = captured(
         4,
@@ -479,8 +482,8 @@ fn old_touch_pair_after_rebase_stays_unknown_and_contact_end_still_terminates() 
             NativePointerId::new(2),
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             location,
-            NativePointerOwner::Native(binding),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
+            NativePointerOwner::Native(binding.window()),
         ))
     );
 }

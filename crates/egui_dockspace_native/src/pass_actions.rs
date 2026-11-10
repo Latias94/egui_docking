@@ -261,6 +261,8 @@ impl NativePassActions {
                 previous.surface() == paint.surface()
                     || previous.viewport_id() != paint.viewport_id()
                     || previous.cumulative_pass_nr() != paint.cumulative_pass_nr()
+                    || previous.native_binding().map(|binding| binding.window())
+                        != paint.native_binding().map(|binding| binding.window())
             }) {
                 return Err(NativePassActionError::OutputChanged);
             }
@@ -278,12 +280,34 @@ impl NativePassActions {
         self.stage(token, NativeFinalPass::Semantic(paints))
     }
 
+    /// Reserves this pass's complete renderer roster before invoking panes.
+    pub(crate) fn begin_surface_pass(
+        &mut self,
+        token: NativeOutputToken,
+        surfaces: &[SurfaceId],
+    ) -> Result<(), NativePassActionError> {
+        self.remember_output_surfaces(token, surfaces)?;
+        let mut paints = Vec::new();
+        paints
+            .try_reserve_exact(surfaces.len())
+            .map_err(|_| NativePassActionError::OutputChanged)?;
+        self.stage(token, NativeFinalPass::Semantic(paints))
+    }
+
     pub(crate) fn stage_retain_previous(
         &mut self,
         token: NativeOutputToken,
         surface: SurfaceId,
     ) -> Result<(), NativePassActionError> {
-        self.remember_output_surfaces(token, &[surface])?;
+        self.stage_retain_previous_surfaces(token, &[surface])
+    }
+
+    pub(crate) fn stage_retain_previous_surfaces(
+        &mut self,
+        token: NativeOutputToken,
+        surfaces: &[SurfaceId],
+    ) -> Result<(), NativePassActionError> {
+        self.remember_output_surfaces(token, surfaces)?;
         self.stage(token, NativeFinalPass::RetainPrevious)
     }
 

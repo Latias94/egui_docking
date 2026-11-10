@@ -294,12 +294,24 @@ impl NativeRetirementState {
             .any(|entry| entry.binding.same_window_lifetime(binding))
     }
 
+    /// Detached placements may share a window only after its physical receipt
+    /// has transferred elsewhere. Each exact placement still retires once.
+    pub(crate) fn can_detach_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.entries.iter().all(|entry| {
+            !entry.binding.same_window_lifetime(binding)
+                || (entry.binding != binding && matches!(entry.kind, RetirementKind::Quiescing))
+        })
+    }
+
     /// The exact route has detached without a remaining physical terminal:
     /// its successor owns the receipt, or native creation was never admitted.
     /// Exact old outputs, callbacks, sidecars and core commit still gate quiescence.
     /// Route admission already prepaid this lifetime's terminal backing.
     pub(crate) fn commit_detachment(&mut self, binding: NativeSurfaceBinding) {
-        debug_assert!(!self.has_quiescence_owner(binding));
+        assert!(
+            self.can_detach_binding(binding),
+            "a detached placement cannot duplicate an exact or physical retirement owner"
+        );
         assert!(
             self.entries.len() < self.entries.capacity()
                 && self

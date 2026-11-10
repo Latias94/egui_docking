@@ -1,3 +1,5 @@
+use dockspace::runtime::{NativeWindowBinding, NativeWindowHit, SurfacePresentationArtifact};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -29,7 +31,6 @@ fn geometry() -> NativeLocalGeometry {
     NativeLocalGeometry::new(
         PhysicalSize::new(1200.0, 900.0).unwrap(),
         ScaleFactor::new(2.0).unwrap(),
-        ScaleFactor::new(1.5).unwrap(),
     )
 }
 
@@ -51,6 +52,7 @@ fn idle(native: &mut NativeCoordinator) -> HostFrameReport {
 }
 
 struct Scene {
+    presentation: Cell<Option<(NativeWindowBinding, SurfacePresentationArtifact)>>,
     tabs: Vec<(ItemId, DockspaceReceiverDescriptor, LogicalRect)>,
     semantic: DockspaceSemanticOutput,
     preview: bool,
@@ -69,7 +71,25 @@ impl Scene {
         point
     }
 
-    fn answer(&self, query: NativeReceiverQuery, captured_at: Duration) -> NativeReceiverAnswer {
+    fn answer(
+        &self,
+        query: impl Into<NativeReceiverQuery>,
+        captured_at: Duration,
+    ) -> NativeReceiverAnswer {
+        let query = match query.into() {
+            NativeReceiverQuery::WindowHit(query) => {
+                let (window, artifact) = self
+                    .presentation
+                    .get()
+                    .expect("recorded scene retains its exact output");
+                return NativeReceiverAnswer::WindowHit(if query.window() == window {
+                    NativeWindowHit::Surface(artifact)
+                } else {
+                    NativeWindowHit::Unknown
+                });
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         assert_eq!(query.surface(), FIRST_SURFACE);
         assert_eq!(
             query.metadata(),
@@ -147,6 +167,7 @@ fn render(frame: &mut NativeHostFrame<'_>) -> Scene {
         .unwrap();
     frame.frame.confirm_surface_painted(receipt).unwrap();
     Scene {
+        presentation: Cell::new(None),
         tabs,
         semantic: semantic.unwrap(),
         preview,
@@ -161,6 +182,9 @@ fn take_output(
     let [output] = report.take_painted_outputs().try_into().unwrap();
     assert!(output.matches_native_binding(binding));
     assert!(output.matches_semantic_output(scene.semantic));
+    scene
+        .presentation
+        .set(Some((binding.window(), output.presentation_artifact())));
     output
 }
 
@@ -255,7 +279,7 @@ fn fixture_with_capabilities(
     let mut facts = NativeWindowFacts::live()
         .with_content_size(geometry.content_size())
         .with_native_scale_factor(geometry.native_scale_factor())
-        .with_presentation_scale_factor(geometry.presentation_scale_factor())
+        .with_presentation_scale_factor(ScaleFactor::new(1.5).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
         .with_presentation(NativeWindowPresentationState::Visible);
     if desktop {
@@ -310,7 +334,7 @@ fn order(native: &NativeCoordinator) -> Vec<ItemId> {
 }
 
 fn raw_event(point: LogicalPoint, state: Option<ElementState>, event_scale: f64) -> WindowEvent {
-    let scale = geometry().presentation_scale_factor().get();
+    let scale = ScaleFactor::new(1.5).unwrap().get();
     let position = PhysicalPosition::new(point.x() * scale, point.y() * scale);
     let facts = PointerEventFacts {
         surface_position: Some(position),
@@ -350,7 +374,7 @@ fn raw_desktop_event(point: LogicalPoint, state: Option<ElementState>) -> Window
     else {
         unreachable!("the fixture only creates mouse motion and button events");
     };
-    let scale = geometry().presentation_scale_factor().get();
+    let scale = ScaleFactor::new(1.5).unwrap().get();
     facts.desktop_position = Some(PhysicalPosition::new(
         400.0 + point.x() * scale,
         -300.0 + point.y() * scale,
@@ -379,7 +403,10 @@ fn capture(
     });
     assert_eq!(record.binding(), Some(binding));
     let routes = record.pointer_routes().unwrap();
-    assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Dock(binding));
+    assert_eq!(
+        routes.delivery(),
+        NativePointerRouteSnapshot::Dock(binding.window())
+    );
     record
 }
 
@@ -437,7 +464,10 @@ fn raw_local_reorder_retries_input_and_delivers_before_output_settlement() {
         else {
             panic!("matching event/callback/committed geometry must capture a local sample");
         };
-        assert_eq!(sample.surface_position(), point);
+        assert_eq!(
+            sample.client_position(),
+            PhysicalPoint::new(point.x() * 1.5, point.y() * 1.5).unwrap()
+        );
         native.bridge.push_record(HostRecord::WindowEvent(record));
     }
     now.store(100, Ordering::SeqCst);
@@ -450,6 +480,11 @@ fn raw_local_reorder_retries_input_and_delivers_before_output_settlement() {
     let mut queries = 0;
     let mut abandoned = native
         .begin_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return scene.answer(query, CAPTURED_AT),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             queries += 1;
             scene.answer(query, CAPTURED_AT)
         })
@@ -589,7 +624,7 @@ fn raw_local_to_desktop_handoff_retries_without_releasing_source_credit_or_accep
     let motion = capture(&native, binding, 3, raw_desktop_event(target, None));
     assert_eq!(
         motion.pointer_routes().unwrap().hover(),
-        NativePointerRouteSnapshot::Dock(binding)
+        NativePointerRouteSnapshot::Dock(binding.window())
     );
     native.bridge.push_record(HostRecord::WindowEvent(motion));
     reduce_one(&mut native);
@@ -711,7 +746,7 @@ fn an_ordinary_desktop_drag_keeps_its_lane_when_a_callback_adds_local_facts() {
         let record = capture(&native, binding, ordinal, raw_desktop_event(point, state));
         assert_eq!(
             record.pointer_routes().unwrap().hover(),
-            NativePointerRouteSnapshot::Dock(binding)
+            NativePointerRouteSnapshot::Dock(binding.window())
         );
         native.bridge.push_record(HostRecord::WindowEvent(record));
         reduce_one(&mut native);
@@ -833,13 +868,13 @@ fn assert_reorder_survives_unknown_capture_release_motion(desktop: bool) {
             match ordinal {
                 3 => NativePointerRouteSnapshot::Unknown,
                 4 => NativePointerRouteSnapshot::None,
-                _ => NativePointerRouteSnapshot::Dock(binding),
+                _ => NativePointerRouteSnapshot::Dock(binding.window()),
             },
         );
         assert_eq!(
             routes.hover(),
             if desktop {
-                NativePointerRouteSnapshot::Dock(binding)
+                NativePointerRouteSnapshot::Dock(binding.window())
             } else {
                 NativePointerRouteSnapshot::Unknown
             },
@@ -859,7 +894,10 @@ fn assert_reorder_survives_unknown_capture_release_motion(desktop: bool) {
             }
         };
         if let Some(sample) = sample {
-            assert_eq!(sample.surface_position(), point);
+            assert_eq!(
+                sample.client_position(),
+                PhysicalPoint::new(point.x() * 1.5, point.y() * 1.5).unwrap()
+            );
             if let Some(basis) = local_basis {
                 assert!(sample.same_coordinates(basis));
             } else {
@@ -874,6 +912,11 @@ fn assert_reorder_survives_unknown_capture_release_motion(desktop: bool) {
         reduce_one(&mut native);
         let mut frame = native
             .begin_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return scene.answer(query, CAPTURED_AT),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 assert_eq!(query.point(), Some(point));
                 scene.answer(query, CAPTURED_AT)
             })
@@ -936,7 +979,7 @@ fn macos_capabilities_and_unknown_initial_roster_allow_same_window_reorder() {
         assert_eq!(record.ordinal(), ordinal);
         assert_eq!(
             record.pointer_routes().unwrap().capture(),
-            NativePointerRouteSnapshot::Dock(binding),
+            NativePointerRouteSnapshot::Dock(binding.window()),
         );
         native.bridge.push_record(HostRecord::WindowEvent(record));
         reduce_one(&mut native);
@@ -964,6 +1007,11 @@ fn macos_capabilities_and_unknown_initial_roster_allow_same_window_reorder() {
     reduce_one(&mut native);
     let mut frame = native
         .begin_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return scene.answer(query, CAPTURED_AT),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             assert_eq!(query.point(), Some(target));
             scene.answer(query, CAPTURED_AT)
         })
@@ -1103,13 +1151,13 @@ fn none_capture_release_rejects_unknown_or_foreign_delivery_after_unknown_motion
                 1,
                 source,
                 NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ),
             (
                 2,
                 target,
                 NativePointerEvent::Moved,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ),
             (
                 3,
@@ -1125,10 +1173,10 @@ fn none_capture_release_rejects_unknown_or_foreign_delivery_after_unknown_motion
             ),
         ] {
             let geometry = coordinates.geometry();
-            let scale = geometry.presentation_scale_factor().get();
+            let scale = ScaleFactor::new(1.5).unwrap().get();
             let sample = coordinates
                 .capture(
-                    binding,
+                    binding.window(),
                     NativeLocalPointerFact::new(
                         PhysicalPoint::new(point.x() * scale, point.y() * scale).unwrap(),
                         geometry.content_size(),
@@ -1137,7 +1185,10 @@ fn none_capture_release_rejects_unknown_or_foreign_delivery_after_unknown_motion
                     geometry,
                 )
                 .unwrap();
-            assert_eq!(sample.surface_position(), point);
+            assert_eq!(
+                sample.client_position(),
+                PhysicalPoint::new(point.x() * 1.5, point.y() * 1.5).unwrap()
+            );
             native
                 .record_pointer(
                     NativePointerInput::new_local(
@@ -1147,7 +1198,7 @@ fn none_capture_release_rejects_unknown_or_foreign_delivery_after_unknown_motion
                         if offset == 4 {
                             delivery
                         } else {
-                            NativePointerOwner::Native(binding)
+                            NativePointerOwner::Native(binding.window())
                         },
                         capture_owner,
                     )
@@ -1306,7 +1357,7 @@ fn desktop_synthetic_focus_move_preserves_the_gesture_until_release_delivery() {
     let target = scene.point(THIRD, 0.625);
     let version = native.session.version();
     let recorded = native.session.native_input_recorded_count();
-    let scale = geometry().presentation_scale_factor().get();
+    let scale = ScaleFactor::new(1.5).unwrap().get();
     let desktop_event = |point: LogicalPoint, state| {
         let mut event = raw_event(point, state, 2.0);
         let facts = match &mut event {
@@ -1352,7 +1403,10 @@ fn desktop_synthetic_focus_move_preserves_the_gesture_until_release_delivery() {
         });
         assert_eq!(record.binding(), Some(binding));
         let routes = record.pointer_routes().unwrap();
-        assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Dock(binding));
+        assert_eq!(
+            routes.delivery(),
+            NativePointerRouteSnapshot::Dock(binding.window())
+        );
         if ordinal == 2 {
             assert_eq!(routes.hover(), NativePointerRouteSnapshot::Unknown);
             assert_eq!(routes.capture(), NativePointerRouteSnapshot::Unknown);
@@ -1362,13 +1416,16 @@ fn desktop_synthetic_focus_move_preserves_the_gesture_until_release_delivery() {
                 record.pointer_location(),
                 Some(CapturedNativePointerLocation::Desktop)
             );
-            assert_eq!(routes.hover(), NativePointerRouteSnapshot::Dock(binding));
+            assert_eq!(
+                routes.hover(),
+                NativePointerRouteSnapshot::Dock(binding.window())
+            );
             assert_eq!(
                 routes.capture(),
                 if ordinal == 4 {
                     NativePointerRouteSnapshot::None
                 } else {
-                    NativePointerRouteSnapshot::Dock(binding)
+                    NativePointerRouteSnapshot::Dock(binding.window())
                 }
             );
         }
@@ -1384,6 +1441,11 @@ fn desktop_synthetic_focus_move_preserves_the_gesture_until_release_delivery() {
     let pressed = finish(
         native
             .begin_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return scene.answer(query, CAPTURED_AT),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 assert_eq!(query.point(), Some(source));
                 scene.answer(query, CAPTURED_AT)
             })
@@ -1424,6 +1486,11 @@ fn desktop_synthetic_focus_move_preserves_the_gesture_until_release_delivery() {
     let moved = finish(
         native
             .begin_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return scene.answer(query, CAPTURED_AT),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 assert_eq!(query.point(), Some(target));
                 scene.answer(query, CAPTURED_AT)
             })
@@ -1440,6 +1507,11 @@ fn desktop_synthetic_focus_move_preserves_the_gesture_until_release_delivery() {
     reduce_one(&mut native);
     let mut frame = native
         .begin_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return scene.answer(query, CAPTURED_AT),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             assert_eq!(query.point(), Some(target));
             scene.answer(query, CAPTURED_AT)
         })

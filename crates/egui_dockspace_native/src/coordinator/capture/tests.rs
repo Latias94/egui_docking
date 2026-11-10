@@ -14,9 +14,9 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceReceiverDescriptor, NativeHostCapabilities, NativeHostCapability, NativeLocalGeometry,
-    NativeMonotonicClock, NativeReceiverPurpose, NativeWindowInputState,
+    NativeMonotonicClock, NativeReceiverPurpose, NativeWindowHit, NativeWindowInputState,
     NativeWindowPresentationState, PointerDeviceKind, SurfacePaintProgramOperation,
-    SurfacePaintProgramStep, UniformSurfaceMetrics,
+    SurfacePaintProgramStep, SurfacePresentationArtifact, UniformSurfaceMetrics,
 };
 use eframe::{NativeViewportPointerCaptureStatus as Status, NativeViewportPointerObservation};
 use winit::application::ApplicationHandler;
@@ -92,7 +92,6 @@ fn geometry(window: &Window) -> NativeLocalGeometry {
     let scale = ScaleFactor::new(window.scale_factor()).unwrap();
     NativeLocalGeometry::new(
         PhysicalSize::new(f64::from(size.width), f64::from(size.height)).unwrap(),
-        scale,
         scale,
     )
 }
@@ -276,7 +275,11 @@ impl Run {
     }
 }
 
-struct Scene(Vec<(ItemId, DockspaceReceiverDescriptor, LogicalRect)>);
+struct Scene(
+    Vec<(ItemId, DockspaceReceiverDescriptor, LogicalRect)>,
+    NativeSurfaceBinding,
+    SurfacePresentationArtifact,
+);
 
 impl Scene {
     fn point(&self, item: ItemId) -> LogicalPoint {
@@ -292,6 +295,13 @@ impl Scene {
     }
 
     fn answer(&self, query: NativeReceiverQuery, captured_at: Duration) -> NativeReceiverAnswer {
+        let query = match query {
+            NativeReceiverQuery::WindowHit(query) => {
+                assert_eq!(query.window(), self.1.window());
+                return NativeReceiverAnswer::WindowHit(NativeWindowHit::Surface(self.2));
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         assert_eq!(query.surface(), SURFACE);
         assert_eq!(query.metadata().device(), PointerDeviceKind::Mouse);
         assert_eq!(query.metadata().observed_at(), Some(captured_at));
@@ -326,28 +336,37 @@ fn present(native: &mut NativeCoordinator, binding: NativeSurfaceBinding) -> Sce
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
-    let plan = frame.frame.paint_plan(SURFACE).unwrap().unwrap();
     let mut tabs = Vec::new();
-    plan.visit_surface_program(|step| {
-        if let SurfacePaintProgramStep::Operation {
-            operation: SurfacePaintProgramOperation::Tab(tab),
-            ..
-        } = step
-            && let Some(receiver) = plan.receiver_for_tab_body(tab)
-        {
-            tabs.push((tab.item(), receiver, tab.visible_bounds()));
+    for surface in frame.frame.surfaces() {
+        let plan = frame.frame.paint_plan(surface).unwrap().unwrap();
+        if surface == SURFACE {
+            plan.visit_surface_program(|step| {
+                if let SurfacePaintProgramStep::Operation {
+                    operation: SurfacePaintProgramOperation::Tab(tab),
+                    ..
+                } = step
+                    && let Some(receiver) = plan.receiver_for_tab_body(tab)
+                {
+                    tabs.push((tab.item(), receiver, tab.visible_bounds()));
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap();
         }
-        Ok::<(), ()>(())
-    })
-    .unwrap();
-    let receipt = plan.execute_surface_program(|_| Ok::<(), ()>(())).unwrap();
-    frame.frame.confirm_surface_painted(receipt).unwrap();
+        let receipt = plan.execute_surface_program(|_| Ok::<(), ()>(())).unwrap();
+        frame.frame.confirm_surface_painted(receipt).unwrap();
+    }
     let mut report = finish(frame);
-    let [output]: [PaintedSurfaceOutput; 1] = report.take_painted_outputs().try_into().unwrap();
+    let outputs = report.take_painted_outputs();
+    let output = outputs
+        .iter()
+        .find(|output| output.surface() == SURFACE)
+        .unwrap();
     assert!(output.matches_native_binding(binding));
+    let artifact = output.presentation_artifact();
     native
         .session
-        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .report_surface_presentations(outputs, SurfacePresentationResult::Presented)
         .unwrap();
     let report = finish(
         native
@@ -355,7 +374,7 @@ fn present(native: &mut NativeCoordinator, binding: NativeSurfaceBinding) -> Sce
             .unwrap(),
     );
     native.settle_host_frame_report(&report).unwrap();
-    Scene(tabs)
+    Scene(tabs, binding, artifact)
 }
 
 struct Core {
@@ -368,12 +387,27 @@ struct Core {
 }
 
 impl Core {
-    fn new(window: &Window, now: Arc<AtomicU64>) -> Self {
-        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+    fn new(window: &Window, now: Arc<AtomicU64>, placement: SourcePlacement) -> Self {
+        use dockspace::geometry::PhysicalPoint;
+        use dockspace::runtime::NativeSurfacePlacement;
+
+        let mut surfaces = vec![DockspaceSurfaceLayout::new(
             SURFACE,
             DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
-        )])
-        .unwrap();
+        )];
+        let representative = if matches!(placement, SourcePlacement::SharedSibling) {
+            surfaces.push(DockspaceSurfaceLayout::new(
+                SurfaceId::new(2),
+                DockspaceRootLayout::new(
+                    RootId::new(2),
+                    DockspaceNode::central_tabs([ItemId::new(3)]),
+                ),
+            ));
+            SurfaceId::new(2)
+        } else {
+            SURFACE
+        };
+        let layout = DockspaceLayout::new(surfaces).unwrap();
         let ticks = Arc::clone(&now);
         let clock =
             NativeMonotonicClock::new(move || Duration::from_millis(ticks.load(Ordering::SeqCst)));
@@ -387,7 +421,7 @@ impl Core {
         )
         .unwrap();
         native
-            .register_native_root(SURFACE, HostWindowToken::new(u64::from(window.id())))
+            .register_native_root(representative, HostWindowToken::new(u64::from(window.id())))
             .unwrap();
         let report = finish(
             native
@@ -413,7 +447,7 @@ impl Core {
                 .unwrap(),
             )
             .with_native_scale_factor(geometry.native_scale_factor())
-            .with_presentation_scale_factor(geometry.presentation_scale_factor())
+            .with_presentation_scale_factor(geometry.native_scale_factor())
             .with_input(NativeWindowInputState::ReceivesInput, None)
             .with_presentation(NativeWindowPresentationState::Visible);
         native
@@ -431,22 +465,76 @@ impl Core {
         let mut frame = native
             .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
             .unwrap();
-        let scale = geometry.presentation_scale_factor().get();
-        frame
-            .frame
-            .measure_surface(
+        let scale = geometry.native_scale_factor().get();
+        if !matches!(placement, SourcePlacement::Implicit) {
+            let mut placements = vec![NativeSurfacePlacement::new(
                 SURFACE,
-                UniformSurfaceMetrics::new(
-                    LogicalRect::new(0.0, 0.0, size.width() / scale, size.height() / scale)
+                LogicalSize::new(size.width() / scale, size.height() / scale).unwrap(),
+                PhysicalPoint::new(0.0, 0.0).unwrap(),
+                geometry.native_scale_factor(),
+                PhysicalRect::new(0.0, 0.0, size.width(), size.height()).unwrap(),
+            )];
+            if representative != SURFACE {
+                placements.push(NativeSurfacePlacement::new(
+                    representative,
+                    LogicalSize::new(20.0, 20.0).unwrap(),
+                    PhysicalPoint::new(size.width() - 20.0 * scale, size.height() - 20.0 * scale)
                         .unwrap(),
-                    LogicalSize::new(32.0, 24.0).unwrap(),
-                    96.0,
+                    geometry.native_scale_factor(),
+                    PhysicalRect::new(
+                        size.width() - 20.0 * scale,
+                        size.height() - 20.0 * scale,
+                        20.0 * scale,
+                        20.0 * scale,
+                    )
+                    .unwrap(),
+                ));
+            }
+            frame
+                .frame
+                .set_native_surface_placements(binding.window(), &placements)
+                .unwrap();
+        }
+        for surface in frame.frame.surfaces() {
+            let logical_size = frame
+                .frame
+                .native_surface_bindings_for_window(binding.window())
+                .find(|binding| binding.surface() == surface)
+                .and_then(|binding| frame.frame.native_surface_placement(binding))
+                .map(|placement| placement.size())
+                .unwrap_or_else(|| {
+                    LogicalSize::new(size.width() / scale, size.height() / scale).unwrap()
+                });
+            frame
+                .frame
+                .measure_surface(
+                    surface,
+                    UniformSurfaceMetrics::new(
+                        LogicalRect::new(0.0, 0.0, logical_size.width(), logical_size.height())
+                            .unwrap(),
+                        LogicalSize::new(32.0, 24.0).unwrap(),
+                        96.0,
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            )
-            .unwrap();
+                .unwrap();
+        }
         let report = finish(frame);
         native.settle_host_frame_report(&report).unwrap();
+        let binding = native
+            .session
+            .native_surface_bindings_for_window(binding.window())
+            .find(|binding| binding.surface() == SURFACE)
+            .unwrap();
+        if !matches!(placement, SourcePlacement::Implicit) {
+            assert_ne!(
+                native
+                    .bridge
+                    .with_viewports(|routes| routes.binding(ViewportId::ROOT)),
+                Some(binding),
+                "the source witness must differ from the callback route's historical surface tag"
+            );
+        }
         let scene = present(&mut native, binding);
         for (_, receiver, _) in &scene.0 {
             assert!(native.session.bind_presented_receiver(receiver).is_some());
@@ -531,6 +619,13 @@ impl Core {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SourcePlacement {
+    Implicit,
+    Rebased,
+    SharedSibling,
+}
+
 #[test]
 #[ignore = "requires DOCKSPACE_X11_CAPTURE_TEST=1, isolated X11, XTest and xdotool"]
 fn real_x11_original_press_capture_receipts_and_cleanup() {
@@ -552,12 +647,18 @@ fn real_x11_original_press_capture_receipts_and_cleanup() {
             .as_ref()
             .is_some_and(|window| window.is_visible() == Some(true))
     });
-    for delayed_ordinary in [false, true] {
-        capture_receipt_journey(&mut run, delayed_ordinary);
+    for placement in [
+        SourcePlacement::Implicit,
+        SourcePlacement::Rebased,
+        SourcePlacement::SharedSibling,
+    ] {
+        for delayed_ordinary in [false, true] {
+            capture_receipt_journey(&mut run, delayed_ordinary, placement);
+        }
     }
 }
 
-fn capture_receipt_journey(run: &mut Run, delayed_ordinary: bool) {
+fn capture_receipt_journey(run: &mut Run, delayed_ordinary: bool, placement: SourcePlacement) {
     run.backend.raw.clear();
     run.backend.observed = false;
     run.backend.now.store(1_000, Ordering::SeqCst);
@@ -569,7 +670,7 @@ fn capture_receipt_journey(run: &mut Run, delayed_ordinary: bool) {
         RawWindowHandle::Xcb(handle) => handle.window.get().to_string(),
         _ => panic!("the test requires X11"),
     };
-    let mut core = Core::new(window, Arc::clone(&run.backend.now));
+    let mut core = Core::new(window, Arc::clone(&run.backend.now), placement);
     run.backend.route = Some((Arc::clone(&core.native.bridge), core.binding));
     let scale = window.scale_factor();
     let first = core.scene.point(FIRST);

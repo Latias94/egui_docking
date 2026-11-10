@@ -129,11 +129,14 @@ impl<Key: PartialEq> CallbackSlot<Key> {
 #[derive(Debug, Default)]
 pub(super) struct NativeCommandCallbacks {
     pointer: CallbackSlot<(NativeViewportPointerPassthroughCommandToken, WindowId, bool)>,
+    pointer_binding: Option<NativeSurfaceBinding>,
     focus: CallbackSlot<(NativeViewportFocusCommandToken, WindowId)>,
     visibility: CallbackSlot<(NativeViewportVisibilityCommandToken, WindowId, bool)>,
     observation: CallbackSlot<NativePointerObservationKey>,
+    observation_binding: Option<NativeSurfaceBinding>,
     observation_record: Option<NativePointerObservationRecord>,
     capture: CallbackSlot<NativePointerCaptureKey>,
+    capture_binding: Option<NativeSurfaceBinding>,
     capture_record: Option<NativePointerCaptureRecord>,
 }
 
@@ -154,7 +157,11 @@ impl NativeCommandCallbacks {
             || self.capture.has_pending_work()
     }
 
-    pub(super) fn reserve_observation(&mut self, key: NativePointerObservationKey) -> bool {
+    pub(super) fn reserve_observation(
+        &mut self,
+        key: NativePointerObservationKey,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
         if self
             .observation
             .receipt
@@ -164,11 +171,12 @@ impl NativeCommandCallbacks {
             return false;
         }
         if self.observation.contains(&key) {
-            return true;
+            return self.observation_binding == Some(binding);
         }
         if !self.observation.reserve(key) {
             return false;
         }
+        self.observation_binding = Some(binding);
         self.observation_record = None;
         true
     }
@@ -185,6 +193,10 @@ impl NativeCommandCallbacks {
 
     pub(super) fn matches_observation(&self, key: NativePointerObservationKey) -> bool {
         self.observation.contains(&key)
+    }
+
+    pub(super) fn observation_binding(&self) -> Option<NativeSurfaceBinding> {
+        self.observation_binding
     }
 
     pub(super) fn observation_pending(&self, key: NativePointerObservationKey) -> bool {
@@ -226,6 +238,9 @@ impl NativeCommandCallbacks {
         record: NativePointerObservationRecord,
         reserve: impl FnOnce() -> ReservedHostRecord,
     ) -> CommandCallbackAdmission {
+        if self.observation_binding != Some(record.binding()) {
+            return CommandCallbackAdmission::Unreserved;
+        }
         let admission = self.observation.accept(record.key(), reserve);
         if admission == CommandCallbackAdmission::First {
             self.observation_record = Some(record);
@@ -233,7 +248,11 @@ impl NativeCommandCallbacks {
         admission
     }
 
-    pub(super) fn reserve_capture(&mut self, key: NativePointerCaptureKey) -> bool {
+    pub(super) fn reserve_capture(
+        &mut self,
+        key: NativePointerCaptureKey,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
         if self
             .capture
             .receipt
@@ -243,11 +262,12 @@ impl NativeCommandCallbacks {
             return false;
         }
         if self.capture.contains(&key) {
-            return true;
+            return self.capture_binding == Some(binding);
         }
         if !self.capture.reserve(key) {
             return false;
         }
+        self.capture_binding = Some(binding);
         self.capture_record = None;
         true
     }
@@ -264,6 +284,10 @@ impl NativeCommandCallbacks {
 
     pub(super) fn matches_capture(&self, key: NativePointerCaptureKey) -> bool {
         self.capture.contains(&key)
+    }
+
+    pub(super) fn capture_binding(&self) -> Option<NativeSurfaceBinding> {
+        self.capture_binding
     }
 
     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
@@ -297,6 +321,9 @@ impl NativeCommandCallbacks {
         record: NativePointerCaptureRecord,
         reserve: impl FnOnce() -> ReservedHostRecord,
     ) -> CommandCallbackAdmission {
+        if self.capture_binding != Some(record.binding()) {
+            return CommandCallbackAdmission::Unreserved;
+        }
         let admission = self.capture.accept(record.key(), reserve);
         if admission == CommandCallbackAdmission::First {
             self.capture_record = Some(record);
@@ -309,6 +336,7 @@ impl NativeCommandCallbacks {
         token: NativeViewportPointerPassthroughCommandToken,
         window: WindowId,
         enabled: bool,
+        binding: NativeSurfaceBinding,
     ) -> bool {
         // A repeated opaque token cannot be rebound to another target or value.
         if self.pointer.receipt.as_ref().is_some_and(|receipt| {
@@ -316,7 +344,18 @@ impl NativeCommandCallbacks {
         }) {
             return false;
         }
-        self.pointer.reserve((token, window, enabled))
+        if self.pointer.contains(&(token, window, enabled)) {
+            return self.pointer_binding == Some(binding);
+        }
+        if !self.pointer.reserve((token, window, enabled)) {
+            return false;
+        }
+        self.pointer_binding = Some(binding);
+        true
+    }
+
+    pub(super) fn pointer_binding(&self) -> Option<NativeSurfaceBinding> {
+        self.pointer_binding
     }
 
     pub(super) fn accept_pointer(
@@ -488,6 +527,9 @@ impl NativeCommandCallbacks {
                 if viewport_id != viewport {
                     return CommandCallbackAdmission::Unreserved;
                 }
+                let Some(binding) = self.observation_binding else {
+                    return CommandCallbackAdmission::Unreserved;
+                };
                 self.accept_observation(
                     NativePointerObservationRecord::retired(key, binding),
                     || make_ingress(HostRecord::PointerObservation(key)),
@@ -510,6 +552,9 @@ impl NativeCommandCallbacks {
                 if viewport_id != viewport {
                     return CommandCallbackAdmission::Unreserved;
                 }
+                let Some(binding) = self.capture_binding else {
+                    return CommandCallbackAdmission::Unreserved;
+                };
                 self.accept_capture(NativePointerCaptureRecord::retired(key, binding), || {
                     make_ingress(HostRecord::PointerCapture(key))
                 })
@@ -562,6 +607,9 @@ impl NativeCommandCallbacks {
                 if viewport_id != viewport || receipt.key.0 != token || receipt.key.2 != enabled {
                     return CommandCallbackAdmission::Unreserved;
                 }
+                let Some(binding) = self.pointer_binding else {
+                    return CommandCallbackAdmission::Unreserved;
+                };
                 let record = NativePointerPassthroughRecord::retired_before_dispatch(
                     token,
                     viewport,
@@ -624,11 +672,49 @@ impl NativeCommandCallbacks {
 
 #[cfg(test)]
 mod tests {
-    use dockspace::runtime::NativeMonotonicClock;
+    use dockspace::runtime::{HostInputOutcome, HostWindowToken, NativeMonotonicClock};
     use eframe::{NativeViewportPointerPassthroughStatus, egui};
 
     use super::super::{HostRecord, journal::HostIngressJournal};
     use super::*;
+
+    fn binding() -> NativeSurfaceBinding {
+        use dockspace::model::{
+            DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+            RootId, SurfaceId,
+        };
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SurfaceId::new(1),
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .unwrap();
+        let mut session = dockspace::runtime::DockspaceSession::from_layout(
+            layout,
+            dockspace::policy::DockPolicy::default(),
+        )
+        .unwrap();
+        session.enable_observed_native_roots().unwrap();
+        session
+            .register_native_root(SurfaceId::new(1), HostWindowToken::new(1))
+            .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame
+            .complete_unpainted_surfaces(dockspace::runtime::SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame
+            .commit()
+            .unwrap()
+            .inputs()
+            .iter()
+            .find_map(|input| match input {
+                HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
+                _ => None,
+            })
+            .unwrap()
+    }
 
     fn token(context: &egui::Context) -> NativeViewportPointerPassthroughCommandToken {
         eframe::queue_native_viewport_pointer_passthrough(context, egui::ViewportId::ROOT, true)
@@ -649,12 +735,13 @@ mod tests {
 
     #[test]
     fn received_callback_does_not_close_its_reservation_before_exact_handoff_and_commit() {
+        let binding = binding();
         let context = egui::Context::default();
         let first = token(&context);
         let next = token(&context);
         let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
         let mut callbacks = NativeCommandCallbacks::default();
-        assert!(callbacks.reserve_pointer(first, WindowId::from(11), true));
+        assert!(callbacks.reserve_pointer(first, WindowId::from(11), true, binding));
         assert_eq!(
             callbacks.accept_pointer(record(first), || {
                 journal.reserve(HostRecord::ViewportPointerPassthrough(record(first)))
@@ -678,7 +765,7 @@ mod tests {
             callbacks.has_pending_work(),
             "an unrelated commit cannot settle a raw callback"
         );
-        assert!(!callbacks.reserve_pointer(next, WindowId::from(11), true));
+        assert!(!callbacks.reserve_pointer(next, WindowId::from(11), true, binding));
         let ordinal = callbacks.callback_ingress().next().unwrap().ordinal();
         assert_eq!(journal.captured_through(), ordinal);
         assert!(callbacks.take_callback_ingress(ordinal + 1).is_none());
@@ -695,7 +782,7 @@ mod tests {
             callbacks.has_pending_work(),
             "handoff alone is not publication"
         );
-        assert!(!callbacks.reserve_pointer(next, WindowId::from(11), true));
+        assert!(!callbacks.reserve_pointer(next, WindowId::from(11), true, binding));
         callbacks.commit_transferred();
         assert!(!callbacks.has_pending_work());
         assert_eq!(
@@ -704,7 +791,7 @@ mod tests {
             )),
             CommandCallbackAdmission::Duplicate
         );
-        assert!(callbacks.reserve_pointer(next, WindowId::from(11), true));
+        assert!(callbacks.reserve_pointer(next, WindowId::from(11), true, binding));
         assert_eq!(
             callbacks.accept_pointer(record(next), || {
                 journal.reserve(HostRecord::ViewportPointerPassthrough(record(next)))
@@ -716,11 +803,12 @@ mod tests {
 
     #[test]
     fn wrong_window_or_value_cannot_consume_the_reserved_callback() {
+        let binding = binding();
         let context = egui::Context::default();
         let token = token(&context);
         let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
         let mut callbacks = NativeCommandCallbacks::default();
-        assert!(callbacks.reserve_pointer(token, WindowId::from(11), true));
+        assert!(callbacks.reserve_pointer(token, WindowId::from(11), true, binding));
         for (window, enabled) in [(WindowId::from(12), true), (WindowId::from(11), false)] {
             let wrong = NativePointerPassthroughRecord::for_test(
                 token,
@@ -737,8 +825,8 @@ mod tests {
                 CommandCallbackAdmission::Unreserved
             );
         }
-        assert!(!callbacks.reserve_pointer(token, WindowId::from(12), true));
-        assert!(!callbacks.reserve_pointer(token, WindowId::from(11), false));
+        assert!(!callbacks.reserve_pointer(token, WindowId::from(12), true, binding));
+        assert!(!callbacks.reserve_pointer(token, WindowId::from(11), false, binding));
         assert_eq!(
             callbacks.accept_pointer(record(token), || {
                 journal.reserve(HostRecord::ViewportPointerPassthrough(record(token)))

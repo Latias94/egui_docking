@@ -43,34 +43,62 @@ impl NativeCoordinator {
             return Err(NativeHostProtocolError::ViewportRosterAcknowledgementMismatch.into());
         }
 
-        let mut rebound = false;
         for &successor in report.native_bindings() {
-            let route_matches = self.bridge.with_viewports(|viewports| {
-                let viewport = viewports.viewport(successor.surface())?;
-                Some(viewports.binding(viewport) == Some(successor))
-            });
-            if route_matches.is_none() {
-                continue;
-            }
-            if route_matches == Some(false) || !self.session.is_current_native_binding(successor) {
+            if !self.session.is_current_native_binding(successor) {
                 return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
                     successor.surface(),
                 )
                 .into());
+            }
+            if let Some((viewport, _)) = self.bridge.workspace_replacement_predecessor(successor)
+                && self
+                    .bridge
+                    .with_viewports(|viewports| viewports.window_binding(viewport))
+                    != Some(successor.window())
+            {
+                return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                    successor.surface(),
+                )
+                .into());
+            }
+        }
+
+        let mut rebound = false;
+        for (index, &successor) in report.native_bindings().iter().enumerate() {
+            if report.native_bindings()[..index]
+                .iter()
+                .any(|previous| previous.window() == successor.window())
+            {
+                continue;
             }
             let Some((viewport, predecessor)) =
                 self.bridge.workspace_replacement_predecessor(successor)
             else {
                 continue;
             };
-
             self.bridge.clear_create_ack(predecessor);
-            self.terminalize_focus(predecessor);
-            self.bridge
-                .with_close_control(|control| control.retire_binding(predecessor));
-            self.retain_retired_input_results(predecessor);
-            self.pointer_translator.retire_binding(predecessor);
-            self.receivers.retire_binding(predecessor);
+            if let Some(binding) = self
+                .focus_control
+                .pending_binding()
+                .filter(|binding| binding.window() == predecessor.window())
+            {
+                self.terminalize_focus(binding);
+            }
+            // The resource is physical, while already dispatched effects keep
+            // their exact placement correlation until their terminal is owned.
+            for binding in report
+                .native_root_continuations()
+                .iter()
+                .map(|continuation| continuation.predecessor())
+                .filter(|binding| binding.window() == predecessor.window())
+                .chain(std::iter::once(predecessor))
+            {
+                self.bridge
+                    .with_close_control(|control| control.retire_binding(binding));
+                self.retain_retired_input_results(binding);
+            }
+            self.pointer_translator.retire_binding(predecessor.window());
+            self.receivers.retire_window(predecessor.window());
             self.bridge
                 .finish_workspace_replacement(viewport, predecessor);
             rebound = true;

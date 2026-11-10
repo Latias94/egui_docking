@@ -137,6 +137,7 @@ fn minimized_surface_keeps_editor_focus_without_presented_receiver_authority() {
         vec![PresentedReceiverSet {
             binding,
             viewport: egui::ViewportId::ROOT,
+            pixels_per_point: f64::from(context.pixels_per_point()),
             hit_authority: Arc::new(
                 context
                     .capture_completed_pass_hit_authority(egui::ViewportId::ROOT)
@@ -152,6 +153,13 @@ fn minimized_surface_keeps_editor_focus_without_presented_receiver_authority() {
         .report_surface_presentation(output, SurfacePresentationResult::Presented)
         .unwrap();
     let bridge = Arc::new(NativeHostBridge::new(NativeViewportMap::default()));
+    bridge
+        .bind_viewport_route(
+            egui::ViewportId::ROOT,
+            winit::window::WindowId::from(1),
+            binding,
+        )
+        .unwrap();
     let mut settled = NativeHostFrame::new(
         session
             .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)

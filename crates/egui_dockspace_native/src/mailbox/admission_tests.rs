@@ -91,7 +91,7 @@ fn focus_refresh_settles_on_admission_and_stays_idle_for_unchanged_rosters() {
         },
         &bridge.lock().viewports,
     );
-    assert_eq!(current.focus(), NativeGlobalFocus::Dock(binding));
+    assert_eq!(current.focus(), NativeGlobalFocus::Dock(binding.window()));
     assert!(bridge.lock().record_global_focus(current));
     assert!(!bridge.lock().global_focus_refresh_pending);
     assert!(bridge.acknowledge_global_focus(current));
@@ -130,7 +130,8 @@ fn rejected_focus_reobserves_unknown_after_recovery_with_or_without_a_pending_re
         for ordinal in 2..=4_097 {
             bridge.push_record(cursor(ordinal, window, binding));
         }
-        let rejected = NativeGlobalFocusRecord::for_test(4_098, NativeGlobalFocus::Dock(binding));
+        let rejected =
+            NativeGlobalFocusRecord::for_test(4_098, NativeGlobalFocus::Dock(binding.window()));
         assert!(!bridge.lock().record_global_focus(rejected));
         assert!(bridge.lock().global_focus_refresh_pending);
         assert_eq!(bridge.lock().journal.captured_through(), 4_097);

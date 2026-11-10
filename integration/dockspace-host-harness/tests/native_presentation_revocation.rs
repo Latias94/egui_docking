@@ -203,11 +203,13 @@ fn revoked_native_release_consumes_presented_output_as_terminal_rejection() {
         .begin_native_host_frame(|query| {
             let query = match query {
                 NativeReceiverQuery::WindowHit(query) => {
-                    return NativeReceiverAnswer::WindowHit(if query.window() == binding.window() {
-                        NativeWindowHit::Surface(artifact)
-                    } else {
-                        NativeWindowHit::Unknown
-                    });
+                    return NativeReceiverAnswer::WindowHit(
+                        if query.window() == binding.window() {
+                            NativeWindowHit::Surface(artifact)
+                        } else {
+                            NativeWindowHit::Unknown
+                        },
+                    );
                 }
                 NativeReceiverQuery::Surface(query) => query,
             };

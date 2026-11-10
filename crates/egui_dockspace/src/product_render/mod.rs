@@ -37,6 +37,7 @@ use crate::response::{DockspaceCapability, DockspaceUnavailableReason};
 use crate::style::{DockStyle, ResolvedDockVisuals};
 
 pub(crate) use measurement::{PaintResources, measure_surface};
+pub(crate) use presentation_menu::prepare_layer as prepare_menu_layer;
 
 /// One action captured from a stable egui widget and response source.
 ///
@@ -377,6 +378,7 @@ pub(crate) fn paint_surface(
         &mut dyn FnMut(&Ui, egui::Rect, Id) -> (Id, egui::LayerId),
     >,
 ) -> Result<ProductPaintOutput, DockspaceRuntimeError> {
+    prepare_menu_layer(ui, instance_id, plan.surface());
     let visuals = style.resolved_visuals(ui.visuals());
     resources.prepare_for_plan(plan, ui, panes)?;
     let pane_focus_request = plan.pane_focus_request();

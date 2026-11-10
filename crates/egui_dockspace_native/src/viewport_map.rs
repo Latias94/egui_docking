@@ -5,6 +5,7 @@ use std::mem::size_of;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceSession, NativeLocalCoordinates, NativeRootContinuation, NativeSurfaceBinding,
+    NativeWindowBinding,
 };
 use eframe::{NativeViewportCreateAttempt, egui::ViewportId};
 use winit::window::WindowId;
@@ -469,16 +470,28 @@ impl NativeViewportMap {
         self.validate_window_unclaimed(viewport, route.window.expect("the window was checked"))
     }
 
-    /// Resolves only the exact predecessor, before any batch route is installed.
+    /// Resolves the exact physical predecessor independently of placement changes.
     pub(crate) fn workspace_root_continuation_viewport(
         &self,
         continuation: NativeRootContinuation,
     ) -> Result<Option<ViewportId>, NativeHostProtocolError> {
         let predecessor = continuation.predecessor();
-        match self.viewport(predecessor.surface()) {
-            Some(viewport) if self.binding(viewport) == Some(predecessor) => Ok(Some(viewport)),
+        let mut routes = self
+            .viewports
+            .iter()
+            .filter(|route| route.binding.window() == predecessor.window());
+        match (routes.next(), routes.next()) {
+            (Some(route), None) => Ok(Some(route.viewport)),
             // A same-surface reset can precede the first physical attachment.
-            None if predecessor.surface() == continuation.successor().surface() => Ok(None),
+            (None, None)
+                if predecessor.surface() == continuation.successor().surface()
+                    && !self.viewports.iter().any(|route| {
+                        route.binding.surface() == predecessor.surface()
+                            || route.binding.window_token() == predecessor.window_token()
+                    }) =>
+            {
+                Ok(None)
+            }
             _ => Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
                 predecessor.surface(),
             )),
@@ -500,6 +513,10 @@ impl NativeViewportMap {
             if continuations().take(index).any(|previous| {
                 previous.predecessor() == predecessor
                     || previous.successor().surface() == successor.surface()
+                    || (previous.predecessor().window() == predecessor.window()
+                        && previous.successor().window() != successor.window())
+                    || (previous.predecessor().window() != predecessor.window()
+                        && previous.successor().window() == successor.window())
             }) {
                 return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
                     predecessor.surface(),
@@ -514,11 +531,48 @@ impl NativeViewportMap {
                 })?;
             if let Some(occupied) = self.viewport(successor.surface())
                 && occupied != viewport
-                && !continuations()
-                    .any(|participant| self.binding(occupied) == Some(participant.predecessor()))
+                && !continuations().any(|participant| {
+                    self.window_binding(occupied) == Some(participant.predecessor().window())
+                })
             {
                 return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
                     successor.surface(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Joins physical-route validation with the complete committed core roster.
+    /// The caller borrows the published registry; this map owns no placement index.
+    pub(crate) fn validate_workspace_root_continuation_rosters<I, R>(
+        &self,
+        continuations: impl Fn() -> I,
+        committed: impl Fn(NativeWindowBinding) -> R,
+    ) -> Result<(), NativeHostProtocolError>
+    where
+        I: Iterator<Item = NativeRootContinuation>,
+        R: Iterator<Item = NativeSurfaceBinding>,
+    {
+        self.validate_workspace_root_continuations(&continuations)?;
+        for continuation in continuations() {
+            let predecessor = continuation.predecessor();
+            if self
+                .workspace_root_continuation_viewport(continuation)?
+                .is_none()
+                && committed(predecessor.window()).next().is_none()
+            {
+                // Initial registration and same-surface reset may share one
+                // candidate before either a physical route or roster exists.
+                continue;
+            }
+            if !committed(predecessor.window()).any(|binding| binding == predecessor)
+                || committed(predecessor.window()).any(|binding| {
+                    !continuations().any(|participant| participant.predecessor() == binding)
+                })
+            {
+                return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                    predecessor.surface(),
                 ));
             }
         }
@@ -535,21 +589,20 @@ impl NativeViewportMap {
         let route = self
             .route(viewport)
             .ok_or(NativeViewportBindingError::ViewportUnbound { viewport })?;
-        Self::validate_binding(viewport, predecessor, route.snapshot())?;
-        self.validate_create_settled(viewport, predecessor)?;
-        if predecessor.surface() == successor.surface() {
-            self.validate_same_window_replacement(viewport, predecessor, successor)?;
-        }
+        self.validate_create_settled(viewport, route.binding)?;
         let terminal_matches = route.window.is_some_and(|window| {
             route.terminal.as_ref().is_some_and(|receipt| {
-                receipt.binding() == predecessor
+                receipt.binding().window() == predecessor.window()
                     && receipt.matches_window(window, Some(viewport))
                     && receipt.is_awaiting()
             })
         });
         if predecessor == successor
-            || self.prepared_retirements.contains(&predecessor)
-            || self.prepared_retirements.contains(&successor)
+            || route.binding.window() != predecessor.window()
+            || predecessor.window_token() != successor.window_token()
+            || self.prepared_retirements.iter().any(|retired| {
+                retired.window() == predecessor.window() || retired.window() == successor.window()
+            })
             || !terminal_matches
         {
             return Err(NativeViewportBindingError::BindingNotCurrent {
@@ -568,12 +621,19 @@ impl NativeViewportMap {
     ) {
         self.validate_workspace_root_continuations(|| continuations.iter().copied())
             .expect("same-lock Root continuations were validated before core publication");
-        // Match each route by its original exact binding, never by a target
-        // surface which another participant may have just acquired.
+        // One original physical route moves once, even when every placement
+        // changed generation. The surface tag only correlates legacy receipts.
         for route in &mut self.viewports {
+            let same_window = |continuation: &&NativeRootContinuation| {
+                continuation.predecessor().window() == route.binding.window()
+            };
             if let Some(continuation) = continuations
                 .iter()
-                .find(|continuation| continuation.predecessor() == route.binding)
+                .filter(same_window)
+                .find(|continuation| {
+                    continuation.predecessor().surface() == route.binding.surface()
+                })
+                .or_else(|| continuations.iter().find(same_window))
             {
                 route.rebind_same_window(continuation.successor());
             }
@@ -696,6 +756,16 @@ impl NativeViewportMap {
         self.route(viewport).map(|route| route.binding)
     }
 
+    pub(crate) fn window_binding(&self, viewport: ViewportId) -> Option<NativeWindowBinding> {
+        self.route(viewport).map(|route| route.binding.window())
+    }
+
+    pub(crate) fn viewport_for_window(&self, binding: NativeWindowBinding) -> Option<ViewportId> {
+        self.viewports
+            .iter()
+            .find_map(|route| (route.binding.window() == binding).then_some(route.viewport))
+    }
+
     pub(crate) fn window(&self, viewport: ViewportId) -> Option<WindowId> {
         self.route(viewport).and_then(|route| route.window)
     }
@@ -703,18 +773,20 @@ impl NativeViewportMap {
     pub(crate) fn pointer_binding_for_window(
         &self,
         window: WindowId,
-    ) -> Option<NativeSurfaceBinding> {
+    ) -> Option<NativeWindowBinding> {
         let (_, binding) = self.route_for_event(window, None)?;
-        (!self.is_pointer_suppressed(binding)).then_some(binding)
+        (!self.is_pointer_suppressed(binding) && !self.prepared_retirements.contains(&binding))
+            .then_some(binding.window())
     }
 
     pub(crate) fn pointer_binding_for_event(
         &self,
         window: WindowId,
         viewport: Option<ViewportId>,
-    ) -> Option<NativeSurfaceBinding> {
+    ) -> Option<NativeWindowBinding> {
         let (_, binding) = self.route_for_event(window, viewport)?;
-        (!self.is_pointer_suppressed(binding)).then_some(binding)
+        (!self.is_pointer_suppressed(binding) && !self.prepared_retirements.contains(&binding))
+            .then_some(binding.window())
     }
 
     /// Returns committed local authority only for the exact usable event route.
@@ -726,8 +798,7 @@ impl NativeViewportMap {
         let binding = self.pointer_binding_for_event(window, viewport)?;
         let (viewport, _) = self.route_for_event(window, viewport)?;
         let coordinates = self.route(viewport)?.local_coordinates?;
-        (coordinates.binding() == binding && !self.prepared_retirements.contains(&binding))
-            .then_some(coordinates)
+        (coordinates.binding() == binding).then_some(coordinates)
     }
 
     /// Refreshes the existing route rows exclusively from committed core state.
@@ -737,7 +808,7 @@ impl NativeViewportMap {
                 if route.pointer_suppressed || self.prepared_retirements.contains(&route.binding) {
                     None
                 } else {
-                    session.native_local_coordinates(route.binding)
+                    session.native_local_coordinates(route.binding.window())
                 };
         }
     }
@@ -756,19 +827,21 @@ impl NativeViewportMap {
         &self,
         window: WindowId,
         viewport: Option<ViewportId>,
-    ) -> Option<NativeSurfaceBinding> {
+    ) -> Option<NativeWindowBinding> {
         let (viewport, binding) = self.route_for_event(window, viewport)?;
         (self.route(viewport)?.focus_reportable
             && !self.is_pointer_suppressed(binding)
             && !self.prepared_retirements.contains(&binding))
-        .then_some(binding)
+        .then_some(binding.window())
     }
 
     /// Replaces the committed focus roster and reports newly eligible routes.
     pub(crate) fn set_focus_reportable(&mut self, bindings: &[NativeSurfaceBinding]) -> bool {
         let mut newly_reportable = false;
         for route in &mut self.viewports {
-            let reportable = bindings.contains(&route.binding)
+            let reportable = bindings
+                .iter()
+                .any(|binding| binding.window() == route.binding.window())
                 && !route.pointer_suppressed
                 && !self.prepared_retirements.contains(&route.binding);
             newly_reportable |= reportable && !route.focus_reportable;
@@ -1347,6 +1420,9 @@ mod storage_tests;
 mod wake_tests;
 
 #[cfg(test)]
+mod continuation_tests;
+
+#[cfg(test)]
 mod tests {
     use dockspace::model::{
         DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
@@ -1446,7 +1522,7 @@ mod tests {
         assert_eq!(two_focused, two_attached);
         assert_eq!(
             routes.focus_binding_for_event(WindowId::from(81), None),
-            Some(first)
+            Some(first.window())
         );
         routes.set_focus_reportable(&[second]);
         let one_focused = routes.owned_data_capacity_bytes();
@@ -1521,7 +1597,10 @@ mod tests {
             Some((viewport, binding))
         );
         assert_eq!(routes.route_for_event(window, Some(other_viewport)), None);
-        assert_eq!(routes.pointer_binding_for_window(window), Some(binding));
+        assert_eq!(
+            routes.pointer_binding_for_window(window),
+            Some(binding.window())
+        );
         assert_eq!(
             routes.binding_for_output(viewport, window, None),
             Some(binding)
@@ -1562,7 +1641,10 @@ mod tests {
             routes.route_for_event(window, None),
             Some((viewport, binding))
         );
-        assert_eq!(routes.pointer_binding_for_window(window), Some(binding));
+        assert_eq!(
+            routes.pointer_binding_for_window(window),
+            Some(binding.window())
+        );
         assert_eq!(
             routes.binding_for_output(viewport, window, None),
             Some(binding)

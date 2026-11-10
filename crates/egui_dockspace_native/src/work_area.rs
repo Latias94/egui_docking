@@ -588,7 +588,13 @@ mod tests {
             .expect("work-area capabilities configure");
         let apply_snapshot = |session: &mut DockspaceSession, roster| {
             session
-                .report_managed_native_snapshot([], roster)
+                .report_managed_native_snapshot(
+                    std::iter::empty::<(
+                        dockspace::runtime::NativeWindowBinding,
+                        dockspace::runtime::NativeWindowFacts,
+                    )>(),
+                    roster,
+                )
                 .expect("the complete work-area snapshot records");
             session
                 .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)

@@ -10,9 +10,9 @@ use std::collections::BTreeSet;
 use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
     DockPresentationConfig, DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole,
-    DockspaceSemanticOutput, DockspaceVisualId, NativeReceiverQuery, PreparedPaneFocusObservation,
-    PresentedDockReceiver, PresentedDockspaceSurface, SurfaceProgramExecutionReceipt,
-    SurfaceUnavailableReason,
+    DockspaceSemanticOutput, DockspaceVisualId, NativeSurfaceReceiverQuery,
+    PreparedPaneFocusObservation, PresentedDockReceiver, PresentedDockspaceSurface,
+    SurfaceProgramExecutionReceipt, SurfaceUnavailableReason,
 };
 use egui::{Id, Ui};
 
@@ -284,7 +284,10 @@ impl NativePaintReceiver {
 
     /// Rebinds this paint-time identity to the exact output named by a core query.
     #[must_use]
-    pub fn bind_for_query(self, query: NativeReceiverQuery) -> Option<PresentedDockReceiver> {
+    pub fn bind_for_query(
+        self,
+        query: NativeSurfaceReceiverQuery,
+    ) -> Option<PresentedDockReceiver> {
         query.bind_receiver(&self.receiver)
     }
 
@@ -294,7 +297,7 @@ impl NativePaintReceiver {
     #[must_use]
     pub fn clear_hover_lane_for_query(
         self,
-        query: NativeReceiverQuery,
+        query: NativeSurfaceReceiverQuery,
     ) -> Option<PresentedDockspaceSurface> {
         let point = query.point()?;
         let rect = self.interact_rect;
@@ -344,7 +347,10 @@ impl NativeScrollPaintReceiver {
 
     /// Rebinds this paint-time identity to the exact output named by a core query.
     #[must_use]
-    pub fn bind_for_query(self, query: NativeReceiverQuery) -> Option<PresentedDockReceiver> {
+    pub fn bind_for_query(
+        self,
+        query: NativeSurfaceReceiverQuery,
+    ) -> Option<PresentedDockReceiver> {
         query.bind_receiver(&self.receiver)
     }
 }
@@ -505,6 +511,7 @@ pub fn paint_surface(
     };
 
     let semantic_output = plan.semantic_output();
+    product_render::prepare_menu_layer(ui, instance_id, surface);
     let capture = crate::output_proof::SurfaceOutputCapture::begin_multilayer(ui.painter());
     let painted = product_render::paint_surface(
         ui,

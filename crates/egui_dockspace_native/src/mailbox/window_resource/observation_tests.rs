@@ -190,7 +190,9 @@ fn prepared_successor_pin_does_not_mutate_its_predecessor_before_explicit_retire
     assert!(resources.references_binding(binding));
     assert!(!resources.reserve_create(viewport, binding, rect));
     // Removing the final old output releases only its retired row.
-    resources.refresh_host_references(|target, current| target == viewport && current == successor);
+    resources.refresh_host_references(|target, current| {
+        target == viewport && current == successor.window()
+    });
     assert!(!resources.references_binding(binding));
     assert_eq!(resources.entries.len(), 1);
     assert_eq!(resources.create(viewport).unwrap().binding, successor);
@@ -443,7 +445,7 @@ fn foreign_provider_bindings_with_reused_public_ids_keep_independent_observation
     assert_eq!(resources.pending_no_frame().count(), 2);
 
     resources.retire(viewport, predecessor);
-    resources.refresh_host_references(|_, binding| binding == successor);
+    resources.refresh_host_references(|_, window| window == successor.window());
     assert!(resources.clear_create_ack(predecessor));
     assert!(resources.clear_no_frame_if(first));
     assert!(!resources.references_binding(predecessor));

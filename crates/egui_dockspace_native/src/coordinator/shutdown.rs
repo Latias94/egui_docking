@@ -205,25 +205,21 @@ impl NativeCoordinator {
         } else {
             prepared_retirements
         };
-        let frame_surfaces = host_frame.frame.surfaces();
-        no_frame_invalidations.select_for_surfaces(&frame_surfaces, !native_input_pending);
+        no_frame_invalidations.select_for_frame(&host_frame.frame, !native_input_pending);
         let PreparedNoFrameInvalidations {
             ready: accepted_no_frame_invalidations,
             repaint_viewports,
         } = no_frame_invalidations;
-        for invalidation in &accepted_no_frame_invalidations {
-            if let Err(error) = host_frame.defer_surface(
-                invalidation.surface(),
-                SurfaceUnavailableReason::SurfaceUnavailable,
-            ) {
-                errors.push(error);
-                return NativeShutdownAdvance::partial_with_repaints(
-                    progress,
-                    presentation_transitions,
-                    errors,
-                    repaint_viewports,
-                );
-            }
+        if let Err(error) =
+            defer_no_frame_invalidations(&mut host_frame.frame, &accepted_no_frame_invalidations)
+        {
+            errors.push(error);
+            return NativeShutdownAdvance::partial_with_repaints(
+                progress,
+                presentation_transitions,
+                errors,
+                repaint_viewports,
+            );
         }
         if let Err(error) =
             host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)

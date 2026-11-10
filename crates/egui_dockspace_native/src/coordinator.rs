@@ -134,6 +134,16 @@ impl PendingNoFrameInvalidation {
         self.viewport
     }
 
+    pub(crate) fn contains_surface(
+        self,
+        frame: &dockspace::runtime::DockspaceHostFrame<'_>,
+        surface: SurfaceId,
+    ) -> bool {
+        frame
+            .native_surface_bindings_for_window(self.binding.window())
+            .any(|binding| binding.surface() == surface)
+    }
+
     #[cfg(test)]
     const fn terminal_observed_for_test(
         viewport: ViewportId,
@@ -162,13 +172,41 @@ pub(crate) struct PreparedNoFrameInvalidations {
 }
 
 impl PreparedNoFrameInvalidations {
+    pub(crate) fn select_for_frame(
+        &mut self,
+        frame: &dockspace::runtime::DockspaceHostFrame<'_>,
+        enabled: bool,
+    ) {
+        let surfaces = frame.surfaces();
+        self.select_matching(
+            |invalidation| {
+                surfaces
+                    .iter()
+                    .any(|surface| invalidation.contains_surface(frame, *surface))
+            },
+            enabled,
+        );
+    }
+
+    #[cfg(test)]
     pub(crate) fn select_for_surfaces(&mut self, surfaces: &[SurfaceId], enabled: bool) {
+        self.select_matching(
+            |invalidation| surfaces.contains(&invalidation.surface()),
+            enabled,
+        );
+    }
+
+    fn select_matching(
+        &mut self,
+        mut accepts: impl FnMut(&PendingNoFrameInvalidation) -> bool,
+        enabled: bool,
+    ) {
         self.repaint_viewports.clear();
         self.ready.retain(|invalidation| {
             if !enabled {
                 return false;
             }
-            if surfaces.contains(&invalidation.surface()) {
+            if accepts(invalidation) {
                 return true;
             }
             if !self.repaint_viewports.contains(&invalidation.viewport()) {
@@ -178,6 +216,21 @@ impl PreparedNoFrameInvalidations {
             false
         });
     }
+}
+
+pub(crate) fn defer_no_frame_invalidations(
+    frame: &mut dockspace::runtime::DockspaceHostFrame<'_>,
+    invalidations: &[PendingNoFrameInvalidation],
+) -> Result<(), NativeRuntimeError> {
+    for surface in frame.surfaces() {
+        if invalidations
+            .iter()
+            .any(|invalidation| invalidation.contains_surface(frame, surface))
+        {
+            frame.defer_surface(surface, SurfaceUnavailableReason::SurfaceUnavailable)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -246,6 +299,7 @@ fn resolve_deferred_binding_paint(
     }
 }
 
+#[cfg(test)]
 const fn should_record_no_frame_invalidation(
     accepts_invalidation: bool,
     binding_is_current: bool,
@@ -805,11 +859,18 @@ impl NativeCoordinator {
             .with_viewports(|viewports| viewports.binding(viewport))
     }
 
-    /// Returns the eframe viewport currently presenting one logical surface.
+    /// Returns the current placement's viewport, or a retained route when unmapped.
     #[must_use]
     pub fn surface_viewport(&self, surface: SurfaceId) -> Option<ViewportId> {
-        self.bridge
-            .with_viewports(|viewports| viewports.viewport(surface))
+        let window = self.session.native_window_bindings().find(|window| {
+            self.session
+                .native_surface_bindings_for_window(*window)
+                .any(|binding| binding.surface() == surface)
+        });
+        self.bridge.with_viewports(|viewports| match window {
+            Some(window) => viewports.viewport_for_window(window),
+            None => viewports.viewport(surface),
+        })
     }
 
     /// Returns every child viewport which the next root pass must re-declare.
@@ -922,11 +983,12 @@ impl NativeCoordinator {
         if self.input_control.command_to_dispatch() != Some(command) {
             return false;
         }
-        let Some((viewport, window)) = self.exact_window_route_for_binding(command.binding())
+        let Some((viewport, window)) = self.current_window_route_for_binding(command.binding())
         else {
             return false;
         };
         if viewport != command.viewport()
+            || window != command.window()
             || !self.bridge.reserve_pointer_callback(
                 viewport,
                 command.binding(),
@@ -1227,7 +1289,10 @@ impl NativeCoordinator {
                 );
                 continue;
             };
-            if self.viewport_binding(viewport) != Some(*binding)
+            if self
+                .viewport_binding(viewport)
+                .map(NativeSurfaceBinding::window)
+                != Some(binding.window())
                 || !self.session.is_current_native_binding(*binding)
             {
                 errors.push(
@@ -1295,7 +1360,7 @@ impl NativeCoordinator {
             || self
                 .bridge
                 .with_viewports(|routes| routes.bindings().any(|route| route == binding))
-            || self.pointer_translator.references_binding(binding)
+            || self.pointer_translator.references_binding(binding.window())
             || self.receivers.references_binding(binding)
             || self.deferred_viewports.viewport_for(binding).is_some()
             || self.effects.references_binding(binding)
@@ -1709,10 +1774,11 @@ impl NativeCoordinator {
         {
             let bridge = Arc::clone(&self.bridge);
             bridge.retire_destroyed_input(&record, || {
-                self.session.report_native_input_binding_retired(binding)?;
+                self.session
+                    .report_native_input_binding_retired(binding.window())?;
                 // Install local suppression and receipt progress before any
                 // close correlation, effect settlement, or retirement can fail.
-                self.pointer_translator.retire_binding(binding);
+                self.pointer_translator.retire_binding(binding.window());
                 Ok(())
             })?;
             bridge.release_pointer_translation_capacity(&self.pointer_translator);
@@ -1799,9 +1865,8 @@ impl NativeCoordinator {
                 if record.status() == NativeViewportPointerPassthroughStatus::Applied
                     && let Some(binding) = record.binding()
                 {
-                    let route = self.exact_window_route_for_binding(binding);
+                    let route = self.current_window_route_for_binding(binding);
                     if route == Some((record.viewport(), record.window()))
-                        && self.session.is_current_native_binding(binding)
                         && self.input_control.observe_unowned_applied(record)?
                     {
                         self.bridge.invalidate_viewport_roster();
@@ -1809,9 +1874,8 @@ impl NativeCoordinator {
                 }
             }
             NativeInputResultDisposition::Current { binding, status }
-                if self.session.is_current_native_binding(binding)
-                    && self.exact_window_route_for_binding(binding)
-                        == Some((record.viewport(), record.window())) =>
+                if self.current_window_route_for_binding(binding)
+                    == Some((record.viewport(), record.window())) =>
             {
                 match status {
                     NativeViewportPointerPassthroughStatus::Applied => {
@@ -1850,8 +1914,8 @@ impl NativeCoordinator {
                     .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
                 callback_error = self.report_callback_terminal_result(result);
                 debug_assert!(
-                    !self.session.is_current_native_binding(binding)
-                        || self.exact_window_route_for_binding(binding)
+                    matches!(disposition, NativeInputResultDisposition::Stale { .. })
+                        || self.current_window_route_for_binding(binding)
                             != Some((record.viewport(), record.window())),
                     "a current input callback must take the exact route branch"
                 );
@@ -1921,12 +1985,14 @@ impl NativeCoordinator {
                 if self.session.is_current_native_binding(binding)
                     && self.bridge.with_viewports(|viewports| {
                         viewports.focus_binding_for_event(record.window(), Some(record.viewport()))
-                    }) == Some(binding) =>
+                    }) == Some(binding.window()) =>
             {
                 match status {
                     NativeViewportFocusStatus::AlreadyFocused => {
                         self.session
-                            .report_native_global_focus(NativeGlobalFocus::Dock(binding))?;
+                            .report_native_global_focus(NativeGlobalFocus::Dock(
+                                binding.window(),
+                            ))?;
                         let request = self
                             .focus_control
                             .take_callback(record)
@@ -1977,7 +2043,7 @@ impl NativeCoordinator {
                         || self.bridge.with_viewports(|viewports| {
                             viewports
                                 .focus_binding_for_event(record.window(), Some(record.viewport()))
-                        }) != Some(binding),
+                        }) != Some(binding.window()),
                     "a current focus callback must take the exact route branch"
                 );
             }
@@ -2086,8 +2152,10 @@ impl NativeCoordinator {
         };
         match record.event() {
             winit::event::WindowEvent::ModifiersChanged(modifiers) => {
-                self.session
-                    .report_native_magnetic_targeting(binding, !modifiers.state().shift_key())?;
+                self.session.report_native_magnetic_targeting(
+                    binding.window(),
+                    !modifiers.state().shift_key(),
+                )?;
             }
             winit::event::WindowEvent::CloseRequested => {
                 if self
@@ -2122,7 +2190,10 @@ impl NativeCoordinator {
                         record.ordinal(),
                     ) {
                         DestroyedObservation::Recorded => {
-                            if !self.session.recognizes_native_binding(binding) {
+                            if !self
+                                .session
+                                .recognizes_native_window_binding(binding.window())
+                            {
                                 self.bridge
                                     .retirement_retire_unrecognized_destroyed(binding);
                             }
@@ -2245,8 +2316,8 @@ impl NativeCoordinator {
                         preparation: observation.preparation(),
                     });
                 }
-                if observation.input_acknowledged() {
-                    let previous = input_acknowledgement.replace(binding);
+                if let Some(source) = observation.input_acknowledgement() {
+                    let previous = input_acknowledgement.replace(source);
                     debug_assert!(
                         previous.is_none(),
                         "one globally ordered input lane acknowledges at most one binding"
@@ -2356,9 +2427,9 @@ impl NativeCoordinator {
         observation: CompiledWindowObservation,
     ) -> CompiledWindowObservation {
         self.input_control
-            .snapshot_fact(observation.binding())
-            .map_or(observation, |(state, acknowledgement)| {
-                observation.with_input(state, acknowledgement)
+            .snapshot_observation(observation.binding().window())
+            .map_or(observation, |(source, state, acknowledgement)| {
+                observation.with_input_from(source, state, acknowledgement)
             })
     }
 
@@ -2612,21 +2683,30 @@ impl NativeCoordinator {
                 token.create_attempt(),
             )
         });
-        let binding = reservation.binding().or(current_binding);
+        let binding = reservation
+            .binding()
+            .map(|binding| binding.window())
+            .or_else(|| current_binding.map(|binding| binding.window()));
         let Some(binding) = binding else {
             return Err((NativeOutputBindingErrorKind::RouteUnavailable, outputs));
         };
         if reservation.binding().is_some()
-            && current_binding.map(NativeSurfaceBinding::window) != Some(binding.window())
+            && current_binding.map(NativeSurfaceBinding::window) != Some(binding)
         {
             return Err((NativeOutputBindingErrorKind::BindingMismatch, outputs));
         }
+        let bindings = self
+            .session
+            .native_surface_bindings_for_window(binding)
+            .collect::<Vec<_>>();
         if outputs.is_empty()
             || outputs.iter().enumerate().any(|(index, output)| {
-                !output.matches_native_binding(binding)
-                    || outputs[..index]
-                        .iter()
-                        .any(|previous| previous.surface() == output.surface())
+                !bindings.iter().any(|placement| {
+                    placement.surface() == output.surface()
+                        && output.matches_native_binding(*placement)
+                }) || outputs[..index]
+                    .iter()
+                    .any(|previous| previous.surface() == output.surface())
             })
         {
             return Err((NativeOutputBindingErrorKind::BindingMismatch, outputs));
@@ -2640,12 +2720,12 @@ impl NativeCoordinator {
         });
         if self
             .receivers
-            .stage_outputs(context, token, binding, &outputs, paints)
+            .stage_outputs(context, token, binding, &bindings, &outputs, paints)
             .is_err()
         {
             return Err((NativeOutputBindingErrorKind::ReceiverMismatch, outputs));
         }
-        if !self.bridge.attach_output_binding(token, binding) {
+        if !self.bridge.attach_output_window_binding(token, binding) {
             self.receivers.abandon(token);
             return Err((NativeOutputBindingErrorKind::BindingMismatch, outputs));
         }
@@ -2698,11 +2778,11 @@ impl NativeCoordinator {
             .binding()
             .filter(|binding| {
                 !retained
-                    && should_record_no_frame_invalidation(
-                        self.bridge.accepts_no_frame_invalidation(),
-                        self.session.is_current_native_binding(*binding),
-                        self.session.presented_surface(binding.surface()).is_some(),
-                    )
+                    && self.bridge.accepts_no_frame_invalidation()
+                    && self
+                        .session
+                        .native_surface_bindings_for_window(binding.window())
+                        .any(|member| self.session.presented_surface(member.surface()).is_some())
             })
             .map(|binding| PendingNoFrameInvalidation::awaiting_terminal(token, binding));
         if !matches!(
@@ -2713,7 +2793,7 @@ impl NativeCoordinator {
             return Err(NativeOutputBindingErrorKind::TokenNotReserved);
         }
         if !retained && let Some(binding) = reservation.binding() {
-            self.receivers.retire_binding(binding);
+            self.receivers.retire_window(binding.window());
         }
         // A retained output needs no follow-up. A NoFrame fallback is allowed
         // to wake only from its physical terminal callback, after the window
@@ -2728,7 +2808,12 @@ impl NativeCoordinator {
     }
 
     pub(crate) fn has_pending_no_frame_invalidation(&self, surface: SurfaceId) -> bool {
-        self.bridge.has_pending_no_frame_invalidation(surface)
+        self.session.native_window_bindings().any(|window| {
+            self.session
+                .native_surface_bindings_for_window(window)
+                .any(|binding| binding.surface() == surface)
+                && self.bridge.has_pending_no_frame_invalidation(window)
+        })
     }
 
     pub(crate) fn finish_no_frame_invalidations(
@@ -2863,7 +2948,8 @@ impl NativeCoordinator {
                     }
                     match (result.status(), binding) {
                         (NativeOutputStatus::Presented, Some(binding)) => {
-                            self.receivers.renderer_presented(result.token(), binding);
+                            self.receivers
+                                .renderer_presented(result.token(), binding.window());
                         }
                         (NativeOutputStatus::Presented, None)
                         | (NativeOutputStatus::NotPresented, _) => {

@@ -41,6 +41,7 @@ pub(crate) fn retained_focus_binding(
 pub(crate) struct NativeSurfacePaint {
     inner: egui_dockspace::native_support::NativeSurfacePaint,
     scroll_identities: Vec<egui::WidgetHitIdentity>,
+    binding: Option<dockspace::runtime::NativeSurfaceBinding>,
 }
 
 impl std::ops::Deref for NativeSurfacePaint {
@@ -60,6 +61,10 @@ impl std::ops::DerefMut for NativeSurfacePaint {
 impl NativeSurfacePaint {
     pub(crate) fn scroll_identities(&self) -> &[egui::WidgetHitIdentity] {
         &self.scroll_identities
+    }
+
+    pub(crate) fn native_binding(&self) -> Option<dockspace::runtime::NativeSurfaceBinding> {
+        self.binding
     }
 }
 
@@ -127,6 +132,18 @@ impl<'session> NativeHostFrame<'session> {
     ) {
         // A replacement may reuse item/widget IDs in a new workspace epoch.
         if self.frame.proposed_native_bindings().next().is_some() {
+            return;
+        }
+        let window = self.bridge.with_viewports(|routes| {
+            routes
+                .binding(context.viewport_id())
+                .map(|binding| binding.window())
+        });
+        if !window.is_some_and(|window| {
+            self.frame
+                .native_surface_bindings_for_window(window)
+                .any(|binding| binding.surface() == surface)
+        }) {
             return;
         }
         if let Some(surface) = self.frame.view().surface(surface) {
@@ -202,16 +219,6 @@ impl<'session> NativeHostFrame<'session> {
             .map_err(Into::into)
     }
 
-    pub(crate) fn defer_surface(
-        &mut self,
-        surface: SurfaceId,
-        reason: SurfaceUnavailableReason,
-    ) -> Result<(), NativeRuntimeError> {
-        self.frame
-            .defer_surface(surface, reason)
-            .map_err(Into::into)
-    }
-
     pub(crate) fn paint_surface(
         &mut self,
         instance_id: egui::Id,
@@ -220,6 +227,23 @@ impl<'session> NativeHostFrame<'session> {
         panes: &mut dyn PaneView,
         style: &DockStyle,
     ) -> Result<NativeSurfacePaint, NativeRuntimeError> {
+        let window = self
+            .frame
+            .proposed_native_bindings()
+            .find(|binding| binding.surface() == surface)
+            .map(|binding| binding.window())
+            .or_else(|| {
+                self.bridge.with_viewports(|routes| {
+                    routes
+                        .binding(ui.ctx().viewport_id())
+                        .map(|binding| binding.window())
+                })
+            });
+        let binding = window.and_then(|window| {
+            self.frame
+                .native_surface_bindings_for_window(window)
+                .find(|binding| binding.surface() == surface)
+        });
         let mut scroll_identities = Vec::new();
         let mut register_scroll_candidate = |ui: &egui::Ui, rect: egui::Rect, id: egui::Id| {
             let identity = ui.register_scroll_hit_candidate(rect, id);
@@ -251,6 +275,7 @@ impl<'session> NativeHostFrame<'session> {
         Ok(NativeSurfacePaint {
             inner: paint,
             scroll_identities,
+            binding,
         })
     }
 

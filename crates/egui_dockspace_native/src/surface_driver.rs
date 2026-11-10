@@ -1,10 +1,13 @@
 //! Shared root/child surface driver over one native coordinator.
 
+use std::sync::Arc;
+
 #[cfg(test)]
 use crate::NativeCommand;
 use dockspace::model::{DockspaceView, SurfaceId};
 use dockspace::runtime::{
-    HostFrameReport, HostInputOutcome, HostWindowToken, NativeInputBudget, SurfaceUnavailableReason,
+    HostFrameReport, HostInputOutcome, HostWindowToken, NativeInputBudget, NativeSurfacePlacement,
+    SurfaceUnavailableReason,
 };
 use eframe::egui::emath::GuiRounding;
 use eframe::egui::{self, Id, ViewportId};
@@ -24,12 +27,15 @@ use crate::error::NativeRuntimeErrorKind;
 use crate::error::{NativeHostProtocolError, NativeRuntimeError};
 use crate::lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};
 use crate::mailbox::NativeDispatch;
+use crate::mailbox::NativeHostBridge;
 use crate::pass_actions::{NativeFinalPass, NativePassActionError, NativePassActions};
 
 mod application;
+mod composition;
 #[path = "native_owned_update.rs"]
 mod native_owned_update;
 
+use composition::NativePaintMapping;
 use native_owned_update::{NativeOwnedUpdate, NativeUpdatePublication, NativeUpdateRun};
 
 const ROOT_WINDOW_TOKEN: HostWindowToken = HostWindowToken::new(1);
@@ -221,10 +227,79 @@ pub(crate) struct NativeRuntimeState<P> {
     application_actions: NativeApplicationActions,
     pass_actions: NativePassActions,
     owned_update: Option<NativeOwnedUpdate>,
+    root_placement_request: Option<Arc<[NativeSurfacePlacement]>>,
+    root_input_placements: Option<NativeRootInputPlacements>,
+    invalid_root_placement_request: bool,
     pending_service: bool,
     close_policy: NativeWindowClosePolicy,
     root_context: Option<egui::Context>,
     shutdown: Option<NativeShutdownState>,
+}
+
+struct NativeRootInputPlacements {
+    token: NativeOutputToken,
+    placements: Option<Arc<[NativeSurfacePlacement]>>,
+}
+
+fn apply_root_placements(
+    frame: &mut dockspace::runtime::DockspaceHostFrame<'_>,
+    bridge: &NativeHostBridge,
+    window: dockspace::runtime::NativeWindowBinding,
+    placements: &[NativeSurfacePlacement],
+) -> Result<bool, NativeRuntimeError> {
+    let unchanged = frame.native_surface_bindings_for_window(window).count() == placements.len()
+        && placements.iter().all(|placement| {
+            frame
+                .native_surface_bindings_for_window(window)
+                .find(|binding| binding.surface() == placement.surface())
+                .and_then(|binding| frame.native_surface_placement(binding))
+                == Some(*placement)
+        });
+    let close_pending = bridge.with_close_control(|control| {
+        control
+            .unresolved_requests()
+            .any(|request| request.binding().window() == window)
+            || frame
+                .native_surface_bindings_for_window(window)
+                .any(|binding| control.request_for_binding(binding).is_some())
+    });
+    // A held close freezes the whole window. Responsive geometry waits for its
+    // decision instead of making an ordinary resize a fatal configuration error.
+    if !unchanged && close_pending {
+        return Ok(false);
+    }
+    frame.set_native_surface_placements(window, placements)?;
+    Ok(true)
+}
+
+fn snapshot_root_placements(
+    frame: &dockspace::runtime::DockspaceHostFrame<'_>,
+    bridge: &NativeHostBridge,
+    window: dockspace::runtime::NativeWindowBinding,
+    retained_bytes: usize,
+) -> Result<Option<Arc<[NativeSurfacePlacement]>>, NativeRuntimeError> {
+    let count = frame.native_surface_bindings_for_window(window).count();
+    let bytes = count
+        .checked_mul(size_of::<NativeSurfacePlacement>())
+        // Vec-to-Arc conversion briefly owns both complete backings.
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| bytes.checked_add(retained_bytes))
+        .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+    if !bridge.prepare_root_placement_storage(bytes) {
+        return Ok(None);
+    }
+    let mut placements = Vec::new();
+    if placements.try_reserve_exact(count).is_err() || placements.capacity() > count {
+        return Ok(None);
+    }
+    for binding in frame.native_surface_bindings_for_window(window) {
+        placements.push(
+            frame
+                .native_surface_placement(binding)
+                .ok_or(NativeHostProtocolError::InvalidWindowSnapshot)?,
+        );
+    }
+    Ok(Some(Arc::from(placements)))
 }
 
 #[derive(Debug)]
@@ -234,6 +309,49 @@ struct NativeShutdownState {
 }
 
 impl<P: PaneView> NativeRuntimeState<P> {
+    fn root_placement_capacity_bytes(&self) -> usize {
+        let request = self.root_placement_request.as_ref();
+        let admitted = self
+            .root_input_placements
+            .as_ref()
+            .and_then(|admitted| admitted.placements.as_ref());
+        request
+            .map_or(0, |placements| size_of_val(&**placements))
+            .saturating_add(
+                admitted
+                    .filter(|admitted| {
+                        request.is_none_or(|request| !Arc::ptr_eq(request, admitted))
+                    })
+                    .map_or(0, |placements| size_of_val(&**placements)),
+            )
+    }
+
+    fn reserve_root_placement_storage(&self, additional: usize) -> Result<(), NativeRuntimeError> {
+        let bytes = self
+            .root_placement_capacity_bytes()
+            .checked_add(additional)
+            .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if !self
+            .coordinator
+            .dispatch_bridge()
+            .prepare_root_placement_storage(bytes)
+        {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable.into());
+        }
+        Ok(())
+    }
+
+    fn refresh_root_placement_storage(&self) {
+        let paid = self
+            .coordinator
+            .dispatch_bridge()
+            .prepare_root_placement_storage(self.root_placement_capacity_bytes());
+        debug_assert!(
+            paid,
+            "releasing already prepaid placement backing cannot fail"
+        );
+    }
+
     #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn boundary_coordinator(&mut self) -> &mut NativeCoordinator {
         &mut self.coordinator
@@ -257,6 +375,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 return Ok(eframe::NativeOutputInputAdmission::Proceed);
             }
             return self.defer_output_input(token);
+        }
+        if token.viewport_id() == ViewportId::ROOT && self.invalid_root_placement_request {
+            return Err(NativeHostProtocolError::InvalidWindowSnapshot.into());
         }
         let bridge = self.coordinator.dispatch_bridge();
         if self.shutdown.is_some()
@@ -291,6 +412,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
             return Ok(eframe::NativeOutputInputAdmission::Proceed);
         }
         if has_input {
+            let root_placement_request = self.root_placement_request.clone();
+            let root_placement_capacity_bytes = self.root_placement_capacity_bytes();
+            let mut input_placements = None;
+            let mut placement_storage_blocked = false;
             let blocked = if bridge.is_control_output(token) {
                 true
             } else {
@@ -300,20 +425,88 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     .coordinator
                     .poll_resolved_host_frame(context, &mut budget)?
                 {
-                    Some(mut frame) => matches!(
-                        frame.frame.surface_work(surface)?,
-                        dockspace::runtime::SurfaceWork::Deferred(
-                            dockspace::runtime::SurfaceWorkDeferred::OutputCapacity
-                        )
-                    ),
+                    Some(mut frame) => {
+                        let window = bridge
+                            .output_reservation(token)
+                            .and_then(|reservation| reservation.binding())
+                            .map(|binding| binding.window());
+                        if token.viewport_id() == ViewportId::ROOT {
+                            if let Some(window) = window {
+                                if let Some(placements) = root_placement_request.as_ref()
+                                    && !frame.native_input_pending()
+                                    && placements
+                                        .iter()
+                                        .any(|placement| placement.surface() == self.root_surface)
+                                    && placements.iter().all(|placement| {
+                                        frame.frame.view().surface(placement.surface()).is_some()
+                                    })
+                                {
+                                    if apply_root_placements(
+                                        &mut frame.frame,
+                                        &bridge,
+                                        window,
+                                        placements,
+                                    )? {
+                                        input_placements = Some(Arc::clone(placements));
+                                    }
+                                }
+                                if input_placements.is_none() && root_placement_request.is_some() {
+                                    input_placements = snapshot_root_placements(
+                                        &frame.frame,
+                                        &bridge,
+                                        window,
+                                        root_placement_capacity_bytes,
+                                    )?;
+                                    placement_storage_blocked = input_placements.is_none();
+                                }
+                            }
+                        }
+                        let mut surfaces = bridge
+                            .output_reservation(token)
+                            .and_then(|reservation| reservation.binding())
+                            .map(|binding| {
+                                frame
+                                    .frame
+                                    .native_surface_bindings_for_window(binding.window())
+                                    .map(|binding| binding.surface())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        if surfaces.is_empty() {
+                            surfaces.push(surface);
+                        }
+                        let mut blocked = false;
+                        for surface in surfaces {
+                            if matches!(
+                                frame.frame.surface_work(surface)?,
+                                dockspace::runtime::SurfaceWork::Deferred(
+                                    dockspace::runtime::SurfaceWorkDeferred::OutputCapacity
+                                )
+                            ) {
+                                blocked = true;
+                                break;
+                            }
+                        }
+                        blocked
+                    }
                     None => true,
                 }
             };
             if blocked
+                || placement_storage_blocked
                 || self.coordinator.session().has_pending_native_input()
                 || budget.is_exhausted()
             {
+                drop(input_placements);
+                self.refresh_root_placement_storage();
                 return self.defer_output_input(token);
+            }
+            if token.viewport_id() == ViewportId::ROOT {
+                self.root_input_placements = Some(NativeRootInputPlacements {
+                    token,
+                    placements: input_placements,
+                });
+                self.refresh_root_placement_storage();
             }
         }
         Ok(eframe::NativeOutputInputAdmission::Proceed)
@@ -536,6 +729,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             application_actions: NativeApplicationActions::default(),
             pass_actions: NativePassActions::default(),
             owned_update: None,
+            root_placement_request: None,
+            root_input_placements: None,
+            invalid_root_placement_request: false,
             pending_service: false,
             close_policy,
             root_context: None,
@@ -715,7 +911,145 @@ impl<P: PaneView> NativeRuntimeState<P> {
         token: NativeOutputToken,
         budget: &mut NativeInputBudget,
     ) -> Result<NativeSurfaceUpdate, NativeRuntimeError> {
+        let placements = (surface == self.root_surface && token.viewport_id() == ViewportId::ROOT)
+            .then(|| {
+                self.root_input_placements
+                    .as_ref()
+                    .filter(|admitted| admitted.token == token)
+                    .map_or_else(
+                        || self.root_placement_request.clone(),
+                        |admitted| admitted.placements.clone(),
+                    )
+            })
+            .flatten();
+        self.update_window_budgeted(ui, surface, placements.as_deref(), token, budget)
+    }
+
+    pub(crate) fn update_root_surfaces(
+        &mut self,
+        ui: &mut egui::Ui,
+        placements: &[NativeSurfacePlacement],
+    ) -> Result<NativeSurfaceUpdate, NativeRuntimeError> {
+        let token = eframe::current_native_output_token()
+            .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
+        if token.viewport_id() != ViewportId::ROOT {
+            return Err(NativeHostProtocolError::InvalidWindowSnapshot.into());
+        }
+        let admitted_this_run = self
+            .root_input_placements
+            .as_ref()
+            .is_some_and(|admitted| admitted.token == token);
+        let invalid = placements.is_empty()
+            || !placements
+                .iter()
+                .any(|placement| placement.surface() == self.root_surface)
+            || placements.len() > self.view().surfaces().count()
+            || placements
+                .iter()
+                .any(|placement| self.view().surface(placement.surface()).is_none())
+            || placements.iter().enumerate().any(|(index, placement)| {
+                placements[..index]
+                    .iter()
+                    .any(|previous| previous.surface() == placement.surface())
+            });
+        if invalid && !admitted_this_run {
+            return Err(NativeHostProtocolError::InvalidWindowSnapshot.into());
+        }
+        if self
+            .owned_update
+            .as_ref()
+            .is_some_and(|update| update.run.token == token)
+            && !invalid
+            && self.root_placement_request.as_deref() != Some(placements)
+        {
+            return Err(NativeHostProtocolError::MultipassOutputChanged.into());
+        }
+        if invalid {
+            self.invalid_root_placement_request = true;
+        } else if self.root_placement_request.as_deref() != Some(placements) {
+            let additional = size_of_val(placements);
+            if let Err(error) = self.reserve_root_placement_storage(additional) {
+                if !admitted_this_run {
+                    return Err(error);
+                }
+                self.invalid_root_placement_request = true;
+            } else {
+                self.root_placement_request = Some(Arc::from(placements));
+                self.refresh_root_placement_storage();
+            }
+        }
+        // Raw input belongs to the roster admitted before eframe took it. A
+        // layout announced by this callback becomes eligible for the next run;
+        // the current run still paints the complete preflighted roster once.
+        let admitted = self
+            .root_input_placements
+            .as_ref()
+            .filter(|admitted| admitted.token == token);
+        let effective = admitted.map_or_else(
+            || self.root_placement_request.clone(),
+            |admitted| admitted.placements.clone(),
+        );
+        if admitted.is_some() && effective.as_deref() != Some(placements) {
+            self.pending_service = true;
+            ui.ctx().request_repaint_once_of(ViewportId::ROOT);
+        }
+        let bridge = self.coordinator.dispatch_bridge();
+        let mut budget = bridge
+            .dispatch_budget(token)
+            .ok_or(NativeHostProtocolError::OutputBudgetUnavailable)?;
+        self.update_window_budgeted(
+            ui,
+            self.root_surface,
+            effective.as_deref(),
+            token,
+            &mut budget,
+        )
+    }
+
+    fn update_window_budgeted(
+        &mut self,
+        ui: &mut egui::Ui,
+        surface: SurfaceId,
+        placements: Option<&[NativeSurfacePlacement]>,
+        token: NativeOutputToken,
+        budget: &mut NativeInputBudget,
+    ) -> Result<NativeSurfaceUpdate, NativeRuntimeError> {
         let context = ui.ctx().clone();
+        let requested_surfaces = placements.map_or_else(
+            || vec![surface],
+            |placements| {
+                placements
+                    .iter()
+                    .map(|placement| placement.surface())
+                    .collect::<Vec<_>>()
+            },
+        );
+        if requested_surfaces
+            .iter()
+            .enumerate()
+            .any(|(index, surface)| requested_surfaces[..index].contains(surface))
+        {
+            return Err(NativeHostProtocolError::InvalidWindowSnapshot.into());
+        }
+        let mut surface_uis = placements
+            .map(|placements| {
+                let parent_clip = context
+                    .layer_transform_to_global(ui.layer_id())
+                    .map_or(ui.clip_rect(), |transform| transform * ui.clip_rect());
+                placements
+                    .iter()
+                    .copied()
+                    .map(|placement| {
+                        let mapping = NativePaintMapping::new(
+                            placement,
+                            context.pixels_per_point(),
+                            parent_clip,
+                        )?;
+                        Ok(mapping.child_ui(ui, self.instance_id, placement.surface()))
+                    })
+                    .collect::<Result<Vec<_>, NativeHostProtocolError>>()
+            })
+            .transpose()?;
         if surface == self.root_surface {
             self.root_context = Some(context.clone());
         }
@@ -738,7 +1072,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 mut run,
                 publication,
             } = update;
-            if publication.surfaces.as_slice() != [surface] {
+            if publication.surfaces != requested_surfaces
+                || publication.placements.as_deref() != placements
+            {
                 return Err(NativeHostProtocolError::MultipassOutputChanged.into());
             }
             run.begin_repeated_pass(&context, token)?;
@@ -765,8 +1101,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 None
             };
             let mut invalidations = self.coordinator.prepare_no_frame_invalidations()?;
-            let no_frame_invalidation_pending =
-                self.coordinator.has_pending_no_frame_invalidation(surface);
+            let no_frame_invalidation_pending = requested_surfaces
+                .iter()
+                .any(|surface| self.coordinator.has_pending_no_frame_invalidation(*surface));
             let published = self.coordinator.session().version();
             let Some(mut host_frame) = self
                 .coordinator
@@ -785,50 +1122,83 @@ impl<P: PaneView> NativeRuntimeState<P> {
             let control_output = bridge.is_control_output(token);
             let mut ui_actions = Vec::new();
             if !native_input_pending && !control_output {
-                let dock_rect = ui.available_rect_before_wrap();
-                let focus_route_matches = token.viewport_id() == context.viewport_id()
-                    && context.input(|input| input.focused)
-                    && bridge
-                        .output_reservation(token)
-                        .and_then(|reservation| reservation.binding())
-                        .is_some_and(|binding| binding.surface() == surface);
-                let actual_focus = host_frame
+                for (index, surface) in requested_surfaces.iter().copied().enumerate() {
+                    let surface_ui = surface_uis.as_mut().map_or(&mut *ui, |uis| &mut uis[index]);
+                    let dock_rect = surface_ui.available_rect_before_wrap();
+                    let focus_route_matches = token.viewport_id() == context.viewport_id()
+                        && context.input(|input| input.focused)
+                        && bridge
+                            .output_reservation(token)
+                            .and_then(|reservation| reservation.binding())
+                            .is_some_and(|binding| {
+                                host_frame
+                                    .frame
+                                    .native_surface_bindings_for_window(binding.window())
+                                    .any(|candidate| candidate.surface() == surface)
+                            });
+                    let actual_focus = host_frame
+                        .frame
+                        .view()
+                        .surface(surface)
+                        .filter(|_| focus_route_matches)
+                        .map(|view| {
+                            egui_dockspace::native_support::sample_host_focus(
+                                &context,
+                                view,
+                                &self.panes,
+                                surface_ui.make_persistent_id((
+                                    self.instance_id.with(surface.get()),
+                                    "workspace-focus",
+                                    surface,
+                                )),
+                                context
+                                    .layer_transform_to_global(surface_ui.layer_id())
+                                    .map_or(dock_rect, |transform| transform * dock_rect),
+                                host_frame.presented_focus_bindings(surface, token.viewport_id()),
+                            )
+                        });
+                    let (actions, mut acknowledgement) =
+                        self.pass_actions.peek_deferred_actions(token, surface);
+                    if let Some(observation) = self.pass_actions.peek_pane_focus(
+                        token,
+                        host_frame.frame.presented_surface(surface),
+                        &mut acknowledgement,
+                    ) {
+                        host_frame.submit_pane_focus_observation(observation)?;
+                    }
+                    if let Some(actual_focus) = actual_focus {
+                        host_frame.frame.report_host_focus(surface, actual_focus)?;
+                    }
+                    for action in actions {
+                        host_frame.frame.submit_deferred_surface_action(action)?;
+                    }
+                    ui_actions.push(acknowledgement);
+                }
+            }
+            let mut placement_update_deferred = false;
+            if !native_input_pending
+                && !control_output
+                && let Some(placements) = placements
+            {
+                let window = host_frame
                     .frame
-                    .view()
-                    .surface(surface)
-                    .filter(|_| focus_route_matches)
-                    .map(|view| {
-                        egui_dockspace::native_support::sample_host_focus(
-                            &context,
-                            view,
-                            &self.panes,
-                            ui.make_persistent_id((
-                                self.instance_id.with(surface.get()),
-                                "workspace-focus",
-                                surface,
-                            )),
-                            context
-                                .layer_transform_to_global(ui.layer_id())
-                                .map_or(dock_rect, |transform| transform * dock_rect),
-                            host_frame.presented_focus_bindings(surface, token.viewport_id()),
-                        )
+                    .proposed_native_bindings()
+                    .find(|binding| binding.surface() == surface)
+                    .map(|binding| binding.window())
+                    .or_else(|| {
+                        bridge
+                            .output_reservation(token)
+                            .and_then(|reservation| reservation.binding())
+                            .map(|binding| binding.window())
                     });
-                let (actions, mut acknowledgement) =
-                    self.pass_actions.peek_deferred_actions(token, surface);
-                if let Some(observation) = self.pass_actions.peek_pane_focus(
-                    token,
-                    host_frame.frame.presented_surface(surface),
-                    &mut acknowledgement,
-                ) {
-                    host_frame.submit_pane_focus_observation(observation)?;
-                }
-                if let Some(actual_focus) = actual_focus {
-                    host_frame.frame.report_host_focus(surface, actual_focus)?;
-                }
-                for action in actions {
-                    host_frame.frame.submit_deferred_surface_action(action)?;
-                }
-                ui_actions.push(acknowledgement);
+                placement_update_deferred = if let Some(window) = window {
+                    !apply_root_placements(&mut host_frame.frame, &bridge, window, placements)?
+                } else {
+                    // The initial registration can still belong to this very
+                    // candidate. Publish that existing bootstrap first; only its
+                    // committed route can supply the real window for placement.
+                    true
+                };
             }
             let application_submission = if !native_input_pending
                 && !control_output
@@ -848,17 +1218,20 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .map(|submission| submission.finish(&mut host_frame.frame))
                 .transpose()?;
             let surfaces = host_frame.frame.surfaces();
-            invalidations.select_for_surfaces(&surfaces, true);
+            invalidations.select_for_frame(&host_frame.frame, true);
             for viewport in &invalidations.repaint_viewports {
                 context.request_repaint_once_of(*viewport);
             }
             let retain_previous = control_output
+                || placement_update_deferred
                 || (surface == self.root_surface
                     && context.input(|input| input.viewport().close_requested()))
                 || bridge
                     .output_reservation(token)
                     .is_some_and(|reservation| reservation.is_abandoned())
-                || !surfaces.contains(&surface)
+                || requested_surfaces
+                    .iter()
+                    .any(|surface| !surfaces.contains(surface))
                 || native_input_pending
                 || should_retain_previous_output(output_prefix_pending, reduced_callback)
                 || no_frame_invalidation_pending
@@ -868,7 +1241,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 host_frame,
                 NativeUpdateRun::begin(&context, token),
                 NativeUpdatePublication {
-                    surfaces: vec![surface],
+                    surfaces: requested_surfaces,
+                    placements: placements.map(<[NativeSurfacePlacement]>::to_vec),
                     no_frame_invalidations: invalidations.ready,
                     retirements: if native_input_pending {
                         None
@@ -895,86 +1269,97 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .as_ref()
             .and_then(NativeSubmittedApplicationAction::encoding_style)
             .unwrap_or(&self.style);
-        let should_measure = if retain_previous {
-            false
-        } else {
-            match host_frame.frame.surface_work(surface)? {
-                dockspace::runtime::SurfaceWork::Ready(plan) => {
-                    plan.measurement_refresh().is_allowed()
+        for (index, surface) in publication.surfaces.iter().copied().enumerate() {
+            let surface_ui = surface_uis.as_mut().map_or(&mut *ui, |uis| &mut uis[index]);
+            let should_measure = if retain_previous {
+                false
+            } else {
+                match host_frame.frame.surface_work(surface)? {
+                    dockspace::runtime::SurfaceWork::Ready(plan) => {
+                        plan.measurement_refresh().is_allowed()
+                    }
+                    dockspace::runtime::SurfaceWork::Deferred(
+                        dockspace::runtime::SurfaceWorkDeferred::Unmeasured,
+                    ) => true,
+                    dockspace::runtime::SurfaceWork::Deferred(
+                        dockspace::runtime::SurfaceWorkDeferred::OutputCapacity,
+                    ) => {
+                        retain_previous = true;
+                        false
+                    }
                 }
-                dockspace::runtime::SurfaceWork::Deferred(
-                    dockspace::runtime::SurfaceWorkDeferred::Unmeasured,
-                ) => true,
-                dockspace::runtime::SurfaceWork::Deferred(
-                    dockspace::runtime::SurfaceWorkDeferred::OutputCapacity,
-                ) => {
-                    retain_previous = true;
-                    false
-                }
+            };
+            if should_measure {
+                let dock_rect = if placements.is_some() {
+                    surface_ui.max_rect()
+                } else {
+                    surface_ui.available_rect_before_wrap()
+                };
+                let popup_rect = if placements.is_some() {
+                    surface_ui.clip_rect()
+                } else {
+                    context.input(egui::InputState::content_rect).round_ui()
+                };
+                host_frame.measure_surface(
+                    surface,
+                    surface_ui,
+                    dock_rect,
+                    popup_rect,
+                    &self.panes,
+                    encoding_style,
+                )?;
             }
-        };
-        if should_measure {
-            let dock_rect = ui.available_rect_before_wrap();
-            let popup_rect = context.input(egui::InputState::content_rect).round_ui();
-            host_frame.measure_surface(
-                surface,
-                ui,
-                dock_rect,
-                popup_rect,
-                &self.panes,
-                encoding_style,
-            )?;
-        }
-        if !retain_previous
-            && !matches!(
-                host_frame.frame.surface_work(surface)?,
-                dockspace::runtime::SurfaceWork::Ready(_)
-            )
-        {
-            retain_previous = true;
+            if !retain_previous
+                && !matches!(
+                    host_frame.frame.surface_work(surface)?,
+                    dockspace::runtime::SurfaceWork::Ready(_)
+                )
+            {
+                retain_previous = true;
+            }
         }
         if !retain_previous && !bridge.prepare_surface_outputs(token, publication.surfaces.len()) {
             retain_previous = true;
         }
         if retain_previous {
-            if crate::host_frame::retained_focus_binding(&context, token, surface, &bridge)
-                .is_some()
-            {
-                host_frame.retain_pane_focus(&context, surface, &self.panes);
+            for surface in &publication.surfaces {
+                host_frame.retain_pane_focus(&context, *surface, &self.panes);
             }
             if surface != self.root_surface {
                 bridge.block_semantic_viewport(token.viewport_id());
             }
             self.pass_actions
-                .stage_retain_previous(token, surface)
+                .stage_retain_previous_surfaces(token, &publication.surfaces)
                 .map_err(map_pass_action_error)?;
         } else {
-            let paint = host_frame.paint_surface(
-                self.instance_id.with(surface.get()),
-                surface,
-                ui,
-                &mut self.panes,
-                encoding_style,
-            )?;
-            let owner = host_frame
-                .frame
-                .proposed_native_bindings()
-                .find(|binding| binding.surface() == surface)
-                .or_else(|| {
+            self.pass_actions
+                .begin_surface_pass(token, &publication.surfaces)
+                .map_err(map_pass_action_error)?;
+            for (index, surface) in publication.surfaces.iter().copied().enumerate() {
+                let surface_ui = surface_uis.as_mut().map_or(&mut *ui, |uis| &mut uis[index]);
+                let paint = host_frame.paint_surface(
+                    self.instance_id.with(surface.get()),
+                    surface,
+                    surface_ui,
+                    &mut self.panes,
+                    encoding_style,
+                )?;
+                let owner = paint.native_binding().or_else(|| {
                     bridge
                         .output_reservation(token)
                         .and_then(|reservation| reservation.binding())
                 });
-            let paint = self
-                .pass_actions
-                .prepare_pass(token, owner, paint)
-                .map_err(map_pass_action_error)?;
-            if !paint.transient_visuals_complete() {
-                return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
+                let paint = self
+                    .pass_actions
+                    .prepare_pass(token, owner, paint)
+                    .map_err(map_pass_action_error)?;
+                if !paint.transient_visuals_complete() {
+                    return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
+                }
+                self.pass_actions
+                    .stage_pass(token, paint)
+                    .map_err(map_pass_action_error)?;
             }
-            self.pass_actions
-                .stage_pass(token, paint)
-                .map_err(map_pass_action_error)?;
         }
         publication.follow_up |= self.pass_actions.has_retained_action_work();
         self.owned_update = Some(NativeOwnedUpdate {
@@ -1128,7 +1513,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
         };
         let surface = *publication
             .surfaces
-            .first()
+            .iter()
+            .find(|surface| **surface == self.root_surface)
+            .or_else(|| publication.surfaces.first())
             .ok_or(NativeHostProtocolError::MultipassOutputChanged)?;
         let mut paints = match final_pass {
             NativeFinalPass::Semantic(paints) => paints,
@@ -1174,12 +1561,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
             false
         };
         if !publication.native_input_pending {
-            for invalidation in &publication.no_frame_invalidations {
-                host.defer_surface(
-                    invalidation.surface(),
-                    SurfaceUnavailableReason::SurfaceUnavailable,
-                )?;
-            }
+            crate::coordinator::defer_no_frame_invalidations(
+                &mut host.frame,
+                &publication.no_frame_invalidations,
+            )?;
         }
         host.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         // This is the only publication of the run. The bridge keeps staging,
@@ -1251,7 +1636,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     self.pass_actions.retain_pane_focus(
                         token,
                         paint.surface(),
-                        self.coordinator.viewport_binding(token.viewport_id()),
+                        paint.native_binding(),
                         artifact,
                         observation,
                     );

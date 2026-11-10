@@ -25,7 +25,13 @@ fn session() -> DockspaceSession {
 
 fn apply(session: &mut DockspaceSession, roster: NativeWorkAreaRoster) {
     session
-        .report_managed_native_snapshot([], roster)
+        .report_managed_native_snapshot(
+            std::iter::empty::<(
+                dockspace::runtime::NativeWindowBinding,
+                dockspace::runtime::NativeWindowFacts,
+            )>(),
+            roster,
+        )
         .expect("the complete work-area snapshot records");
     session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)

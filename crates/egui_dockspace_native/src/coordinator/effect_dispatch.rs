@@ -65,10 +65,8 @@ impl NativeCoordinator {
     }
 
     fn exact_viewport_for_binding(&self, binding: NativeSurfaceBinding) -> Option<ViewportId> {
-        self.bridge.with_viewports(|viewports| {
-            let viewport = viewports.viewport(binding.surface())?;
-            (viewports.binding(viewport) == Some(binding)).then_some(viewport)
-        })
+        self.bridge
+            .with_viewports(|viewports| viewports.viewport_for_window(binding.window()))
     }
 
     pub(super) fn exact_window_route_for_binding(
@@ -76,12 +74,23 @@ impl NativeCoordinator {
         binding: NativeSurfaceBinding,
     ) -> Option<(ViewportId, WindowId)> {
         self.bridge.with_viewports(|viewports| {
-            let viewport = viewports.viewport(binding.surface())?;
-            if viewports.binding(viewport) != Some(binding) {
-                return None;
-            }
+            let viewport = viewports.viewport_for_window(binding.window())?;
             Some((viewport, viewports.window(viewport)?))
         })
+    }
+
+    pub(super) fn current_window_route_for_binding(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<(ViewportId, WindowId)> {
+        if !self
+            .session
+            .native_window_bindings()
+            .any(|window| window == binding.window())
+        {
+            return None;
+        }
+        self.exact_window_route_for_binding(binding)
     }
 
     pub(super) fn fail_pending_viewport_effect(
@@ -113,14 +122,22 @@ impl NativeCoordinator {
         binding: NativeSurfaceBinding,
     ) {
         self.bridge.with_viewports_mut(|viewports| {
-            if viewports.binding(viewport) == Some(binding) {
-                viewports.suppress_pointer_route(viewport, binding);
+            if let Some(current) = viewports.binding(viewport)
+                && current.window() == binding.window()
+            {
+                viewports.suppress_pointer_route(viewport, current);
             }
         });
         self.deferred_viewports.remove(binding);
-        self.terminalize_focus(binding);
+        if let Some(pending) = self
+            .focus_control
+            .pending_binding()
+            .filter(|pending| pending.window() == binding.window())
+        {
+            self.terminalize_focus(pending);
+        }
         self.retain_retired_input_results(binding);
-        self.receivers.retire_binding(binding);
+        self.receivers.retire_window(binding.window());
         self.bridge
             .retire_deferred_binding_paints(viewport, binding);
     }
@@ -211,7 +228,15 @@ impl NativeCoordinator {
                     let viewport = match kind {
                         NativeViewportEffectKind::Create => viewport_id_for(binding),
                         NativeViewportEffectKind::Replacement => {
-                            let Some(viewport) = self.surface_viewport(binding.surface()) else {
+                            let predecessor_viewport = self
+                                .session
+                                .native_replacement_predecessor(binding)
+                                .and_then(|predecessor| {
+                                    self.bridge.with_viewports(|viewports| {
+                                        viewports.viewport_for_window(predecessor.window())
+                                    })
+                                });
+                            let Some(viewport) = predecessor_viewport else {
                                 self.submit_unsupported_effect(request)?;
                                 continue;
                             };
@@ -355,7 +380,7 @@ impl NativeCoordinator {
                 NativeEffectOperation::SetPointerPassthrough { binding, enabled } => {
                     let binding = *binding;
                     let enabled = *enabled;
-                    let Some((viewport, window)) = self.exact_window_route_for_binding(binding)
+                    let Some((viewport, window)) = self.current_window_route_for_binding(binding)
                     else {
                         self.submit_failed_effect(
                             request,
@@ -363,13 +388,6 @@ impl NativeCoordinator {
                         )?;
                         continue;
                     };
-                    if !self.session.is_current_native_binding(binding) {
-                        self.submit_failed_effect(
-                            request,
-                            NativeDispatchFailure::WindowUnavailable,
-                        )?;
-                        continue;
-                    }
                     if let Err(request) = self
                         .input_control
                         .retain(viewport, window, binding, enabled, request)

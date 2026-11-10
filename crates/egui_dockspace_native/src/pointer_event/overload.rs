@@ -8,7 +8,7 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceSession, HostInputOutcome, HostWindowToken, NativePointerRoster,
+    DockspaceSession, HostInputOutcome, HostWindowToken, NativePointerRoster, NativeSurfaceBinding,
     SurfaceUnavailableReason,
 };
 use eframe::egui::ViewportId;
@@ -172,8 +172,8 @@ fn binding_and_provider_terminals_reuse_all_button_contact_and_scroll_slots() {
     observe(&mut translator, wheel(TouchPhase::Started));
     let admitted = translator.owned_data_capacity_bytes();
     let reserved = translator.reserved_translation_capacity_bytes();
-    translator.retire_binding(binding);
-    assert!(!translator.references_binding(binding));
+    translator.retire_binding(binding.window());
+    assert!(!translator.references_binding(binding.window()));
     assert!(translator.owned_data_capacity_bytes() <= admitted);
     let mouse = NativeInputDeviceKey::Mouse(NativePhysicalDeviceKey::Winit(DeviceId::dummy()));
     let Some(NativePointerDeviceEntry::Live(device)) = translator.devices.get(&mouse) else {
@@ -239,13 +239,13 @@ fn overload_discards_mouse_buttons_origins_and_capture_before_fresh_press() {
         translator.translate(&press, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    assert!(translator.references_binding(binding));
+    assert!(translator.references_binding(binding.window()));
     assert!(!translator.can_coalesce_idle_cursor_moves());
     let old_identity = translator.next_device_identity;
 
     translator.finish_overload_cancellation();
 
-    assert!(!translator.references_binding(binding));
+    assert!(!translator.references_binding(binding.window()));
     assert!(translator.can_coalesce_idle_cursor_moves());
     assert_eq!(translator.next_device_identity, old_identity);
     assert_eq!(
@@ -255,7 +255,7 @@ fn overload_discards_mouse_buttons_origins_and_capture_before_fresh_press() {
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary)
         ),
     );
-    assert!(!translator.references_binding(binding));
+    assert!(!translator.references_binding(binding.window()));
     assert_eq!(
         translator.translate(&record(mouse(ElementState::Released)), |_| None),
         expected(
@@ -438,8 +438,8 @@ fn overload_preserves_device_removal_gates_and_binding_retired_tail_policy() {
         translator.translate(&start, |_| None),
         NativePointerTranslation::Input(_)
     ));
-    translator.retire_binding(binding);
-    assert!(!translator.references_binding(binding));
+    translator.retire_binding(binding.window());
+    assert!(!translator.references_binding(binding.window()));
     let tail = NativeWindowEventRecord::for_test(
         2,
         WindowId::from(1),

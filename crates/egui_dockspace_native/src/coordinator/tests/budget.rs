@@ -217,6 +217,7 @@ fn pending_native_suffix_does_not_delay_committed_local_coordinate_refresh() {
                 (
                     first,
                     ready_window_facts(0.0)
+                        .with_native_scale_factor(ScaleFactor::new(2.0).unwrap())
                         .with_presentation_scale_factor(ScaleFactor::new(2.0).unwrap()),
                 ),
                 (second, ready_window_facts(720.0)),
@@ -239,6 +240,7 @@ fn pending_native_suffix_does_not_delay_committed_local_coordinate_refresh() {
     )));
     let committed = native.session.native_local_coordinates(first).unwrap();
     assert_ne!(committed, original);
+    assert!(native.session.presented_surface(first.surface()).is_none());
     assert_eq!(
         native
             .bridge

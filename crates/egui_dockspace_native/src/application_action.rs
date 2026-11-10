@@ -243,7 +243,7 @@ pub(crate) enum NativeApplicationCommand {
     DocumentRestore {
         restore: Box<PreparedDockspaceDocumentRestore>,
         root_surface: SurfaceId,
-        existing_root: Option<NativeSurfaceBinding>,
+        root_mappings: Vec<(NativeSurfaceBinding, SurfaceId)>,
     },
 }
 
@@ -348,13 +348,13 @@ impl NativeApplicationAction {
             NativeApplicationCommand::DocumentRestore {
                 restore,
                 root_surface,
-                existing_root,
+                root_mappings,
             } => {
                 return Ok(NativeApplicationSubmission::Replacement(
                     NativeWorkspaceReplacement::Document {
                         restore,
                         root_surface,
-                        existing_root,
+                        root_mappings,
                     },
                 ));
             }
@@ -420,7 +420,7 @@ pub(crate) enum NativeWorkspaceReplacement {
     Document {
         restore: Box<PreparedDockspaceDocumentRestore>,
         root_surface: SurfaceId,
-        existing_root: Option<NativeSurfaceBinding>,
+        root_mappings: Vec<(NativeSurfaceBinding, SurfaceId)>,
     },
 }
 
@@ -523,15 +523,13 @@ impl NativeApplicationSubmission {
             Self::Replacement(NativeWorkspaceReplacement::Document {
                 restore,
                 root_surface,
-                existing_root,
+                root_mappings,
             }) => {
-                if let Some(existing_root) = existing_root {
-                    if let Err(error) = frame.submit_native_document_restore_rebinding_root(
-                        &restore,
-                        existing_root,
-                        root_surface,
-                    ) {
-                        return root_continuation_rejection(error, existing_root, root_surface);
+                if let Some(&(existing_root, incoming_root)) = root_mappings.first() {
+                    if let Err(error) =
+                        frame.submit_native_document_restore_with_roots(&restore, root_mappings)
+                    {
+                        return root_continuation_rejection(error, existing_root, incoming_root);
                     }
                 } else {
                     frame.submit_native_document_restore(&restore, root_surface)?;

@@ -37,7 +37,7 @@ impl PendingNativeOutput {
             Self::Surfaces(outputs) => {
                 !outputs.is_empty()
                     && outputs.iter().enumerate().all(|(index, output)| {
-                        output.matches_native_binding(binding)
+                        output.matches_native_window(binding.window())
                             && !outputs[..index]
                                 .iter()
                                 .any(|previous| previous.surface() == output.surface())
@@ -454,7 +454,7 @@ impl NativeOutputResource {
             || outputs.len() > self.surface_backing.capacity()
             || !self.reservation.binding().is_some_and(|binding| {
                 outputs.iter().enumerate().all(|(index, output)| {
-                    output.matches_native_binding(binding)
+                    output.matches_native_window(binding.window())
                         && !outputs[..index]
                             .iter()
                             .any(|previous| previous.surface() == output.surface())

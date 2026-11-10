@@ -15,9 +15,9 @@ use dockspace::runtime::{
     DockspaceReceiverDescriptor, NativeCreateReadiness, NativeEffectAcknowledgement,
     NativeEffectOperation, NativeInputStorageLimit, NativeLocalGeometry,
     NativeLocalPointerLocation, NativeProducerStorageLimit, NativeReceiverPurpose,
-    NativeReceiverQuery, NativeReportStorageLimit, NativeSurfaceBinding, PaintedSurfaceOutput,
-    SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePresentationResult,
-    UniformSurfaceMetrics,
+    NativeReceiverQuery, NativeReportStorageLimit, NativeSurfaceBinding, NativeWindowBinding,
+    NativeWindowHit, PaintedSurfaceOutput, SurfacePaintProgramOperation, SurfacePaintProgramStep,
+    SurfacePresentationArtifact, SurfacePresentationResult, UniformSurfaceMetrics,
 };
 use winit::dpi::{PhysicalPosition, PhysicalSize as WinitPhysicalSize};
 use winit::event::{
@@ -177,11 +177,14 @@ fn establish_source(state: &mut NativeRuntimeState<Panes>) -> NativeSurfaceBindi
     source
 }
 
-struct Scene(Vec<(ItemId, DockspaceReceiverDescriptor, LogicalRect)>);
+struct Scene {
+    tabs: Vec<(ItemId, DockspaceReceiverDescriptor, LogicalRect)>,
+    presentation: Option<(NativeWindowBinding, SurfacePresentationArtifact)>,
+}
 
 impl Scene {
     fn point(&self, item: ItemId, fraction: f64) -> LogicalPoint {
-        let (_, receiver, visible) = self.0.iter().find(|tab| tab.0 == item).unwrap();
+        let (_, receiver, visible) = self.tabs.iter().find(|tab| tab.0 == item).unwrap();
         let point = LogicalPoint::new(
             visible.x() + visible.width() * fraction,
             visible.y() + visible.height() * 0.5,
@@ -192,9 +195,21 @@ impl Scene {
     }
 
     fn resolve(&self, query: NativeReceiverQuery) -> NativeReceiverAnswer {
+        let query = match query {
+            NativeReceiverQuery::WindowHit(query) => {
+                return NativeReceiverAnswer::WindowHit(
+                    self.presentation
+                        .filter(|(window, _)| *window == query.window())
+                        .map_or(NativeWindowHit::Unknown, |(_, artifact)| {
+                            NativeWindowHit::Surface(artifact)
+                        }),
+                );
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         assert_eq!(query.surface(), SOURCE);
         let point = query.point().unwrap();
-        let Some((_, receiver, _)) = self.0.iter().find(|tab| tab.1.bounds().contains(point))
+        let Some((_, receiver, _)) = self.tabs.iter().find(|tab| tab.1.bounds().contains(point))
         else {
             return NativeReceiverAnswer::Unknown;
         };
@@ -243,7 +258,10 @@ fn paint(frame: &mut NativeHostFrame<'_>) -> Scene {
         .unwrap();
     frame.frame.confirm_surface_painted(receipt).unwrap();
     assert_eq!(tabs.len(), 2);
-    Scene(tabs)
+    Scene {
+        tabs,
+        presentation: None,
+    }
 }
 
 fn present_source(state: &mut NativeRuntimeState<Panes>, source: NativeSurfaceBinding) -> Scene {
@@ -263,10 +281,11 @@ fn present_source(state: &mut NativeRuntimeState<Panes>, source: NativeSurfaceBi
             .unwrap(),
         )
         .unwrap();
-    let scene = paint(&mut frame);
+    let mut scene = paint(&mut frame);
     let mut report = finish(frame);
     let [output] = report.take_painted_outputs().try_into().unwrap();
     assert!(output.matches_native_binding(source));
+    scene.presentation = Some((source.window(), output.presentation_artifact()));
     state
         .coordinator
         .report_model_presentation_for_test(output, SurfacePresentationResult::Presented)
@@ -297,7 +316,6 @@ fn capture(
         .unwrap();
     let geometry = NativeLocalGeometry::new(
         PhysicalSize::new(640.0, 480.0).unwrap(),
-        ScaleFactor::new(1.0).unwrap(),
         ScaleFactor::new(1.0).unwrap(),
     );
     let position = PhysicalPosition::new(point.x(), point.y());
@@ -345,7 +363,8 @@ fn capture(
     assert!(matches!(
         record.pointer_location(),
         Some(CapturedNativePointerLocation::NativeLocal(NativeLocalPointerLocation::Exact(sample)))
-            if sample.surface_position() == point
+            if sample.client_position()
+                == dockspace::geometry::PhysicalPoint::new(point.x(), point.y()).unwrap()
     ));
     assert_eq!(record.binding(), Some(source));
     let captured = bridge.captured_through_for_test();
@@ -446,6 +465,9 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
         root_surface: SURFACE,
         instance_id: egui::Id::unique("elapsed-service-three-owners"),
         owned_update: None,
+        root_placement_request: None,
+        root_input_placements: None,
+        invalid_root_placement_request: false,
         pending_service: false,
         style: DockStyle::default(),
         panes: Panes(Vec::new()),

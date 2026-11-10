@@ -1,10 +1,17 @@
 use super::*;
-use crate::mailbox::{HostRecord, journal::HostIngressJournal};
+use crate::mailbox::{HostRecord, NativeHostBridge, journal::HostIngressJournal};
 use crate::viewport_callback::NativeViewportCreateFailureRecord;
 use crate::viewport_map::{CreateAdmission, CreateTerminal, NativeViewportMap};
+use dockspace::geometry::{LogicalSize, PhysicalPoint, PhysicalRect, PhysicalSize, ScaleFactor};
+use dockspace::model::{
+    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
+    SurfaceId,
+};
 use dockspace::runtime::{
-    DockspaceSession, HostFrameReport, HostInputOutcome, NativeCloseState,
-    NativeEffectAcknowledgement, NativeWorkAreaRoster, SurfaceUnavailableReason,
+    DockspaceHostFrame, DockspaceSession, HostFrameReport, HostInputOutcome, HostWindowToken,
+    NativeCloseState, NativeEffectAcknowledgement, NativePointerRoster, NativeSurfacePlacement,
+    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+    SurfaceUnavailableReason,
 };
 use eframe::NativeViewportCreateFailureKind;
 
@@ -109,6 +116,254 @@ fn commit_failed_create(
     assert!(!state.is_quiescence_candidate(binding));
     state.commit_create_failures();
     assert!(state.is_quiescence_candidate(binding));
+}
+
+fn shared_layout() -> DockspaceLayout {
+    DockspaceLayout::new([1, 2].map(|id| {
+        DockspaceSurfaceLayout::new(
+            SurfaceId::new(id),
+            DockspaceRootLayout::new(
+                RootId::new(id),
+                DockspaceNode::central_tabs([ItemId::new(id)]),
+            ),
+        )
+    }))
+    .unwrap()
+}
+
+fn shared_placements() -> (
+    DockspaceSession,
+    NativeSurfaceBinding,
+    [NativeSurfaceBinding; 2],
+) {
+    let mut session =
+        DockspaceSession::from_layout(shared_layout(), dockspace::policy::DockPolicy::default())
+            .unwrap();
+    session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .unwrap();
+    session
+        .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+            eframe::NativeWindowingBackend::Windows,
+        ))
+        .unwrap();
+    session
+        .register_native_root(SurfaceId::new(1), HostWindowToken::new(1))
+        .unwrap();
+    let original = commit(&mut session).native_bindings()[0];
+    let scale = ScaleFactor::new(1.0).unwrap();
+    session
+        .report_managed_native_snapshot(
+            [(
+                original.window(),
+                NativeWindowFacts::live()
+                    .with_content_size(PhysicalSize::new(800.0, 600.0).unwrap())
+                    .with_native_scale_factor(scale)
+                    .with_presentation_scale_factor(scale)
+                    .with_input(NativeWindowInputState::ReceivesInput, None)
+                    .with_presentation(NativeWindowPresentationState::Visible),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .unwrap();
+    commit(&mut session);
+    let placements = [1, 2].map(|id| {
+        let x = if id == 1 { 0.0 } else { 400.0 };
+        NativeSurfacePlacement::new(
+            SurfaceId::new(id),
+            LogicalSize::new(400.0, 600.0).unwrap(),
+            PhysicalPoint::new(x, 0.0).unwrap(),
+            scale,
+            PhysicalRect::new(x, 0.0, 400.0, 600.0).unwrap(),
+        )
+    });
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .set_native_surface_placements(original.window(), &placements)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    let bindings: [NativeSurfaceBinding; 2] = session
+        .native_surface_bindings_for_window(original.window())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    assert_ne!(bindings[0], bindings[1]);
+    assert_eq!(bindings[0].window(), bindings[1].window());
+    (session, original, bindings)
+}
+
+fn shared_replacement<'a>(
+    session: &'a mut DockspaceSession,
+    bindings: &[NativeSurfaceBinding; 2],
+) -> DockspaceHostFrame<'a> {
+    let reset = session.prepare_layout_reset(shared_layout()).unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .submit_native_layout_reset_with_roots(
+            &reset,
+            bindings.iter().map(|&binding| (binding, binding.surface())),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame
+}
+
+#[test]
+fn shared_placement_detachment_keeps_exact_quiescence_and_physical_owner_exclusion() {
+    let (_session, _, bindings) = shared_placements();
+    let mut state = NativeRetirementState::with_capacity_limit(2).unwrap();
+    let backing = state.entries.as_ptr();
+    let bytes = state.owned_data_capacity_bytes();
+    assert!(state.can_detach_binding(bindings[0]));
+    state.commit_detachment(bindings[0]);
+    assert!(!state.can_detach_binding(bindings[0]));
+    assert!(state.can_detach_binding(bindings[1]));
+    assert!(state.has_quiescence_owner(bindings[1]));
+    assert!(
+        state
+            .begin_unmaterialized_quiescence(bindings[1], NativeCreateReceipt::new(None))
+            .is_err()
+    );
+    assert!(!state.can_retain_window(bindings[1], WindowId::from(91)));
+    state.commit_detachment(bindings[1]);
+    assert_eq!(state.bindings().collect::<Vec<_>>(), bindings);
+    assert!(state.finish_quiescence(bindings[0]));
+    assert!(!state.finish_quiescence(bindings[0]));
+    assert!(state.is_quiescence_candidate(bindings[1]));
+    assert!(state.finish_quiescence(bindings[1]));
+    assert!(!state.has_pending_work());
+    assert_eq!(state.entries.as_ptr(), backing);
+    assert_eq!(state.owned_data_capacity_bytes(), bytes);
+
+    let mut physical = NativeRetirementState::with_capacity_limit(2).unwrap();
+    physical
+        .retain_window(window_receipt(
+            ViewportId::ROOT,
+            WindowId::from(92),
+            bindings[0],
+        ))
+        .unwrap();
+    assert!(!physical.can_detach_binding(bindings[0]));
+    assert!(!physical.can_detach_binding(bindings[1]));
+    let mut unmaterialized = NativeRetirementState::with_capacity_limit(2).unwrap();
+    unmaterialized
+        .begin_unmaterialized_quiescence(bindings[0], NativeCreateReceipt::new(None))
+        .unwrap();
+    assert!(!unmaterialized.can_detach_binding(bindings[1]));
+}
+
+#[test]
+fn shared_replacement_prepays_every_exact_placement_and_drains_real_core_guards_independently() {
+    for reverse in [false, true] {
+        let (mut session, original, bindings) = shared_placements();
+        let bridge =
+            NativeHostBridge::try_new_with_capacity(NativeViewportMap::default(), 2, 1).unwrap();
+        bridge.configure_lifecycle_storage(2, 1).unwrap();
+        bridge.configure_window_resource_storage(2, 0).unwrap();
+        bridge
+            .bind_viewport_route(ViewportId::ROOT, WindowId::from(93), original)
+            .unwrap();
+        let capacity = bridge.owned_input_capacity_bytes(None);
+        let frame = shared_replacement(&mut session, &bindings);
+        let proposed = frame
+            .proposed_native_root_continuations()
+            .collect::<Vec<_>>();
+        assert_eq!(proposed.len(), 2);
+        let (mut report, _) = bridge
+            .commit_host_frame_with_staging(frame, true, None)
+            .unwrap();
+        assert_eq!(report.native_root_continuations(), proposed);
+        assert!(report.take_native_effects().is_empty());
+        assert!(report.take_painted_outputs().is_empty());
+        assert_eq!(bridge.retirement_quiescence_candidates(), bindings);
+        let successor_window = proposed[0].successor().window();
+        assert_eq!(proposed[1].successor().window(), successor_window);
+        assert_eq!(
+            session.native_window_bindings().collect::<Vec<_>>(),
+            [successor_window]
+        );
+        let order = if reverse {
+            [bindings[1], bindings[0]]
+        } else {
+            bindings
+        };
+        for (index, binding) in order.into_iter().enumerate() {
+            assert!(session.recognizes_native_binding(binding));
+            session.report_native_binding_quiescence(binding).unwrap();
+            commit(&mut session);
+            session.prepare_native_pointer_capacity().expect(
+                "the real core must retain an independent terminal guard for each placement",
+            );
+            assert!(bridge.retirement_finish_quiescence(binding));
+            assert!(!bridge.retirement_finish_quiescence(binding));
+            assert!(!session.recognizes_native_binding(binding));
+            if index == 0 {
+                assert!(session.recognizes_native_binding(order[1]));
+                assert!(bridge.retirement_is_quiescence_candidate(order[1]));
+            }
+            assert!(session.is_current_native_binding(proposed[0].successor()));
+            assert!(session.is_current_native_binding(proposed[1].successor()));
+        }
+        assert!(bridge.retirement_quiescence_candidates().is_empty());
+        assert_eq!(bridge.owned_input_capacity_bytes(None), capacity);
+    }
+}
+
+#[test]
+fn shared_replacement_refuses_an_underpaid_exact_roster_before_core_or_route_publication() {
+    for finite_entries in [false, true] {
+        let (mut session, original, bindings) = shared_placements();
+        let bridge =
+            NativeHostBridge::try_new_with_capacity(NativeViewportMap::default(), 2, 1).unwrap();
+        if finite_entries {
+            bridge.configure_lifecycle_storage(1, 1).unwrap();
+        }
+        bridge.configure_window_resource_storage(2, 0).unwrap();
+        bridge
+            .bind_viewport_route(ViewportId::ROOT, WindowId::from(94), original)
+            .unwrap();
+        if !finite_entries {
+            // Physical route admission prepaid one slot. Leave one byte less
+            // than the second exact placement requires, with no entry limit.
+            assert!(bridge.configure_input_storage_allowance(usize::MAX, 0));
+            let baseline = bridge.selected_storage_reserved_bytes().unwrap();
+            let growth = NativeRetirementState::reservation_bytes(2).unwrap()
+                - NativeRetirementState::reservation_bytes(1).unwrap();
+            assert!(bridge.configure_input_storage_allowance(baseline + growth - 1, 0));
+        }
+        let version = session.version();
+        let capacity = bridge.owned_input_capacity_bytes(None);
+        let mut expected = None;
+        for _ in 0..2 {
+            let frame = shared_replacement(&mut session, &bindings);
+            let proposed = frame
+                .proposed_native_root_continuations()
+                .collect::<Vec<_>>();
+            assert_eq!(expected.get_or_insert_with(|| proposed.clone()), &proposed);
+            assert!(
+                bridge
+                    .commit_host_frame_with_staging(frame, true, None)
+                    .is_err()
+            );
+            assert_eq!(session.version(), version);
+            assert_eq!(
+                bridge.with_viewports(|routes| routes.binding(ViewportId::ROOT)),
+                Some(original)
+            );
+            assert!(bridge.retirement_quiescence_candidates().is_empty());
+            assert_eq!(bridge.owned_input_capacity_bytes(None), capacity);
+            assert!(
+                bindings
+                    .iter()
+                    .all(|binding| session.is_current_native_binding(*binding))
+            );
+        }
+    }
 }
 
 #[test]

@@ -21,8 +21,8 @@ fn captured_record(
     ordinal: u64,
     event: WindowEvent,
 ) -> NativeWindowEventRecord {
-    let viewport = native.surface_viewport(binding.surface()).unwrap();
     let record = native.bridge.with_viewports(|routes| {
+        let viewport = routes.viewport_for_window(binding.window()).unwrap();
         NativeWindowEventRecord::for_test_snapshot(
             ordinal,
             routes.window(viewport).unwrap(),
@@ -116,13 +116,73 @@ fn presented_routes() -> (
     (native, first, second)
 }
 
+fn shared_route_facts() -> NativeWindowFacts {
+    let bounds = PhysicalRect::new(0.0, 0.0, 1400.0, 480.0).unwrap();
+    ready_window_facts(0.0)
+        .with_content_bounds(bounds)
+        .with_outer_bounds(bounds)
+}
+
+fn shared_routes() -> (NativeCoordinator, NativeSurfaceBinding) {
+    let mut native = coordinator();
+    native
+        .register_native_root(FIRST_SURFACE, HostWindowToken::new(22))
+        .unwrap();
+    let original = commit_boundary(&mut native).native_bindings()[0];
+    native
+        .bind_viewport(ViewportId::ROOT, WindowId::from(22), original)
+        .unwrap();
+    native
+        .report_snapshot(
+            [(original, shared_route_facts())],
+            NativeWorkAreaRoster::Unknown,
+            crate::capabilities::capabilities_for_backend(eframe::NativeWindowingBackend::X11),
+        )
+        .unwrap();
+    commit_boundary(&mut native);
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .frame
+        .set_native_surface_placements(
+            original.window(),
+            &[FIRST_SURFACE, SECOND_SURFACE].map(|surface| {
+                let x = if surface == FIRST_SURFACE { 0.0 } else { 720.0 };
+                dockspace::runtime::NativeSurfacePlacement::new(
+                    surface,
+                    LogicalSize::new(640.0, 480.0).unwrap(),
+                    dockspace::geometry::PhysicalPoint::new(x, 0.0).unwrap(),
+                    ScaleFactor::new(1.0).unwrap(),
+                    PhysicalRect::new(x, 0.0, 640.0, 480.0).unwrap(),
+                )
+            }),
+        )
+        .unwrap();
+    finish(frame);
+    paint_and_present_all_surfaces(&mut native);
+    assert!(!native.session.recognizes_native_binding(original));
+    assert!(
+        native
+            .session
+            .recognizes_native_window_binding(original.window())
+    );
+    assert_eq!(native.viewport_binding(ViewportId::ROOT), Some(original));
+    (native, original)
+}
+
+struct RecordedSource {
+    descriptor: DockspaceReceiverDescriptor,
+    artifacts: Vec<(
+        dockspace::runtime::NativeWindowBinding,
+        dockspace::runtime::NativeSurfacePlacement,
+        dockspace::runtime::SurfacePresentationArtifact,
+    )>,
+}
+
 fn source_and_target(
     native: &mut NativeCoordinator,
-) -> (
-    DockspaceReceiverDescriptor,
-    PhysicalPosition<f64>,
-    PhysicalPosition<f64>,
-) {
+) -> (RecordedSource, PhysicalPosition<f64>, PhysicalPosition<f64>) {
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
@@ -179,18 +239,50 @@ fn source_and_target(
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     frame.commit().unwrap();
-    (receiver, source, target)
+    let (_, artifacts) = paint_and_present_all_surfaces_with_artifacts(native);
+    let artifacts = artifacts
+        .into_iter()
+        .map(|(binding, artifact)| {
+            (
+                binding.window(),
+                native.session.native_surface_placement(binding).unwrap(),
+                artifact,
+            )
+        })
+        .collect();
+    (
+        RecordedSource {
+            descriptor: receiver,
+            artifacts,
+        },
+        source,
+        target,
+    )
 }
 
-fn resolve(
-    query: NativeReceiverQuery,
-    source: &DockspaceReceiverDescriptor,
-) -> NativeReceiverAnswer {
+fn resolve(query: NativeReceiverQuery, source: &RecordedSource) -> NativeReceiverAnswer {
+    let query = match query {
+        NativeReceiverQuery::WindowHit(query) => {
+            return NativeReceiverAnswer::WindowHit(
+                source
+                    .artifacts
+                    .iter()
+                    .find(|(window, placement, _)| {
+                        *window == query.window() && placement.clip().contains(query.point())
+                    })
+                    .map_or(
+                        dockspace::runtime::NativeWindowHit::Unknown,
+                        |(_, _, artifact)| dockspace::runtime::NativeWindowHit::Surface(*artifact),
+                    ),
+            );
+        }
+        NativeReceiverQuery::Surface(query) => query,
+    };
     if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
         NativeReceiverAnswer::ClearHoverLane(query.presented_surface())
     } else {
         query
-            .bind_receiver(source)
+            .bind_receiver(&source.descriptor)
             .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
     }
 }
@@ -238,6 +330,151 @@ fn commit_boundary(native: &mut NativeCoordinator) -> HostFrameReport {
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
     finish(frame)
+}
+
+#[test]
+fn shared_sibling_shift_callback_uses_the_physical_window_after_placement_rebinding() {
+    let (mut native, original) = shared_routes();
+    let (receivers, source, target) = source_and_target(&mut native);
+    for (ordinal, point, state) in [(1, source, Some(ElementState::Pressed)), (2, target, None)] {
+        record_pointer(
+            &mut native,
+            original,
+            ordinal,
+            mouse_event(point, state, 22, None),
+        );
+    }
+    let mut dragging = native
+        .begin_host_frame(|query| resolve(query, &receivers))
+        .unwrap();
+    assert!(matches!(
+        preview(&mut dragging),
+        Some(DockspacePreviewVisual::Dock {
+            surface: FIRST_SURFACE,
+            ..
+        })
+    ));
+    assert!(!finish(dragging).workspace_changed());
+    assert!(native.session.has_active_gesture());
+
+    let shift = captured_record(
+        &native,
+        original,
+        3,
+        WindowEvent::ModifiersChanged(ModifiersState::SHIFT.into()),
+    );
+    native.bridge.push_record(HostRecord::WindowEvent(shift));
+    native
+        .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+        .unwrap()
+        .unwrap();
+    let mut shifted = native
+        .begin_host_frame(|query| resolve(query, &receivers))
+        .unwrap();
+    assert!(preview(&mut shifted).is_none());
+    let report = finish(shifted);
+    assert!(report.inputs().iter().any(|input| matches!(
+        input,
+        HostInputOutcome::MagneticTargetingUpdated {
+            enabled: false,
+            changed: true
+        }
+    )));
+    assert!(!report.workspace_changed());
+    assert!(native.session.has_active_gesture());
+}
+
+#[test]
+fn shared_window_destroyed_callback_survives_retirement_of_its_original_placement() {
+    let (mut native, original) = shared_routes();
+    let sibling = native
+        .session
+        .native_surface_bindings_for_window(original.window())
+        .find(|binding| binding.surface() == SECOND_SURFACE)
+        .unwrap();
+    let mut selection = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    selection.frame.select_item_current(ItemId::new(2)).unwrap();
+    let mut selected = finish(selection);
+    let effects = selected.take_native_effects();
+    assert!(matches!(effects.as_slice(), [request]
+        if request.operation() == &NativeEffectOperation::RequestFocus { binding: sibling }));
+    native
+        .accept_native_effects(&egui::Context::default(), effects)
+        .unwrap();
+    assert_eq!(native.focus_control.pending_binding(), Some(sibling));
+    let (receivers, source, target) = source_and_target(&mut native);
+    for (ordinal, point, state) in [(1, source, Some(ElementState::Pressed)), (2, target, None)] {
+        record_pointer(
+            &mut native,
+            original,
+            ordinal,
+            mouse_event(point, state, 22, None),
+        );
+    }
+    let dragging = native
+        .begin_host_frame(|query| resolve(query, &receivers))
+        .unwrap();
+    assert!(!finish(dragging).workspace_changed());
+    assert!(native.session.has_active_gesture());
+
+    let destroyed = native.bridge.with_viewports_mut(|routes| {
+        NativeWindowEventRecord::for_test_ingress(
+            3,
+            WindowId::from(22),
+            Some(ViewportId::ROOT),
+            WindowEvent::Destroyed,
+            routes,
+        )
+    });
+    assert_eq!(destroyed.binding(), Some(original));
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(destroyed));
+    native
+        .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+        .unwrap()
+        .unwrap();
+    assert!(native.focus_control.pending_binding().is_none());
+    assert!(
+        native
+            .pending_effect_results
+            .iter()
+            .any(|pending| { pending.result.binding() == sibling })
+    );
+    let report = commit_boundary(&mut native);
+    assert!(report.inputs().iter().any(|input| matches!(
+        input,
+        HostInputOutcome::NativeInputBindingRetired { binding }
+            if binding.window() == original.window()
+    )));
+    assert!(!native.session.has_active_gesture());
+    assert!(native.bridge.retirement_requires_snapshot());
+    native.bridge.push_viewport_roster(
+        NativeViewportRosterRecord::for_test_with_backend_and_work_areas(
+            [],
+            crate::work_area::FrozenWorkAreaRoster::Unknown,
+            eframe::NativeWindowingBackend::X11,
+        ),
+    );
+    assert!(native.reduce_next_viewport_roster().unwrap());
+    let report = commit_boundary(&mut native);
+    assert!(report.inputs().iter().any(|input| matches!(
+        input,
+        HostInputOutcome::NativePlatformSnapshotApplied { .. }
+    )));
+    assert!(native.settle_host_frame_report(&report).unwrap());
+    assert!(!native.bridge.retirement_requires_snapshot());
+    assert!(
+        native
+            .session
+            .native_local_coordinates(original.window())
+            .is_none()
+    );
+    for surface in [FIRST_SURFACE, SECOND_SURFACE] {
+        assert!(native.session.presented_surface(surface).is_none());
+    }
 }
 
 #[test]

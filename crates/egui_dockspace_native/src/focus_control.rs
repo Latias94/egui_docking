@@ -1,6 +1,8 @@
 //! Exact native-focus command and callback correlation.
 
-use dockspace::runtime::{NativeEffectRequest, NativeGlobalFocus, NativeSurfaceBinding};
+use dockspace::runtime::{
+    NativeEffectRequest, NativeGlobalFocus, NativeSurfaceBinding, NativeWindowBinding,
+};
 use eframe::{
     NativeGlobalFocus as EframeGlobalFocus, NativeGlobalFocusObservation,
     NativeViewportFocusCommandToken, NativeViewportFocusResult, NativeViewportFocusStatus,
@@ -61,7 +63,7 @@ impl NativeGlobalFocusRecord {
     }
 
     pub(crate) fn references_binding(self, binding: NativeSurfaceBinding) -> bool {
-        matches!(self.focus, NativeGlobalFocus::Dock(current) if current == binding)
+        matches!(self.focus, NativeGlobalFocus::Dock(current) if current == binding.window())
     }
 }
 
@@ -71,7 +73,7 @@ pub(crate) struct NativeViewportFocusRecord {
     token: NativeViewportFocusCommandToken,
     viewport: ViewportId,
     window: WindowId,
-    binding: Option<NativeSurfaceBinding>,
+    binding: Option<NativeWindowBinding>,
     status: NativeViewportFocusStatus,
 }
 
@@ -86,13 +88,13 @@ impl NativeViewportFocusRecord {
             token,
             viewport,
             window,
-            binding: Some(binding),
+            binding: Some(binding.window()),
             status: NativeViewportFocusStatus::Retired,
         }
     }
 
     pub(crate) fn qualified_for_binding(mut self, binding: NativeSurfaceBinding) -> Self {
-        self.binding = Some(binding);
+        self.binding = Some(binding.window());
         self
     }
 
@@ -122,7 +124,10 @@ impl NativeViewportFocusRecord {
             token,
             viewport,
             window,
-            binding,
+            binding: match binding {
+                Some(binding) => Some(binding.window()),
+                None => None,
+            },
             status,
         }
     }
@@ -140,7 +145,7 @@ impl NativeViewportFocusRecord {
     }
 
     pub(crate) fn references_binding(self, binding: NativeSurfaceBinding) -> bool {
-        matches!(self.binding, Some(current) if current == binding)
+        matches!(self.binding, Some(current) if current == binding.window())
     }
 }
 
@@ -267,7 +272,7 @@ impl<Request> NativeFocusControl<Request> {
         {
             return NativeFocusResultDisposition::Unrelated;
         }
-        if record.binding == Some(pending.binding) {
+        if record.binding == Some(pending.binding.window()) {
             NativeFocusResultDisposition::Current {
                 binding: pending.binding,
                 status: record.status,
