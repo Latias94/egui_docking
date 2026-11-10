@@ -12,8 +12,8 @@ mod view;
 pub use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 pub use action::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
-    DockspaceActionRejection, InvalidDockFraction, LogicalSurfaceRejection, NativeWindowPlacement,
-    PreparedDockAction,
+    DockspaceActionRejection, InvalidDockFraction, LogicalSurfaceRejection, NativeTearOffSource,
+    NativeWindowPlacement, PreparedDockAction, PreparedTabsGroup,
 };
 pub(crate) use action::{PreparedDockActionAuthorityMismatch, ProductAction};
 pub use layout::{

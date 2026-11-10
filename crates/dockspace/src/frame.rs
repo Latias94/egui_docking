@@ -770,8 +770,29 @@ impl ViewportCoordinator {
             predecessor,
             target,
         };
-        self.analyze_restore(desired_surfaces, Some(continuation))?;
+        self.analyze_restore(desired_surfaces, std::slice::from_ref(&continuation))?;
         Ok(continuation)
+    }
+
+    /// Prepares a complete set of external Root continuations in one transaction.
+    ///
+    /// Participating windows may exchange logical surfaces. Duplicate sources,
+    /// duplicate targets and targets occupied by a nonparticipating window fail
+    /// before any registry or cleanup state changes.
+    pub(crate) fn prepare_native_root_continuations(
+        &self,
+        mappings: &[(ViewportBinding, SurfaceId)],
+        desired_surfaces: &BTreeSet<SurfaceId>,
+    ) -> Result<Vec<PreparedNativeRootContinuation>, ViewportCoordinatorError> {
+        let continuations = mappings
+            .iter()
+            .map(|&(predecessor, target)| PreparedNativeRootContinuation {
+                predecessor,
+                target,
+            })
+            .collect::<Vec<_>>();
+        self.analyze_restore(desired_surfaces, &continuations)?;
+        Ok(continuations)
     }
 
     /// Atomically invalidates old-epoch platform state and reconciles safe current bindings.
@@ -782,10 +803,10 @@ impl ViewportCoordinator {
         &mut self,
         new_epoch: WorkspaceEpoch,
         desired_surfaces: &BTreeSet<SurfaceId>,
-        continuation: Option<PreparedNativeRootContinuation>,
+        continuations: &[PreparedNativeRootContinuation],
     ) -> Result<ViewportReconciliation, ViewportCoordinatorError> {
         let mut candidate = self.clone();
-        let analysis = candidate.analyze_restore(desired_surfaces, continuation)?;
+        let analysis = candidate.analyze_restore(desired_surfaces, continuations)?;
         let registry = candidate
             .registry
             .reconcile_restore(new_epoch, &analysis.retained_bindings)
@@ -836,7 +857,7 @@ impl ViewportCoordinator {
     fn analyze_restore(
         &self,
         desired_surfaces: &BTreeSet<SurfaceId>,
-        continuation: Option<PreparedNativeRootContinuation>,
+        continuations: &[PreparedNativeRootContinuation],
     ) -> Result<RestoreAnalysis, ViewportCoordinatorError> {
         let create_by_binding = self.native_create_snapshot_by_binding();
         let mut staging_by_binding: BTreeMap<_, _> = create_by_binding
@@ -932,11 +953,27 @@ impl ViewportCoordinator {
             .values()
             .filter_map(RecoveryPending::replacement_binding)
             .collect();
-        if let Some(PreparedNativeRootContinuation {
+        let mut targets = BTreeSet::new();
+        let mut continuing = BTreeMap::new();
+        for &PreparedNativeRootContinuation {
             predecessor,
             target,
-        }) = continuation
+        } in continuations
         {
+            if continuing.insert(predecessor, target).is_some() {
+                return Err(
+                    ViewportCoordinatorError::NativeRootContinuationDuplicatePredecessor {
+                        predecessor,
+                    },
+                );
+            }
+            if !targets.insert(target) {
+                return Err(
+                    ViewportCoordinatorError::NativeRootContinuationDuplicateTarget { target },
+                );
+            }
+        }
+        for (&predecessor, &target) in &continuing {
             if !desired_surfaces.contains(&target) {
                 return Err(
                     ViewportCoordinatorError::NativeRootContinuationTargetMissing { target },
@@ -972,6 +1009,7 @@ impl ViewportCoordinator {
             }
             if let Some(occupied) = self.registry.record(target)
                 && occupied.binding() != predecessor
+                && !continuing.contains_key(&occupied.binding())
             {
                 return Err(
                     ViewportCoordinatorError::NativeRootContinuationTargetOccupied {
@@ -985,10 +1023,10 @@ impl ViewportCoordinator {
             .registry
             .records()
             .filter_map(|(surface, record)| {
-                let target = match continuation {
-                    Some(prepared) if prepared.predecessor == record.binding() => prepared.target,
-                    _ => surface,
-                };
+                let target = continuing
+                    .get(&record.binding())
+                    .copied()
+                    .unwrap_or(surface);
                 Self::restore_binding_is_safe(
                     target,
                     record,
@@ -4350,6 +4388,12 @@ pub enum ViewportCoordinatorError {
     /// The predecessor is not an exact current, safe, admitted external root binding.
     #[error("native root continuation predecessor is unavailable: {predecessor:?}")]
     NativeRootContinuationPredecessorUnavailable { predecessor: ViewportBinding },
+    /// One physical window cannot continue on two logical surfaces.
+    #[error("native root continuation repeats predecessor {predecessor:?}")]
+    NativeRootContinuationDuplicatePredecessor { predecessor: ViewportBinding },
+    /// Two physical windows cannot acquire the same incoming logical surface.
+    #[error("native root continuation repeats target {target:?}")]
+    NativeRootContinuationDuplicateTarget { target: SurfaceId },
     /// The replacement workspace does not contain the requested continuation target.
     #[error("native root continuation target is absent from the workspace: {target:?}")]
     NativeRootContinuationTargetMissing { target: SurfaceId },

@@ -12,8 +12,7 @@ use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, NativeCleanupObservation,
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeEffectResult,
-    NativeInputBudget, NativeMonotonicClock, NativeRootContinuation, NativeSurfaceBinding,
-    NativeWindowFacts,
+    NativeInputBudget, NativeMonotonicClock, NativeSurfaceBinding, NativeWindowFacts,
 };
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
@@ -67,6 +66,8 @@ mod preparation_output_tests;
 mod roster;
 mod terminal_roster;
 mod window_resource;
+#[cfg(test)]
+mod workspace_replacement_tests;
 use command_callback::CommandCallbackAdmission;
 use journal::{HostIngressJournal, ReservedHostRecord};
 use output_resource::NativeOutputResource;
@@ -2029,41 +2030,24 @@ impl CursorPrefixClaim<'_> {
 }
 
 impl NativeHostState {
-    fn workspace_replacement_route(
-        &self,
-        continuation: NativeRootContinuation,
-    ) -> Result<Option<ViewportId>, NativeHostProtocolError> {
-        let predecessor = continuation.predecessor();
-        match self.viewports.viewport(predecessor.surface()) {
-            Some(viewport) if self.viewports.binding(viewport) == Some(predecessor) => {
-                Ok(Some(viewport))
-            }
-            // A same-surface reset can precede the first physical attachment.
-            None if predecessor.surface() == continuation.successor().surface() => Ok(None),
-            _ => Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
-                predecessor.surface(),
-            )),
-        }
-    }
-
     /// The speculative rows carry backing promises, never callback authority.
     /// Holding this lock through publication prevents another owner spending them.
     fn prepare_workspace_replacement(
         &mut self,
-        continuations: impl Iterator<Item = NativeRootContinuation>,
+        frame: &DockspaceHostFrame<'_>,
     ) -> Result<(), NativeRuntimeError> {
+        self.viewports
+            .validate_workspace_root_continuations(|| frame.proposed_native_root_continuations())?;
         self.refresh_window_resource_references();
-        for continuation in continuations {
+        for continuation in frame.proposed_native_root_continuations() {
             let predecessor = continuation.predecessor();
             let successor = continuation.successor();
-            let Some(viewport) = self.workspace_replacement_route(continuation)? else {
+            let Some(viewport) = self
+                .viewports
+                .workspace_root_continuation_viewport(continuation)?
+            else {
                 continue;
             };
-            self.viewports
-                .validate_workspace_root_continuation(viewport, continuation)
-                .map_err(|_| {
-                    NativeHostProtocolError::NativeAdmissionRouteChanged(predecessor.surface())
-                })?;
             let window = self
                 .viewports
                 .window(viewport)
@@ -2092,17 +2076,19 @@ impl NativeHostState {
             self.window_resources.abort_workspace_replacement();
             return;
         }
+        self.viewports
+            .commit_workspace_root_continuations(report.native_root_continuations());
         for &continuation in report.native_root_continuations() {
             let predecessor = continuation.predecessor();
             let successor = continuation.successor();
-            let Some(viewport) = self
-                .workspace_replacement_route(continuation)
-                .expect("the prepaid exact predecessor retains its viewport")
-            else {
+            let Some(viewport) = self.viewports.viewport(successor.surface()) else {
                 continue;
             };
-            self.viewports
-                .commit_workspace_root_continuation(viewport, continuation);
+            assert_eq!(
+                self.viewports.binding(viewport),
+                Some(successor),
+                "the prepaid exact successor retains its viewport"
+            );
             self.window_resources
                 .retain_workspace_predecessor(viewport, predecessor, successor);
             self.window_resources.retire(viewport, predecessor);
@@ -4252,9 +4238,7 @@ impl NativeHostBridge {
             )
             .into());
         }
-        if let Err(error) =
-            records.prepare_workspace_replacement(frame.proposed_native_root_continuations())
-        {
+        if let Err(error) = records.prepare_workspace_replacement(&frame) {
             records.window_resources.abort_workspace_replacement();
             return Err(error);
         }

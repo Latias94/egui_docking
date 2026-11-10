@@ -2783,13 +2783,13 @@ fn root_presentation_transitions_share_one_pending_reservation() {
     let tear_off = submit_test_input(
         &mut rehoming.engine,
         rehoming.presentation_host,
-        EngineInput::TearOffRoot {
+        EngineInput::TearOffNative {
             expected: version,
-            root,
-            placement: crate::model::NativeWindowPlacement::new(
+            source: crate::model::NativeTearOffSource::Root(root),
+            placement: Some(crate::model::NativeWindowPlacement::new(
                 PhysicalRect::new(800.0, 120.0, 360.0, 260.0)
                     .expect("native placement must validate"),
-            ),
+            )),
         },
     )
     .expect("a competing native transition must reduce as a typed conflict");
@@ -3010,13 +3010,13 @@ fn active_surface_local_drag_rejects_programmatic_native_tear_off_atomically() {
     TestInputStream::resume(&fixture.engine, ENGINE_TEST_INPUT_SOURCE)
         .append(
             &mut frame,
-            EngineInput::TearOffRoot {
+            EngineInput::TearOffNative {
                 expected: version,
-                root: SOURCE_ROOT,
-                placement: crate::model::NativeWindowPlacement::new(
+                source: crate::model::NativeTearOffSource::Root(SOURCE_ROOT),
+                placement: Some(crate::model::NativeWindowPlacement::new(
                     PhysicalRect::new(700.0, 100.0, 420.0, 320.0)
                         .expect("native placement must validate"),
-                ),
+                )),
             },
         )
         .expect("the competing tear-off stages after the pointer checkpoint");
@@ -3741,7 +3741,7 @@ fn indeterminate_create_survives_inventory_absence_and_its_origin_survives_resto
     fixture
         .engine
         .viewport
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new(), &[])
         .expect("workspace restore must preserve terminal create compensation ownership");
     let restored = fixture
         .engine

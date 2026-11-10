@@ -62,9 +62,11 @@ its existing profile. Native Touch stationary capture remains unqualified.
 Several logical docking areas can share a HostLocal input producer. Managed
 native hosting currently binds one logical surface to one OS window; combining
 several independent surfaces inside a single OS window with managed native Child
-docking is not yet supported. Programmatic native tear-off currently targets a
-complete root, and automatic native document restoration uses one external Root
-plus its declared Children. See the
+docking is not yet supported. Programmatic native tear-off accepts an item,
+an opaque captured tabs group or a complete root, with explicit or core-derived
+placement. Renderer-neutral native document restore accepts explicit mappings
+for multiple external Roots and preserves each Child's declared recovery host.
+The reference application's automatic restore profile remains one Root. See the
 [multiview composition limits](docs/PLATFORM_SUPPORT.md#multiview-composition-limits)
 for the distinction between supported journeys and remaining core interface work.
 
@@ -251,6 +253,20 @@ Managed native restore can explicitly queue the declared Child windows through
 the existing preparation, first-live and cleanup owners. Ordinary document
 restore alone does not create OS windows; native restore waits for fresh Root
 facts and exact predecessor quiescence before advancing those declarations.
+Custom native hosts can use `submit_native_document_restore_with_roots` with
+`(existing_binding, incoming_surface)` pairs. Core validates the entire mapping,
+including complete Root cycles, and publishes all exact continuations together.
+`submit_native_layout_reset_with_roots` provides the same atomic continuation
+contract without requiring document persistence. Install physical routes only
+after the committed report confirms the proposed pairs.
+
+Programmatic native commands use `NativeTearOffSource::{Item, Tabs, Root}`.
+Capture a group once with `capture_tabs_group`; the opaque selection freezes its
+original source and version. `native_window_command_default` preflights ordinary
+core placement without entering paint encoding, and `native_window_command`
+accepts explicit `NativeWindowPlacement`. A Ready command carries the existing
+`PreparedDockAction`. Neither command transfers source content before the new
+window's exact first-live output is accepted.
 
 Raw workspace snapshots, independently replaceable key maps, and mutable
 restore candidates are not product interfaces.

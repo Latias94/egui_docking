@@ -91,6 +91,21 @@ invalid declarations and retained Root/Child conflicts
 publish nothing. Recording results remain distinct from the native example's
 separate real-window restoration journey.
 
+`tests/multi_root_restore.rs` restores explicitly mapped external Roots in one
+transaction, including a complete surface swap. Proposed routes publish only
+after commit; failed or dropped attempts preserve all predecessors and document
+state. Restored Children retain their distinct recovery hosts through renderer
+preparation, first-live presentation and resource loss. Duplicate, stale,
+foreign and occupied mappings reject without discarding earlier accepted input.
+The same batch continuation contract applies to layout reset without serde.
+
+`tests/programmatic_native_tear_off.rs` promotes one item, an opaque captured
+tabs group or a complete root directly into the existing native create owner.
+It checks source preservation until exact first live, group/version authority,
+failure and cancellation, explicit/default placement, policy and finite storage.
+Central group transfers leave the original central container empty. These
+recording traces do not qualify new physical multiview or mixed-DPI profiles.
+
 The explicit Root-rebinding journeys remove the old logical host while preserving
 its external window token under a new exact binding. They force a retired incoming
 Root through exact instance replacement, check Child recovery/placement references, failed/dropped

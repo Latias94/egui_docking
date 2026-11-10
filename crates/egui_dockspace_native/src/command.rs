@@ -3,13 +3,17 @@
 use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
-use dockspace::model::{DockPlacement, ItemId, NativeWindowPlacement, RootId, SurfaceId};
+use dockspace::model::{
+    DockPlacement, ItemId, NativeTearOffSource, NativeWindowPlacement, RootId, SurfaceId,
+};
 
 /// One application intent for [`NativeDockspaceApp::request_command`](crate::NativeDockspaceApp::request_command).
 ///
-/// Commands are ordinary copyable values that menus and command palettes may
+/// Commands are ordinary values that menus and command palettes may
 /// retain. Admission prepares them against the current session under its lock;
 /// a stored command is not a prepared action or presentation authority.
+/// A captured tabs group retains its original session and version when stored
+/// or cloned; admission never resolves its former anchor again.
 /// Consume [`NativeDockspaceApp::take_action_status`](crate::NativeDockspaceApp::take_action_status)
 /// before submitting another command. Pane state always stays in the application.
 ///
@@ -24,7 +28,7 @@ use dockspace::model::{DockPlacement, ItemId, NativeWindowPlacement, RootId, Sur
 /// # }
 /// ```
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NativeCommand {
     /// Select an open pane and request its focus through the core.
     ///
@@ -83,9 +87,26 @@ pub enum NativeCommand {
         /// Any pane in the contained group.
         item: ItemId,
     },
-    /// Begin moving a complete root to a newly managed OS window.
+    /// Begin moving one item, captured tabs group or complete root to a managed OS window.
     ///
     /// Source ownership remains until the child's exact first-live presentation.
+    MoveToNewWindow {
+        /// Content to transfer; captured groups retain their original authority.
+        source: NativeTearOffSource,
+        /// Requested desktop-physical outer bounds.
+        placement: NativeWindowPlacement,
+    },
+    /// Begin native tear-off using core-derived placement from current platform facts.
+    ///
+    /// Missing source geometry or work-area facts produces a core-owned action
+    /// rejection. The command never invents a desktop origin or moves content early.
+    MoveToNewWindowDefault {
+        /// Content to transfer; captured groups retain their original authority.
+        source: NativeTearOffSource,
+    },
+    /// Begin moving a complete root to a newly managed OS window.
+    ///
+    /// Equivalent to [`Self::MoveToNewWindow`] with [`NativeTearOffSource::Root`].
     MoveRootToNewWindow {
         /// Complete group to promote.
         root: RootId,

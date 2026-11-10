@@ -905,7 +905,7 @@ pub enum DockspacePresentationCommandUnavailable {
 }
 
 /// One opaque root command frozen from an exact current paint candidate.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PresentationCommandPaintRecord {
     authority_domain: crate::ids::EngineAuthorityDomainId,
     version: crate::model::WorkspaceVersion,
@@ -960,25 +960,25 @@ impl PresentationCommandPaintRecord {
 
     /// Returns the stable root addressed by this command.
     #[must_use]
-    pub const fn root(self) -> RootId {
+    pub const fn root(&self) -> RootId {
         self.root
     }
 
     /// Returns this command's stable semantic kind.
     #[must_use]
-    pub const fn kind(self) -> DockspacePresentationCommandKind {
+    pub const fn kind(&self) -> DockspacePresentationCommandKind {
         self.kind
     }
 
     /// Returns whether core admitted this command for the exact paint candidate.
     #[must_use]
-    pub const fn is_ready(self) -> bool {
+    pub const fn is_ready(&self) -> bool {
         self.action.is_some()
     }
 
     /// Returns the stable reason this command is disabled, if any.
     #[must_use]
-    pub const fn unavailable_reason(self) -> Option<DockspacePresentationCommandUnavailable> {
+    pub const fn unavailable_reason(&self) -> Option<DockspacePresentationCommandUnavailable> {
         self.unavailable
     }
 }
@@ -2036,20 +2036,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
                 };
                 ProductAction::DockRoot { root, placement }
             }
-            DockspacePresentationCommandKind::MoveToNewWindow => {
-                let placement = match self
-                    .candidate
-                    .default_native_window_placement(root, self.plan)
-                {
-                    Ok(placement) => placement,
-                    Err(reason) => {
-                        return Ok(Some(unavailable(
-                            DockspacePresentationCommandUnavailable::Action(reason),
-                        )));
-                    }
-                };
-                ProductAction::TearOffRoot { root, placement }
-            }
+            DockspacePresentationCommandKind::MoveToNewWindow => ProductAction::TearOffNative {
+                source: crate::model::NativeTearOffSource::Root(root),
+                placement: None,
+            },
         };
         let record = match self.candidate.prepare_product_action_if_available(action)? {
             Ok(prepared) => {

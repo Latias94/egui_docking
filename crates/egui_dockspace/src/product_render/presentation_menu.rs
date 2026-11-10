@@ -117,7 +117,7 @@ pub(super) fn paint(
             node.set_role(Role::Menu);
             node.set_label("Presentation commands");
         });
-        for command in commands.iter().copied() {
+        for command in commands {
             let label = command_label(command.kind());
             let enabled = ui_enabled && command.is_ready();
             let response = ui

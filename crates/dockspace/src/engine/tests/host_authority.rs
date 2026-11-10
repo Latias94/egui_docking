@@ -126,7 +126,7 @@ fn native_surface_local_lease_cannot_freeze_a_reincarnated_binding_frame() {
         .reconcile_workspace_epoch(
             rebound_epoch,
             &std::collections::BTreeSet::from([SOURCE_SURFACE]),
-            None,
+            &[],
         )
         .expect("workspace reconciliation must rebind the native viewport");
     let binding_b = engine
@@ -596,7 +596,7 @@ fn native_surface_local_lease_cannot_cross_a_workspace_binding_reincarnation() {
     let roster = std::collections::BTreeSet::from([SOURCE_SURFACE]);
     engine
         .viewport
-        .reconcile_workspace_epoch(rebound_epoch, &roster, None)
+        .reconcile_workspace_epoch(rebound_epoch, &roster, &[])
         .expect("workspace reconciliation must rebind the native viewport");
     let binding_b = engine
         .viewport

@@ -491,10 +491,48 @@ impl DockspaceHostFrame<'_> {
         root: crate::ids::RootId,
         placement: NativeWindowPlacement,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::TearOffRoot {
+        self.move_to_new_window_current(crate::model::NativeTearOffSource::Root(root), placement)
+    }
+
+    /// Requests a native window for an item, frozen tabs group, or complete root.
+    ///
+    /// The source stays unchanged until the exact target first-live output is
+    /// presented. Creation failure and cancellation retain its original owner.
+    /// A tabs-group selection remains bound to the version where it was captured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame cannot accept another semantic input.
+    /// Product-level availability and policy rejections are reported at commit.
+    pub fn move_to_new_window_current(
+        &mut self,
+        source: crate::model::NativeTearOffSource,
+        placement: NativeWindowPlacement,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::TearOffNative {
             expected: self.frame.view().version(),
-            root,
-            placement,
+            source,
+            placement: Some(placement),
+        })
+    }
+
+    /// Requests native tear-off using core placement from current authoritative facts.
+    ///
+    /// Placement uses the same source geometry and work-area solver as paint,
+    /// menu and prepared commands. Missing facts produce an ordinary product
+    /// rejection without moving the source or emitting a Create effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame cannot accept another semantic input.
+    pub fn move_to_new_window_default_current(
+        &mut self,
+        source: crate::model::NativeTearOffSource,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::TearOffNative {
+            expected: self.frame.view().version(),
+            source,
+            placement: None,
         })
     }
 

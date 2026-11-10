@@ -2,7 +2,10 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use dockspace::model::{DockspaceLayout, DockspaceView, SurfaceId};
+use dockspace::model::{
+    DockAnchor, DockspaceActionRejection, DockspaceLayout, DockspaceView, PreparedTabsGroup,
+    SurfaceId,
+};
 use dockspace::runtime::DockspaceClosePlan;
 use dockspace::runtime::DockspaceSession;
 use eframe::egui::{self, Id, ViewportClass, ViewportId};
@@ -191,6 +194,24 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     pub fn with_view<R>(&self, inspect: impl FnOnce(DockspaceView<'_>) -> R) -> R {
         let state = lock_state(&self.state);
         inspect(state.view())
+    }
+
+    /// Captures one complete tabs group from the published session under the runtime lock.
+    ///
+    /// Store the opaque result in [`crate::NativeCommand::MoveToNewWindow`] or
+    /// [`crate::NativeCommand::MoveToNewWindowDefault`]. Membership, order,
+    /// selection, session and version remain bound to this capture. Later
+    /// admission never looks up `anchor` again or refreshes a stale group.
+    /// This read-only query does not occupy the application command slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the core rejection when the anchor is absent or its group is empty.
+    pub fn capture_tabs_group(
+        &self,
+        anchor: DockAnchor,
+    ) -> Result<PreparedTabsGroup, DockspaceActionRejection> {
+        lock_state(&self.state).capture_tabs_group(anchor)
     }
 
     /// Inspects the application pane registry while holding the runtime lock.

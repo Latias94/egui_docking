@@ -158,51 +158,78 @@ impl DockspaceHostFrame<'_> {
         existing_root: NativeSurfaceBinding,
         incoming_root: SurfaceId,
     ) -> Result<(), DockspaceRuntimeError> {
+        self.submit_native_layout_reset_with_roots(reset, [(existing_root, incoming_root)])
+    }
+
+    /// Resets the layout with an atomic set of external Root window continuations.
+    ///
+    /// Each pair is `(existing_root_binding, incoming_root_surface)`. Sources
+    /// and targets must be unique. Participating windows may exchange their
+    /// logical surfaces; another window may not occupy a target. Proposed
+    /// routes become installable only with the matching committed report.
+    ///
+    /// # Errors
+    ///
+    /// Returns reset errors, missing targets, duplicate mappings, stale or
+    /// foreign bindings and conflicting target ownership. No part of a failed
+    /// or dropped replacement publishes.
+    pub fn submit_native_layout_reset_with_roots(
+        &mut self,
+        reset: &PreparedDockspaceLayoutReset,
+        mappings: impl IntoIterator<Item = (NativeSurfaceBinding, SurfaceId)>,
+    ) -> Result<(), DockspaceRuntimeError> {
         self.ensure_semantic_input_allowed()?;
         self.session.ensure_managed_native_host_available()?;
         self.session.ensure_prepared_layout_reset_current(reset)?;
         self.complete_pointer_input()?;
         reset.ensure_authority(self.frame.view())?;
-        if reset.workspace.surface(incoming_root).is_none() {
-            return Err(DockspaceRuntimeError::native_root_surface_missing(
-                incoming_root,
-            ));
+        let mappings = mappings.into_iter().collect::<Vec<_>>();
+        for &(_, target) in &mappings {
+            if reset.workspace.surface(target).is_none() {
+                return Err(DockspaceRuntimeError::native_root_surface_missing(target));
+            }
         }
-        let continuation =
-            self.prepare_native_root_continuation(existing_root, incoming_root, &reset.workspace)?;
-        self.append(EngineInput::ReplaceWorkspaceContinuingRoot {
+        let continuations = self.prepare_native_root_continuations(&mappings, &reset.workspace)?;
+        self.append(EngineInput::ReplaceWorkspaceContinuingRoots {
             workspace: reset.workspace.clone(),
-            continuation,
+            continuations,
         })?;
         self.replacement_submitted = true;
         Ok(())
     }
 
-    pub(super) fn prepare_native_root_continuation(
+    pub(super) fn prepare_native_root_continuations(
         &self,
-        existing: NativeSurfaceBinding,
-        target: SurfaceId,
+        mappings: &[(NativeSurfaceBinding, SurfaceId)],
         workspace: &Workspace,
-    ) -> Result<crate::frame::PreparedNativeRootContinuation, DockspaceRuntimeError> {
-        if !self
-            .session
-            .native
-            .as_ref()
-            .is_some_and(|native| native.recognizes_binding(existing))
-        {
-            return Err(DockspaceRuntimeError::native_root_unavailable(
-                existing.surface(),
-            ));
-        }
+    ) -> Result<Vec<crate::frame::PreparedNativeRootContinuation>, DockspaceRuntimeError> {
         let viewport = self.frame.view().viewport();
-        let predecessor = viewport
-            .viewport(existing.surface())
-            .map(|record| record.binding())
-            .filter(|binding| existing.matches_viewport_binding(*binding))
-            .ok_or_else(|| DockspaceRuntimeError::native_root_unavailable(existing.surface()))?;
+        let predecessors = mappings
+            .iter()
+            .map(|&(existing, target)| {
+                if !self
+                    .session
+                    .native
+                    .as_ref()
+                    .is_some_and(|native| native.recognizes_binding(existing))
+                {
+                    return Err(DockspaceRuntimeError::native_root_unavailable(
+                        existing.surface(),
+                    ));
+                }
+                let predecessor = viewport
+                    .viewport(existing.surface())
+                    .map(|record| record.binding())
+                    .filter(|binding| existing.matches_viewport_binding(*binding))
+                    .ok_or_else(|| {
+                        DockspaceRuntimeError::native_root_unavailable(existing.surface())
+                    })?;
+                Ok((predecessor, target))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let surfaces = workspace.surfaces().map(|(surface, _)| surface).collect();
         viewport
-            .prepare_native_root_continuation(predecessor, target, &surfaces)
+            .prepare_native_root_continuations(&predecessors, &surfaces)
             .map_err(DockspaceRuntimeError::native_root_continuation)
     }
 

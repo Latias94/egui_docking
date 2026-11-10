@@ -4,7 +4,8 @@ use dockspace::close::{
     CloseDecision, CloseItemDecisionState, ClosePlanTarget, DeferredCloseDecision,
 };
 use dockspace::model::{
-    DockAnchor, DockPlacement, DockspaceLayout, DockspaceRootView, RootId, SurfaceId,
+    DockAnchor, DockPlacement, DockspaceActionRejection, DockspaceLayout, DockspaceRootView,
+    NativeTearOffSource, PreparedTabsGroup, RootId, SurfaceId,
 };
 use dockspace::runtime::{DockspaceClosePlan, NativeSurfaceBinding};
 use eframe::egui;
@@ -212,6 +213,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
         Ok(())
     }
 
+    pub(crate) fn capture_tabs_group(
+        &self,
+        anchor: DockAnchor,
+    ) -> Result<PreparedTabsGroup, DockspaceActionRejection> {
+        self.coordinator.session().capture_tabs_group(anchor)
+    }
+
     pub(crate) fn request_command(
         &mut self,
         command: crate::NativeCommand,
@@ -219,7 +227,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         use crate::NativeCommand;
 
         self.ensure_application_slot_available()?;
-        if self.command_removes_host_surface(command) {
+        if self.command_removes_host_surface(&command) {
             return Err(NativeActionRequestError::HostSurfaceRequired {
                 surface: self.root_surface,
             });
@@ -244,8 +252,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
             NativeCommand::BringContainedIntoView { item } => {
                 session.prepare_bring_contained_into_view(item).into()
             }
+            NativeCommand::MoveToNewWindow { source, placement } => {
+                session.prepare_move_to_new_window(source, placement).into()
+            }
+            NativeCommand::MoveToNewWindowDefault { source } => {
+                session.prepare_move_to_new_window_default(source).into()
+            }
             NativeCommand::MoveRootToNewWindow { root, placement } => session
-                .prepare_move_root_to_new_window(root, placement)
+                .prepare_move_to_new_window(NativeTearOffSource::Root(root), placement)
                 .into(),
             NativeCommand::CloseItem { item } => session.prepare_close_item(item).into(),
             NativeCommand::CloseRoot { root } => session.prepare_close_root(root).into(),
@@ -298,7 +312,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         main.or_else(|| surface.contained().next()?.root())
     }
 
-    fn command_removes_host_surface(&self, command: crate::NativeCommand) -> bool {
+    fn command_removes_host_surface(&self, command: &crate::NativeCommand) -> bool {
         use crate::NativeCommand;
 
         // A locked move cannot remove the host; retain its core-owned rejection.
@@ -317,15 +331,15 @@ impl<P: PaneView> NativeRuntimeState<P> {
         };
         let view = self.coordinator.session().view();
         let target = match command {
-            NativeCommand::DockItem { item, placement } if complete_item(item) => {
-                self.placement_surface(placement)
+            NativeCommand::DockItem { item, placement } if complete_item(*item) => {
+                self.placement_surface(*placement)
             }
             NativeCommand::DockRoot {
                 root: source,
                 placement,
-            } if source == root.id() => self.placement_surface(placement),
-            NativeCommand::FloatItem { item, surface } if complete_item(item) => {
-                view.surface(surface).map(|surface| surface.id())
+            } if *source == root.id() => self.placement_surface(*placement),
+            NativeCommand::FloatItem { item, surface } if complete_item(*item) => {
+                view.surface(*surface).map(|surface| surface.id())
             }
             _ => None,
         };

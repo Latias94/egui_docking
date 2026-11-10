@@ -21,7 +21,7 @@ pub(crate) struct NativeSurfaceInitialRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NativeSurfaceRestorePlan {
-    pub(crate) root: SurfaceId,
+    pub(crate) roots: BTreeSet<SurfaceId>,
     pub(crate) children: Vec<NativeSurfaceInitialRequest>,
 }
 

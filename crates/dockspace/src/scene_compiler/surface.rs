@@ -2025,7 +2025,7 @@ fn root_leaf_minimums(
     Ok(minimums)
 }
 
-pub(super) fn pane_outer_minimum(
+pub(crate) fn pane_outer_minimum(
     measured: LogicalSize,
     config: &DockPresentationConfig,
     tab_bar_visibility: TabBarVisibility,
@@ -2127,7 +2127,7 @@ fn tab_local_range(widths: impl Iterator<Item = f64>, ordinal: usize) -> Option<
     Some((start, start + widths.next()?))
 }
 
-fn contained_minimum_size(
+pub(crate) fn contained_minimum_size(
     config: &DockPresentationConfig,
     root_minimum: LogicalSize,
 ) -> Result<LogicalSize, SceneCompilationError> {

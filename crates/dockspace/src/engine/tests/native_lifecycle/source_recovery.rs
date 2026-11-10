@@ -212,7 +212,7 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
         .binding();
 
     // AlreadyNative disables the painted menu entry. The current-action facade
-    // instead submits TearOffRoot directly, so exercise that same public reducer input.
+    // instead submits TearOffNative directly, so exercise that same reducer input.
     let mut menu_session = DockspaceSession::from_engine_for_test(
         fixture.engine.candidate(),
         fixture.presentation_host,
@@ -237,13 +237,13 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
     let created = submit_test_input(
         &mut fixture.engine,
         fixture.presentation_host,
-        EngineInput::TearOffRoot {
+        EngineInput::TearOffNative {
             expected: version,
-            root: SOURCE_ROOT,
-            placement: crate::model::NativeWindowPlacement::new(
+            source: crate::model::NativeTearOffSource::Root(SOURCE_ROOT),
+            placement: Some(crate::model::NativeWindowPlacement::new(
                 PhysicalRect::new(1000.0, 0.0, 400.0, 300.0)
                     .expect("the prospective window placement must be valid"),
-            ),
+            )),
         },
     )
     .expect("the current-action reducer must accept a native child source");
@@ -535,12 +535,12 @@ fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
         let created = submit_test_input(
             &mut fixture.engine,
             fixture.presentation_host,
-            EngineInput::TearOffRoot {
+            EngineInput::TearOffNative {
                 expected,
-                root,
-                placement: crate::model::NativeWindowPlacement::new(
+                source: crate::model::NativeTearOffSource::Root(root),
+                placement: Some(crate::model::NativeWindowPlacement::new(
                     PhysicalRect::new(x, 0.0, 400.0, 300.0).unwrap(),
-                ),
+                )),
             },
         )
         .expect("both independent roots must request real native creates");

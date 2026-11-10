@@ -2,9 +2,13 @@
 
 use super::*;
 
-use crate::geometry::PhysicalRect;
-use crate::model::{DockspaceActionOutcome, DockspaceActionRejection, NativeWindowPlacement};
+use crate::geometry::{LogicalRect, LogicalSize, PhysicalRect};
+use crate::model::{
+    DockspaceActionOutcome, DockspaceActionRejection, NativeTearOffSource, NativeWindowPlacement,
+};
 use crate::platform::ObservedWorkArea;
+use crate::scene_compiler::{contained_minimum_size, pane_outer_minimum};
+use crate::scene_manifest::PaneMinimumKey;
 
 #[cfg(test)]
 mod tests;
@@ -31,6 +35,15 @@ impl NativeRootCreateRejection {
     }
 }
 
+struct PreparedProductNativeTearOff {
+    payload: MovePayload,
+    source_presentation: PresentedSurfaceAuthority,
+    command: WorkspaceCommand,
+    proposal: crate::frame::NativeCreateProposal,
+    pane_focus: PaneFocusDisposition,
+    items: Vec<ItemId>,
+}
+
 impl DockEngine {
     pub(super) fn root_is_bound_native_main(&self, root: RootId) -> bool {
         matches!(
@@ -40,59 +53,128 @@ impl DockEngine {
         )
     }
 
-    pub(super) fn derive_default_native_window_placement(
+    fn native_payload_owner(
         &self,
         root: RootId,
-        plan: &crate::scene::PresentationPlan,
-    ) -> Result<NativeWindowPlacement, DockspaceActionRejection> {
-        if !self
-            .viewport
-            .native_exact_placement_create_capability()
-            .is_supported()
-        {
-            return Err(DockspaceActionRejection::NativeUnavailable);
+    ) -> Result<(SurfaceId, Option<FloatingPresentationId>), DockspaceActionRejection> {
+        match self.workspace.presentation_for_root(root) {
+            Some(crate::RootPresentationOwner::Main { surface }) => Ok((surface, None)),
+            Some(crate::RootPresentationOwner::Contained { surface, floating }) => {
+                Ok((surface, Some(floating)))
+            }
+            None => Err(DockspaceActionRejection::RootUnavailable { root }),
         }
+    }
 
-        let owner = self
-            .workspace
-            .presentation_for_root(root)
-            .ok_or(DockspaceActionRejection::RootUnavailable { root })?;
-        let (surface, floating) = match owner {
-            crate::RootPresentationOwner::Main { surface } => (surface, None),
-            crate::RootPresentationOwner::Contained { surface, floating } => {
-                (surface, Some(floating))
+    fn native_payload_geometry(
+        &self,
+        payload: &MovePayload,
+        complete_root: bool,
+        plan: &crate::scene::PresentationPlan,
+    ) -> Result<(Option<LogicalRect>, LogicalSize), DockspaceActionRejection> {
+        let (root, node) = match payload {
+            MovePayload::Item(source) => (source.root(), source.tabs()),
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
+                (source.root(), source.node())
             }
         };
+        let (surface, floating) = self.native_payload_owner(root)?;
+        let unavailable = DockspaceActionRejection::PresentationUnavailable { surface };
         if plan.surface() != surface {
-            return Err(DockspaceActionRejection::PresentationUnavailable { surface });
+            return Err(unavailable);
         }
+        if !complete_root {
+            let facts = plan.layout_facts().ok_or(unavailable)?;
+            let root_facts = facts.root(root).ok_or(unavailable)?;
+            let pane_minimum = match payload {
+                MovePayload::Item(source) => {
+                    let measured = root_facts
+                        .pane_minimum(PaneMinimumKey::new(root, node, Some(source.item())))
+                        .ok_or(unavailable)?;
+                    let visibility = self
+                        .presentation_requirements()
+                        .surface(surface)
+                        .and_then(|requirements| {
+                            requirements.tab_bar(crate::scene::TabBarSceneId { root, tabs: node })
+                        })
+                        .map(|bar| bar.policy().visibility())
+                        .ok_or(unavailable)?;
+                    pane_outer_minimum(measured, facts.config(), visibility)
+                        .map_err(|_| DockspaceActionRejection::Conflict)?
+                }
+                MovePayload::Tabs(_) | MovePayload::Subtree(_) => root_facts
+                    .projection()
+                    .nodes
+                    .get(&node)
+                    .map(|result| result.constraints.min())
+                    .ok_or(unavailable)?,
+            };
+            let minimum = contained_minimum_size(facts.config(), pane_minimum)
+                .map_err(|_| DockspaceActionRejection::Conflict)?;
+            let pane = plan
+                .pane_records()
+                .iter()
+                .find(|pane| pane.id() == (crate::scene::PaneSceneId { root, tabs: node }))
+                .ok_or(unavailable)?;
+            let bounds = pane.bounds();
+            // A partial payload uses its pane and measured recovery minimum,
+            // independently of the enclosing floating window and its siblings.
+            let rect = LogicalRect::new(
+                bounds.x(),
+                bounds.y(),
+                bounds.width().max(minimum.width()),
+                bounds.height().max(minimum.height()),
+            )
+            .map_err(|_| DockspaceActionRejection::Conflict)?;
+            return Ok((Some(rect), minimum));
+        }
+        if let Some(floating) = floating {
+            let rect = plan
+                .contained_record(floating)
+                .filter(|record| record.root() == root)
+                .map(crate::scene::ContainedRecord::outer_bounds);
+            let minimum = plan
+                .contained_minimums()
+                .iter()
+                .find(|measurement| measurement.floating() == floating)
+                .map(|measurement| measurement.minimum_size())
+                .ok_or(unavailable)?;
+            return Ok((rect, minimum));
+        }
+        let rect = plan
+            .layout_facts()
+            .and_then(|facts| facts.root(root))
+            .map(|facts| facts.bounds())
+            .ok_or(unavailable)?;
+        Ok((
+            Some(rect),
+            self.presentation_config().minimum_floating_size(),
+        ))
+    }
+
+    fn derive_default_native_payload_placement(
+        &self,
+        surface: SurfaceId,
+        complete_main: bool,
+        source_rect: LogicalRect,
+    ) -> Result<NativeWindowPlacement, DockspaceActionRejection> {
+        let unavailable = DockspaceActionRejection::PresentationUnavailable { surface };
         let coordinates = self
             .viewport
             .viewport(surface)
             .and_then(crate::viewport_registry::ViewportRecord::coordinates)
-            .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
-        let source_outer = coordinates
-            .outer_bounds()
-            .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
-
-        let requested = match floating {
-            None => source_outer,
-            Some(floating) => {
-                let contained = plan
-                    .contained_record(floating)
-                    .filter(|record| record.root() == root)
-                    .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
-                let content = coordinates
-                    .surface_rect_to_desktop(contained.outer_bounds())
-                    .map_err(|_| DockspaceActionRejection::PresentationUnavailable { surface })?;
-                let source_content = coordinates
-                    .content_bounds()
-                    .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
-                expand_content_rect_to_outer(content, source_content, source_outer)
-                    .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?
-            }
+            .ok_or(unavailable)?;
+        let source_outer = coordinates.outer_bounds().ok_or(unavailable)?;
+        let requested = if complete_main {
+            source_outer
+        } else {
+            let content = coordinates
+                .surface_rect_to_desktop(source_rect)
+                .map_err(|_| unavailable)?;
+            let source_content = coordinates.content_bounds().ok_or(unavailable)?;
+            expand_content_rect_to_outer(content, source_content, source_outer)
+                .ok_or(unavailable)?
         };
-
         let work_area = select_native_work_area(
             requested,
             self.viewport.work_areas().map(|(_, work_area)| work_area),
@@ -105,83 +187,140 @@ impl DockEngine {
             requested.width(),
             requested.height(),
         )
-        .map_err(|_| DockspaceActionRejection::PresentationUnavailable { surface })?;
+        .map_err(|_| unavailable)?;
         let clamped = clamp_native_window_rect(cascaded, work_area.bounds())
             .ok_or(DockspaceActionRejection::NativeUnavailable)?;
         Ok(NativeWindowPlacement::new(clamped))
     }
 
-    pub(super) fn validate_product_native_tear_off_availability(
+    fn capture_product_native_payload(
         &self,
-        root: RootId,
-        placement: NativeWindowPlacement,
+        source: &NativeTearOffSource,
+    ) -> Result<(MovePayload, Vec<ItemId>), DockspaceActionRejection> {
+        match source {
+            NativeTearOffSource::Item(item) => self
+                .workspace
+                .capture_item_source_by_id(*item)
+                .map_err(|_| DockspaceActionRejection::Conflict)?
+                .map(|source| (MovePayload::Item(source), vec![*item]))
+                .ok_or(DockspaceActionRejection::ItemUnavailable { item: *item }),
+            NativeTearOffSource::Tabs(group) => {
+                if group.authority_domain != self.authority_domain || group.expected != self.version
+                {
+                    return Err(DockspaceActionRejection::Conflict);
+                }
+                self.validate_node_source(&group.source)
+                    .map_err(|_| DockspaceActionRejection::Conflict)?;
+                let Some(Node::Tabs { items, .. }) = self.workspace.node(group.source.node())
+                else {
+                    return Err(DockspaceActionRejection::Conflict);
+                };
+                if items.is_empty() {
+                    return Err(DockspaceActionRejection::Conflict);
+                }
+                Ok((MovePayload::Tabs(group.source.clone()), items.to_vec()))
+            }
+            NativeTearOffSource::Root(root) => self
+                .capture_product_root_payload(*root)
+                .map(|(_, payload, items)| (payload, items)),
+        }
+    }
+
+    fn prepare_product_native_payload_tear_off(
+        &self,
+        source: &NativeTearOffSource,
+        placement: Option<NativeWindowPlacement>,
         policy: &DockPolicySnapshot,
-    ) -> Result<Result<(), DockspaceActionRejection>, EngineError> {
+    ) -> Result<Result<PreparedProductNativeTearOff, DockspaceActionRejection>, EngineError> {
+        let native_supported = self
+            .viewport
+            .native_exact_placement_create_capability()
+            .is_supported();
+        // A default request needs a native placement provider before it can
+        // derive a rectangle. Explicit requests preserve policy-first rejection.
+        if placement.is_none() && !native_supported {
+            return Ok(Err(DockspaceActionRejection::NativeUnavailable));
+        }
         if policy.check_tear_off(TearOffPresentation::Native).is_err() {
             return Ok(Err(DockspaceActionRejection::PolicyDenied));
         }
-        if !self
-            .viewport
-            .native_exact_placement_create_capability()
-            .is_supported()
-        {
+        if !native_supported || !self.viewport.native_binding_allocation_available() {
             return Ok(Err(DockspaceActionRejection::NativeUnavailable));
-        }
-        if self.root_has_pending_presentation_transition(root) {
-            return Ok(Err(DockspaceActionRejection::Conflict));
         }
         if self.pending_mutation.is_some() || self.interaction.status() != InteractionStatus::Idle {
             return Ok(Err(DockspaceActionRejection::Conflict));
         }
-
-        let (source, payload, _) = match self.capture_product_root_payload(root) {
-            Ok(payload) => payload,
+        let (payload, items) = match self.capture_product_native_payload(source) {
+            Ok(captured) => captured,
             Err(reason) => return Ok(Err(reason)),
         };
-        let complete = self.capture_complete_root_payload(&payload);
-        if !matches!(complete, Ok(Some(ref complete)) if complete == &source) {
+        let source_root = match &payload {
+            MovePayload::Item(source) => source.root(),
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => source.root(),
+        };
+        if self.root_has_pending_presentation_transition(source_root) {
             return Ok(Err(DockspaceActionRejection::Conflict));
         }
-        let (source_surface, existing_floating) = match self.workspace.presentation_for_root(root) {
-            Some(crate::RootPresentationOwner::Main { surface }) => (surface, None),
-            Some(crate::RootPresentationOwner::Contained { surface, floating }) => {
-                (surface, Some(floating))
-            }
-            None => return Ok(Err(DockspaceActionRejection::RootUnavailable { root })),
+        let complete = match self.capture_complete_root_payload(&payload) {
+            Ok(complete) => complete,
+            Err(reason) => return Ok(Err(reason)),
+        };
+        let (source_surface, floating) = match self.native_payload_owner(source_root) {
+            Ok(owner) => owner,
+            Err(reason) => return Ok(Err(reason)),
         };
         let Some(projection) = self.interaction_projection(source_surface) else {
             return Ok(Err(DockspaceActionRejection::PresentationUnavailable {
                 surface: source_surface,
             }));
         };
-        let minimum_size = match existing_floating {
-            Some(floating) => projection
-                .plan()
-                .contained_minimums()
-                .iter()
-                .find(|measurement| measurement.floating() == floating)
-                .map(|measurement| measurement.minimum_size()),
-            None => projection
-                .plan()
-                .layout_facts()
-                .and_then(|facts| facts.root(root))
-                .map(|_| self.presentation_config().minimum_floating_size()),
+        let (source_rect, minimum_size) =
+            match self.native_payload_geometry(&payload, complete.is_some(), projection.plan()) {
+                Ok(geometry) => geometry,
+                Err(reason) => return Ok(Err(reason)),
+            };
+        let placement = match placement {
+            Some(placement) => placement,
+            None => {
+                let Some(source_rect) = source_rect else {
+                    return Ok(Err(DockspaceActionRejection::PresentationUnavailable {
+                        surface: source_surface,
+                    }));
+                };
+                match self.derive_default_native_payload_placement(
+                    source_surface,
+                    complete.is_some() && floating.is_none(),
+                    source_rect,
+                ) {
+                    Ok(placement) => placement,
+                    Err(reason) => return Ok(Err(reason)),
+                }
+            }
         };
-        let Some(_minimum_size) = minimum_size else {
-            return Ok(Err(DockspaceActionRejection::PresentationUnavailable {
-                surface: source_surface,
-            }));
+        let pane_focus = match self.freeze_payload_focus(&payload) {
+            Ok(focus) => match &payload {
+                MovePayload::Item(source) => PaneFocusDisposition::Set(source.item()),
+                MovePayload::Tabs(_) | MovePayload::Subtree(_) => focus,
+            },
+            Err(error) => {
+                return Ok(Err(super::product_action::product_command_rejection(
+                    ProductAction::TearOffNative {
+                        source: source.clone(),
+                        placement: Some(placement),
+                    },
+                    &error,
+                )?));
+            }
         };
-        if let Err(error) = self.freeze_payload_focus(&payload) {
-            return Ok(Err(super::product_action::product_command_rejection(
-                ProductAction::TearOffRoot { root, placement },
-                &error,
-            )?));
-        }
-        let reservation = match self.prepare_native_root_transfer_identities(existing_floating) {
+        let retained_floating = complete.as_ref().and(floating);
+        let reservation = match self.prepare_native_payload_transfer_identities(
+            complete.as_ref().map(NodeSource::root),
+            retained_floating,
+        ) {
             Ok(reservation) => reservation,
             Err(
-                EngineError::PresentationSurfaceIdentityExhausted
+                EngineError::PresentationRootIdentityExhausted
+                | EngineError::PresentationSurfaceIdentityExhausted
                 | EngineError::PresentationFloatingIdentityExhausted,
             ) => return Ok(Err(DockspaceActionRejection::IdentityExhausted)),
             Err(error) => return Err(error),
@@ -194,30 +333,63 @@ impl DockEngine {
         {
             return Ok(Err(DockspaceActionRejection::NativeUnavailable));
         }
-        let command = WorkspaceCommand::RehomeRoot {
-            source,
-            target: RootPresentationTarget::NewSurface {
+        let command = Self::tear_off_command_from_complete_root(
+            &payload,
+            RootPresentationTarget::NewSurface {
                 surface: reservation.surface(),
             },
-        };
-        if let Err(error) =
-            crate::operation::authorize_workspace_command(&self.workspace, policy, &command)
-        {
+            reservation.root(),
+            complete,
+        );
+        let proposal = crate::frame::NativeCreateProposal::new(
+            reservation.surface(),
+            placement.outer_rect(),
+            ConvertedMainRecovery::new(reservation.root(), reservation.floating(), minimum_size),
+        );
+        Ok(Ok(PreparedProductNativeTearOff {
+            payload,
+            source_presentation: projection.authority(),
+            command,
+            proposal,
+            pane_focus,
+            items,
+        }))
+    }
+
+    pub(super) fn validate_product_native_payload_tear_off_availability(
+        &self,
+        source: &NativeTearOffSource,
+        placement: Option<NativeWindowPlacement>,
+        policy: &DockPolicySnapshot,
+    ) -> Result<Result<(), DockspaceActionRejection>, EngineError> {
+        let prepared =
+            match self.prepare_product_native_payload_tear_off(source, placement, policy)? {
+                Ok(prepared) => prepared,
+                Err(reason) => return Ok(Err(reason)),
+            };
+        if let Err(error) = crate::operation::authorize_workspace_command(
+            &self.workspace,
+            policy,
+            &prepared.command,
+        ) {
             return Ok(Err(super::product_action::product_command_rejection(
-                ProductAction::TearOffRoot { root, placement },
+                ProductAction::TearOffNative {
+                    source: source.clone(),
+                    placement,
+                },
                 &error,
             )?));
         }
         Ok(Ok(()))
     }
 
-    pub(super) fn reduce_product_native_tear_off(
+    pub(super) fn reduce_product_native_payload_tear_off(
         &mut self,
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
-        root: RootId,
-        placement: NativeWindowPlacement,
+        source: &NativeTearOffSource,
+        placement: Option<NativeWindowPlacement>,
         policy: &DockPolicySnapshot,
     ) -> Result<InputOutcome, EngineError> {
         if expected != self.version {
@@ -226,132 +398,26 @@ impl DockEngine {
                 accepted_base: self.version,
             });
         }
-        if policy.check_tear_off(TearOffPresentation::Native).is_err() {
-            return Ok(InputOutcome::ProductActionRejected {
-                reason: DockspaceActionRejection::PolicyDenied,
-                version: self.version,
-            });
-        }
-        if !self
-            .viewport
-            .native_exact_placement_create_capability()
-            .is_supported()
-        {
-            return Ok(InputOutcome::ProductActionRejected {
-                reason: DockspaceActionRejection::NativeUnavailable,
-                version: self.version,
-            });
-        }
-        if self.pending_mutation.is_some() || self.interaction.status() != InteractionStatus::Idle {
-            return Ok(InputOutcome::ProductActionRejected {
-                reason: DockspaceActionRejection::Conflict,
-                version: self.version,
-            });
-        }
-
-        let (source, payload, items) = match self.capture_product_root_payload(root) {
-            Ok(payload) => payload,
-            Err(reason) => {
-                return Ok(InputOutcome::ProductActionRejected {
-                    reason,
-                    version: self.version,
-                });
-            }
-        };
-        let complete = self.capture_complete_root_payload(&payload);
-        if !matches!(complete, Ok(Some(ref complete)) if complete == &source) {
-            return Ok(InputOutcome::ProductActionRejected {
-                reason: DockspaceActionRejection::Conflict,
-                version: self.version,
-            });
-        }
-
-        let (source_surface, existing_floating) = match self.workspace.presentation_for_root(root) {
-            Some(crate::RootPresentationOwner::Main { surface }) => (surface, None),
-            Some(crate::RootPresentationOwner::Contained { surface, floating }) => {
-                (surface, Some(floating))
-            }
-            None => {
-                return Ok(InputOutcome::ProductActionRejected {
-                    reason: DockspaceActionRejection::Conflict,
-                    version: self.version,
-                });
-            }
-        };
-        let Some(projection) = self.interaction_projection(source_surface) else {
-            return Ok(InputOutcome::ProductActionRejected {
-                reason: DockspaceActionRejection::PresentationUnavailable {
-                    surface: source_surface,
-                },
-                version: self.version,
-            });
-        };
-        let minimum_size = match existing_floating {
-            Some(floating) => projection
-                .plan()
-                .contained_minimums()
-                .iter()
-                .find(|measurement| measurement.floating() == floating)
-                .map(|measurement| measurement.minimum_size()),
-            None => projection
-                .plan()
-                .layout_facts()
-                .and_then(|facts| facts.root(root))
-                .map(|_| self.presentation_config().minimum_floating_size()),
-        };
-        let Some(minimum_size) = minimum_size else {
-            return Ok(InputOutcome::ProductActionRejected {
-                reason: DockspaceActionRejection::PresentationUnavailable {
-                    surface: source_surface,
-                },
-                version: self.version,
-            });
-        };
-        let source_presentation = projection.authority();
-        let pane_focus = match self.freeze_payload_focus(&payload) {
-            Ok(pane_focus) => pane_focus,
-            Err(error) => {
-                return Ok(InputOutcome::ProductActionRejected {
-                    reason: super::product_action::product_command_rejection(
-                        ProductAction::TearOffRoot { root, placement },
-                        &error,
-                    )?,
-                    version: self.version,
-                });
-            }
-        };
-        let reservation = match self.prepare_native_root_transfer_identities(existing_floating) {
-            Ok(reservation) => reservation,
-            Err(
-                EngineError::PresentationSurfaceIdentityExhausted
-                | EngineError::PresentationFloatingIdentityExhausted,
-            ) => {
-                return Ok(InputOutcome::ProductActionRejected {
-                    reason: DockspaceActionRejection::IdentityExhausted,
-                    version: self.version,
-                });
-            }
-            Err(error) => return Err(error),
-        };
-        let command = WorkspaceCommand::RehomeRoot {
-            source,
-            target: RootPresentationTarget::NewSurface {
-                surface: reservation.surface(),
-            },
-        };
-        let proposal = crate::frame::NativeCreateProposal::new(
-            reservation.surface(),
-            placement.outer_rect(),
-            ConvertedMainRecovery::new(root, reservation.floating(), minimum_size),
-        );
+        let prepared =
+            match self.prepare_product_native_payload_tear_off(source, placement, policy)? {
+                Ok(prepared) => prepared,
+                Err(reason) => {
+                    return Ok(InputOutcome::ProductActionRejected {
+                        reason,
+                        version: self.version,
+                    });
+                }
+            };
+        let source_surface = prepared.source_presentation.surface();
+        let root = prepared.proposal.root();
         match self.start_native_root_create(
             cause,
             focus_causal,
-            source_presentation,
-            payload,
-            command,
-            proposal,
-            pane_focus,
+            prepared.source_presentation,
+            prepared.payload,
+            prepared.command,
+            prepared.proposal,
+            prepared.pane_focus,
             policy,
         )? {
             Ok(request) => Ok(InputOutcome::ProductActionProcessed {
@@ -359,7 +425,7 @@ impl DockEngine {
                     root,
                     source_surface,
                     target_surface: request.binding().surface(),
-                    items,
+                    items: prepared.items,
                 },
                 version: self.version,
             }),
@@ -378,7 +444,10 @@ impl DockEngine {
             Err(NativeRootCreateRejection::Command(error)) => {
                 Ok(InputOutcome::ProductActionRejected {
                     reason: super::product_action::product_command_rejection(
-                        ProductAction::TearOffRoot { root, placement },
+                        ProductAction::TearOffNative {
+                            source: source.clone(),
+                            placement,
+                        },
                         &error,
                     )?,
                     version: self.version,

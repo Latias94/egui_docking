@@ -2,7 +2,7 @@
 
 use super::{DockspaceRuntimeError, DockspaceSession, NativeWindowPlacement, PreparedDockAction};
 use crate::ids::{RootId, SurfaceId};
-use crate::model::{DockspaceActionRejection, ProductAction};
+use crate::model::{DockspaceActionRejection, NativeTearOffSource, ProductAction};
 
 /// One presentation command evaluated against the current published session state.
 #[derive(Debug)]
@@ -100,10 +100,20 @@ impl<'session> DockspacePresentationCommands<'session> {
         &self,
         placement: NativeWindowPlacement,
     ) -> Result<DockspacePresentationCommand, DockspaceRuntimeError> {
-        self.prepare(ProductAction::TearOffRoot {
-            root: self.root,
-            placement,
-        })
+        self.session
+            .native_window_command(NativeTearOffSource::Root(self.root), placement)
+    }
+
+    /// Preflights promotion using core-derived source geometry and default placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal runtime error only when native preflight violates a core invariant.
+    pub fn move_to_new_window_default(
+        &self,
+    ) -> Result<DockspacePresentationCommand, DockspaceRuntimeError> {
+        self.session
+            .native_window_command_default(NativeTearOffSource::Root(self.root))
     }
 
     fn prepare(
@@ -116,6 +126,67 @@ impl<'session> DockspacePresentationCommands<'session> {
                 .engine
                 .prepare_product_action_if_available(action)?
             {
+                Ok(action) => DockspacePresentationCommand::Ready(action),
+                Err(reason) => DockspacePresentationCommand::Unavailable(reason),
+            },
+        )
+    }
+}
+
+impl DockspaceSession {
+    /// Preflights one item, captured tabs group or root into an explicitly placed native window.
+    ///
+    /// A ready action remains revision-bound. Neither this query nor submitting
+    /// its result transfers content before exact first-live presentation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal runtime error only when native preflight violates a core invariant.
+    pub fn native_window_command(
+        &self,
+        source: NativeTearOffSource,
+        placement: NativeWindowPlacement,
+    ) -> Result<DockspacePresentationCommand, DockspaceRuntimeError> {
+        self.prepare_native_window_command(source, Some(placement))
+    }
+
+    /// Preflights native tear-off with core-derived placement from current platform facts.
+    ///
+    /// No paint encoding is needed. Missing source geometry or work-area authority
+    /// makes the command unavailable; it never falls back to saved window positions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal runtime error only when native preflight violates a core invariant.
+    pub fn native_window_command_default(
+        &self,
+        source: NativeTearOffSource,
+    ) -> Result<DockspacePresentationCommand, DockspaceRuntimeError> {
+        self.prepare_native_window_command(source, None)
+    }
+
+    fn prepare_native_window_command(
+        &self,
+        source: NativeTearOffSource,
+        placement: Option<NativeWindowPlacement>,
+    ) -> Result<DockspacePresentationCommand, DockspaceRuntimeError> {
+        if self
+            .native
+            .as_ref()
+            .and_then(|native| native.binding_allocation_budget())
+            == Some(0)
+        {
+            return Ok(DockspacePresentationCommand::Unavailable(
+                DockspaceActionRejection::NativeUnavailable,
+            ));
+        }
+        Ok(
+            match self
+                .engine
+                .prepare_product_action_if_available(ProductAction::TearOffNative {
+                    source,
+                    placement,
+                })? {
                 Ok(action) => DockspacePresentationCommand::Ready(action),
                 Err(reason) => DockspacePresentationCommand::Unavailable(reason),
             },

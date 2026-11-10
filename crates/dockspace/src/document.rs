@@ -644,30 +644,11 @@ impl PreparedRuntimeDocumentRestore {
             && self.source_document == *document
     }
 
-    #[cfg(test)]
     pub(crate) fn into_engine_input(
         self,
         frame: HostFrameView<'_>,
     ) -> Result<(EngineInput, PendingRuntimeDocumentRestore), RuntimeDocumentRestoreError> {
-        self.into_engine_input_tracking_surface(frame, None)
-            .map(|(input, pending, _)| (input, pending))
-    }
-
-    pub(crate) fn into_engine_input_tracking_surface(
-        self,
-        frame: HostFrameView<'_>,
-        tracked_surface: Option<SurfaceId>,
-    ) -> Result<
-        (
-            EngineInput,
-            PendingRuntimeDocumentRestore,
-            Option<SurfaceId>,
-        ),
-        RuntimeDocumentRestoreError,
-    > {
-        if frame.authority_domain() != self.source_authority_domain
-            || tracked_surface.is_some_and(|surface| self.workspace().surface(surface).is_none())
-        {
+        if frame.authority_domain() != self.source_authority_domain {
             return Err(RuntimeDocumentRestoreError::EnginePublicationMismatch);
         }
         let expected_workspace = WorkspaceSnapshot::capture(self.restored.restore.workspace())?;
@@ -700,11 +681,7 @@ impl PreparedRuntimeDocumentRestore {
             replacement_base_version,
             source_authority_domain: self.source_authority_domain,
         };
-        Ok((
-            EngineInput::RestoreWorkspace(restore),
-            pending,
-            tracked_surface,
-        ))
+        Ok((EngineInput::RestoreWorkspace(restore), pending))
     }
 }
 

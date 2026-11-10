@@ -1543,6 +1543,7 @@ fn validate_move_target_semantics(
         if source_record.node != source_node
             && let Some(central) = source_record.central
             && workspace.subtree_contains(source_node, central)
+            && !moves_central_tab_contents(workspace, payload)
         {
             return Err(CommandError::CentralNodeWouldDetach {
                 root: source_root,
@@ -3097,7 +3098,7 @@ fn detach_payload(
             })
         }
         MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
-            let node = source.node();
+            let mut node = source.node();
             let source_root = source.root();
             let items = workspace.collect_items_in_subtree(node);
             let (selected, mru, is_tabs) = match workspace.storage.nodes.get(node) {
@@ -3110,7 +3111,25 @@ fn detach_payload(
                     });
                 }
             };
-            let central = detach_node(workspace, source_root, node)?;
+            let central = if moves_central_tab_contents(workspace, payload) {
+                // A central container belongs to its root. Moving its tabs
+                // transfers their state while leaving that container empty.
+                workspace.begin_root_edit(source_root);
+                let source =
+                    workspace
+                        .storage
+                        .nodes
+                        .get_mut(node)
+                        .ok_or(CommandError::MissingNode {
+                            role: ReferenceRole::Source,
+                            node,
+                        })?;
+                let contents = std::mem::replace(source, Node::tabs([]));
+                node = workspace.insert_runtime_node(contents);
+                None
+            } else {
+                detach_node(workspace, source_root, node)?
+            };
             Ok(DetachedPayload::Node {
                 source_root,
                 node,
@@ -3122,6 +3141,12 @@ fn detach_payload(
             })
         }
     }
+}
+
+fn moves_central_tab_contents(workspace: &Workspace, payload: &MovePayload) -> bool {
+    matches!(payload, MovePayload::Tabs(source) if workspace.root(source.root()).is_some_and(
+        |record| record.central == Some(source.node()) && record.node != source.node()
+    ))
 }
 
 fn detach_node(

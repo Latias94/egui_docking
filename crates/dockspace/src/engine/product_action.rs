@@ -6,7 +6,8 @@ use crate::command::{
 use crate::ids::NodeId;
 use crate::model::{
     DockAnchor, DockEdge, DockPlacement, DockspaceActionOutcome, DockspaceActionRejection,
-    NativeWindowPlacement, PreparedDockAction, PreparedDockActionAuthorityMismatch, ProductAction,
+    NativeTearOffSource, NativeWindowPlacement, PreparedDockAction,
+    PreparedDockActionAuthorityMismatch, PreparedTabsGroup, ProductAction,
 };
 use crate::workspace::WorkspaceIndex;
 
@@ -162,7 +163,7 @@ impl DockEngine {
     ) -> Result<InputOutcome, EngineError> {
         let expected = self.version;
         let scene = candidate.stamp();
-        let Some(root) = product_presentation_transition_root(action) else {
+        let Some(root) = product_presentation_transition_root(&action) else {
             return Err(EngineError::ReductionCauseInvariant {
                 detail: "local presentation command carried a non-presentation product action",
             });
@@ -223,14 +224,15 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
-            ProductAction::TearOffRoot { root, placement } => self.reduce_product_native_tear_off(
-                cause,
-                focus_causal,
-                expected,
-                root,
-                placement,
-                policy,
-            ),
+            ProductAction::TearOffNative { source, placement } => self
+                .reduce_product_native_payload_tear_off(
+                    cause,
+                    focus_causal,
+                    expected,
+                    &source,
+                    placement,
+                    policy,
+                ),
             _ => Err(EngineError::ReductionCauseInvariant {
                 detail: "local presentation command changed action class during reduction",
             }),
@@ -241,14 +243,18 @@ impl DockEngine {
         &self,
         action: ProductAction,
     ) -> Result<Result<PreparedDockAction, DockspaceActionRejection>, EngineError> {
-        if product_presentation_transition_root(action)
+        if product_presentation_transition_root(&action)
             .is_some_and(|root| self.root_has_pending_presentation_transition(root))
         {
             return Ok(Err(DockspaceActionRejection::Conflict));
         }
-        if let ProductAction::TearOffRoot { root, placement } = action {
+        if let ProductAction::TearOffNative { source, placement } = &action {
             return self
-                .validate_product_native_tear_off_availability(root, placement, &self.policy)
+                .validate_product_native_payload_tear_off_availability(
+                    source,
+                    *placement,
+                    &self.policy,
+                )
                 .map(|availability| availability.map(|()| self.prepare_product_action(action)));
         }
         if let ProductAction::FloatRoot { root, surface, .. } = action
@@ -268,7 +274,7 @@ impl DockEngine {
             }
         }
 
-        let plan = match self.compile_product_action(action) {
+        let plan = match self.compile_product_action(action.clone()) {
             Ok(plan) => plan,
             Err(reason) => return Ok(Err(reason)),
         };
@@ -343,7 +349,48 @@ impl DockEngine {
         root: RootId,
         placement: NativeWindowPlacement,
     ) -> PreparedDockAction {
-        self.prepare_product_action(ProductAction::TearOffRoot { root, placement })
+        self.prepare_product_action(ProductAction::TearOffNative {
+            source: NativeTearOffSource::Root(root),
+            placement: Some(placement),
+        })
+    }
+
+    pub(crate) fn capture_tabs_group(
+        &self,
+        anchor: DockAnchor,
+    ) -> Result<PreparedTabsGroup, DockspaceActionRejection> {
+        let (root, tabs) = self.capture_product_anchor(anchor)?;
+        if !matches!(self.workspace.node(tabs), Some(Node::Tabs { items, .. }) if !items.is_empty())
+        {
+            return Err(DockspaceActionRejection::Conflict);
+        }
+        let source = self
+            .workspace
+            .capture_node_source(root, tabs)
+            .map_err(|_| DockspaceActionRejection::Conflict)?;
+        Ok(PreparedTabsGroup {
+            authority_domain: self.authority_domain,
+            expected: self.version,
+            source,
+        })
+    }
+
+    pub(crate) fn prepare_move_to_new_window(
+        &self,
+        source: NativeTearOffSource,
+        placement: Option<NativeWindowPlacement>,
+    ) -> PreparedDockAction {
+        let (authority_domain, expected) = match &source {
+            NativeTearOffSource::Tabs(group) => (group.authority_domain, group.expected),
+            NativeTearOffSource::Item(_) | NativeTearOffSource::Root(_) => {
+                (self.authority_domain, self.version)
+            }
+        };
+        PreparedDockAction::new(
+            authority_domain,
+            expected,
+            ProductAction::TearOffNative { source, placement },
+        )
     }
 
     /// Prepares one complete-root contained-floating action against the published version.
@@ -404,9 +451,9 @@ impl DockEngine {
                 placement,
             },
             ProductAction::DockBackRoot { root } => EngineInput::DockBackRoot { expected, root },
-            ProductAction::TearOffRoot { root, placement } => EngineInput::TearOffRoot {
+            ProductAction::TearOffNative { source, placement } => EngineInput::TearOffNative {
                 expected,
-                root,
+                source,
                 placement,
             },
             ProductAction::FloatRoot {
@@ -451,7 +498,7 @@ impl DockEngine {
                 accepted_base,
             });
         }
-        if product_presentation_transition_root(action)
+        if product_presentation_transition_root(&action)
             .is_some_and(|root| self.root_has_pending_presentation_transition(root))
         {
             return Ok(InputOutcome::ProductActionRejected {
@@ -470,7 +517,7 @@ impl DockEngine {
             | ProductAction::FloatRoot { root, .. } => self.product_root_focus_item(root),
             _ => None,
         };
-        let plan = match self.compile_product_action(action) {
+        let plan = match self.compile_product_action(action.clone()) {
             Ok(plan) => plan,
             Err(reason) => {
                 return Ok(InputOutcome::ProductActionRejected {
@@ -502,7 +549,7 @@ impl DockEngine {
             cause,
             focus_causal,
             expected,
-            action,
+            action.clone(),
             command.clone(),
             context.clone(),
             policy,
@@ -670,7 +717,7 @@ impl DockEngine {
                 self.compile_product_root_move(root, placement)
             }
             ProductAction::DockBackRoot { root } => self.compile_product_dock_back(root),
-            ProductAction::TearOffRoot { .. } => Err(DockspaceActionRejection::Conflict),
+            ProductAction::TearOffNative { .. } => Err(DockspaceActionRejection::Conflict),
             ProductAction::FloatRoot {
                 root,
                 surface,
@@ -1054,18 +1101,29 @@ impl DockEngine {
     }
 }
 
-pub(super) const fn product_presentation_transition_root(action: ProductAction) -> Option<RootId> {
+pub(super) const fn product_presentation_transition_root(action: &ProductAction) -> Option<RootId> {
     match action {
         ProductAction::DockRoot { root, .. }
         | ProductAction::DockBackRoot { root }
-        | ProductAction::TearOffRoot { root, .. }
-        | ProductAction::FloatRoot { root, .. } => Some(root),
+        | ProductAction::FloatRoot { root, .. } => Some(*root),
+        ProductAction::TearOffNative {
+            source: NativeTearOffSource::Root(root),
+            ..
+        } => Some(*root),
+        ProductAction::TearOffNative {
+            source: NativeTearOffSource::Tabs(group),
+            ..
+        } => Some(group.source.root()),
         ProductAction::SelectItem { .. }
         | ProductAction::OpenItem { .. }
         | ProductAction::DockItem { .. }
         | ProductAction::FloatItem { .. }
         | ProductAction::RaiseContained { .. }
-        | ProductAction::BringContainedIntoView { .. } => None,
+        | ProductAction::BringContainedIntoView { .. }
+        | ProductAction::TearOffNative {
+            source: NativeTearOffSource::Item(_),
+            ..
+        } => None,
     }
 }
 

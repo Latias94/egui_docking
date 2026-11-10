@@ -3,7 +3,9 @@
 use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
-use dockspace::model::{DockspaceActionOutcome, SurfaceId, WorkspaceVersion};
+use dockspace::model::{
+    DockspaceActionOutcome, DockspaceActionRejection, SurfaceId, WorkspaceVersion,
+};
 use dockspace::policy::DockPolicy;
 #[cfg(feature = "serde")]
 use dockspace::runtime::PreparedDockspaceDocumentRestore;
@@ -286,7 +288,17 @@ impl NativeApplicationAction {
             ));
         }
         let submitted = match self.command {
-            NativeApplicationCommand::Dock(action) => frame.submit_prepared_action(action)?,
+            NativeApplicationCommand::Dock(action) => match frame.submit_prepared_action(action) {
+                Ok(submitted) => submitted,
+                Err(error) if error.is_foreign_prepared_action() => {
+                    return Ok(NativeApplicationSubmission::Terminal(
+                        NativeActionStatus::Dock(DockspaceActionStatus::Rejected(
+                            DockspaceActionRejection::Conflict,
+                        )),
+                    ));
+                }
+                Err(error) => return Err(error),
+            },
             NativeApplicationCommand::Close(request) => {
                 frame.submit_prepared_close_request(request)?
             }
@@ -664,6 +676,9 @@ impl NativeApplicationActions {
                     return Err(());
                 };
                 let valid = match status {
+                    NativeActionStatus::Dock(DockspaceActionStatus::Rejected(
+                        DockspaceActionRejection::Conflict,
+                    )) => matches!(kind, NativeActionExpectation::Dock),
                     NativeActionStatus::Stale {
                         expected: stale, ..
                     } => expected == stale && kind.is_replacement(),

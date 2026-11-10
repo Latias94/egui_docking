@@ -14,7 +14,7 @@ pub struct ValidatedWorkspaceRestore {
     workspace: Workspace,
     presentation_identity_frontier: PresentationIdentityFrontier,
     native_surfaces: Option<crate::frame::NativeSurfaceRestorePlan>,
-    root_continuation: Option<crate::frame::PreparedNativeRootContinuation>,
+    root_continuations: Vec<crate::frame::PreparedNativeRootContinuation>,
 }
 
 impl ValidatedWorkspaceRestore {
@@ -27,7 +27,7 @@ impl ValidatedWorkspaceRestore {
             workspace,
             presentation_identity_frontier,
             native_surfaces: None,
-            root_continuation: None,
+            root_continuations: Vec::new(),
         }
     }
 
@@ -55,18 +55,16 @@ impl ValidatedWorkspaceRestore {
     }
 
     #[cfg(feature = "serde")]
-    pub(crate) fn with_root_continuation(
+    pub(crate) fn with_root_continuations(
         mut self,
-        continuation: crate::frame::PreparedNativeRootContinuation,
+        continuations: Vec<crate::frame::PreparedNativeRootContinuation>,
     ) -> Self {
-        self.root_continuation = Some(continuation);
+        self.root_continuations = continuations;
         self
     }
 
-    pub(crate) const fn root_continuation(
-        &self,
-    ) -> Option<crate::frame::PreparedNativeRootContinuation> {
-        self.root_continuation
+    pub(crate) fn root_continuations(&self) -> &[crate::frame::PreparedNativeRootContinuation] {
+        &self.root_continuations
     }
 
     pub(crate) fn into_parts(self) -> (Workspace, PresentationIdentityFrontier) {
@@ -745,13 +743,12 @@ pub enum EngineInput {
     },
     /// Authoritatively replace the complete workspace.
     ReplaceWorkspace(Workspace),
-    /// Replaces the workspace while retaining one exact external Root window
-    /// on its explicitly prepared incoming logical surface.
-    ReplaceWorkspaceContinuingRoot {
+    /// Replaces the workspace while atomically continuing exact external Root windows.
+    ReplaceWorkspaceContinuingRoots {
         /// Validated replacement graph with final presentation identities.
         workspace: Workspace,
-        /// Current coordinator preparation for the exact predecessor and target.
-        continuation: crate::frame::PreparedNativeRootContinuation,
+        /// Complete coordinator preparation for the exact predecessors and targets.
+        continuations: Vec<crate::frame::PreparedNativeRootContinuation>,
     },
     /// Restore one complete workspace and allocator lineage validated as one document.
     RestoreWorkspace(ValidatedWorkspaceRestore),
@@ -803,14 +800,14 @@ pub enum EngineInput {
         /// Stable root moved as one payload.
         root: RootId,
     },
-    /// Start one native child-window lifecycle for a complete root.
-    TearOffRoot {
+    /// Starts one native child-window lifecycle without early source transfer.
+    TearOffNative {
         /// Exact workspace version from which this product action was derived.
         expected: WorkspaceVersion,
-        /// Stable complete root retained until the ownership-transfer barrier.
-        root: RootId,
-        /// Explicit application-requested outer-window placement.
-        placement: crate::model::NativeWindowPlacement,
+        /// Exact item, frozen tabs group, or stable complete root.
+        source: crate::model::NativeTearOffSource,
+        /// Explicit outer placement, or `None` for the core-derived default.
+        placement: Option<crate::model::NativeWindowPlacement>,
     },
     /// Move one complete root into a contained presentation on an existing surface.
     FloatRoot {
@@ -1099,7 +1096,7 @@ impl EngineInput {
             | Self::CancelNativeCreate { .. }
             | Self::RetryViewportCleanup { .. }
             | Self::ReplaceWorkspace(_)
-            | Self::ReplaceWorkspaceContinuingRoot { .. }
+            | Self::ReplaceWorkspaceContinuingRoots { .. }
             | Self::RestoreWorkspace(_) => InputPriority::LifecycleControl,
             Self::PublishPlatformSnapshot { .. }
             | Self::PublishNativeCloseObservation { .. }
@@ -1122,7 +1119,7 @@ impl EngineInput {
             | Self::DockItem { .. }
             | Self::DockRoot { .. }
             | Self::DockBackRoot { .. }
-            | Self::TearOffRoot { .. }
+            | Self::TearOffNative { .. }
             | Self::FloatRoot { .. }
             | Self::FloatItem { .. }
             | Self::RaiseContained { .. }

@@ -578,7 +578,7 @@ fn failed_cleanup_observation() -> (
     let (mut coordinator, binding) = runtime_child_routing_coordinator();
     let destructive_epoch = WorkspaceEpoch::new(1);
     coordinator
-        .reconcile_workspace_epoch(destructive_epoch, &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(destructive_epoch, &BTreeSet::new(), &[])
         .expect("first restore must retire the binding");
     let destructive = coordinator
         .take_new_effects()
@@ -593,7 +593,7 @@ fn failed_cleanup_observation() -> (
         .expect("first restore must emit destructive cleanup");
     let observation_epoch = WorkspaceEpoch::new(2);
     coordinator
-        .reconcile_workspace_epoch(observation_epoch, &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(observation_epoch, &BTreeSet::new(), &[])
         .expect("second restore must continue cleanup observation");
     let continuation = coordinator
         .take_new_effects()
@@ -839,7 +839,7 @@ fn workspace_replacement_quarantines_recovery_binding_until_exact_destruction() 
     let (mut coordinator, _destroyed, replacement, _obligation) = ready_recovery_replacement();
 
     coordinator
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new(), &[])
         .expect("workspace replacement must retire the runtime recovery binding");
 
     let retirement = coordinator
@@ -1574,7 +1574,7 @@ fn restore_skips_only_a_focus_predecessor_the_provider_never_received() {
 
         let desired = BTreeSet::from([old_binding.surface()]);
         coordinator
-            .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &desired, None)
+            .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &desired, &[])
             .expect("restore must reconcile focus history");
         let existing_binding = coordinator
             .registry()
@@ -4171,7 +4171,7 @@ fn native_root_continuation_moves_the_exact_window_and_its_input_restore() {
 
     let epoch = WorkspaceEpoch::new(1);
     let reconciliation = coordinator
-        .reconcile_workspace_epoch(epoch, &desired, Some(prepared))
+        .reconcile_workspace_epoch(epoch, &desired, &[prepared])
         .expect("continuation must retain the root after its source surface disappears");
     let &[(before, after)] = reconciliation.rebound() else {
         panic!("one exact continuation must be returned: {reconciliation:?}");
@@ -4356,7 +4356,7 @@ fn native_root_continuation_rejects_invalid_and_stale_preparation_atomically() {
                     .reconcile_workspace_epoch(
                         WorkspaceEpoch::new(1),
                         &BTreeSet::from([binding.surface()]),
-                        None,
+                        &[],
                     )
                     .expect("a prior replacement must invalidate the prepared predecessor");
             }
@@ -4407,7 +4407,7 @@ fn native_root_continuation_rejects_invalid_and_stale_preparation_atomically() {
                 coordinator.reconcile_workspace_epoch(
                     WorkspaceEpoch::new(2),
                     &desired,
-                    Some(prepared)
+                    &[prepared]
                 ),
                 Err(expected),
                 "consumption must revalidate {rejection:?}",
@@ -4437,7 +4437,7 @@ fn native_root_continuation_preserves_other_roots_and_exact_quiescence_guards() 
         .prepare_native_root_continuation(predecessor, target, &desired)
         .expect("continuation must override the predecessor's default destination");
     let reconciliation = coordinator
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &desired, Some(prepared))
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &desired, &[prepared])
         .expect("both roots must retain their physical windows");
     let rebound = reconciliation
         .rebound()
@@ -4518,7 +4518,7 @@ fn workspace_rebound_requires_a_fresh_restore_ack_and_ignores_old_effects() {
 
     let new_epoch = WorkspaceEpoch::new(1);
     let reconciliation = coordinator
-        .reconcile_workspace_epoch(new_epoch, &BTreeSet::from([old_binding.surface()]), None)
+        .reconcile_workspace_epoch(new_epoch, &BTreeSet::from([old_binding.surface()]), &[])
         .expect("workspace replacement must reconcile the binding");
     let &[(actual_old, new_binding)] = reconciliation.rebound() else {
         panic!("one binding must rebound: {reconciliation:?}");
@@ -4879,7 +4879,7 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
     let (mut coordinator, binding, enable, old_restore) =
         released_unobserved_runtime_child_enable();
     coordinator
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new(), &[])
         .expect("first restore must retire the source binding");
     assert!(coordinator.take_new_effects().is_empty());
     assert_eq!(
@@ -4888,7 +4888,7 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
     );
 
     coordinator
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &BTreeSet::new(), &[])
         .expect("second restore must preserve the pointer obligation");
     let second = coordinator.take_new_effects();
     let emitted_restore = second
@@ -4904,7 +4904,7 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
         .expect("second restore must serialize behind the emitted predecessor");
 
     let third = coordinator
-        .reconcile_workspace_epoch(WorkspaceEpoch::new(3), &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(WorkspaceEpoch::new(3), &BTreeSet::new(), &[])
         .expect("third restore must queue another pointer successor");
     let unemitted_restore = third
         .cleanup_effects()
@@ -4927,7 +4927,7 @@ fn repeated_restore_preserves_the_pointer_barrier_before_destructive_cleanup() {
 
     let fourth_epoch = WorkspaceEpoch::new(4);
     coordinator
-        .reconcile_workspace_epoch(fourth_epoch, &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(fourth_epoch, &BTreeSet::new(), &[])
         .expect("fourth restore must replace the unemitted successor");
     assert_eq!(
         coordinator
@@ -5112,7 +5112,7 @@ fn old_cleanup_result_requires_a_current_exact_binding_continuation() {
     let (mut coordinator, binding) = runtime_child_routing_coordinator();
     let first_epoch = WorkspaceEpoch::new(1);
     coordinator
-        .reconcile_workspace_epoch(first_epoch, &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(first_epoch, &BTreeSet::new(), &[])
         .expect("first restore must retire the binding");
     let destructive = coordinator
         .take_new_effects()
@@ -5127,7 +5127,7 @@ fn old_cleanup_result_requires_a_current_exact_binding_continuation() {
         .expect("first restore must emit destructive cleanup");
     let current_epoch = WorkspaceEpoch::new(2);
     coordinator
-        .reconcile_workspace_epoch(current_epoch, &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(current_epoch, &BTreeSet::new(), &[])
         .expect("second restore must create a cleanup continuation");
     let _ = coordinator.take_new_effects();
 
@@ -5171,7 +5171,7 @@ fn old_cleanup_result_is_stale_while_same_boundary_continuation_is_unemitted() {
     let (mut coordinator, binding) = runtime_child_routing_coordinator();
     let first_epoch = WorkspaceEpoch::new(1);
     coordinator
-        .reconcile_workspace_epoch(first_epoch, &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(first_epoch, &BTreeSet::new(), &[])
         .expect("first restore must retire the binding");
     let destructive = coordinator
         .take_new_effects()
@@ -5187,7 +5187,7 @@ fn old_cleanup_result_is_stale_while_same_boundary_continuation_is_unemitted() {
 
     let current_epoch = WorkspaceEpoch::new(2);
     let reconciliation = coordinator
-        .reconcile_workspace_epoch(current_epoch, &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(current_epoch, &BTreeSet::new(), &[])
         .expect("same boundary restore must queue a continuation");
     let continuation = reconciliation
         .cleanup_effects()
@@ -5340,7 +5340,7 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
 
         let first_epoch = WorkspaceEpoch::new(1);
         coordinator
-            .reconcile_workspace_epoch(first_epoch, &BTreeSet::new(), None)
+            .reconcile_workspace_epoch(first_epoch, &BTreeSet::new(), &[])
             .expect("first workspace replacement must retire the binding");
         assert!(coordinator.take_new_effects().is_empty());
 
@@ -5368,7 +5368,7 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
 
         let second_epoch = WorkspaceEpoch::new(2);
         coordinator
-            .reconcile_workspace_epoch(second_epoch, &BTreeSet::new(), None)
+            .reconcile_workspace_epoch(second_epoch, &BTreeSet::new(), &[])
             .expect("second workspace replacement must migrate cleanup observation");
         let migrated = coordinator
             .try_take_new_effects()
@@ -5534,7 +5534,7 @@ fn retired_observed_window_restores_input_before_cleanup_can_fail() {
 
     let new_epoch = WorkspaceEpoch::new(1);
     let reconciliation = coordinator
-        .reconcile_workspace_epoch(new_epoch, &BTreeSet::new(), None)
+        .reconcile_workspace_epoch(new_epoch, &BTreeSet::new(), &[])
         .expect("workspace replacement must retire the old binding");
     assert_eq!(reconciliation.retired(), &[binding]);
     assert!(coordinator.take_new_effects().is_empty());

@@ -1281,10 +1281,9 @@ impl ViewportRegistry {
         for (binding, target) in retained_bindings {
             self.current_record(*binding)?;
             if !targets.insert(*target)
-                || self
-                    .records
-                    .get(target)
-                    .is_some_and(|record| record.binding != *binding)
+                || self.records.get(target).is_some_and(|record| {
+                    record.binding != *binding && !retained_bindings.contains_key(&record.binding)
+                })
             {
                 return Err(ViewportRegistryError::SurfaceAlreadyRegistered { surface: *target });
             }
@@ -1293,6 +1292,7 @@ impl ViewportRegistry {
         let surfaces: Vec<SurfaceId> = self.records.keys().copied().collect();
         let mut retained = Vec::new();
         let mut retired = Vec::new();
+        let mut continuing = Vec::with_capacity(retained_bindings.len());
         for surface in surfaces {
             let before = self
                 .records
@@ -1303,15 +1303,20 @@ impl ViewportRegistry {
                 retired.push(self.detach(before)?);
                 continue;
             };
-            let incarnation = self.next_incarnation()?;
             if target != surface {
                 self.next_surface_authority(surface)?;
             }
-            let generation = self.next_surface_authority(target)?;
-            let mut record = self
+            let record = self
                 .records
                 .remove(&surface)
                 .ok_or(ViewportRegistryError::MissingSurface { surface })?;
+            continuing.push((before, target, record));
+        }
+        // Vacate every source before installing successors. A cycle such as
+        // A -> B -> A must never overwrite a predecessor still being read.
+        for (before, target, mut record) in continuing {
+            let incarnation = self.next_incarnation()?;
+            let generation = self.next_surface_authority(target)?;
             let after = ViewportBinding::new(
                 self.authority_domain,
                 new_epoch,

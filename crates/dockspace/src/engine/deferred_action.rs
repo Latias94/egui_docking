@@ -74,7 +74,7 @@ impl DockEngine {
                     cause,
                     focus_causal,
                     witness,
-                    *action,
+                    action.clone(),
                     policy,
                     events,
                     interaction_events,
@@ -288,9 +288,9 @@ impl DockEngine {
             }
             LocalSurfaceAction::CloseRoot { root, .. } => root_is_current(*root),
             LocalSurfaceAction::PresentationCommand { action, .. } => {
-                product_action::product_presentation_transition_root(*action)
+                product_action::product_presentation_transition_root(action)
                     .is_some_and(root_is_current)
-                    && self.deferred_presentation_destination_is_current(plan, *action)
+                    && self.deferred_presentation_destination_is_current(plan, action)
             }
             LocalSurfaceAction::TabChrome { action, .. } => {
                 self.deferred_tab_chrome_is_current(plan, action)
@@ -366,13 +366,13 @@ impl DockEngine {
     fn deferred_presentation_destination_is_current(
         &self,
         plan: &PresentationPlan,
-        action: ProductAction,
+        action: &ProductAction,
     ) -> bool {
         use crate::model::{DockAnchor, DockPlacement};
         let ProductAction::DockRoot { placement, .. } = action else {
             return true;
         };
-        let anchor = match placement {
+        let anchor = match *placement {
             DockPlacement::Center(anchor) | DockPlacement::InnerEdge { anchor, .. } => anchor,
             DockPlacement::Before(item) | DockPlacement::After(item) => DockAnchor::Item(item),
             DockPlacement::OuterEdge { root, .. } => DockAnchor::Central(root),

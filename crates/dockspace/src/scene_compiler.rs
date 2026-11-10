@@ -63,7 +63,10 @@ pub(crate) use requirements::{
     SceneRequirementDerivationError, derive_scene_requirement_draft,
     derive_scene_requirement_draft_with_index,
 };
-pub(crate) use surface::{CompiledSurfacePlan, compile_surface_plan, selection_geometry_unchanged};
+pub(crate) use surface::{
+    CompiledSurfacePlan, compile_surface_plan, contained_minimum_size, pane_outer_minimum,
+    selection_geometry_unchanged,
+};
 pub use surface::{PresentationCompilationError, SceneCompilationError};
 
 #[cfg(test)]

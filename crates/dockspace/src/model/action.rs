@@ -139,6 +139,37 @@ impl NativeWindowPlacement {
     }
 }
 
+/// One exact tabs group captured from a published dockspace session.
+///
+/// The capability freezes its source membership, order, selection and workspace
+/// version. Moving its former anchor into another group never retargets this
+/// value. Runtime graph identities remain private.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedTabsGroup {
+    pub(crate) authority_domain: EngineAuthorityDomainId,
+    pub(crate) expected: WorkspaceVersion,
+    pub(crate) source: crate::command::NodeSource,
+}
+
+impl PreparedTabsGroup {
+    /// Returns the published version from which the complete group was captured.
+    #[must_use]
+    pub const fn expected_version(&self) -> WorkspaceVersion {
+        self.expected
+    }
+}
+
+/// Semantic content requested for one managed native child window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeTearOffSource {
+    /// Move one open item, leaving the rest of its group in place.
+    Item(ItemId),
+    /// Move one previously captured complete tabs group.
+    Tabs(PreparedTabsGroup),
+    /// Move one complete root, preserving its stable root identity.
+    Root(RootId),
+}
+
 /// Product-visible result of one accepted item action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DockspaceActionOutcome {
@@ -253,9 +284,11 @@ pub enum DockspaceActionOutcome {
         /// Whether stacking order changed.
         changed: bool,
     },
-    /// A complete root entered the native create lifecycle without moving its content yet.
+    /// A payload entered the native create lifecycle without moving its content yet.
     NativeRootTearOffRequested {
-        /// Stable root reserved for transfer after exact first-live presentation.
+        /// Destination root reserved for exact first-live presentation.
+        ///
+        /// Complete-root payloads retain their identity; partial payloads reserve a new root.
         root: RootId,
         /// Surface currently presenting the root.
         source_surface: SurfaceId,
@@ -384,9 +417,7 @@ impl PreparedDockAction {
         self.expected
     }
 
-    pub(crate) const fn into_parts(
-        self,
-    ) -> (EngineAuthorityDomainId, WorkspaceVersion, ProductAction) {
+    pub(crate) fn into_parts(self) -> (EngineAuthorityDomainId, WorkspaceVersion, ProductAction) {
         (self.authority_domain, self.expected, self.action)
     }
 }
@@ -396,7 +427,7 @@ impl PreparedDockAction {
 #[error("prepared docking action belongs to another dockspace authority domain")]
 pub(crate) struct PreparedDockActionAuthorityMismatch;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ProductAction {
     SelectItem {
         item: ItemId,
@@ -416,9 +447,9 @@ pub(crate) enum ProductAction {
     DockBackRoot {
         root: RootId,
     },
-    TearOffRoot {
-        root: RootId,
-        placement: NativeWindowPlacement,
+    TearOffNative {
+        source: NativeTearOffSource,
+        placement: Option<NativeWindowPlacement>,
     },
     FloatRoot {
         root: RootId,

@@ -514,15 +514,6 @@ impl<'frame> HostFrameView<'frame> {
             .is_ok()
     }
 
-    pub(crate) fn default_native_window_placement(
-        &self,
-        root: RootId,
-        plan: &crate::scene::PresentationPlan,
-    ) -> Result<crate::model::NativeWindowPlacement, crate::model::DockspaceActionRejection> {
-        self.engine
-            .derive_default_native_window_placement(root, plan)
-    }
-
     pub(crate) fn default_contained_float_rect(
         &self,
         root: RootId,
@@ -2353,7 +2344,7 @@ impl CoreHostFrame {
                 | EngineInput::ObserveNativeInputDeviceRemoval { .. }
                 | EngineInput::ObserveNativeInputBindingRetired { .. }
                 | EngineInput::ReplaceWorkspace(_)
-                | EngineInput::ReplaceWorkspaceContinuingRoot { .. }
+                | EngineInput::ReplaceWorkspaceContinuingRoots { .. }
                 | EngineInput::RestoreWorkspace(_)
         );
         let input = SequencedInput::new(stamp, sequence, source, source_sequence, input);
@@ -2456,7 +2447,7 @@ impl CoreHostFrame {
         let scope = self.item_identity_scope.as_ref()?;
         match input {
             EngineInput::ReplaceWorkspace(workspace)
-            | EngineInput::ReplaceWorkspaceContinuingRoot { workspace, .. } => workspace
+            | EngineInput::ReplaceWorkspaceContinuingRoots { workspace, .. } => workspace
                 .item_multiset()
                 .into_keys()
                 .find(|item| !scope.contains(item)),

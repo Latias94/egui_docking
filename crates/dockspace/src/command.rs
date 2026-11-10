@@ -542,6 +542,7 @@ pub enum MovePayload {
     /// Move one item out of its tabs stack.
     Item(ItemSource),
     /// Move and merge one complete tabs stack.
+    /// An inner central container stays in its source root with no tabs.
     Tabs(NodeSource),
     /// Move an arbitrary complete subtree; center targets reject split payloads.
     Subtree(NodeSource),

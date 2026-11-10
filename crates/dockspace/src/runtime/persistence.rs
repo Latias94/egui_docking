@@ -1,6 +1,6 @@
 //! Product persistence owned by the renderer-neutral dockspace session.
 
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 use thiserror::Error;
 
@@ -193,8 +193,26 @@ impl PreparedDockspaceDocumentRestore {
         native_surface_restore_plan(
             self.view(),
             self.surface_presentation_preferences(),
-            root_surface,
+            [root_surface],
         )?;
+        Ok(())
+    }
+
+    /// Validates hosting for an explicit set of retained external Root windows.
+    ///
+    /// Every other surface must declare a Child recovering to one of these
+    /// roots and carry a positive saved physical placement. This check uses
+    /// document identities and grants no current native authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty or duplicate roots, missing Root surfaces, conflicting
+    /// declarations, missing Child placement and recovery outside the root set.
+    pub fn validate_native_surface_hosting_for_roots(
+        &self,
+        roots: impl IntoIterator<Item = SurfaceId>,
+    ) -> Result<(), super::DockspaceRuntimeError> {
+        native_surface_restore_plan(self.view(), self.surface_presentation_preferences(), roots)?;
         Ok(())
     }
 
@@ -221,9 +239,15 @@ impl PreparedDockspaceDocumentRestore {
     }
 }
 
-/// An explicit document declaration cannot be hosted by a fixed-root native host.
+/// A document declaration cannot be hosted by its explicit external Root mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum DockspaceNativeDocumentHostingError {
+    /// Native restoration requires an explicit nonempty external Root mapping.
+    #[error("native document restoration requires at least one external root")]
+    RootMappingRequired,
+    /// An incoming logical Root can name only one external window.
+    #[error("native document repeats root mapping for {surface}")]
+    DuplicateRootMapping { surface: SurfaceId },
     /// The incoming layout must preserve its configured logical root.
     #[error("native document omits configured root surface {surface}")]
     RootSurfaceMissing { surface: SurfaceId },
@@ -233,8 +257,8 @@ pub enum DockspaceNativeDocumentHostingError {
     /// Every additional surface requires one explicit Child declaration.
     #[error("document surface {surface} has no supported child hosting declaration")]
     ChildDeclarationRequired { surface: SurfaceId },
-    /// The fixed-root host cannot supply another independent recovery root.
-    #[error("document child {surface} does not recover to configured root {root}")]
+    /// The Child recovery host is outside the supplied external Root set.
+    #[error("document child {surface} recovers to unmapped root {root}")]
     RecoveryHostMismatch { surface: SurfaceId, root: SurfaceId },
     /// A saved physical rectangle is required for explicit initial placement.
     #[error("document child {surface} has no positive saved outer placement")]
@@ -242,7 +266,7 @@ pub enum DockspaceNativeDocumentHostingError {
     /// The actual external root cannot continue through this replacement.
     #[error("native document cannot retain the current external root {surface}")]
     RootWindowUnavailable { surface: SurfaceId },
-    /// Role conversion of another retained external root needs a separate protocol.
+    /// A Root outside the continuation batch still occupies the incoming Child surface.
     #[error("native document child {surface} still owns an external root window")]
     ChildAlreadyHosted { surface: SurfaceId },
 }
@@ -250,27 +274,40 @@ pub enum DockspaceNativeDocumentHostingError {
 fn native_surface_restore_plan(
     view: DockspaceView<'_>,
     preferences: impl Iterator<Item = DockspaceSurfacePresentationPreference>,
-    root: SurfaceId,
+    roots: impl IntoIterator<Item = SurfaceId>,
 ) -> Result<crate::frame::NativeSurfaceRestorePlan, DockspaceNativeDocumentHostingError> {
-    if view.surface(root).is_none() {
-        return Err(DockspaceNativeDocumentHostingError::RootSurfaceMissing { surface: root });
+    let mut root_set = BTreeSet::new();
+    for root in roots {
+        if !root_set.insert(root) {
+            return Err(DockspaceNativeDocumentHostingError::DuplicateRootMapping {
+                surface: root,
+            });
+        }
+        if view.surface(root).is_none() {
+            return Err(DockspaceNativeDocumentHostingError::RootSurfaceMissing { surface: root });
+        }
+    }
+    if root_set.is_empty() {
+        return Err(DockspaceNativeDocumentHostingError::RootMappingRequired);
     }
     let preferences = preferences
         .map(|preference| (preference.surface(), preference))
         .collect::<std::collections::BTreeMap<_, _>>();
-    if matches!(
-        preferences
-            .get(&root)
-            .and_then(|preference| preference.native_hosting()),
-        Some(NativeSurfaceHostPreference::Child { .. })
-    ) {
-        return Err(DockspaceNativeDocumentHostingError::RootDeclaredChild { surface: root });
+    for &root in &root_set {
+        if matches!(
+            preferences
+                .get(&root)
+                .and_then(|preference| preference.native_hosting()),
+            Some(NativeSurfaceHostPreference::Child { .. })
+        ) {
+            return Err(DockspaceNativeDocumentHostingError::RootDeclaredChild { surface: root });
+        }
     }
     let mut children = Vec::new();
     for surface in view
         .surfaces()
         .map(|surface| surface.id())
-        .filter(|surface| *surface != root)
+        .filter(|surface| !root_set.contains(surface))
     {
         let preference = preferences.get(&surface);
         let Some(NativeSurfaceHostPreference::Child { recovery_host }) =
@@ -278,10 +315,10 @@ fn native_surface_restore_plan(
         else {
             return Err(DockspaceNativeDocumentHostingError::ChildDeclarationRequired { surface });
         };
-        if recovery_host != root {
+        if !root_set.contains(&recovery_host) {
             return Err(DockspaceNativeDocumentHostingError::RecoveryHostMismatch {
                 surface,
-                root,
+                root: recovery_host,
             });
         }
         let Some(placement) = preference
@@ -296,7 +333,10 @@ fn native_surface_restore_plan(
             placement,
         });
     }
-    Ok(crate::frame::NativeSurfaceRestorePlan { root, children })
+    Ok(crate::frame::NativeSurfaceRestorePlan {
+        roots: root_set,
+        children,
+    })
 }
 
 impl fmt::Debug for PreparedDockspaceDocumentRestore {
@@ -669,7 +709,7 @@ impl super::DockspaceHostFrame<'_> {
         &mut self,
         restore: &PreparedDockspaceDocumentRestore,
     ) -> Result<(), super::DockspaceRuntimeError> {
-        self.submit_document_restore_with_native_root(restore, None, None)
+        self.submit_document_restore_with_native_roots(restore, None, &[])
     }
 
     /// Atomically restores a document and queues its explicit native Child surfaces.
@@ -691,7 +731,7 @@ impl super::DockspaceHostFrame<'_> {
     ) -> Result<(), super::DockspaceRuntimeError> {
         self.session.ensure_managed_native_host_available()?;
         restore.validate_native_surface_hosting(root_surface)?;
-        self.submit_document_restore_with_native_root(restore, Some(root_surface), None)
+        self.submit_document_restore_with_native_roots(restore, Some(&[root_surface]), &[])
     }
 
     /// Restores native surfaces while continuing the external Root on a new surface.
@@ -713,20 +753,47 @@ impl super::DockspaceHostFrame<'_> {
         existing_root: super::NativeSurfaceBinding,
         incoming_root: SurfaceId,
     ) -> Result<(), super::DockspaceRuntimeError> {
-        self.session.ensure_managed_native_host_available()?;
-        restore.validate_native_surface_hosting(incoming_root)?;
-        self.submit_document_restore_with_native_root(
-            restore,
-            Some(incoming_root),
-            Some(existing_root),
-        )
+        self.submit_native_document_restore_with_roots(restore, [(existing_root, incoming_root)])
     }
 
-    fn submit_document_restore_with_native_root(
+    /// Restores native hosting through explicit existing-window to incoming-Root mappings.
+    ///
+    /// Each pair is `(existing_root_binding, incoming_root_surface)`. Supply
+    /// every external Root required by the document. Sources and targets must
+    /// be unique; participating windows may exchange surface identities. All
+    /// continuations, document state and Child creation intents publish in one
+    /// transaction. A saved Child recovers only to its declared mapped Root.
+    ///
+    /// Hosts may prepare physical routes from the proposed continuations, but
+    /// install them only after the matching commit. Fresh native facts and
+    /// presented output are required before successor input becomes available.
+    ///
+    /// # Errors
+    ///
+    /// Rejects ordinary restore failures, incomplete hosting declarations,
+    /// duplicate mappings, stale or foreign predecessors, unavailable Roots
+    /// and targets occupied by a window outside this mapping. A failed or
+    /// dropped frame preserves the document, bindings and preparation.
+    pub fn submit_native_document_restore_with_roots(
         &mut self,
         restore: &PreparedDockspaceDocumentRestore,
-        native_root: Option<SurfaceId>,
-        existing_root: Option<super::NativeSurfaceBinding>,
+        mappings: impl IntoIterator<Item = (super::NativeSurfaceBinding, SurfaceId)>,
+    ) -> Result<(), super::DockspaceRuntimeError> {
+        self.session.ensure_managed_native_host_available()?;
+        let mappings = mappings.into_iter().collect::<Vec<_>>();
+        let roots = mappings
+            .iter()
+            .map(|(_, surface)| *surface)
+            .collect::<Vec<_>>();
+        restore.validate_native_surface_hosting_for_roots(roots.iter().copied())?;
+        self.submit_document_restore_with_native_roots(restore, Some(&roots), &mappings)
+    }
+
+    fn submit_document_restore_with_native_roots(
+        &mut self,
+        restore: &PreparedDockspaceDocumentRestore,
+        native_roots: Option<&[SurfaceId]>,
+        mappings: &[(super::NativeSurfaceBinding, SurfaceId)],
     ) -> Result<(), super::DockspaceRuntimeError> {
         self.ensure_semantic_input_allowed()?;
         self.session
@@ -739,64 +806,62 @@ impl super::DockspaceHostFrame<'_> {
             .ok_or_else(DockspacePersistenceError::not_configured)?
             .item_identity_scope();
         let target_scope = restore.inner.item_identity_scope();
-        let (mut input, pending, mapped_root) = restore
+        let (mut input, pending) = restore
             .inner
             .clone()
-            .into_engine_input_tracking_surface(self.frame.view(), native_root)
+            .into_engine_input(self.frame.view())
             .map_err(DockspacePersistenceError::session)?;
-        if let Some(root) = mapped_root {
+        if let Some(roots) = native_roots {
             let crate::engine::EngineInput::RestoreWorkspace(restored) = input else {
                 unreachable!("validated document preparation produces a restore input");
             };
             let plan = native_surface_restore_plan(
                 DockspaceView::new(restored.workspace()),
                 surface_presentation_preferences(Some(pending.viewport_placements())),
-                root,
+                roots.iter().copied(),
             )?;
-            let continuing = existing_root
-                .map(|existing| {
-                    self.prepare_native_root_continuation(existing, root, restored.workspace())
-                })
-                .transpose()?;
+            let continuations =
+                self.prepare_native_root_continuations(mappings, restored.workspace())?;
             let viewport = self.frame.view().viewport();
-            if continuing.is_none()
-                && !viewport.viewport(root).is_some_and(|record| {
-                    record.role() == crate::viewport::ViewportRole::Root
-                        && record.ownership()
-                            == crate::viewport_registry::ViewportOwnership::External
-                        && record.admission()
-                            == crate::viewport_registry::ViewportAdmission::Admitted
-                        && !matches!(
-                            record.lifecycle(),
-                            crate::viewport_registry::ViewportLifecycle::CloseRequested
-                                | crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
-                                | crate::viewport_registry::ViewportLifecycle::Missing
-                                | crate::viewport_registry::ViewportLifecycle::Destroyed
-                        )
-                })
-            {
-                return Err(DockspaceNativeDocumentHostingError::RootWindowUnavailable {
-                    surface: root,
+            for &root in &plan.roots {
+                if mappings.is_empty()
+                    && !viewport.viewport(root).is_some_and(|record| {
+                        record.role() == crate::viewport::ViewportRole::Root
+                            && record.ownership()
+                                == crate::viewport_registry::ViewportOwnership::External
+                            && record.admission()
+                                == crate::viewport_registry::ViewportAdmission::Admitted
+                            && !matches!(
+                                record.lifecycle(),
+                                crate::viewport_registry::ViewportLifecycle::CloseRequested
+                                    | crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
+                                    | crate::viewport_registry::ViewportLifecycle::Missing
+                                    | crate::viewport_registry::ViewportLifecycle::Destroyed
+                            )
+                    })
+                {
+                    return Err(DockspaceNativeDocumentHostingError::RootWindowUnavailable {
+                        surface: root,
+                    }
+                    .into());
                 }
-                .into());
             }
             for child in &plan.children {
-                if viewport
-                    .viewport(child.surface)
-                    .is_some_and(|record| record.role() == crate::viewport::ViewportRole::Root)
-                {
+                if viewport.viewport(child.surface).is_some_and(|record| {
+                    record.role() == crate::viewport::ViewportRole::Root
+                        && !mappings.iter().any(|(existing, _)| {
+                            existing.matches_viewport_binding(record.binding())
+                        })
+                }) {
                     return Err(DockspaceNativeDocumentHostingError::ChildAlreadyHosted {
                         surface: child.surface,
                     }
                     .into());
                 }
             }
-            let restored = restored.with_native_surfaces(plan);
-            let restored = if let Some(continuation) = continuing {
-                restored.with_root_continuation(continuation)
-            } else {
-                restored
-            };
+            let restored = restored
+                .with_native_surfaces(plan)
+                .with_root_continuations(continuations);
             input = crate::engine::EngineInput::RestoreWorkspace(restored);
         }
         let sequence = self.next_application_source_sequence()?;

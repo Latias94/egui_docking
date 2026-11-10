@@ -7,7 +7,10 @@ use crate::command::ContentCloseTarget;
 use crate::engine::{DockEngine, EngineError};
 #[cfg(test)]
 use crate::graph::Workspace;
-use crate::model::{DockPlacement, DockspaceLayout, DockspaceView, WorkspaceVersion};
+use crate::model::{
+    DockAnchor, DockPlacement, DockspaceActionRejection, DockspaceLayout, DockspaceView,
+    NativeTearOffSource, PreparedTabsGroup, WorkspaceVersion,
+};
 use crate::presentation_observation::PresentationHostLease;
 
 use super::close::PreparedCloseRequest;
@@ -296,6 +299,49 @@ impl DockspaceSession {
         placement: NativeWindowPlacement,
     ) -> PreparedDockAction {
         self.engine.prepare_move_root_to_new_window(root, placement)
+    }
+
+    /// Captures the complete tabs group addressed by `anchor` in the published version.
+    ///
+    /// The returned opaque source freezes membership, order and selection. It is
+    /// never retargeted by looking up the anchor again during submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable rejection when the anchor is absent or its group is empty.
+    pub fn capture_tabs_group(
+        &self,
+        anchor: DockAnchor,
+    ) -> Result<PreparedTabsGroup, DockspaceActionRejection> {
+        self.engine.capture_tabs_group(anchor)
+    }
+
+    /// Prepares an item, captured tabs group or complete root for an explicitly placed window.
+    ///
+    /// Creation retains the original source until exact first-live admission.
+    /// A captured group preserves its original session and version authority;
+    /// preparing it again never refreshes a stale or foreign group.
+    #[must_use]
+    pub fn prepare_move_to_new_window(
+        &self,
+        source: NativeTearOffSource,
+        placement: NativeWindowPlacement,
+    ) -> PreparedDockAction {
+        self.engine
+            .prepare_move_to_new_window(source, Some(placement))
+    }
+
+    /// Prepares a native tear-off whose placement is derived by core at submission.
+    ///
+    /// Current authoritative source geometry and work-area facts are required.
+    /// Missing facts produce an ordinary unavailable action rather than invented
+    /// desktop coordinates. Source ownership follows the same first-live barrier.
+    #[must_use]
+    pub fn prepare_move_to_new_window_default(
+        &self,
+        source: NativeTearOffSource,
+    ) -> PreparedDockAction {
+        self.engine.prepare_move_to_new_window(source, None)
     }
 
     /// Prepares one revision-bound complete-root contained-floating action.

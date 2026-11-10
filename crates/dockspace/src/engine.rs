@@ -3724,7 +3724,7 @@ impl DockEngine {
         workspace: &Workspace,
         restored_identity_frontier: Option<PresentationIdentityFrontier>,
         native_surfaces: Option<&crate::frame::NativeSurfaceRestorePlan>,
-        root_continuation: Option<crate::frame::PreparedNativeRootContinuation>,
+        root_continuations: &[crate::frame::PreparedNativeRootContinuation],
         application_base: &mut WorkspaceVersion,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -3760,7 +3760,7 @@ impl DockEngine {
             .collect::<std::collections::BTreeSet<_>>();
         let reconciliation = self
             .viewport
-            .reconcile_workspace_epoch(epoch, &desired_surfaces, root_continuation)
+            .reconcile_workspace_epoch(epoch, &desired_surfaces, root_continuations)
             .map_err(|source| EngineError::Viewport { input, source })?;
         let rebound_root_surfaces = reconciliation
             .rebound()
@@ -3787,15 +3787,18 @@ impl DockEngine {
         self.native_admission.clear();
         self.issue_root_recovery_anchors(input, rebound_root_surfaces)?;
         if let Some(plan) = native_surfaces {
-            if !self.viewport.viewport(plan.root).is_some_and(|record| {
-                record.role() == ViewportRole::Root
-                    && record.ownership() == crate::viewport_registry::ViewportOwnership::External
-            }) || !self.root_recovery_anchors.contains_key(&plan.root)
-            {
-                return Err(EngineError::NativeWorkspaceRootUnavailable {
-                    input,
-                    surface: plan.root,
-                });
+            for &root in &plan.roots {
+                if !self.viewport.viewport(root).is_some_and(|record| {
+                    record.role() == ViewportRole::Root
+                        && record.ownership()
+                            == crate::viewport_registry::ViewportOwnership::External
+                }) || !self.root_recovery_anchors.contains_key(&root)
+                {
+                    return Err(EngineError::NativeWorkspaceRootUnavailable {
+                        input,
+                        surface: root,
+                    });
+                }
             }
             for child in &plan.children {
                 if self.viewport.viewport(child.surface).is_some()

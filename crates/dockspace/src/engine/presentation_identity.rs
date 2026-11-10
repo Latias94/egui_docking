@@ -21,18 +21,23 @@ pub(super) struct DragPresentationIdentityReservation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct NativeRootTransferIdentityReservation {
+pub(super) struct NativePayloadTransferIdentityReservation {
     surface: SurfaceId,
+    root: RootId,
     floating: FloatingPresentationId,
 }
 
-impl NativeRootTransferIdentityReservation {
+impl NativePayloadTransferIdentityReservation {
     pub(super) const fn surface(self) -> SurfaceId {
         self.surface
     }
 
     pub(super) const fn floating(self) -> FloatingPresentationId {
         self.floating
+    }
+
+    pub(super) const fn root(self) -> RootId {
+        self.root
     }
 }
 
@@ -214,11 +219,18 @@ impl PresentationIdentityAuthority {
         })
     }
 
-    pub(super) fn prepare_native_root_transfer(
+    pub(super) fn prepare_native_payload_transfer(
         &self,
+        complete_root: Option<RootId>,
         existing_floating: Option<FloatingPresentationId>,
-    ) -> Result<NativeRootTransferIdentityReservation, EngineError> {
+    ) -> Result<NativePayloadTransferIdentityReservation, EngineError> {
         let mut candidate = self.frontier;
+        let root = match complete_root {
+            Some(root) => root,
+            None => candidate
+                .reserve_root()
+                .ok_or(EngineError::PresentationRootIdentityExhausted)?,
+        };
         let surface = candidate
             .reserve_surface()
             .ok_or(EngineError::PresentationSurfaceIdentityExhausted)?;
@@ -228,7 +240,11 @@ impl PresentationIdentityAuthority {
                 .reserve_floating()
                 .ok_or(EngineError::PresentationFloatingIdentityExhausted)?,
         };
-        Ok(NativeRootTransferIdentityReservation { surface, floating })
+        Ok(NativePayloadTransferIdentityReservation {
+            surface,
+            root,
+            floating,
+        })
     }
 }
 
@@ -410,15 +426,16 @@ impl DockEngine {
         authority.prepare_floating()
     }
 
-    pub(super) fn prepare_native_root_transfer_identities(
+    pub(super) fn prepare_native_payload_transfer_identities(
         &self,
+        complete_root: Option<RootId>,
         existing_floating: Option<FloatingPresentationId>,
-    ) -> Result<NativeRootTransferIdentityReservation, EngineError> {
+    ) -> Result<NativePayloadTransferIdentityReservation, EngineError> {
         let mut authority = self.presentation_identity;
         authority.observe_workspace(&self.workspace);
         authority.observe_native_reservations(self.pending_native_identity_reservations());
         self.observe_pending_presentation_rehome_identity(&mut authority);
-        authority.prepare_native_root_transfer(existing_floating)
+        authority.prepare_native_payload_transfer(complete_root, existing_floating)
     }
 
     #[cfg(test)]

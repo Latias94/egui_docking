@@ -54,7 +54,8 @@ use error_kind::{
 use native::NativePlatformError;
 
 pub use crate::model::{
-    LogicalSurfaceRejection, NativeWindowPlacement, PreparedDockAction, WorkspaceVersion,
+    LogicalSurfaceRejection, NativeTearOffSource, NativeWindowPlacement, PreparedDockAction,
+    PreparedTabsGroup, WorkspaceVersion,
 };
 pub use crate::pointer_journal::{PointerDeviceKind, PointerEventMetadata};
 pub use crate::presentation_config::{
@@ -892,12 +893,27 @@ impl DockspaceRuntimeError {
                     DockspaceRuntimeErrorKind::OperationConflict
                 }
                 DockspaceNativeDocumentHostingError::RootSurfaceMissing { .. }
-                | DockspaceNativeDocumentHostingError::RootDeclaredChild { .. } => {
+                | DockspaceNativeDocumentHostingError::RootDeclaredChild { .. }
+                | DockspaceNativeDocumentHostingError::RootMappingRequired
+                | DockspaceNativeDocumentHostingError::DuplicateRootMapping { .. } => {
                     DockspaceRuntimeErrorKind::InvalidConfiguration
                 }
                 _ => DockspaceRuntimeErrorKind::Unsupported,
             },
         }
+    }
+
+    /// Returns whether a prepared product action belongs to another session.
+    ///
+    /// [`DockspaceHostFrame::submit_prepared_action`] rejects this exact error
+    /// before appending input and without poisoning its candidate. Other phase,
+    /// protocol and publication conflicts do not satisfy this query.
+    #[must_use]
+    pub const fn is_foreign_prepared_action(&self) -> bool {
+        matches!(
+            &self.source,
+            DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch(_)
+        )
     }
 
     /// Returns the typed interaction failure when this error belongs to that lane.

@@ -390,7 +390,7 @@ fn moving_an_inner_central_subtree_is_rejected() {
         &mut workspace,
         &DockPolicySnapshot::default(),
         WorkspaceCommand::Move {
-            payload: MovePayload::Tabs(source),
+            payload: MovePayload::Subtree(source),
             target: DockTarget::Center(target),
         },
     )
@@ -407,6 +407,136 @@ fn moving_an_inner_central_subtree_is_rejected() {
         } if source_node == central && central_node == central
     ));
     assert_eq!(workspace, before);
+}
+
+#[test]
+fn moving_a_central_tabs_group_transfers_content_and_preserves_its_source_container() {
+    for destination in 0..5 {
+        let mut builder = WorkspaceBuilder::new();
+        let central =
+            builder.insert_node(Node::tabs_with_selection([item(1), item(4)], Some(item(4))));
+        let sibling = builder.insert_node(Node::tabs([item(2)]));
+        let source_node =
+            builder.insert_node(Node::equal_split(Axis::Horizontal, [central, sibling]).unwrap());
+        let target_tabs = builder.insert_node(Node::tabs([item(3)]));
+        builder.set_root(ROOT_A, RootRecord::new(source_node).with_central(central));
+        builder.set_root(ROOT_B, RootRecord::new(target_tabs));
+        builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
+        builder.set_surface(SURFACE_B, SurfacePresentation::with_main(ROOT_B));
+        let mut workspace = builder.build().unwrap();
+        let original_items = workspace.item_multiset();
+        let source = workspace.capture_node_source(ROOT_A, central).unwrap();
+        let old_source = source.clone();
+        let payload = MovePayload::Tabs(source);
+        let command = match destination {
+            0 => WorkspaceCommand::Move {
+                payload,
+                target: DockTarget::Center(
+                    workspace.capture_tab_target(ROOT_B, target_tabs).unwrap(),
+                ),
+            },
+            1 => WorkspaceCommand::CreateSurfaceRoot {
+                surface: SURFACE_C,
+                root: ROOT_C,
+                content: RootContent::Move(payload),
+            },
+            2 => WorkspaceCommand::CreateContainedRoot {
+                surface: SURFACE_B,
+                root: ROOT_C,
+                floating: FloatingPresentationId::new(1),
+                rect: rect(20.0, 30.0),
+                position: ContainedPosition::Front,
+                content: RootContent::Move(payload),
+            },
+            3 => WorkspaceCommand::Move {
+                payload,
+                target: DockTarget::Center(workspace.capture_tab_target(ROOT_A, sibling).unwrap()),
+            },
+            _ => WorkspaceCommand::Move {
+                payload,
+                target: DockTarget::InnerEdge(
+                    workspace
+                        .capture_inner_edge_target(
+                            ROOT_A,
+                            sibling,
+                            Edge::Bottom,
+                            DockFraction::new(0.4).unwrap(),
+                        )
+                        .unwrap(),
+                ),
+            },
+        };
+        let mut policy = DockPolicy::default();
+        policy.set_allow_native_surfaces(true);
+        let policy = policy.snapshot(PolicyRevision::default());
+        apply(&mut workspace, &policy, command).unwrap();
+        if destination != 4 {
+            assert_eq!(workspace.root(ROOT_A).unwrap().node, source_node);
+        }
+        assert_eq!(workspace.root(ROOT_A).unwrap().central, Some(central));
+        assert_eq!(workspace.node(central), Some(&Node::tabs([])));
+        if destination != 3 {
+            assert_eq!(workspace.node(sibling), Some(&Node::tabs([item(2)])));
+        }
+        let (target_root, moved_tabs, _) = workspace.locate_item_by_id(item(4)).unwrap();
+        let expected_items = match destination {
+            0 => {
+                assert_eq!(target_root, ROOT_B);
+                vec![item(3), item(1), item(4)]
+            }
+            1 | 2 => {
+                assert_eq!(target_root, ROOT_C);
+                assert_eq!(workspace.root(ROOT_C).unwrap().central, None);
+                vec![item(1), item(4)]
+            }
+            3 => {
+                assert_eq!(target_root, ROOT_A);
+                vec![item(2), item(1), item(4)]
+            }
+            _ => {
+                assert_eq!(target_root, ROOT_A);
+                vec![item(1), item(4)]
+            }
+        };
+        let Some(Node::Tabs {
+            items,
+            selected,
+            mru,
+        }) = workspace.node(moved_tabs)
+        else {
+            panic!("the transferred group must remain a tabs leaf");
+        };
+        assert_eq!(*items, expected_items);
+        assert_eq!(*selected, Some(item(4)));
+        if matches!(destination, 1 | 2 | 4) {
+            assert_eq!(mru, &[item(4), item(1)]);
+        }
+        assert_eq!(workspace.item_multiset(), original_items);
+        workspace.validate().unwrap();
+        let fresh = workspace
+            .capture_node_source(target_root, moved_tabs)
+            .unwrap();
+        let target = workspace.capture_tab_target(ROOT_B, target_tabs).unwrap();
+        let published = workspace.clone();
+        assert!(
+            apply(
+                &mut workspace,
+                &policy,
+                WorkspaceCommand::Move {
+                    payload: MovePayload::Tabs(old_source),
+                    target: DockTarget::Center(target),
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(workspace, published);
+        assert_eq!(
+            workspace
+                .capture_node_source(target_root, moved_tabs)
+                .unwrap(),
+            fresh
+        );
+    }
 }
 
 #[test]

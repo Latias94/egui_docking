@@ -63,6 +63,15 @@ impl NativeViewportRoute {
                 }),
         }
     }
+
+    fn rebind_same_window(&mut self, successor: NativeSurfaceBinding) {
+        self.binding = successor;
+        self.local_coordinates = None;
+        if let Some(receipt) = self.terminal.as_mut() {
+            receipt.rebind(successor);
+        }
+        self.focus_reportable = false;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -460,8 +469,63 @@ impl NativeViewportMap {
         self.validate_window_unclaimed(viewport, route.window.expect("the window was checked"))
     }
 
-    /// Only a core-minted exact pair permits moving a Root to another surface.
-    pub(crate) fn validate_workspace_root_continuation(
+    /// Resolves only the exact predecessor, before any batch route is installed.
+    pub(crate) fn workspace_root_continuation_viewport(
+        &self,
+        continuation: NativeRootContinuation,
+    ) -> Result<Option<ViewportId>, NativeHostProtocolError> {
+        let predecessor = continuation.predecessor();
+        match self.viewport(predecessor.surface()) {
+            Some(viewport) if self.binding(viewport) == Some(predecessor) => Ok(Some(viewport)),
+            // A same-surface reset can precede the first physical attachment.
+            None if predecessor.surface() == continuation.successor().surface() => Ok(None),
+            _ => Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                predecessor.surface(),
+            )),
+        }
+    }
+
+    /// Validates the complete borrowed roster without allocating a second owner.
+    /// A target may be occupied only by its source or another exact participant.
+    pub(crate) fn validate_workspace_root_continuations<I>(
+        &self,
+        continuations: impl Fn() -> I,
+    ) -> Result<(), NativeHostProtocolError>
+    where
+        I: Iterator<Item = NativeRootContinuation>,
+    {
+        for (index, continuation) in continuations().enumerate() {
+            let predecessor = continuation.predecessor();
+            let successor = continuation.successor();
+            if continuations().take(index).any(|previous| {
+                previous.predecessor() == predecessor
+                    || previous.successor().surface() == successor.surface()
+            }) {
+                return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                    predecessor.surface(),
+                ));
+            }
+            let Some(viewport) = self.workspace_root_continuation_viewport(continuation)? else {
+                continue;
+            };
+            self.validate_workspace_root_predecessor(viewport, continuation)
+                .map_err(|_| {
+                    NativeHostProtocolError::NativeAdmissionRouteChanged(predecessor.surface())
+                })?;
+            if let Some(occupied) = self.viewport(successor.surface())
+                && occupied != viewport
+                && !continuations()
+                    .any(|participant| self.binding(occupied) == Some(participant.predecessor()))
+            {
+                return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                    successor.surface(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_workspace_root_predecessor(
         &self,
         viewport: ViewportId,
         continuation: NativeRootContinuation,
@@ -493,32 +557,34 @@ impl NativeViewportMap {
                 surface: predecessor.surface(),
             });
         }
-        self.validate_window_unclaimed(viewport, route.window.expect("the receipt has a window"))?;
-        self.validate_surface_unclaimed(viewport, successor)
+        self.validate_window_unclaimed(viewport, route.window.expect("the receipt has a window"))
     }
 
     /// The caller holds the preparation lock through core publication and install.
     /// The physical receipt and pending repaint stay in their existing route slot.
-    pub(crate) fn commit_workspace_root_continuation(
+    pub(crate) fn commit_workspace_root_continuations(
         &mut self,
-        viewport: ViewportId,
-        continuation: NativeRootContinuation,
+        continuations: &[NativeRootContinuation],
     ) {
-        self.validate_workspace_root_continuation(viewport, continuation)
-            .expect("same-lock Root continuation was validated before core publication");
-        self.rebind_same_window(viewport, continuation.successor());
+        self.validate_workspace_root_continuations(|| continuations.iter().copied())
+            .expect("same-lock Root continuations were validated before core publication");
+        // Match each route by its original exact binding, never by a target
+        // surface which another participant may have just acquired.
+        for route in &mut self.viewports {
+            if let Some(continuation) = continuations
+                .iter()
+                .find(|continuation| continuation.predecessor() == route.binding)
+            {
+                route.rebind_same_window(continuation.successor());
+            }
+        }
     }
 
     fn rebind_same_window(&mut self, viewport: ViewportId, successor: NativeSurfaceBinding) {
         let route = self
             .route_mut(viewport)
             .expect("validated replacement retains its route");
-        route.binding = successor;
-        route.local_coordinates = None;
-        if let Some(receipt) = route.terminal.as_mut() {
-            receipt.rebind(successor);
-        }
-        route.focus_reportable = false;
+        route.rebind_same_window(successor);
     }
 
     pub(crate) fn remove_viewport(

@@ -111,19 +111,26 @@ distinguishes implemented capabilities from unsupported combinations:
   independent SurfaceIds in one OS window, combined with managed native Child
   docking, are not yet a supported composition. Multiple panes and groups inside
   one surface remain supported.
-- Pointer-driven native tear-off handles partial payloads; public programmatic
-  native tear-off currently accepts a complete root. Moving a partial item/group
-  into a new contained root first is a separate published operation.
-- Automatic native document restore implements one external Root with declared
-  Children recovering to it. The document format and registry can represent
-  multiple Roots, but arbitrary multi-Root automatic hosting orchestration is
-  not implemented.
-- Default native placement is derived by core for paint-plan commands. The
-  session-level native command currently requires explicit placement.
+- Pointer-driven and public programmatic native tear-off share payload
+  admission for items, captured tabs groups and complete roots. Group selection
+  freezes its exact source and version; source ownership remains unchanged until
+  exact first-live presentation. Partial payloads do not need an intermediate
+  contained root or an already-published move.
+- Renderer-neutral native document restore accepts explicit existing-window to
+  incoming-Root mappings. Core validates and publishes the complete batch,
+  supports Root cycles, and queues Children against their own declared recovery
+  hosts. Batch layout reset is also available without persistence. The reference
+  application's automatic restore entry remains a single-Root product profile.
+- Default native placement is available through independent session commands as
+  well as paint-plan commands. Both use current authoritative source geometry
+  and the same core work-area solver. Explicit placement remains available;
+  absent facts return typed unavailable results.
 
 These limits do not change the physical-platform evidence below. Native endpoint
 identity, logical placement and shared-window close scope must be addressed
 together before the first composition can be advertised.
+The proposed replacement is specified in the
+[shared native window design](plans/2026-11-10-shared-native-window-design.md).
 
 ## Official egui reference adapter
 

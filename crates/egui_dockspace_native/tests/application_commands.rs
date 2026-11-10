@@ -1,6 +1,7 @@
+use dockspace::geometry::PhysicalRect;
 use dockspace::model::{
     DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
+    DockspaceSurfaceLayout, ItemId, NativeTearOffSource, NativeWindowPlacement, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::DockspaceSession;
@@ -24,28 +25,32 @@ impl PaneView for Panes {
     }
 }
 
-#[test]
-fn a_stored_command_shares_bounded_admission_without_mutating_application_data() {
+fn app() -> NativeDockspaceApp<Panes> {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
     )])
     .unwrap();
     let session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
-    let app = NativeDockspaceApp::new(
+    NativeDockspaceApp::new(
         egui::Id::unique("public-native-command-consumer"),
         session,
         SURFACE,
         Panes("unsaved application text".to_owned()),
         DockStyle::default(),
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn a_stored_command_shares_bounded_admission_without_mutating_application_data() {
+    let app = app();
     let command = NativeCommand::FloatItem {
         item: FIRST,
         surface: SURFACE,
     };
 
-    app.request_command(command).unwrap();
+    app.request_command(command.clone()).unwrap();
     assert_eq!(
         app.request_command(command),
         Err(NativeActionRequestError::Busy)
@@ -66,4 +71,84 @@ fn a_stored_command_shares_bounded_admission_without_mutating_application_data()
         app.with_view(|view| view.item(FIRST).unwrap().root()),
         RootId::new(1)
     );
+}
+
+#[test]
+fn stored_native_payload_commands_and_group_capture_share_the_public_slot() {
+    let placement =
+        NativeWindowPlacement::new(PhysicalRect::new(900.0, 100.0, 480.0, 320.0).unwrap());
+    for kind in 0..6 {
+        let app = app();
+        let group = app.capture_tabs_group(DockAnchor::Item(FIRST)).unwrap();
+        let source = match kind {
+            0 | 3 => NativeTearOffSource::Item(SECOND),
+            1 | 4 => NativeTearOffSource::Tabs(group.clone()),
+            _ => NativeTearOffSource::Root(RootId::new(1)),
+        };
+        let command = match kind {
+            0..=2 => NativeCommand::MoveToNewWindow { source, placement },
+            3 | 4 => NativeCommand::MoveToNewWindowDefault { source },
+            _ => NativeCommand::MoveRootToNewWindow {
+                root: RootId::new(1),
+                placement,
+            },
+        };
+        app.request_command(command.clone()).unwrap();
+        assert_eq!(
+            app.request_command(command),
+            Err(NativeActionRequestError::Busy)
+        );
+        assert_eq!(
+            app.request_command(NativeCommand::SelectItem { item: FIRST }),
+            Err(NativeActionRequestError::Busy)
+        );
+        assert_eq!(
+            app.capture_tabs_group(DockAnchor::Item(SECOND)).unwrap(),
+            group
+        );
+        assert!(
+            app.capture_tabs_group(DockAnchor::Item(ItemId::new(99)))
+                .is_err()
+        );
+        assert!(app.take_action_status().is_none());
+        assert_eq!(
+            app.with_view(|view| view.item(FIRST).unwrap().tabs().items().to_vec()),
+            [FIRST, SECOND]
+        );
+        assert_eq!(
+            app.with_view(|view| view.item(SECOND).unwrap().surface()),
+            SURFACE
+        );
+        assert_eq!(
+            app.with_panes(|panes| panes.0.clone()),
+            "unsaved application text"
+        );
+    }
+}
+
+#[test]
+fn another_apps_captured_group_uses_the_same_public_command_slot() {
+    let source = app();
+    let destination = app();
+    let group = source.capture_tabs_group(DockAnchor::Item(FIRST)).unwrap();
+    let original = group.clone();
+    destination
+        .request_command(NativeCommand::MoveToNewWindowDefault {
+            source: NativeTearOffSource::Tabs(group),
+        })
+        .unwrap();
+    assert_eq!(
+        destination.request_command(NativeCommand::SelectItem { item: SECOND }),
+        Err(NativeActionRequestError::Busy)
+    );
+    assert_eq!(
+        source.capture_tabs_group(DockAnchor::Item(FIRST)).unwrap(),
+        original
+    );
+    assert_eq!(
+        destination.with_view(|view| view.item(FIRST).unwrap().surface()),
+        SURFACE
+    );
+    assert!(destination.take_action_status().is_none());
+    assert!(destination.error_kind().is_none());
 }
