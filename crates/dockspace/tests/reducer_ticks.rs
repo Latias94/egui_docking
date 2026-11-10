@@ -164,6 +164,15 @@ fn configuration_phase_runs_after_semantic_inputs_without_reordering() {
         2,
         EngineInput::ReplacePolicy { expected, policy },
     );
+    assert!(!frame.view().policy().allows_tab_merge());
+    assert!(engine.policy().allows_tab_merge());
+    assert!(
+        frame
+            .view()
+            .workspace()
+            .locate_item_by_id(ItemId::new(2))
+            .is_some()
+    );
     complete_host_frame(&engine, &mut frame);
 
     let transition = host.finish(frame, &mut engine);

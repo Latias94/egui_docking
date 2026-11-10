@@ -193,8 +193,8 @@ impl DockEngine {
                     input: Some(self.last_input),
                     detail: source.to_string(),
                 })?;
-            let policy = self.policy.clone();
-            let outcome = self.reduce_surface_contribution(tick, contribution, &policy)?;
+            let outcome =
+                self.reduce_surface_contribution(tick, contribution, self.policy.revision())?;
             changed |= outcome.changes_surface_authority();
         }
         Ok(changed)

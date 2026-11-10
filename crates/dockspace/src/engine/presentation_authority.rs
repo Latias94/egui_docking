@@ -1309,7 +1309,7 @@ impl DockEngine {
         &mut self,
         tick: ReducerTickId,
         contribution: PreparedSurfaceContribution,
-        policy: &DockPolicySnapshot,
+        policy_revision: PolicyRevision,
     ) -> Result<SurfaceContributionOutcome, EngineError> {
         let token = contribution.token;
         let surface = token.surface();
@@ -1332,12 +1332,12 @@ impl DockEngine {
                 },
             });
         }
-        if contribution.policy_revision != policy.revision() {
+        if contribution.policy_revision != policy_revision {
             return Ok(SurfaceContributionOutcome::Rejected {
                 surface,
                 reason: SurfaceContributionRejection::PolicyAuthorityChanged {
                     submitted: contribution.policy_revision,
-                    current: policy.revision(),
+                    current: policy_revision,
                 },
             });
         }

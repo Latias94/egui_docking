@@ -237,9 +237,9 @@ impl DockEngine {
             presentation_snapshot_changed: _,
             presentation_projection_changed: _,
             candidate,
-            tick_policy,
+            tick_policy: _,
             vacancy_ledger,
-            application_base,
+            application_base: _,
             presentation_observation_outcomes,
             reduced_inputs,
             reduced_pointer_edges,
@@ -247,7 +247,6 @@ impl DockEngine {
             interaction_events,
             last_reduced_input,
             last_causal_cause,
-            configuration_inputs,
             staged_presentation_outputs,
             staged_presentation_output_surfaces: _,
             surface_contributions,
@@ -506,15 +505,12 @@ impl DockEngine {
             predecessor_tick,
             presentation_observation_outcomes,
             interaction_events,
-            tick_policy,
             vacancy_ledger,
-            application_base,
             reduced_inputs,
             reduced_pointer_edges,
             events,
             last_reduced_input,
             last_causal_cause,
-            configuration_inputs,
             presentation_attempt,
             presentation_dispositions,
             staged_presentation_outputs,
@@ -647,15 +643,12 @@ impl DockEngine {
         presentation_predecessor_tick: ReducerTickId,
         presentation_observations: Vec<HostPresentationObservationOutcome>,
         mut interaction_events: Vec<InteractionEvent>,
-        tick_policy: DockPolicySnapshot,
-        mut vacancy_ledger: TickVacancyLedger,
-        mut application_base: WorkspaceVersion,
-        mut reduced: Vec<ReducedInput>,
+        vacancy_ledger: TickVacancyLedger,
+        reduced: Vec<ReducedInput>,
         reduced_pointer_edges: Vec<crate::transition::ReducedPointerEdge>,
         mut events: Vec<WorkspaceEvent>,
         last_reduced_input: Option<InputSequence>,
         last_causal_cause: Option<ReductionCause>,
-        configuration_inputs: Vec<SequencedInput>,
         presentation_attempt: HostPresentationAttemptId,
         presentation_dispositions: Vec<HostPresentationDispositionOutcome>,
         staged_presentation_outputs: Vec<StagedPresentationOutput>,
@@ -671,10 +664,6 @@ impl DockEngine {
         let before_close = self.close.clone();
         let before_viewport = self.viewport.clone();
         let before_viewport_focus = self.viewport_focus.clone();
-        let tick_start = TickStartAuthority {
-            policy: &tick_policy,
-            semantic_presentations: None,
-        };
         if let Some(input) = last_reduced_input {
             candidate.rebuild_presentation_requirements(input)?;
         }
@@ -716,7 +705,11 @@ impl DockEngine {
                     reason: SurfaceContributionRejection::ResizeProjectionChanged { surface },
                 }
             } else {
-                candidate.reduce_surface_contribution(tick, contribution, tick_start.policy)?
+                candidate.reduce_surface_contribution(
+                    tick,
+                    contribution,
+                    candidate.policy.revision(),
+                )?
             };
             if outcome.changes_surface_authority()
                 && before_stamp != candidate.scene().surface(surface).map(SurfaceScene::stamp)
@@ -772,35 +765,6 @@ impl DockEngine {
             ReductionCause::SurfaceContributionBatch { tick },
             &mut interaction_events,
         )?;
-
-        let before_configuration_interaction = candidate.interaction.clone();
-        let mut last_configuration_cause = None;
-        for input in configuration_inputs {
-            let cause = input.cause(tick);
-            last_configuration_cause = Some(cause);
-            let outcome = candidate.reduce_sequenced_input(
-                input,
-                tick,
-                tick_start,
-                &mut application_base,
-                &mut events,
-                &mut interaction_events,
-            )?;
-            let _ = candidate.reconcile_pointer_provider_scope(cause, &mut interaction_events)?;
-            vacancy_ledger.observe_workspace_reconciliation(outcome.outcome());
-            vacancy_ledger.observe_bindings(&candidate);
-            reduced.push(outcome);
-        }
-        let changed_configuration_resize_surfaces =
-            candidate.changed_resize_presentation_surfaces(&before_configuration_interaction);
-        candidate.invalidate_uncovered_changed_resize_presentation(
-            &changed_configuration_resize_surfaces,
-            candidate.last_input,
-            &BTreeSet::new(),
-        )?;
-        if let Some(cause) = last_configuration_cause {
-            let _ = candidate.cancel_revoked_presentation_caused(cause, &mut interaction_events)?;
-        }
 
         let _ =
             candidate.observe_pending_presentation_rehome_dispositions(&presentation_dispositions);
@@ -862,7 +826,7 @@ impl DockEngine {
                 &mut interaction_events,
             )?;
         }
-        if let Some(cause) = last_configuration_cause.or(last_causal_cause) {
+        if let Some(cause) = last_causal_cause {
             let _ = candidate.reconcile_pointer_provider_scope(cause, &mut interaction_events)?;
         }
         candidate.reconcile_viewport_focus_authority();

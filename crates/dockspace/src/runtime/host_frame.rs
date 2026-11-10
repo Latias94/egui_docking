@@ -794,19 +794,19 @@ impl DockspaceHostFrame<'_> {
         ))
     }
 
-    /// Replaces the complete declarative docking policy at the terminal configuration phase.
+    /// Replaces the complete declarative docking policy before measurement and encoding.
     ///
-    /// Earlier semantic and pointer input remains ordered before this replacement. Later
-    /// semantic input is rejected, while surface contributions may still settle the frame's
-    /// pre-configuration presentation before the replacement invalidates it atomically.
+    /// Earlier semantic and pointer input retains its original policy and presentation facts.
+    /// This replacement updates the private candidate immediately and closes semantic input.
+    /// Measurements and encoding use the resulting policy; publication waits for frame commit.
     ///
     /// Returns the identity for querying this replacement's exact committed outcome,
     /// including an unchanged policy and its version at this point in reducer order.
     ///
     /// # Errors
     ///
-    /// Returns an error when the input prefix is incomplete, document replacement already owns
-    /// the terminal phase, or the private application source sequence is exhausted.
+    /// Returns an error when the input prefix is incomplete, encoding has begun, document
+    /// replacement already owns the terminal phase, or the application sequence is exhausted.
     pub fn replace_policy(
         &mut self,
         policy: DockPolicy,
@@ -818,17 +818,18 @@ impl DockspaceHostFrame<'_> {
         Ok(DockspaceSubmittedAction::new(frame_attempt, sequence))
     }
 
-    /// Replaces renderer-neutral presentation geometry at the terminal configuration phase.
+    /// Replaces renderer-neutral presentation geometry before measurement and encoding.
     ///
     /// The configuration controls semantic layout and interaction geometry. Visual-only colors,
-    /// fonts, and animation remain adapter-owned.
+    /// fonts, and animation remain adapter-owned. Earlier input retains its original geometry;
+    /// subsequent measurement and encoding use this private candidate's new configuration.
     /// The returned receipt resolves this replacement's exact committed result
     /// through [`HostFrameReport::submitted_action_outcome`].
     ///
     /// # Errors
     ///
-    /// Returns an error when the input prefix is incomplete, document replacement already owns
-    /// the terminal phase, or the private application source sequence is exhausted.
+    /// Returns an error when the input prefix is incomplete, encoding has begun, document
+    /// replacement already owns the terminal phase, or the application sequence is exhausted.
     pub fn replace_presentation_config(
         &mut self,
         config: DockPresentationConfig,

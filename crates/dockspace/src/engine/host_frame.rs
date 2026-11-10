@@ -1215,7 +1215,6 @@ impl CoreHostFrame {
             interaction_events: observation_interaction_events,
             last_reduced_input: None,
             last_causal_cause: None,
-            configuration_inputs: Vec::new(),
             staged_presentation_outputs: Vec::new(),
             staged_presentation_output_surfaces: BTreeSet::new(),
             surface_contributions: BTreeMap::new(),
@@ -2267,9 +2266,9 @@ impl CoreHostFrame {
 
     /// Appends one explicit configuration input.
     ///
-    /// Configuration commits intentionally execute after this frame's measured
-    /// surface contributions. Passing any other input here is rejected rather
-    /// than silently changing reduction order.
+    /// Configuration closes semantic input and immediately updates this frame's
+    /// private candidate. Measurements and paint use the resulting configuration;
+    /// publication still waits for the complete frame to commit.
     pub fn append_configuration(
         &mut self,
         source: StableInputSourceId,
@@ -2318,7 +2317,7 @@ impl CoreHostFrame {
         )
     }
 
-    /// Closes provider and semantic ingress before terminal configuration begins.
+    /// Closes provider and semantic ingress before configuration begins.
     ///
     /// Calling this method is an irreversible type-state transition for this
     /// frame candidate: later semantic or pointer input is rejected. The
@@ -2485,56 +2484,91 @@ impl CoreHostFrame {
                 | EngineInput::RestoreWorkspace(_)
         );
         let input = SequencedInput::new(stamp, sequence, source, source_sequence, input);
-        match phase {
-            HostFrameInputPhase::Semantic => {
-                let cause = input.cause(self.tick);
-                let outcome = self.candidate.reduce_sequenced_input(
-                    input,
-                    self.tick,
-                    TickStartAuthority {
-                        policy: &self.tick_policy,
-                        semantic_presentations: Some(&self.frozen_semantic_presentations),
-                    },
-                    &mut self.application_base,
-                    &mut self.events,
-                    &mut self.interaction_events,
-                );
-                let outcome = match outcome {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        self.input_prefix_error = Some(error);
-                        return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-                    }
-                };
-                if let Err(error) = self
-                    .candidate
-                    .reconcile_pointer_provider_scope(cause, &mut self.interaction_events)
-                {
-                    self.input_prefix_error = Some(error);
-                    return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-                }
-                self.vacancy_ledger
-                    .observe_workspace_reconciliation(outcome.outcome());
-                self.vacancy_ledger.observe_bindings(&self.candidate);
-                self.last_reduced_input = Some(sequence);
-                self.last_causal_cause = Some(cause);
-                self.reduced_inputs.push(outcome);
-                if let Err(error) = self.candidate.rebuild_presentation_requirements(sequence) {
-                    self.input_prefix_error = Some(error);
-                    return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-                }
-                if let Err(error) = self.refresh_presentation_snapshot() {
-                    self.input_prefix_error = Some(error);
-                    return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
-                }
-                if refresh_presented_interaction_authority {
-                    self.refresh_presented_interaction_authority();
-                }
+        let cause = input.cause(self.tick);
+        let before_configuration_resize_surface = configuration
+            .then(|| {
+                self.candidate
+                    .interaction
+                    .active_resize_view()
+                    .filter(|resize| !resize.updates().is_empty())
+                    .map(|resize| resize.surface())
+            })
+            .flatten();
+        let outcome = self.candidate.reduce_sequenced_input(
+            input,
+            self.tick,
+            TickStartAuthority {
+                policy: &self.tick_policy,
+                semantic_presentations: Some(&self.frozen_semantic_presentations),
+            },
+            &mut self.application_base,
+            &mut self.events,
+            &mut self.interaction_events,
+        );
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.input_prefix_error = Some(error);
+                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
             }
-            HostFrameInputPhase::Configuration => {
-                self.configuration_inputs.push(input);
-                self.configuration_phase_started = true;
+        };
+        if let Err(error) = self
+            .candidate
+            .reconcile_pointer_provider_scope(cause, &mut self.interaction_events)
+        {
+            self.input_prefix_error = Some(error);
+            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+        }
+        if configuration {
+            // Configuration may cancel an existing resize, but cannot edit its
+            // weights or start a new one. Retain only the surface needed to
+            // revoke that preview before compiling new-configuration geometry.
+            let after_resize_surface = self
+                .candidate
+                .interaction
+                .active_resize_view()
+                .filter(|resize| !resize.updates().is_empty())
+                .map(|resize| resize.surface());
+            let changed_surfaces = if before_configuration_resize_surface == after_resize_surface {
+                BTreeSet::new()
+            } else {
+                before_configuration_resize_surface
+                    .into_iter()
+                    .chain(after_resize_surface)
+                    .collect()
+            };
+            let result = self
+                .candidate
+                .invalidate_uncovered_changed_resize_presentation(
+                    &changed_surfaces,
+                    sequence,
+                    &BTreeSet::new(),
+                )
+                .and_then(|_| {
+                    self.candidate
+                        .cancel_revoked_presentation_caused(cause, &mut self.interaction_events)
+                });
+            if let Err(error) = result {
+                self.input_prefix_error = Some(error);
+                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
             }
+        }
+        self.vacancy_ledger
+            .observe_workspace_reconciliation(outcome.outcome());
+        self.vacancy_ledger.observe_bindings(&self.candidate);
+        self.last_reduced_input = Some(sequence);
+        self.last_causal_cause = Some(cause);
+        self.reduced_inputs.push(outcome);
+        if let Err(error) = self.candidate.rebuild_presentation_requirements(sequence) {
+            self.input_prefix_error = Some(error);
+            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+        }
+        if let Err(error) = self.refresh_presentation_snapshot() {
+            self.input_prefix_error = Some(error);
+            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+        }
+        if refresh_presented_interaction_authority {
+            self.refresh_presented_interaction_authority();
         }
         if overload_cancellation {
             self.input_terminated_for_overload = true;
@@ -2786,7 +2820,7 @@ impl CoreHostFrame {
         Ok(request)
     }
 
-    /// Adds one surface contribution reduced after every non-configuration input.
+    /// Adds one surface contribution reduced after the complete input prefix.
     ///
     /// Contributions are retained in canonical [`crate::ids::SurfaceId`] order,
     /// independent of adapter callback arrival order. A tick may include at most
@@ -2843,7 +2877,7 @@ impl CoreHostFrame {
         let outcome = match self.candidate.reduce_surface_contribution(
             self.tick,
             contribution,
-            &self.tick_policy,
+            self.candidate.policy.revision(),
         ) {
             Ok(outcome) => outcome,
             Err(error) => {

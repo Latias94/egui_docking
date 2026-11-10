@@ -534,8 +534,11 @@ impl DockEngine {
                     let contribution = self
                         .prepare_surface_contribution(token, (*measurements).clone())
                         .map_err(|error| Self::tab_strip_state_invariant(cause, error))?;
-                    let policy = self.policy.clone();
-                    self.reduce_surface_contribution(cause.tick(), contribution, &policy)?;
+                    self.reduce_surface_contribution(
+                        cause.tick(),
+                        contribution,
+                        self.policy.revision(),
+                    )?;
                 }
                 self.rebind_edge_scroll_after_local_recompile(cause, surfaces)?;
                 Ok(())

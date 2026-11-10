@@ -1,6 +1,7 @@
 use super::*;
 
 mod backend_ingress_prefix;
+mod configuration_phase;
 mod local_selection;
 mod magnetic_targeting;
 

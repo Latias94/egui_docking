@@ -585,11 +585,11 @@ fn only_an_installed_ready_plan_silently_adopts_its_resolved_scroll_offset() {
         .expect("surface scene exists")
         .stamp();
     let ledger_before = fixture.engine.presentation_ledger_diagnostics();
-    let policy = fixture.engine.policy.clone();
+    let policy_revision = fixture.engine.policy.revision();
 
     let installed = fixture
         .engine
-        .reduce_surface_contribution(ReducerTickId::new(900), ready, &policy)
+        .reduce_surface_contribution(ReducerTickId::new(900), ready, policy_revision)
         .expect("ready contribution must install");
     assert!(matches!(
         installed,
@@ -672,7 +672,7 @@ fn only_an_installed_ready_plan_silently_adopts_its_resolved_scroll_offset() {
         .expect("replacement transient offset is valid");
     let stale = fixture
         .engine
-        .reduce_surface_contribution(ReducerTickId::new(901), stale_ready, &policy)
+        .reduce_surface_contribution(ReducerTickId::new(901), stale_ready, policy_revision)
         .expect("stale Ready is a typed nonfatal rejection");
     assert!(matches!(
         stale,
@@ -719,7 +719,7 @@ fn only_an_installed_ready_plan_silently_adopts_its_resolved_scroll_offset() {
         .expect("second replacement transient offset is valid");
     let retained = fixture
         .engine
-        .reduce_surface_contribution(ReducerTickId::new(902), retained, &policy)
+        .reduce_surface_contribution(ReducerTickId::new(902), retained, policy_revision)
         .expect("retained contribution must reduce");
     assert!(matches!(
         retained,
@@ -1500,11 +1500,11 @@ fn menu_control_release_opens_then_toggles_and_invalidates_old_contributions() {
         selected_before,
         "the opening release cannot be reinterpreted as a new menu row"
     );
-    let policy = fixture.engine.policy.clone();
+    let policy_revision = fixture.engine.policy.revision();
     assert!(matches!(
         fixture
             .engine
-            .reduce_surface_contribution(ReducerTickId::new(2), prepared, &policy)
+            .reduce_surface_contribution(ReducerTickId::new(2), prepared, policy_revision)
             .expect("stale contribution must reduce as a rejection"),
         SurfaceContributionOutcome::Rejected {
             reason: SurfaceContributionRejection::StaleBase { .. },

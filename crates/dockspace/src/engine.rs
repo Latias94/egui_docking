@@ -282,9 +282,8 @@ pub(crate) const BACKEND_INGRESS_INPUT_SOURCE: StableInputSourceId =
 
 /// Explicit phase of one core-owned host frame.
 ///
-/// The semantic phase retains provider append order. Configuration changes are
-/// intentionally applied after surface contributions so one frame has a stable
-/// policy/configuration authority for interaction and measurement.
+/// The semantic phase retains provider append order. Configuration closes that
+/// input prefix and updates the private candidate before measurement and paint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostFrameInputPhase {
     /// Platform, application, renderer, lifecycle, and maintenance input.
@@ -380,9 +379,9 @@ pub enum CoreHostFrameError {
     },
     /// Semantic input cannot follow an accepted configuration input in one frame.
     ///
-    /// Configuration is a terminal phase because it is deliberately reduced
-    /// after semantic inputs and surface contributions. Accepting a later
-    /// semantic input would silently reorder the core-minted append sequence.
+    /// Configuration closes the semantic prefix before measurement and paint.
+    /// Accepting a later semantic input would mix its new configuration with
+    /// the policy and presented authority frozen for the accepted input prefix.
     #[error("a semantic input cannot follow the terminal configuration phase")]
     SemanticAfterConfiguration,
     /// No semantic, configuration, or pointer input may follow overload cancellation.
@@ -832,7 +831,6 @@ pub struct CoreHostFrame {
     interaction_events: Vec<InteractionEvent>,
     last_reduced_input: Option<InputSequence>,
     last_causal_cause: Option<ReductionCause>,
-    configuration_inputs: Vec<SequencedInput>,
     staged_presentation_outputs: Vec<StagedPresentationOutput>,
     staged_presentation_output_surfaces: BTreeSet<SurfaceId>,
     surface_contributions: BTreeMap<SurfaceId, PreparedSurfaceContribution>,
@@ -3713,9 +3711,8 @@ impl DockEngine {
     /// The capability must come from [`Self::begin_host_frame`] on this exact
     /// engine. Its frozen domain, authority frontiers, workspace version,
     /// requirement revision, and complete roster are revalidated before any
-    /// tick or source watermark can advance. Semantic input then reduces
-    /// strictly in append order; only the separately explicit configuration
-    /// phase follows surface contributions.
+    /// tick or source watermark can advance. Semantic and configuration inputs
+    /// reduce in append order in the private candidate before its contributions.
     fn platform_provider_rejection(
         &self,
         provider: PlatformObservationLease,

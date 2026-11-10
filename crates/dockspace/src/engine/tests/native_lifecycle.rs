@@ -4080,14 +4080,14 @@ fn explicit_tick_fatal_reduction_rolls_back_provenance_and_complete_state() {
             EngineInput::WorkspaceCommand { expected, command },
         )
         .expect("workspace command belongs to the semantic phase");
-    frame
-        .append_configuration(
+    assert_eq!(
+        frame.append_configuration(
             source,
             SourceSequence::new(2),
             EngineInput::ReplacePolicy { expected, policy },
-        )
-        .expect("policy replacement belongs to the terminal configuration phase");
-    complete_host_frame_with_explicit_surface_roster(&engine, &mut frame);
+        ),
+        Err(CoreHostFrameError::InputPrefixReductionFailed)
+    );
     let before = engine.candidate();
 
     assert!(matches!(
