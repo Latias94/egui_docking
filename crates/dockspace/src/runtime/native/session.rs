@@ -5,6 +5,52 @@ use crate::intent::Authority;
 use crate::pointer_journal::PointerEdgeSequence;
 
 impl DockspaceSession {
+    /// Returns each committed real native window exactly once.
+    pub fn native_window_bindings(&self) -> impl Iterator<Item = NativeWindowBinding> + '_ {
+        let native = self.native.as_ref();
+        native.into_iter().flat_map(|native| {
+            native
+                .producer
+                .windows
+                .iter()
+                .filter(|state| state.current)
+                .map(move |state| {
+                    NativeWindowBinding::from_binding(native.provider(), state.binding)
+                })
+        })
+    }
+    /// Returns the exact committed surface placements hosted by a real window.
+    pub fn native_surface_bindings_for_window(
+        &self,
+        window: NativeWindowBinding,
+    ) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        let provider = self.native.as_ref().map(RuntimeNativeState::provider);
+        self.engine
+            .viewport()
+            .registry()
+            .bindings_for_window(window.window)
+            .filter_map(move |binding| {
+                (provider == Some(window.provider))
+                    .then(|| NativeSurfaceBinding::from_binding(window.provider, binding))
+            })
+    }
+
+    /// Queries only the exact committed placement; stale generations return none.
+    #[must_use]
+    pub fn native_surface_placement(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativeSurfacePlacement> {
+        let native = self.native.as_ref()?;
+        if binding.provider != native.provider() {
+            return None;
+        }
+        self.engine
+            .viewport()
+            .registry()
+            .surface_placement(binding.binding)
+    }
+
     /// Returns whether native creation still owns a preparation or first-live obligation.
     ///
     /// The answer is derived from the existing lifecycle coordinator. Source
@@ -119,18 +165,17 @@ impl DockspaceSession {
     /// A callback captured before hiding, closing or retirement must revalidate
     /// this query before recording its formerly known docking focus.
     #[must_use]
-    pub fn native_binding_can_report_focus(&self, binding: NativeSurfaceBinding) -> bool {
+    pub fn native_binding_can_report_focus(&self, binding: impl Into<NativeWindowBinding>) -> bool {
+        let binding = binding.into();
         self.native
             .as_ref()
-            .is_some_and(|native| native.recognizes_binding(binding))
+            .is_some_and(|native| native.recognizes_window_binding(binding))
             && self
                 .engine
                 .viewport()
                 .registry()
-                .record(binding.surface())
-                .is_some_and(|record| {
-                    record.binding() == binding.binding && record.can_report_focus_fact()
-                })
+                .window(binding.window)
+                .is_some_and(|record| record.can_report_focus_fact())
     }
 
     /// Returns native client-coordinate authority from the committed engine state.
@@ -142,19 +187,20 @@ impl DockspaceSession {
     #[must_use]
     pub fn native_local_coordinates(
         &self,
-        binding: NativeSurfaceBinding,
+        binding: impl Into<NativeWindowBinding>,
     ) -> Option<NativeLocalCoordinates> {
+        let binding = binding.into();
         let native = self.native.as_ref()?;
         let backend = native.recorder.lease();
         if native.profile != NativeHostProfile::ManagedDesktop
             || self.engine.backend_ingress_provider() != Some(backend)
-            || !native.contains_binding(binding)
+            || !native.contains_window_binding(binding)
         {
             return None;
         }
         let snapshot = self
             .engine
-            .native_local_coordinate_snapshot(backend.presentation_host(), binding.binding)?;
+            .native_window_coordinate_snapshot(backend.presentation_host(), binding.window)?;
         Some(NativeLocalCoordinates::new(backend, binding, snapshot))
     }
 
@@ -168,6 +214,49 @@ impl DockspaceSession {
         self.native
             .as_ref()
             .is_some_and(|native| native.recognizes_binding(binding))
+    }
+
+    /// Returns whether the host retains this exact live or retired real window.
+    ///
+    /// Placement changes do not revoke physical callbacks. A retired window
+    /// remains recognized until its exact lifecycle obligations are quiescent.
+    #[must_use]
+    pub fn recognizes_native_window_binding(&self, binding: NativeWindowBinding) -> bool {
+        self.native
+            .as_ref()
+            .is_some_and(|native| native.recognizes_window_binding(binding))
+    }
+
+    /// Returns the exact destroyed source of a pending replacement request.
+    ///
+    /// The recovery owner, rather than a surface label on a platform route,
+    /// correlates the replacement with its original physical window lifetime.
+    #[must_use]
+    pub fn native_replacement_predecessor(
+        &self,
+        replacement: NativeSurfaceBinding,
+    ) -> Option<NativeSurfaceBinding> {
+        let native = self.native.as_ref()?;
+        if replacement.provider != native.provider() {
+            return None;
+        }
+        self.engine
+            .viewport()
+            .pending_recoveries()
+            .find_map(|(_, pending)| {
+                if pending.replacement_binding() != Some(replacement.binding) {
+                    return None;
+                }
+                match pending.origin() {
+                    crate::viewport::NativeSurfaceEstablishmentOrigin::Destroyed { binding } => {
+                        Some(NativeSurfaceBinding::from_binding(
+                            native.provider(),
+                            binding,
+                        ))
+                    }
+                    crate::viewport::NativeSurfaceEstablishmentOrigin::Initial { .. } => None,
+                }
+            })
     }
 
     /// Enrolls exact observation of externally owned native root windows.
@@ -403,7 +492,7 @@ impl DockspaceSession {
 
     /// Records one exact-set native platform snapshot in backend order.
     ///
-    /// Every currently registered native surface must appear exactly once.
+    /// Every currently registered real native window must appear exactly once.
     /// Validation and recording are one atomic facade operation. A rejected
     /// roster cannot be published later against a different workspace or
     /// binding incarnation.
@@ -412,9 +501,9 @@ impl DockspaceSession {
     ///
     /// Returns an error for an unavailable provider, stale or duplicate bindings,
     /// an incomplete roster, or generation exhaustion.
-    pub fn report_native_snapshot(
+    pub fn report_native_snapshot<B: Into<NativeWindowBinding>>(
         &mut self,
-        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+        observations: impl IntoIterator<Item = (B, NativeWindowFacts)>,
     ) -> Result<(), DockspaceRuntimeError> {
         let expected_epoch = self.version().epoch();
         let native = self.native_state_mut()?;
@@ -440,9 +529,9 @@ impl DockspaceSession {
     /// Returns an error when capabilities have not been configured, for the
     /// wrong host profile, stale or incomplete window bindings, or an invalid
     /// exact work-area roster.
-    pub fn report_managed_native_snapshot(
+    pub fn report_managed_native_snapshot<B: Into<NativeWindowBinding>>(
         &mut self,
-        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+        observations: impl IntoIterator<Item = (B, NativeWindowFacts)>,
         work_areas: NativeWorkAreaRoster,
     ) -> Result<(), DockspaceRuntimeError> {
         let expected_epoch = self.version().epoch();
@@ -616,11 +705,11 @@ impl DockspaceSession {
         Ok(())
     }
 
-    /// Records the input terminal boundary of one exact native binding.
+    /// Records the input terminal boundary of one exact real native window.
     ///
     /// A destroyed window can no longer own held buttons, capture or a smooth
     /// scroll sequence. One fixed-size backend fact ends only input which
-    /// depends on this binding, including its retained provider scroll tails.
+    /// depends on this window, including its retained provider scroll tails.
     /// Unknown capture reports preserve their preceding binding dependency.
     /// Other windows and already accepted release/output obligations survive.
     ///
@@ -636,8 +725,9 @@ impl DockspaceSession {
     /// leaves the caller responsible for its original platform callback.
     pub fn report_native_input_binding_retired(
         &mut self,
-        binding: NativeSurfaceBinding,
+        binding: impl Into<NativeWindowBinding>,
     ) -> Result<(), DockspaceRuntimeError> {
+        let binding = binding.into();
         self.ensure_managed_native_host_available()?;
         let native = self
             .native
@@ -646,15 +736,14 @@ impl DockspaceSession {
         if binding.provider != native.provider() {
             return Err(NativePlatformError::ProviderSuperseded.into());
         }
-        if !native.recognizes_binding(binding) {
-            return Err(NativePlatformError::StaleSurface {
-                surface: binding.surface(),
-            }
-            .into());
-        }
+        // The retained window owns this transport carrier independently of
+        // whether its original logical placement is still current.
+        let observation_binding = native
+            .window_observation_binding(binding)
+            .ok_or(NativePlatformError::StaleWindow { binding })?;
         self.native_state_mut()?
             .recorder
-            .record_native_input_binding_retired(binding.binding)
+            .record_native_input_binding_retired(observation_binding)
             .map_err(NativePlatformError::from_ingress)?;
         Ok(())
     }
@@ -686,21 +775,24 @@ impl DockspaceSession {
     /// Returns a typed stale-surface, acknowledgement, or generation error.
     pub fn publish_native_close(
         &mut self,
-        binding: NativeSurfaceBinding,
+        binding: impl Into<NativeWindowBinding>,
         state: NativeCloseState,
         acknowledgement: Option<NativeCloseEffectAcknowledgement>,
     ) -> Result<(), DockspaceRuntimeError> {
+        let window = binding.into();
         let expected_epoch = self.version().epoch();
         let native = self.native_state_mut()?;
-        if !native.contains_binding(binding) {
-            return Err(NativePlatformError::StaleSurface {
-                surface: binding.surface(),
-            }
-            .into());
+        if !native.contains_window_binding(window) {
+            return Err(NativePlatformError::StaleWindow { binding: window }.into());
         }
+        let binding = native
+            .producer
+            .window(window.window)
+            .ok_or(NativePlatformError::ProtocolInvariant)?
+            .observation_binding;
         let generation = native
             .producer
-            .binding(binding.binding)
+            .window(window.window)
             .ok_or(NativePlatformError::ProtocolInvariant)?
             .close_generation
             .checked_add(1)
@@ -716,7 +808,7 @@ impl DockspaceSession {
                 }
                 .into());
             }
-            Some(acknowledgement) if acknowledgement.binding != binding.binding => {
+            Some(acknowledgement) if acknowledgement.binding.window() != window.window => {
                 return Err(NativePlatformError::EffectAcknowledgementBindingMismatch {
                     surface: binding.surface(),
                 }
@@ -730,13 +822,13 @@ impl DockspaceSession {
         native.record_close(
             expected_epoch,
             WindowCloseObservation::new(
-                binding.binding,
+                binding,
                 CloseObservationGeneration::new(generation),
                 Authority::Known(state),
                 acknowledgement,
             ),
         )?;
-        if let Some(state) = native.producer.binding_mut(binding.binding) {
+        if let Some(state) = native.producer.window_mut(window.window) {
             state.close_generation = generation;
         }
         Ok(())
@@ -771,13 +863,13 @@ impl DockspaceSession {
             ));
         }
         let surface = result.binding.surface();
-        if !native.recognizes_binding(result.binding()) {
+        if !native.recognizes_window_binding(result.binding().window()) {
             return Err(NativeEffectSubmissionError::new(
                 NativePlatformError::StaleSurface { surface },
                 result,
             ));
         }
-        if !native.binding_is_live(result.binding())
+        if !native.contains_window_binding(result.binding().window())
             && result.receipt_epoch() != current_epoch
             && !self
                 .engine
@@ -885,8 +977,8 @@ impl DockspaceSession {
     ///
     /// This changes no pointer position, button or capture fact. The reducer
     /// applies it only to an active gesture from the same provider when this
-    /// exact current binding is its source or the known keyboard-focus window.
-    /// Inactive or retired bindings are inert. Enabling allows fresh acquisition
+    /// exact current window is its source or the known keyboard-focus window.
+    /// Inactive or retired windows are inert. Enabling allows fresh acquisition
     /// on a later pointer edge and cannot revive an old preview. Already frozen
     /// releases retain their original decision.
     ///
@@ -896,14 +988,18 @@ impl DockspaceSession {
     /// the existing recorded-input allowance cannot retain this semantic record.
     pub fn report_native_magnetic_targeting(
         &mut self,
-        binding: NativeSurfaceBinding,
+        binding: impl Into<NativeWindowBinding>,
         enabled: bool,
     ) -> Result<(), DockspaceRuntimeError> {
+        let binding = binding.into();
         self.ensure_managed_native_host_available()?;
         let native = self.native_state_mut()?;
         if binding.provider != native.provider() {
             return Err(NativePlatformError::ProviderSuperseded.into());
         }
+        let observation_binding = native
+            .window_observation_binding(binding)
+            .ok_or(NativePlatformError::StaleWindow { binding })?;
         native
             .recorder
             .preflight_native_transport_append(1, size_of::<EngineInput>())
@@ -913,7 +1009,7 @@ impl DockspaceSession {
             .recorder_mut()
             .record_semantic_input(EngineInput::UpdateNativeMagneticTargeting {
                 provider,
-                binding: binding.binding,
+                binding: observation_binding,
                 enabled,
             })
             .map_err(NativePlatformError::from_ingress)?;
@@ -977,10 +1073,10 @@ fn validate_close_request(
         return Err(NativePlatformError::ProviderSuperseded);
     }
     let binding = close.edge.binding();
-    if native
-        .current_binding(binding.surface())
-        .is_none_or(|current| current.binding != binding)
-    {
+    if !native.contains_window_binding(NativeWindowBinding::from_binding(
+        close.provider,
+        binding.window(),
+    )) {
         return Err(NativePlatformError::StaleSurface {
             surface: binding.surface(),
         });

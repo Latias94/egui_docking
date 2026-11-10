@@ -192,9 +192,7 @@ impl DockspaceSession {
         let (owner, source_binding, local_coordinates) =
             self.native_pointer_continuation_source()?;
         let request = self.engine.pointer_continuation()?;
-        if request.token.owner != owner.stream()
-            || (local_coordinates.is_some() && request.surface != source_binding.surface())
-        {
+        if request.token.owner != owner.stream() {
             return None;
         }
         let capture = self.engine.native_drag_capture_projection(request.token);
@@ -217,10 +215,9 @@ impl DockspaceSession {
     pub fn native_pointer_continuation_awaits_presentation(&self, surface: SurfaceId) -> bool {
         self.native_pointer_continuation_source().is_some_and(
             |(_, source_binding, local_coordinates)| {
-                (local_coordinates.is_none() || surface == source_binding.surface())
-                    && self
-                        .engine
-                        .pointer_continuation_awaits_presentation(surface)
+                let _ = (source_binding, local_coordinates);
+                self.engine
+                    .pointer_continuation_awaits_presentation(surface)
             },
         )
     }
@@ -262,12 +259,10 @@ impl DockspaceSession {
                 binding: local_binding,
                 coordinate_generation,
             } => {
-                if local_binding != binding
-                    || presentation.presented.coordinate_generation() != coordinate_generation
-                {
+                if local_binding != binding.window() {
                     return None;
                 }
-                let coordinates = self.native_local_coordinates(source_binding)?;
+                let coordinates = self.native_local_coordinates(source_binding.window())?;
                 if coordinates.coordinate_generation() != coordinate_generation {
                     return None;
                 }

@@ -155,8 +155,9 @@ impl SurfaceHost {
     fn assert_pending(&self, binding: NativeSurfaceBinding) {
         self.assert_unchanged();
         assert_eq!(binding.surface(), TARGET);
+        // Physical window coordinates may be available before this exact
+        // surface receives its first-live presentation authority.
         assert!(self.session.presented_surface(TARGET).is_none());
-        assert!(self.session.native_local_coordinates(binding).is_none());
         assert!(self.session.native_local_coordinates(self.root).is_some());
     }
 
@@ -514,6 +515,7 @@ fn direct_prepared_first_live_admits_the_existing_surface_without_changing_its_t
     ] {
         let mut fixture = SurfaceHost::new();
         let (child, create) = fixture.request();
+        assert!(fixture.session.native_local_coordinates(child).is_none());
         let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
             panic!("creation must return its exact readiness acknowledgement");
         };
@@ -541,6 +543,7 @@ fn direct_prepared_first_live_admits_the_existing_surface_without_changing_its_t
             child_facts(NativeWindowPresentationState::Visible)
                 .with_create_readiness(NativeCreateReadiness::Prepared, None),
         );
+        assert!(fixture.session.native_local_coordinates(child).is_some());
         let output = paint(&mut fixture.session, child);
         fixture.assert_pending(child);
         fixture.present(child, output);

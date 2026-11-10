@@ -136,6 +136,10 @@ monotonic_id!(
     WorkAreaGeneration,
     "Generation of the complete canonical desktop work-area roster."
 );
+monotonic_id!(
+    PlacementGeneration,
+    "Core-minted generation of one surface's association and client mapping."
+);
 /// Complete identity of one real native-window incarnation.
 ///
 /// Window lifetime is independent of the logical surfaces associated with it.
@@ -196,6 +200,7 @@ impl WindowBinding {
 pub struct ViewportBinding {
     window: WindowBinding,
     surface: SurfaceId,
+    placement_generation: PlacementGeneration,
 }
 
 impl Ord for ViewportBinding {
@@ -208,6 +213,7 @@ impl Ord for ViewportBinding {
             self.surface(),
             self.token(),
             self.incarnation(),
+            self.placement_generation(),
         )
             .cmp(&(
                 other.authority_domain(),
@@ -215,6 +221,7 @@ impl Ord for ViewportBinding {
                 other.surface(),
                 other.token(),
                 other.incarnation(),
+                other.placement_generation(),
             ))
     }
 }
@@ -232,6 +239,10 @@ impl std::hash::Hash for ViewportBinding {
         self.surface().hash(state);
         self.token().hash(state);
         self.incarnation().hash(state);
+        // Preserve the original singleton hash input for generation zero.
+        if self.placement_generation.get() != 0 {
+            self.placement_generation.hash(state);
+        }
     }
 }
 
@@ -265,7 +276,25 @@ impl ViewportBinding {
     }
 
     pub(crate) const fn from_window(window: WindowBinding, surface: SurfaceId) -> Self {
-        Self { window, surface }
+        Self::with_placement_generation(window, surface, PlacementGeneration::new(0))
+    }
+
+    pub(crate) const fn with_placement_generation(
+        window: WindowBinding,
+        surface: SurfaceId,
+        placement_generation: PlacementGeneration,
+    ) -> Self {
+        Self {
+            window,
+            surface,
+            placement_generation,
+        }
+    }
+
+    /// Returns the exact lifetime of this surface's native placement.
+    #[must_use]
+    pub const fn placement_generation(self) -> PlacementGeneration {
+        self.placement_generation
     }
 
     /// Returns the exact real-window identity associated with this surface.
@@ -302,6 +331,12 @@ impl ViewportBinding {
     #[must_use]
     pub const fn incarnation(self) -> WindowIncarnation {
         self.window.incarnation()
+    }
+}
+
+impl From<ViewportBinding> for WindowBinding {
+    fn from(binding: ViewportBinding) -> Self {
+        binding.window()
     }
 }
 

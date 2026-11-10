@@ -570,8 +570,8 @@ fn start_pending_native_create(fixture: &mut NativeVacancyFixture) -> NativeCrea
                 PointerEdgeLocation::Desktop {
                     route: source_route,
                 },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             ),
         )
         .expect("source press stages");
@@ -623,8 +623,8 @@ fn start_pending_native_create(fixture: &mut NativeVacancyFixture) -> NativeCrea
                 PointerEdgeLocation::Desktop {
                     route: outside_all_route(fixture, outside),
                 },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             ),
         )
         .expect("outside-all move stages");
@@ -669,8 +669,8 @@ fn start_pending_native_create(fixture: &mut NativeVacancyFixture) -> NativeCrea
                 PointerEdgeLocation::Desktop {
                     route: outside_all_route(fixture, outside),
                 },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             ),
         )
         .expect("confirmed outside-all move stages");
@@ -737,7 +737,7 @@ fn start_pending_native_create(fixture: &mut NativeVacancyFixture) -> NativeCrea
                 PointerEdgeLocation::Desktop {
                     route: outside_all_route(fixture, outside),
                 },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
                 Authority::Known(PointerCaptureOwner::None),
             ),
         )

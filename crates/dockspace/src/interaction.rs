@@ -34,9 +34,9 @@ use crate::intent::{
 };
 use crate::model::{DockspaceActionOutcome, DockspaceActionRejection};
 use crate::pointer_journal::{
-    DesktopRouteValidation, HostLocalPointerRoute, NativeLocalPointerRoute, PointerCaptureOwner,
-    PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope, PointerStreamId,
-    ScrollCancelReason, ScrollPhase, ScrollSequenceToken,
+    DesktopRouteValidation, HostLocalPointerRoute, PointerCaptureOwner, PointerEventDeliveryOwner,
+    PointerInputLease, PointerProviderScope, PointerStreamId, ScrollCancelReason, ScrollPhase,
+    ScrollSequenceToken,
 };
 use crate::policy::PolicyRevision;
 use crate::presentation_config::PresentationConfigRevision;
@@ -1802,8 +1802,8 @@ pub(crate) enum ManipulationPositionKey {
         hover: Option<HostLocalPointerRoute>,
     },
     JournalNativeLocal {
-        manipulation: Option<NativeLocalPointerRoute>,
-        hover: Option<NativeLocalPointerRoute>,
+        manipulation: Option<crate::pointer_journal::NativeSurfacePointerRoute>,
+        hover: Option<crate::pointer_journal::NativeSurfacePointerRoute>,
     },
     JournalDesktop(DesktopRouteValidation),
 }
@@ -2104,7 +2104,7 @@ impl DragTargetState {
 pub(crate) enum GestureLane {
     Desktop,
     NativeLocal {
-        binding: ViewportBinding,
+        binding: crate::viewport::WindowBinding,
         coordinate_generation: CoordinateGeneration,
     },
     HostLocal,
@@ -3853,7 +3853,7 @@ mod tests {
         let owner = GestureOwner::new(
             PointerStreamId::new(lease, PointerId::new(1), 1),
             GestureLane::NativeLocal {
-                binding,
+                binding: binding.window(),
                 coordinate_generation: generation,
             },
         );
@@ -3923,7 +3923,9 @@ mod tests {
             DragArmStart {
                 epoch,
                 owner,
-                journal_capture_authority: Authority::Known(PointerCaptureOwner::Native(binding)),
+                journal_capture_authority: Authority::Known(PointerCaptureOwner::Native(
+                    binding.window(),
+                )),
                 button: PointerButton::Primary,
                 payload,
                 source_surface: surface,
@@ -4011,7 +4013,7 @@ mod tests {
         let owner = GestureOwner::new(
             stream,
             GestureLane::NativeLocal {
-                binding,
+                binding: binding.window(),
                 coordinate_generation: CoordinateGeneration::new(1),
             },
         );
@@ -4027,7 +4029,7 @@ mod tests {
             GestureOwner::new(
                 stream,
                 GestureLane::NativeLocal {
-                    binding,
+                    binding: binding.window(),
                     coordinate_generation: CoordinateGeneration::new(2),
                 },
             ),
@@ -4192,8 +4194,8 @@ mod tests {
             panic!("test owner must be native-local");
         };
         let local_point = LogicalPoint::new(42.0, 18.0).expect("test local point is finite");
-        let route = NativeLocalPointerRoute::new(
-            binding,
+        let route = crate::pointer_journal::NativeSurfacePointerRoute::new(
+            ViewportBinding::from_window(binding, state.active_surface().unwrap()),
             coordinate_generation,
             PhysicalPoint::new(105.0, 45.0).expect("test client point is finite"),
             local_point,
@@ -4457,8 +4459,8 @@ mod tests {
                 else {
                     panic!("test owner must be native-local");
                 };
-                let route = NativeLocalPointerRoute::new(
-                    binding,
+                let route = crate::pointer_journal::NativeSurfacePointerRoute::new(
+                    ViewportBinding::from_window(binding, state.active_surface().unwrap()),
                     coordinate_generation,
                     PhysicalPoint::new(point.x() * 2.5, point.y() * 2.5)
                         .expect("test client point is finite"),
@@ -4516,7 +4518,7 @@ mod tests {
             WindowIncarnation::new(1),
         );
         let route = |x, y| {
-            NativeLocalPointerRoute::new(
+            crate::pointer_journal::NativeSurfacePointerRoute::new(
                 binding,
                 CoordinateGeneration::new(1),
                 PhysicalPoint::new(x, y).expect("test client position must be finite"),

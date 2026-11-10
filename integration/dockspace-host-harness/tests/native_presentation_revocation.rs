@@ -9,9 +9,10 @@ use dockspace::runtime::{
     HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeDesktopPointerLocation,
     NativeDesktopPosition, NativeHostCapabilities, NativeHostCapability, NativePointerButton,
     NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
-    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeSurfaceBinding,
-    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
-    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult, UniformSurfaceMetrics,
+    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverQuery,
+    NativeSurfaceBinding, NativeWindowFacts, NativeWindowHit, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PaintedSurfaceOutput,
+    SurfacePresentationArtifact, SurfacePresentationResult, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -67,7 +68,11 @@ fn paint(session: &mut DockspaceSession) -> PaintedSurfaceOutput {
         .expect("one output is owned")
 }
 
-fn session() -> (DockspaceSession, NativeSurfaceBinding) {
+fn session() -> (
+    DockspaceSession,
+    NativeSurfaceBinding,
+    SurfacePresentationArtifact,
+) {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(
@@ -131,16 +136,17 @@ fn session() -> (DockspaceSession, NativeSurfaceBinding) {
         .expect("source measures");
     frame.commit().expect("measurement commits");
     let output = paint(&mut session);
+    let artifact = output.presentation_artifact();
     session
         .report_surface_presentation(output, SurfacePresentationResult::Presented)
         .expect("root output is presented");
     idle(&mut session);
-    (session, binding)
+    (session, binding, artifact)
 }
 
 #[test]
 fn revoked_native_release_consumes_presented_output_as_terminal_rejection() {
-    let (mut session, binding) = session();
+    let (mut session, binding, artifact) = session();
     let work_area = session
         .native_work_area(HostWorkAreaToken::new(1))
         .expect("work area is authoritative");
@@ -164,16 +170,16 @@ fn revoked_native_release_consumes_presented_output_as_terminal_rejection() {
         (
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             start,
-            NativePointerHover::Dock(binding),
+            NativePointerHover::Dock(binding.window()),
             None,
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
         ),
         (
             NativePointerEvent::Moved,
             outside,
             NativePointerHover::OutsideAll,
             Some(work_area),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
         ),
         (
             NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
@@ -188,13 +194,23 @@ fn revoked_native_release_consumes_presented_output_as_terminal_rejection() {
                 pointer,
                 event,
                 NativeDesktopPointerLocation::new(NativeDesktopPosition::Exact(point), hover, area),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
                 capture,
             ))
             .expect("native edge records");
     }
     let mut release = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(query) => {
+                    return NativeReceiverAnswer::WindowHit(if query.window() == binding.window() {
+                        NativeWindowHit::Surface(artifact)
+                    } else {
+                        NativeWindowHit::Unknown
+                    });
+                }
+                NativeReceiverQuery::Surface(query) => query,
+            };
             query
                 .bind_receiver(&descriptor)
                 .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)

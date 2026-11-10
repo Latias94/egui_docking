@@ -41,14 +41,15 @@ use dockspace::platform::{
     WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::pointer_journal::{
-    DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, PointerCaptureOwner, PointerEdge,
-    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
-    PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope,
+    DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, NativeSurfacePointerRoute,
+    PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
+    PointerEdgeSequence, PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope,
 };
 use dockspace::pointer_receiver::{
-    PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
-    PointerReceiverHoverHitDisposition, PointerReceiverObservation, PointerReceiverProbeReceipt,
-    PointerReceiverReceiptBatch, PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
+    NativeWindowHitReceipt, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
+    PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
+    PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
+    PresentedPointerReceiverObservation,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_hit::PresentationHitRegionKind;
@@ -1283,8 +1284,8 @@ fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJo
         PointerEdgeLocation::Desktop {
             route: source_route,
         },
-        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     let mut frame = if joined {
         let (frame, progress) =
@@ -1314,15 +1315,41 @@ fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJo
         PointerReceiverDeliveryDisposition::Dock(source_receiver),
     )
     .expect("journal source press must bind to the presented tab");
-    let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(
-        PointerReceiverObservation::Presented(
-            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
-                delivery,
-            )])
+    let observation = PointerReceiverObservation::Presented(
+        PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(delivery)])
             .expect("journal source press must answer delivery"),
-        ),
-    )])
-    .expect("journal source press receipt set must be exact");
+    );
+    let receipt = if let Some(probe) = candidate.native_window() {
+        assert_eq!(probe.window(), source_binding.window());
+        let coordinates = frame
+            .view()
+            .viewport()
+            .registry()
+            .placement_record(source_binding)
+            .and_then(|record| record.coordinates())
+            .expect("the joined source hit requires its exact placement coordinates");
+        let hit_point = coordinates
+            .client_to_surface(probe.client_position())
+            .expect("the physical client hit must map into the source surface");
+        assert_eq!(hit_point, source_point);
+        candidate.receipt_with_native_hit(
+            observation,
+            NativeWindowHitReceipt::Surface {
+                route: NativeSurfacePointerRoute::new(
+                    source_binding,
+                    coordinates.coordinate_generation(),
+                    probe.client_position(),
+                    hit_point,
+                ),
+                output: projection.output_ticket(),
+                authority: projection.authority(),
+            },
+        )
+    } else {
+        candidate.receipt(observation)
+    };
+    let receipts = PointerReceiverReceiptBatch::new([receipt])
+        .expect("journal source press receipt set must be exact");
     if joined {
         assert_eq!(
             frame
@@ -1382,8 +1409,10 @@ fn move_journal_drag_outside(fixture: &mut Fixture, drag: ActiveJournalDrag) -> 
         PointerEdgeLocation::Desktop {
             route: outside_all_route(fixture, outside),
         },
-        Authority::Known(PointerEventDeliveryOwner::Native(drag.source_binding)),
-        Authority::Known(PointerCaptureOwner::Native(drag.source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(
+            drag.source_binding.window(),
+        )),
+        Authority::Known(PointerCaptureOwner::Native(drag.source_binding.window())),
     );
     let mut frame = if joined {
         let (frame, progress) =
@@ -1483,8 +1512,10 @@ fn move_journal_drag_to_surface(
                 fixture.pointer_sequence,
                 PointerEdgeKind::Moved,
                 PointerEdgeLocation::Desktop { route },
-                Authority::Known(PointerEventDeliveryOwner::Native(drag.source_binding)),
-                Authority::Known(PointerCaptureOwner::Native(drag.source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(
+                    drag.source_binding.window(),
+                )),
+                Authority::Known(PointerCaptureOwner::Native(drag.source_binding.window())),
             ),
         )
         .expect("target move must stage");
@@ -1633,7 +1664,9 @@ fn request_native_create(fixture: &mut Fixture, source: NativeDragSource) -> Nat
         PointerEdgeLocation::Desktop {
             route: outside_all_route(fixture, outside),
         },
-        Authority::Known(PointerEventDeliveryOwner::Native(drag.source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(
+            drag.source_binding.window(),
+        )),
         Authority::Known(PointerCaptureOwner::None),
     );
     let joined = fixture.presentation_host.has_joined_backend();
@@ -2420,7 +2453,7 @@ fn native_source_surface_retirement_waits_for_first_live_output() {
             host_window(&fixture),
             native_window_with_presentation(request, WindowPresentationState::Visible),
         ],
-        GlobalFocusedWindow::Dock(source_binding),
+        GlobalFocusedWindow::Dock(source_binding.window()),
         None,
     );
     assert!(
@@ -3095,7 +3128,7 @@ fn prepared_native_create_activates_after_first_live_presentation_without_known_
             host_window(&fixture),
             native_window_with_presentation(request, WindowPresentationState::Visible),
         ],
-        GlobalFocusedWindow::Dock(request.binding()),
+        GlobalFocusedWindow::Dock(request.binding().window()),
         Some(focus),
     );
     assert!(platform_effects(&fixture, &focused).is_empty());

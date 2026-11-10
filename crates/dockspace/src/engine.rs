@@ -10,6 +10,7 @@ mod input;
 mod logical_surface;
 mod native_admission;
 mod native_input;
+mod native_placement;
 mod native_projection;
 mod native_tear_off;
 mod pending_mutation;
@@ -49,8 +50,8 @@ use crate::behavior_tests::support as test_support;
 
 pub use self::pointer_proof::PointerReceiverGeometryError;
 use self::pointer_proof::{
-    is_tab_list_menu_click, journal_position_key, pointer_receiver_candidate_spec,
-    validated_desktop_delivery_route,
+    is_tab_list_menu_click, journal_position_key, native_window_pointer_probe,
+    pointer_receiver_candidate_spec, resolve_native_pointer_edge, validated_desktop_delivery_route,
 };
 
 use self::tab_strip_input::TabListMenuActivation;
@@ -179,15 +180,14 @@ use crate::platform_provider::{
     PlatformProviderReservation,
 };
 use crate::pointer_journal::{
-    DesktopRouteFact, DesktopRoutePresentationError, DesktopRouteValidation,
-    NativeLocalPointerRoute, PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind,
-    PointerEdgeLocation, PointerEdgeSequence, PointerEventDeliveryOwner, PointerInputLease,
-    PointerJournalLedger, PointerJournalLedgerError, PointerProviderScope, PointerStreamId,
-    ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollPhase,
-    ScrollSequenceToken, SurfaceLocalPointerDrainReceipt, SurfaceLocalPointerEndpoint,
-    SurfaceLocalPointerFrameCommit, SurfaceLocalPointerProvider, SurfaceLocalPointerProviderError,
-    SurfaceLocalPointerQuiescenceDisposition, SurfaceLocalPointerRetirementOutcome,
-    SurfaceLocalPointerScope, ValidatedDesktopRoute,
+    DesktopRouteFact, DesktopRoutePresentationError, DesktopRouteValidation, PointerCaptureOwner,
+    PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
+    PointerEventDeliveryOwner, PointerInputLease, PointerJournalLedger, PointerJournalLedgerError,
+    PointerProviderScope, PointerStreamId, ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId,
+    ScrollEdge, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerDrainReceipt,
+    SurfaceLocalPointerEndpoint, SurfaceLocalPointerFrameCommit, SurfaceLocalPointerProvider,
+    SurfaceLocalPointerProviderError, SurfaceLocalPointerQuiescenceDisposition,
+    SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope, ValidatedDesktopRoute,
 };
 use crate::pointer_receiver::{
     PointerReceiverAttemptError, PointerReceiverAttemptIssuer, PointerReceiverCandidateRoster,
@@ -269,8 +269,7 @@ use crate::viewport_focus::{
     FocusObservationTransition, ObservedPlatformFocusEffect, PaneFocusDisposition, PaneFocusIntent,
     PaneFocusIntentGeneration, PaneFocusObservation, PaneFocusRequestObservation,
     PaneFocusRevealRejection, PanelFocusRecord, PendingPlatformFocus, PlatformFocusEvidence,
-    PlatformFocusRestoreGate, ViewportActivationRequest, ViewportFocusCoordinator,
-    ViewportFocusError,
+    ViewportActivationRequest, ViewportFocusCoordinator, ViewportFocusError,
 };
 use crate::viewport_registry::{NativeCloseEdgeDisposition, ViewportAdmission, ViewportOwnership};
 pub(crate) use host_frame::CoreEncodingCheckpoint;
@@ -1505,7 +1504,7 @@ pub enum EngineError {
         /// Failing sequenced input.
         input: InputSequence,
         /// Exact stale, destroyed, or otherwise unobservable binding.
-        binding: ViewportBinding,
+        binding: crate::viewport::WindowBinding,
     },
     /// A pointer edge or another already-bound reducer fact could not advance focus state.
     #[error("viewport focus reduction {cause:?} failed: {source}")]
@@ -1651,6 +1650,9 @@ enum WorkspacePublicationAuthority {
         source_surface: crate::ids::SurfaceId,
         obligation: SurfaceRecoveryObligationId,
     },
+    WindowRecoveryCommit {
+        window: crate::viewport::WindowBinding,
+    },
     PresentationRehome {
         source_surface: crate::ids::SurfaceId,
         obligation: SurfaceRecoveryObligationId,
@@ -1683,6 +1685,10 @@ enum ContainedPlacementAuthority {
 #[derive(Debug, Clone, PartialEq)]
 enum PreparedCloseOperation {
     Content(crate::close_plan::ContentCloseScope),
+    Window {
+        bindings: Vec<ViewportBinding>,
+        operations: Vec<PreparedCloseOperation>,
+    },
     SurfaceRetain {
         roster: SurfaceRosterDisposition,
         recovery_focus: PaneFocusDisposition,
@@ -4157,6 +4163,33 @@ impl DockEngine {
         let Some(source) = drag.complete_root.as_ref() else {
             return NativeDragSourceInput::Preserve;
         };
+        let sibling_has_content = self
+            .viewport
+            .registry()
+            .bindings_for_window(record.binding().window())
+            .filter(|binding| binding.surface() != drag.source_surface)
+            .any(|binding| {
+                self.workspace
+                    .surface(binding.surface())
+                    .is_some_and(|surface| {
+                        surface
+                            .main_root
+                            .into_iter()
+                            .chain(surface.contained.iter().filter_map(|floating| {
+                                self.workspace
+                                    .contained_floating(*floating)
+                                    .map(|floating| floating.root)
+                            }))
+                            .any(|root| {
+                                self.workspace
+                                    .root(root)
+                                    .is_some_and(|root| self.workspace.subtree_has_items(root.node))
+                            })
+                    })
+            });
+        if sibling_has_content {
+            return NativeDragSourceInput::Preserve;
+        }
         if self
             .workspace
             .surface(drag.source_surface)
@@ -5437,6 +5470,7 @@ impl DockEngine {
             } => Some((source_surface, obligation)),
             WorkspacePublicationAuthority::Ordinary
             | WorkspacePublicationAuthority::NativeCommit { .. }
+            | WorkspacePublicationAuthority::WindowRecoveryCommit { .. }
             | WorkspacePublicationAuthority::PresentationRehome { .. }
             | WorkspacePublicationAuthority::PendingPresentationRehome { .. } => None,
         };
@@ -5450,6 +5484,7 @@ impl DockEngine {
             WorkspacePublicationAuthority::Ordinary
             | WorkspacePublicationAuthority::NativeCommit { .. }
             | WorkspacePublicationAuthority::RecoveryCommit { .. }
+            | WorkspacePublicationAuthority::WindowRecoveryCommit { .. }
             | WorkspacePublicationAuthority::PendingPresentationRehome { .. } => None,
         };
         if let Some((source_surface, obligation, root, floating)) = presentation_rehome
@@ -5476,6 +5511,17 @@ impl DockEngine {
             return Err(CommandError::SurfaceLifecycleFrozen {
                 surface: source_surface,
             });
+        }
+        let window_recovery = match authority {
+            WorkspacePublicationAuthority::WindowRecoveryCommit { window } => Some(window),
+            _ => None,
+        };
+        if let Some(window) = window_recovery {
+            for (surface, bound) in &recoveries {
+                if bound.binding.window() == window && candidate.surface(*surface).is_some() {
+                    return Err(CommandError::SurfaceLifecycleFrozen { surface: *surface });
+                }
+            }
         }
         let live_surfaces = recoveries.keys().copied().collect::<Vec<_>>();
         for surface in live_surfaces {
@@ -5514,18 +5560,14 @@ impl DockEngine {
             if let Some(converted) = obligation.target().converted_main()
                 && candidate.contained_floating(converted.floating()).is_some()
             {
-                let exact_recovery_consumption = matches!(
-                    authority,
-                    WorkspacePublicationAuthority::RecoveryCommit {
-                        source_surface,
-                        obligation: obligation_id,
-                    } if source_surface == *surface && obligation_id == obligation.id()
-                ) && candidate
-                    .presentation_for_root(converted.source_root())
-                    == Some(crate::RootPresentationOwner::Contained {
-                        surface: obligation.target().host_surface(),
-                        floating: converted.floating(),
-                    });
+                let exact_recovery_consumption = (recovery_commit
+                    == Some((*surface, obligation.id()))
+                    || window_recovery == Some(bound.binding.window()))
+                    && candidate.presentation_for_root(converted.source_root())
+                        == Some(crate::RootPresentationOwner::Contained {
+                            surface: obligation.target().host_surface(),
+                            floating: converted.floating(),
+                        });
                 let exact_presentation_rehome = matches!(
                     presentation_rehome,
                     Some((source_surface, obligation_id, root, floating))
@@ -5562,6 +5604,9 @@ impl DockEngine {
                     surface: source_surface,
                 });
             }
+        }
+        if let Some(window) = window_recovery {
+            recoveries.retain(|_, bound| bound.binding.window() != window);
         }
         for (saga_id, saga) in self.viewport.native_create_sagas() {
             let prepared = saga.prepared();
@@ -5751,6 +5796,25 @@ impl DockEngine {
             })
         });
         persistent.or(transient)
+    }
+
+    fn first_workspace_publication_mismatch_excluding(
+        &self,
+        candidate: &Workspace,
+        action_barrier: Option<&BTreeMap<SurfaceId, SurfaceRosterDisposition>>,
+        excluded: &BTreeSet<SurfaceId>,
+    ) -> Option<SurfaceId> {
+        self.surface_recovery
+            .first_workspace_mismatch_excluding_surfaces(candidate, excluded)
+            .or_else(|| {
+                action_barrier.and_then(|barrier| {
+                    barrier.values().find_map(|roster| {
+                        (!excluded.contains(&roster.surface())
+                            && !roster.matches_workspace(candidate))
+                        .then_some(roster.surface())
+                    })
+                })
+            })
     }
 
     fn publish_workspace(&mut self, publication: StagedWorkspacePublication) {

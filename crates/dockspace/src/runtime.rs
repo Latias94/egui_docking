@@ -106,8 +106,10 @@ pub use native::{
     NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
     NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
     NativeSurfaceCloseAction, NativeSurfaceCloseRejection, NativeSurfaceCloseRequest,
-    NativeWindowBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaBinding, NativeWorkAreaFacts, NativeWorkAreaRoster,
+    NativeSurfacePlacement, NativeSurfaceReceiverQuery, NativeWindowBinding, NativeWindowFacts,
+    NativeWindowHit, NativeWindowHitPurpose, NativeWindowHitQuery, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaBinding, NativeWorkAreaFacts,
+    NativeWorkAreaRoster,
 };
 pub use native::{NativePointerCaptureRequest, NativePointerContinuation};
 pub use native_effect::{

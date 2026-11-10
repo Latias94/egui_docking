@@ -1,5 +1,8 @@
 //! Explicit native-local to desktop handoff through the public joined host API.
 
+use dockspace::runtime::{NativeWindowBinding, NativeWindowHit, SurfacePresentationArtifact};
+use std::cell::Cell;
+
 use std::time::Duration;
 
 use dockspace::geometry::{
@@ -42,7 +45,6 @@ fn geometry() -> NativeLocalGeometry {
     NativeLocalGeometry::new(
         PhysicalSize::new(1200.0, 900.0).unwrap(),
         ScaleFactor::new(2.0).unwrap(),
-        ScaleFactor::new(1.5).unwrap(),
     )
 }
 
@@ -59,7 +61,7 @@ fn facts(origin: Option<PhysicalRect>) -> NativeWindowFacts {
     let facts = NativeWindowFacts::live()
         .with_content_size(geometry.content_size())
         .with_native_scale_factor(geometry.native_scale_factor())
-        .with_presentation_scale_factor(geometry.presentation_scale_factor())
+        .with_presentation_scale_factor(ScaleFactor::new(1.5).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
         .with_presentation(NativeWindowPresentationState::Visible);
     match origin {
@@ -122,6 +124,7 @@ struct Tab {
 }
 
 struct Scene {
+    presentation: Cell<Option<(NativeWindowBinding, SurfacePresentationArtifact)>>,
     surface: SurfaceId,
     recording: RecordingRenderer,
     tabs: Vec<Tab>,
@@ -145,7 +148,21 @@ impl Scene {
         point
     }
 
-    fn answer(&self, query: NativeReceiverQuery) -> NativeReceiverAnswer {
+    fn answer(&self, query: impl Into<NativeReceiverQuery>) -> NativeReceiverAnswer {
+        let query = match query.into() {
+            NativeReceiverQuery::WindowHit(query) => {
+                let (window, artifact) = self
+                    .presentation
+                    .get()
+                    .expect("a receiver scene must retain its exact painted output");
+                return NativeReceiverAnswer::WindowHit(if query.window() == window {
+                    NativeWindowHit::Surface(artifact)
+                } else {
+                    NativeWindowHit::Unknown
+                });
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         if query.surface() != self.surface {
             return NativeReceiverAnswer::Unknown;
         }
@@ -247,6 +264,7 @@ fn render(frame: &mut DockspaceHostFrame<'_>, surface: SurfaceId) -> Scene {
     }
     frame.confirm_surface_painted(receipt).unwrap();
     Scene {
+        presentation: Cell::new(None),
         surface,
         recording,
         tabs,
@@ -265,6 +283,9 @@ fn take_output(
         scene.recording.records.last(),
         Some(OwnedRecord::SurfaceEnd(semantic)) if output.matches_semantic_output(*semantic)
     ));
+    scene
+        .presentation
+        .set(Some((binding.window(), output.presentation_artifact())));
     output
 }
 
@@ -388,7 +409,7 @@ fn capture_client(
     client: PhysicalPoint,
 ) -> NativeLocalPointerSample {
     cap.capture(
-        binding,
+        binding.window(),
         NativeLocalPointerFact::new(
             client,
             geometry().content_size(),
@@ -404,17 +425,24 @@ fn sample(
     binding: NativeSurfaceBinding,
     point: LogicalPoint,
 ) -> NativeLocalPointerSample {
-    let factor = geometry().presentation_scale_factor().get();
+    let factor = 1.5;
     let client = PhysicalPoint::new(point.x() * factor, point.y() * factor).unwrap();
     let sample = capture_client(cap, binding, client);
     assert_eq!(sample.client_position(), client);
-    assert_eq!(sample.surface_position(), point);
+    assert_eq!(sample_logical(sample), point);
     sample
+}
+
+// These fixture surfaces use an explicitly declared whole-client 1.5 mapping.
+// This conversion supplies expected test values, never a runtime capability.
+fn sample_logical(sample: NativeLocalPointerSample) -> LogicalPoint {
+    let client = sample.client_position();
+    LogicalPoint::new(client.x() / 1.5, client.y() / 1.5).unwrap()
 }
 
 fn desktop_point(surface: SurfaceId, point: LogicalPoint) -> PhysicalPoint {
     let bounds = bounds(surface);
-    let factor = geometry().presentation_scale_factor().get();
+    let factor = 1.5;
     PhysicalPoint::new(
         bounds.x() + point.x() * factor,
         bounds.y() + point.y() * factor,
@@ -428,7 +456,7 @@ fn desktop_location(
 ) -> NativeDesktopPointerLocation {
     NativeDesktopPointerLocation::new(
         NativeDesktopPosition::Exact(point),
-        NativePointerHover::Dock(hover),
+        NativePointerHover::Dock(hover.window()),
         None,
     )
 }
@@ -437,7 +465,7 @@ fn capture_for(binding: NativeSurfaceBinding, event: Event) -> NativePointerOwne
     if matches!(event, Event::ButtonReleased(_)) {
         NativePointerOwner::None
     } else {
-        NativePointerOwner::Native(binding)
+        NativePointerOwner::Native(binding.window())
     }
 }
 
@@ -450,7 +478,7 @@ fn local(
         POINTER,
         event,
         NativeLocalPointerLocation::Exact(sample),
-        NativePointerOwner::Native(binding),
+        NativePointerOwner::Native(binding.window()),
         capture_for(binding, event),
     )
 }
@@ -460,7 +488,7 @@ fn desktop(binding: NativeSurfaceBinding, event: Event, point: LogicalPoint) -> 
         POINTER,
         event,
         desktop_location(binding, desktop_point(binding.surface(), point)),
-        NativePointerOwner::Native(binding),
+        NativePointerOwner::Native(binding.window()),
         capture_for(binding, event),
     )
 }
@@ -477,7 +505,7 @@ fn handoff(
         pointer,
         event,
         NativeLocalToDesktopHandoff::new(local, desktop),
-        NativePointerOwner::Native(binding),
+        NativePointerOwner::Native(binding.window()),
         capture,
     )
 }
@@ -493,9 +521,9 @@ fn moved_handoff(
         local,
         desktop_location(
             binding,
-            desktop_point(binding.surface(), local.surface_position()),
+            desktop_point(binding.surface(), sample_logical(local)),
         ),
-        NativePointerOwner::Native(binding),
+        NativePointerOwner::Native(binding.window()),
     )
 }
 
@@ -514,7 +542,7 @@ fn reorder_batch(
         desktop(
             binding,
             Event::ButtonReleased(Button::Primary),
-            target.surface_position(),
+            sample_logical(target),
         ),
     ]
 }
@@ -723,6 +751,11 @@ fn inactive_tab_same_batch_handoff_preserves_the_actual_output_and_source_contin
     let mut actual_hover_queries = 0;
     let mut frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return original.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
                 actual_hover_queries += 1;
             }
@@ -751,20 +784,25 @@ fn inactive_tab_same_batch_handoff_preserves_the_actual_output_and_source_contin
     let version = session.version();
     session
         .record_native_pointer_batch([
-            desktop(binding, Event::Moved, target.surface_position()),
+            desktop(binding, Event::Moved, sample_logical(target)),
             desktop(
                 binding,
                 Event::ButtonReleased(Button::Primary),
-                target.surface_position(),
+                sample_logical(target),
             ),
         ])
         .unwrap();
     let mut fresh_hover_queries = 0;
     let mut frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return current.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
                 fresh_hover_queries += 1;
-                assert_eq!(query.point(), Some(target.surface_position()));
+                assert_eq!(query.point(), Some(sample_logical(target)));
                 assert!(
                     query
                         .clear_hover_lane(&original.tab(FIRST).receiver)
@@ -840,7 +878,7 @@ fn dropped_desktop_handoff_output_preserves_delivery_and_the_pointer_can_start_a
             desktop(
                 binding,
                 Event::ButtonReleased(Button::Primary),
-                target.surface_position(),
+                sample_logical(target),
             ),
         ])
         .unwrap();
@@ -880,7 +918,7 @@ fn rejected_handoffs_drain_real_terminals_and_leave_the_same_native_pointer_reus
         let target = start_local_drag(&mut session, binding, &scene);
         let version = session.version();
         let recorded = session.native_input_recorded_count();
-        let mut point = desktop_point(A, target.surface_position());
+        let mut point = desktop_point(A, sample_logical(target));
         if matches!(missing, MissingProof::SamePoint) {
             point = PhysicalPoint::new(point.x() + 3.0, point.y()).unwrap();
         }
@@ -888,10 +926,10 @@ fn rejected_handoffs_drain_real_terminals_and_leave_the_same_native_pointer_reus
             MissingProof::CaptureUnknown => NativePointerOwner::Unknown,
             MissingProof::CaptureNone => NativePointerOwner::None,
             MissingProof::CaptureForeign => NativePointerOwner::Foreign,
-            _ => NativePointerOwner::Native(binding),
+            _ => NativePointerOwner::Native(binding.window()),
         };
         let input = if matches!(missing, MissingProof::ExplicitPacket) {
-            desktop(binding, Event::Moved, target.surface_position())
+            desktop(binding, Event::Moved, sample_logical(target))
         } else {
             handoff(
                 if matches!(missing, MissingProof::SamePointer) {
@@ -946,7 +984,7 @@ fn rejected_handoffs_drain_real_terminals_and_leave_the_same_native_pointer_reus
             .record_native_pointer(desktop(
                 binding,
                 Event::ButtonReleased(Button::Primary),
-                target.surface_position(),
+                sample_logical(target),
             ))
             .unwrap();
         let frame = session
@@ -991,13 +1029,13 @@ fn rebased_and_foreign_local_samples_cannot_upgrade_or_publish_a_valid_prefix() 
                     Event::Moved,
                     target,
                     desktop_location(binding, point),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                 ),
                 NativePointerInput::new(
                     POINTER,
                     Event::ButtonReleased(Button::Primary),
                     desktop_location(binding, point),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                     NativePointerOwner::None,
                 ),
             ])
@@ -1042,8 +1080,8 @@ fn rebased_and_foreign_local_samples_cannot_upgrade_or_publish_a_valid_prefix() 
                 binding,
                 Event::Moved,
                 foreign,
-                desktop_location(binding, desktop_point(A, target.surface_position())),
-                NativePointerOwner::Native(binding),
+                desktop_location(binding, desktop_point(A, sample_logical(target))),
+                NativePointerOwner::Native(binding.window()),
             ),
         ])
         .unwrap_err();
@@ -1060,7 +1098,7 @@ fn rebased_and_foreign_local_samples_cannot_upgrade_or_publish_a_valid_prefix() 
         .record_native_pointer(desktop(
             binding,
             Event::ButtonReleased(Button::Primary),
-            target.surface_position(),
+            sample_logical(target),
         ))
         .unwrap();
     let frame = session
@@ -1082,7 +1120,7 @@ fn late_local_preview_after_handoff_cannot_replace_or_redeliver_the_accepted_rel
         let local_target = sample(cap, binding, scene.insertion(THIRD, !same_target));
         let desktop_target = sample(cap, binding, scene.insertion(THIRD, false));
         assert_eq!(
-            local_target.surface_position() == desktop_target.surface_position(),
+            sample_logical(local_target) == sample_logical(desktop_target),
             same_target
         );
         session
@@ -1112,7 +1150,7 @@ fn late_local_preview_after_handoff_cannot_replace_or_redeliver_the_accepted_rel
                 desktop(
                     binding,
                     Event::ButtonReleased(Button::Primary),
-                    desktop_target.surface_position(),
+                    sample_logical(desktop_target),
                 ),
             ])
             .unwrap();
@@ -1178,7 +1216,7 @@ fn wrong_winner_suffix_rolls_back_handoff_and_retries_the_original_batch_once() 
             desktop(
                 binding,
                 Event::ButtonReleased(Button::Primary),
-                target.surface_position(),
+                sample_logical(target),
             ),
         ])
         .unwrap();
@@ -1188,9 +1226,14 @@ fn wrong_winner_suffix_rolls_back_handoff_and_retries_the_original_batch_once() 
     assert!(
         session
             .begin_native_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
                     hover_queries += 1;
-                    assert_eq!(query.point(), Some(target.surface_position()));
+                    assert_eq!(query.point(), Some(sample_logical(target)));
                     assert!(query.matches_native_binding(binding));
                     if hover_queries == 2 {
                         // This is the correct exact output, but its real tab
@@ -1218,9 +1261,14 @@ fn wrong_winner_suffix_rolls_back_handoff_and_retries_the_original_batch_once() 
     let mut retry_hover_queries = 0;
     let mut frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
                 retry_hover_queries += 1;
-                assert_eq!(query.point(), Some(target.surface_position()));
+                assert_eq!(query.point(), Some(sample_logical(target)));
             }
             scene.answer(query)
         })
@@ -1263,7 +1311,7 @@ fn handoff_queries_b_at_its_desktop_hover_point_but_missing_hit_observation_cann
         source,
         source_client,
     );
-    assert_ne!(manipulation.surface_position(), hover_point);
+    assert_ne!(sample_logical(manipulation), hover_point);
     assert!(manipulation.client_position().x() > geometry().content_size().width());
     session
         .record_native_pointer(handoff(
@@ -1272,17 +1320,22 @@ fn handoff_queries_b_at_its_desktop_hover_point_but_missing_hit_observation_cann
             Event::Moved,
             manipulation,
             desktop_location(destination, desktop),
-            NativePointerOwner::Native(source),
+            NativePointerOwner::Native(source.window()),
         ))
         .unwrap();
     let mut b_hover_queries = 0;
     let mut frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return target_scene.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             assert!(matches!(query.purpose(), NativeReceiverPurpose::HoverHit));
             assert_eq!(query.surface(), B);
             assert!(query.matches_native_binding(destination));
             assert_eq!(query.point(), Some(hover_point));
-            assert_ne!(query.point(), Some(manipulation.surface_position()));
+            assert_ne!(query.point(), Some(sample_logical(manipulation)));
             b_hover_queries += 1;
             // Exact native hover and hit-test control cannot supply the missing
             // independent observation of the rendered receiver at this edge.
@@ -1310,12 +1363,17 @@ fn handoff_queries_b_at_its_desktop_hover_point_but_missing_hit_observation_cann
             POINTER,
             Event::ButtonReleased(Button::Primary),
             desktop_location(destination, desktop),
-            NativePointerOwner::Native(source),
+            NativePointerOwner::Native(source.window()),
             NativePointerOwner::None,
         ))
         .unwrap();
     let frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return target.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             assert_eq!(query.surface(), B);
             assert!(query.matches_native_binding(destination));
             assert_eq!(query.point(), Some(hover_point));
@@ -1351,7 +1409,7 @@ fn cross_window_handoff_preserves_root_input_and_delivers_before_the_target_outp
         )
         .unwrap();
         let local = capture_client(cap, source, source_client);
-        assert_ne!(local.surface_position(), point);
+        assert_ne!(sample_logical(local), point);
         session
             .record_native_pointer(handoff(
                 POINTER,
@@ -1359,11 +1417,16 @@ fn cross_window_handoff_preserves_root_input_and_delivers_before_the_target_outp
                 Event::Moved,
                 local,
                 desktop_location(destination, desktop_point),
-                NativePointerOwner::Native(source),
+                NativePointerOwner::Native(source.window()),
             ))
             .unwrap();
         let mut frame = session
             .begin_native_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return target_scene.answer(query),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 assert_eq!(query.surface(), B);
                 assert!(query.matches_native_binding(destination));
                 assert_eq!(query.point(), Some(point));
@@ -1398,7 +1461,7 @@ fn cross_window_handoff_preserves_root_input_and_delivers_before_the_target_outp
                         POINTER,
                         event,
                         desktop_location(destination, release_desktop),
-                        NativePointerOwner::Native(source),
+                        NativePointerOwner::Native(source.window()),
                         capture_for(source, event),
                     )
                 }),
@@ -1406,10 +1469,15 @@ fn cross_window_handoff_preserves_root_input_and_delivers_before_the_target_outp
             .unwrap();
         let mut frame = session
             .begin_native_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return target.answer(query),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 assert_eq!(query.surface(), B);
                 assert!(query.matches_native_binding(destination));
                 assert_eq!(query.point(), Some(release_point));
-                assert_ne!(query.point(), Some(local.surface_position()));
+                assert_ne!(query.point(), Some(sample_logical(local)));
                 target.answer(query)
             })
             .unwrap();
@@ -1489,7 +1557,7 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
             source,
             PhysicalPoint::new(desktop.x() - bounds(A).x(), desktop.y() - bounds(A).y()).unwrap(),
         );
-        assert_ne!(manipulation.surface_position(), hover);
+        assert_ne!(sample_logical(manipulation), hover);
         let metadata = |millis| {
             PointerEventMetadata::new(PointerDeviceKind::Mouse, Duration::from_millis(millis))
         };
@@ -1501,7 +1569,7 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
                     Event::Moved,
                     manipulation,
                     desktop_location(destination, desktop),
-                    NativePointerOwner::Native(source),
+                    NativePointerOwner::Native(source.window()),
                 )
                 .with_metadata(metadata(10)),
             )
@@ -1509,6 +1577,11 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
         let mut report = finish(
             session
                 .begin_native_host_frame(|query| {
+                    let query = match query {
+                        NativeReceiverQuery::WindowHit(_) => return target_scene.answer(query),
+                        NativeReceiverQuery::Surface(query) => query,
+                    };
+
                     assert_eq!(query.surface(), B);
                     assert_eq!(query.point(), Some(hover));
                     target_scene.answer(query)
@@ -1531,8 +1604,8 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
                 POINTER,
                 event,
                 desktop_location(destination, desktop),
-                NativePointerOwner::Native(source),
-                NativePointerOwner::Native(source),
+                NativePointerOwner::Native(source.window()),
+                NativePointerOwner::Native(source.window()),
             )
             .with_metadata(metadata(millis))
         };
@@ -1542,6 +1615,11 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
         let mut report = finish(
             session
                 .begin_native_host_frame(|query| {
+                    let query = match query {
+                        NativeReceiverQuery::WindowHit(_) => return target_scene.answer(query),
+                        NativeReceiverQuery::Surface(query) => query,
+                    };
+
                     assert_eq!(query.surface(), B);
                     assert_eq!(query.point(), Some(hover));
                     target_scene.answer(query)
@@ -1566,9 +1644,14 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
             .unwrap();
         let mut frame = session
             .begin_native_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return target_scene.answer(query),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 assert!(query.matches_native_binding(destination));
                 assert_eq!(query.point(), Some(hover));
-                assert_ne!(query.point(), Some(manipulation.surface_position()));
+                assert_ne!(query.point(), Some(sample_logical(manipulation)));
                 target_scene.answer(query)
             })
             .unwrap();
@@ -1592,7 +1675,7 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
                     POINTER,
                     Event::ContactEnded(Button::Primary),
                     desktop_location(destination, desktop),
-                    NativePointerOwner::Native(source),
+                    NativePointerOwner::Native(source.window()),
                     NativePointerOwner::None,
                 )
                 .with_metadata(metadata(180)),
@@ -1601,6 +1684,11 @@ fn stationary_hover_after_handoff_keeps_source_binding_and_requires_confirmed_cr
         let mut report = finish(
             session
                 .begin_native_host_frame(|query| {
+                    let query = match query {
+                        NativeReceiverQuery::WindowHit(_) => return fresh.answer(query),
+                        NativeReceiverQuery::Surface(query) => query,
+                    };
+
                     assert!(
                         query
                             .bind_receiver(&target_scene.tab(FIFTH).receiver)
@@ -1630,7 +1718,7 @@ fn rejected_mapping_preserves_the_real_local_move_and_release() {
     let binding = bindings[0];
     let target = start_local_drag(&mut session, binding, &scene);
     let version = session.version();
-    let mismatch = desktop_point(A, target.surface_position());
+    let mismatch = desktop_point(A, sample_logical(target));
     let mismatch = PhysicalPoint::new(mismatch.x() + 1.0, mismatch.y()).unwrap();
     session
         .record_native_pointer_batch([
@@ -1640,14 +1728,19 @@ fn rejected_mapping_preserves_the_real_local_move_and_release() {
                 Event::Moved,
                 target,
                 desktop_location(binding, mismatch),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ),
             local(binding, Event::ButtonReleased(Button::Primary), target),
         ])
         .unwrap();
     let mut frame = session
         .begin_native_host_frame(|query| {
-            assert_eq!(query.point(), Some(target.surface_position()));
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
+            assert_eq!(query.point(), Some(sample_logical(target)));
             scene.answer(query)
         })
         .unwrap();
@@ -1692,7 +1785,7 @@ fn armed_and_terminal_handoff_packets_preserve_the_original_local_event() {
                 Event::Moved,
                 source,
                 unrelated_desktop,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ));
         }
         inputs.push(local(binding, Event::Moved, target));
@@ -1711,6 +1804,11 @@ fn armed_and_terminal_handoff_packets_preserve_the_original_local_event() {
         session.record_native_pointer_batch(inputs).unwrap();
         let mut frame = session
             .begin_native_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 assert_eq!(query.surface(), A);
                 scene.answer(query)
             })

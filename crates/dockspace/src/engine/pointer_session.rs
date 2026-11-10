@@ -3,16 +3,19 @@
 use super::*;
 
 impl DockEngine {
-    fn native_capture_binding_is_current(&self, binding: ViewportBinding) -> bool {
-        self.workspace.surface(binding.surface()).is_some()
-            && self
-                .viewport
-                .viewport(binding.surface())
-                .is_some_and(|record| {
-                    record.binding() == binding
-                        && record.admission() == ViewportAdmission::Admitted
-                        && record.is_observed()
-                })
+    fn native_capture_binding_is_current(&self, binding: crate::viewport::WindowBinding) -> bool {
+        self.viewport
+            .registry()
+            .window(binding)
+            .is_some_and(|window| {
+                window.ever_observed()
+                    && !matches!(
+                        window.lifecycle(),
+                        crate::viewport_registry::ViewportLifecycle::Destroyed
+                            | crate::viewport_registry::ViewportLifecycle::Missing
+                            | crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
+                    )
+            })
     }
 
     fn active_journal_required_capture_owner(
@@ -33,7 +36,7 @@ impl DockEngine {
                 .interaction
                 .active_presentation_authority()
                 .and_then(|presentation| presentation.presented.binding())
-                .map(PointerCaptureOwner::Native)
+                .map(|binding| PointerCaptureOwner::Native(binding.window()))
                 .ok_or(EngineError::ReductionCauseInvariant {
                     detail: "native journal gesture has no press-bound native capture owner",
                 }),
@@ -58,7 +61,7 @@ impl DockEngine {
                 .interaction
                 .active_presentation_authority()
                 .and_then(|presentation| presentation.presented.binding())
-                .map(PointerEventDeliveryOwner::Native)
+                .map(|binding| PointerEventDeliveryOwner::Native(binding.window()))
                 .ok_or(EngineError::ReductionCauseInvariant {
                     detail: "native journal gesture has no press-bound native delivery owner",
                 }),
@@ -319,10 +322,10 @@ impl DockEngine {
                 let Some(binding) = presentation.authority().binding() else {
                     return Ok(Some(InteractionRejection::TargetAuthorityInvalid));
                 };
-                let expected = PointerCaptureOwner::Native(binding);
+                let expected = PointerCaptureOwner::Native(binding.window());
                 (
                     expected,
-                    actual == expected && self.native_capture_binding_is_current(binding),
+                    actual == expected && self.native_capture_binding_is_current(binding.window()),
                 )
             }
         };

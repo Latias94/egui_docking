@@ -278,7 +278,7 @@ fn release_then_press_across_windows_preserves_provider_order() {
                 42,
                 PointerEdgeKind::ButtonPressed(PointerButton::Primary),
                 desktop_location(Authority::Known(PointerWindow::Dock(window_b))),
-                Authority::Known(PointerCaptureOwner::Native(window_b)),
+                Authority::Known(PointerCaptureOwner::Native(window_b.window())),
             ),
         ],
     )
@@ -989,7 +989,7 @@ fn capture_owner_is_fail_closed_against_the_provider_scope() {
             1,
             PointerEdgeKind::CaptureChanged,
             desktop_location(Authority::Known(PointerWindow::Foreign)),
-            Authority::Known(PointerCaptureOwner::Native(foreign_binding)),
+            Authority::Known(PointerCaptureOwner::Native(foreign_binding.window())),
         )],
     )
     .expect("complete foreign capture journal");
@@ -998,7 +998,7 @@ fn capture_owner_is_fail_closed_against_the_provider_scope() {
         Err(PointerJournalLedgerError::ForeignCaptureBinding {
             lease: desktop,
             sequence: PointerEdgeSequence::new(1),
-            binding: foreign_binding,
+            binding: foreign_binding.window(),
             expected: authority_domain,
             submitted: domain(2),
         })
@@ -1012,7 +1012,7 @@ fn capture_owner_is_fail_closed_against_the_provider_scope() {
             1,
             PointerEdgeKind::CaptureChanged,
             desktop_location(Authority::Known(PointerWindow::Dock(local_binding))),
-            Authority::Known(PointerCaptureOwner::Native(local_binding)),
+            Authority::Known(PointerCaptureOwner::Native(local_binding.window())),
         )],
     )
     .expect("complete exact native capture journal");
@@ -1036,7 +1036,7 @@ fn capture_owner_is_fail_closed_against_the_provider_scope() {
             11,
             PointerEdgeKind::CaptureChanged,
             local_location(),
-            Authority::Known(PointerCaptureOwner::Native(local_binding)),
+            Authority::Known(PointerCaptureOwner::Native(local_binding.window())),
         )],
     )
     .expect("complete local capture journal");
@@ -1045,7 +1045,7 @@ fn capture_owner_is_fail_closed_against_the_provider_scope() {
         Err(PointerJournalLedgerError::CaptureScopeMismatch {
             lease: local,
             sequence: PointerEdgeSequence::new(11),
-            submitted: PointerCaptureOwner::Native(local_binding),
+            submitted: PointerCaptureOwner::Native(local_binding.window()),
         })
     );
 
@@ -1086,13 +1086,13 @@ fn native_capture_identity_preserves_window_incarnation_across_token_reuse() {
                 1,
                 PointerEdgeKind::CaptureChanged,
                 desktop_location(Authority::Known(PointerWindow::Dock(stale))),
-                Authority::Known(PointerCaptureOwner::Native(stale)),
+                Authority::Known(PointerCaptureOwner::Native(stale.window())),
             ),
             edge(
                 2,
                 PointerEdgeKind::CaptureChanged,
                 desktop_location(Authority::Known(PointerWindow::Dock(successor))),
-                Authority::Known(PointerCaptureOwner::Native(successor)),
+                Authority::Known(PointerCaptureOwner::Native(successor.window())),
             ),
         ],
     )
@@ -1101,11 +1101,11 @@ fn native_capture_identity_preserves_window_incarnation_across_token_reuse() {
     let commit = commit_candidate(&mut ledger, lease, journal).expect("exact native captures");
     assert_eq!(
         commit.journal().edges()[0].capture_owner(),
-        Authority::Known(PointerCaptureOwner::Native(stale))
+        Authority::Known(PointerCaptureOwner::Native(stale.window()))
     );
     assert_eq!(
         commit.journal().edges()[1].capture_owner(),
-        Authority::Known(PointerCaptureOwner::Native(successor))
+        Authority::Known(PointerCaptureOwner::Native(successor.window()))
     );
     assert_eq!(
         commit.accepted_edges()[0].stream(),
@@ -1149,7 +1149,7 @@ fn desktop_route_from_another_engine_domain_is_rejected_before_watermark_commit(
         Err(PointerJournalLedgerError::ForeignDesktopRouteBinding {
             lease,
             sequence: PointerEdgeSequence::new(5),
-            binding: foreign,
+            binding: foreign.window(),
             expected: local_domain,
             submitted: foreign_domain,
         })
@@ -2142,7 +2142,7 @@ fn desktop_dock_route_uses_the_target_binding_generation_and_scale_once() {
     assert_eq!(fact.position(), Authority::Known(desktop));
     assert_eq!(
         fact.hovered(),
-        Authority::Known(DesktopHoveredWindow::Dock(binding))
+        Authority::Known(DesktopHoveredWindow::Dock(binding.window()))
     );
 }
 
@@ -2240,7 +2240,7 @@ fn known_dock_hover_without_a_coordinate_route_cannot_become_a_local_target() {
 
     assert_eq!(
         fact.hovered(),
-        Authority::Known(DesktopHoveredWindow::Dock(binding))
+        Authority::Known(DesktopHoveredWindow::Dock(binding.window()))
     );
     assert_eq!(
         fact.dock_route_authority(),

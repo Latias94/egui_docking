@@ -8,13 +8,13 @@ use crate::platform::{
     InputEffectAcknowledgement, NativeDragSourceInput, PlatformCapability, WindowInputObservation,
     WindowInputState,
 };
-use crate::viewport::{InputObservationGeneration, ViewportBinding};
+use crate::viewport::{InputObservationGeneration, ViewportBinding, WindowBinding};
 
 /// Sole owner of pointer routes, holders, and pass-through recovery sagas.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct PointerPassthroughLifecycle {
     drag_sources: BTreeMap<PointerId, PointerDragRoute>,
-    sagas: BTreeMap<ViewportBinding, PointerPassthroughSaga>,
+    sagas: BTreeMap<WindowBinding, PointerPassthroughSaga>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,7 +182,7 @@ impl PointerPassthroughLifecycle {
     }
 
     pub(super) fn contains_binding(&self, binding: ViewportBinding) -> bool {
-        self.sagas.contains_key(&binding)
+        self.sagas.contains_key(&binding.window())
     }
 
     pub(super) fn drag_source(&self, pointer: PointerId) -> Option<ViewportBinding> {
@@ -198,7 +198,7 @@ impl PointerPassthroughLifecycle {
     }
 
     pub(super) fn tracked_bindings(&self) -> Vec<ViewportBinding> {
-        self.sagas.keys().copied().collect()
+        self.sagas.values().map(|saga| saga.binding).collect()
     }
 
     /// Atomically transfers one pointer to its sole source binding.
@@ -214,7 +214,7 @@ impl PointerPassthroughLifecycle {
             if input == NativeDragSourceInput::PassThrough
                 && !self
                     .sagas
-                    .get(&binding)
+                    .get(&binding.window())
                     .is_some_and(|saga| saga.holders.contains(&pointer))
             {
                 return Err(PointerPassthroughLifecycleError::SagaMissing { binding });
@@ -227,8 +227,8 @@ impl PointerPassthroughLifecycle {
         }
         if input == NativeDragSourceInput::PassThrough {
             self.sagas
-                .entry(binding)
-                .or_insert_with(|| PointerPassthroughSaga::new(pointer))
+                .entry(binding.window())
+                .or_insert_with(|| PointerPassthroughSaga::new(binding, pointer))
                 .holders
                 .insert(pointer);
         }
@@ -262,7 +262,7 @@ impl PointerPassthroughLifecycle {
         let binding = route.binding;
         let saga = self
             .sagas
-            .get_mut(&binding)
+            .get_mut(&binding.window())
             .ok_or(PointerPassthroughLifecycleError::SagaMissing { binding })?;
         if !saga.holders.remove(&pointer) {
             return Err(PointerPassthroughLifecycleError::SagaMissing { binding });
@@ -274,17 +274,17 @@ impl PointerPassthroughLifecycle {
     /// Clears all active holders for a binding while retaining any recovery obligation.
     pub(super) fn prepare_binding_for_vacancy(&mut self, binding: ViewportBinding) {
         self.drag_sources
-            .retain(|_, source| source.binding != binding);
-        if let Some(saga) = self.sagas.get_mut(&binding) {
+            .retain(|_, source| source.binding.window() != binding.window());
+        if let Some(saga) = self.sagas.get_mut(&binding.window()) {
             saga.holders.clear();
         }
     }
 
     /// Forgets an exact terminal binding and every route that names it.
     pub(super) fn terminate_binding(&mut self, binding: ViewportBinding) {
-        self.sagas.remove(&binding);
+        self.sagas.remove(&binding.window());
         self.drag_sources
-            .retain(|_, source| source.binding != binding);
+            .retain(|_, source| source.binding.window() != binding.window());
     }
 
     pub(super) fn clear(&mut self) {
@@ -308,9 +308,9 @@ impl PointerPassthroughLifecycle {
     ) -> BTreeMap<ViewportBinding, PointerPassthroughRecovery> {
         self.sagas
             .iter()
-            .filter_map(|(binding, saga)| {
+            .filter_map(|(_, saga)| {
                 saga.recovery_required()
-                    .then_some((*binding, PointerPassthroughRecovery(saga.clone())))
+                    .then_some((saga.binding, PointerPassthroughRecovery(saga.clone())))
             })
             .collect()
     }
@@ -320,8 +320,10 @@ impl PointerPassthroughLifecycle {
         binding: ViewportBinding,
         previous: &PointerPassthroughRecovery,
     ) {
-        self.sagas
-            .insert(binding, PointerPassthroughSaga::epoch_recovery(&previous.0));
+        self.sagas.insert(
+            binding.window(),
+            PointerPassthroughSaga::epoch_recovery(binding, &previous.0),
+        );
     }
 
     pub(super) fn install_retired_recovery(
@@ -329,24 +331,25 @@ impl PointerPassthroughLifecycle {
         binding: ViewportBinding,
         previous: &PointerPassthroughRecovery,
     ) {
-        self.sagas.insert(binding, previous.0.retired_recovery());
+        let mut recovery = previous.0.retired_recovery();
+        recovery.binding = binding;
+        self.sagas.insert(binding.window(), recovery);
     }
 
     pub(super) fn effect_attempts(
         &self,
         binding: ViewportBinding,
     ) -> PointerPassthroughEffectAttempts {
-        self.sagas
-            .get(&binding)
-            .map_or(PointerPassthroughEffectAttempts::default(), |saga| {
-                PointerPassthroughEffectAttempts {
-                    enable: saga.enable.map(|attempt| attempt.effect.effect),
-                    restore: saga
-                        .restore
-                        .and_then(|obligation| obligation.attempt)
-                        .map(|attempt| attempt.effect.effect),
-                }
-            })
+        self.sagas.get(&binding.window()).map_or(
+            PointerPassthroughEffectAttempts::default(),
+            |saga| PointerPassthroughEffectAttempts {
+                enable: saga.enable.map(|attempt| attempt.effect.effect),
+                restore: saga
+                    .restore
+                    .and_then(|obligation| obligation.attempt)
+                    .map(|attempt| attempt.effect.effect),
+            },
+        )
     }
 
     pub(super) fn reconcile(
@@ -358,14 +361,14 @@ impl PointerPassthroughLifecycle {
     ) -> Result<Option<PointerPassthroughEffectRequest>, PointerPassthroughLifecycleError> {
         let action = self
             .sagas
-            .get_mut(&binding)
+            .get_mut(&binding.window())
             .map_or(PointerPassthroughAction::None, |saga| {
                 saga.action(evidence, enable_phase, restore_phase)
             });
         match action {
             PointerPassthroughAction::None => Ok(None),
             PointerPassthroughAction::Remove => {
-                self.sagas.remove(&binding);
+                self.sagas.remove(&binding.window());
                 Ok(None)
             }
             PointerPassthroughAction::RequestEnable => {
@@ -392,7 +395,7 @@ impl PointerPassthroughLifecycle {
     ) -> Result<PointerPassthroughEffectRequest, PointerPassthroughLifecycleError> {
         let saga = self
             .sagas
-            .get(&binding)
+            .get(&binding.window())
             .ok_or(PointerPassthroughLifecycleError::SagaMissing { binding })?;
         if saga.restore.is_none() {
             return Err(PointerPassthroughLifecycleError::RestoreObligationMissing { binding });
@@ -412,7 +415,7 @@ impl PointerPassthroughLifecycle {
         kind: PointerPassthroughEffectRequestKind,
     ) -> Option<PointerPassthroughEffectRequest> {
         self.sagas
-            .get(&binding)
+            .get(&binding.window())
             .map(|saga| PointerPassthroughEffectRequest {
                 binding,
                 lane_tail: saga.lane_tail,
@@ -425,7 +428,7 @@ impl PointerPassthroughLifecycle {
         request: PointerPassthroughEffectRequest,
         effect: EffectId,
     ) -> Result<(), PointerPassthroughLifecycleError> {
-        let saga = self.sagas.get_mut(&request.binding).ok_or(
+        let saga = self.sagas.get_mut(&request.binding.window()).ok_or(
             PointerPassthroughLifecycleError::SagaMissing {
                 binding: request.binding,
             },
@@ -462,7 +465,7 @@ impl PointerPassthroughLifecycle {
         evidence: PointerPassthroughEvidence,
     ) -> bool {
         self.sagas
-            .get_mut(&binding)
+            .get_mut(&binding.window())
             .is_some_and(|saga| saga.record_dispatch_result(effect, result, evidence))
     }
 
@@ -472,12 +475,12 @@ impl PointerPassthroughLifecycle {
         observation: WindowInputObservation,
     ) -> Option<EffectId> {
         self.sagas
-            .get(&binding)
+            .get(&binding.window())
             .and_then(|saga| saga.causal_effect(observation))
     }
 
     pub(super) fn accept_observed_effect(&mut self, binding: ViewportBinding, effect: EffectId) {
-        if let Some(saga) = self.sagas.get_mut(&binding) {
+        if let Some(saga) = self.sagas.get_mut(&binding.window()) {
             saga.accept_observed_effect(effect);
         }
     }
@@ -488,7 +491,7 @@ impl PointerPassthroughLifecycle {
         binding: ViewportBinding,
     ) -> Option<Option<InputObservationGeneration>> {
         self.sagas
-            .get(&binding)
+            .get(&binding.window())
             .and_then(|saga| saga.restore)
             .and_then(|obligation| obligation.attempt)
             .map(|attempt| attempt.issued_after)
@@ -500,7 +503,7 @@ impl PointerPassthroughLifecycle {
         binding: ViewportBinding,
     ) -> Option<Option<InputObservationGeneration>> {
         self.sagas
-            .get(&binding)
+            .get(&binding.window())
             .and_then(|saga| saga.restore)
             .and_then(|obligation| obligation.attempt)
             .map(|attempt| attempt.terminal_reported_after)
@@ -509,7 +512,7 @@ impl PointerPassthroughLifecycle {
     #[cfg(test)]
     pub(super) fn restore_state_settled(&self, binding: ViewportBinding) -> Option<bool> {
         self.sagas
-            .get(&binding)
+            .get(&binding.window())
             .and_then(|saga| saga.restore)
             .map(|restore| restore.state_settled)
     }
@@ -517,6 +520,7 @@ impl PointerPassthroughLifecycle {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PointerPassthroughSaga {
+    binding: ViewportBinding,
     original: Option<PointerInputOriginal>,
     holders: BTreeSet<PointerId>,
     enable: Option<PointerInputEnableAttempt>,
@@ -601,8 +605,9 @@ struct PointerPassthroughRetryEvidence {
 }
 
 impl PointerPassthroughSaga {
-    fn new(holder: PointerId) -> Self {
+    fn new(binding: ViewportBinding, holder: PointerId) -> Self {
         Self {
+            binding,
             original: None,
             holders: BTreeSet::from([holder]),
             enable: None,
@@ -611,8 +616,9 @@ impl PointerPassthroughSaga {
         }
     }
 
-    fn epoch_recovery(previous: &Self) -> Self {
+    fn epoch_recovery(binding: ViewportBinding, previous: &Self) -> Self {
         Self {
+            binding,
             original: previous.original,
             holders: BTreeSet::new(),
             enable: None,
@@ -627,6 +633,7 @@ impl PointerPassthroughSaga {
 
     fn provider_recovery(previous: &Self) -> Self {
         Self {
+            binding: previous.binding,
             original: previous.original,
             holders: BTreeSet::new(),
             enable: None,
@@ -972,8 +979,12 @@ mod tests {
         assert_eq!(change.previous(), Some(first));
         assert_eq!(change.current(), successor);
         assert_eq!(lifecycle.drag_source(pointer), Some(successor));
-        assert!(!lifecycle.sagas[&first].holders.contains(&pointer));
-        assert!(lifecycle.sagas[&successor].holders.contains(&pointer));
+        assert!(!lifecycle.sagas[&first.window()].holders.contains(&pointer));
+        assert!(
+            lifecycle.sagas[&successor.window()]
+                .holders
+                .contains(&pointer)
+        );
         assert_eq!(
             lifecycle
                 .sagas

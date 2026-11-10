@@ -22,19 +22,20 @@ use dockspace::runtime::{
     NativeEffectOperation, NativeEffectRequest, NativeGlobalFocus, NativeHostCapabilities,
     NativeHostCapability, NativeHostErrorKind, NativePointerButton, NativePointerEvent,
     NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-    NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose, NativeScrollDelta,
-    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
-    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
-    NativeWindowFacts, NativeWindowInputState, NativeWindowPlacement,
-    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PanePaintRecord,
-    PresentedDockReceiver, PresentedDockspaceSurface, SplitterJunctionPaintRecord,
-    SplitterPaintRecord, SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer,
-    SurfaceMeasurementRequest, SurfacePaintPlan, SurfacePaintProgramOperation,
-    SurfacePaintProgramStep, SurfacePointerButton, SurfacePointerCancelReason,
-    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
-    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
-    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceSplitterAdjustment,
+    NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
+    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
+    NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
+    NativeSurfaceBinding, NativeWindowBinding, NativeWindowFacts, NativeWindowHit,
+    NativeWindowInputState, NativeWindowPlacement, NativeWindowPresentationState,
+    NativeWorkAreaFacts, NativeWorkAreaRoster, PanePaintRecord, PresentedDockReceiver,
+    PresentedDockspaceSurface, SplitterJunctionPaintRecord, SplitterPaintRecord,
+    SurfaceContainedResizeAdjustment, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
+    SurfacePaintPlan, SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePresentationArtifact, SurfacePresentationResult, SurfaceScrollDelta,
+    SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers, SurfaceScrollMomentum,
+    SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceSplitterAdjustment,
     SurfaceUnavailableReason, TabBarPaintRecord, TabPaintRecord, TabStripMetrics,
     UniformSurfaceMetrics,
 };
@@ -252,15 +253,20 @@ impl DeterministicHost {
             .expect("the managed native frame must commit atomically")
     }
 
-    fn observe_painted_outputs(&mut self, mut report: HostFrameReport) {
+    fn observe_painted_outputs(
+        &mut self,
+        mut report: HostFrameReport,
+    ) -> SurfacePresentationArtifact {
         let outputs = report.take_painted_outputs();
         assert_eq!(outputs.len(), 1, "the fixture paints one logical surface");
+        let artifact = outputs[0].presentation_artifact();
         for output in outputs {
             self.session
                 .report_surface_presentation(output, SurfacePresentationResult::Presented)
                 .expect("the host confirms the exact output it presented");
         }
         self.run(|_| {});
+        artifact
     }
 
     fn register_native_root(
@@ -1841,7 +1847,7 @@ impl ManagedLifecycleScenarioFixture {
         assert!(focus.accepted().is_none());
         self.host
             .session
-            .report_native_global_focus(NativeGlobalFocus::Dock(child))
+            .report_native_global_focus(NativeGlobalFocus::Dock(child.window()))
             .expect("the admitted child reports the requested focus");
         self.commit();
     }
@@ -1897,7 +1903,7 @@ impl ManagedLifecycleScenarioFixture {
         assert!(requested_root_focus);
         self.host
             .session
-            .report_native_global_focus(NativeGlobalFocus::Dock(self.root))
+            .report_native_global_focus(NativeGlobalFocus::Dock(self.root.window()))
             .expect("the redock host reports the requested focus");
         release.expect("the redocked child retains its exact release effect")
     }
@@ -2157,7 +2163,19 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
             }
         },
     );
-    for output in painted.take_painted_outputs() {
+    let painted_outputs = painted.take_painted_outputs();
+    assert_eq!(painted_outputs.len(), 2);
+    let source_artifact = painted_outputs
+        .iter()
+        .find(|output| output.surface() == SURFACE)
+        .expect("the source exposes its exact painted artifact")
+        .presentation_artifact();
+    let target_artifact = painted_outputs
+        .iter()
+        .find(|output| output.surface() == SECOND_SURFACE)
+        .expect("the target exposes its exact painted artifact")
+        .presentation_artifact();
+    for output in painted_outputs {
         host.session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .expect("the initial native output terminal records");
@@ -2194,28 +2212,40 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                 NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
                 NativeDesktopPointerLocation::new(
                     NativeDesktopPosition::Exact(source_desktop),
-                    NativePointerHover::Dock(source_binding),
+                    NativePointerHover::Dock(source_binding.window()),
                     None,
                 ),
-                NativePointerOwner::Native(source_binding),
-                NativePointerOwner::Native(source_binding),
+                NativePointerOwner::Native(source_binding.window()),
+                NativePointerOwner::Native(source_binding.window()),
             ),
             NativePointerInput::new(
                 pointer,
                 NativePointerEvent::Moved,
                 NativeDesktopPointerLocation::new(
                     NativeDesktopPosition::Exact(target_desktop),
-                    NativePointerHover::Dock(target_binding),
+                    NativePointerHover::Dock(target_binding.window()),
                     None,
                 ),
-                NativePointerOwner::Native(source_binding),
-                NativePointerOwner::Native(source_binding),
+                NativePointerOwner::Native(source_binding.window()),
+                NativePointerOwner::Native(source_binding.window()),
             ),
         ])
         .expect("the exact cross-surface drag prefix records atomically");
     let mut previewed = false;
     let mut preview = host.run_native(
         |query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(query) => {
+                    let artifact = if query.window() == source_binding.window() {
+                        source_artifact
+                    } else {
+                        assert_eq!(query.window(), target_binding.window());
+                        target_artifact
+                    };
+                    return NativeReceiverAnswer::WindowHit(NativeWindowHit::Surface(artifact));
+                }
+                NativeReceiverQuery::Surface(query) => query,
+            };
             let descriptor = match query.surface() {
                 SURFACE => &source_tab_descriptor,
                 SECOND_SURFACE => &target_drop_descriptor,
@@ -2322,7 +2352,11 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
                 .expect("the surviving source publishes a fresh target output");
         },
     );
-    for output in surviving.take_painted_outputs() {
+    let surviving_outputs = surviving.take_painted_outputs();
+    assert_eq!(surviving_outputs.len(), 1);
+    assert_eq!(surviving_outputs[0].surface(), SURFACE);
+    let surviving_artifact = surviving_outputs[0].presentation_artifact();
+    for output in surviving_outputs {
         host.session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .expect("the fresh surviving target output terminal records");
@@ -2345,15 +2379,24 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
             NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
             NativeDesktopPointerLocation::new(
                 NativeDesktopPosition::Exact(target_desktop),
-                NativePointerHover::Dock(source_binding),
+                NativePointerHover::Dock(source_binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(source_binding),
+            NativePointerOwner::Native(source_binding.window()),
             NativePointerOwner::None,
         ))
         .expect("the surviving source gesture releases over the fresh target");
     let mut released = host.run_native(
         |query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(query) => {
+                    assert_eq!(query.window(), source_binding.window());
+                    return NativeReceiverAnswer::WindowHit(NativeWindowHit::Surface(
+                        surviving_artifact,
+                    ));
+                }
+                NativeReceiverQuery::Surface(query) => query,
+            };
             query
                 .bind_receiver(&fresh_target)
                 .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
@@ -2398,7 +2441,7 @@ fn private_multi_surface_fixture_target_destruction_preserves_the_source_drag() 
     ));
     assert!(focus.accepted().is_none());
     host.session
-        .report_native_global_focus(NativeGlobalFocus::Dock(source_binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(source_binding.window()))
         .expect("the surviving source reports the requested focus");
     let released_outputs = released.take_painted_outputs();
     assert_eq!(
@@ -4045,7 +4088,7 @@ fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
                 .expect("the native output was painted");
         },
     );
-    host.observe_painted_outputs(paint);
+    let artifact = host.observe_painted_outputs(paint);
     let tab = tab.expect("item B exposes a tab receiver");
     let receiver = host
         .session
@@ -4055,7 +4098,7 @@ fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
     let desktop = PhysicalPoint::new(point.x(), point.y()).expect("the desktop point is valid");
     let location = NativeDesktopPointerLocation::new(
         NativeDesktopPosition::Exact(desktop),
-        NativePointerHover::Dock(binding),
+        NativePointerHover::Dock(binding.window()),
         None,
     );
     host.session
@@ -4063,8 +4106,8 @@ fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
             NativePointerId::new(1),
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             location,
-            NativePointerOwner::Native(binding),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
+            NativePointerOwner::Native(binding.window()),
         ))
         .expect("the press records without exposing a sequence");
     host.session
@@ -4072,17 +4115,29 @@ fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
             NativePointerId::new(1),
             NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
             location,
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
             NativePointerOwner::None,
         ))
         .expect("the release records after the press");
 
+    let resolve = |query| match query {
+        NativeReceiverQuery::WindowHit(query) => {
+            assert_eq!(query.window(), binding.window());
+            assert_eq!(query.point(), desktop);
+            NativeReceiverAnswer::WindowHit(NativeWindowHit::Surface(artifact))
+        }
+        NativeReceiverQuery::Surface(query) => {
+            assert_eq!(query.surface(), SURFACE);
+            assert_eq!(query.point(), Some(point));
+            NativeReceiverAnswer::Dock(receiver)
+        }
+    };
     let mut abandoned_queries = Vec::new();
     drop(
         host.session
             .begin_native_host_frame(|query| {
                 abandoned_queries.push(query);
-                NativeReceiverAnswer::Dock(receiver)
+                resolve(query)
             })
             .expect("the first native attempt begins before being abandoned"),
     );
@@ -4090,9 +4145,7 @@ fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
     host.run_native(
         |query| {
             retry_queries.push(query);
-            assert_eq!(query.surface(), SURFACE);
-            assert_eq!(query.point(), Some(point));
-            NativeReceiverAnswer::Dock(receiver)
+            resolve(query)
         },
         |_| {},
     );
@@ -4103,7 +4156,10 @@ fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
     assert_eq!(
         retry_queries
             .iter()
-            .map(|query| query.purpose().clone())
+            .filter_map(|query| match query {
+                NativeReceiverQuery::Surface(query) => Some(*query.purpose()),
+                NativeReceiverQuery::WindowHit(_) => None,
+            })
             .collect::<Vec<_>>(),
         vec![
             NativeReceiverPurpose::ClickDelivery,
@@ -4178,7 +4234,7 @@ fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
                 .expect("the native overflow output was painted");
         },
     );
-    host.observe_painted_outputs(paint);
+    let artifact = host.observe_painted_outputs(paint);
     let receiver = host
         .session
         .bind_presented_receiver(
@@ -4190,12 +4246,12 @@ fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
         NativeDesktopPosition::Exact(
             PhysicalPoint::new(center.x(), center.y()).expect("the desktop point is valid"),
         ),
-        NativePointerHover::Dock(binding),
+        NativePointerHover::Dock(binding.window()),
         None,
     );
     let continuation = NativeDesktopPointerLocation::new(
         NativeDesktopPosition::Unknown,
-        NativePointerHover::Dock(binding),
+        NativePointerHover::Dock(binding.window()),
         None,
     );
     let modifiers = NativeScrollModifiers::Exact {
@@ -4244,7 +4300,7 @@ fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
                     modifiers,
                 )),
                 location,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
                 NativePointerOwner::None,
             ))
             .expect("the ordered native scroll edge records");
@@ -4253,7 +4309,19 @@ fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
     let mut purposes = Vec::new();
     host.run_native(
         |query| {
-            purposes.push(query.purpose().clone());
+            let query = match query {
+                NativeReceiverQuery::WindowHit(query) => {
+                    assert_eq!(query.window(), binding.window());
+                    assert_eq!(
+                        query.point(),
+                        PhysicalPoint::new(center.x(), center.y())
+                            .expect("the window-client scroll point is valid"),
+                    );
+                    return NativeReceiverAnswer::WindowHit(NativeWindowHit::Surface(artifact));
+                }
+                NativeReceiverQuery::Surface(query) => query,
+            };
+            purposes.push(*query.purpose());
             assert_eq!(query.surface(), SURFACE);
             assert_eq!(query.point(), Some(center));
             NativeReceiverAnswer::Dock(receiver)
@@ -4493,7 +4561,7 @@ fn ogc_04_snapshot_waits_for_a_pending_roster_registration() {
 
     let error = host
         .session
-        .report_native_snapshot([])
+        .report_native_snapshot(std::iter::empty::<(NativeWindowBinding, NativeWindowFacts)>())
         .expect_err("facts cannot be validated against the pre-registration roster");
     assert!(matches!(
         error.native_kind(),

@@ -1,5 +1,8 @@
 //! Native stationary scrolling and device-specific hit proofs through public input.
 
+use dockspace::runtime::{NativeWindowBinding, NativeWindowHit, SurfacePresentationArtifact};
+use std::cell::Cell;
+
 use std::time::Duration;
 
 use dockspace::geometry::{
@@ -48,6 +51,7 @@ fn idle(session: &mut DockspaceSession) -> HostFrameReport {
 }
 
 struct Scene {
+    presentation: Cell<Option<(NativeWindowBinding, SurfacePresentationArtifact)>>,
     recording: RecordingRenderer,
     first_tab: Option<DockspaceReceiverDescriptor>,
     bar: Option<(LogicalRect, f64, f64)>,
@@ -60,7 +64,21 @@ impl Scene {
         self.first_tab.unwrap()
     }
 
-    fn answer(&self, query: NativeReceiverQuery) -> NativeReceiverAnswer {
+    fn answer(&self, query: impl Into<NativeReceiverQuery>) -> NativeReceiverAnswer {
+        let query = match query.into() {
+            NativeReceiverQuery::WindowHit(query) => {
+                let (window, artifact) = self
+                    .presentation
+                    .get()
+                    .expect("a receiver scene must retain its exact painted output");
+                return NativeReceiverAnswer::WindowHit(if query.window() == window {
+                    NativeWindowHit::Surface(artifact)
+                } else {
+                    NativeWindowHit::Unknown
+                });
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         assert_eq!(query.surface(), SURFACE);
         let Some(point) = query.point() else {
             return NativeReceiverAnswer::Unknown;
@@ -154,6 +172,7 @@ fn render(frame: &mut DockspaceHostFrame<'_>) -> Scene {
     }
     frame.confirm_surface_painted(receipt).unwrap();
     Scene {
+        presentation: Cell::new(None),
         recording,
         first_tab,
         bar,
@@ -171,6 +190,14 @@ fn paint(session: &mut DockspaceSession) -> (Scene, PaintedSurfaceOutput) {
     assert!(
         matches!(scene.recording.records.last(), Some(OwnedRecord::SurfaceEnd(semantic)) if output.matches_semantic_output(*semantic))
     );
+    let [window]: [NativeWindowBinding; 1] = session
+        .native_window_bindings()
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    scene
+        .presentation
+        .set(Some((window, output.presentation_artifact())));
     (scene, output)
 }
 
@@ -196,7 +223,6 @@ fn present(
 fn geometry(width: f64) -> NativeLocalGeometry {
     NativeLocalGeometry::new(
         PhysicalSize::new(width, 600.0).unwrap(),
-        ScaleFactor::new(1.0).unwrap(),
         ScaleFactor::new(1.0).unwrap(),
     )
 }
@@ -253,7 +279,7 @@ fn fixture(desktop: bool, split: bool) -> (DockspaceSession, NativeSurfaceBindin
     let mut facts = NativeWindowFacts::live()
         .with_content_size(geometry.content_size())
         .with_native_scale_factor(geometry.native_scale_factor())
-        .with_presentation_scale_factor(geometry.presentation_scale_factor())
+        .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
         .with_presentation(NativeWindowPresentationState::Visible);
     if desktop {
@@ -294,7 +320,7 @@ fn input(
     let capture = if matches!(event, Event::ButtonReleased(_) | Event::ContactEnded(_)) {
         NativePointerOwner::None
     } else {
-        NativePointerOwner::Native(binding)
+        NativePointerOwner::Native(binding.window())
     };
     let input = if desktop {
         NativePointerInput::new(
@@ -304,10 +330,10 @@ fn input(
                 NativeDesktopPosition::Exact(
                     PhysicalPoint::new(400.0 + point.x(), -200.0 + point.y()).unwrap(),
                 ),
-                NativePointerHover::Dock(binding),
+                NativePointerHover::Dock(binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
             capture,
         )
     } else {
@@ -315,7 +341,7 @@ fn input(
         let geometry = coordinates.geometry();
         let sample = coordinates
             .capture(
-                binding,
+                binding.window(),
                 NativeLocalPointerFact::new(
                     PhysicalPoint::new(point.x(), point.y()).unwrap(),
                     geometry.content_size(),
@@ -328,7 +354,7 @@ fn input(
             POINTER,
             event,
             NativeLocalPointerLocation::Exact(sample),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
             capture,
         )
     };
@@ -373,6 +399,11 @@ fn native_edge_scroll_retries_and_waits_for_each_exact_output_without_motion() {
         let report = finish(
             session
                 .begin_native_host_frame(|query| {
+                    let query = match query {
+                        NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                        NativeReceiverQuery::Surface(query) => query,
+                    };
+
                     let answer = scene.answer(query);
                     queries.push((query, answer));
                     answer
@@ -427,6 +458,9 @@ fn native_edge_scroll_retries_and_waits_for_each_exact_output_without_motion() {
         assert!(session.native_pointer_continuation_awaits_presentation(SURFACE));
         assert!(!session.pointer_continuation_awaits_presentation(SURFACE));
         let [exact] = report.take_painted_outputs().try_into().unwrap();
+        scrolled
+            .presentation
+            .set(Some((binding.window(), exact.presentation_artifact())));
         present(&mut session, exact, Disposition::Presented);
         let next = session.native_pointer_continuation().unwrap();
         assert_ne!(next.token(), wake.token());

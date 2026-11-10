@@ -6,10 +6,7 @@ use super::{
     RuntimeNativeState,
 };
 use crate::engine::{BackendIngressProgress, CoreHostFrame, DockEngine};
-use crate::pointer_receiver::{
-    PointerReceiverObservation, PointerReceiverProbeRequest, PointerReceiverReceiptBatch,
-    PointerReceiverUnknownReason,
-};
+use crate::pointer_receiver::{PointerReceiverObservation, PointerReceiverReceiptBatch};
 use crate::runtime::DockspaceRuntimeError;
 use crate::runtime::presentation::{RuntimePresentationState, SubmittedPresentationObservation};
 use std::num::NonZeroUsize;
@@ -124,39 +121,23 @@ impl RuntimeNativeState {
                         .candidates()
                         .iter()
                         .map(|candidate| {
-                            let observation = if candidate.receiver_is_applicable() {
-                                let surface = match candidate.probes() {
-                                    PointerReceiverProbeRequest::Delivery => {
-                                        candidate.delivery_surface()
-                                    }
-                                    PointerReceiverProbeRequest::HoverHit => {
-                                        candidate.hover_surface()
-                                    }
-                                    PointerReceiverProbeRequest::NotApplicable => None,
-                                };
-                                if surface.is_some_and(|surface| {
-                                    frame.view().interaction_projection(surface).is_some_and(
-                                        |projection| {
-                                            presentation.blocks_pointer_authority(
-                                                surface,
-                                                projection.authority(),
-                                            )
-                                        },
-                                    )
-                                }) {
-                                    PointerReceiverObservation::Unknown(
-                                        PointerReceiverUnknownReason::NotReported,
-                                    )
-                                } else {
-                                    let resolver = resolver
-                                        .as_deref_mut()
-                                        .ok_or(NativePlatformError::ReceiverResolverRequired)?;
-                                    resolve_receiver_observation(frame, candidate, resolver)?
-                                }
+                            let (observation, native_hit) = if candidate.receiver_is_applicable() {
+                                let resolver = resolver
+                                    .as_deref_mut()
+                                    .ok_or(NativePlatformError::ReceiverResolverRequired)?;
+                                resolve_receiver_observation(
+                                    frame,
+                                    candidate,
+                                    resolver,
+                                    presentation,
+                                )?
                             } else {
-                                PointerReceiverObservation::NotApplicable
+                                (PointerReceiverObservation::NotApplicable, None)
                             };
-                            Ok(candidate.receipt(observation))
+                            Ok(match native_hit {
+                                Some(hit) => candidate.receipt_with_native_hit(observation, hit),
+                                None => candidate.receipt(observation),
+                            })
                         })
                         .collect::<Result<Vec<_>, DockspaceRuntimeError>>()?;
                     let receipts = PointerReceiverReceiptBatch::new(receipts)

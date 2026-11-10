@@ -143,6 +143,17 @@ impl PaintedSurfaceOutput {
         }
     }
 
+    /// Correlates this contribution with its real native window only.
+    ///
+    /// This does not prove another surface's exact placement or output endpoint.
+    #[must_use]
+    pub fn matches_native_window(&self, window: super::NativeWindowBinding) -> bool {
+        match self.output.endpoint() {
+            HostPresentationEndpoint::Native(binding) => binding.window() == window.core(),
+            HostPresentationEndpoint::Headless => false,
+        }
+    }
+
     /// Returns whether this emission accepted the exact semantic output.
     #[must_use]
     pub fn matches_semantic_output(&self, output: super::DockspaceSemanticOutput) -> bool {
@@ -569,50 +580,40 @@ impl RuntimePresentationState {
         Ok(())
     }
 
-    pub(super) fn output_slot_available(
-        &self,
-        submitted: &SubmittedPresentationObservation,
-        observations: &[HostPresentationObservationOutcome],
-        reserved: usize,
-    ) -> bool {
-        required_output_slots(&self.pending.lock(), submitted, observations, reserved)
-            .is_some_and(|total| self.slot_limit.is_none_or(|limit| total <= limit))
-    }
-
     pub(super) fn reserve_output(
         &mut self,
         submitted: &SubmittedPresentationObservation,
         observations: &[HostPresentationObservationOutcome],
         reserved: usize,
-        stream: PresentationStreamAdmission,
+        stream: Option<PresentationStreamAdmission>,
         reserved_streams: impl Iterator<Item = PresentationStreamAdmission>,
     ) -> Result<bool, NativePlatformError> {
         let mut pending = self.pending.lock();
         let Some(total) = required_output_slots(&pending, submitted, observations, reserved) else {
             return Ok(false);
         };
-        let (new_streams, handoffs) = reserved_streams.chain(std::iter::once(stream)).fold(
-            (0, 0),
-            |(new_streams, handoffs), admission| {
-                let (new, handoff) = match admission {
-                    PresentationStreamAdmission::Existing(stream) => (
-                        usize::from(!self.streams.iter().any(|state| state.stream == stream)),
-                        0,
-                    ),
-                    PresentationStreamAdmission::New => (1, 0),
-                    PresentationStreamAdmission::EndpointHandoff { predecessor } => (
-                        1,
-                        usize::from(self.handoff_predecessor_is_drained(
-                            predecessor,
-                            &pending,
-                            submitted,
-                            observations,
-                        )),
-                    ),
-                };
-                (new_streams + new, handoffs + handoff)
-            },
-        );
+        let (new_streams, handoffs) =
+            reserved_streams
+                .chain(stream)
+                .fold((0, 0), |(new_streams, handoffs), admission| {
+                    let (new, handoff) = match admission {
+                        PresentationStreamAdmission::Existing(stream) => (
+                            usize::from(!self.streams.iter().any(|state| state.stream == stream)),
+                            0,
+                        ),
+                        PresentationStreamAdmission::New => (1, 0),
+                        PresentationStreamAdmission::EndpointHandoff { predecessor } => (
+                            1,
+                            usize::from(self.handoff_predecessor_is_drained(
+                                predecessor,
+                                &pending,
+                                submitted,
+                                observations,
+                            )),
+                        ),
+                    };
+                    (new_streams + new, handoffs + handoff)
+                });
         if self.slot_limit.is_some_and(|limit| total > limit)
             || !self.stream_capacity_available(new_streams, handoffs)
         {
@@ -1027,7 +1028,7 @@ impl RuntimePresentationState {
         &mut self,
         transition: &EngineTransition,
         submitted: &SubmittedPresentationObservation,
-        admissions: &std::collections::BTreeMap<SurfaceId, PresentationStreamAdmission>,
+        admissions: &std::collections::BTreeMap<SurfaceId, Option<PresentationStreamAdmission>>,
         candidate: &DockEngine,
     ) -> Result<PreparedPresentationEmissions, NativePlatformError> {
         let emissions = transition.presentation_emissions();
@@ -1066,7 +1067,7 @@ impl RuntimePresentationState {
             .filter(|index| is_new_stream(*index))
             .filter(|index| {
                 let output = emissions[*index].output();
-                let Some(PresentationStreamAdmission::EndpointHandoff { predecessor }) =
+                let Some(Some(PresentationStreamAdmission::EndpointHandoff { predecessor })) =
                     admissions.get(&output.surface())
                 else {
                     return false;
@@ -1487,6 +1488,80 @@ mod tests {
                 .retires(replacement_artifact)
         );
         assert_eq!(session.presentation.pending.lock().capacity(), capacity);
+        assert!(session.presentation.pending.is_empty());
+    }
+
+    #[test]
+    fn unmeasured_surface_roster_reserves_distinct_slots_before_encoding() {
+        let mut builder = Workspace::builder();
+        let surfaces = [SurfaceId::new(1), SurfaceId::new(2)];
+        for surface in surfaces {
+            let root = RootId::new(surface.get());
+            let tabs = builder.insert_node(Node::tabs([ItemId::new(surface.get())]));
+            builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+            builder.set_surface(surface, SurfacePresentation::with_main(root));
+        }
+        let mut session = DockspaceSession::from_workspace_for_test(
+            builder.build().unwrap(),
+            DockPolicy::default(),
+        )
+        .unwrap();
+        session.presentation = RuntimePresentationState::with_capacity_limit(1).unwrap();
+        let version = session.version();
+        let mut frame = session.begin_host_frame().unwrap();
+        assert!(matches!(
+            frame.surface_work(SurfaceId::new(99)).unwrap(),
+            super::super::SurfaceWork::Deferred(super::super::SurfaceWorkDeferred::Unmeasured)
+        ));
+        for _ in 0..2 {
+            assert!(matches!(
+                frame.surface_work(surfaces[0]).unwrap(),
+                super::super::SurfaceWork::Deferred(super::super::SurfaceWorkDeferred::Unmeasured)
+            ));
+        }
+        assert!(matches!(
+            frame.surface_work(surfaces[1]).unwrap(),
+            super::super::SurfaceWork::Deferred(super::super::SurfaceWorkDeferred::OutputCapacity)
+        ));
+        assert!(frame.commit().unwrap().take_painted_outputs().is_empty());
+        assert_eq!(session.version(), version);
+        assert!(session.presentation.pending.is_empty());
+
+        session.presentation.configure_output_capacity(2).unwrap();
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+            LogicalSize::new(32.0, 24.0).unwrap(),
+            80.0,
+        )
+        .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        for surface in surfaces {
+            assert!(matches!(
+                frame.surface_work(surface).unwrap(),
+                super::super::SurfaceWork::Deferred(super::super::SurfaceWorkDeferred::Unmeasured)
+            ));
+        }
+        for surface in surfaces {
+            frame.measure_surface(surface, metrics).unwrap();
+            let receipt = frame
+                .paint_plan(surface)
+                .unwrap()
+                .unwrap()
+                .execute_surface_program(|_| Ok::<(), ()>(()))
+                .unwrap();
+            frame.confirm_surface_painted(receipt).unwrap();
+        }
+        let outputs = frame.commit().unwrap().take_painted_outputs();
+        assert_eq!(outputs.len(), 2);
+        session
+            .report_surface_presentations(outputs, SurfacePresentationResult::Presented)
+            .unwrap();
+        assert_eq!(
+            settle_presentations(&mut session)
+                .surface_presentation_commits()
+                .len(),
+            2
+        );
         assert!(session.presentation.pending.is_empty());
     }
 

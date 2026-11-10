@@ -217,11 +217,7 @@ fn overload_cancel_drop_preserves_the_active_gesture_and_allows_exact_retry() {
     assert_eq!(retained.retired_lease_guards(), 0);
 }
 
-fn pressed_session() -> (
-    DockspaceSession,
-    NativeSurfaceBinding,
-    DockspaceReceiverDescriptor,
-) {
+fn pressed_session() -> (DockspaceSession, NativeSurfaceBinding, PresentedReceiver) {
     let (mut session, binding) = programmatic_tear_off_session();
     let receiver = presented_tab_receiver(&mut session, ITEM);
     let point = receiver.center();
@@ -233,15 +229,17 @@ fn pressed_session() -> (
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             NativeDesktopPointerLocation::new(
                 NativeDesktopPosition::Exact(desktop),
-                NativePointerHover::Dock(binding),
+                NativePointerHover::Dock(binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(binding),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
+            NativePointerOwner::Native(binding.window()),
         ))
         .expect("the real managed press records");
     let mut press = session
-        .begin_native_host_frame(|query| receiver_answer(query, receiver))
+        .begin_native_host_frame(with_window_hit(receiver, |query| {
+            receiver_answer(query, receiver)
+        }))
         .expect("the press resolves against its exact presented receiver");
     press
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -269,11 +267,11 @@ fn native_input(
             NativeDesktopPosition::Exact(
                 PhysicalPoint::new(ROOT_ORIGIN_X + point.x(), ROOT_ORIGIN_Y + point.y()).unwrap(),
             ),
-            NativePointerHover::Dock(binding),
+            NativePointerHover::Dock(binding.window()),
             None,
         ),
-        NativePointerOwner::Native(binding),
-        NativePointerOwner::Native(binding),
+        NativePointerOwner::Native(binding.window()),
+        NativePointerOwner::Native(binding.window()),
     )
 }
 
@@ -352,7 +350,9 @@ fn backend_reset_then_same_pointer_press_rebinds_the_presented_receiver_in_one_b
             ))
             .unwrap();
         let mut frame = session
-            .begin_native_host_frame(|query| receiver_answer(query, receiver))
+            .begin_native_host_frame(with_window_hit(receiver, |query| {
+                receiver_answer(query, receiver)
+            }))
             .expect("reset and fresh press share the original exact presented receiver");
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -404,7 +404,9 @@ fn overload_cancel_allows_a_held_pointer_to_press_again_with_a_fresh_stream() {
         ))
         .expect("a held pointer may start over without an invented release");
     let mut frame = session
-        .begin_native_host_frame(|query| receiver_answer(query, receiver))
+        .begin_native_host_frame(with_window_hit(receiver, |query| {
+            receiver_answer(query, receiver)
+        }))
         .expect("the new press is not rejected as already held");
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -529,15 +531,15 @@ fn overload_cancel_ends_gesture_and_owned_and_suppressed_scroll_idempotently() {
             ])
             .unwrap();
         let mut frame = session
-            .begin_native_host_frame(|query| {
+            .begin_native_host_frame(with_window_hit(tab, |query| {
                 let descriptor =
                     if matches!(query.purpose(), NativeReceiverPurpose::ScrollDelivery(_)) {
                         scroll_receiver
                     } else {
-                        tab
+                        tab.descriptor
                     };
                 receiver_answer(query, descriptor)
-            })
+            }))
             .unwrap();
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -629,18 +631,16 @@ fn overload_cancel_ends_gesture_and_owned_and_suppressed_scroll_idempotently() {
     }
 }
 
-fn contained_resize_receiver(session: &mut DockspaceSession) -> DockspaceReceiverDescriptor {
-    let mut frame = session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
-    let contained = plan.contained().next().unwrap();
-    let handle = contained
-        .resize()
-        .find(|handle| handle.direction() == ContainedResizeDirection::East)
-        .unwrap();
-    plan.receiver_for_contained_resize(contained, handle)
-        .unwrap()
+fn contained_resize_receiver(session: &mut DockspaceSession) -> PresentedReceiver {
+    presented_receiver(session, |plan| {
+        let contained = plan.contained().next().unwrap();
+        let handle = contained
+            .resize()
+            .find(|handle| handle.direction() == ContainedResizeDirection::East)
+            .unwrap();
+        plan.receiver_for_contained_resize(contained, handle)
+            .unwrap()
+    })
 }
 
 #[test]
@@ -662,7 +662,9 @@ fn overload_cancel_restores_durable_contained_projection_without_changing_worksp
         ])
         .unwrap();
     let mut frame = session
-        .begin_native_host_frame(|query| receiver_answer(query, receiver))
+        .begin_native_host_frame(with_window_hit(receiver, |query| {
+            receiver_answer(query, receiver)
+        }))
         .unwrap();
     assert_eq!(
         frame
@@ -829,7 +831,9 @@ fn overload_cancel_preserves_delivered_contained_release_and_its_successor_outpu
             ])
             .unwrap();
         let mut frame = session
-            .begin_native_host_frame(|query| receiver_answer(query, receiver))
+            .begin_native_host_frame(with_window_hit(receiver, |query| {
+                receiver_answer(query, receiver)
+            }))
             .unwrap();
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -879,7 +883,9 @@ fn overload_cancel_preserves_a_release_accepted_earlier_in_the_same_frame() {
         ])
         .unwrap();
     let mut frame = session
-        .begin_native_host_frame(|query| receiver_answer(query, receiver))
+        .begin_native_host_frame(with_window_hit(receiver, |query| {
+            receiver_answer(query, receiver)
+        }))
         .unwrap();
     let submitted = frame.cancel_native_input_for_overload().unwrap();
     frame
@@ -964,16 +970,16 @@ fn overload_cancel_preserves_delivered_drag_release_and_its_successor_output() {
             ])
             .unwrap();
         let mut frame = session
-            .begin_native_host_frame(|query| {
+            .begin_native_host_frame(with_window_hit(receiver, |query| {
                 receiver_answer(
                     query,
                     if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
                         target
                     } else {
-                        receiver
+                        receiver.descriptor
                     },
                 )
-            })
+            }))
             .unwrap();
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -1082,7 +1088,7 @@ fn overload_roster_resync_restores_authority_only_after_commit_and_real_release(
             NativePointerRoster::Exact(vec![NativePointerState::new(
                 NativePointerId::new(1),
                 [NativePointerButton::Primary],
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             )])
         } else {
             NativePointerRoster::Exact(Vec::new())
@@ -1154,7 +1160,9 @@ fn overload_roster_resync_restores_authority_only_after_commit_and_real_release(
                 ))
                 .unwrap();
             let mut frame = session
-                .begin_native_host_frame(|query| receiver_answer(query, receiver))
+                .begin_native_host_frame(with_window_hit(receiver, |query| {
+                    receiver_answer(query, receiver)
+                }))
                 .unwrap();
             frame
                 .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -1216,7 +1224,9 @@ fn overload_roster_resync_recovers_after_later_press_and_release() {
         ])
         .unwrap();
     let mut frame = session
-        .begin_native_host_frame(|query| receiver_answer(query, receiver))
+        .begin_native_host_frame(with_window_hit(receiver, |query| {
+            receiver_answer(query, receiver)
+        }))
         .unwrap();
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)

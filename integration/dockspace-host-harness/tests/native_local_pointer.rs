@@ -1,5 +1,8 @@
 //! Joined native input uses committed client geometry without desktop placement.
 
+use dockspace::runtime::{NativeWindowBinding, NativeWindowHit, SurfacePresentationArtifact};
+use std::cell::Cell;
+
 use dockspace::geometry::{
     LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, PhysicalSize, ScaleFactor,
 };
@@ -41,20 +44,32 @@ fn scale(value: f64) -> ScaleFactor {
     ScaleFactor::new(value).unwrap()
 }
 
-fn geometry() -> NativeLocalGeometry {
-    NativeLocalGeometry::new(size(1200.0, 900.0), scale(2.0), scale(1.5))
+#[derive(Clone, Copy)]
+struct FixtureGeometry {
+    local: NativeLocalGeometry,
+    presentation_scale: ScaleFactor,
 }
 
-fn changed_geometry() -> NativeLocalGeometry {
-    NativeLocalGeometry::new(size(1200.0, 900.0), scale(2.0), scale(2.0))
+fn geometry() -> FixtureGeometry {
+    FixtureGeometry {
+        local: NativeLocalGeometry::new(size(1200.0, 900.0), scale(2.0)),
+        presentation_scale: scale(1.5),
+    }
 }
 
-fn facts(geometry: NativeLocalGeometry) -> NativeWindowFacts {
+fn changed_geometry() -> FixtureGeometry {
+    FixtureGeometry {
+        presentation_scale: scale(2.0),
+        ..geometry()
+    }
+}
+
+fn facts(geometry: FixtureGeometry) -> NativeWindowFacts {
     // Neither an origin, outer bounds, work area nor desktop hover is supplied.
     NativeWindowFacts::live()
-        .with_content_size(geometry.content_size())
-        .with_native_scale_factor(geometry.native_scale_factor())
-        .with_presentation_scale_factor(geometry.presentation_scale_factor())
+        .with_content_size(geometry.local.content_size())
+        .with_native_scale_factor(geometry.local.native_scale_factor())
+        .with_presentation_scale_factor(geometry.presentation_scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
         .with_presentation(NativeWindowPresentationState::Visible)
 }
@@ -130,7 +145,7 @@ fn registered_with_desktop(desktop: bool) -> (DockspaceSession, [NativeSurfaceBi
 fn snapshot(
     session: &mut DockspaceSession,
     bindings: [NativeSurfaceBinding; 2],
-    a_geometry: NativeLocalGeometry,
+    a_geometry: FixtureGeometry,
 ) {
     session
         .report_managed_native_snapshot(
@@ -143,10 +158,10 @@ fn snapshot(
         .unwrap();
 }
 
-fn measure(frame: &mut DockspaceHostFrame<'_>, a_geometry: NativeLocalGeometry) {
+fn measure(frame: &mut DockspaceHostFrame<'_>, a_geometry: FixtureGeometry) {
     for (surface, geometry) in [(A, a_geometry), (B, geometry())] {
-        let size = geometry.content_size();
-        let scale = geometry.presentation_scale_factor().get();
+        let size = geometry.local.content_size();
+        let scale = geometry.presentation_scale.get();
         frame
             .measure_surface(
                 surface,
@@ -169,6 +184,7 @@ struct RecordedTab {
 }
 
 struct Scene {
+    presentation: Cell<Option<(NativeWindowBinding, SurfacePresentationArtifact)>>,
     surface: SurfaceId,
     recording: RecordingRenderer,
     tabs: Vec<RecordedTab>,
@@ -193,7 +209,21 @@ impl Scene {
         point
     }
 
-    fn answer(&self, query: NativeReceiverQuery) -> NativeReceiverAnswer {
+    fn answer(&self, query: impl Into<NativeReceiverQuery>) -> NativeReceiverAnswer {
+        let query = match query.into() {
+            NativeReceiverQuery::WindowHit(query) => {
+                let (window, artifact) = self
+                    .presentation
+                    .get()
+                    .expect("a receiver scene must retain its exact painted output");
+                return NativeReceiverAnswer::WindowHit(if query.window() == window {
+                    NativeWindowHit::Surface(artifact)
+                } else {
+                    NativeWindowHit::Unknown
+                });
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         if query.surface() != self.surface {
             return NativeReceiverAnswer::Unknown;
         }
@@ -250,14 +280,14 @@ impl Scene {
 fn render(
     frame: &mut DockspaceHostFrame<'_>,
     surface: SurfaceId,
-    geometry: NativeLocalGeometry,
+    geometry: FixtureGeometry,
 ) -> Scene {
     if matches!(
         frame.surface_work(surface).unwrap(),
         SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured)
     ) {
-        let size = geometry.content_size();
-        let scale = geometry.presentation_scale_factor().get();
+        let size = geometry.local.content_size();
+        let scale = geometry.presentation_scale.get();
         frame
             .measure_surface(
                 surface,
@@ -305,6 +335,7 @@ fn render(
     }
     frame.confirm_surface_painted(receipt).unwrap();
     Scene {
+        presentation: Cell::new(None),
         surface,
         recording,
         tabs,
@@ -323,13 +354,16 @@ fn output(
         scene.recording.records.last(),
         Some(OwnedRecord::SurfaceEnd(semantic)) if output.matches_semantic_output(*semantic)
     ));
+    scene
+        .presentation
+        .set(Some((binding.window(), output.presentation_artifact())));
     output
 }
 
 fn paint(
     session: &mut DockspaceSession,
     binding: NativeSurfaceBinding,
-    geometry: NativeLocalGeometry,
+    geometry: FixtureGeometry,
 ) -> (Scene, PaintedSurfaceOutput) {
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -391,29 +425,36 @@ fn order(session: &DockspaceSession) -> Vec<ItemId> {
 fn sample(
     cap: NativeLocalCoordinates,
     binding: NativeSurfaceBinding,
-    geometry: NativeLocalGeometry,
+    geometry: FixtureGeometry,
     point: LogicalPoint,
 ) -> NativeLocalPointerSample {
-    let factor = geometry.presentation_scale_factor().get();
+    let factor = geometry.presentation_scale.get();
     let physical = PhysicalPoint::new(point.x() * factor, point.y() * factor).unwrap();
     let sample = cap
         .capture(
-            binding,
+            binding.window(),
             NativeLocalPointerFact::new(
                 physical,
-                geometry.content_size(),
-                geometry.native_scale_factor(),
+                geometry.local.content_size(),
+                geometry.local.native_scale_factor(),
             ),
-            geometry,
+            geometry.local,
         )
         .unwrap();
     assert_eq!(sample.client_position(), physical);
     assert_eq!(
-        sample.surface_position(),
+        sample_logical(sample, geometry),
         point,
         "divide by the presentation scale exactly once"
     );
     sample
+}
+
+// Expected coordinates use the fixture's declared projection, not native DPI.
+fn sample_logical(sample: NativeLocalPointerSample, geometry: FixtureGeometry) -> LogicalPoint {
+    let point = sample.client_position();
+    let factor = geometry.presentation_scale.get();
+    LogicalPoint::new(point.x() / factor, point.y() / factor).unwrap()
 }
 
 fn edge(
@@ -424,13 +465,13 @@ fn edge(
     let capture = if matches!(event, Event::ButtonReleased(_)) {
         NativePointerOwner::None
     } else {
-        NativePointerOwner::Native(binding)
+        NativePointerOwner::Native(binding.window())
     };
     NativePointerInput::new_local(
         POINTER,
         event,
         location,
-        NativePointerOwner::Native(binding),
+        NativePointerOwner::Native(binding.window()),
         capture,
     )
 }
@@ -447,7 +488,7 @@ fn reorder_batch(
     session: &DockspaceSession,
     binding: NativeSurfaceBinding,
     scene: &Scene,
-    geometry: NativeLocalGeometry,
+    geometry: FixtureGeometry,
 ) -> [NativePointerInput; 3] {
     let cap = session.native_local_coordinates(binding).unwrap();
     let source = sample(cap, binding, geometry, scene.tab(FIRST).receiver.center());
@@ -481,7 +522,7 @@ fn assert_clean_idle(session: &mut DockspaceSession) {
 fn refresh(
     session: &mut DockspaceSession,
     binding: NativeSurfaceBinding,
-    geometry: NativeLocalGeometry,
+    geometry: FixtureGeometry,
 ) -> Scene {
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -501,7 +542,7 @@ fn deliver_reorder(
     session: &mut DockspaceSession,
     binding: NativeSurfaceBinding,
     scene: &Scene,
-    geometry: NativeLocalGeometry,
+    geometry: FixtureGeometry,
 ) -> DockspaceManipulationId {
     let version = session.version();
     assert_eq!(order(session), [FIRST, SECOND, THIRD]);
@@ -670,30 +711,21 @@ fn capture_requires_event_callback_and_committed_geometry_to_match() {
     let current = geometry();
     let position = PhysicalPoint::new(120.0, 30.0).unwrap();
     for event in [
-        NativeLocalPointerFact::new(position, size(1201.0, 900.0), current.native_scale_factor()),
-        NativeLocalPointerFact::new(position, current.content_size(), scale(1.0)),
+        NativeLocalPointerFact::new(
+            position,
+            size(1201.0, 900.0),
+            current.local.native_scale_factor(),
+        ),
+        NativeLocalPointerFact::new(position, current.local.content_size(), scale(1.0)),
     ] {
         assert_eq!(
-            cap.capture(binding, event, current),
+            cap.capture(binding.window(), event, current.local),
             Err(NativeLocalCoordinateError::EventGeometryMismatch)
         );
     }
     for callback in [
-        NativeLocalGeometry::new(
-            size(1201.0, 900.0),
-            current.native_scale_factor(),
-            current.presentation_scale_factor(),
-        ),
-        NativeLocalGeometry::new(
-            current.content_size(),
-            scale(1.0),
-            current.presentation_scale_factor(),
-        ),
-        NativeLocalGeometry::new(
-            current.content_size(),
-            current.native_scale_factor(),
-            scale(2.0),
-        ),
+        NativeLocalGeometry::new(size(1201.0, 900.0), current.local.native_scale_factor()),
+        NativeLocalGeometry::new(current.local.content_size(), scale(1.0)),
     ] {
         let event = NativeLocalPointerFact::new(
             position,
@@ -701,7 +733,7 @@ fn capture_requires_event_callback_and_committed_geometry_to_match() {
             callback.native_scale_factor(),
         );
         assert_eq!(
-            cap.capture(binding, event, callback),
+            cap.capture(binding.window(), event, callback),
             Err(NativeLocalCoordinateError::CallbackGeometryMismatch)
         );
     }
@@ -713,7 +745,21 @@ fn capture_requires_event_callback_and_committed_geometry_to_match() {
     );
     assert_eq!(captured.client_position(), position);
     // Matching capture remains possible after every rejected mismatch.
-    assert_eq!(cap.geometry(), current);
+    assert_eq!(cap.geometry(), current.local);
+    assert_eq!(
+        cap.capture(
+            binding.window(),
+            NativeLocalPointerFact::new(
+                position,
+                current.local.content_size(),
+                current.local.native_scale_factor(),
+            ),
+            changed_geometry().local,
+        )
+        .unwrap(),
+        captured,
+        "a presentation mapping change is not a physical callback geometry mismatch",
+    );
 }
 
 #[test]
@@ -734,12 +780,12 @@ fn identical_geometry_cannot_lend_capabilities_to_another_window_or_session() {
     );
     let event = NativeLocalPointerFact::new(
         PhysicalPoint::new(120.0, 30.0).unwrap(),
-        geometry().content_size(),
-        geometry().native_scale_factor(),
+        geometry().local.content_size(),
+        geometry().local.native_scale_factor(),
     );
     for wrong in [bindings[1], foreign_bindings[0]] {
         assert!(matches!(
-            cap.capture(wrong, event, geometry()),
+            cap.capture(wrong.window(), event, geometry().local),
             Err(NativeLocalCoordinateError::BindingMismatch { .. })
         ));
     }
@@ -788,6 +834,11 @@ fn identical_geometry_cannot_lend_capabilities_to_another_window_or_session() {
         .unwrap();
     let frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return sibling_scene.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             assert!(query.matches_native_binding(bindings[1]));
             sibling_scene.answer(query)
         })
@@ -808,7 +859,7 @@ fn identical_geometry_cannot_lend_capabilities_to_another_window_or_session() {
 }
 
 #[test]
-fn local_coordinate_capabilities_only_follow_committed_snapshots_even_after_frame_drop() {
+fn placement_mapping_only_changes_with_committed_snapshots_and_preserves_window_coordinates() {
     let (mut session, bindings) = registered();
     let binding = bindings[0];
     let version = session.version();
@@ -829,13 +880,16 @@ fn local_coordinate_capabilities_only_follow_committed_snapshots_even_after_fram
         .unwrap();
     measure(&mut frame, geometry());
     assert!(!finish(frame).workspace_changed());
-    assert!(session.native_local_coordinates(binding).is_none());
-    // Measurement does not establish an active presentation endpoint. A real
-    // committed output must first bind this native surface to its host.
-    let (_, exact) = paint(&mut session, binding, geometry());
-    present(&mut session, exact, Disposition::Presented);
     let original = session.native_local_coordinates(binding).unwrap();
-    assert_eq!(original.geometry(), geometry());
+    assert_eq!(original.geometry(), geometry().local);
+    // Committed physical geometry does not establish surface presentation
+    // authority. The exact output must still cross its first-live barrier.
+    assert!(session.presented_surface(binding.surface()).is_none());
+    let (scene, exact) = paint(&mut session, binding, geometry());
+    present(&mut session, exact, Disposition::Presented);
+    assert_eq!(session.native_local_coordinates(binding), Some(original));
+    let receiver = scene.tab(FIRST).receiver;
+    assert!(session.bind_presented_receiver(&receiver).is_some());
 
     snapshot(&mut session, bindings, geometry());
     idle(&mut session);
@@ -847,6 +901,7 @@ fn local_coordinate_capabilities_only_follow_committed_snapshots_even_after_fram
 
     snapshot(&mut session, bindings, changed_geometry());
     assert_eq!(session.native_local_coordinates(binding), Some(original));
+    assert!(session.bind_presented_receiver(&receiver).is_some());
     let recorded = session.native_input_recorded_count();
     {
         let mut abandoned = session
@@ -855,6 +910,7 @@ fn local_coordinate_capabilities_only_follow_committed_snapshots_even_after_fram
         measure(&mut abandoned, changed_geometry());
     }
     assert_eq!(session.native_local_coordinates(binding), Some(original));
+    assert!(session.bind_presented_receiver(&receiver).is_some());
     assert_eq!(session.native_input_recorded_count(), recorded);
     assert!(session.has_pending_native_input());
     assert_eq!(session.version(), version);
@@ -864,14 +920,15 @@ fn local_coordinate_capabilities_only_follow_committed_snapshots_even_after_fram
     measure(&mut frame, changed_geometry());
     assert!(!finish(frame).workspace_changed());
     let current = session.native_local_coordinates(binding).unwrap();
-    assert_ne!(current, original);
-    assert_eq!(current.geometry(), changed_geometry());
+    assert_eq!(current, original);
+    assert_eq!(current.geometry(), changed_geometry().local);
+    assert!(session.bind_presented_receiver(&receiver).is_none());
     assert!(!session.has_pending_native_input());
     assert_eq!(session.version(), version);
 }
 
 #[test]
-fn earlier_snapshot_invalidates_captured_samples_and_still_drains_the_terminal() {
+fn earlier_surface_mapping_change_rejects_old_receivers_and_still_drains_the_terminal() {
     for already_dragging in [false, true] {
         let (mut session, bindings, scene) = fixture();
         let binding = bindings[0];
@@ -905,11 +962,13 @@ fn earlier_snapshot_invalidates_captured_samples_and_still_drains_the_terminal()
             located(binding, Event::Moved, target),
             located(binding, Event::ButtonReleased(Button::Primary), target),
         ]);
-        // Recording retains G1 even though the producer has already seen G2.
+        // Recording retains the event's original physical points. The current
+        // placement mapping and output still require their own authority.
         session.record_native_pointer_batch(inputs).unwrap();
         let mut frame = session
-            .begin_native_host_frame(|_| {
-                panic!("a G1 local sample cannot query a receiver after the preceding G2 snapshot")
+            .begin_native_host_frame(|query| {
+                assert!(matches!(query, NativeReceiverQuery::WindowHit(_)));
+                scene.answer(query)
             })
             .unwrap();
         measure(&mut frame, changed_geometry());
@@ -929,7 +988,7 @@ fn earlier_snapshot_invalidates_captured_samples_and_still_drains_the_terminal()
         assert!(!session.has_active_gesture());
         assert!(!session.has_pending_native_input());
         let fresh = session.native_local_coordinates(binding).unwrap();
-        assert_ne!(fresh, cap);
+        assert_eq!(fresh, cap);
         let scene = refresh(&mut session, binding, changed_geometry());
         deliver_reorder(&mut session, binding, &scene, changed_geometry());
     }
@@ -962,7 +1021,7 @@ fn outside_and_unknown_releases_cancel_without_poisoning_the_same_pointer() {
                 cap,
                 binding,
                 geometry(),
-                LogicalPoint::new(-40.0, target.surface_position().y()).unwrap(),
+                LogicalPoint::new(-40.0, sample_logical(target, geometry()).y()).unwrap(),
             ))
         };
         session
@@ -1001,14 +1060,16 @@ fn inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_conti
     // Derive the client edge from the actual presented tab geometry instead of
     // assuming the measured title width is the complete tab width.
     let logical_edge = inside_point.x() + (outside_point.x() - inside_point.x()) * 0.5;
-    let local_geometry = NativeLocalGeometry::new(
-        size(
-            logical_edge * geometry().presentation_scale_factor().get(),
-            geometry().content_size().height(),
+    let local_geometry = FixtureGeometry {
+        local: NativeLocalGeometry::new(
+            size(
+                logical_edge * geometry().presentation_scale.get(),
+                geometry().local.content_size().height(),
+            ),
+            geometry().local.native_scale_factor(),
         ),
-        geometry().native_scale_factor(),
-        geometry().presentation_scale_factor(),
-    );
+        presentation_scale: geometry().presentation_scale,
+    };
     snapshot(&mut session, bindings, local_geometry);
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -1021,7 +1082,7 @@ fn inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_conti
     present(&mut session, exact, Disposition::Presented);
 
     let cap = session.native_local_coordinates(binding).unwrap();
-    assert_eq!(cap.geometry(), local_geometry);
+    assert_eq!(cap.geometry(), local_geometry.local);
     let source = sample(
         cap,
         binding,
@@ -1031,7 +1092,7 @@ fn inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_conti
     let outside = sample(cap, binding, local_geometry, scene.insertion(THIRD, false));
     let client = PhysicalRect::from_min_size(
         PhysicalPoint::new(0.0, 0.0).unwrap(),
-        local_geometry.content_size(),
+        local_geometry.local.content_size(),
     )
     .unwrap();
     assert!(client.contains(source.client_position()));
@@ -1043,7 +1104,7 @@ fn inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_conti
             .tab(THIRD)
             .receiver
             .bounds()
-            .contains(outside.surface_position())
+            .contains(sample_logical(outside, local_geometry))
     );
 
     let version = session.version();
@@ -1056,8 +1117,13 @@ fn inside_plan_outside_client_clip_cannot_hover_but_captured_source_motion_conti
     let mut outside_hover_queries = 0;
     let mut frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             if matches!(query.purpose(), NativeReceiverPurpose::HoverHit)
-                && query.point() == Some(outside.surface_position())
+                && query.point() == Some(sample_logical(outside, local_geometry))
             {
                 outside_hover_queries += 1;
             }
@@ -1131,6 +1197,11 @@ fn inactive_tab_selection_preserves_its_actual_output_until_the_successor_is_pre
     let mut hover_queries = 0;
     let mut frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return original.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
                 hover_queries += 1;
             }
@@ -1178,6 +1249,11 @@ fn inactive_tab_selection_preserves_its_actual_output_until_the_successor_is_pre
     let mut rejected_old_hover = 0;
     let mut frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return current.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
                 rejected_old_hover += 1;
                 assert!(
@@ -1238,8 +1314,8 @@ fn the_next_gesture_on_the_same_native_pointer_can_choose_the_desktop_lane() {
     let current = refresh(&mut session, binding, geometry());
     let point = current.tab(SECOND).receiver.center();
     let desktop = PhysicalPoint::new(
-        bounds.x() + point.x() * geometry().presentation_scale_factor().get(),
-        bounds.y() + point.y() * geometry().presentation_scale_factor().get(),
+        bounds.x() + point.x() * geometry().presentation_scale.get(),
+        bounds.y() + point.y() * geometry().presentation_scale.get(),
     )
     .unwrap();
     let before = session.version();
@@ -1249,7 +1325,7 @@ fn the_next_gesture_on_the_same_native_pointer_can_choose_the_desktop_lane() {
             [
                 (
                     Event::ButtonPressed(Button::Primary),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                 ),
                 (
                     Event::ButtonReleased(Button::Primary),
@@ -1262,10 +1338,10 @@ fn the_next_gesture_on_the_same_native_pointer_can_choose_the_desktop_lane() {
                     event,
                     NativeDesktopPointerLocation::new(
                         NativeDesktopPosition::Exact(desktop),
-                        NativePointerHover::Dock(binding),
+                        NativePointerHover::Dock(binding.window()),
                         None,
                     ),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                     capture,
                 )
             }),

@@ -20,8 +20,8 @@ use dockspace::viewport_focus::{
     ActivationCancellation, ActivationStartOutcome, ActivationSuppression,
     FocusAuthorityRevocation, FocusCausalStamp, FocusEffectAttachment, FocusEffectReportTransition,
     FocusObservationEnvelope, FocusObservationGeneration, FocusObservationTransition,
-    GlobalFocusedWindow, PaneFocusDisposition, PaneFocusIntentGeneration, PaneFocusIntentId,
-    PaneFocusIntentSource, PaneFocusObservation, PaneFocusObservationGeneration,
+    GlobalFocusedWindow, PaneFocusDisposition, PaneFocusIntent, PaneFocusIntentGeneration,
+    PaneFocusIntentId, PaneFocusIntentSource, PaneFocusObservation, PaneFocusObservationGeneration,
     PaneFocusObservationRejection, PaneFocusObservationTransition, PanelFocusRecord,
     PendingPlatformFocus, PendingViewportActivation, PlatformFocusEvidence,
     ViewportActivationCause, ViewportActivationRequest, ViewportFocusCoordinator,
@@ -139,6 +139,35 @@ fn publish(
         .expect("focus identity domains must remain available")
 }
 
+fn explicit_pane_after_released_quarantine(
+    coordinator: &mut ViewportFocusCoordinator,
+    target: ViewportBinding,
+    current: [ViewportBinding; 2],
+    generation: u64,
+) -> PaneFocusIntent {
+    assert!(coordinator.suppressed_tear_off_bindings().is_empty());
+    assert!(coordinator.pending_pane_intent().is_none());
+    let activation = coordinator
+        .request_activation(
+            ViewportActivationRequest::explicit(target, PanelFocus::Item(ITEM_B)),
+            focus_stamp(generation),
+            true,
+            current_bindings(current),
+            current_items,
+        )
+        .expect("the released window must accept a fresh explicit pane activation");
+    let ActivationStartOutcome::PaneFocusReady { intent } = activation.outcome() else {
+        panic!(
+            "released quarantine must not require another physical focus effect: {activation:?}"
+        );
+    };
+    assert_eq!(
+        intent.source(),
+        PaneFocusIntentSource::ExplicitViewportActivation
+    );
+    intent
+}
+
 #[test]
 fn focused_pointer_tab_gesture_installs_pane_intent_without_platform_focus() {
     let current = bindings([9, 10]);
@@ -146,7 +175,10 @@ fn focused_pointer_tab_gesture_installs_pane_intent_without_platform_focus() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -185,7 +217,10 @@ fn focused_drop_with_no_history_preserves_pane_focus_without_minting_an_intent()
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -219,7 +254,10 @@ fn newer_preserve_suppresses_an_older_delayed_activation() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -268,7 +306,10 @@ fn newer_no_history_focus_suppresses_an_older_delayed_activation() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let applied = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         20,
         current,
     );
@@ -331,7 +372,10 @@ fn pointer_tab_gesture_waits_for_newer_exact_focus_without_requesting_it() {
 
     let observed = publish(
         &mut coordinator,
-        focus_envelope(2, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            2,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         3,
         current,
     );
@@ -359,7 +403,10 @@ fn explicit_activation_waits_for_a_newer_exact_binding_observation() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let initial = publish(
         &mut coordinator,
-        focus_envelope(10, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            10,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         10,
         current,
     );
@@ -391,7 +438,10 @@ fn explicit_activation_waits_for_a_newer_exact_binding_observation() {
     assert_eq!(
         publish(
             &mut coordinator,
-            focus_envelope(10, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+            focus_envelope(
+                10,
+                Authority::Known(GlobalFocusedWindow::Dock(binding_a.window()))
+            ),
             12,
             current,
         ),
@@ -399,7 +449,10 @@ fn explicit_activation_waits_for_a_newer_exact_binding_observation() {
     );
     let completed = publish(
         &mut coordinator,
-        focus_envelope(11, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            11,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         13,
         current,
     );
@@ -434,7 +487,10 @@ fn unfocused_preserving_activation_completes_without_a_pane_intent() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -462,7 +518,7 @@ fn unfocused_preserving_activation_completes_without_a_pane_intent() {
         &mut coordinator,
         focus_envelope_with_ack(
             2,
-            Authority::Known(GlobalFocusedWindow::Dock(binding_b)),
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
             effect,
         ),
         3,
@@ -483,7 +539,10 @@ fn exact_effect_ack_without_target_focus_settles_effect_but_not_pane_focus() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -534,7 +593,10 @@ fn newer_different_dock_observation_does_not_preempt_an_unobserved_focus_effect(
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -552,7 +614,10 @@ fn newer_different_dock_observation_does_not_preempt_an_unobserved_focus_effect(
 
     let _ = publish(
         &mut coordinator,
-        focus_envelope(2, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            2,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         3,
         current,
     );
@@ -571,7 +636,10 @@ fn exact_ack_with_unknown_focus_waits_for_later_authoritative_target() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -625,7 +693,10 @@ fn exact_ack_with_unknown_focus_waits_for_later_authoritative_target() {
 
     let completed = publish(
         &mut coordinator,
-        focus_envelope(3, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            3,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         4,
         current,
     );
@@ -643,7 +714,10 @@ fn superseding_activation_survives_a_late_predecessor_focus() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -686,7 +760,7 @@ fn superseding_activation_survives_a_late_predecessor_focus() {
         &mut coordinator,
         focus_envelope_with_ack(
             2,
-            Authority::Known(GlobalFocusedWindow::Dock(binding_b)),
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
             first_effect,
         ),
         4,
@@ -704,7 +778,7 @@ fn superseding_activation_survives_a_late_predecessor_focus() {
         &mut coordinator,
         focus_envelope_with_ack(
             3,
-            Authority::Known(GlobalFocusedWindow::Dock(binding_a)),
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
             second_effect,
         ),
         5,
@@ -742,7 +816,10 @@ fn foreign_focus_quarantines_a_late_explicit_focus_effect_until_reconfirmed() {
     ));
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -772,7 +849,10 @@ fn foreign_focus_quarantines_a_late_explicit_focus_effect_until_reconfirmed() {
 
     let late_predecessor = publish(
         &mut coordinator,
-        focus_envelope(3, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            3,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         4,
         current,
     );
@@ -809,20 +889,21 @@ fn foreign_focus_quarantines_a_late_explicit_focus_effect_until_reconfirmed() {
 
     let later_user_focus = publish(
         &mut coordinator,
-        focus_envelope(5, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            5,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         6,
         current,
     );
     let FocusObservationTransition::Applied(later_user_focus) = later_user_focus else {
         panic!("focus after exact Foreign reconfirmation must be ordinary platform authority");
     };
-    let restored = later_user_focus
-        .pane_intent()
-        .expect("exact Foreign reconfirmation must release the stale-effect barrier");
+    assert!(later_user_focus.pane_intent().is_none());
+    let restored = explicit_pane_after_released_quarantine(&mut coordinator, binding_b, current, 7);
     assert_eq!(restored.surface(), binding_b.surface());
     assert_eq!(restored.native_guard(), Some(binding_b));
     assert_eq!(restored.focus(), PanelFocus::Item(ITEM_B));
-    assert_eq!(restored.source(), PaneFocusIntentSource::PlatformActivation);
 }
 
 #[test]
@@ -844,7 +925,10 @@ fn failed_superseded_focus_effect_releases_the_external_focus_barrier() {
     ));
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -883,16 +967,18 @@ fn failed_superseded_focus_effect_releases_the_external_focus_barrier() {
 
     let later_user_focus = publish(
         &mut coordinator,
-        focus_envelope(3, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            3,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         4,
         current,
     );
     let FocusObservationTransition::Applied(later_user_focus) = later_user_focus else {
         panic!("focus after a terminal predecessor failure must be ordinary authority");
     };
-    let restored = later_user_focus
-        .pane_intent()
-        .expect("the terminal failure must release the obsolete target quarantine");
+    assert!(later_user_focus.pane_intent().is_none());
+    let restored = explicit_pane_after_released_quarantine(&mut coordinator, binding_b, current, 5);
     assert_eq!(restored.surface(), binding_b.surface());
     assert_eq!(restored.native_guard(), Some(binding_b));
     assert_eq!(restored.focus(), PanelFocus::Item(ITEM_B));
@@ -905,7 +991,10 @@ fn newer_foreign_focus_supersedes_none_after_a_late_focus_hazard() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -935,7 +1024,10 @@ fn newer_foreign_focus_supersedes_none_after_a_late_focus_hazard() {
 
     let late_predecessor = publish(
         &mut coordinator,
-        focus_envelope(3, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            3,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         4,
         current,
     );
@@ -975,20 +1067,21 @@ fn newer_foreign_focus_supersedes_none_after_a_late_focus_hazard() {
 
     let later_user_focus = publish(
         &mut coordinator,
-        focus_envelope(5, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            5,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         6,
         current,
     );
     let FocusObservationTransition::Applied(later_user_focus) = later_user_focus else {
         panic!("focus after the newer Foreign winner must be ordinary platform authority");
     };
-    let restored = later_user_focus
-        .pane_intent()
-        .expect("the newer Foreign winner must release the stale-effect barrier");
+    assert!(later_user_focus.pane_intent().is_none());
+    let restored = explicit_pane_after_released_quarantine(&mut coordinator, binding_b, current, 7);
     assert_eq!(restored.surface(), binding_b.surface());
     assert_eq!(restored.native_guard(), Some(binding_b));
     assert_eq!(restored.focus(), PanelFocus::Item(ITEM_B));
-    assert_eq!(restored.source(), PaneFocusIntentSource::PlatformActivation);
 }
 
 #[test]
@@ -1010,7 +1103,10 @@ fn newer_dock_focus_releases_an_older_target_quarantine() {
     ));
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -1035,14 +1131,20 @@ fn newer_dock_focus_releases_an_older_target_quarantine() {
     );
     let _ = publish(
         &mut coordinator,
-        focus_envelope(3, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            3,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         4,
         current,
     );
 
     let newer_dock_winner = publish(
         &mut coordinator,
-        focus_envelope(4, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            4,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         5,
         current,
     );
@@ -1053,16 +1155,18 @@ fn newer_dock_focus_releases_an_older_target_quarantine() {
 
     let later_user_focus = publish(
         &mut coordinator,
-        focus_envelope(5, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            5,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         6,
         current,
     );
     let FocusObservationTransition::Applied(later_user_focus) = later_user_focus else {
         panic!("focus after a newer Dock winner must be ordinary platform authority");
     };
-    let restored = later_user_focus
-        .pane_intent()
-        .expect("the newer Dock winner must release the stale target quarantine");
+    assert!(later_user_focus.pane_intent().is_none());
+    let restored = explicit_pane_after_released_quarantine(&mut coordinator, binding_b, current, 7);
     assert_eq!(restored.surface(), binding_b.surface());
     assert_eq!(restored.native_guard(), Some(binding_b));
     assert_eq!(restored.focus(), PanelFocus::Item(ITEM_B));
@@ -1075,7 +1179,10 @@ fn pointer_winner_serializes_after_an_emitted_explicit_focus_hazard() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -1123,7 +1230,7 @@ fn pointer_winner_serializes_after_an_emitted_explicit_focus_hazard() {
         &mut coordinator,
         focus_envelope_with_ack(
             2,
-            Authority::Known(GlobalFocusedWindow::Dock(binding_b)),
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
             predecessor_effect,
         ),
         4,
@@ -1141,7 +1248,7 @@ fn pointer_winner_serializes_after_an_emitted_explicit_focus_hazard() {
         &mut coordinator,
         focus_envelope_with_ack(
             3,
-            Authority::Known(GlobalFocusedWindow::Dock(binding_a)),
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
             winner_effect,
         ),
         5,
@@ -1166,7 +1273,10 @@ fn indeterminate_focus_effect_waits_but_definitive_failure_cancels() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -1206,7 +1316,10 @@ fn indeterminate_focus_effect_waits_but_definitive_failure_cancels() {
     assert!(coordinator.pending_activation().is_none());
     let late = publish(
         &mut coordinator,
-        focus_envelope(2, Authority::Known(GlobalFocusedWindow::Dock(binding_b))),
+        focus_envelope(
+            2,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b.window())),
+        ),
         3,
         current,
     );
@@ -1228,7 +1341,10 @@ fn pane_focus_history_has_three_states_and_requires_exact_acknowledgement() {
     );
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -1332,7 +1448,10 @@ fn no_history_never_uses_selected_tab_as_pane_focus() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let applied = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );
@@ -1373,7 +1492,10 @@ fn newer_known_foreign_focus_clears_an_unacknowledged_explicit_pane_intent() {
     let mut coordinator = ViewportFocusCoordinator::default();
     let _ = publish(
         &mut coordinator,
-        focus_envelope(1, Authority::Known(GlobalFocusedWindow::Dock(binding_a))),
+        focus_envelope(
+            1,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_a.window())),
+        ),
         1,
         current,
     );

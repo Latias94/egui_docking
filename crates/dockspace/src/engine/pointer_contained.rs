@@ -338,7 +338,7 @@ impl DockEngine {
             (PointerProviderScope::NativeJoined(_), PointerEdgeLocation::NativeLocal { .. }) => {
                 super::pointer_proof::validated_native_local_route(self, edge)
                     .filter(|route| route.binding().surface() == transform.surface)
-                    .map(NativeLocalPointerRoute::surface_position)
+                    .map(|route| route.surface_position())
                     .ok_or(
                         InteractionRejection::ContainedGestureCoordinateAuthorityUnavailable {
                             surface: transform.surface,

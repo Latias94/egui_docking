@@ -2,14 +2,15 @@
 
 use super::{
     NativePlatformError, NativeProjectedScrollDelta, NativeReceiverAnswer, NativeReceiverPurpose,
-    NativeReceiverQuery, NativeScrollReceiverChallenge,
+    NativeReceiverQuery, NativeScrollReceiverChallenge, NativeSurfaceReceiverQuery,
 };
 use crate::engine::CoreHostFrame;
 use crate::pointer_receiver::{
-    PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
-    PointerReceiverDeliveryRequest, PointerReceiverHoverHit, PointerReceiverHoverHitDisposition,
-    PointerReceiverObservation, PointerReceiverProbeReceipt, PointerReceiverProbeRequest,
-    PointerReceiverUnknownReason, PresentedPointerReceiverObservation, ScrollReceiverChallenge,
+    NativeWindowHitReceipt, PointerReceiverCandidate, PointerReceiverDelivery,
+    PointerReceiverDeliveryDisposition, PointerReceiverDeliveryRequest, PointerReceiverHoverHit,
+    PointerReceiverHoverHitDisposition, PointerReceiverObservation, PointerReceiverProbeReceipt,
+    PointerReceiverProbeRequest, PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
+    ScrollReceiverChallenge,
 };
 use crate::runtime::{
     DockspaceRuntimeError, PresentedDockReceiver, PresentedDockspaceSurface, interaction,
@@ -19,8 +20,60 @@ pub(super) fn resolve_receiver_observation(
     frame: &CoreHostFrame,
     candidate: &PointerReceiverCandidate,
     resolver: &mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,
-) -> Result<PointerReceiverObservation, DockspaceRuntimeError> {
-    match candidate.probes() {
+    presentation: &crate::runtime::presentation::RuntimePresentationState,
+) -> Result<(PointerReceiverObservation, Option<NativeWindowHitReceipt>), DockspaceRuntimeError> {
+    let native_hit = if let Some(probe) = candidate.native_window() {
+        let outside_client = frame
+            .view()
+            .viewport()
+            .registry()
+            .window(probe.window())
+            .and_then(|record| record.coordinates())
+            .is_some_and(|coordinates| {
+                let point = probe.client_position();
+                point.x() < 0.0
+                    || point.y() < 0.0
+                    || point.x() > coordinates.content_size().width()
+                    || point.y() > coordinates.content_size().height()
+            });
+        if outside_client {
+            return Ok((
+                unknown_observation(),
+                Some(NativeWindowHitReceipt::WindowBackground),
+            ));
+        }
+        let Some(query) = super::window_hit::NativeWindowHitQuery::from_candidate(frame, candidate)
+        else {
+            return Ok((unknown_observation(), Some(NativeWindowHitReceipt::Unknown)));
+        };
+        let hit = match resolver(NativeReceiverQuery::WindowHit(query)) {
+            NativeReceiverAnswer::WindowHit(hit) => hit,
+            _ => super::window_hit::NativeWindowHit::Unknown,
+        };
+        Some(super::window_hit::validate_window_hit(
+            frame, candidate, hit,
+        ))
+    } else {
+        None
+    };
+    let selected = native_hit.map(|hit| candidate.with_native_selection(hit));
+    let candidate = selected.as_ref().unwrap_or(candidate);
+    let surface = match candidate.probes() {
+        PointerReceiverProbeRequest::Delivery => candidate.delivery_surface(),
+        PointerReceiverProbeRequest::HoverHit => candidate.hover_surface(),
+        PointerReceiverProbeRequest::NotApplicable => None,
+    };
+    if surface.is_some_and(|surface| {
+        frame
+            .view()
+            .interaction_projection(surface)
+            .is_some_and(|projection| {
+                presentation.blocks_pointer_authority(surface, projection.authority())
+            })
+    }) {
+        return Ok((unknown_observation(), native_hit));
+    }
+    let observation = match candidate.probes() {
         PointerReceiverProbeRequest::NotApplicable => Ok(PointerReceiverObservation::NotApplicable),
         PointerReceiverProbeRequest::Delivery => {
             resolve_delivery_observation(frame, candidate, resolver)
@@ -28,7 +81,8 @@ pub(super) fn resolve_receiver_observation(
         PointerReceiverProbeRequest::HoverHit => {
             resolve_hover_observation(frame, candidate, resolver)
         }
-    }
+    }?;
+    Ok((observation, native_hit))
 }
 
 fn resolve_delivery_observation(
@@ -50,34 +104,52 @@ fn resolve_delivery_observation(
             return Err(NativePlatformError::ProtocolInvariant.into());
         }
         PointerReceiverDeliveryRequest::Click => {
-            let query = NativeReceiverQuery {
+            let query = NativeSurfaceReceiverQuery {
                 purpose: NativeReceiverPurpose::ClickDelivery,
                 presented_surface,
                 point: candidate.route_point(),
+                client_position: physical_client_point(
+                    frame,
+                    candidate,
+                    surface,
+                    candidate.route_point(),
+                ),
                 metadata: candidate.metadata(),
             };
             (
-                resolve_delivery_lane(projection, &resolver(query)),
+                resolve_delivery_lane(projection, &resolver(NativeReceiverQuery::Surface(query))),
                 unknown,
                 unknown,
             )
         }
         PointerReceiverDeliveryRequest::ClickAndDrag => {
-            let click = NativeReceiverQuery {
+            let click = NativeSurfaceReceiverQuery {
                 purpose: NativeReceiverPurpose::ClickDelivery,
                 presented_surface,
                 point: candidate.route_point(),
+                client_position: physical_client_point(
+                    frame,
+                    candidate,
+                    surface,
+                    candidate.route_point(),
+                ),
                 metadata: candidate.metadata(),
             };
-            let drag = NativeReceiverQuery {
+            let drag = NativeSurfaceReceiverQuery {
                 purpose: NativeReceiverPurpose::DragDelivery,
                 presented_surface,
                 point: candidate.route_point(),
+                client_position: physical_client_point(
+                    frame,
+                    candidate,
+                    surface,
+                    candidate.route_point(),
+                ),
                 metadata: candidate.metadata(),
             };
             (
-                resolve_delivery_lane(projection, &resolver(click)),
-                resolve_delivery_lane(projection, &resolver(drag)),
+                resolve_delivery_lane(projection, &resolver(NativeReceiverQuery::Surface(click))),
+                resolve_delivery_lane(projection, &resolver(NativeReceiverQuery::Surface(drag))),
                 unknown,
             )
         }
@@ -85,16 +157,22 @@ fn resolve_delivery_observation(
             let Some(challenge) = native_scroll_challenge(frame, candidate) else {
                 return Ok(unknown_observation());
             };
-            let query = NativeReceiverQuery {
+            let query = NativeSurfaceReceiverQuery {
                 purpose: NativeReceiverPurpose::ScrollDelivery(challenge),
                 presented_surface,
                 point: candidate.route_point(),
+                client_position: physical_client_point(
+                    frame,
+                    candidate,
+                    surface,
+                    candidate.route_point(),
+                ),
                 metadata: candidate.metadata(),
             };
             (
                 unknown,
                 unknown,
-                resolve_delivery_lane(projection, &resolver(query)),
+                resolve_delivery_lane(projection, &resolver(NativeReceiverQuery::Surface(query))),
             )
         }
     };
@@ -114,13 +192,14 @@ fn resolve_hover_observation(
     let Some(projection) = frame.view().interaction_projection(surface) else {
         return Ok(unknown_observation());
     };
-    let query = NativeReceiverQuery {
+    let query = NativeSurfaceReceiverQuery {
         purpose: NativeReceiverPurpose::HoverHit,
         presented_surface: PresentedDockspaceSurface::from_projection(projection),
         point: Some(point),
+        client_position: physical_client_point(frame, candidate, surface, Some(point)),
         metadata: candidate.metadata(),
     };
-    let disposition = match resolver(query) {
+    let disposition = match resolver(NativeReceiverQuery::Surface(query)) {
         NativeReceiverAnswer::Dock(receiver)
             if interaction::receiver_matches(&receiver, &projection) =>
         {
@@ -145,7 +224,8 @@ fn resolve_hover_observation(
         {
             PointerReceiverHoverHitDisposition::Blocked
         }
-        NativeReceiverAnswer::Dock(_)
+        NativeReceiverAnswer::WindowHit(_)
+        | NativeReceiverAnswer::Dock(_)
         | NativeReceiverAnswer::NoReceiver(_)
         | NativeReceiverAnswer::ClearHoverLane(_)
         | NativeReceiverAnswer::Blocked(_)
@@ -206,7 +286,8 @@ fn resolve_delivery_lane(
         {
             PointerReceiverDeliveryDisposition::Blocked
         }
-        NativeReceiverAnswer::Dock(_)
+        NativeReceiverAnswer::WindowHit(_)
+        | NativeReceiverAnswer::Dock(_)
         | NativeReceiverAnswer::NoReceiver(_)
         | NativeReceiverAnswer::ClearHoverLane(_)
         | NativeReceiverAnswer::Blocked(_)
@@ -226,4 +307,23 @@ fn presented_observation(
 
 const fn unknown_observation() -> PointerReceiverObservation {
     PointerReceiverObservation::Unknown(PointerReceiverUnknownReason::NotReported)
+}
+
+fn physical_client_point(
+    frame: &CoreHostFrame,
+    candidate: &PointerReceiverCandidate,
+    surface: crate::ids::SurfaceId,
+    point: Option<crate::geometry::LogicalPoint>,
+) -> Option<crate::geometry::PhysicalPoint> {
+    if let Some(probe) = candidate.native_window() {
+        return Some(probe.client_position());
+    }
+    frame
+        .view()
+        .viewport()
+        .viewport(surface)?
+        .coordinates()?
+        .surface_client_geometry()
+        .surface_to_client(point?)
+        .ok()
 }

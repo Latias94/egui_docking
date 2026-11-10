@@ -770,9 +770,9 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
         NativeHostCapabilities, NativeHostCapability, NativeInputBudget, NativeMonotonicClock,
         NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
         NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
-        NativeReceiverPurpose, NativeWindowFacts, NativeWindowInputState,
-        NativeWindowPresentationState, NativeWorkAreaRoster, PointerDeviceKind,
-        PointerEventMetadata,
+        NativeReceiverPurpose, NativeReceiverQuery, NativeWindowFacts, NativeWindowHit,
+        NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+        PointerDeviceKind, PointerEventMetadata,
     };
     use std::time::Duration;
 
@@ -864,23 +864,23 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
             NativeDesktopPosition::Exact(
                 PhysicalPoint::new(content.x() + point.x(), content.y() + point.y()).unwrap(),
             ),
-            NativePointerHover::Dock(old),
+            NativePointerHover::Dock(old.window()),
             None,
         );
         let press = NativePointerInput::new(
             NativePointerId::new(1),
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             location,
-            NativePointerOwner::Native(old),
-            NativePointerOwner::Native(old),
+            NativePointerOwner::Native(old.window()),
+            NativePointerOwner::Native(old.window()),
         )
         .with_metadata(metadata);
         let release = NativePointerInput::new(
             NativePointerId::new(1),
             NativePointerEvent::ContactEnded(NativePointerButton::Primary),
             location,
-            NativePointerOwner::Native(old),
-            NativePointerOwner::Native(old),
+            NativePointerOwner::Native(old.window()),
+            NativePointerOwner::Native(old.window()),
         )
         .with_metadata(release_metadata);
         session
@@ -888,6 +888,26 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
             .unwrap();
         assert_eq!(session.native_input_recorded_count(), recorded + 2);
 
+        let query_metadata = |query: NativeReceiverQuery| match query {
+            NativeReceiverQuery::WindowHit(query) => query.metadata(),
+            NativeReceiverQuery::Surface(query) => query.metadata(),
+        };
+        let resolve = |query| match query {
+            NativeReceiverQuery::WindowHit(query) => {
+                assert_eq!(query.window(), old.window());
+                assert_eq!(
+                    query.point(),
+                    PhysicalPoint::new(point.x(), point.y()).unwrap()
+                );
+                NativeReceiverAnswer::WindowHit(NativeWindowHit::Surface(artifact))
+            }
+            NativeReceiverQuery::Surface(query) => {
+                assert!(query.matches_native_binding(old));
+                assert!(query.matches_presentation_artifact(artifact));
+                assert_eq!(query.point(), Some(point));
+                NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+            }
+        };
         let clock = NativeMonotonicClock::new(|| Duration::ZERO);
         let mut first_budget = NativeInputBudget::new(&clock);
         first_budget.complete_unsequenced_records(255);
@@ -895,12 +915,9 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
         assert!(
             session
                 .poll_native_host_frame(&mut first_budget, |query| {
-                    assert!(query.matches_native_binding(old));
-                    assert!(query.matches_presentation_artifact(artifact));
-                    assert_eq!(query.metadata(), metadata);
-                    assert_eq!(query.point(), Some(point));
+                    assert_eq!(query_metadata(query), metadata);
                     queries.push(query);
-                    NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+                    resolve(query)
                 })
                 .unwrap()
                 .is_none(),
@@ -909,10 +926,18 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
         assert!(first_budget.is_exhausted());
         assert_eq!(first_budget.remaining_records(), 0);
         assert_eq!(first_budget.elapsed(), Duration::ZERO);
+        assert!(
+            queries
+                .iter()
+                .any(|query| matches!(query, NativeReceiverQuery::WindowHit(_)))
+        );
         assert_eq!(
             queries
                 .iter()
-                .map(|query| *query.purpose())
+                .filter_map(|query| match query {
+                    NativeReceiverQuery::Surface(query) => Some(*query.purpose()),
+                    NativeReceiverQuery::WindowHit(_) => None,
+                })
                 .collect::<Vec<_>>(),
             [
                 NativeReceiverPurpose::ClickDelivery,
@@ -929,12 +954,9 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
         let mut remaining_queries = Vec::new();
         let mut candidate = session
             .poll_native_host_frame(&mut tail_budget, |query| {
-                assert!(query.matches_native_binding(old));
-                assert!(query.matches_presentation_artifact(artifact));
-                assert_eq!(query.metadata(), release_metadata);
-                assert_eq!(query.point(), Some(point));
+                assert_eq!(query_metadata(query), release_metadata);
                 remaining_queries.push(query);
-                NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+                resolve(query)
             })
             .unwrap()
             .unwrap();
@@ -942,7 +964,10 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
         assert_eq!(
             remaining_queries
                 .iter()
-                .map(|query| *query.purpose())
+                .filter_map(|query| match query {
+                    NativeReceiverQuery::Surface(query) => Some(*query.purpose()),
+                    NativeReceiverQuery::WindowHit(_) => None,
+                })
                 .collect::<Vec<_>>(),
             [
                 NativeReceiverPurpose::ClickDelivery,
@@ -973,9 +998,9 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
             assert!(
                 session
                     .poll_native_host_frame(&mut retry_budget, |query| {
-                        assert_eq!(query.metadata(), metadata);
+                        assert_eq!(query_metadata(query), metadata);
                         retry_queries.push(query);
-                        NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+                        resolve(query)
                     })
                     .unwrap()
                     .is_none()
@@ -989,16 +1014,16 @@ fn budgeted_native_terminal_reset_resumes_receivers_and_retries_one_publication_
             assert_eq!(session.native_input_recorded_count(), recorded + 2);
             session
                 .begin_native_layout_reset_frame(&reset, |query| {
-                    assert_eq!(query.metadata(), release_metadata);
+                    assert_eq!(query_metadata(query), release_metadata);
                     retry_queries.push(query);
-                    NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+                    resolve(query)
                 })
                 .unwrap()
         } else {
             let mut retry = session
                 .poll_native_host_frame(&mut retry_budget, |query| {
                     retry_queries.push(query);
-                    NativeReceiverAnswer::Dock(query.bind_receiver(&receiver).unwrap())
+                    resolve(query)
                 })
                 .unwrap()
                 .unwrap();

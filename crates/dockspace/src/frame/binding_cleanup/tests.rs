@@ -1,13 +1,20 @@
 use super::*;
 use crate::effect::{DispatchFailureReason, EffectIndeterminateReason};
 use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
-use crate::intent::Authority;
+use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
-    CloseEffectAcknowledgement, InputEffectAcknowledgement, WindowCloseObservation,
-    WindowCloseState, WindowInputObservation, WindowInputState,
+    CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
+    ObservedWindow, PlatformCapabilities, WindowCloseObservation, WindowCloseState,
+    WindowInputObservation, WindowInputState, WindowInventoryObservation,
+    WorkAreaRosterObservation,
 };
 use crate::platform_provider::PlatformObservationAuthority;
-use crate::viewport::{CloseObservationGeneration, InputObservationGeneration, WindowIncarnation};
+use crate::viewport::{
+    CapabilityObservationGeneration, CloseObservationGeneration, InputObservationGeneration,
+    InventoryObservationGeneration, PlacementGeneration, PlatformSnapshotGeneration,
+    WindowIncarnation, WorkAreaObservationGeneration,
+};
+use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 
 fn binding(surface: u64, token: u64) -> ViewportBinding {
     ViewportBinding::new(
@@ -49,6 +56,213 @@ fn provider_pair() -> (PlatformObservationLease, PlatformObservationLease) {
         .finish_replacement(ticket)
         .expect("successor provider must activate");
     (first, second)
+}
+
+fn physical_snapshot(
+    transport: ViewportBinding,
+    generation: u64,
+    state: WindowCloseState,
+) -> PlatformSnapshot {
+    let windows = if state == WindowCloseState::Destroyed {
+        Vec::new()
+    } else {
+        vec![
+            ObservedWindow::new(transport)
+                .with_input_observation(WindowInputObservation::new(
+                    transport,
+                    InputObservationGeneration::new(generation),
+                    Authority::Known(WindowInputState::ReceivesInput),
+                    InputEffectAcknowledgement::known(None),
+                ))
+                .with_close_requested(Authority::Known(state == WindowCloseState::LiveRequested)),
+        ]
+    };
+    PlatformSnapshot::new(
+        PlatformSnapshotGeneration::new(generation),
+        CapabilityRosterObservation::new(
+            CapabilityObservationGeneration::new(generation),
+            Authority::Known(PlatformCapabilities::default()),
+        ),
+        unknown_focus_observation(
+            FocusObservationGeneration::new(generation),
+            AuthorityUnavailableReason::NotReported,
+        ),
+        WindowInventoryObservation::unknown(
+            InventoryObservationGeneration::new(generation),
+            AuthorityUnavailableReason::NotReported,
+        ),
+        windows,
+        vec![WindowCloseObservation::new(
+            transport,
+            CloseObservationGeneration::new(generation),
+            Authority::Known(state),
+            CloseEffectAcknowledgement::known(None),
+        )],
+        WorkAreaRosterObservation::new(
+            WorkAreaObservationGeneration::new(generation),
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn shared_window_retirement_observes_the_original_transport_and_keeps_its_exact_owner() {
+    let transport = binding(1, 10);
+    let owner = ViewportBinding::with_placement_generation(
+        transport.window(),
+        SurfaceId::new(2),
+        PlacementGeneration::new(2),
+    );
+    let (provider, _) = provider_pair();
+    let mut request = runtime_request(owner, BindingRetirementStatus::AwaitingAppearance);
+    request.role = ViewportRole::Root;
+    request.ownership = ViewportOwnership::External;
+    request.cleanup = BindingCleanupAction::KeepExternal;
+    request.observed = false;
+    request.may_reappear = true;
+    let mut lifecycle = BindingCleanupLifecycle::default();
+    lifecycle.begin(request).unwrap();
+
+    let live = physical_snapshot(transport, 1, WindowCloseState::LiveClear);
+    assert_eq!(
+        lifecycle.observe_snapshot(provider, &live),
+        [BindingCleanupDirective::Drive { binding: owner }]
+    );
+    let retirement = lifecycle.get(&owner).unwrap();
+    assert!(retirement.observed());
+    assert!(!retirement.may_reappear());
+    assert_eq!(
+        retirement.input_observations.current().unwrap().binding(),
+        transport
+    );
+    assert_eq!(
+        retirement.close_observations.current().unwrap().binding(),
+        transport
+    );
+    assert!(lifecycle.get(&transport).is_none());
+    assert!(lifecycle.plan_drive(owner, false).unwrap().is_none());
+    assert_eq!(
+        lifecycle.get(&owner).unwrap().status(),
+        BindingRetirementStatus::AwaitingExactDestruction
+    );
+
+    let destroyed = physical_snapshot(transport, 2, WindowCloseState::Destroyed);
+    let directives = lifecycle.observe_snapshot(provider, &destroyed);
+    let [BindingCleanupDirective::ExactDestroyed(terminal)] = directives.as_slice() else {
+        panic!("the physical result must finish the existing exact cleanup owner");
+    };
+    assert_eq!(terminal.binding(), owner);
+    assert!(lifecycle.get(&owner).is_none());
+    assert!(lifecycle.is_terminal(owner));
+    assert!(!lifecycle.is_terminal(transport));
+    assert!(!lifecycle.token_is_reserved(owner.token()));
+}
+
+#[test]
+fn shared_transport_observations_preserve_exact_cleanup_effect_lineage() {
+    let transport = binding(1, 10);
+    let owner = ViewportBinding::with_placement_generation(
+        transport.window(),
+        SurfaceId::new(2),
+        PlacementGeneration::new(2),
+    );
+    let effect = EffectId::new(7);
+    let (provider, _) = provider_pair();
+    let mut lifecycle = BindingCleanupLifecycle::default();
+    lifecycle
+        .begin(runtime_request(
+            owner,
+            BindingRetirementStatus::CleanupRequested { effect },
+        ))
+        .unwrap();
+    lifecycle.observe_snapshot(
+        provider,
+        &physical_snapshot(transport, 1, WindowCloseState::LiveClear),
+    );
+    assert_eq!(
+        lifecycle
+            .reduce_effect(
+                EffectId::new(8),
+                EffectPhase::DispatchFailed(DispatchFailureReason::WindowUnavailable),
+            )
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        lifecycle
+            .reduce_effect(
+                effect,
+                EffectPhase::DispatchFailed(DispatchFailureReason::WindowUnavailable),
+            )
+            .unwrap(),
+        Some(owner)
+    );
+    assert_eq!(
+        lifecycle.plan_destructive_retry(effect).unwrap(),
+        Some(PlatformEffect::ReleaseChild { binding: owner })
+    );
+    let destroyed = physical_snapshot(transport, 2, WindowCloseState::Destroyed);
+    let directives = lifecycle.observe_snapshot(provider, &destroyed);
+    assert!(matches!(
+        directives.as_slice(),
+        [BindingCleanupDirective::ExactDestroyed(terminal)] if terminal.binding() == owner
+    ));
+    assert_eq!(lifecycle.retention_manifest().cleanup_lineage_entries(), 0);
+}
+
+#[test]
+fn same_token_from_another_window_lifetime_cannot_finish_shared_retirement() {
+    let transport = binding(1, 10);
+    let owner = ViewportBinding::with_placement_generation(
+        transport.window(),
+        SurfaceId::new(2),
+        PlacementGeneration::new(2),
+    );
+    let (provider, _) = provider_pair();
+    for foreign in [
+        ViewportBinding::new(
+            EngineAuthorityDomainId::new_for_test(2),
+            transport.epoch(),
+            transport.surface(),
+            transport.token(),
+            transport.incarnation(),
+        ),
+        ViewportBinding::new(
+            transport.authority_domain(),
+            WorkspaceEpoch::new(1),
+            transport.surface(),
+            transport.token(),
+            transport.incarnation(),
+        ),
+        ViewportBinding::new(
+            transport.authority_domain(),
+            transport.epoch(),
+            transport.surface(),
+            transport.token(),
+            WindowIncarnation::new(2),
+        ),
+        binding(1, 11),
+    ] {
+        let mut lifecycle = BindingCleanupLifecycle::default();
+        lifecycle
+            .begin(runtime_request(
+                owner,
+                BindingRetirementStatus::AwaitingExactDestruction,
+            ))
+            .unwrap();
+        assert_eq!(
+            lifecycle.observe_snapshot(
+                provider,
+                &physical_snapshot(foreign, 1, WindowCloseState::Destroyed),
+            ),
+            [BindingCleanupDirective::Drive { binding: owner }]
+        );
+        assert!(lifecycle.get(&owner).is_some());
+        assert!(lifecycle.token_is_reserved(owner.token()));
+        assert!(!lifecycle.is_terminal(owner));
+    }
 }
 
 #[test]

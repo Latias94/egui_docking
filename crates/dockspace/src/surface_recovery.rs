@@ -1387,6 +1387,17 @@ impl SurfaceRecoveryState {
         self.first_workspace_mismatch_other_than(workspace, Some(excluded))
     }
 
+    pub(crate) fn first_workspace_mismatch_excluding_surfaces(
+        &self,
+        workspace: &Workspace,
+        excluded: &std::collections::BTreeSet<SurfaceId>,
+    ) -> Option<SurfaceId> {
+        self.pending
+            .values()
+            .filter(|roster| !excluded.contains(&roster.surface()))
+            .find_map(|roster| (!roster.matches_workspace(workspace)).then_some(roster.surface()))
+    }
+
     fn first_workspace_mismatch_other_than(
         &self,
         workspace: &Workspace,

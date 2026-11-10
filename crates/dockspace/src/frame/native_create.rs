@@ -541,10 +541,23 @@ impl ViewportCoordinator {
         }
 
         let mut candidate = self.clone();
-        candidate
+        let bindings = candidate
             .registry
-            .admit(binding)
-            .map_err(ViewportCoordinatorError::Registry)?;
+            .bindings_for_window(binding.window())
+            .collect::<Vec<_>>();
+        let admission = candidate
+            .registry
+            .placement_record(binding)
+            .map(|record| record.admission())
+            .ok_or(ViewportCoordinatorError::CreateSagaNotReady { saga: saga_id })?;
+        if admission == crate::viewport_registry::ViewportAdmission::Pending {
+            candidate
+                .registry
+                .admit_window(&bindings)
+                .map_err(ViewportCoordinatorError::Registry)?;
+        } else if admission != crate::viewport_registry::ViewportAdmission::Admitted {
+            return Err(ViewportCoordinatorError::CreateSagaNotReady { saga: saga_id });
+        }
         let saga = candidate
             .native_creates
             .sagas

@@ -1805,6 +1805,7 @@ fn terminal_binding_guard_preserves_exact_binding_and_complete_recovery() {
         [ViewportLifecycleAction::SurfaceDestroyed {
             observation,
             source_coordinates: Some(_),
+            ..
         }] if *observation == expected_destroyed
     ));
     assert_eq!(

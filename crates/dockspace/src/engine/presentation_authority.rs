@@ -1892,6 +1892,25 @@ impl DockEngine {
                 | HostPresentationObservationOutcome::Rejected { .. } => None,
             })
             .collect::<BTreeSet<_>>();
+        let withdrawn_first_live_streams = outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                HostPresentationObservationOutcome::CapturedUnknown { stream, .. }
+                | HostPresentationObservationOutcome::Retired {
+                    stream,
+                    promotion_eligible: false,
+                    ..
+                }
+                | HostPresentationObservationOutcome::Retired {
+                    stream,
+                    presented: Authority::Known(None),
+                    ..
+                } => Some(*stream),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        self.native_admission
+            .revoke_observed_streams(&withdrawn_first_live_streams);
         changed_surfaces.extend(
             self.invalidate_interaction_authority_for_current_streams(&invalidated_streams),
         );
@@ -1979,51 +1998,102 @@ impl DockEngine {
                 promotion.endpoint(),
                 coordinate_generation,
             );
-            if let HostPresentationEndpoint::Native(binding) = promotion.endpoint()
-                && self
-                    .viewport
+            let awaiting_window_first_live = if let HostPresentationEndpoint::Native(binding) =
+                promotion.endpoint()
+            {
+                self.viewport
                     .viewport(binding.surface())
                     .is_some_and(|record| {
                         record.admission() == crate::viewport_registry::ViewportAdmission::Pending
                     })
+            } else {
+                false
+            };
+            if awaiting_window_first_live
                 && !self
                     .native_first_live_output_requires_follow_up(ticket, promotion.endpoint())?
             {
                 continue;
             }
-            if let Some(stamp) = self.scene().native_first_live_projection(ticket.surface()) {
-                if self.scene().validate_observed_authority(authority).is_err()
-                    || !self.commit_native_first_live_projection(
-                        stamp,
-                        authority,
-                        cause,
-                        &mut lifecycle_events,
-                        &mut changed_surfaces,
-                    )?
-                {
+            let mut authorities = if awaiting_window_first_live {
+                if self.scene().validate_observed_authority(authority).is_err() {
                     continue;
                 }
+                let Some(authorities) = self.observe_native_first_live_window(authority) else {
+                    continue;
+                };
+                authorities
             } else {
-                match self
-                    .presentation_authority
-                    .scene
-                    .accept_observed_authority(authority)
+                vec![authority]
+            };
+            // A prospective topology owner goes first. Its popup/source checks
+            // must finish before any sibling authority is accepted.
+            authorities.sort_by_key(|authority| {
+                self.scene()
+                    .native_first_live_projection(authority.surface())
+                    .is_none()
+            });
+            let mut accepted_member = false;
+            for authority in authorities {
+                let member_ticket = authority.ticket();
+                if let Some(stamp) = self
+                    .scene()
+                    .native_first_live_projection(member_ticket.surface())
                 {
-                    Ok(changed) => {
-                        self.admit_first_live_native_output(
-                            ticket,
-                            capture,
+                    if self.scene().validate_observed_authority(authority).is_err()
+                        || !self.commit_native_first_live_projection(
+                            stamp,
+                            authority,
+                            cause,
                             &mut lifecycle_events,
-                        )?;
-                        changed_surfaces.extend(changed);
+                            &mut changed_surfaces,
+                        )?
+                    {
+                        if accepted_member {
+                            return Err(EngineError::ReductionCauseInvariant {
+                                detail: "first-live window roster changed after committing a member",
+                            });
+                        }
+                        break;
                     }
-                    Err(_) => {
-                        changed_surfaces.extend(
-                            self.invalidate_interaction_authority_for_current_streams(
-                                &promotion_stream,
-                            ),
-                        );
-                        continue;
+                    accepted_member = true;
+                } else {
+                    let member_capture = if member_ticket == ticket {
+                        capture
+                    } else {
+                        self.scene().retained_output_capture(member_ticket).map_err(|_| {
+                            EngineError::ReductionCauseInvariant {
+                                detail: "validated first-live roster lost its retained coordinate capture",
+                            }
+                        })?
+                    };
+                    match self
+                        .presentation_authority
+                        .scene
+                        .accept_observed_authority(authority)
+                    {
+                        Ok(changed) => {
+                            self.admit_first_live_native_output(
+                                member_ticket,
+                                member_capture,
+                                &mut lifecycle_events,
+                            )?;
+                            changed_surfaces.extend(changed);
+                            accepted_member = true;
+                        }
+                        Err(_) => {
+                            if awaiting_window_first_live {
+                                return Err(EngineError::ReductionCauseInvariant {
+                                    detail: "a validated first-live window roster lost a member before publication",
+                                });
+                            }
+                            changed_surfaces.extend(
+                                self.invalidate_interaction_authority_for_current_streams(
+                                    &promotion_stream,
+                                ),
+                            );
+                            break;
+                        }
                     }
                 }
             }

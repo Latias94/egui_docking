@@ -79,7 +79,7 @@ pub struct DockspaceHostFrame<'session> {
     pub(super) submitted_presentation: presentation::SubmittedPresentationObservation,
     pub(super) painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
     pub(super) encoding_surfaces:
-        BTreeMap<SurfaceId, crate::presentation_observation::PresentationStreamAdmission>,
+        BTreeMap<SurfaceId, Option<crate::presentation_observation::PresentationStreamAdmission>>,
     pub(super) encoding_started: std::cell::Cell<bool>,
     pub(super) encoding_checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
     pub(super) encoding_pass: u64,
@@ -91,6 +91,100 @@ pub struct DockspaceHostFrame<'session> {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Replaces all logical placements in one real native window atomically.
+    ///
+    /// Measurements and painting in this candidate use the proposed placements.
+    /// Dropping the frame preserves the committed roster and exact generations.
+    /// The clip is independent of each surface's logical layout size.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale windows, invalid geometry, missing surfaces, storage refusal,
+    /// pending native input or an already started presentation phase.
+    pub fn set_native_surface_placements(
+        &mut self,
+        window: super::NativeWindowBinding,
+        placements: &[super::NativeSurfacePlacement],
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        self.session.ensure_managed_native_host_available()?;
+        let native = self
+            .session
+            .native
+            .as_ref()
+            .ok_or(NativePlatformError::ProviderUnavailable)?;
+        if native.provider() != window.provider() {
+            return Err(NativePlatformError::ProviderSuperseded.into());
+        }
+        if native
+            .placement_roster_capacity()
+            .is_some_and(|capacity| placements.len() > capacity)
+        {
+            return Err(NativePlatformError::InputCapacity.into());
+        }
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(placements.len())
+            .map_err(|_| NativePlatformError::InputCapacity)?;
+        owned.extend_from_slice(placements);
+        let expected = self.frame.view().version();
+        self.append(EngineInput::SetNativeSurfacePlacements {
+            provider: window.provider(),
+            expected,
+            window: window.core(),
+            placements: owned,
+        })
+    }
+
+    /// Queries the exact proposed surface roster of a real window.
+    pub fn native_surface_bindings_for_window(
+        &self,
+        window: super::NativeWindowBinding,
+    ) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        let provider = self
+            .session
+            .native
+            .as_ref()
+            .map(super::native::RuntimeNativeState::provider);
+        self.frame
+            .view()
+            .viewport()
+            .registry()
+            .bindings_for_window(window.core())
+            .filter_map(move |binding| {
+                (provider == Some(window.provider()))
+                    .then(|| NativeSurfaceBinding::from_binding(window.provider(), binding))
+            })
+    }
+
+    /// Returns committed predecessor placements while a candidate proposes successors.
+    ///
+    /// Resource preparation uses this exact scope; candidate queries return the
+    /// proposed scope and cannot identify pending callbacks from the predecessor.
+    pub fn committed_native_surface_bindings_for_window(
+        &self,
+        window: super::NativeWindowBinding,
+    ) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        self.session.native_surface_bindings_for_window(window)
+    }
+
+    /// Returns layout and physical mapping only for this exact proposed placement.
+    #[must_use]
+    pub fn native_surface_placement(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<super::NativeSurfacePlacement> {
+        let native = self.session.native.as_ref()?;
+        if binding.window().provider() != native.provider() {
+            return None;
+        }
+        self.frame
+            .view()
+            .viewport()
+            .registry()
+            .surface_placement(binding.core_binding())
+    }
+
     /// Returns exact Root binding pairs proposed by this terminal replacement.
     ///
     /// Prepay route/resource changes from these opaque pairs before committing

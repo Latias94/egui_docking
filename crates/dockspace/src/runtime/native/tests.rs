@@ -103,7 +103,9 @@ fn admission_diff_reports_only_the_same_pending_binding() {
 
     native
         .producer
-        .binding_mut(binding.binding)
+        .bindings
+        .iter_mut()
+        .find(|state| state.binding == binding.binding)
         .unwrap()
         .admission = Some(ViewportAdmission::Pending);
     assert_eq!(
@@ -124,7 +126,9 @@ fn admission_diff_reports_only_the_same_pending_binding() {
     );
     native
         .producer
-        .binding_mut(binding.binding)
+        .bindings
+        .iter_mut()
+        .find(|state| state.binding == binding.binding)
         .unwrap()
         .binding = replacement;
     assert!(
@@ -393,7 +397,8 @@ fn native_receiver_query_binds_only_the_exact_presented_output_and_binding() {
         .engine
         .interaction_projection(SURFACE)
         .expect("the presented output grants interaction authority");
-    let query = NativeReceiverQuery {
+    let query = NativeSurfaceReceiverQuery {
+        client_position: None,
         purpose: NativeReceiverPurpose::DragDelivery,
         presented_surface: PresentedDockspaceSurface::from_projection(projection),
         point: Some(descriptor.center()),
@@ -407,7 +412,7 @@ fn native_receiver_query_binds_only_the_exact_presented_output_and_binding() {
     assert!(!query.matches_semantic_output(foreign_semantic_output()));
     assert!(query.bind_receiver(&descriptor).is_some());
 
-    let hover_query = NativeReceiverQuery {
+    let hover_query = NativeSurfaceReceiverQuery {
         purpose: NativeReceiverPurpose::HoverHit,
         ..query
     };
@@ -745,7 +750,7 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
     }
     assert!(requested_root_focus);
     session
-        .report_native_global_focus(NativeGlobalFocus::Dock(root_binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(root_binding.window()))
         .expect("the exact redock host reports the requested focus");
     let acknowledgement = release
         .expect("the release effect exists")
@@ -859,9 +864,17 @@ fn retired_binding_accepts_only_an_exact_terminal_binding_guard() {
         .native
         .as_mut()
         .expect("the native provider remains enrolled");
-    let state = native.producer.binding_mut(binding.binding).unwrap();
+    let state = native
+        .producer
+        .bindings
+        .iter_mut()
+        .find(|state| state.binding == binding.binding)
+        .unwrap();
     assert!(state.admission.take().is_some());
-    state.window_generation = 0;
+    let retired_window = state.binding.window();
+    let window = native.producer.window_mut(retired_window).unwrap();
+    window.current = false;
+    window.window_generation = 0;
 
     assert!(session.recognizes_native_binding(binding));
     assert!(!session.is_current_native_binding(binding));
@@ -874,9 +887,17 @@ fn retired_binding_accepts_only_an_exact_terminal_binding_guard() {
         .native
         .as_mut()
         .expect("the native provider remains enrolled");
-    let state = native.producer.binding_mut(live_binding.binding).unwrap();
+    let state = native
+        .producer
+        .bindings
+        .iter_mut()
+        .find(|state| state.binding == live_binding.binding)
+        .unwrap();
     assert!(state.admission.take().is_some());
-    state.window_generation = 0;
+    let retired_window = state.binding.window();
+    let window = native.producer.window_mut(retired_window).unwrap();
+    window.current = false;
+    window.window_generation = 0;
     let error = live_session
         .report_native_snapshot([(live_binding, NativeWindowFacts::live())])
         .expect_err("a retired binding cannot regain live authority");
@@ -890,9 +911,17 @@ fn retired_binding_accepts_same_provider_effect_results() {
         .native
         .as_mut()
         .expect("the native provider remains enrolled");
-    let state = native.producer.binding_mut(binding.binding).unwrap();
+    let state = native
+        .producer
+        .bindings
+        .iter_mut()
+        .find(|state| state.binding == binding.binding)
+        .unwrap();
     assert!(state.admission.take().is_some());
-    state.window_generation = 0;
+    let retired_window = state.binding.window();
+    let window = native.producer.window_mut(retired_window).unwrap();
+    window.current = false;
+    window.window_generation = 0;
 
     let mut ledger = EffectLedger::default();
     ledger
@@ -1284,7 +1313,7 @@ fn narrow_focus_lane_is_ordered_and_does_not_advance_with_unchanged_snapshots() 
         )
         .expect("the initial capability snapshot records first");
     session
-        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
         .expect("exact dock focus records after its capability roster");
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -1352,7 +1381,7 @@ fn losing_inventory_revokes_dock_focus_without_guessing_a_successor() {
         )
         .expect("the initial capability snapshot records");
     session
-        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
         .expect("exact dock focus records");
     commit_managed_frame(&mut session);
 
@@ -1383,7 +1412,7 @@ fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_gene
         )
         .expect("the visible root snapshot records");
     session
-        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
         .expect("the visible root focus records");
     commit_managed_frame(&mut session);
     let focus_before = session.engine.viewport_focus().clone();
@@ -1393,7 +1422,7 @@ fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_gene
     assert_eq!(baseline.generation(), FocusObservationGeneration::new(1));
     assert_eq!(
         baseline.focused(),
-        &Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+        &Authority::Known(GlobalFocusedWindow::Dock(binding.binding.window()))
     );
     let workspace_before = session.workspace().clone();
     let version_before = session.version();
@@ -1411,7 +1440,7 @@ fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_gene
     assert!(session.is_current_native_binding(binding));
     // Recording destruction does not retire producer admission before commit.
     session
-        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
         .expect("a late focus callback can still queue behind destruction");
     let native = session.native.as_ref().expect("the native host exists");
     let recorded = native.recorder.recorded_through();
@@ -1447,7 +1476,7 @@ fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_gene
     assert_eq!(observation.generation(), FocusObservationGeneration::new(3));
     assert_eq!(
         observation.focused(),
-        &Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+        &Authority::Known(GlobalFocusedWindow::Dock(binding.binding.window()))
     );
     assert_eq!(recorded.get(), backend_before.get() + 2);
 
@@ -1503,7 +1532,7 @@ fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_gene
         assert_eq!(native.snapshot_generation, snapshot_generation);
         assert_eq!(native.binding_roster_unsettled_through, unsettled);
         assert_eq!(native.focus_generation, 3);
-        assert_eq!(native.focus, NativeGlobalFocus::Dock(binding));
+        assert_eq!(native.focus, NativeGlobalFocus::Dock(binding.window()));
         assert_eq!(native.recorder.recorded_through(), recorded);
         assert_eq!(native.recorder.pointer_through(), pointer);
         assert_eq!(
@@ -1539,7 +1568,7 @@ fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_gene
         None
     );
     assert_eq!(native.focus_generation, 3);
-    assert_eq!(native.focus, NativeGlobalFocus::Dock(binding));
+    assert_eq!(native.focus, NativeGlobalFocus::Dock(binding.window()));
 
     // A retired Dock fact consumes its raw generation without requiring another tombstone.
     session
@@ -1575,14 +1604,14 @@ fn nonvisible_snapshots_revoke_dock_focus_once_and_visibility_needs_a_new_focus_
             .report_managed_native_snapshot([(binding, visible)], NativeWorkAreaRoster::Unknown)
             .expect("the visible root snapshot records");
         session
-            .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+            .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
             .expect("the actual visible root focus records");
         commit_managed_frame(&mut session);
         let baseline = session.engine.viewport_focus().focus_observation().unwrap();
         assert_eq!(baseline.generation(), FocusObservationGeneration::new(1));
         assert_eq!(
             baseline.focused(),
-            &Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+            &Authority::Known(GlobalFocusedWindow::Dock(binding.binding.window()))
         );
 
         let unavailable = presentation.map_or_else(NativeWindowFacts::live, |state| {
@@ -1613,7 +1642,7 @@ fn nonvisible_snapshots_revoke_dock_focus_once_and_visibility_needs_a_new_focus_
         assert_eq!(session.engine.viewport_focus().focus_observation(), None);
 
         session
-            .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+            .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
             .expect("a new actual focus callback records after visibility returns");
         commit_managed_frame(&mut session);
         let restored = session
@@ -1624,7 +1653,7 @@ fn nonvisible_snapshots_revoke_dock_focus_once_and_visibility_needs_a_new_focus_
         assert_eq!(restored.generation(), FocusObservationGeneration::new(3));
         assert_eq!(
             restored.focused(),
-            &Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+            &Authority::Known(GlobalFocusedWindow::Dock(binding.binding.window()))
         );
     }
 }
@@ -1637,7 +1666,7 @@ fn focus_before_the_initial_managed_snapshot_is_rejected_atomically() {
     let recorded_before = native.recorder.recorded_through();
 
     let error = session
-        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
         .expect_err("focus cannot precede the capability roster that authorizes it");
     assert_eq!(
         error.native_kind(),
@@ -1658,7 +1687,7 @@ fn focus_before_the_initial_managed_snapshot_is_rejected_atomically() {
         )
         .expect("the initial capability snapshot remains recordable");
     session
-        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
         .expect("focus remains recordable after the capability snapshot");
     commit_managed_frame(&mut session);
 }
@@ -1669,7 +1698,7 @@ fn global_focus_rejects_foreign_provider_bindings_atomically() {
     let (_, foreign) = native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
 
     let error = session
-        .report_native_global_focus(NativeGlobalFocus::Dock(foreign))
+        .report_native_global_focus(NativeGlobalFocus::Dock(foreign.window()))
         .expect_err("a foreign provider binding cannot acquire focus authority");
     assert_eq!(error.native_kind(), Some(NativeHostErrorKind::StaleBinding));
     let native = session.native.as_ref().expect("native host exists");

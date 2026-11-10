@@ -16,6 +16,13 @@ pub struct NativeWindowBinding {
 }
 
 impl NativeWindowBinding {
+    pub(in crate::runtime) const fn core(self) -> WindowBinding {
+        self.window
+    }
+
+    pub(in crate::runtime) const fn provider(self) -> PlatformObservationLease {
+        self.provider
+    }
     pub(super) const fn from_binding(
         provider: PlatformObservationLease,
         window: WindowBinding,

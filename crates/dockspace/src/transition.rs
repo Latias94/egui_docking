@@ -149,6 +149,10 @@ pub enum InputOutcome {
         /// Durable workspace version after processing the decision.
         version: WorkspaceVersion,
     },
+    /// The complete placement roster changed atomically in a native window.
+    NativeSurfacePlacementsChanged {
+        window: crate::viewport::WindowBinding,
+    },
     /// An existing adapter window was bound to a logical surface.
     ViewportRegistered {
         /// Complete core-owned binding identity.

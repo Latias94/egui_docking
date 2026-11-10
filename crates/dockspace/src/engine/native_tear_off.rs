@@ -325,11 +325,26 @@ impl DockEngine {
             ) => return Ok(Err(DockspaceActionRejection::IdentityExhausted)),
             Err(error) => return Err(error),
         };
-        if self
+        let Some(recovery_anchor) = self
             .surface_recovery_target(source_surface)
             .map(SurfaceRecoveryTarget::anchor)
             .or_else(|| self.root_recovery_anchor(source_surface))
-            .is_none()
+        else {
+            return Ok(Err(DockspaceActionRejection::NativeUnavailable));
+        };
+        // Rehoming the final root prunes its logical surface. A new child
+        // cannot promise recovery into that same surface after it disappears.
+        // Check this before returning a prepared command as available; the
+        // transaction's exact future-host check remains the final safeguard.
+        if complete.is_some()
+            && recovery_anchor.surface() == source_surface
+            && self
+                .workspace
+                .surface(source_surface)
+                .is_some_and(|surface| {
+                    surface.main_root.is_some() && surface.contained.is_empty()
+                        || surface.main_root.is_none() && surface.contained.len() == 1
+                })
         {
             return Ok(Err(DockspaceActionRejection::NativeUnavailable));
         }

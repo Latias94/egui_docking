@@ -1480,7 +1480,7 @@ impl EffectLedger {
         let Some(record) = self.records.get_mut(&effect) else {
             return missing;
         };
-        if record.request.effect.binding() != binding {
+        if record.request.effect.binding().window() != binding.window() {
             return EffectTransition::BindingMismatch;
         }
         let Some(delivery) = record.delivery else {
@@ -1511,7 +1511,7 @@ impl EffectLedger {
             return false;
         }
         self.records.get(&effect).is_some_and(|record| {
-            record.request.effect.binding() == binding
+            record.request.effect.binding().window() == binding.window()
                 && record.delivery.is_some_and(|delivery| {
                     delivery.provider() == provider
                         && inventory_generation > delivery.inventory_generation()
@@ -1544,7 +1544,7 @@ impl EffectLedger {
         let Some(record) = self.records.get_mut(&effect) else {
             return missing;
         };
-        if record.request.effect.binding() != binding {
+        if record.request.effect.binding().window() != binding.window() {
             return EffectTransition::BindingMismatch;
         }
         apply_observation_phase(

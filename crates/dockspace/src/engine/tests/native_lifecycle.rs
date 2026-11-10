@@ -1341,7 +1341,7 @@ fn auto_focused_native_window_waits_for_first_live_before_pane_focus_is_admitted
         WindowPresentationState::Visible,
         4,
         true,
-        GlobalFocusedWindow::Dock(request.binding()),
+        GlobalFocusedWindow::Dock(request.binding().window()),
     );
     let provider = test_platform_provider(&mut fixture.engine);
     let expected_epoch = fixture.engine.version().epoch();
@@ -1609,7 +1609,7 @@ fn delayed_auto_focus_from_a_superseded_native_create_reasserts_the_current_winn
         WindowPresentationState::Visible,
         5,
         true,
-        GlobalFocusedWindow::Dock(request.binding()),
+        GlobalFocusedWindow::Dock(request.binding().window()),
     );
     let provider = test_platform_provider(&mut fixture.engine);
     let expected_epoch = fixture.engine.version().epoch();
@@ -1655,7 +1655,7 @@ fn delayed_auto_focus_from_a_superseded_native_create_reasserts_the_current_winn
         WindowPresentationState::Visible,
         6,
         true,
-        GlobalFocusedWindow::Dock(source_binding),
+        GlobalFocusedWindow::Dock(source_binding.window()),
     );
     let provider = test_platform_provider(&mut fixture.engine);
     let expected_epoch = fixture.engine.version().epoch();
@@ -1684,7 +1684,7 @@ fn delayed_auto_focus_from_a_superseded_native_create_reasserts_the_current_winn
         WindowPresentationState::Visible,
         7,
         true,
-        GlobalFocusedWindow::Dock(request.binding()),
+        GlobalFocusedWindow::Dock(request.binding().window()),
     );
     let provider = test_platform_provider(&mut fixture.engine);
     let expected_epoch = fixture.engine.version().epoch();
@@ -1700,7 +1700,8 @@ fn delayed_auto_focus_from_a_superseded_native_create_reasserts_the_current_winn
     .expect("a later focus edge must not remain permanently quarantined");
     assert_eq!(
         fixture.engine.viewport_focus().winning_focus_target(),
-        Some(request.binding())
+        None,
+        "a physical focus edge cannot choose a pane or logical surface"
     );
 }
 
@@ -3628,9 +3629,17 @@ fn native_presentation_close_compiles_its_bound_recovery_obligation() {
         .expect("bound presentation recovery must compile");
 
     assert!(capture.requirements.is_empty());
+    let PreparedCloseOperation::Window {
+        bindings,
+        operations,
+    } = capture.prepared
+    else {
+        panic!("a physical close freezes one complete window scope");
+    };
+    assert_eq!(bindings, [request.binding()]);
     assert!(matches!(
-        capture.prepared,
-        PreparedCloseOperation::SurfaceRehome { transaction, .. }
+        operations.as_slice(),
+        [PreparedCloseOperation::SurfaceRehome { transaction, .. }]
             if transaction.target_surface() == recovery_host
     ));
     assert_eq!(

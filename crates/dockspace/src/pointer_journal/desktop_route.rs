@@ -117,9 +117,10 @@ impl DesktopRouteFact {
     pub const fn dock(route: DesktopDockRoute) -> Self {
         Self {
             position: Authority::Known(route.desktop_position()),
-            hovered: Authority::Known(DesktopHoveredWindow::Dock(route.binding())),
+            hovered: Authority::Known(DesktopHoveredWindow::Dock(route.binding().window())),
             dock_route: Some(Authority::Known(route)),
             derive_dock_route_in_core: false,
+            placement: None,
             work_area: None,
         }
     }
@@ -139,9 +140,25 @@ impl DesktopRouteFact {
     ) -> Self {
         Self {
             position,
-            hovered: Authority::Known(DesktopHoveredWindow::Dock(binding)),
+            hovered: Authority::Known(DesktopHoveredWindow::Dock(binding.window())),
             dock_route: None,
             derive_dock_route_in_core: true,
+            placement: Some(binding),
+            work_area: None,
+        }
+    }
+
+    /// Preserves physical window hover without preselecting a logical placement.
+    pub const fn window_from_desktop_position(
+        window: WindowBinding,
+        position: Authority<PhysicalPoint>,
+    ) -> Self {
+        Self {
+            position,
+            hovered: Authority::Known(DesktopHoveredWindow::Dock(window)),
+            dock_route: None,
+            derive_dock_route_in_core: true,
+            placement: None,
             work_area: None,
         }
     }
@@ -161,9 +178,10 @@ impl DesktopRouteFact {
     ) -> Self {
         Self {
             position,
-            hovered: Authority::Known(DesktopHoveredWindow::Dock(binding)),
+            hovered: Authority::Known(DesktopHoveredWindow::Dock(binding.window())),
             dock_route: Some(Authority::Unknown(reason)),
             derive_dock_route_in_core: false,
+            placement: Some(binding),
             work_area: None,
         }
     }
@@ -176,6 +194,7 @@ impl DesktopRouteFact {
             hovered: Authority::Known(DesktopHoveredWindow::Foreign),
             dock_route: None,
             derive_dock_route_in_core: false,
+            placement: None,
             work_area: None,
         }
     }
@@ -192,6 +211,7 @@ impl DesktopRouteFact {
             hovered: Authority::Known(DesktopHoveredWindow::None),
             dock_route: None,
             derive_dock_route_in_core: false,
+            placement: None,
             work_area: Some(work_area),
         }
     }
@@ -207,6 +227,7 @@ impl DesktopRouteFact {
             hovered: Authority::Unknown(reason),
             dock_route: None,
             derive_dock_route_in_core: false,
+            placement: None,
             work_area: None,
         }
     }
@@ -259,19 +280,31 @@ impl DesktopRouteFact {
         registry: &ViewportRegistry,
     ) -> DesktopRouteValidation {
         let (binding, submitted_route) = match self.hovered {
-            Authority::Known(DesktopHoveredWindow::Dock(binding)) => match self.dock_route {
-                Some(Authority::Known(route)) => (binding, Some(route)),
-                Some(Authority::Unknown(reason)) => {
-                    return DesktopRouteValidation::Unavailable(
-                        DesktopRouteUnavailable::CoordinateRouteUnknown {
-                            binding,
-                            position: self.position,
-                            reason,
-                        },
-                    );
+            Authority::Known(DesktopHoveredWindow::Dock(window)) => match self.dock_route {
+                Some(Authority::Known(route)) if route.binding().window() == window => {
+                    (route.binding(), Some(route))
                 }
-                None if self.derive_dock_route_in_core => (binding, None),
-                None => unreachable!("a known docking hover always carries coordinate authority"),
+                _ => {
+                    let Some(binding) = self.placement.filter(|binding| binding.window() == window)
+                    else {
+                        return DesktopRouteValidation::Unavailable(
+                            DesktopRouteUnavailable::WindowPlacementUnresolved {
+                                window,
+                                position: self.position,
+                            },
+                        );
+                    };
+                    if let Some(Authority::Unknown(reason)) = self.dock_route {
+                        return DesktopRouteValidation::Unavailable(
+                            DesktopRouteUnavailable::CoordinateRouteUnknown {
+                                binding,
+                                position: self.position,
+                                reason,
+                            },
+                        );
+                    }
+                    (binding, None)
+                }
             },
             Authority::Known(DesktopHoveredWindow::Foreign) => {
                 return DesktopRouteValidation::Known(ValidatedDesktopRoute::Foreign {

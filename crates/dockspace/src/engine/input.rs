@@ -601,6 +601,13 @@ pub enum EngineInput {
         /// Complete window incarnation, independent of its logical surface's successor.
         binding: ViewportBinding,
     },
+    /// Atomically replaces the complete surface placement roster of a real window.
+    SetNativeSurfacePlacements {
+        provider: PlatformObservationLease,
+        expected: WorkspaceVersion,
+        window: crate::viewport::WindowBinding,
+        placements: Vec<crate::coordinates::NativeSurfacePlacement>,
+    },
     /// Bind an existing adapter window to a current logical surface.
     RegisterViewport {
         /// Exact platform provider enrolling this native binding.
@@ -1087,7 +1094,8 @@ impl EngineInput {
     #[must_use]
     pub const fn priority(&self) -> InputPriority {
         match self {
-            Self::RegisterViewport { .. }
+            Self::SetNativeSurfacePlacements { .. }
+            | Self::RegisterViewport { .. }
             | Self::BootstrapChildViewport { .. }
             | Self::CreateNativeSurface { .. }
             | Self::AdvanceNativeSurfaceCreate { .. }

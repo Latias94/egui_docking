@@ -18,11 +18,11 @@ fn receiver_resolution_time_seals_current_record_without_starting_its_successor(
             event,
             NativeDesktopPointerLocation::new(
                 NativeDesktopPosition::Exact(position),
-                NativePointerHover::Dock(binding),
+                NativePointerHover::Dock(binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(binding),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
+            NativePointerOwner::Native(binding.window()),
         )
     };
     let before = session.engine.backend_ingress_committed_through();
@@ -45,11 +45,14 @@ fn receiver_resolution_time_seals_current_record_without_starting_its_successor(
     let mut budget = NativeInputBudget::new(&clock);
     let mut queries = 0;
     let mut pressed = session
-        .poll_native_host_frame(&mut budget, |query| {
-            queries += 1;
-            nanos.store(3_000_000, Ordering::SeqCst);
-            receiver_answer(query, receiver)
-        })
+        .poll_native_host_frame(
+            &mut budget,
+            with_window_hit(receiver, |query| {
+                queries += 1;
+                nanos.store(3_000_000, Ordering::SeqCst);
+                receiver_answer(query, receiver)
+            }),
+        )
         .expect("the current record must finish after its resolver crosses the deadline")
         .expect("a completed independent press can seal");
     assert!(queries > 0, "the real receiver resolver must consume time");
@@ -82,7 +85,10 @@ fn receiver_resolution_time_seals_current_record_without_starting_its_successor(
 
     let mut next_budget = NativeInputBudget::new(&clock);
     let mut released = session
-        .poll_native_host_frame(&mut next_budget, |query| receiver_answer(query, receiver))
+        .poll_native_host_frame(
+            &mut next_budget,
+            with_window_hit(receiver, |query| receiver_answer(query, receiver)),
+        )
         .expect("the exact release must continue in a new scheduling turn")
         .expect("the release fits the fresh budget");
     assert!(!released.native_input_pending());

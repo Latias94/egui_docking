@@ -579,7 +579,7 @@ impl BindingCleanupLifecycle {
         Ok(())
     }
 
-    /// Updates binding-scoped provider streams and returns coordinator work without executing it.
+    /// Updates physical-window streams without changing the exact cleanup/effect owner.
     pub(super) fn observe_snapshot(
         &mut self,
         provider: PlatformObservationLease,
@@ -588,13 +588,13 @@ impl BindingCleanupLifecycle {
         let observations = snapshot
             .window_observations()
             .iter()
-            .map(|window| (window.binding(), window))
+            .map(|window| (window.binding().window(), window))
             .collect::<BTreeMap<_, _>>();
         let close_observations = snapshot
             .close_observations()
             .iter()
             .copied()
-            .map(|observation| (observation.binding(), observation))
+            .map(|observation| (observation.binding().window(), observation))
             .collect::<BTreeMap<_, _>>();
         let bindings = self.entries.keys().copied().collect::<Vec<_>>();
         let mut directives = Vec::with_capacity(bindings.len());
@@ -603,7 +603,7 @@ impl BindingCleanupLifecycle {
             let destroyed = self.entries.get_mut(&binding).is_some_and(|retirement| {
                 retirement
                     .close_observations
-                    .observe(binding, close_observations.get(&binding).copied());
+                    .observe(binding, close_observations.get(&binding.window()).copied());
                 retirement.is_retired()
                     && retirement
                         .close_observations
@@ -618,7 +618,7 @@ impl BindingCleanupLifecycle {
                 }
                 continue;
             }
-            if let Some(observation) = observations.get(&binding)
+            if let Some(observation) = observations.get(&binding.window())
                 && let Some(retirement) = self.entries.get_mut(&binding)
             {
                 retirement.observed = true;

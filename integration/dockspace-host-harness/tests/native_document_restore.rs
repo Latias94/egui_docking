@@ -1214,7 +1214,8 @@ fn rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_l
         .report_managed_native_snapshot([(host.root, root_facts())], work_areas())
         .unwrap();
     idle(&mut host.session);
-    assert!(host.session.native_local_coordinates(host.root).is_none());
+    let fresh_coordinates = host.session.native_local_coordinates(host.root).unwrap();
+    assert_ne!(fresh_coordinates, coordinates);
     assert!(
         host.session
             .presented_surface(host.root.surface())
@@ -1222,8 +1223,10 @@ fn rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_l
     );
     let (output, _) = paint(&mut host.session, host.root);
     assert!(!output.matches_native_binding(external_root));
-    let fresh_coordinates = host.session.native_local_coordinates(host.root).unwrap();
-    assert_ne!(fresh_coordinates, coordinates);
+    assert_eq!(
+        host.session.native_local_coordinates(host.root),
+        Some(fresh_coordinates)
+    );
     assert!(
         host.session
             .presented_surface(host.root.surface())
@@ -2140,7 +2143,8 @@ fn restored_child_keeps_its_full_forest_through_preparation_and_first_live_barri
     assert!(idle(&mut host.session).native_admissions().is_empty());
     assert_eq!(host.session.version(), version);
     assert_eq!(assert_content(host.session.view()), ids);
-    assert!(host.session.native_local_coordinates(binding).is_none());
+    let prepared_coordinates = host.session.native_local_coordinates(binding).unwrap();
+    assert!(host.session.presented_surface(binding.surface()).is_none());
     let (dropped, _) = paint(&mut host.session, binding);
     let artifact = dropped.presentation_artifact();
     host.session
@@ -2154,7 +2158,11 @@ fn restored_child_keeps_its_full_forest_through_preparation_and_first_live_barri
             .iter()
             .any(|commit| commit.retires(artifact))
     );
-    assert!(host.session.native_local_coordinates(binding).is_none());
+    assert_eq!(
+        host.session.native_local_coordinates(binding),
+        Some(prepared_coordinates)
+    );
+    assert!(host.session.presented_surface(binding.surface()).is_none());
     assert_eq!(host.session.version(), version);
     assert_eq!(assert_content(host.session.view()), ids);
     host.present_first_live(binding, ids, 0);

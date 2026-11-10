@@ -80,25 +80,34 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         self.require_managed_input_provider(provider)?;
+        let window = binding.window();
         let current = self
             .viewport
             .registry()
-            .record(binding.surface())
-            .is_some_and(|record| record.binding() == binding);
+            .window(window)
+            .is_some_and(|record| record.is_routeable());
         let keyboard_focus = self
             .viewport_focus
             .focus_observation()
             .is_some_and(|observation| {
                 observation.focused()
-                    == &Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(binding))
+                    == &Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(window))
+            });
+        let source_matches = self
+            .interaction
+            .active_presentation_authority()
+            .is_some_and(|authority| {
+                matches!(
+                    authority.presented.endpoint(),
+                    crate::presentation_observation::HostPresentationEndpoint::Native(source)
+                        if source.window() == window
+                )
             });
         let owner = self.interaction.active_owner().filter(|owner| {
-            owner.lease() == provider.pointer_provider()
-                && (keyboard_focus || self.interaction.active_presentation_authority().is_some_and(|authority| {
-                    authority.presented.endpoint()
-                        == crate::presentation_observation::HostPresentationEndpoint::Native(binding)
-                }))
-        }).filter(|_| current);
+            current
+                && owner.lease() == provider.pointer_provider()
+                && (keyboard_focus || source_matches)
+        });
         let changed = if let Some(owner) = owner {
             self.update_gesture_magnetic_targeting(cause, owner, enabled, interaction_events)?
         } else {
@@ -496,14 +505,14 @@ impl DockEngine {
                         .ok_or(EngineError::ReductionCauseInvariant {
                             detail: "desktop primary press has no exact hovered source binding",
                         })?;
-                    PointerEventDeliveryOwner::Native(binding)
+                    PointerEventDeliveryOwner::Native(binding.window())
                 }
                 PointerProviderScope::NativeJoined(_) => {
                     let binding = match owner.lane() {
                     GestureLane::NativeLocal { binding, .. } => binding,
                     GestureLane::Desktop => desktop_delivery_route
                         .and_then(DesktopRouteValidation::dock_route)
-                        .map(|route| route.binding())
+                        .map(|route| route.binding().window())
                         .ok_or(EngineError::ReductionCauseInvariant {
                             detail: "joined desktop primary press has no native coordinate route",
                         })?,
@@ -3068,9 +3077,10 @@ impl DockEngine {
         {
             // Input-state observation cannot replace the current edge's independent
             // delivery/capture facts. Release keeps its validated pre-edge capture.
-            edge.delivery_owner() == Authority::Known(PointerEventDeliveryOwner::Native(binding))
+            edge.delivery_owner()
+                == Authority::Known(PointerEventDeliveryOwner::Native(binding.window()))
                 && matches!(self.interaction.active_journal_capture_authority(),
-                    Some(Authority::Known(PointerCaptureOwner::Native(current))) if current == binding)
+                    Some(Authority::Known(PointerCaptureOwner::Native(current))) if current == binding.window())
         } else {
             true
         }
@@ -4095,7 +4105,17 @@ impl DockEngine {
         } else {
             None
         };
-        let effective_edges = edge_view
+        let validated_receipts = candidates
+            .validate_against_presented_outputs(receipts, frozen_pointer_outputs)
+            .map_err(|source| EngineError::PointerReceiverReceipt { source })?;
+        let source_edge = edge_view
+            .as_ref()
+            .or_else(|| prepared.journal().edges().first());
+        let native_view = source_edge
+            .zip(validated_receipts.receipts().first())
+            .map(|(edge, receipt)| resolve_native_pointer_edge(self, edge, receipt))
+            .transpose()?;
+        let effective_edges = native_view
             .as_ref()
             .map_or(prepared.journal().edges(), std::slice::from_ref);
         let desktop_hover_routes = effective_edges
@@ -4118,9 +4138,6 @@ impl DockEngine {
                 validated_desktop_delivery_route(self, edge).map(|route| (edge.sequence(), route))
             })
             .collect::<BTreeMap<_, _>>();
-        let validated_receipts = candidates
-            .validate_against_presented_outputs(receipts, frozen_pointer_outputs)
-            .map_err(|source| EngineError::PointerReceiverReceipt { source })?;
         let snapshot = JournalPresentationSnapshot::from_validated_receipts(
             provider,
             frozen_pointer_presentations,
@@ -4188,7 +4205,7 @@ impl DockEngine {
             if let Some(projection) = handoff {
                 self.apply_native_handoff_projection(projection, edge)?;
             }
-            let effective = edge_view.as_ref().unwrap_or(edge);
+            let effective = native_view.as_ref().unwrap_or(edge);
             let mut interaction = self.reduce_journal_pointer_edge(
                 cause,
                 focus_causal,

@@ -84,7 +84,7 @@ fn retired_cleanup_observations_keep_window_generation_without_restoring_admissi
         .as_ref()
         .unwrap()
         .producer
-        .binding(binding.binding)
+        .window(binding.binding.window())
         .unwrap()
         .window_generation;
     assert!(before > 0);
@@ -105,9 +105,9 @@ fn retired_cleanup_observations_keep_window_generation_without_restoring_admissi
         .as_ref()
         .unwrap()
         .producer
-        .binding(binding.binding)
+        .window(binding.binding.window())
         .unwrap();
-    assert!(state.admission.is_none());
+    assert!(!state.current);
     assert!(state.cleanup_observation);
     assert_eq!(state.window_generation, before);
     for expected in [before + 1, before + 2] {
@@ -135,7 +135,7 @@ fn retired_cleanup_observations_keep_window_generation_without_restoring_admissi
             .as_ref()
             .unwrap()
             .producer
-            .binding(binding.binding)
+            .window(binding.binding.window())
             .unwrap();
         assert_eq!(state.window_generation, expected);
         assert!(state.cleanup_observation);
@@ -146,7 +146,7 @@ fn retired_cleanup_observations_keep_window_generation_without_restoring_admissi
                 .as_ref()
                 .unwrap()
                 .producer
-                .binding(binding.binding)
+                .window(binding.binding.window())
                 .unwrap()
                 .window_generation,
             expected
@@ -170,7 +170,7 @@ fn retired_cleanup_observations_keep_window_generation_without_restoring_admissi
         .as_ref()
         .unwrap()
         .producer
-        .binding(binding.binding)
+        .window(binding.binding.window())
         .unwrap();
     assert!(!state.cleanup_observation);
     assert_eq!(state.window_generation, 0);

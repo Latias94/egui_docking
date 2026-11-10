@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod window_close_tests;
+
 impl DockEngine {
     pub(super) fn reduce_queued_native_surface_create(
         &mut self,
@@ -595,11 +598,7 @@ impl DockEngine {
                 } if !destroyed_bindings.contains(&observation.binding()) => {
                     self.settle_cleared_native_surface_close(provider, *requested, *observation);
                 }
-                crate::viewport_registry::RegistryEvent::Destroyed { observation } => {
-                    let _ = self
-                        .viewport_focus
-                        .observe_destroyed_binding(observation.binding());
-                }
+                crate::viewport_registry::RegistryEvent::Destroyed { .. } => {}
                 crate::viewport_registry::RegistryEvent::Ready { .. }
                 | crate::viewport_registry::RegistryEvent::PresentationChanged { .. }
                 | crate::viewport_registry::RegistryEvent::FactsUnavailable { .. }
@@ -613,7 +612,6 @@ impl DockEngine {
             provider,
             snapshot.focus(),
             focus_causal,
-            self.platform_focus_restore_gate(),
             events,
         )?;
         let actions = transition.actions().to_vec();
@@ -834,7 +832,6 @@ impl DockEngine {
             provider,
             observation,
             focus_causal,
-            self.platform_focus_restore_gate(),
             events,
         )?;
         *application_base = self.version;
@@ -910,13 +907,12 @@ impl DockEngine {
         provider: PlatformObservationLease,
         observation: crate::viewport_focus::FocusObservationEnvelope,
         focus_causal: FocusCausalStamp,
-        restore_gate: PlatformFocusRestoreGate,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<FocusObservationTransition, EngineError> {
         let observed = self.focus_binding_snapshot(|record| record.can_observe_focus());
         let activatable = self.focus_binding_snapshot(|record| record.can_accept_activation());
-        let reportable = self.focus_fact_binding_snapshot(|record| record.can_report_focus_fact());
-        let isolated = self.focus_fact_binding_snapshot(|record| {
+        let reportable = self.focus_fact_window_snapshot(|record| record.can_report_focus_fact());
+        let isolated = self.focus_fact_window_snapshot(|record| {
             record.admission() == crate::viewport_registry::ViewportAdmission::Pending
                 || self.native_source_surface_is_held(record.binding().surface())
         });
@@ -925,7 +921,7 @@ impl DockEngine {
             observation.focused()
             && !reportable.contains(binding)
         {
-            if self.viewport.recognizes_retired_native_binding(*binding) {
+            if self.viewport.recognizes_retired_native_window(*binding) {
                 retired_binding = true;
             } else {
                 return Err(EngineError::GlobalFocusBindingUnavailable {
@@ -954,7 +950,6 @@ impl DockEngine {
             .publish_platform_focus_observation_with_retired_binding(
                 observation,
                 focus_causal,
-                restore_gate,
                 retired_binding,
                 |binding| observed.contains(&binding),
                 |binding| activatable.contains(&binding),
@@ -1061,28 +1056,6 @@ impl DockEngine {
         }
     }
 
-    fn platform_focus_restore_gate(&self) -> PlatformFocusRestoreGate {
-        match self.pointer_button_authority() {
-            crate::pointer_journal::AnyButtonDownAuthority::KnownDown => {
-                PlatformFocusRestoreGate::KnownDown
-            }
-            crate::pointer_journal::AnyButtonDownAuthority::KnownAllReleased
-                if matches!(
-                    self.pointer_provider().map(PointerInputLease::scope),
-                    Some(
-                        PointerProviderScope::DesktopGlobal | PointerProviderScope::NativeJoined(_)
-                    )
-                ) =>
-            {
-                PlatformFocusRestoreGate::KnownAllReleased
-            }
-            crate::pointer_journal::AnyButtonDownAuthority::KnownAllReleased
-            | crate::pointer_journal::AnyButtonDownAuthority::Unknown(_) => {
-                PlatformFocusRestoreGate::Unknown
-            }
-        }
-    }
-
     pub(super) fn reduce_viewport_activation(
         &mut self,
         expected: WorkspaceVersion,
@@ -1152,7 +1125,7 @@ impl DockEngine {
                                 observation.focused(),
                                 Authority::Known(
                                     crate::viewport_focus::GlobalFocusedWindow::Dock(binding)
-                                ) if *binding == request.target()
+                                ) if *binding == request.target().window()
                             )
                         });
                 if !target_is_focused
@@ -1587,14 +1560,14 @@ impl DockEngine {
             .collect()
     }
 
-    fn focus_fact_binding_snapshot(
+    fn focus_fact_window_snapshot(
         &self,
         include: impl Fn(crate::viewport_registry::ViewportRecord<'_>) -> bool,
-    ) -> BTreeSet<crate::viewport::ViewportBinding> {
+    ) -> BTreeSet<crate::viewport::WindowBinding> {
         self.viewport
             .registry()
             .records()
-            .filter_map(|(_, record)| include(record).then_some(record.binding()))
+            .filter_map(|(_, record)| include(record).then_some(record.binding().window()))
             .collect()
     }
 
@@ -1848,6 +1821,7 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<(), EngineError> {
         let mut active_barrier = recovery_batch.active_rosters.clone();
+        let mut settled_windows = BTreeSet::new();
         for action in actions {
             match action {
                 crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive {
@@ -1941,6 +1915,18 @@ impl DockEngine {
                             };
                             self.native_admission
                                 .reconcile_pending_creates(&self.viewport);
+                            let required = viewport
+                                .registry()
+                                .bindings_for_window(binding.window())
+                                .collect::<Vec<_>>();
+                            self.native_admission
+                                .prepare_window_roster(
+                                    &required,
+                                    self.presentation_authority.last_presentation_output_serial,
+                                )
+                                .map_err(|source| EngineError::ReductionCauseInvariant {
+                                    detail: source.detail(),
+                                })?;
                             self.native_admission
                                 .register_native_create(
                                     *saga,
@@ -1966,9 +1952,17 @@ impl DockEngine {
                         }
                     }
                 }
-                crate::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. } => {
-                    let binding = observation.binding();
+                crate::frame::ViewportLifecycleAction::SurfaceDestroyed {
+                    binding,
+                    observation,
+                    ..
+                } => {
+                    let binding = *binding;
                     self.discard_native_first_live_barrier(binding);
+                    if settled_windows.contains(&binding.window()) {
+                        continue;
+                    }
+                    let window_bindings = self.native_window_recovery_bindings(binding.window());
                     if self.reduce_planned_destroyed_surface(
                         input,
                         provider,
@@ -1979,7 +1973,23 @@ impl DockEngine {
                         events,
                         interaction_events,
                     )? {
-                        active_barrier.remove(&binding.surface());
+                        settled_windows.insert(binding.window());
+                        for binding in &window_bindings {
+                            active_barrier.remove(&binding.surface());
+                        }
+                        continue;
+                    }
+                    if self.reduce_destroyed_window_recovery(
+                        input,
+                        binding.window(),
+                        &active_barrier,
+                        &recovery_batch.targets,
+                        events,
+                    )? {
+                        settled_windows.insert(binding.window());
+                        for binding in &window_bindings {
+                            active_barrier.remove(&binding.surface());
+                        }
                         continue;
                     }
                     let mut context = DestroyedSurfaceContext {
@@ -1991,7 +2001,7 @@ impl DockEngine {
                     self.reduce_destroyed_surface(
                         input,
                         focus_causal,
-                        *observation,
+                        binding,
                         activations,
                         &mut context,
                     )?;
@@ -2021,7 +2031,7 @@ impl DockEngine {
                                 observation.focused(),
                                 Authority::Known(
                                     crate::viewport_focus::GlobalFocusedWindow::Dock(binding)
-                                ) if *binding == *replacement_binding
+                                ) if *binding == replacement_binding.window()
                             )
                         });
                     let focus_is_already_pending = self
@@ -2039,6 +2049,19 @@ impl DockEngine {
                         });
                     self.native_admission
                         .reconcile_pending_creates(&self.viewport);
+                    let required = self
+                        .viewport
+                        .registry()
+                        .bindings_for_window(replacement_binding.window())
+                        .collect::<Vec<_>>();
+                    self.native_admission
+                        .prepare_window_roster(
+                            &required,
+                            self.presentation_authority.last_presentation_output_serial,
+                        )
+                        .map_err(|source| EngineError::ReductionCauseInvariant {
+                            detail: source.detail(),
+                        })?;
                     let ready_basis = self.viewport.native_ready_basis(*replacement_binding).ok_or(
                         EngineError::ReductionCauseInvariant { detail: "replacement readiness action lost its current preparation proof" }
                     )?;
@@ -2071,6 +2094,19 @@ impl DockEngine {
                     source_binding: destroyed_binding,
                     recovery_obligation,
                 } => {
+                    if settled_windows.contains(&destroyed_binding.window()) {
+                        continue;
+                    }
+                    if self.reduce_destroyed_window_recovery(
+                        input,
+                        destroyed_binding.window(),
+                        &active_barrier,
+                        &recovery_batch.targets,
+                        events,
+                    )? {
+                        settled_windows.insert(destroyed_binding.window());
+                        continue;
+                    }
                     // The frame coordinator owns a replacement while its
                     // pre-admission cleanup is unresolved. A queued retry
                     // must not race that cleanup and issue another close for
@@ -2139,34 +2175,24 @@ impl DockEngine {
     ) -> Result<SurfaceRecoveryBatchContext, EngineError> {
         let active_rosters = self.freeze_destroyed_surface_rosters(input, actions)?;
         let mut targets = BTreeMap::new();
-        for action in actions {
-            let target_surface = match action {
-                crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { .. }
-                | crate::frame::ViewportLifecycleAction::NativeSurfaceReady { .. }
-                | crate::frame::ViewportLifecycleAction::NativeSurfaceLost { .. } => None,
-                crate::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. } => self
-                    .bound_surface_recoveries
-                    .get(&observation.binding().surface())
-                    .filter(|bound| bound.binding == observation.binding())
-                    .map(|bound| bound.obligation.target().host_surface()),
-                crate::frame::ViewportLifecycleAction::RetryRecovery {
-                    source_binding: destroyed_binding,
-                    recovery_obligation,
-                } => self
-                    .bound_surface_recoveries
-                    .get(&destroyed_binding.surface())
-                    .filter(|bound| {
-                        bound.binding == *destroyed_binding
-                            && bound.obligation.id() == *recovery_obligation
-                    })
-                    .map(|bound| bound.obligation.target().host_surface()),
-            };
-            let Some(target_surface) = target_surface else {
-                continue;
-            };
-            if targets.contains_key(&target_surface) {
-                continue;
-            }
+        let windows = actions
+            .iter()
+            .filter_map(|action| match action {
+                crate::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. } => {
+                    Some(observation.binding().window())
+                }
+                crate::frame::ViewportLifecycleAction::RetryRecovery { source_binding, .. } => {
+                    Some(source_binding.window())
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        for bound in self
+            .bound_surface_recoveries
+            .values()
+            .filter(|bound| windows.contains(&bound.binding.window()))
+        {
+            let target_surface = bound.obligation.target().host_surface();
             if let Some(facts) = self.freeze_surface_recovery_target(target_surface) {
                 targets.insert(target_surface, facts);
             }
@@ -2236,7 +2262,7 @@ impl DockEngine {
         Ok(())
     }
 
-    fn invalidate_surface_coordinate_scene(
+    pub(super) fn invalidate_surface_coordinate_scene(
         &mut self,
         surface: crate::ids::SurfaceId,
     ) -> Result<SurfaceSceneStamp, SceneBuildError> {
@@ -2264,25 +2290,47 @@ impl DockEngine {
         actions: &[crate::frame::ViewportLifecycleAction],
     ) -> Result<BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>, EngineError> {
         let mut rosters = BTreeMap::new();
+        let mut frozen_windows = BTreeSet::new();
+        let coordinates = actions
+            .iter()
+            .filter_map(|action| match action {
+                crate::frame::ViewportLifecycleAction::SurfaceDestroyed {
+                    binding,
+                    source_coordinates,
+                    ..
+                } => Some((*binding, *source_coordinates)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
         for action in actions {
-            let crate::frame::ViewportLifecycleAction::SurfaceDestroyed {
-                observation,
-                source_coordinates,
-                ..
-            } = action
+            let crate::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. } =
+                action
             else {
                 continue;
             };
             let binding = observation.binding();
-            let surface = binding.surface();
-            if self.workspace.surface(surface).is_none() {
+            if !frozen_windows.insert(binding.window()) {
                 continue;
             }
-            let mut roster = self
-                .capture_surface_roster_with_coordinates(surface, *source_coordinates)
-                .map_err(|source| EngineError::SurfaceRoster { input, source })?;
-            let _ = self.freeze_surface_roster_minimums(&mut roster);
-            rosters.insert(surface, roster);
+            let window_bindings = self.native_window_recovery_bindings(binding.window());
+            for binding in window_bindings {
+                let surface = binding.surface();
+                if self.workspace.surface(surface).is_none() {
+                    continue;
+                }
+                let mut roster = self
+                    .capture_surface_roster_with_coordinates(
+                        surface,
+                        coordinates.get(&binding).copied().flatten().or_else(|| {
+                            self.viewport.registry().placement_record(binding).and_then(
+                                crate::viewport_registry::ViewportRecord::recovery_coordinates,
+                            )
+                        }),
+                    )
+                    .map_err(|source| EngineError::SurfaceRoster { input, source })?;
+                let _ = self.freeze_surface_roster_minimums(&mut roster);
+                rosters.insert(surface, roster);
+            }
         }
         Ok(rosters)
     }
@@ -2324,20 +2372,28 @@ impl DockEngine {
             // Minimum measurements belong to the last local scene, independently
             // of the historical desktop projection used to place recovered roots.
             let source = coordinates.content();
-            let local = match self.viewport.viewport(roster.surface()) {
+            let (local, destroyed) = match self.viewport.viewport(roster.surface()) {
                 Some(record) if record.binding() == source.binding() => {
                     let Some(local) = record.coordinates() else {
                         return false;
                     };
-                    local
+                    (
+                        local,
+                        record.lifecycle()
+                            == crate::viewport_registry::ViewportLifecycle::Destroyed,
+                    )
                 }
                 Some(_) => return false,
-                None => source,
+                None => (source, false),
             };
             if !matches!(
                 ready.coordinate_capture(),
                 SurfaceCoordinateCapture::NativeReady { coordinates: captured, .. }
                     if captured == local
+                        // Destruction revokes the placement's live generation without
+                        // changing the geometry which measured its recovery minimums.
+                        || destroyed
+                            && captured.with_generation(local.coordinate_generation()) == local
             ) {
                 return false;
             }
@@ -2392,7 +2448,23 @@ impl DockEngine {
             return Ok(false);
         };
         let changed = commit.candidate != *self.workspace;
-        let publication = match self.stage_workspace_publication(commit.candidate, &self.policy) {
+        let authority = match &prepared {
+            PreparedCloseOperation::Window { bindings, .. }
+                if bindings
+                    .iter()
+                    .all(|binding| commit.candidate.surface(binding.surface()).is_none()) =>
+            {
+                WorkspacePublicationAuthority::WindowRecoveryCommit {
+                    window: binding.window(),
+                }
+            }
+            _ => WorkspacePublicationAuthority::Ordinary,
+        };
+        let publication = match self.stage_workspace_publication_with_authority(
+            commit.candidate,
+            &self.policy,
+            authority,
+        ) {
             Ok(publication) => publication,
             Err(source) if source.is_expected_rejection() => return Ok(false),
             Err(source) => {
@@ -2437,8 +2509,14 @@ impl DockEngine {
         for kind in commit.events {
             events.push(WorkspaceEvent::new(input, self.version, kind));
         }
-        self.complete_destroyed_surface(input, binding)?;
-        self.surface_recovery.complete_pending(binding.surface());
+        let bindings = match &prepared {
+            PreparedCloseOperation::Window { bindings, .. } => bindings.as_slice(),
+            _ => std::slice::from_ref(&binding),
+        };
+        for &binding in bindings {
+            self.complete_destroyed_surface(input, binding)?;
+            self.surface_recovery.complete_pending(binding.surface());
+        }
 
         if let Some(surface) = commit.focus_target
             && let Some(target) = self
@@ -2478,6 +2556,120 @@ impl DockEngine {
     ) -> Result<Option<PreparedSurfaceCloseCommit>, EngineError> {
         match prepared {
             PreparedCloseOperation::Content(_) => Ok(None),
+            PreparedCloseOperation::Window {
+                bindings,
+                operations,
+            } => {
+                if !self.native_close_roster_is_current(bindings)
+                    || operations.len() != bindings.len()
+                {
+                    return Ok(None);
+                }
+                let mut content = Vec::new();
+                let mut recovery = Vec::new();
+                let mut focus = None;
+                for (binding, operation) in bindings.iter().zip(operations) {
+                    let roster = match operation {
+                        PreparedCloseOperation::SurfaceRetain { roster, .. } => roster,
+                        PreparedCloseOperation::SurfaceContent {
+                            roster, prepared, ..
+                        } => {
+                            content.push(prepared);
+                            roster
+                        }
+                        PreparedCloseOperation::SurfaceRehome {
+                            roster,
+                            transaction,
+                            recovery_focus,
+                        } => {
+                            recovery.push(transaction);
+                            focus.get_or_insert((transaction.target_surface(), *recovery_focus));
+                            roster
+                        }
+                        PreparedCloseOperation::Window { .. }
+                        | PreparedCloseOperation::Content(_) => return Ok(None),
+                    };
+                    if roster.surface() != binding.surface()
+                        || !roster.matches_workspace(&self.workspace)
+                    {
+                        return Ok(None);
+                    }
+                }
+                if !content.is_empty() && content.len() != operations.len()
+                    || !recovery.is_empty() && recovery.len() != operations.len()
+                {
+                    return Ok(None);
+                }
+                let (candidate, events) = if !content.is_empty() {
+                    match crate::operation::prepare_surface_content_closes(
+                        &self.workspace,
+                        &self.policy,
+                        &content,
+                    ) {
+                        Ok((candidate, outcomes)) => (
+                            candidate,
+                            outcomes
+                                .into_iter()
+                                .map(WorkspaceEventKind::CloseCommitted)
+                                .collect(),
+                        ),
+                        Err(source) if source.is_expected_rejection() => return Ok(None),
+                        Err(source) => return Err(EngineError::Command { input, source }),
+                    }
+                } else if !recovery.is_empty() {
+                    match crate::operation::prepare_surface_recovery_transactions(
+                        &self.workspace,
+                        &recovery,
+                    ) {
+                        Ok(prepared) => {
+                            let (candidate, report) = prepared.into_parts();
+                            (
+                                candidate,
+                                report
+                                    .into_outcomes()
+                                    .into_iter()
+                                    .map(WorkspaceEventKind::CommandCommitted)
+                                    .collect(),
+                            )
+                        }
+                        Err(source) if source.is_expected_rejection() => return Ok(None),
+                        Err(source) => return Err(EngineError::Command { input, source }),
+                    }
+                } else {
+                    (self.clone_workspace_candidate(), Vec::new())
+                };
+                let excluded = bindings
+                    .iter()
+                    .map(|binding| binding.surface())
+                    .collect::<BTreeSet<_>>();
+                if (!content.is_empty() || !recovery.is_empty())
+                    && excluded
+                        .iter()
+                        .any(|surface| candidate.surface(*surface).is_some())
+                    || self
+                        .first_workspace_publication_mismatch_excluding(
+                            &candidate,
+                            Some(action_barrier),
+                            &excluded,
+                        )
+                        .is_some()
+                {
+                    return Ok(None);
+                }
+                let (focus_target, recovery_focus) = focus.map_or(
+                    (
+                        None,
+                        PaneFocusDisposition::from_record(PanelFocusRecord::None),
+                    ),
+                    |(target, pane)| (Some(target), pane),
+                );
+                Ok(Some(PreparedSurfaceCloseCommit {
+                    candidate,
+                    events,
+                    focus_target,
+                    recovery_focus,
+                }))
+            }
             PreparedCloseOperation::SurfaceRetain {
                 roster,
                 recovery_focus,
@@ -2574,15 +2766,234 @@ impl DockEngine {
         }
     }
 
+    fn native_window_recovery_bindings(
+        &self,
+        window: crate::viewport::WindowBinding,
+    ) -> Vec<ViewportBinding> {
+        self.viewport
+            .registry()
+            .bindings_for_window(window)
+            .chain(
+                self.bound_surface_recoveries
+                    .values()
+                    .filter(|bound| {
+                        bound.binding.window() == window
+                            && self
+                                .surface_recovery
+                                .pending(bound.binding.surface())
+                                .is_some()
+                    })
+                    .map(|bound| bound.binding),
+            )
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// A physical destruction either recovers every hosted child surface or
+    /// leaves every source roster pending. No sibling graph is published alone.
+    fn reduce_destroyed_window_recovery(
+        &mut self,
+        input: InputSequence,
+        window: crate::viewport::WindowBinding,
+        action_barrier: &BTreeMap<SurfaceId, SurfaceRosterDisposition>,
+        targets: &BTreeMap<SurfaceId, SurfaceRecoveryHostFacts>,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<bool, EngineError> {
+        let bindings = self.native_window_recovery_bindings(window);
+        if bindings.len() < 2 {
+            return Ok(false);
+        }
+        let external_root = self
+            .viewport
+            .registry()
+            .window(window)
+            .is_some_and(|record| record.role() == ViewportRole::Root);
+        if external_root {
+            for binding in bindings {
+                self.complete_destroyed_surface(input, binding)?;
+            }
+            return Ok(true);
+        }
+        if bindings.iter().any(|binding| {
+            self.bound_surface_recoveries
+                .get(&binding.surface())
+                .is_some_and(|bound| {
+                    self.viewport
+                        .recovery_retry_is_suppressed(*binding, bound.obligation.id())
+                })
+        }) {
+            return Ok(true);
+        }
+        let mut sources = Vec::new();
+        let mut transactions = Vec::new();
+        let mut blocked = None;
+        for &binding in &bindings {
+            let surface = binding.surface();
+            if self.workspace.surface(surface).is_none() {
+                continue;
+            }
+            let mut roster = action_barrier
+                .get(&surface)
+                .or_else(|| self.surface_recovery.pending(surface))
+                .cloned()
+                .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
+            let _ = self.freeze_surface_roster_minimums(&mut roster);
+            let obligation = self
+                .bound_surface_recoveries
+                .get(&surface)
+                .filter(|bound| bound.binding == binding)
+                .map(|bound| bound.obligation.clone());
+            let transaction = obligation.as_ref().and_then(|obligation| {
+                if obligation.authority_domain() != self.authority_domain
+                    || Self::recovery_policy_request(
+                        &self.workspace,
+                        surface,
+                        obligation.request().host_surface(),
+                    )
+                    .as_ref()
+                        != Ok(obligation.request())
+                {
+                    blocked.get_or_insert(SurfaceRecoveryBlockedReason::ObligationMismatch);
+                    return None;
+                }
+                let host = obligation.target().host_surface();
+                let Some(facts) = targets.get(&host) else {
+                    blocked.get_or_insert(SurfaceRecoveryBlockedReason::HostAuthorityUnavailable {
+                        surface: host,
+                    });
+                    return None;
+                };
+                match roster.compile_recovery_transaction(
+                    &self.workspace,
+                    obligation.target(),
+                    *facts,
+                ) {
+                    Ok(transaction) => Some(transaction),
+                    Err(source) => {
+                        blocked.get_or_insert(SurfaceRecoveryBlockedReason::Compile(source));
+                        None
+                    }
+                }
+            });
+            if obligation.is_none() {
+                blocked.get_or_insert(SurfaceRecoveryBlockedReason::ObligationMismatch);
+            }
+            if let Some(transaction) = transaction {
+                transactions.push(transaction);
+            }
+            sources.push((binding, roster, obligation));
+        }
+        if blocked.is_none() {
+            let programs = transactions.iter().collect::<Vec<_>>();
+            match crate::operation::prepare_surface_recovery_transactions(
+                &self.workspace,
+                &programs,
+            ) {
+                Ok(prepared) => {
+                    let (candidate, report) = prepared.into_parts();
+                    let excluded = bindings
+                        .iter()
+                        .map(|binding| binding.surface())
+                        .collect::<BTreeSet<_>>();
+                    if excluded
+                        .iter()
+                        .any(|surface| candidate.surface(*surface).is_some())
+                        || self
+                            .first_workspace_publication_mismatch_excluding(
+                                &candidate,
+                                Some(action_barrier),
+                                &excluded,
+                            )
+                            .is_some()
+                    {
+                        blocked = Some(SurfaceRecoveryBlockedReason::ProgramRejected);
+                    } else {
+                        match self.stage_workspace_publication_with_authority(
+                            candidate,
+                            &self.policy,
+                            WorkspacePublicationAuthority::WindowRecoveryCommit { window },
+                        ) {
+                            Ok(publication) => {
+                                self.publish_workspace(publication);
+                                self.reconcile_viewport_focus_authority();
+                                if report.changed() {
+                                    self.advance_revision(input)?;
+                                }
+                                events.extend(report.into_outcomes().into_iter().map(|outcome| {
+                                    WorkspaceEvent::new(
+                                        input,
+                                        self.version,
+                                        WorkspaceEventKind::CommandCommitted(outcome),
+                                    )
+                                }));
+                                for binding in bindings {
+                                    if self.viewport.recovery_pending(binding.surface()).is_some() {
+                                        self.viewport
+                                            .complete_pending_recovery(binding.surface())
+                                            .map_err(|source| EngineError::Viewport {
+                                                input,
+                                                source,
+                                            })?;
+                                    } else if self
+                                        .viewport
+                                        .registry()
+                                        .placement_record(binding)
+                                        .is_some()
+                                    {
+                                        self.complete_destroyed_surface(input, binding)?;
+                                    }
+                                    self.surface_recovery.complete_pending(binding.surface());
+                                }
+                                return Ok(true);
+                            }
+                            Err(source) if source.is_expected_rejection() => {
+                                blocked = Some(SurfaceRecoveryBlockedReason::ProgramRejected)
+                            }
+                            Err(source) => {
+                                return Err(EngineError::Command {
+                                    input,
+                                    source: TransactionError::Command { index: 0, source },
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(source) if source.is_expected_rejection() => {
+                    blocked = Some(SurfaceRecoveryBlockedReason::ProgramRejected)
+                }
+                Err(source) => return Err(EngineError::Command { input, source }),
+            }
+        }
+        let reason = blocked.unwrap_or(SurfaceRecoveryBlockedReason::ProgramRejected);
+        for (binding, roster, obligation) in sources {
+            if let Some(obligation) = obligation {
+                self.viewport
+                    .defer_destroyed_surface_recovery(binding, obligation.id())
+                    .map_err(|source| EngineError::Viewport { input, source })?;
+            }
+            if !self.surface_recovery.defer(roster.clone())
+                && !self.surface_recovery.update_pending_roster(roster)
+            {
+                return Err(EngineError::ConflictingSurfaceRecovery {
+                    input,
+                    surface: binding.surface(),
+                });
+            }
+            self.surface_recovery
+                .mark_blocked(binding.surface(), reason.clone());
+        }
+        Ok(true)
+    }
+
     fn reduce_destroyed_surface(
         &mut self,
         input: InputSequence,
         _focus_causal: FocusCausalStamp,
-        observation: crate::platform::WindowCloseObservation,
+        binding: crate::viewport::ViewportBinding,
         _activations: &mut Vec<ActivationStart>,
         context: &mut DestroyedSurfaceContext<'_>,
     ) -> Result<(), EngineError> {
-        let binding = observation.binding();
         let surface = binding.surface();
         if self.workspace.surface(surface).is_none() {
             self.complete_destroyed_surface(input, binding)?;

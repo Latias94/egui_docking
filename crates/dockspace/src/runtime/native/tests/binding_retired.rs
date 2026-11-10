@@ -56,7 +56,7 @@ fn input(
             NativePointerHover::Unknown,
             None,
         ),
-        NativePointerOwner::Native(binding),
+        NativePointerOwner::Native(binding.window()),
         NativePointerOwner::Unknown,
     )
 }

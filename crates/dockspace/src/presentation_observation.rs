@@ -953,7 +953,7 @@ enum PresentationStreamRetirementCause {
 }
 
 /// Exact stream reuse or endpoint succession observed before encoding.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PresentationStreamAdmission {
     Existing(HostPresentationStreamId),
     New,

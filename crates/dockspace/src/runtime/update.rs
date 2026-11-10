@@ -34,7 +34,7 @@ pub struct DockspaceUpdate {
     native_input_pending: bool,
     submitted_presentation: SubmittedPresentationObservation,
     painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
-    encoding_surfaces: BTreeMap<SurfaceId, PresentationStreamAdmission>,
+    encoding_surfaces: BTreeMap<SurfaceId, Option<PresentationStreamAdmission>>,
     encoding_started: Cell<bool>,
     encoding_checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
     encoding_pass: u64,

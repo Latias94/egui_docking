@@ -472,11 +472,11 @@ fn a_desktop_pointer_cannot_borrow_local_geometry_without_a_real_desktop_origin(
                     event,
                     NativeDesktopPointerLocation::new(
                         NativeDesktopPosition::Exact(point),
-                        NativePointerHover::Dock(binding),
+                        NativePointerHover::Dock(binding.window()),
                         None,
                     ),
-                    NativePointerOwner::Native(binding),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
+                    NativePointerOwner::Native(binding.window()),
                 )
             }),
         )

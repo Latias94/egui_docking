@@ -2334,7 +2334,8 @@ impl CoreHostFrame {
         self.candidate.last_input = sequence;
         let refresh_presented_interaction_authority = matches!(
             &input,
-            EngineInput::RegisterViewport { .. }
+            EngineInput::SetNativeSurfacePlacements { .. }
+                | EngineInput::RegisterViewport { .. }
                 | EngineInput::BootstrapChildViewport { .. }
                 | EngineInput::CreateNativeSurface { .. }
                 | EngineInput::AdvanceNativeSurfaceCreate { .. }

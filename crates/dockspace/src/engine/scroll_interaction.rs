@@ -146,7 +146,7 @@ struct ActiveScrollSession {
     id: ScrollSessionId,
     // Preserve the initial native delivery through semantic termination. The
     // receiver or its geometry may already be unavailable when the window dies.
-    native_delivery_binding: Option<ViewportBinding>,
+    native_delivery_binding: Option<crate::viewport::WindowBinding>,
     disposition: ActiveScrollDisposition,
 }
 
@@ -429,7 +429,7 @@ impl DockEngine {
             .active
             .iter()
             .filter(|(key, session)| {
-                session.native_delivery_binding == Some(binding)
+                session.native_delivery_binding == Some(binding.window())
                     || retired_streams.contains(&key.stream)
             })
             .map(|(key, _)| *key)
@@ -1084,7 +1084,7 @@ impl DockEngine {
                         "desktop scroll presentation has no native binding",
                     ));
                 };
-                PointerEventDeliveryOwner::Native(binding)
+                PointerEventDeliveryOwner::Native(binding.window())
             }
         };
         match edge.delivery_owner() {
@@ -1280,9 +1280,7 @@ impl DockEngine {
             } => {
                 let binding = coordinates.binding();
                 let coordinate_generation = coordinates.coordinate_generation();
-                if owner.endpoint.binding() != Some(binding)
-                    || owner.endpoint.coordinate_generation() != coordinate_generation
-                {
+                if owner.endpoint.binding().map(|binding| binding.window()) != Some(binding) {
                     return Err(scroll_invariant(
                         cause,
                         "physical scroll delta differs from the locked delivery endpoint",
@@ -1290,13 +1288,21 @@ impl DockEngine {
                 }
                 let coordinates = self
                     .viewport
-                    .viewport(binding.surface())
+                    .registry()
+                    .placement_record(owner.endpoint.binding().ok_or_else(|| {
+                        scroll_invariant(cause, "physical scroll owner lost its placement")
+                    })?)
                     .filter(|record| {
-                        record.binding() == binding
-                            && record.coordinate_generation() == coordinate_generation
+                        record.binding().window() == binding
+                            && record.coordinate_generation()
+                                == owner.endpoint.coordinate_generation()
                             && record.has_coordinate_authority()
                     })
                     .and_then(|record| record.coordinates())
+                    .filter(|coordinates| {
+                        coordinates.window_coordinates().coordinate_generation()
+                            == coordinate_generation
+                    })
                     .ok_or_else(|| {
                         scroll_invariant(
                             cause,
@@ -1529,7 +1535,7 @@ const fn scroll_session_receiver(session: ActiveScrollSession) -> Option<Present
     }
 }
 
-fn native_scroll_delivery_binding(edge: &PointerEdge) -> Option<ViewportBinding> {
+fn native_scroll_delivery_binding(edge: &PointerEdge) -> Option<crate::viewport::WindowBinding> {
     match edge.delivery_owner() {
         Authority::Known(PointerEventDeliveryOwner::Native(binding)) => Some(binding),
         Authority::Known(_) | Authority::Unknown(_) => None,

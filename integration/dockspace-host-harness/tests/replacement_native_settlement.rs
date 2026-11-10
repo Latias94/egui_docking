@@ -236,9 +236,13 @@ fn layout_reset_preserves_native_snapshot_settlement_and_retry_watermarks() {
         }]
     );
     assert_eq!(report.native_bindings(), &[successor]);
-    assert!(session.native_local_coordinates(successor).is_none());
+    let coordinates = session.native_local_coordinates(successor).unwrap();
+    assert!(session.presented_surface(SURFACE).is_none());
     present_successor(&mut session);
-    assert!(session.native_local_coordinates(successor).is_some());
+    assert_eq!(
+        session.native_local_coordinates(successor),
+        Some(coordinates)
+    );
     assert!(session.native_local_coordinates(old).is_none());
     assert_eq!(session.native_input_recorded_count(), recorded + 2);
     assert!(!session.has_pending_native_input());
@@ -376,7 +380,7 @@ mod document_restore {
             .report_managed_native_snapshot([(old, local_facts())], NativeWorkAreaRoster::Unknown)
             .unwrap();
         session
-            .report_native_global_focus(NativeGlobalFocus::Dock(old))
+            .report_native_global_focus(NativeGlobalFocus::Dock(old.window()))
             .unwrap();
         let recorded = session.native_input_recorded_count();
         assert_eq!(recorded, recorded_before + 2);
@@ -447,7 +451,7 @@ mod document_restore {
 
         // A callback captured before replacement cannot lend authority to its successor.
         let error = session
-            .report_native_global_focus(NativeGlobalFocus::Dock(old))
+            .report_native_global_focus(NativeGlobalFocus::Dock(old.window()))
             .unwrap_err();
         assert_eq!(error.native_kind(), Some(NativeHostErrorKind::StaleBinding));
         session
@@ -468,7 +472,7 @@ mod document_restore {
             )
             .unwrap();
         session
-            .report_native_global_focus(NativeGlobalFocus::Dock(successor))
+            .report_native_global_focus(NativeGlobalFocus::Dock(successor.window()))
             .unwrap();
         let report = commit_deferred(native_frame(&mut session, 2));
         assert_eq!(
@@ -482,9 +486,13 @@ mod document_restore {
         );
         assert_eq!(report.native_bindings(), &[successor]);
         assert!(session.native_binding_can_report_focus(successor));
-        assert!(session.native_local_coordinates(successor).is_none());
+        let coordinates = session.native_local_coordinates(successor).unwrap();
+        assert!(session.presented_surface(SURFACE).is_none());
         present_successor(&mut session);
-        assert!(session.native_local_coordinates(successor).is_some());
+        assert_eq!(
+            session.native_local_coordinates(successor),
+            Some(coordinates)
+        );
         assert!(!session.native_binding_can_report_focus(old));
         assert!(session.native_local_coordinates(old).is_none());
         assert_eq!(session.native_input_recorded_count(), recorded + 3);

@@ -271,12 +271,32 @@ impl SurfaceCloseRequest {
 /// incarnation. The independent inventory generation records when core first
 /// received that observation, preventing a pre-effect sample delivered late
 /// from satisfying an emission barrier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub struct NativeCloseEdge {
     domain: EngineAuthorityDomainId,
     binding: ViewportBinding,
     observed_at: CloseObservationGeneration,
     received_at: InventoryGeneration,
+}
+
+impl PartialEq for NativeCloseEdge {
+    fn eq(&self, other: &Self) -> bool {
+        self.domain == other.domain
+            && self.binding.window() == other.binding.window()
+            && self.observed_at == other.observed_at
+            && self.received_at == other.received_at
+    }
+}
+
+impl Eq for NativeCloseEdge {}
+
+impl std::hash::Hash for NativeCloseEdge {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.domain.hash(state);
+        self.binding.window().hash(state);
+        self.observed_at.hash(state);
+        self.received_at.hash(state);
+    }
 }
 
 impl NativeCloseEdge {
@@ -300,7 +320,8 @@ impl NativeCloseEdge {
         self.domain
     }
 
-    /// Returns the exact native-window incarnation which requested closure.
+    /// Returns the observation carrier for the exact window which requested closure.
+    /// Its surface label does not restrict the window's captured close scope.
     #[must_use]
     pub const fn binding(self) -> ViewportBinding {
         self.binding
@@ -486,6 +507,7 @@ pub struct ClosePlan {
     authority: CloseAuthority,
     target: ClosePlanTarget,
     items: Arc<[ClosePlanItem]>,
+    native_roster: Option<Arc<[ViewportBinding]>>,
     destruction: CloseDestructionState,
     cancellation: CloseCancellationState,
     phase: ClosePlanPhase,
@@ -514,6 +536,15 @@ impl ClosePlan {
     #[must_use]
     pub fn items(&self) -> &[ClosePlanItem] {
         &self.items
+    }
+
+    /// Returns every exact surface placement covered by one native window close.
+    ///
+    /// Entries are in stable surface order. Item/root content closes have no
+    /// native roster; their target and decision requirements remain sufficient.
+    #[must_use]
+    pub fn native_bindings(&self) -> &[ViewportBinding] {
+        self.native_roster.as_deref().unwrap_or(&[])
     }
 
     /// Returns the independently settleable native destruction obligation.

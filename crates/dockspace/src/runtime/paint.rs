@@ -1334,37 +1334,30 @@ impl DockspaceHostFrame<'_> {
         surface: SurfaceId,
     ) -> Result<SurfaceWork<'_>, DockspaceRuntimeError> {
         self.complete_pointer_input()?;
-        if self
-            .frame
-            .view()
-            .scene()
-            .surface(surface)
-            .and_then(SurfaceScene::ready)
-            .is_none()
-        {
-            // An unmeasured scene still needs a free output slot. Checking it
-            // now lets a native host keep input buffered across a resize.
-            let (observations, _) = self.frame.output_admission_facts(surface);
-            let deferred = if self.encoding_surfaces.contains_key(&surface)
-                || self.session.presentation.output_slot_available(
-                    &self.submitted_presentation,
-                    observations,
-                    self.encoding_surfaces.len(),
-                ) {
-                SurfaceWorkDeferred::Unmeasured
-            } else {
-                SurfaceWorkDeferred::OutputCapacity
-            };
-            return Ok(SurfaceWork::Deferred(deferred));
-        }
-        if !self.encoding_surfaces.contains_key(&surface) {
-            let (observations, stream) = self.frame.output_admission_facts(surface);
+        let Some(scene) = self.frame.view().scene().surface(surface) else {
+            return Ok(SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured));
+        };
+        // Reserve every member before checking readiness. A resize may leave
+        // several surfaces unmeasured; each still needs its own output slot
+        // before the host consumes a shared window's buffered text or IME input.
+        // The endpoint is unknown until measurement. Charge its output slot
+        // now, then validate stream storage when the ready endpoint is known.
+        let ready = scene.ready().is_some();
+        let (observations, admission) = self.frame.output_admission_facts(surface);
+        let stream = ready.then_some(admission);
+        if self.encoding_surfaces.get(&surface) != Some(&stream) {
+            let reserved = self.encoding_surfaces.len()
+                - usize::from(self.encoding_surfaces.contains_key(&surface));
             if !self.session.presentation.reserve_output(
                 &self.submitted_presentation,
                 observations,
-                self.encoding_surfaces.len(),
+                reserved,
                 stream,
-                self.encoding_surfaces.values().copied(),
+                self.encoding_surfaces
+                    .iter()
+                    .filter_map(|(&other, admission)| {
+                        (other != surface).then_some(*admission).flatten()
+                    }),
             )? {
                 return Ok(SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity));
             }

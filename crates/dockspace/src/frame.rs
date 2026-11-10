@@ -153,6 +153,7 @@ pub(crate) enum ViewportLifecycleAction {
         proof: NativeReadyProof,
     },
     SurfaceDestroyed {
+        binding: ViewportBinding,
         observation: WindowCloseObservation,
         source_coordinates: Option<RecoveryCoordinateSnapshot>,
     },
@@ -656,7 +657,9 @@ impl ViewportCoordinator {
     }
 
     pub(crate) fn retains_window_cleanup(&self, binding: ViewportBinding) -> bool {
-        self.binding_cleanup.contains_key(&binding)
+        self.binding_cleanup
+            .keys()
+            .any(|cleanup| cleanup.window() == binding.window())
     }
 
     pub(crate) fn recognizes_retired_native_binding(&self, binding: ViewportBinding) -> bool {
@@ -667,6 +670,24 @@ impl ViewportCoordinator {
             })
             || self.binding_cleanup.contains_key(&binding)
             || self.binding_cleanup.is_terminal(binding)
+    }
+
+    pub(crate) fn recognizes_retired_native_window(
+        &self,
+        binding: crate::viewport::WindowBinding,
+    ) -> bool {
+        self.registry
+            .placements_in_window(binding)
+            .any(|record| record.admission() == ViewportAdmission::Retiring)
+            || self
+                .binding_cleanup
+                .keys()
+                .any(|retired| retired.window() == binding)
+            || self
+                .binding_cleanup
+                .terminal_bindings()
+                .iter()
+                .any(|retired| retired.window() == binding)
     }
 
     #[cfg(test)]
@@ -695,6 +716,16 @@ impl ViewportCoordinator {
 
     pub(crate) const fn native_binding_allocation_available(&self) -> bool {
         self.registry.native_binding_allocation_available()
+    }
+
+    pub(crate) fn set_surface_placements(
+        &mut self,
+        window: crate::viewport::WindowBinding,
+        placements: &[crate::coordinates::NativeSurfacePlacement],
+    ) -> Result<(), ViewportCoordinatorError> {
+        self.registry
+            .set_surface_placements(window, placements)
+            .map_err(ViewportCoordinatorError::Registry)
     }
 
     /// Registers an existing adapter window without storing its OS handle.
@@ -1418,8 +1449,14 @@ impl ViewportCoordinator {
     ) -> Result<(), ViewportCoordinatorError> {
         for facts in retired {
             let binding = facts.binding();
-            let recovery_cleanup_exists = self.binding_cleanup.recovery_cleanup(binding).is_some();
             accumulated.retired.push(binding);
+            if !facts.window_retired() {
+                let provider = self.active_platform_provider()?;
+                self.binding_cleanup
+                    .record_terminal_binding_guard(binding, provider);
+                continue;
+            }
+            let recovery_cleanup_exists = self.binding_cleanup.recovery_cleanup(binding).is_some();
             let staging = analysis.staging_by_binding.get(&binding).copied();
             let cleanup =
                 staging
@@ -1838,9 +1875,21 @@ impl ViewportCoordinator {
             | RegistryEvent::CloseRequested { .. }
             | RegistryEvent::CloseRequestCleared { .. } => None,
         }) {
-            candidate
-                .binding_cleanup
-                .record_terminal_binding_guard(binding, provider);
+            let members = candidate
+                .registry
+                .bindings_for_window(binding.window())
+                .collect::<Vec<_>>();
+            if members.is_empty() {
+                candidate
+                    .binding_cleanup
+                    .record_terminal_binding_guard(binding, provider);
+            } else {
+                for member in members {
+                    candidate
+                        .binding_cleanup
+                        .record_terminal_binding_guard(member, provider);
+                }
+            }
             candidate.terminate_pointer_passthrough_binding(binding);
         }
         candidate.reconcile_binding_cleanups(provider, snapshot)?;
@@ -2589,11 +2638,7 @@ impl ViewportCoordinator {
         bool,
         bool,
     ) {
-        if let Some(record) = self
-            .registry
-            .record(binding.surface())
-            .filter(|record| record.binding() == binding)
-        {
+        if let Some(record) = self.registry.window(binding.window()) {
             return (
                 record.input_observation(),
                 record.input_observation_generation_watermark(),
@@ -2679,13 +2724,14 @@ impl ViewportCoordinator {
             .effects
             .records()
             .filter_map(|(effect, record)| {
-                (record.request().effect().binding() == binding).then_some(effect)
+                (record.request().effect().binding().window() == binding.window())
+                    .then_some((effect, record.request().effect().binding()))
             })
             .collect::<Vec<_>>();
-        for effect in effects {
+        for (effect, exact) in effects {
             let _ =
                 self.effects
-                    .mark_destroyed(effect, binding, self.registry.inventory_generation());
+                    .mark_destroyed(effect, exact, self.registry.inventory_generation());
         }
     }
 
@@ -2819,10 +2865,29 @@ impl ViewportCoordinator {
         source_coordinates: Option<RecoveryCoordinateSnapshot>,
         actions: &mut Vec<ViewportLifecycleAction>,
     ) {
-        actions.push(ViewportLifecycleAction::SurfaceDestroyed {
-            observation,
-            source_coordinates,
-        });
+        let bindings = self
+            .registry
+            .bindings_for_window(observation.binding().window())
+            .collect::<Vec<_>>();
+        if bindings.is_empty() {
+            actions.push(ViewportLifecycleAction::SurfaceDestroyed {
+                binding: observation.binding(),
+                observation,
+                source_coordinates,
+            });
+        } else {
+            for binding in bindings {
+                actions.push(ViewportLifecycleAction::SurfaceDestroyed {
+                    binding,
+                    observation,
+                    source_coordinates: self
+                        .registry
+                        .placement_record(binding)
+                        .and_then(ViewportRecord::recovery_coordinates)
+                        .or(source_coordinates),
+                });
+            }
+        }
     }
 
     pub(crate) fn retry_cleanup(
@@ -3262,7 +3327,14 @@ impl ViewportCoordinator {
     }
 
     fn vacancy_binding_has_terminal_owner(&self, binding: ViewportBinding) -> bool {
-        self.binding_cleanup.is_terminal(binding) || self.binding_cleanup.contains_key(&binding)
+        self.binding_cleanup
+            .terminal_bindings()
+            .iter()
+            .any(|terminal| terminal.window() == binding.window())
+            || self
+                .binding_cleanup
+                .keys()
+                .any(|retired| retired.window() == binding.window())
     }
 
     /// Reconciles native resources against exact tick-start binding authority.
@@ -3327,6 +3399,24 @@ impl ViewportCoordinator {
                 );
             }
             settlement.logical_vacated_bindings.push(expected.binding);
+            if candidate
+                .registry
+                .bindings_for_window(expected.binding.window())
+                .count()
+                > 1
+            {
+                // Placement vacancy does not retire a real window with another
+                // hosted member. The final member owns any native cleanup.
+                candidate
+                    .registry
+                    .detach(expected.binding)
+                    .map_err(ViewportCoordinatorError::Registry)?;
+                let provider = candidate.active_platform_provider()?;
+                candidate
+                    .binding_cleanup
+                    .record_terminal_binding_guard(expected.binding, provider);
+                continue;
+            }
             if actual.admission() == ViewportAdmission::Retiring {
                 continue;
             }
@@ -3413,7 +3503,11 @@ impl ViewportCoordinator {
         self.inventory_observations
             .current()
             .and_then(|observation| observation.known_roster())
-            .is_some_and(|bindings| bindings.binary_search(&binding).is_ok())
+            .is_some_and(|bindings| {
+                bindings
+                    .iter()
+                    .any(|observed| observed.window() == binding.window())
+            })
     }
 
     #[must_use]
@@ -4208,7 +4302,12 @@ impl ViewportCoordinator {
             .map_err(recovery_replacement_error)?;
         candidate
             .registry
-            .admit(binding)
+            .admit_window(
+                &candidate
+                    .registry
+                    .bindings_for_window(binding.window())
+                    .collect::<Vec<_>>(),
+            )
             .map_err(ViewportCoordinatorError::Registry)?;
         *self = candidate;
         Ok(())

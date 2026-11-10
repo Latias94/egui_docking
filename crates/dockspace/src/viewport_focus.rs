@@ -18,7 +18,7 @@ use crate::frame::PanelFocus;
 use crate::ids::{ItemId, NativeCreateSagaId, SurfaceId};
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::presentation_observation::{HostPresentationStreamId, PresentationHostLease};
-use crate::viewport::ViewportBinding;
+use crate::viewport::{ViewportBinding, WindowBinding};
 
 macro_rules! focus_generation {
     ($name:ident, $description:literal) => {
@@ -106,8 +106,8 @@ focus_generation!(
 /// Globally consistent native focus reported by one provider observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GlobalFocusedWindow {
-    /// One exact live docking window binding is focused.
-    Dock(ViewportBinding),
+    /// One exact live docking window is focused, without selecting a placement or pane.
+    Dock(WindowBinding),
     /// A non-docking application or system window is focused.
     Foreign,
     /// The provider authoritatively reports that no native window is focused.
@@ -645,26 +645,6 @@ impl PaneFocusIntentSource {
             Self::CloseRecovery => 3,
             Self::WorkspaceReplacement => 2,
         }
-    }
-}
-
-/// Core-derived gate for ordinary pane restoration after native focus changes.
-///
-/// Explicit viewport activations bypass this gate because they carry their own
-/// exact pane-focus request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlatformFocusRestoreGate {
-    /// A complete global provider roster proves no button remains pressed.
-    KnownAllReleased,
-    /// At least one exact provider pointer/button pair remains pressed.
-    KnownDown,
-    /// Global button authority is incomplete or unavailable.
-    Unknown,
-}
-
-impl PlatformFocusRestoreGate {
-    const fn allows_ordinary_restore(self) -> bool {
-        matches!(self, Self::KnownAllReleased)
     }
 }
 
@@ -1449,6 +1429,7 @@ impl NativeActivationReservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusClaimTarget {
     Dock(ViewportBinding),
+    Window(WindowBinding),
     Surface(SurfaceId),
     Foreign,
     None,
@@ -1457,7 +1438,7 @@ enum FocusClaimTarget {
 impl FocusClaimTarget {
     const fn from_global(focused: GlobalFocusedWindow) -> Self {
         match focused {
-            GlobalFocusedWindow::Dock(binding) => Self::Dock(binding),
+            GlobalFocusedWindow::Dock(binding) => Self::Window(binding),
             GlobalFocusedWindow::Foreign => Self::Foreign,
             GlobalFocusedWindow::None => Self::None,
         }
@@ -1466,6 +1447,14 @@ impl FocusClaimTarget {
     const fn dock(self) -> Option<ViewportBinding> {
         match self {
             Self::Dock(binding) => Some(binding),
+            Self::Window(_) | Self::Surface(_) | Self::Foreign | Self::None => None,
+        }
+    }
+
+    const fn window(self) -> Option<WindowBinding> {
+        match self {
+            Self::Dock(binding) => Some(binding.window()),
+            Self::Window(window) => Some(window),
             Self::Surface(_) | Self::Foreign | Self::None => None,
         }
     }
@@ -1863,7 +1852,6 @@ impl FocusDelta {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ViewportFocusCoordinator {
     focus_observations: FocusObservationStream,
-    destroyed_previous_focus: Option<ViewportBinding>,
     last_activation: ActivationGeneration,
     last_pane_intent: PaneFocusIntentId,
     focus_lane: FocusLane,
@@ -1908,11 +1896,20 @@ impl ViewportFocusCoordinator {
         );
     }
 
-    fn focus_matches_reserved_claim(&self, binding: ViewportBinding) -> bool {
+    fn window_matches_semantic_claim(&self, window: WindowBinding) -> bool {
         self.focus_lane.winner.is_some_and(|claim| {
-            claim.target == FocusClaimTarget::Dock(binding)
-                && claim.cause == ViewportActivationCause::TearOffCommitted
+            claim
+                .target
+                .dock()
+                .is_some_and(|binding| binding.window() == window)
         })
+    }
+
+    fn window_is_quarantined(&self, window: WindowBinding) -> bool {
+        self.focus_lane
+            .quarantined
+            .iter()
+            .any(|binding| binding.window() == window)
     }
 
     #[cfg(test)]
@@ -2261,7 +2258,12 @@ impl ViewportFocusCoordinator {
         }
         if let Some(observation) = self.focus_observations.current()
             && let Authority::Known(GlobalFocusedWindow::Dock(binding)) = observation.focused
-            && self.focus_lane.quarantined.contains(&binding)
+            && let Some(binding) = self
+                .focus_lane
+                .quarantined
+                .iter()
+                .copied()
+                .find(|candidate| candidate.window() == binding)
         {
             return Some(binding);
         }
@@ -2392,7 +2394,7 @@ impl ViewportFocusCoordinator {
         if self.focus_observations.last_generation.is_some()
             && !self.focus_observations.current().is_some_and(|observation| {
                 matches!(observation.focused, Authority::Known(GlobalFocusedWindow::Dock(binding))
-                    if Some(binding) == native_guard)
+                    if Some(binding) == native_guard.map(ViewportBinding::window))
             })
         {
             return false;
@@ -2417,15 +2419,15 @@ impl ViewportFocusCoordinator {
 
     fn record_platform_ui_focus(&mut self, focused: Option<GlobalFocusedWindow>) {
         let (focus, scope) = match focused {
-            Some(GlobalFocusedWindow::Dock(binding)) => {
-                let scope = Some((binding.surface(), Some(binding)));
-                if self
-                    .current_ui_focus
-                    .is_some_and(|record| record.scope == scope)
-                {
+            Some(GlobalFocusedWindow::Dock(window)) => {
+                if self.current_ui_focus.is_some_and(|record| {
+                    record.scope.is_some_and(|(_, binding)| {
+                        binding.is_some_and(|binding| binding.window() == window)
+                    })
+                }) {
                     return;
                 }
-                (CurrentUiFocus::Unknown, scope)
+                (CurrentUiFocus::Unknown, None)
             }
             Some(GlobalFocusedWindow::Foreign) => (CurrentUiFocus::External, None),
             Some(GlobalFocusedWindow::None) => (CurrentUiFocus::None, None),
@@ -2524,7 +2526,7 @@ impl ViewportFocusCoordinator {
         let surface = match target {
             FocusClaimTarget::Dock(binding) => binding.surface(),
             FocusClaimTarget::Surface(surface) => surface,
-            FocusClaimTarget::Foreign | FocusClaimTarget::None => {
+            FocusClaimTarget::Window(_) | FocusClaimTarget::Foreign | FocusClaimTarget::None => {
                 return WorkspaceReplacementFocus::OutsideDock;
             }
         };
@@ -3016,8 +3018,8 @@ impl ViewportFocusCoordinator {
             .and_then(Self::known_focus_target)
             .is_some_and(|target| {
                 target
-                    .dock()
-                    .is_none_or(|binding| !self.focus_lane.quarantined.contains(&binding))
+                    .window()
+                    .is_none_or(|window| !self.window_is_quarantined(window))
             });
         if retained_authority {
             self.focus_lane.barrier = FocusBarrier::None;
@@ -3049,7 +3051,6 @@ impl ViewportFocusCoordinator {
         let transition = candidate.publish_focus_observation_in_place(
             observation,
             causal,
-            PlatformFocusRestoreGate::KnownAllReleased,
             false,
             is_current_binding,
             is_current_binding,
@@ -3065,20 +3066,18 @@ impl ViewportFocusCoordinator {
         &mut self,
         observation: FocusObservationEnvelope,
         causal: FocusCausalStamp,
-        restore_gate: PlatformFocusRestoreGate,
         can_observe_binding: impl Fn(ViewportBinding) -> bool + Copy,
         can_accept_activation: impl Fn(ViewportBinding) -> bool + Copy,
-        is_isolated_binding: impl Fn(ViewportBinding) -> bool + Copy,
+        is_isolated_window: impl Fn(WindowBinding) -> bool + Copy,
         item_is_on_surface: impl Fn(SurfaceId, ItemId) -> bool + Copy,
     ) -> Result<FocusObservationTransition, ViewportFocusError> {
         self.publish_platform_focus_observation_with_retired_binding(
             observation,
             causal,
-            restore_gate,
             false,
             can_observe_binding,
             can_accept_activation,
-            is_isolated_binding,
+            is_isolated_window,
             item_is_on_surface,
         )
     }
@@ -3087,22 +3086,20 @@ impl ViewportFocusCoordinator {
         &mut self,
         observation: FocusObservationEnvelope,
         causal: FocusCausalStamp,
-        restore_gate: PlatformFocusRestoreGate,
         retired_binding: bool,
         can_observe_binding: impl Fn(ViewportBinding) -> bool + Copy,
         can_accept_activation: impl Fn(ViewportBinding) -> bool + Copy,
-        is_isolated_binding: impl Fn(ViewportBinding) -> bool + Copy,
+        is_isolated_window: impl Fn(WindowBinding) -> bool + Copy,
         item_is_on_surface: impl Fn(SurfaceId, ItemId) -> bool + Copy,
     ) -> Result<FocusObservationTransition, ViewportFocusError> {
         let mut candidate = self.clone();
         let transition = candidate.publish_focus_observation_in_place(
             observation,
             causal,
-            restore_gate,
             retired_binding,
             can_observe_binding,
             can_accept_activation,
-            is_isolated_binding,
+            is_isolated_window,
             item_is_on_surface,
         )?;
         *self = candidate;
@@ -3119,26 +3116,6 @@ impl ViewportFocusCoordinator {
         self.clear_provider_bound_state(had_global_authority)
     }
 
-    /// Arms one-shot ordinary focus-restoration suppression when the provider
-    /// destroys the exact window which most recently owned global focus.
-    pub(crate) fn observe_destroyed_binding(&mut self, binding: ViewportBinding) -> bool {
-        let was_last_focused = self
-            .focus_observations
-            .current()
-            .is_some_and(|observation| {
-                matches!(
-                    observation.focused,
-                    Authority::Known(GlobalFocusedWindow::Dock(focused)) if focused == binding
-                )
-            });
-        if !was_last_focused {
-            return false;
-        }
-        let changed = self.destroyed_previous_focus != Some(binding);
-        self.destroyed_previous_focus = Some(binding);
-        changed
-    }
-
     fn known_focus_target(observation: FocusObservationEnvelope) -> Option<FocusClaimTarget> {
         match observation.focused {
             Authority::Known(focused) => Some(FocusClaimTarget::from_global(focused)),
@@ -3147,11 +3124,11 @@ impl ViewportFocusCoordinator {
     }
 
     fn target_is_pending_hazard(&self, target: FocusClaimTarget) -> bool {
-        target.dock().is_some_and(|binding| {
+        target.window().is_some_and(|window| {
             self.focus_lane
                 .hazards
                 .values()
-                .any(|attempt| attempt.request.target == binding)
+                .any(|attempt| attempt.request.target.window() == window)
         })
     }
 
@@ -3168,8 +3145,8 @@ impl ViewportFocusCoordinator {
             return;
         };
         if winner
-            .dock()
-            .is_some_and(|binding| self.focus_lane.quarantined.contains(&binding))
+            .window()
+            .is_some_and(|window| self.window_is_quarantined(window))
         {
             return;
         }
@@ -3183,7 +3160,7 @@ impl ViewportFocusCoordinator {
             }
             return;
         };
-        if winner == FocusClaimTarget::Dock(driving.request.target)
+        if winner.window() == Some(driving.request.target.window())
             || observation.generation <= driving.observation_baseline
         {
             return;
@@ -3224,8 +3201,7 @@ impl ViewportFocusCoordinator {
     fn reduce_focus_hazards(
         &mut self,
         observation: FocusObservationEnvelope,
-        can_accept_activation: impl Fn(ViewportBinding) -> bool,
-        is_isolated_binding: impl Fn(ViewportBinding) -> bool,
+        is_isolated_window: impl Fn(WindowBinding) -> bool,
         applied: &mut FocusObservationApplied,
     ) {
         let focused_binding = match observation.focused {
@@ -3247,7 +3223,7 @@ impl ViewportFocusCoordinator {
                 }
                 let evidence = if acknowledged_effect == Some(*effect) {
                     Some(PlatformFocusEvidence::ExactEffectAcknowledgement)
-                } else if focused_binding == Some(attempt.request.target) {
+                } else if focused_binding == Some(attempt.request.target.window()) {
                     Some(PlatformFocusEvidence::NewerMatchingObservation)
                 } else {
                     None
@@ -3260,7 +3236,7 @@ impl ViewportFocusCoordinator {
         let mut settled_any = false;
         for (effect, binding, evidence) in settled {
             settled_any = true;
-            hazard_took_focus |= focused_binding == Some(binding);
+            hazard_took_focus |= focused_binding == Some(binding.window());
             self.focus_lane.hazards.remove(&effect);
             applied.record_observed_effect(ObservedPlatformFocusEffect {
                 effect,
@@ -3274,10 +3250,8 @@ impl ViewportFocusCoordinator {
             if self.focus_lane.hazards.is_empty() {
                 let post_hazard_authority =
                     Self::known_focus_target(observation).is_some_and(|target| {
-                        target.dock().is_none_or(|binding| {
-                            !self.focus_lane.quarantined.contains(&binding)
-                                && can_accept_activation(binding)
-                                && !is_isolated_binding(binding)
+                        target.window().is_none_or(|window| {
+                            !self.window_is_quarantined(window) && !is_isolated_window(window)
                         })
                     });
                 if !hazard_took_focus
@@ -3298,11 +3272,10 @@ impl ViewportFocusCoordinator {
         &mut self,
         mut observation: FocusObservationEnvelope,
         causal: FocusCausalStamp,
-        restore_gate: PlatformFocusRestoreGate,
         retired_binding: bool,
         can_observe_binding: impl Fn(ViewportBinding) -> bool + Copy,
         can_accept_activation: impl Fn(ViewportBinding) -> bool + Copy,
-        is_isolated_binding: impl Fn(ViewportBinding) -> bool + Copy,
+        is_isolated_window: impl Fn(WindowBinding) -> bool + Copy,
         item_is_on_surface: impl Fn(SurfaceId, ItemId) -> bool + Copy,
     ) -> Result<FocusObservationTransition, ViewportFocusError> {
         let previous = self.focus_observations.current();
@@ -3348,8 +3321,7 @@ impl ViewportFocusCoordinator {
                 if matches!(reason, FocusAuthorityRevocation::Unknown(_)) {
                     self.reduce_focus_hazards(
                         observation,
-                        can_accept_activation,
-                        is_isolated_binding,
+                        is_isolated_window,
                         &mut effect_settlement,
                     );
                     self.reduce_pending_activation_observation(
@@ -3397,12 +3369,7 @@ impl ViewportFocusCoordinator {
             &mut applied,
         )?;
         self.supersede_driving_with_platform_focus(observation, focus_changed, &mut applied);
-        self.reduce_focus_hazards(
-            observation,
-            can_accept_activation,
-            is_isolated_binding,
-            &mut applied,
-        );
+        self.reduce_focus_hazards(observation, is_isolated_window, &mut applied);
         self.reduce_pending_activation_observation(
             observation,
             can_observe_binding,
@@ -3415,13 +3382,13 @@ impl ViewportFocusCoordinator {
         let focused_is_isolated = matches!(
             observation.focused,
             Authority::Known(GlobalFocusedWindow::Dock(binding))
-                if is_isolated_binding(binding)
-                    || self.focus_lane.quarantined.contains(&binding)
+                if is_isolated_window(binding)
+                    || self.window_is_quarantined(binding)
                     || self
                         .focus_lane
                         .hazards
                         .values()
-                        .any(|attempt| attempt.request.target == binding)
+                        .any(|attempt| attempt.request.target.window() == binding)
         );
         if !focused_is_isolated
             && self.pending_pane_intent.is_some_and(|intent| {
@@ -3431,7 +3398,7 @@ impl ViewportFocusCoordinator {
                         observation.focused,
                         Authority::Known(focused)
                             if Some(focused)
-                                != intent.native_guard().map(GlobalFocusedWindow::Dock)
+                                != intent.native_guard().map(|binding| GlobalFocusedWindow::Dock(binding.window()))
                     )
             })
         {
@@ -3453,43 +3420,8 @@ impl ViewportFocusCoordinator {
             intent.focus_observation_baseline = observation.generation;
         }
 
-        let focused_current_binding = if (focus_changed || focus_requires_reconciliation)
-            && let Authority::Known(GlobalFocusedWindow::Dock(binding)) = observation.focused
-            && !focused_is_isolated
-            && can_accept_activation(binding)
-        {
-            Some(binding)
-        } else {
-            None
-        };
-        let suppress_destroyed_previous_restore =
-            focused_current_binding.is_some() && self.destroyed_previous_focus.take().is_some();
-
-        if applied.pane_intent().is_none()
-            && !preserves_replacement
-            && (focus_changed || focus_requires_reconciliation)
-            && restore_gate.allows_ordinary_restore()
-            && !suppress_destroyed_previous_restore
-            && let Some(binding) = focused_current_binding
-            && let Some(focus) = self.panel_focus(binding.surface()).focus()
-        {
-            if let PanelFocus::Item(item) = focus
-                && !item_is_on_surface(binding.surface(), item)
-            {
-                self.panel_focus_by_surface.remove(&binding.surface());
-            } else {
-                applied.set_pane_intent(self.install_pane_intent(PaneIntentInstall {
-                    causal,
-                    activation: None,
-                    surface: binding.surface(),
-                    native_guard: Some(binding),
-                    focus,
-                    source: PaneFocusIntentSource::PlatformActivation,
-                    cause: None,
-                    focus_observation_baseline: observation.generation,
-                })?);
-            }
-        }
+        // A physical window can host several independently focused placements.
+        // Its focus fact never selects a surface or restores a pane history.
 
         if ((focus_changed && (previous.is_some() || self.focus_lane.winner.is_none()))
             || focus_requires_reconciliation)
@@ -3501,13 +3433,13 @@ impl ViewportFocusCoordinator {
                 unreachable!("known focus was checked above")
             };
             let target = FocusClaimTarget::from_global(focused);
-            if target.dock().is_none_or(|binding| {
-                !is_isolated_binding(binding) && !self.focus_lane.quarantined.contains(&binding)
+            if target.window().is_none_or(|window| {
+                !is_isolated_window(window) && !self.window_is_quarantined(window)
             }) {
                 if preserves_replacement
                     || target
-                        .dock()
-                        .is_some_and(|binding| self.focus_matches_reserved_claim(binding))
+                        .window()
+                        .is_some_and(|window| self.window_matches_semantic_claim(window))
                 {
                     if focus_requires_reconciliation {
                         self.focus_lane.barrier = FocusBarrier::None;
@@ -3557,11 +3489,11 @@ impl ViewportFocusCoordinator {
         };
         let target_focus = matches!(
             observation.focused,
-            Authority::Known(GlobalFocusedWindow::Dock(binding)) if binding == request.target
+            Authority::Known(GlobalFocusedWindow::Dock(binding)) if binding == request.target.window()
         );
         let authoritative_non_target = matches!(
             observation.focused,
-            Authority::Known(focused) if focused != GlobalFocusedWindow::Dock(request.target)
+            Authority::Known(focused) if focused != GlobalFocusedWindow::Dock(request.target.window())
         );
 
         if request.cause.awaits_observed_focus()
@@ -3663,7 +3595,7 @@ impl ViewportFocusCoordinator {
         } else if acknowledged {
             match observation.focused {
                 Authority::Known(GlobalFocusedWindow::Dock(binding))
-                    if self.focus_lane.quarantined.contains(&binding) =>
+                    if self.window_is_quarantined(binding) =>
                 {
                     self.reassert_after_quarantined_focus(pending, observation, applied)?;
                 }
@@ -3690,7 +3622,7 @@ impl ViewportFocusCoordinator {
             if matches!(
                 observation.focused,
                 Authority::Known(GlobalFocusedWindow::Dock(binding))
-                    if self.focus_lane.quarantined.contains(&binding)
+                    if self.window_is_quarantined(binding)
             ) {
                 self.reassert_after_quarantined_focus(pending, observation, applied)?;
             } else {
@@ -4536,7 +4468,6 @@ impl ViewportFocusCoordinator {
             .take()
             .map(|record| record.generation);
         self.admitted_observe_only_activation = None;
-        self.destroyed_previous_focus = None;
         self.focus_lane = FocusLane::default();
         self.pending_pane_intent = retained_pane_intent;
         self.admitted_pane_intent = admitted_pane_intent;
@@ -4567,9 +4498,9 @@ impl ViewportFocusCoordinator {
             let Authority::Known(GlobalFocusedWindow::Dock(focused)) = observed.focused else {
                 return None;
             };
-            let successor = root_continuations
-                .iter()
-                .find_map(|&(before, after)| (before == focused).then_some(after))?;
+            let successor = root_continuations.iter().find_map(|&(before, after)| {
+                (before.window() == focused).then_some(after.window())
+            })?;
             Some(FocusObservationEnvelope::new(
                 observed.generation,
                 Authority::Known(GlobalFocusedWindow::Dock(successor)),
@@ -4595,7 +4526,6 @@ impl ViewportFocusCoordinator {
         }
         // Layout replacement retains the provider and its replay watermark.
         // Foreign/absent focus and transport revocation must survive it too.
-        self.destroyed_previous_focus = None;
         self.focus_lane = FocusLane::default();
         self.pane_intent_watermark = None;
         self.recorded_observe_only_activation = None;
@@ -4720,7 +4650,7 @@ impl ViewportFocusCoordinator {
     fn observation_focuses(observation: FocusObservationEnvelope, target: ViewportBinding) -> bool {
         matches!(
             observation.focused,
-            Authority::Known(GlobalFocusedWindow::Dock(binding)) if binding == target
+            Authority::Known(GlobalFocusedWindow::Dock(binding)) if binding == target.window()
         )
     }
 
@@ -5006,7 +4936,7 @@ mod tests {
     #[test]
     fn focus_observation_stream_requires_causal_tombstones() {
         let mut stream = FocusObservationStream::default();
-        let initial = focus_observation(4, GlobalFocusedWindow::Dock(binding()));
+        let initial = focus_observation(4, GlobalFocusedWindow::Dock(binding().window()));
         stream.observe(Some(initial));
         assert_eq!(stream.current(), Some(initial));
 
@@ -5044,7 +4974,7 @@ mod tests {
         let mut stream = FocusObservationStream::default();
         stream.observe(Some(focus_observation(
             1,
-            GlobalFocusedWindow::Dock(binding()),
+            GlobalFocusedWindow::Dock(binding().window()),
         )));
 
         stream.observe(None);
@@ -5072,7 +5002,7 @@ mod tests {
             "known focus cannot bridge a numeric generation gap"
         );
         stream.observe(Some(focus_tombstone(8)));
-        let restored = focus_observation(9, GlobalFocusedWindow::Dock(second_binding()));
+        let restored = focus_observation(9, GlobalFocusedWindow::Dock(second_binding().window()));
         stream.observe(Some(restored));
         assert_eq!(stream.current(), Some(restored));
 
@@ -5094,7 +5024,7 @@ mod tests {
         let mut stream = FocusObservationStream::default();
         stream.observe(Some(focus_observation(
             40,
-            GlobalFocusedWindow::Dock(binding()),
+            GlobalFocusedWindow::Dock(binding().window()),
         )));
         stream.observe(Some(focus_observation(40, GlobalFocusedWindow::Foreign)));
         assert_eq!(stream.current(), None);
@@ -5104,7 +5034,7 @@ mod tests {
         assert_eq!(stream.generation_watermark(), None);
 
         let replacement_baseline =
-            focus_observation(1, GlobalFocusedWindow::Dock(second_binding()));
+            focus_observation(1, GlobalFocusedWindow::Dock(second_binding().window()));
         stream.observe(Some(replacement_baseline));
         assert_eq!(stream.current(), Some(replacement_baseline));
 
@@ -5131,9 +5061,8 @@ mod tests {
         assert!(matches!(
             publish_platform_focus(
                 &mut coordinator,
-                focus_observation(10, GlobalFocusedWindow::Dock(target)),
+                focus_observation(10, GlobalFocusedWindow::Dock(target.window())),
                 1,
-                PlatformFocusRestoreGate::KnownAllReleased,
             ),
             FocusObservationTransition::Applied(_)
         ));
@@ -5154,9 +5083,8 @@ mod tests {
 
         let conflict = publish_platform_focus(
             &mut coordinator,
-            focus_observation(10, GlobalFocusedWindow::Dock(replacement)),
+            focus_observation(10, GlobalFocusedWindow::Dock(replacement.window())),
             3,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let FocusObservationTransition::AuthorityRevoked {
             generation,
@@ -5182,9 +5110,8 @@ mod tests {
         assert!(matches!(
             publish_platform_focus(
                 &mut coordinator,
-                focus_observation(11, GlobalFocusedWindow::Dock(replacement)),
+                focus_observation(11, GlobalFocusedWindow::Dock(replacement.window())),
                 4,
-                PlatformFocusRestoreGate::KnownAllReleased,
             ),
             FocusObservationTransition::TombstoneRequired {
                 generation,
@@ -5194,25 +5121,15 @@ mod tests {
         assert_eq!(coordinator.focus_observation(), None);
 
         assert!(matches!(
-            publish_platform_focus(
-                &mut coordinator,
-                focus_tombstone(12),
-                5,
-                PlatformFocusRestoreGate::KnownAllReleased,
-            ),
+            publish_platform_focus(&mut coordinator, focus_tombstone(12), 5,),
             FocusObservationTransition::AuthorityRevoked {
                 reason: FocusAuthorityRevocation::Unknown(AuthorityUnavailableReason::NotReported),
                 ..
             }
         ));
-        let restored = focus_observation(13, GlobalFocusedWindow::Dock(replacement));
+        let restored = focus_observation(13, GlobalFocusedWindow::Dock(replacement.window()));
         assert!(matches!(
-            publish_platform_focus(
-                &mut coordinator,
-                restored,
-                6,
-                PlatformFocusRestoreGate::KnownAllReleased,
-            ),
+            publish_platform_focus(&mut coordinator, restored, 6,),
             FocusObservationTransition::Applied(_)
         ));
         assert_eq!(coordinator.focus_observation(), Some(restored));
@@ -5221,19 +5138,13 @@ mod tests {
     #[test]
     fn coordinator_revokes_focus_for_generation_gaps_and_unknown_tombstones() {
         let mut coordinator = ViewportFocusCoordinator::default();
-        let initial = focus_observation(20, GlobalFocusedWindow::Dock(binding()));
-        let _ = publish_platform_focus(
-            &mut coordinator,
-            initial,
-            1,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
+        let initial = focus_observation(20, GlobalFocusedWindow::Dock(binding().window()));
+        let _ = publish_platform_focus(&mut coordinator, initial, 1);
 
         let gap = publish_platform_focus(
             &mut coordinator,
             focus_observation(22, GlobalFocusedWindow::Foreign),
             2,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(
             gap,
@@ -5248,27 +5159,12 @@ mod tests {
         ));
         assert_eq!(coordinator.focus_observation(), None);
 
-        let _ = publish_platform_focus(
-            &mut coordinator,
-            focus_tombstone(23),
-            3,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
+        let _ = publish_platform_focus(&mut coordinator, focus_tombstone(23), 3);
         let restored = focus_observation(24, GlobalFocusedWindow::Foreign);
-        let _ = publish_platform_focus(
-            &mut coordinator,
-            restored,
-            4,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
+        let _ = publish_platform_focus(&mut coordinator, restored, 4);
         assert_eq!(coordinator.focus_observation(), Some(restored));
 
-        let unknown = publish_platform_focus(
-            &mut coordinator,
-            focus_tombstone(25),
-            5,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
+        let unknown = publish_platform_focus(&mut coordinator, focus_tombstone(25), 5);
         assert!(matches!(
             unknown,
             FocusObservationTransition::AuthorityRevoked {
@@ -5291,18 +5187,13 @@ mod tests {
     #[test]
     fn retired_duplicate_preserves_raw_focus_and_accepts_the_next_known_focus() {
         for successor in [
-            GlobalFocusedWindow::Dock(second_binding()),
+            GlobalFocusedWindow::Dock(second_binding().window()),
             GlobalFocusedWindow::Foreign,
         ] {
             let mut coordinator = ViewportFocusCoordinator::default();
-            let raw = focus_observation(10, GlobalFocusedWindow::Dock(binding()));
+            let raw = focus_observation(10, GlobalFocusedWindow::Dock(binding().window()));
             assert!(matches!(
-                publish_platform_focus(
-                    &mut coordinator,
-                    raw,
-                    1,
-                    PlatformFocusRestoreGate::KnownAllReleased,
-                ),
+                publish_platform_focus(&mut coordinator, raw, 1,),
                 FocusObservationTransition::Applied(_)
             ));
 
@@ -5311,7 +5202,6 @@ mod tests {
                     .publish_platform_focus_observation_with_retired_binding(
                         raw,
                         focus_stamp(causal),
-                        PlatformFocusRestoreGate::KnownAllReleased,
                         true,
                         |candidate| candidate == second_binding(),
                         |candidate| candidate == second_binding(),
@@ -5342,12 +5232,7 @@ mod tests {
 
             let restored = focus_observation(11, successor);
             assert!(matches!(
-                publish_platform_focus(
-                    &mut coordinator,
-                    restored,
-                    4,
-                    PlatformFocusRestoreGate::KnownAllReleased,
-                ),
+                publish_platform_focus(&mut coordinator, restored, 4,),
                 FocusObservationTransition::Applied(_)
             ));
             assert_eq!(coordinator.focus_observation(), Some(restored));
@@ -5357,16 +5242,11 @@ mod tests {
     #[test]
     fn stale_retired_focus_does_not_revoke_a_newer_root_observation() {
         let mut coordinator = ViewportFocusCoordinator::default();
-        let retired = focus_observation(10, GlobalFocusedWindow::Dock(binding()));
-        let current = focus_observation(11, GlobalFocusedWindow::Dock(second_binding()));
+        let retired = focus_observation(10, GlobalFocusedWindow::Dock(binding().window()));
+        let current = focus_observation(11, GlobalFocusedWindow::Dock(second_binding().window()));
         for (causal, observation) in [(1, retired), (2, current)] {
             assert!(matches!(
-                publish_platform_focus(
-                    &mut coordinator,
-                    observation,
-                    causal,
-                    PlatformFocusRestoreGate::KnownAllReleased,
-                ),
+                publish_platform_focus(&mut coordinator, observation, causal,),
                 FocusObservationTransition::Applied(_)
             ));
         }
@@ -5375,7 +5255,6 @@ mod tests {
             .publish_platform_focus_observation_with_retired_binding(
                 retired,
                 focus_stamp(3),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 true,
                 |candidate| candidate == second_binding(),
                 |candidate| candidate == second_binding(),
@@ -5401,19 +5280,16 @@ mod tests {
     fn retired_focus_conflicts_and_gaps_still_require_a_provider_tombstone() {
         for generation in [10, 12] {
             let mut coordinator = ViewportFocusCoordinator::default();
-            let initial = focus_observation(10, GlobalFocusedWindow::Dock(binding()));
-            let _ = publish_platform_focus(
-                &mut coordinator,
-                initial,
-                1,
-                PlatformFocusRestoreGate::KnownAllReleased,
+            let initial = focus_observation(10, GlobalFocusedWindow::Dock(binding().window()));
+            let _ = publish_platform_focus(&mut coordinator, initial, 1);
+            let raw = focus_observation(
+                generation,
+                GlobalFocusedWindow::Dock(third_binding().window()),
             );
-            let raw = focus_observation(generation, GlobalFocusedWindow::Dock(third_binding()));
             let transition = coordinator
                 .publish_platform_focus_observation_with_retired_binding(
                     raw,
                     focus_stamp(2),
-                    PlatformFocusRestoreGate::KnownAllReleased,
                     true,
                     |candidate| candidate == second_binding(),
                     |candidate| candidate == second_binding(),
@@ -5440,14 +5316,15 @@ mod tests {
             );
             assert!(coordinator.focus_observations.requires_tombstone);
 
-            let blocked =
-                focus_observation(generation + 1, GlobalFocusedWindow::Dock(third_binding()));
+            let blocked = focus_observation(
+                generation + 1,
+                GlobalFocusedWindow::Dock(third_binding().window()),
+            );
             assert!(matches!(
                 coordinator
                     .publish_platform_focus_observation_with_retired_binding(
                         blocked,
                         focus_stamp(3),
-                        PlatformFocusRestoreGate::KnownAllReleased,
                         true,
                         |candidate| candidate == second_binding(),
                         |candidate| candidate == second_binding(),
@@ -5459,21 +5336,11 @@ mod tests {
             ));
             assert!(coordinator.focus_observations.requires_tombstone);
 
-            let _ = publish_platform_focus(
-                &mut coordinator,
-                focus_tombstone(generation + 2),
-                4,
-                PlatformFocusRestoreGate::KnownAllReleased,
-            );
+            let _ = publish_platform_focus(&mut coordinator, focus_tombstone(generation + 2), 4);
             assert!(!coordinator.focus_observations.requires_tombstone);
             let restored = focus_observation(generation + 3, GlobalFocusedWindow::Foreign);
             assert!(matches!(
-                publish_platform_focus(
-                    &mut coordinator,
-                    restored,
-                    5,
-                    PlatformFocusRestoreGate::KnownAllReleased,
-                ),
+                publish_platform_focus(&mut coordinator, restored, 5,),
                 FocusObservationTransition::Applied(_)
             ));
             assert_eq!(coordinator.focus_observation(), Some(restored));
@@ -5491,9 +5358,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(20, GlobalFocusedWindow::Dock(binding())),
+            focus_observation(20, GlobalFocusedWindow::Dock(binding().window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(coordinator.reserve_activation_causal(owner, focus_stamp(2), request));
 
@@ -5501,7 +5367,6 @@ mod tests {
             &mut coordinator,
             focus_observation(22, GlobalFocusedWindow::Foreign),
             3,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(
             gap,
@@ -5520,7 +5385,6 @@ mod tests {
             &mut coordinator,
             focus_observation(23, GlobalFocusedWindow::None),
             4,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(
             tombstone_required,
@@ -5531,12 +5395,7 @@ mod tests {
             Some(reservation)
         );
 
-        let tombstone = publish_platform_focus(
-            &mut coordinator,
-            focus_tombstone(24),
-            5,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
+        let tombstone = publish_platform_focus(&mut coordinator, focus_tombstone(24), 5);
         assert!(matches!(
             tombstone,
             FocusObservationTransition::AuthorityRevoked {
@@ -5553,7 +5412,6 @@ mod tests {
             &mut coordinator,
             focus_observation(25, GlobalFocusedWindow::None),
             6,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(baseline, FocusObservationTransition::Applied(_)));
 
@@ -5585,9 +5443,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(30, GlobalFocusedWindow::Dock(binding())),
+            focus_observation(30, GlobalFocusedWindow::Dock(binding().window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(coordinator.reserve_activation_causal(owner, focus_stamp(2), request));
 
@@ -5595,7 +5452,6 @@ mod tests {
             &mut coordinator,
             focus_observation(30, GlobalFocusedWindow::Foreign),
             3,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(
             conflict,
@@ -5620,9 +5476,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(40, GlobalFocusedWindow::Dock(binding())),
+            focus_observation(40, GlobalFocusedWindow::Dock(binding().window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(coordinator.reserve_activation_causal(owner, focus_stamp(2), request));
 
@@ -5640,9 +5495,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(40, GlobalFocusedWindow::Dock(target)),
+            focus_observation(40, GlobalFocusedWindow::Dock(target.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(
             coordinator.publish_pane_focus_observation(
@@ -5709,14 +5563,10 @@ mod tests {
             "provider replacement must retain the pane observation history"
         );
 
-        let replacement_baseline = focus_observation(1, GlobalFocusedWindow::Dock(replacement));
+        let replacement_baseline =
+            focus_observation(1, GlobalFocusedWindow::Dock(replacement.window()));
         assert!(matches!(
-            publish_platform_focus(
-                &mut coordinator,
-                replacement_baseline,
-                4,
-                PlatformFocusRestoreGate::KnownAllReleased,
-            ),
+            publish_platform_focus(&mut coordinator, replacement_baseline, 4,),
             FocusObservationTransition::Applied(_)
         ));
         assert_eq!(coordinator.focus_observation(), Some(replacement_baseline));
@@ -5755,18 +5605,13 @@ mod tests {
             WindowIncarnation::new(2),
         );
         for focus in [
-            GlobalFocusedWindow::Dock(predecessor),
-            GlobalFocusedWindow::Dock(successor),
+            GlobalFocusedWindow::Dock(predecessor.window()),
+            GlobalFocusedWindow::Dock(successor.window()),
             GlobalFocusedWindow::Foreign,
             GlobalFocusedWindow::None,
         ] {
             let mut coordinator = ViewportFocusCoordinator::default();
-            publish_platform_focus(
-                &mut coordinator,
-                focus_observation(5, focus),
-                1,
-                PlatformFocusRestoreGate::KnownAllReleased,
-            );
+            publish_platform_focus(&mut coordinator, focus_observation(5, focus), 1);
             coordinator.reconcile_workspace_replacement(&[(predecessor, successor)]);
             let expected_ui_focus = match focus {
                 GlobalFocusedWindow::Foreign => CurrentUiFocus::External,
@@ -5779,16 +5624,11 @@ mod tests {
                 coordinator.panel_focus(predecessor.surface()),
                 PanelFocusRecord::NoHistory
             );
-            if focus == GlobalFocusedWindow::Dock(predecessor) {
-                let expected = focus_observation(5, GlobalFocusedWindow::Dock(successor));
+            if focus == GlobalFocusedWindow::Dock(predecessor.window()) {
+                let expected = focus_observation(5, GlobalFocusedWindow::Dock(successor.window()));
                 assert_eq!(coordinator.focus_observation(), Some(expected));
                 assert!(matches!(
-                    publish_platform_focus(
-                        &mut coordinator,
-                        expected,
-                        2,
-                        PlatformFocusRestoreGate::KnownAllReleased,
-                    ),
+                    publish_platform_focus(&mut coordinator, expected, 2,),
                     FocusObservationTransition::Duplicate
                 ));
                 assert!(matches!(
@@ -5796,7 +5636,6 @@ mod tests {
                         &mut coordinator,
                         focus_observation(6, GlobalFocusedWindow::Foreign),
                         3,
-                        PlatformFocusRestoreGate::KnownAllReleased,
                     ),
                     FocusObservationTransition::Applied(_)
                 ));
@@ -5816,9 +5655,8 @@ mod tests {
         let mut revoked = ViewportFocusCoordinator::default();
         publish_platform_focus(
             &mut revoked,
-            focus_observation(5, GlobalFocusedWindow::Dock(predecessor)),
+            focus_observation(5, GlobalFocusedWindow::Dock(predecessor.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         revoked.focus_observations.observe(None);
         revoked.reconcile_workspace_replacement(&[(predecessor, successor)]);
@@ -5834,21 +5672,15 @@ mod tests {
     fn repeated_workspace_replacement_cannot_turn_revoked_focus_into_no_history() {
         for last in [
             focus_tombstone(5),
-            focus_observation(5, GlobalFocusedWindow::Dock(binding())),
+            focus_observation(5, GlobalFocusedWindow::Dock(binding().window())),
         ] {
             let mut coordinator = ViewportFocusCoordinator::default();
             publish_platform_focus(
                 &mut coordinator,
-                focus_observation(3, GlobalFocusedWindow::Dock(binding())),
+                focus_observation(3, GlobalFocusedWindow::Dock(binding().window())),
                 1,
-                PlatformFocusRestoreGate::KnownAllReleased,
             );
-            publish_platform_focus(
-                &mut coordinator,
-                last,
-                2,
-                PlatformFocusRestoreGate::KnownAllReleased,
-            );
+            publish_platform_focus(&mut coordinator, last, 2);
             let stream = coordinator.focus_observations;
             for _ in 0..2 {
                 coordinator.reconcile_workspace_replacement(&[]);
@@ -5876,31 +5708,22 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(99, GlobalFocusedWindow::Dock(binding())),
+            focus_observation(99, GlobalFocusedWindow::Dock(binding().window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
 
         coordinator.reconcile_workspace_replacement(&[]);
-        let replacement = focus_observation(1, GlobalFocusedWindow::Dock(second_binding()));
+        let replacement =
+            focus_observation(1, GlobalFocusedWindow::Dock(second_binding().window()));
         assert!(matches!(
-            publish_platform_focus(
-                &mut coordinator,
-                replacement,
-                2,
-                PlatformFocusRestoreGate::KnownAllReleased,
-            ),
+            publish_platform_focus(&mut coordinator, replacement, 2,),
             FocusObservationTransition::Stale { .. }
         ));
         assert_eq!(coordinator.focus_observation(), None);
-        let replacement = focus_observation(100, GlobalFocusedWindow::Dock(second_binding()));
+        let replacement =
+            focus_observation(100, GlobalFocusedWindow::Dock(second_binding().window()));
         assert!(matches!(
-            publish_platform_focus(
-                &mut coordinator,
-                replacement,
-                3,
-                PlatformFocusRestoreGate::KnownAllReleased
-            ),
+            publish_platform_focus(&mut coordinator, replacement, 3,),
             FocusObservationTransition::Applied(_)
         ));
         assert_eq!(coordinator.focus_observation(), Some(replacement));
@@ -5921,14 +5744,12 @@ mod tests {
         coordinator: &mut ViewportFocusCoordinator,
         observation: FocusObservationEnvelope,
         pane_generation: u64,
-        gate: PlatformFocusRestoreGate,
     ) -> FocusObservationTransition {
         let bindings = [binding(), second_binding()];
         coordinator
             .publish_platform_focus_observation(
                 observation,
                 focus_stamp(pane_generation),
-                gate,
                 |candidate| bindings.contains(&candidate),
                 |candidate| bindings.contains(&candidate),
                 |_| false,
@@ -5959,7 +5780,6 @@ mod tests {
             &mut coordinator,
             focus_observation(1, GlobalFocusedWindow::Foreign),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let older_request = ViewportActivationRequest::tear_off_committed(
             older,
@@ -6078,7 +5898,7 @@ mod tests {
             .focus_observations
             .force_current_for_test(FocusObservationEnvelope::new(
                 FocusObservationGeneration::new(1),
-                Authority::Known(GlobalFocusedWindow::Dock(target)),
+                Authority::Known(GlobalFocusedWindow::Dock(target.window())),
                 Authority::Known(None),
             ));
         coordinator.exhaust_pane_intent_ids();
@@ -6097,103 +5917,203 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_mouse_down_suppresses_only_ordinary_platform_restore() {
-        let target = second_binding();
+    fn physical_window_focus_never_restores_a_surface_history() {
+        let first = binding();
+        let second = second_binding();
         let mut coordinator = ViewportFocusCoordinator::default();
-        let _ = publish_platform_focus(
-            &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(binding())),
-            1,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
         coordinator
             .panel_focus_by_surface
-            .insert(target.surface(), PanelFocusRecord::Item(ItemId::new(2)));
-
-        let suppressed = publish_platform_focus(
-            &mut coordinator,
-            focus_observation(2, GlobalFocusedWindow::Dock(target)),
-            2,
-            PlatformFocusRestoreGate::KnownDown,
-        );
-        let FocusObservationTransition::Applied(suppressed) = suppressed else {
-            panic!("new focus must be accepted");
-        };
-        assert!(suppressed.pane_intent().is_none());
-
-        let _ = publish_platform_focus(
-            &mut coordinator,
-            focus_observation(3, GlobalFocusedWindow::Foreign),
-            3,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
-        let restored = publish_platform_focus(
-            &mut coordinator,
-            focus_observation(4, GlobalFocusedWindow::Dock(target)),
-            4,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
-        let FocusObservationTransition::Applied(restored) = restored else {
-            panic!("later focus must be accepted");
-        };
+            .insert(first.surface(), PanelFocusRecord::Item(ItemId::new(1)));
+        coordinator
+            .panel_focus_by_surface
+            .insert(second.surface(), PanelFocusRecord::Item(ItemId::new(2)));
+        for (index, focused) in [
+            GlobalFocusedWindow::Dock(first.window()),
+            GlobalFocusedWindow::Dock(second.window()),
+            GlobalFocusedWindow::Foreign,
+            GlobalFocusedWindow::Dock(first.window()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let transition = publish_platform_focus(
+                &mut coordinator,
+                focus_observation(index as u64 + 1, focused),
+                index as u64 + 1,
+            );
+            let FocusObservationTransition::Applied(applied) = transition else {
+                panic!("each next focus fact must be accepted");
+            };
+            assert!(applied.pane_intent().is_none());
+            assert!(coordinator.pending_pane_intent().is_none());
+            assert_eq!(coordinator.winning_focus_target(), None);
+            assert_eq!(
+                coordinator.current_focus(),
+                Some(match focused {
+                    GlobalFocusedWindow::Foreign => CurrentUiFocus::External,
+                    GlobalFocusedWindow::Dock(_) => CurrentUiFocus::Unknown,
+                    GlobalFocusedWindow::None => CurrentUiFocus::None,
+                })
+            );
+        }
         assert_eq!(
-            restored.pane_intent().map(PaneFocusIntent::source),
-            Some(PaneFocusIntentSource::PlatformActivation)
+            coordinator.panel_focus(first.surface()),
+            PanelFocusRecord::Item(ItemId::new(1))
+        );
+        assert_eq!(
+            coordinator.panel_focus(second.surface()),
+            PanelFocusRecord::Item(ItemId::new(2))
         );
     }
 
-    #[test]
-    fn unknown_button_authority_cannot_restore_ordinary_pane_focus() {
-        assert!(PlatformFocusRestoreGate::KnownAllReleased.allows_ordinary_restore());
-        assert!(!PlatformFocusRestoreGate::KnownDown.allows_ordinary_restore());
-        assert!(!PlatformFocusRestoreGate::Unknown.allows_ordinary_restore());
+    fn shared_window_sibling() -> ViewportBinding {
+        ViewportBinding::new(
+            binding().authority_domain(),
+            binding().epoch(),
+            SurfaceId::new(2),
+            binding().token(),
+            binding().incarnation(),
+        )
     }
 
     #[test]
-    fn destroyed_previous_focus_suppresses_one_ordinary_restore() {
-        let target = second_binding();
+    fn shared_window_focus_preserves_an_exact_pane_fact_without_selecting_a_sibling() {
+        let first = binding();
+        let second = shared_window_sibling();
+        let is_current = |binding| binding == first || binding == second;
+        let item_is_current = |surface, item| {
+            (surface == first.surface() && item == ItemId::new(1))
+                || (surface == second.surface() && item == ItemId::new(2))
+        };
         let mut coordinator = ViewportFocusCoordinator::default();
-        let _ = publish_platform_focus(
-            &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(binding())),
-            1,
-            PlatformFocusRestoreGate::KnownAllReleased,
+        coordinator
+            .publish_focus_observation(
+                focus_observation(1, GlobalFocusedWindow::Dock(first.window())),
+                focus_stamp(1),
+                is_current,
+                item_is_current,
+            )
+            .expect("the physical window is observable");
+        assert_eq!(coordinator.current_focus(), Some(CurrentUiFocus::Unknown));
+        let observed = coordinator.publish_pane_focus_observation(
+            PaneFocusObservation::new(
+                PaneFocusObservationGeneration::new(1),
+                second,
+                PanelFocus::Item(ItemId::new(2)),
+            ),
+            is_current,
+            item_is_current,
+        );
+        assert!(matches!(
+            observed,
+            PaneFocusObservationTransition::Applied { .. }
+        ));
+        assert_eq!(
+            coordinator.current_pane_focus(second.surface()),
+            Some(ItemId::new(2))
         );
         coordinator
-            .panel_focus_by_surface
-            .insert(target.surface(), PanelFocusRecord::Item(ItemId::new(2)));
-        assert!(coordinator.observe_destroyed_binding(binding()));
-
-        let suppressed = publish_platform_focus(
-            &mut coordinator,
-            focus_observation(2, GlobalFocusedWindow::Dock(target)),
-            2,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
-        let FocusObservationTransition::Applied(suppressed) = suppressed else {
-            panic!("fallback focus must be accepted");
-        };
-        assert!(suppressed.pane_intent().is_none());
-
-        let _ = publish_platform_focus(
-            &mut coordinator,
-            focus_observation(3, GlobalFocusedWindow::Foreign),
-            3,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
-        let restored = publish_platform_focus(
-            &mut coordinator,
-            focus_observation(4, GlobalFocusedWindow::Dock(target)),
-            4,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
-        let FocusObservationTransition::Applied(restored) = restored else {
-            panic!("later platform focus must be accepted");
-        };
+            .publish_focus_observation(
+                focus_observation(2, GlobalFocusedWindow::Dock(first.window())),
+                focus_stamp(2),
+                is_current,
+                item_is_current,
+            )
+            .expect("the next fact describes the same physical window");
         assert_eq!(
-            restored.pane_intent().map(PaneFocusIntent::source),
-            Some(PaneFocusIntentSource::PlatformActivation)
+            coordinator.current_pane_focus(second.surface()),
+            Some(ItemId::new(2))
         );
+        assert_eq!(coordinator.current_pane_focus(first.surface()), None);
+        assert!(coordinator.pending_pane_intent().is_none());
+        assert_eq!(
+            coordinator.workspace_replacement_focus(),
+            WorkspaceReplacementFocus::Dock {
+                surface: second.surface(),
+                item: Some(ItemId::new(2))
+            }
+        );
+        coordinator.clear_binding(first);
+        assert_eq!(
+            coordinator.current_pane_focus(second.surface()),
+            Some(ItemId::new(2))
+        );
+        assert!(matches!(
+            coordinator.focus_observation().map(|observation| *observation.focused()),
+            Some(Authority::Known(GlobalFocusedWindow::Dock(window))) if window == first.window()
+        ));
+    }
+
+    #[test]
+    fn shared_window_activation_keeps_its_exact_pane_target_without_an_os_focus_effect() {
+        let first = binding();
+        let second = shared_window_sibling();
+        let is_current = |binding| binding == first || binding == second;
+        let item_is_current = |surface, item| {
+            (surface == first.surface() && item == ItemId::new(1))
+                || (surface == second.surface() && item == ItemId::new(2))
+        };
+        let mut coordinator = ViewportFocusCoordinator::default();
+        coordinator
+            .publish_focus_observation(
+                focus_observation(1, GlobalFocusedWindow::Dock(first.window())),
+                focus_stamp(1),
+                is_current,
+                item_is_current,
+            )
+            .expect("the physical window is observable");
+        let start = coordinator
+            .request_activation(
+                ViewportActivationRequest::explicit(second, PanelFocus::Item(ItemId::new(2))),
+                focus_stamp(2),
+                false,
+                is_current,
+                item_is_current,
+            )
+            .expect("a sibling in the focused window needs no native activation control");
+        let ActivationStartOutcome::PaneFocusReady { intent } = start.outcome() else {
+            panic!("the exact semantic target must receive a pane request immediately");
+        };
+        assert_eq!(intent.native_guard(), Some(second));
+        assert_eq!(intent.surface(), second.surface());
+        assert!(coordinator.pending_activation().is_none());
+        assert_eq!(coordinator.current_pane_focus(second.surface()), None);
+        coordinator.mark_boundary_published();
+        let sibling = coordinator.publish_pane_focus_observation(
+            PaneFocusObservation::new(
+                PaneFocusObservationGeneration::new(1),
+                first,
+                PanelFocus::Item(ItemId::new(1)),
+            )
+            .acknowledging(intent.id()),
+            is_current,
+            item_is_current,
+        );
+        assert!(matches!(
+            sibling,
+            PaneFocusObservationTransition::Rejected(
+                PaneFocusObservationRejection::IntentBindingMismatch
+            )
+        ));
+        assert_eq!(coordinator.pending_pane_intent(), Some(intent));
+        let exact = coordinator.publish_pane_focus_observation(
+            PaneFocusObservation::new(
+                PaneFocusObservationGeneration::new(1),
+                second,
+                PanelFocus::Item(ItemId::new(2)),
+            )
+            .acknowledging(intent.id()),
+            is_current,
+            item_is_current,
+        );
+        assert!(
+            matches!(exact, PaneFocusObservationTransition::Applied { cleared_intent: Some(id), .. } if id == intent.id())
+        );
+        assert_eq!(
+            coordinator.current_pane_focus(second.surface()),
+            Some(ItemId::new(2))
+        );
+        assert!(coordinator.pending_pane_intent().is_none());
     }
 
     #[test]
@@ -6201,12 +6121,7 @@ mod tests {
         let target = second_binding();
         let mut coordinator = ViewportFocusCoordinator::default();
         let baseline = focus_tombstone(1);
-        publish_platform_focus(
-            &mut coordinator,
-            baseline,
-            1,
-            PlatformFocusRestoreGate::KnownAllReleased,
-        );
+        publish_platform_focus(&mut coordinator, baseline, 1);
         let request = ViewportActivationRequest::explicit(target, PanelFocus::Item(ItemId::new(2)));
         let unsupported = coordinator
             .request_activation(
@@ -6251,12 +6166,7 @@ mod tests {
             FocusEffectAttachment::Applied
         );
         assert!(matches!(
-            publish_platform_focus(
-                &mut coordinator,
-                baseline,
-                4,
-                PlatformFocusRestoreGate::KnownAllReleased,
-            ),
+            publish_platform_focus(&mut coordinator, baseline, 4,),
             FocusObservationTransition::Duplicate
         ));
         assert!(coordinator.pending_activation().is_some());
@@ -6264,9 +6174,8 @@ mod tests {
 
         let completed = publish_platform_focus(
             &mut coordinator,
-            focus_observation(2, GlobalFocusedWindow::Dock(target)),
+            focus_observation(2, GlobalFocusedWindow::Dock(target.window())),
             5,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let FocusObservationTransition::Applied(completed) = completed else {
             panic!("a fresh exact native focus observation must complete activation");
@@ -6324,16 +6233,14 @@ mod tests {
     }
 
     #[test]
-    fn explicit_activation_bypasses_both_platform_restore_gates() {
+    fn explicit_activation_completes_only_its_requested_pane() {
         let target = second_binding();
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(binding())),
+            focus_observation(1, GlobalFocusedWindow::Dock(binding().window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
-        assert!(coordinator.observe_destroyed_binding(binding()));
         let start = coordinator
             .request_activation(
                 ViewportActivationRequest::explicit(target, PanelFocus::Item(ItemId::new(2))),
@@ -6351,9 +6258,8 @@ mod tests {
 
         let completed = publish_platform_focus(
             &mut coordinator,
-            focus_observation(2, GlobalFocusedWindow::Dock(target)),
+            focus_observation(2, GlobalFocusedWindow::Dock(target.window())),
             3,
-            PlatformFocusRestoreGate::KnownDown,
         );
         let FocusObservationTransition::Applied(completed) = completed else {
             panic!("explicit target focus must be accepted");
@@ -6378,9 +6284,8 @@ mod tests {
         let mut unissued = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut unissued,
-            focus_observation(1, GlobalFocusedWindow::Dock(current)),
+            focus_observation(1, GlobalFocusedWindow::Dock(current.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let start = unissued
             .request_activation(
@@ -6405,9 +6310,8 @@ mod tests {
         let mut emitted = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut emitted,
-            focus_observation(1, GlobalFocusedWindow::Dock(current)),
+            focus_observation(1, GlobalFocusedWindow::Dock(current.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let start = emitted
             .request_activation(
@@ -6437,9 +6341,8 @@ mod tests {
 
         let settled = emitted
             .publish_platform_focus_observation(
-                focus_observation(2, GlobalFocusedWindow::Dock(target)),
+                focus_observation(2, GlobalFocusedWindow::Dock(target.window())),
                 focus_stamp(3),
-                PlatformFocusRestoreGate::KnownDown,
                 binding_is_live,
                 |candidate| candidate == current,
                 |_| false,
@@ -6478,9 +6381,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(current)),
+            focus_observation(1, GlobalFocusedWindow::Dock(current.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let start = coordinator
             .request_activation(
@@ -6512,9 +6414,8 @@ mod tests {
 
         let settled = coordinator
             .publish_platform_focus_observation(
-                focus_observation(2, GlobalFocusedWindow::Dock(target)),
+                focus_observation(2, GlobalFocusedWindow::Dock(target.window())),
                 focus_stamp(3),
-                PlatformFocusRestoreGate::KnownDown,
                 binding_is_live,
                 |candidate| candidate == current,
                 |_| false,
@@ -6561,9 +6462,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(target)),
+            focus_observation(1, GlobalFocusedWindow::Dock(target.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
 
         let recovery = coordinator
@@ -6614,7 +6514,6 @@ mod tests {
             &mut coordinator,
             focus_observation(1, GlobalFocusedWindow::Foreign),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let request = ViewportActivationRequest::explicit(target, PanelFocus::Item(ItemId::new(1)));
         let owner = NativeCreateSagaId::new(1);
@@ -6664,9 +6563,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(target)),
+            focus_observation(1, GlobalFocusedWindow::Dock(target.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
 
         let explicit = coordinator
@@ -6721,9 +6619,8 @@ mod tests {
         let mut lower_first = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut lower_first,
-            focus_observation(1, GlobalFocusedWindow::Dock(target)),
+            focus_observation(1, GlobalFocusedWindow::Dock(target.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let lower = lower_first
             .request_activation(
@@ -6771,9 +6668,8 @@ mod tests {
         let mut higher_first = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut higher_first,
-            focus_observation(1, GlobalFocusedWindow::Dock(target)),
+            focus_observation(1, GlobalFocusedWindow::Dock(target.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let _ = higher_first
             .request_activation(
@@ -6883,7 +6779,6 @@ mod tests {
             &mut coordinator,
             focus_observation(1, GlobalFocusedWindow::Foreign),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
 
         assert!(coordinator.reserve_activation_causal(
@@ -6941,9 +6836,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(current)),
+            focus_observation(1, GlobalFocusedWindow::Dock(current.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(coordinator.reserve_activation_causal(
             NativeCreateSagaId::new(1),
@@ -6953,12 +6847,11 @@ mod tests {
 
         let staging_focus = coordinator
             .publish_platform_focus_observation(
-                focus_observation(2, GlobalFocusedWindow::Dock(staging)),
+                focus_observation(2, GlobalFocusedWindow::Dock(staging.window())),
                 focus_stamp(3),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 |candidate| candidate == current,
                 |candidate| candidate == current,
-                |candidate| candidate == staging,
+                |candidate| candidate == staging.window(),
                 |surface, item| surface == staging.surface() && item == ItemId::new(2),
             )
             .expect("a structurally exact staging focus fact must be retained");
@@ -6998,9 +6891,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(winner)),
+            focus_observation(1, GlobalFocusedWindow::Dock(winner.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let selected = coordinator
             .request_activation(
@@ -7073,12 +6965,15 @@ mod tests {
 
         let late_auto_focus = coordinator
             .publish_platform_focus_observation(
-                focus_observation(2, GlobalFocusedWindow::Dock(older)),
+                focus_observation(2, GlobalFocusedWindow::Dock(older.window())),
                 focus_stamp(3),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 binding_is_live,
                 binding_is_live,
-                |candidate| suppressed.contains(&candidate),
+                |candidate| {
+                    suppressed
+                        .iter()
+                        .any(|binding| binding.window() == candidate)
+                },
                 item_is_live,
             )
             .expect("the delayed auto-focus fact must remain isolated from pane arbitration");
@@ -7091,9 +6986,8 @@ mod tests {
 
         let winner_restored = coordinator
             .publish_platform_focus_observation(
-                focus_observation(3, GlobalFocusedWindow::Dock(winner)),
+                focus_observation(3, GlobalFocusedWindow::Dock(winner.window())),
                 focus_stamp(4),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 binding_is_live,
                 binding_is_live,
                 |_| false,
@@ -7111,9 +7005,8 @@ mod tests {
 
         let later_user_focus = coordinator
             .publish_platform_focus_observation(
-                focus_observation(4, GlobalFocusedWindow::Dock(older)),
+                focus_observation(4, GlobalFocusedWindow::Dock(older.window())),
                 focus_stamp(5),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 binding_is_live,
                 binding_is_live,
                 |_| false,
@@ -7124,7 +7017,7 @@ mod tests {
             later_user_focus,
             FocusObservationTransition::Applied(_)
         ));
-        assert_eq!(coordinator.winning_focus_target(), Some(older));
+        assert_eq!(coordinator.winning_focus_target(), None);
     }
 
     #[test]
@@ -7179,11 +7072,10 @@ mod tests {
             .publish_platform_focus_observation(
                 FocusObservationEnvelope::new(
                     FocusObservationGeneration::new(2),
-                    Authority::Known(GlobalFocusedWindow::Dock(old_winner)),
+                    Authority::Known(GlobalFocusedWindow::Dock(old_winner.window())),
                     Authority::Known(Some(old_effect)),
                 ),
                 focus_stamp(5),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 binding_is_live,
                 binding_is_live,
                 |_| false,
@@ -7206,11 +7098,10 @@ mod tests {
             .publish_platform_focus_observation(
                 FocusObservationEnvelope::new(
                     FocusObservationGeneration::new(3),
-                    Authority::Known(GlobalFocusedWindow::Dock(new_winner)),
+                    Authority::Known(GlobalFocusedWindow::Dock(new_winner.window())),
                     Authority::Known(Some(successor_effect)),
                 ),
                 focus_stamp(6),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 binding_is_live,
                 binding_is_live,
                 |_| false,
@@ -7248,9 +7139,8 @@ mod tests {
 
         let replacement_focus = publish_platform_focus(
             &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(older)),
+            focus_observation(1, GlobalFocusedWindow::Dock(older.window())),
             4,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(
             replacement_focus,
@@ -7260,21 +7150,19 @@ mod tests {
             coordinator
                 .focus_observation()
                 .map(|observation| *observation.focused()),
-            Some(Authority::Known(GlobalFocusedWindow::Dock(older)))
+            Some(Authority::Known(GlobalFocusedWindow::Dock(older.window())))
         );
         let _ = publish_platform_focus(
             &mut coordinator,
             focus_observation(2, GlobalFocusedWindow::Foreign),
             5,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(3, GlobalFocusedWindow::Dock(older)),
+            focus_observation(3, GlobalFocusedWindow::Dock(older.window())),
             6,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
-        assert_eq!(coordinator.winning_focus_target(), Some(older));
+        assert_eq!(coordinator.winning_focus_target(), None);
     }
 
     #[test]
@@ -7282,9 +7170,8 @@ mod tests {
         let (mut coordinator, older, _winner, barrier, effect) = pending_lifecycle_focus_barrier();
         let isolated = publish_platform_focus(
             &mut coordinator,
-            focus_observation(2, GlobalFocusedWindow::Dock(older)),
+            focus_observation(2, GlobalFocusedWindow::Dock(older.window())),
             4,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(isolated, FocusObservationTransition::Applied(_)));
         assert_ne!(coordinator.winning_focus_target(), Some(older));
@@ -7303,24 +7190,22 @@ mod tests {
 
         let reconciled = publish_platform_focus(
             &mut coordinator,
-            focus_observation(3, GlobalFocusedWindow::Dock(older)),
+            focus_observation(3, GlobalFocusedWindow::Dock(older.window())),
             5,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(reconciled, FocusObservationTransition::Applied(_)));
-        assert_eq!(coordinator.winning_focus_target(), Some(older));
+        assert_eq!(coordinator.winning_focus_target(), None);
 
         let duplicate_target = publish_platform_focus(
             &mut coordinator,
-            focus_observation(4, GlobalFocusedWindow::Dock(older)),
+            focus_observation(4, GlobalFocusedWindow::Dock(older.window())),
             6,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert!(matches!(
             duplicate_target,
             FocusObservationTransition::Applied(_)
         ));
-        assert_eq!(coordinator.winning_focus_target(), Some(older));
+        assert_eq!(coordinator.winning_focus_target(), None);
     }
 
     #[test]
@@ -7336,11 +7221,10 @@ mod tests {
             .publish_platform_focus_observation(
                 FocusObservationEnvelope::new(
                     FocusObservationGeneration::new(2),
-                    Authority::Known(GlobalFocusedWindow::Dock(older)),
+                    Authority::Known(GlobalFocusedWindow::Dock(older.window())),
                     Authority::Known(Some(effect)),
                 ),
                 focus_stamp(4),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 binding_is_live,
                 binding_is_live,
                 |_| false,
@@ -7389,7 +7273,6 @@ mod tests {
                     Authority::Known(Some(effect)),
                 ),
                 focus_stamp(4),
-                PlatformFocusRestoreGate::Unknown,
                 binding_is_live,
                 binding_is_live,
                 |_| false,
@@ -7427,9 +7310,8 @@ mod tests {
 
         let late_old_target = coordinator
             .publish_platform_focus_observation(
-                focus_observation(3, GlobalFocusedWindow::Dock(older)),
+                focus_observation(3, GlobalFocusedWindow::Dock(older.window())),
                 focus_stamp(5),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 binding_is_live,
                 binding_is_live,
                 |_| false,
@@ -7459,11 +7341,10 @@ mod tests {
             .publish_platform_focus_observation(
                 FocusObservationEnvelope::new(
                     FocusObservationGeneration::new(4),
-                    Authority::Known(GlobalFocusedWindow::Dock(winner)),
+                    Authority::Known(GlobalFocusedWindow::Dock(winner.window())),
                     Authority::Known(Some(replacement_effect)),
                 ),
                 focus_stamp(6),
-                PlatformFocusRestoreGate::KnownAllReleased,
                 binding_is_live,
                 binding_is_live,
                 |_| false,
@@ -7488,9 +7369,8 @@ mod tests {
         let mut coordinator = ViewportFocusCoordinator::default();
         let _ = publish_platform_focus(
             &mut coordinator,
-            focus_observation(1, GlobalFocusedWindow::Dock(target)),
+            focus_observation(1, GlobalFocusedWindow::Dock(target.window())),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         let _ = coordinator.publish_pane_focus_observation(
             PaneFocusObservation::new(
@@ -7707,7 +7587,6 @@ mod tests {
             &mut coordinator,
             focus_observation(1, GlobalFocusedWindow::Foreign),
             1,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert_eq!(
             coordinator.workspace_replacement_focus(),
@@ -7726,7 +7605,6 @@ mod tests {
             &mut coordinator,
             focus_observation(2, GlobalFocusedWindow::Foreign),
             3,
-            PlatformFocusRestoreGate::KnownAllReleased,
         );
         assert_eq!(
             coordinator.pending_pane_intent().unwrap().id(),
@@ -7818,7 +7696,7 @@ mod tests {
         let mut after = before.clone();
         let _ = after
             .publish_focus_observation(
-                focus_observation(1, GlobalFocusedWindow::Dock(target)),
+                focus_observation(1, GlobalFocusedWindow::Dock(target.window())),
                 focus_stamp(1),
                 |candidate| candidate == target,
                 |_, item| item == ItemId::new(1),
@@ -7922,7 +7800,7 @@ mod tests {
         let mut after = before.clone();
         let _ = after
             .publish_focus_observation(
-                focus_observation(1, GlobalFocusedWindow::Dock(target)),
+                focus_observation(1, GlobalFocusedWindow::Dock(target.window())),
                 focus_stamp(1),
                 |candidate| candidate == target,
                 |_, item| item == ItemId::new(1) || item == ItemId::new(2),

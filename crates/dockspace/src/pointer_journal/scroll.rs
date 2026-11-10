@@ -77,10 +77,7 @@ impl ScrollDelta {
 impl PhysicalScrollCoordinates {
     /// Creates exact conversion authority for one physical-pixel sample.
     #[must_use]
-    pub const fn new(
-        binding: ViewportBinding,
-        coordinate_generation: CoordinateGeneration,
-    ) -> Self {
+    pub const fn new(binding: WindowBinding, coordinate_generation: CoordinateGeneration) -> Self {
         Self {
             binding,
             coordinate_generation,
@@ -89,7 +86,7 @@ impl PhysicalScrollCoordinates {
 
     /// Returns the native viewport incarnation whose scale converts the sample.
     #[must_use]
-    pub const fn binding(self) -> ViewportBinding {
+    pub const fn binding(self) -> WindowBinding {
         self.binding
     }
 
@@ -238,8 +235,7 @@ impl ScrollEdge {
             }),
             Authority::Known(delivery),
         ) = (self.delta, self.delivery)
-            && (delivery.binding() != Some(coordinates.binding())
-                || delivery.coordinate_generation() != coordinates.coordinate_generation())
+            && delivery.binding().map(ViewportBinding::window) != Some(coordinates.binding())
         {
             return Err(ScrollEdgeError::PhysicalDeltaEndpointMismatch);
         }

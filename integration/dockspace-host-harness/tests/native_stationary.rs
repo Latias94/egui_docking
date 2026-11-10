@@ -1,5 +1,8 @@
 //! Native stationary work through real receiver records and exact output settlement.
 
+use dockspace::runtime::{NativeWindowBinding, NativeWindowHit, SurfacePresentationArtifact};
+use std::cell::Cell;
+
 use std::time::Duration;
 
 use dockspace::geometry::{
@@ -53,8 +56,11 @@ fn geometry() -> NativeLocalGeometry {
     NativeLocalGeometry::new(
         PhysicalSize::new(1200.0, 900.0).unwrap(),
         ScaleFactor::new(2.0).unwrap(),
-        ScaleFactor::new(1.5).unwrap(),
     )
+}
+
+fn presentation_scale() -> ScaleFactor {
+    ScaleFactor::new(1.5).unwrap()
 }
 
 fn window_facts(with_origin: bool) -> NativeWindowFacts {
@@ -62,7 +68,7 @@ fn window_facts(with_origin: bool) -> NativeWindowFacts {
     let facts = NativeWindowFacts::live()
         .with_content_size(geometry.content_size())
         .with_native_scale_factor(geometry.native_scale_factor())
-        .with_presentation_scale_factor(geometry.presentation_scale_factor())
+        .with_presentation_scale_factor(presentation_scale())
         .with_input(NativeWindowInputState::ReceivesInput, None)
         .with_presentation(NativeWindowPresentationState::Visible);
     if with_origin {
@@ -108,6 +114,7 @@ struct Tab {
 }
 
 struct Scene {
+    presentation: Cell<Option<(NativeWindowBinding, SurfacePresentationArtifact)>>,
     recording: RecordingRenderer,
     tabs: Vec<Tab>,
     focus: Option<DockspacePaneFocusRequest>,
@@ -130,7 +137,21 @@ impl Scene {
         point
     }
 
-    fn answer(&self, query: NativeReceiverQuery) -> NativeReceiverAnswer {
+    fn answer(&self, query: impl Into<NativeReceiverQuery>) -> NativeReceiverAnswer {
+        let query = match query.into() {
+            NativeReceiverQuery::WindowHit(query) => {
+                let (window, artifact) = self
+                    .presentation
+                    .get()
+                    .expect("a receiver scene must retain its exact painted output");
+                return NativeReceiverAnswer::WindowHit(if query.window() == window {
+                    NativeWindowHit::Surface(artifact)
+                } else {
+                    NativeWindowHit::Unknown
+                });
+            }
+            NativeReceiverQuery::Surface(query) => query,
+        };
         assert_eq!(query.surface(), SURFACE);
         let Some(point) = query.point() else {
             return NativeReceiverAnswer::Unknown;
@@ -238,6 +259,7 @@ fn render(frame: &mut DockspaceHostFrame<'_>, width: f64) -> Scene {
     }
     frame.confirm_surface_painted(receipt).unwrap();
     Scene {
+        presentation: Cell::new(None),
         recording,
         tabs,
         focus,
@@ -256,6 +278,9 @@ fn take_output(
         scene.recording.records.last(),
         Some(OwnedRecord::SurfaceEnd(semantic)) if output.matches_semantic_output(*semantic)
     ));
+    scene
+        .presentation
+        .set(Some((binding.window(), output.presentation_artifact())));
     output
 }
 
@@ -339,19 +364,20 @@ fn sample(
     binding: NativeSurfaceBinding,
     point: LogicalPoint,
 ) -> NativeLocalPointerSample {
-    let scale = geometry().presentation_scale_factor().get();
+    let scale = presentation_scale().get();
+    let client = PhysicalPoint::new(point.x() * scale, point.y() * scale).unwrap();
     let sample = coordinates
         .capture(
-            binding,
+            binding.window(),
             NativeLocalPointerFact::new(
-                PhysicalPoint::new(point.x() * scale, point.y() * scale).unwrap(),
+                client,
                 geometry().content_size(),
                 geometry().native_scale_factor(),
             ),
             geometry(),
         )
         .unwrap();
-    assert_eq!(sample.surface_position(), point);
+    assert_eq!(sample.client_position(), client);
     sample
 }
 
@@ -359,12 +385,12 @@ fn desktop_location(
     binding: NativeSurfaceBinding,
     point: LogicalPoint,
 ) -> NativeDesktopPointerLocation {
-    let scale = geometry().presentation_scale_factor().get();
+    let scale = presentation_scale().get();
     NativeDesktopPointerLocation::new(
         NativeDesktopPosition::Exact(
             PhysicalPoint::new(400.0 + point.x() * scale, -300.0 + point.y() * scale).unwrap(),
         ),
-        NativePointerHover::Dock(binding),
+        NativePointerHover::Dock(binding.window()),
         None,
     )
 }
@@ -382,7 +408,7 @@ fn observed_input(
             POINTER,
             event,
             NativeLocalPointerLocation::Exact(sample(coordinates, binding, point)),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
             capture,
         )
     } else {
@@ -390,7 +416,7 @@ fn observed_input(
             POINTER,
             event,
             desktop_location(binding, point),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
             capture,
         )
     };
@@ -421,7 +447,7 @@ fn input(
         if matches!(event, Event::ButtonReleased(_) | Event::ContactEnded(_)) {
             NativePointerOwner::None
         } else {
-            NativePointerOwner::Native(binding)
+            NativePointerOwner::Native(binding.window())
         },
         metadata,
     )
@@ -567,7 +593,7 @@ fn native_hover_dwell_is_read_only_and_retries_the_recorded_due_sample_once() {
                 request,
                 Duration::from_millis(159),
                 Device::Mouse,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ))
             .unwrap();
         assert!(session.native_pointer_continuation().is_none());
@@ -581,12 +607,17 @@ fn native_hover_dwell_is_read_only_and_retries_the_recorded_due_sample_once() {
                 request,
                 request.deadline(),
                 Device::Mouse,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ))
             .unwrap();
         let recorded = session.native_input_recorded_count();
         let mut abandoned = session
             .begin_native_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return current.answer(query),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 assert_eq!(query.metadata(), at(Device::Mouse, 160));
                 assert!(query.matches_native_binding(binding));
                 current.answer(query)
@@ -604,6 +635,11 @@ fn native_hover_dwell_is_read_only_and_retries_the_recorded_due_sample_once() {
 
         let mut retry = session
             .begin_native_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return current.answer(query),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 assert_eq!(query.metadata(), at(Device::Mouse, 160));
                 current.answer(query)
             })
@@ -630,7 +666,7 @@ fn native_hover_dwell_is_read_only_and_retries_the_recorded_due_sample_once() {
                 request,
                 Duration::from_millis(161),
                 Device::Mouse,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ))
             .unwrap();
         assert!(idle(&mut session).inputs().is_empty());
@@ -649,6 +685,11 @@ fn native_hover_dwell_is_read_only_and_retries_the_recorded_due_sample_once() {
         let report = finish(
             session
                 .begin_native_host_frame(|query| {
+                    let query = match query {
+                        NativeReceiverQuery::WindowHit(_) => return fresh.answer(query),
+                        NativeReceiverQuery::Surface(query) => query,
+                    };
+
                     NativeReceiverAnswer::Blocked(query.presented_surface())
                 })
                 .unwrap(),
@@ -755,7 +796,7 @@ fn native_touch_long_press_arms_then_contact_end_delivers_before_its_reorder_out
                 request,
                 Duration::from_millis(349),
                 Device::Touch,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ))
             .unwrap();
         assert!(reduce(&mut session, &scene).inputs().is_empty());
@@ -765,7 +806,7 @@ fn native_touch_long_press_arms_then_contact_end_delivers_before_its_reorder_out
                 request,
                 request.deadline(),
                 Device::Touch,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ))
             .unwrap();
         let recorded = session.native_input_recorded_count();
@@ -909,7 +950,7 @@ fn native_dwell_unknown_delivery_preserves_the_held_gesture_for_rearm_and_releas
             let version = session.version();
             let request = start_drag(&mut session, lane, binding, &scene, target);
             let capture = if known_capture {
-                NativePointerOwner::Native(binding)
+                NativePointerOwner::Native(binding.window())
             } else {
                 NativePointerOwner::Unknown
             };
@@ -936,7 +977,7 @@ fn native_dwell_unknown_delivery_preserves_the_held_gesture_for_rearm_and_releas
                     request,
                     Duration::from_millis(161),
                     Device::Mouse,
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                 ))
                 .unwrap();
             let duplicate = idle(&mut session);
@@ -966,7 +1007,7 @@ fn native_dwell_unknown_delivery_preserves_the_held_gesture_for_rearm_and_releas
                     rearmed,
                     rearmed.deadline(),
                     Device::Mouse,
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                 ))
                 .unwrap();
             let mut frame = session
@@ -1079,15 +1120,18 @@ fn native_dwell_revokes_unknown_capture_or_receiver_and_cancels_foreign_capture(
             let version = session.version();
             let request = start_drag(&mut session, lane, binding, &scene, target);
             let stale = session.presented_surface(SURFACE).unwrap();
-            if failure == "stale-receiver" {
-                let (_, output) = paint(&mut session, binding);
+            let fresh_scene = if failure == "stale-receiver" {
+                let (fresh, output) = paint(&mut session, binding);
                 present(&mut session, output);
                 assert_ne!(session.presented_surface(SURFACE), Some(stale));
-            }
+                Some(fresh)
+            } else {
+                None
+            };
             let capture = match failure {
                 "unknown-capture" => NativePointerOwner::Unknown,
                 "foreign-capture" => NativePointerOwner::Foreign,
-                _ => NativePointerOwner::Native(binding),
+                _ => NativePointerOwner::Native(binding.window()),
             };
             session
                 .record_native_pointer(continuation(
@@ -1099,13 +1143,21 @@ fn native_dwell_revokes_unknown_capture_or_receiver_and_cancels_foreign_capture(
                 .unwrap();
             let report = finish(
                 session
-                    .begin_native_host_frame(|query| match failure {
-                        "unknown-capture" | "foreign-capture" => {
-                            panic!("unproven native capture must not generate receiver challenges")
+                    .begin_native_host_frame(|query| {
+                        if matches!(failure, "unknown-capture" | "foreign-capture") {
+                            panic!("unproven native capture must not generate receiver challenges");
                         }
-                        "blocked" => NativeReceiverAnswer::Blocked(query.presented_surface()),
-                        "stale-receiver" => NativeReceiverAnswer::ClearHoverLane(stale),
-                        _ => NativeReceiverAnswer::Unknown,
+                        let query = match query {
+                            NativeReceiverQuery::WindowHit(_) => {
+                                return fresh_scene.as_ref().unwrap_or(&scene).answer(query);
+                            }
+                            NativeReceiverQuery::Surface(query) => query,
+                        };
+                        match failure {
+                            "blocked" => NativeReceiverAnswer::Blocked(query.presented_surface()),
+                            "stale-receiver" => NativeReceiverAnswer::ClearHoverLane(stale),
+                            _ => NativeReceiverAnswer::Unknown,
+                        }
                     })
                     .unwrap(),
             );
@@ -1121,7 +1173,7 @@ fn native_dwell_revokes_unknown_capture_or_receiver_and_cancels_foreign_capture(
                         request,
                         Duration::from_millis(161),
                         Device::Mouse,
-                        NativePointerOwner::Native(binding),
+                        NativePointerOwner::Native(binding.window()),
                     ))
                     .unwrap();
                 assert!(!idle(&mut session).workspace_changed());
@@ -1141,6 +1193,13 @@ fn native_dwell_revokes_unknown_capture_or_receiver_and_cancels_foreign_capture(
             let report = finish(
                 session
                     .begin_native_host_frame(|query| {
+                        let query = match query {
+                            NativeReceiverQuery::WindowHit(_) => {
+                                return fresh_scene.as_ref().unwrap_or(&scene).answer(query);
+                            }
+                            NativeReceiverQuery::Surface(query) => query,
+                        };
+
                         NativeReceiverAnswer::Blocked(query.presented_surface())
                     })
                     .unwrap(),
@@ -1169,13 +1228,18 @@ fn wrong_native_receiver_winner_rolls_back_the_due_input_and_retries_with_curren
                 request,
                 request.deadline(),
                 Device::Mouse,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ))
             .unwrap();
         let recorded = session.native_input_recorded_count();
         assert!(
             session
                 .begin_native_host_frame(|query| {
+                    let query = match query {
+                        NativeReceiverQuery::WindowHit(_) => return current.answer(query),
+                        NativeReceiverQuery::Surface(query) => query,
+                    };
+
                     assert_eq!(query.point(), Some(target));
                     NativeReceiverAnswer::NoReceiver(query.presented_surface())
                 })
@@ -1236,6 +1300,11 @@ fn same_native_pointer_scroll_revokes_touch_deadline_and_observes_capture_loss()
             let report = finish(
                 session
                     .begin_native_host_frame(|query| {
+                        let query = match query {
+                            NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                            NativeReceiverQuery::Surface(query) => query,
+                        };
+
                         assert!(matches!(
                             query.purpose(),
                             NativeReceiverPurpose::ScrollDelivery(_)
@@ -1256,7 +1325,7 @@ fn same_native_pointer_scroll_revokes_touch_deadline_and_observes_capture_loss()
                     binding,
                     Event::CaptureChanged,
                     source,
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                     at(Device::Touch, 30),
                 ))
                 .unwrap();
@@ -1267,7 +1336,7 @@ fn same_native_pointer_scroll_revokes_touch_deadline_and_observes_capture_loss()
                     request,
                     request.deadline(),
                     Device::Touch,
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                 ))
                 .unwrap();
             assert!(idle(&mut session).inputs().is_empty());
@@ -1322,7 +1391,7 @@ fn non_primary_native_capture_edges_revoke_the_old_wake_and_cancel_known_loss() 
                     binding,
                     Event::ButtonReleased(Button::Secondary),
                     target,
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                     at(Device::Mouse, 30),
                 ))
                 .unwrap();
@@ -1336,7 +1405,7 @@ fn non_primary_native_capture_edges_revoke_the_old_wake_and_cancel_known_loss() 
                     request,
                     request.deadline(),
                     Device::Mouse,
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                 ))
                 .unwrap();
             assert!(!idle(&mut session).workspace_changed());
@@ -1356,6 +1425,11 @@ fn non_primary_native_capture_edges_revoke_the_old_wake_and_cancel_known_loss() 
             let report = finish(
                 session
                     .begin_native_host_frame(|query| {
+                        let query = match query {
+                            NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                            NativeReceiverQuery::Surface(query) => query,
+                        };
+
                         NativeReceiverAnswer::Blocked(query.presented_surface())
                     })
                     .unwrap(),
@@ -1389,6 +1463,11 @@ fn native_continuation_cannot_borrow_another_pointer_or_reused_stream() {
                 finish(
                     session
                         .begin_native_host_frame(|query| {
+                            let query = match query {
+                                NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                                NativeReceiverQuery::Surface(query) => query,
+                            };
+
                             NativeReceiverAnswer::Blocked(query.presented_surface())
                         })
                         .unwrap(),
@@ -1420,15 +1499,15 @@ fn native_continuation_cannot_borrow_another_pointer_or_reused_stream() {
                     pointer,
                     request.event(),
                     NativeLocalPointerLocation::Exact(sample(coordinates, binding, target)),
-                    NativePointerOwner::Native(binding),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
+                    NativePointerOwner::Native(binding.window()),
                 ),
                 None => NativePointerInput::new(
                     pointer,
                     request.event(),
                     desktop_location(binding, target),
-                    NativePointerOwner::Native(binding),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
+                    NativePointerOwner::Native(binding.window()),
                 ),
             }
             .with_metadata(at(Device::Mouse, 160));
@@ -1456,7 +1535,7 @@ fn native_continuation_cannot_borrow_another_pointer_or_reused_stream() {
 }
 
 #[test]
-fn native_local_coordinate_rebase_revokes_the_wake_and_drains_the_old_sample_terminal() {
+fn native_local_placement_rebase_revokes_the_wake_and_drains_the_old_sample_terminal() {
     let (mut session, binding, scene) = fixture(false);
     let target = scene.point(SECOND, 0.625);
     let request = start_drag(&mut session, Lane::Local, binding, &scene, target);
@@ -1473,7 +1552,7 @@ fn native_local_coordinate_rebase_revokes_the_wake_and_drains_the_old_sample_ter
         .unwrap();
     assert!(session.native_pointer_continuation().is_none());
     assert!(!idle(&mut session).workspace_changed());
-    assert_ne!(session.native_local_coordinates(binding), Some(coordinates));
+    assert_eq!(session.native_local_coordinates(binding), Some(coordinates));
     assert!(session.native_pointer_continuation().is_none());
     session
         .record_native_pointer(observed_input(
@@ -1485,7 +1564,14 @@ fn native_local_coordinate_rebase_revokes_the_wake_and_drains_the_old_sample_ter
             at(Device::Mouse, 160),
         ))
         .unwrap();
-    let terminal = idle(&mut session);
+    let terminal = finish(
+        session
+            .begin_native_host_frame(|query| {
+                assert!(matches!(query, NativeReceiverQuery::WindowHit(_)));
+                scene.answer(query)
+            })
+            .unwrap(),
+    );
     assert!(!terminal.workspace_changed());
     assert_eq!(session.version(), version);
     assert!(session.view().item(FIRST).unwrap().is_selected());
@@ -1510,8 +1596,8 @@ fn an_obsolete_local_token_after_handoff_cannot_cancel_the_desktop_drag() {
                 POINTER,
                 Event::Moved,
                 packet,
-                NativePointerOwner::Native(binding),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
+                NativePointerOwner::Native(binding.window()),
             )
             .with_metadata(at(Device::Mouse, 20)),
         )
@@ -1527,7 +1613,7 @@ fn an_obsolete_local_token_after_handoff_cannot_cancel_the_desktop_drag() {
             local,
             local.deadline(),
             Device::Mouse,
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
         ))
         .unwrap();
     assert!(idle(&mut session).inputs().is_empty());
@@ -1674,6 +1760,11 @@ fn native_pointer_capture_request_precedes_timed_work_and_keeps_exact_drag_ident
     let released = finish(
         session
             .begin_native_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 NativeReceiverAnswer::Blocked(query.presented_surface())
             })
             .unwrap(),
@@ -1742,7 +1833,7 @@ fn native_pointer_capture_request_excludes_local_mouse_and_native_touch_drags() 
                     pressed,
                     pressed.deadline(),
                     device,
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                 ))
                 .unwrap();
             assert!(!reduce(&mut session, &scene).workspace_changed());
@@ -1792,8 +1883,8 @@ fn native_pointer_capture_request_rejects_foreign_sources_and_ends_on_cancel_or_
                         POINTER,
                         Event::CaptureChanged,
                         desktop_location(foreign, target),
-                        NativePointerOwner::Native(foreign),
-                        NativePointerOwner::Native(foreign),
+                        NativePointerOwner::Native(foreign.window()),
+                        NativePointerOwner::Native(foreign.window()),
                     )
                     .with_metadata(at(Device::Mouse, 20)),
                 )
@@ -1900,7 +1991,7 @@ fn native_capture_acquisition_restarts_overdue_dwell_without_executing_it() {
             request,
             Duration::from_millis(240),
             Device::Mouse,
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
         ))
         .unwrap();
     assert!(idle(&mut session).inputs().is_empty());
@@ -1911,12 +2002,17 @@ fn native_capture_acquisition_restarts_overdue_dwell_without_executing_it() {
                 restarted,
                 Duration::from_millis(millis),
                 Device::Mouse,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ))
             .unwrap();
         let report = finish(
             session
                 .begin_native_host_frame(|query| {
+                    let query = match query {
+                        NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                        NativeReceiverQuery::Surface(query) => query,
+                    };
+
                     assert_eq!(query.metadata(), at(Device::Mouse, millis));
                     assert_eq!(query.point(), Some(target));
                     assert!(query.matches_native_binding(binding));
@@ -2011,7 +2107,7 @@ fn native_capture_acquisition_from_an_older_challenge_restarts_the_current_targe
             restarted,
             restarted.deadline(),
             Device::Mouse,
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
         ))
         .unwrap();
     let selected = reduce(&mut session, &scene);
@@ -2037,13 +2133,13 @@ fn native_capture_acquisition_retries_dropped_frames_and_rejects_foreign_or_stal
     for delivery_foreign in [false, true] {
         let (delivery, capture) = if delivery_foreign {
             (
-                NativePointerOwner::Native(foreign),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(foreign.window()),
+                NativePointerOwner::Native(binding.window()),
             )
         } else {
             (
-                NativePointerOwner::Native(binding),
-                NativePointerOwner::Native(foreign),
+                NativePointerOwner::Native(binding.window()),
+                NativePointerOwner::Native(foreign.window()),
             )
         };
         let invalid = NativePointerInput::new(
@@ -2122,6 +2218,11 @@ fn native_capture_acquisition_retries_dropped_frames_and_rejects_foreign_or_stal
     let released = finish(
         session
             .begin_native_host_frame(|query| {
+                let query = match query {
+                    NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                    NativeReceiverQuery::Surface(query) => query,
+                };
+
                 NativeReceiverAnswer::Blocked(query.presented_surface())
             })
             .unwrap(),
@@ -2289,7 +2390,7 @@ fn native_capture_acquisition_restarts_edge_scroll_and_waits_for_the_exact_outpu
                 wake,
                 Duration::from_millis(millis),
                 Device::Mouse,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
             ))
             .unwrap();
         let mut frame = session
@@ -2307,11 +2408,16 @@ fn native_capture_acquisition_restarts_edge_scroll_and_waits_for_the_exact_outpu
             restarted,
             restarted.deadline(),
             Device::Mouse,
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
         ))
         .unwrap();
     let mut frame = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                NativeReceiverQuery::Surface(query) => query,
+            };
+
             assert_eq!(query.metadata(), at(Device::Mouse, 290));
             assert_eq!(query.point(), Some(edge));
             assert!(query.matches_native_binding(binding));
@@ -2399,7 +2505,7 @@ fn native_capture_acquisition_after_unknown_capture_does_not_restore_a_cleared_t
             request,
             Duration::from_millis(241),
             Device::Mouse,
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
         ))
         .unwrap();
     assert!(idle(&mut session).inputs().is_empty());
@@ -2456,12 +2562,12 @@ fn native_capture_acquisition_with_missing_facts_only_clears_the_timer() {
         let delivery = if unknown_delivery {
             NativePointerOwner::Unknown
         } else {
-            NativePointerOwner::Native(binding)
+            NativePointerOwner::Native(binding.window())
         };
         let capture = if unknown_capture {
             NativePointerOwner::Unknown
         } else {
-            NativePointerOwner::Native(binding)
+            NativePointerOwner::Native(binding.window())
         };
         session
             .record_native_pointer(
@@ -2603,6 +2709,11 @@ fn obsolete_capture_acquisition_still_observes_current_capture_loss() {
         let released = finish(
             session
                 .begin_native_host_frame(|query| {
+                    let query = match query {
+                        NativeReceiverQuery::WindowHit(_) => return scene.answer(query),
+                        NativeReceiverQuery::Surface(query) => query,
+                    };
+
                     NativeReceiverAnswer::Blocked(query.presented_surface())
                 })
                 .unwrap(),
@@ -2638,7 +2749,7 @@ fn obsolete_capture_acquisition_still_observes_current_capture_loss() {
                     POINTER,
                     old.capture_acquired_event().unwrap(),
                     desktop_location(binding, target),
-                    NativePointerOwner::Native(binding),
+                    NativePointerOwner::Native(binding.window()),
                     capture,
                 )
                 .with_metadata(at(Device::Mouse, 50)),
@@ -2708,8 +2819,8 @@ fn a_local_capture_token_cannot_authorize_acquisition_after_desktop_handoff() {
                 POINTER,
                 Event::Moved,
                 packet,
-                NativePointerOwner::Native(binding),
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native(binding.window()),
+                NativePointerOwner::Native(binding.window()),
             )
             .with_metadata(at(Device::Mouse, 20)),
         )

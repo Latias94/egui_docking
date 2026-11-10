@@ -149,7 +149,7 @@ fn native_activation_focus_request_waits_for_observation_commit_and_survives_fra
     assert_eq!(session.pane_focus_request(MAIN_SURFACE), None);
 
     session
-        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding.window()))
         .expect("the admitted activation receives a newer matching focus fact");
     let before = session.version();
     let unpublished = session

@@ -13,8 +13,8 @@ use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::viewport::{
     CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
     InputObservationGeneration, InventoryGeneration, InventoryObservationGeneration,
-    PlatformSnapshotGeneration, PresentationObservationGeneration, ViewportBinding, WindowToken,
-    WorkAreaObservationGeneration, WorkAreaToken,
+    PlatformSnapshotGeneration, PresentationObservationGeneration, ViewportBinding, WindowBinding,
+    WindowToken, WorkAreaObservationGeneration, WorkAreaToken,
 };
 use crate::viewport_focus::FocusObservationEnvelope;
 
@@ -90,7 +90,7 @@ impl WindowCreatePreparationObservation {
     }
 
     fn same_provider_envelope(self, other: Self) -> bool {
-        self.binding == other.binding
+        self.binding.window() == other.binding.window()
             && self.generation == other.generation
             && self.readiness == other.readiness
             && self.acknowledged_create == other.acknowledged_create
@@ -110,10 +110,12 @@ pub(crate) struct WindowCreatePreparationObservationStream {
 impl WindowCreatePreparationObservationStream {
     pub(crate) fn observe(
         &mut self,
-        binding: ViewportBinding,
+        binding: impl Into<WindowBinding>,
         observation: Option<WindowCreatePreparationObservation>,
     ) {
-        let Some(observation) = observation.filter(|observation| observation.binding() == binding)
+        let binding = binding.into();
+        let Some(observation) =
+            observation.filter(|observation| observation.binding().window() == binding)
         else {
             self.requires_tombstone |= self.current.is_some();
             self.current = None;
@@ -853,6 +855,12 @@ impl WindowInputObservation {
     pub fn acknowledges(self, effect: EffectId) -> bool {
         self.acknowledged_effect.acknowledges(effect)
     }
+    fn same_provider_envelope(self, other: Self) -> bool {
+        self.binding.window() == other.binding.window()
+            && self.generation == other.generation
+            && self.state == other.state
+            && self.acknowledged_effect == other.acknowledged_effect
+    }
 }
 
 /// Last authoritative member of one provider-owned per-incarnation stream.
@@ -878,15 +886,16 @@ impl WindowInputObservationStream {
 
     pub(crate) fn observe(
         &mut self,
-        binding: ViewportBinding,
+        binding: impl Into<WindowBinding>,
         observation: Option<WindowInputObservation>,
     ) {
+        let binding = binding.into();
         let Some(observation) = observation else {
             self.current = None;
             self.requires_tombstone |= self.last_generation.is_some();
             return;
         };
-        if observation.binding() != binding {
+        if observation.binding().window() != binding {
             self.current = None;
             self.requires_tombstone |= self.last_generation.is_some();
             return;
@@ -894,7 +903,10 @@ impl WindowInputObservationStream {
         match self.last_generation {
             Some(generation) if observation.generation() < generation => return,
             Some(generation) if observation.generation() == generation => {
-                if self.last_envelope != Some(observation) {
+                if self
+                    .last_envelope
+                    .is_none_or(|last| !last.same_provider_envelope(observation))
+                {
                     self.current = None;
                     self.requires_tombstone = true;
                 }
@@ -996,7 +1008,7 @@ impl WindowPresentationObservation {
     }
 
     fn same_provider_envelope(self, other: Self) -> bool {
-        self.binding == other.binding
+        self.binding.window() == other.binding.window()
             && self.generation == other.generation
             && self.state == other.state
     }
@@ -1014,15 +1026,16 @@ pub(crate) struct WindowPresentationObservationStream {
 impl WindowPresentationObservationStream {
     pub(crate) fn observe(
         &mut self,
-        binding: ViewportBinding,
+        binding: impl Into<WindowBinding>,
         observation: Option<WindowPresentationObservation>,
     ) {
+        let binding = binding.into();
         let Some(observation) = observation else {
             self.current = None;
             self.requires_tombstone |= self.last_generation.is_some();
             return;
         };
-        if observation.binding() != binding {
+        if observation.binding().window() != binding {
             self.current = None;
             self.requires_tombstone |= self.last_generation.is_some();
             return;
@@ -1153,6 +1166,15 @@ impl WindowCoordinateObservation {
             && matches!(self.native_scale_factor, Authority::Known(_))
             && matches!(self.presentation_scale_factor, Authority::Known(_))
     }
+    fn same_provider_envelope(self, other: Self) -> bool {
+        self.binding.window() == other.binding.window()
+            && self.generation == other.generation
+            && self.content_size == other.content_size
+            && self.content_bounds == other.content_bounds
+            && self.outer_bounds == other.outer_bounds
+            && self.native_scale_factor == other.native_scale_factor
+            && self.presentation_scale_factor == other.presentation_scale_factor
+    }
 }
 
 /// Last authoritative member of one provider-owned per-incarnation coordinate stream.
@@ -1172,15 +1194,16 @@ pub(crate) struct WindowCoordinateObservationStream {
 impl WindowCoordinateObservationStream {
     pub(crate) fn observe(
         &mut self,
-        binding: ViewportBinding,
+        binding: impl Into<WindowBinding>,
         observation: Option<WindowCoordinateObservation>,
     ) {
+        let binding = binding.into();
         let Some(observation) = observation else {
             self.current = None;
             self.requires_tombstone |= self.last_generation.is_some();
             return;
         };
-        if observation.binding() != binding {
+        if observation.binding().window() != binding {
             self.current = None;
             self.requires_tombstone |= self.last_generation.is_some();
             return;
@@ -1188,7 +1211,10 @@ impl WindowCoordinateObservationStream {
         match self.last_generation {
             Some(generation) if observation.generation() < generation => return,
             Some(generation) if observation.generation() == generation => {
-                if self.last_envelope != Some(observation) {
+                if self
+                    .last_envelope
+                    .is_none_or(|last| !last.same_provider_envelope(observation))
+                {
                     self.current = None;
                     self.requires_tombstone = true;
                 }
@@ -1340,7 +1366,7 @@ impl WindowCloseObservation {
     }
 
     fn same_provider_envelope(self, other: Self) -> bool {
-        self.binding == other.binding
+        self.binding.window() == other.binding.window()
             && self.generation == other.generation
             && self.state == other.state
             && self.acknowledged_effect == other.acknowledged_effect
@@ -1374,9 +1400,10 @@ impl WindowCloseObservationStream {
 
     pub(crate) fn observe(
         &mut self,
-        binding: ViewportBinding,
+        binding: impl Into<WindowBinding>,
         observation: Option<WindowCloseObservation>,
     ) {
+        let binding = binding.into();
         if self.destroyed {
             return;
         }
@@ -1385,7 +1412,7 @@ impl WindowCloseObservationStream {
             self.requires_tombstone |= self.last_generation.is_some();
             return;
         };
-        if observation.binding() != binding {
+        if observation.binding().window() != binding {
             self.current = None;
             self.requires_tombstone |= self.last_generation.is_some();
             return;
@@ -1870,7 +1897,10 @@ fn validate_focus_window(
     else {
         return Ok(());
     };
-    if windows.iter().any(|window| window.binding() == *binding) {
+    if windows
+        .iter()
+        .any(|window| window.binding().window() == *binding)
+    {
         Ok(())
     } else {
         Err(PlatformSnapshotError::FocusWindowWithoutObservation { binding: *binding })
@@ -2053,7 +2083,7 @@ pub enum PlatformSnapshotError {
     )]
     DestroyedCloseObservationWithWindow { binding: ViewportBinding },
     #[error("global focus names an unobserved docking binding {binding:?}")]
-    FocusWindowWithoutObservation { binding: ViewportBinding },
+    FocusWindowWithoutObservation { binding: WindowBinding },
     #[error("platform snapshot repeats work-area token {token:?}")]
     DuplicateWorkArea { token: WorkAreaToken },
     #[error("platform snapshot contains an empty work area: {token:?}")]
@@ -2973,7 +3003,9 @@ mod tests {
         let current = binding(2);
         let focus = FocusObservationEnvelope::new(
             FocusObservationGeneration::new(1),
-            Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(delayed)),
+            Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(
+                delayed.window(),
+            )),
             Authority::Known(None),
         );
 
@@ -2993,7 +3025,9 @@ mod tests {
                 Vec::new(),
                 unknown_work_areas(1),
             ),
-            Err(PlatformSnapshotError::FocusWindowWithoutObservation { binding: delayed })
+            Err(PlatformSnapshotError::FocusWindowWithoutObservation {
+                binding: delayed.window()
+            })
         );
     }
 

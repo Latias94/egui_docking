@@ -12,6 +12,7 @@ mod storage;
 #[cfg(test)]
 mod tests;
 mod window_binding;
+mod window_hit;
 
 use thiserror::Error;
 
@@ -24,6 +25,7 @@ use crate::backend_ingress::{
     BackendIngressError, BackendIngressOrdinal, BackendIngressPrefixRetirementReceipt,
     BackendIngressRecorder,
 };
+pub use crate::coordinates::NativeSurfacePlacement;
 use crate::engine::EngineInput;
 use crate::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
 use crate::ids::{SurfaceId, WorkspaceEpoch};
@@ -34,8 +36,8 @@ use crate::platform::{
 pub use crate::platform::{NativeCreateReadiness, NativeDragSourceInput};
 use crate::platform_provider::PlatformObservationLease;
 use crate::viewport::{
-    CloseObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaGeneration,
-    WorkAreaToken,
+    CloseObservationGeneration, ViewportBinding, ViewportRole, WindowBinding, WindowToken,
+    WorkAreaGeneration, WorkAreaToken,
 };
 use crate::viewport_registry::ViewportAdmission;
 pub use budget::{NativeInputBudget, NativeMonotonicClock};
@@ -57,9 +59,11 @@ pub use pointer::{
     NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta,
     NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
     NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
+    NativeSurfaceReceiverQuery,
 };
 pub use storage::{NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit};
 pub use window_binding::NativeWindowBinding;
+pub use window_hit::{NativeWindowHit, NativeWindowHitPurpose, NativeWindowHitQuery};
 
 /// Opaque native-window resource key.
 ///
@@ -187,7 +191,7 @@ pub enum NativeWorkAreaRoster {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeGlobalFocus {
     /// One exact current docking window owns native focus.
-    Dock(NativeSurfaceBinding),
+    Dock(NativeWindowBinding),
     /// A non-docking application or system window owns native focus.
     Foreign,
     /// The platform authoritatively reports that no native window is focused.
@@ -342,6 +346,9 @@ pub(super) enum NativeHostProfile {
 }
 
 impl NativeSurfaceBinding {
+    pub(super) const fn core_binding(self) -> ViewportBinding {
+        self.binding
+    }
     pub(super) const fn from_binding(
         provider: PlatformObservationLease,
         binding: ViewportBinding,
@@ -384,6 +391,12 @@ impl NativeSurfaceBinding {
 
     pub(super) fn matches_viewport_binding(self, binding: ViewportBinding) -> bool {
         self.binding == binding
+    }
+}
+
+impl From<NativeSurfaceBinding> for NativeWindowBinding {
+    fn from(binding: NativeSurfaceBinding) -> Self {
+        binding.window()
     }
 }
 
@@ -804,6 +817,12 @@ impl NativeHostErrorKind {
 /// Exact native lifecycle failure retained inside the runtime implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub(super) enum NativePlatformError {
+    #[error("native window binding is stale: {binding:?}")]
+    StaleWindow { binding: NativeWindowBinding },
+    #[error("native snapshot repeats window: {binding:?}")]
+    DuplicateWindow { binding: NativeWindowBinding },
+    #[error("retired native window has live facts: {binding:?}")]
+    RetiredWindowHasLiveFacts { binding: NativeWindowBinding },
     /// A managed token was supplied to an external resource registration.
     #[error("managed window tokens cannot register external resources")]
     InvalidRegistrationToken,
@@ -823,12 +842,6 @@ pub(super) enum NativePlatformError {
     #[error("native surface {surface} binding is stale")]
     StaleSurface {
         /// Stable logical surface named by the stale capability.
-        surface: SurfaceId,
-    },
-    /// A complete snapshot repeated one binding capability.
-    #[error("native snapshot repeats surface {surface}")]
-    DuplicateSurface {
-        /// Duplicated logical surface.
         surface: SurfaceId,
     },
     /// A complete snapshot did not exactly cover the current binding roster.
@@ -864,12 +877,6 @@ pub(super) enum NativePlatformError {
     /// Destroyed inventory facts also carried live-window properties.
     #[error("destroyed native surface {surface} also reported live-window properties")]
     DestroyedSurfaceHasLiveFacts {
-        /// Stable logical surface carrying contradictory facts.
-        surface: SurfaceId,
-    },
-    /// A retired binding was reported as a live window again.
-    #[error("retired native surface {surface} reported live-window facts")]
-    RetiredSurfaceHasLiveFacts {
         /// Stable logical surface carrying contradictory facts.
         surface: SurfaceId,
     },
@@ -932,10 +939,11 @@ impl NativePlatformError {
             Self::ProviderUnavailable => NativeHostErrorKind::NotEnabled,
             Self::ProviderAlreadyEnabled => NativeHostErrorKind::AlreadyEnabled,
             Self::InputCapacity => NativeHostErrorKind::InputCapacity,
-            Self::ProviderSuperseded | Self::StaleSurface { .. } => {
+            Self::ProviderSuperseded | Self::StaleSurface { .. } | Self::StaleWindow { .. } => {
                 NativeHostErrorKind::StaleBinding
             }
-            Self::DuplicateSurface { .. }
+            Self::DuplicateWindow { .. }
+            | Self::RetiredWindowHasLiveFacts { .. }
             | Self::InvalidRegistrationToken
             | Self::IncompleteRoster
             | Self::ContentSizeBoundsMismatch { .. }
@@ -943,7 +951,6 @@ impl NativePlatformError {
             | Self::InvalidPointerFacts
             | Self::CapabilityRosterChanged
             | Self::DestroyedSurfaceHasLiveFacts { .. }
-            | Self::RetiredSurfaceHasLiveFacts { .. }
             | Self::EffectAcknowledgementBindingMismatch { .. }
             | Self::EffectAcknowledgementProviderMismatch { .. } => {
                 NativeHostErrorKind::InvalidFacts
@@ -986,6 +993,15 @@ pub(super) struct RuntimeNativeState {
 struct NativeBindingState {
     binding: ViewportBinding,
     admission: Option<ViewportAdmission>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeWindowState {
+    binding: WindowBinding,
+    // Legacy platform envelopes retain their original correlation tag. It is
+    // never used to select a placement or to grant surface input authority.
+    observation_binding: ViewportBinding,
+    current: bool,
     cleanup_observation: bool,
     window_generation: u64,
     close_generation: u64,
@@ -994,6 +1010,7 @@ struct NativeBindingState {
 #[derive(Debug, PartialEq, Eq)]
 struct NativeProducerState {
     bindings: Vec<NativeBindingState>,
+    windows: Vec<NativeWindowState>,
     work_areas: Vec<WorkAreaToken>,
     work_area_generation: WorkAreaGeneration,
 }
@@ -1006,11 +1023,18 @@ impl NativeProducerState {
             .and_then(|index| self.bindings.get(index))
     }
 
-    fn binding_mut(&mut self, binding: ViewportBinding) -> Option<&mut NativeBindingState> {
-        self.bindings
+    fn window(&self, binding: WindowBinding) -> Option<&NativeWindowState> {
+        self.windows
             .binary_search_by_key(&binding, |state| state.binding)
             .ok()
-            .and_then(|index| self.bindings.get_mut(index))
+            .and_then(|index| self.windows.get(index))
+    }
+
+    fn window_mut(&mut self, binding: WindowBinding) -> Option<&mut NativeWindowState> {
+        self.windows
+            .binary_search_by_key(&binding, |state| state.binding)
+            .ok()
+            .and_then(|index| self.windows.get_mut(index))
     }
 
     fn prepare(
@@ -1022,20 +1046,43 @@ impl NativeProducerState {
             limit.validate()?;
         }
         let registry = engine.viewport().registry();
-        let mut binding_count = previous.map_or(0, |producer| producer.bindings.len());
-        for (_, record) in registry.records() {
-            if previous.is_none_or(|producer| producer.binding(record.binding()).is_none()) {
-                binding_count = binding_count
-                    .checked_add(1)
-                    .ok_or(NativePlatformError::InputCapacity)?;
-            }
-            if limit.is_some_and(|limit| binding_count > limit.binding_slots().get()) {
-                return Err(NativePlatformError::InputCapacity);
-            }
-        }
+        let obsolete_live_placement = |state: &NativeBindingState| {
+            registry.window(state.binding.window()).is_some()
+                && registry.placement_record(state.binding).is_none()
+                && !engine
+                    .viewport()
+                    .recognizes_retired_native_binding(state.binding)
+        };
+        let retained_bindings = previous.map_or(0, |producer| {
+            producer
+                .bindings
+                .iter()
+                .filter(|state| !obsolete_live_placement(state))
+                .count()
+        });
+        let new_bindings = registry
+            .records()
+            .filter(|(_, record)| {
+                previous.is_none_or(|producer| producer.binding(record.binding()).is_none())
+            })
+            .count();
+        let binding_count = retained_bindings
+            .checked_add(new_bindings)
+            .ok_or(NativePlatformError::InputCapacity)?;
+        let new_windows = registry
+            .windows()
+            .filter(|window| {
+                previous.is_none_or(|producer| producer.window(window.binding()).is_none())
+            })
+            .count();
+        let window_count = previous
+            .map_or(0, |producer| producer.windows.len())
+            .checked_add(new_windows)
+            .ok_or(NativePlatformError::InputCapacity)?;
         let work_area_count = engine.viewport().work_areas().count();
         if limit.is_some_and(|limit| {
             binding_count > limit.binding_slots().get()
+                || window_count > limit.binding_slots().get()
                 || work_area_count > limit.work_area_slots().get()
         }) {
             return Err(NativePlatformError::InputCapacity);
@@ -1043,24 +1090,33 @@ impl NativeProducerState {
         let mut bindings = storage::producer_buffer(
             limit.map_or(binding_count, |limit| limit.binding_slots().get()),
         )?;
+        let mut windows = storage::producer_buffer(
+            limit.map_or(window_count, |limit| limit.binding_slots().get()),
+        )?;
         let mut work_areas = storage::producer_buffer(
             limit.map_or(work_area_count, |limit| limit.work_area_slots().get()),
         )?;
         if let Some(previous) = previous {
             for state in &previous.bindings {
+                if !obsolete_live_placement(state) {
+                    bindings.push(NativeBindingState {
+                        binding: state.binding,
+                        admission: registry
+                            .placement_record(state.binding)
+                            .map(|record| record.admission()),
+                    });
+                }
+            }
+            for state in &previous.windows {
                 let mut next = *state;
-                next.admission = registry
-                    .record(state.binding.surface())
-                    .filter(|record| record.binding() == state.binding)
-                    .map(|record| record.admission());
-                next.cleanup_observation = engine.viewport().retains_window_cleanup(state.binding);
-                if next.admission.is_none() && !next.cleanup_observation {
-                    // A bare terminal guard accepts only destruction. An exact
-                    // cleanup owner may still need a late window appearance;
-                    // it never returns that incarnation to the current registry.
+                next.current = registry.window(state.binding).is_some();
+                next.cleanup_observation = engine
+                    .viewport()
+                    .retains_window_cleanup(state.observation_binding);
+                if !next.current && !next.cleanup_observation {
                     next.window_generation = 0;
                 }
-                bindings.push(next);
+                windows.push(next);
             }
         }
         for (_, record) in registry.records() {
@@ -1068,6 +1124,15 @@ impl NativeProducerState {
                 bindings.push(NativeBindingState {
                     binding: record.binding(),
                     admission: Some(record.admission()),
+                });
+            }
+        }
+        for window in registry.windows() {
+            if previous.is_none_or(|producer| producer.window(window.binding()).is_none()) {
+                windows.push(NativeWindowState {
+                    binding: window.binding(),
+                    observation_binding: window.observation_binding(),
+                    current: true,
                     cleanup_observation: false,
                     window_generation: 0,
                     close_generation: 0,
@@ -1075,10 +1140,12 @@ impl NativeProducerState {
             }
         }
         bindings.sort_unstable_by_key(|state| state.binding);
+        windows.sort_unstable_by_key(|state| state.binding);
         work_areas.extend(engine.viewport().work_areas().map(|(token, _)| token));
         work_areas.sort_unstable();
         Ok(Self {
             bindings,
+            windows,
             work_areas,
             work_area_generation: engine.viewport().work_area_generation(),
         })
@@ -1088,6 +1155,11 @@ impl NativeProducerState {
         self.bindings
             .capacity()
             .saturating_mul(size_of::<NativeBindingState>())
+            .saturating_add(
+                self.windows
+                    .capacity()
+                    .saturating_mul(size_of::<NativeWindowState>()),
+            )
             .saturating_add(
                 self.work_areas
                     .capacity()
@@ -1153,12 +1225,41 @@ impl RuntimeNativeState {
         })
     }
 
+    pub(super) fn placement_roster_capacity(&self) -> Option<usize> {
+        self.producer_storage_limit
+            .map(|limit| limit.binding_slots().get())
+    }
+
     pub(super) fn contains_binding(&self, binding: NativeSurfaceBinding) -> bool {
         binding.provider == self.provider() && self.binding_is_live(binding)
     }
 
+    pub(super) fn contains_window_binding(&self, binding: NativeWindowBinding) -> bool {
+        binding.provider == self.provider()
+            && self
+                .producer
+                .window(binding.window)
+                .is_some_and(|state| state.current)
+    }
+
     pub(super) fn recognizes_binding(&self, binding: NativeSurfaceBinding) -> bool {
         binding.provider == self.provider() && self.producer.binding(binding.binding).is_some()
+    }
+
+    pub(super) fn recognizes_window_binding(&self, binding: NativeWindowBinding) -> bool {
+        binding.provider == self.provider() && self.producer.window(binding.window).is_some()
+    }
+
+    pub(super) fn window_observation_binding(
+        &self,
+        binding: NativeWindowBinding,
+    ) -> Option<ViewportBinding> {
+        if binding.provider != self.provider() {
+            return None;
+        }
+        self.producer
+            .window(binding.window)
+            .map(|state| state.observation_binding)
     }
 
     pub(super) fn binding_is_live(&self, binding: NativeSurfaceBinding) -> bool {
@@ -1271,6 +1372,16 @@ impl RuntimeNativeState {
             .record_platform_binding_quiescence(binding.binding)
             .map_err(NativePlatformError::from_ingress)?;
         self.producer.bindings.remove(index);
+        if !self
+            .producer
+            .bindings
+            .iter()
+            .any(|state| state.binding.window() == binding.binding.window())
+        {
+            self.producer
+                .windows
+                .retain(|state| state.binding != binding.binding.window());
+        }
         Ok(())
     }
 
@@ -1312,7 +1423,9 @@ impl RuntimeNativeState {
         NativePlatformError,
     > {
         if let NativeGlobalFocus::Dock(binding) = self.focus
-            && !bindings.into_iter().any(|live| live == binding.binding)
+            && !bindings
+                .into_iter()
+                .any(|live| live.window() == binding.window)
         {
             let generation = self.next_focus_generation()?;
             return Ok((
@@ -1323,38 +1436,34 @@ impl RuntimeNativeState {
         Ok((self.current_focus_observation()?, None))
     }
 
-    fn validate_snapshot_roster(
+    fn validate_snapshot_roster<B: Into<NativeWindowBinding>>(
         &self,
-        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+        observations: impl IntoIterator<Item = (B, NativeWindowFacts)>,
     ) -> Result<Vec<NativeSnapshotEntry>, NativePlatformError> {
         if self.binding_roster_unsettled_through.is_some() {
             return Err(NativePlatformError::BindingRosterUnsettled);
         }
         let mut supplied: Vec<NativeSnapshotEntry> = Vec::new();
         for (binding, facts) in observations {
+            let binding = binding.into();
             if binding.provider != self.provider() {
                 return Err(NativePlatformError::ProviderSuperseded);
             }
-            let state = self.producer.binding(binding.binding).ok_or(
-                NativePlatformError::StaleSurface {
-                    surface: binding.surface(),
-                },
-            )?;
-            if state.admission.is_none()
+            let state = self
+                .producer
+                .window(binding.window)
+                .ok_or(NativePlatformError::StaleWindow { binding })?;
+            if !state.current
                 && !state.cleanup_observation
                 && !matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. })
             {
-                return Err(NativePlatformError::RetiredSurfaceHasLiveFacts {
-                    surface: binding.surface(),
-                });
+                return Err(NativePlatformError::RetiredWindowHasLiveFacts { binding });
             }
             if supplied
                 .iter()
-                .any(|entry| entry.binding == binding.binding)
+                .any(|entry| entry.binding.window() == binding.window)
             {
-                return Err(NativePlatformError::DuplicateSurface {
-                    surface: binding.surface(),
-                });
+                return Err(NativePlatformError::DuplicateWindow { binding });
             }
             let close_generation = state
                 .close_generation
@@ -1383,17 +1492,17 @@ impl RuntimeNativeState {
                 }
             }
             supplied.push(NativeSnapshotEntry {
-                binding: binding.binding,
+                binding: state.observation_binding,
                 facts,
                 window_generation,
                 close_generation,
             });
         }
-        supplied.sort_unstable_by_key(|entry| entry.binding);
-        if self.producer.bindings.iter().any(|state| {
-            state.admission.is_some()
+        supplied.sort_unstable_by_key(|entry| entry.binding.window());
+        if self.producer.windows.iter().any(|state| {
+            state.current
                 && supplied
-                    .binary_search_by_key(&state.binding, |entry| entry.binding)
+                    .binary_search_by_key(&state.binding, |entry| entry.binding.window())
                     .is_err()
         }) {
             return Err(NativePlatformError::IncompleteRoster);
@@ -1401,10 +1510,10 @@ impl RuntimeNativeState {
         Ok(supplied)
     }
 
-    fn record_snapshot_facts(
+    fn record_snapshot_facts<B: Into<NativeWindowBinding>>(
         &mut self,
         expected_epoch: WorkspaceEpoch,
-        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+        observations: impl IntoIterator<Item = (B, NativeWindowFacts)>,
         work_areas: NativeWorkAreaRoster,
     ) -> Result<(), NativePlatformError> {
         if self.profile == NativeHostProfile::ObservedRoots
@@ -1427,12 +1536,10 @@ impl RuntimeNativeState {
         let (focus, focus_update) =
             self.focus_observation_for_bindings(supplied.iter().filter_map(|entry| {
                 (matches!(entry.facts.lifecycle, NativeWindowLifecycleFact::Live)
-                    && self.producer.binding(entry.binding).is_some_and(|state| {
-                        matches!(
-                            state.admission,
-                            Some(ViewportAdmission::Admitted | ViewportAdmission::Pending)
-                        )
-                    })
+                    && self
+                        .producer
+                        .window(entry.binding.window())
+                        .is_some_and(|state| state.current)
                     && entry
                         .facts
                         .presentation
@@ -1464,8 +1571,9 @@ impl RuntimeNativeState {
         self.snapshot_generation = generation;
         // All generation candidates remain private until the final recorder
         // append succeeds. Installing them only updates existing lifetime slots.
-        for state in &mut self.producer.bindings {
-            if let Ok(index) = supplied.binary_search_by_key(&state.binding, |entry| entry.binding)
+        for state in &mut self.producer.windows {
+            if let Ok(index) =
+                supplied.binary_search_by_key(&state.binding, |entry| entry.binding.window())
                 && let Some(entry) = supplied.get(index)
             {
                 if matches!(entry.facts.lifecycle, NativeWindowLifecycleFact::Live) {
@@ -1516,10 +1624,8 @@ impl RuntimeNativeState {
             if binding.provider != self.provider() {
                 return Err(NativePlatformError::ProviderSuperseded);
             }
-            if !self.binding_is_live(binding) {
-                return Err(NativePlatformError::StaleSurface {
-                    surface: binding.surface(),
-                });
+            if !self.contains_window_binding(binding) {
+                return Err(NativePlatformError::StaleWindow { binding });
             }
         }
         if self.snapshot_generation == 0 {
@@ -1663,8 +1769,8 @@ impl RuntimeNativeState {
                 NativeGlobalFocus::Dock(focused) => root_continuations
                     .iter()
                     .find_map(|&(before, after)| {
-                        (focused.binding == before).then_some(NativeGlobalFocus::Dock(
-                            NativeSurfaceBinding::from_binding(self.provider(), after),
+                        (focused.window == before.window()).then_some(NativeGlobalFocus::Dock(
+                            NativeWindowBinding::from_binding(self.provider(), after.window()),
                         ))
                     })
                     .unwrap_or(self.focus),

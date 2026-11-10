@@ -37,8 +37,9 @@ impl DockEngine {
             binding: local_binding,
             coordinate_generation,
         } = owner.lane()
-            && (local_binding != binding
-                || coordinates.coordinate_generation() != coordinate_generation)
+            && (local_binding != binding.window()
+                || coordinates.window_coordinates().coordinate_generation()
+                    != coordinate_generation)
         {
             return None;
         }
@@ -49,9 +50,11 @@ impl DockEngine {
         let binding = self.native_stationary_source_identity(owner)?;
         (self
             .pointer_journal
-            .native_primary_press_continuity(owner.stream(), binding)
+            .native_primary_press_continuity(owner.stream(), binding.window())
             && self.interaction.active_journal_capture_authority()
-                == Some(Authority::Known(PointerCaptureOwner::Native(binding))))
+                == Some(Authority::Known(PointerCaptureOwner::Native(
+                    binding.window(),
+                ))))
         .then_some(binding)
     }
 
@@ -74,6 +77,11 @@ impl DockEngine {
             return false;
         };
         if source.surface() == surface {
+            return true;
+        }
+        if self.viewport.viewport(surface).is_some_and(|target| {
+            target.binding().window() == source.window() && target.is_routeable()
+        }) {
             return true;
         }
         owner.is_desktop()
@@ -102,8 +110,9 @@ impl DockEngine {
         self.native_stationary_source(owner).is_some_and(|binding| {
             edge.pointer() == owner.pointer()
                 && edge.delivery_owner()
-                    == Authority::Known(PointerEventDeliveryOwner::Native(binding))
-                && edge.capture_owner() == Authority::Known(PointerCaptureOwner::Native(binding))
+                    == Authority::Known(PointerEventDeliveryOwner::Native(binding.window()))
+                && edge.capture_owner()
+                    == Authority::Known(PointerCaptureOwner::Native(binding.window()))
         })
     }
 

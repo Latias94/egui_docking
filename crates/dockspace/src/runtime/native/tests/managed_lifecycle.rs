@@ -20,7 +20,7 @@ use crate::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use crate::runtime::{
     DockspaceHostFrame, DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
     DockspaceReceiverDescriptor, HostFrameReport, NativeEffectAcknowledgement,
-    NativeEffectOperation, NativeWindowPlacement,
+    NativeEffectOperation, NativeWindowPlacement, SurfacePaintPlan, SurfacePresentationArtifact,
 };
 
 const SECOND_ITEM: ItemId = ItemId::new(2);
@@ -1126,7 +1126,7 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
     assert_dropped_redock_preserves_transition(&mut session, child_binding, child_root);
 
     session
-        .report_native_global_focus(NativeGlobalFocus::Dock(child_binding))
+        .report_native_global_focus(NativeGlobalFocus::Dock(child_binding.window()))
         .expect("the still-live child can own actual OS focus before redock");
     commit_managed_frame(&mut session);
 
@@ -1360,21 +1360,14 @@ fn tracked_application_action_correlation_ignores_an_earlier_pointer_close_reque
     const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 
     let (mut session, root_binding) = programmatic_tear_off_session();
-    let source_receiver = {
-        let mut frame = session
-            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-            .expect("the contained receiver inspection frame begins");
-        let plan = frame
-            .paint_plan(SURFACE)
-            .expect("the contained source plan resolves")
-            .expect("the contained source plan is ready");
+    let source_receiver = presented_receiver(&mut session, |plan| {
         let contained = plan
             .contained()
             .find(|contained| contained.floating() == FLOATING)
             .expect("the contained floating is present");
         plan.receiver_for_contained_close(contained)
             .expect("the contained floating exposes its dock-back receiver")
-    };
+    });
     let source_point = source_receiver.center();
     let source_desktop = PhysicalPoint::new(
         ROOT_ORIGIN_X + source_point.x(),
@@ -1391,11 +1384,11 @@ fn tracked_application_action_correlation_ignores_an_earlier_pointer_close_reque
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             NativeDesktopPointerLocation::new(
                 NativeDesktopPosition::Exact(source_desktop),
-                NativePointerHover::Dock(root_binding),
+                NativePointerHover::Dock(root_binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(root_binding),
-            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding.window()),
+            NativePointerOwner::Native(root_binding.window()),
         ))
         .expect("the exact contained close press records");
     session
@@ -1404,15 +1397,17 @@ fn tracked_application_action_correlation_ignores_an_earlier_pointer_close_reque
             NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
             NativeDesktopPointerLocation::new(
                 NativeDesktopPosition::Exact(source_desktop),
-                NativePointerHover::Dock(root_binding),
+                NativePointerHover::Dock(root_binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding.window()),
             NativePointerOwner::None,
         ))
         .expect("the exact contained close release records");
     let mut release = session
-        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
+        .begin_native_host_frame(with_window_hit(source_receiver, |query| {
+            receiver_answer(query, source_receiver)
+        }))
         .expect("the joined pointer and application frame begins");
     let application_request = release
         .submit_prepared_action(application)
@@ -1464,16 +1459,12 @@ fn tracked_application_action_correlation_ignores_an_earlier_pointer_close_reque
 
 pub(super) fn prepare_native_tear_off_release(
     limit: Option<NativeInputStorageLimit>,
-) -> (
-    DockspaceSession,
-    NativeSurfaceBinding,
-    DockspaceReceiverDescriptor,
-) {
+) -> (DockspaceSession, NativeSurfaceBinding, PresentedReceiver) {
     let (mut session, root_binding) = managed_tear_off_session_with_storage_limit(limit);
     let work_area_binding = session
         .native_work_area(HostWorkAreaToken::new(1))
         .expect("the committed work-area roster mints route authority");
-    let source_receiver = presented_tab_receiver(&mut session, ITEM);
+    let mut source_receiver = presented_tab_receiver(&mut session, ITEM);
     let source_point = source_receiver.center();
     let source_desktop = PhysicalPoint::new(
         ROOT_ORIGIN_X + source_point.x(),
@@ -1489,11 +1480,11 @@ pub(super) fn prepare_native_tear_off_release(
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
             NativeDesktopPointerLocation::new(
                 NativeDesktopPosition::Exact(source_desktop),
-                NativePointerHover::Dock(root_binding),
+                NativePointerHover::Dock(root_binding.window()),
                 None,
             ),
-            NativePointerOwner::Native(root_binding),
-            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding.window()),
+            NativePointerOwner::Native(root_binding.window()),
         ))
         .expect("the exact source press records");
     session
@@ -1505,13 +1496,15 @@ pub(super) fn prepare_native_tear_off_release(
                 NativePointerHover::OutsideAll,
                 Some(work_area_binding),
             ),
-            NativePointerOwner::Native(root_binding),
-            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding.window()),
+            NativePointerOwner::Native(root_binding.window()),
         ))
         .expect("the exact outside-all move records");
 
     let mut route = session
-        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
+        .begin_native_host_frame(with_window_hit(source_receiver, |query| {
+            receiver_answer(query, source_receiver)
+        }))
         .expect("the native drag frame begins");
     assert!(
         program_has_drag_preview(
@@ -1528,7 +1521,8 @@ pub(super) fn prepare_native_tear_off_release(
         .expect("the source-input-preserving frame is painted");
     let mut route_report = route.commit().expect("the preserving route frame commits");
     assert!(route_report.take_native_effects().is_empty());
-    present_surface_outputs(&mut session, &mut route_report);
+    source_receiver.artifact = present_surface_outputs(&mut session, &mut route_report)
+        .expect("the source preview presents its exact output");
 
     session
         .record_native_pointer(NativePointerInput::new(
@@ -1539,12 +1533,14 @@ pub(super) fn prepare_native_tear_off_release(
                 NativePointerHover::OutsideAll,
                 Some(work_area_binding),
             ),
-            NativePointerOwner::Native(root_binding),
-            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding.window()),
+            NativePointerOwner::Native(root_binding.window()),
         ))
         .expect("the confirmed outside-all move records");
     let mut preview = session
-        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
+        .begin_native_host_frame(with_window_hit(source_receiver, |query| {
+            receiver_answer(query, source_receiver)
+        }))
         .expect("the confirmed native preview frame begins");
     assert!(
         program_has_drag_preview(
@@ -1561,7 +1557,8 @@ pub(super) fn prepare_native_tear_off_release(
         .expect("the exact native preview is painted");
     let mut preview_report = preview.commit().expect("the native preview frame commits");
     assert!(preview_report.take_native_effects().is_empty());
-    present_surface_outputs(&mut session, &mut preview_report);
+    source_receiver.artifact = present_surface_outputs(&mut session, &mut preview_report)
+        .expect("the release resolves against the latest source output");
 
     session
         .record_native_pointer(NativePointerInput::new(
@@ -1572,7 +1569,7 @@ pub(super) fn prepare_native_tear_off_release(
                 NativePointerHover::OutsideAll,
                 Some(work_area_binding),
             ),
-            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding.window()),
             NativePointerOwner::None,
         ))
         .expect("the exact outside-all release records");
@@ -1582,7 +1579,9 @@ pub(super) fn prepare_native_tear_off_release(
 fn request_native_create() -> PendingNativeCreate {
     let (mut session, root_binding, source_receiver) = prepare_native_tear_off_release(None);
     let mut release = session
-        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
+        .begin_native_host_frame(with_window_hit(source_receiver, |query| {
+            receiver_answer(query, source_receiver)
+        }))
         .expect("the native release frame begins");
     release
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
@@ -1782,31 +1781,101 @@ fn native_scale() -> ScaleFactor {
     ScaleFactor::new(1.0).expect("the native scale validates")
 }
 
-fn presented_tab_receiver(
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PresentedReceiver {
+    pub(super) descriptor: DockspaceReceiverDescriptor,
+    pub(super) artifact: SurfacePresentationArtifact,
+    window: crate::runtime::NativeWindowBinding,
+}
+
+impl std::ops::Deref for PresentedReceiver {
+    type Target = DockspaceReceiverDescriptor;
+
+    fn deref(&self) -> &Self::Target {
+        &self.descriptor
+    }
+}
+
+impl From<PresentedReceiver> for DockspaceReceiverDescriptor {
+    fn from(receiver: PresentedReceiver) -> Self {
+        receiver.descriptor
+    }
+}
+
+fn presented_receiver(
     session: &mut DockspaceSession,
-    item: ItemId,
-) -> DockspaceReceiverDescriptor {
+    select: impl FnOnce(&SurfacePaintPlan<'_>) -> DockspaceReceiverDescriptor,
+) -> PresentedReceiver {
+    let window = session
+        .native_window_bindings()
+        .find(|window| {
+            session
+                .native_surface_bindings_for_window(*window)
+                .any(|binding| binding.surface() == SURFACE)
+        })
+        .expect("the managed receiver fixture has an exact window");
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .expect("the receiver inspection frame begins");
+        .expect("the receiver paint frame begins");
     let plan = frame
         .paint_plan(SURFACE)
-        .expect("the source plan resolves")
-        .expect("the source plan is ready");
-    let tab = plan
-        .tabs()
-        .find(|tab| tab.item() == item)
-        .expect("the source tab is present");
-    plan.receiver_for_tab_body(tab)
-        .expect("the source tab exposes its exact drag receiver")
+        .expect("the receiver plan resolves")
+        .expect("the receiver surface is paintable");
+    let descriptor = select(&plan);
+    let receipt = plan
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .expect("the receiver's actual surface program executes");
+    frame.confirm_surface_painted(receipt).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut report = frame.commit().expect("the receiver output publishes");
+    let artifact = present_surface_outputs(session, &mut report)
+        .expect("the receiver retains the artifact of its actual output");
+    commit_managed_frame(session);
+    PresentedReceiver {
+        descriptor,
+        artifact,
+        window,
+    }
+}
+
+fn presented_tab_receiver(session: &mut DockspaceSession, item: ItemId) -> PresentedReceiver {
+    presented_receiver(session, |plan| {
+        let tab = plan
+            .tabs()
+            .find(|tab| tab.item() == item)
+            .expect("the source tab is present");
+        plan.receiver_for_tab_body(tab)
+            .expect("the source tab exposes its exact drag receiver")
+    })
+}
+
+pub(super) fn with_window_hit<F>(
+    receiver: PresentedReceiver,
+    mut resolve: F,
+) -> impl FnMut(NativeReceiverQuery) -> NativeReceiverAnswer + use<F>
+where
+    F: FnMut(crate::runtime::NativeSurfaceReceiverQuery) -> NativeReceiverAnswer,
+{
+    move |query| match query {
+        NativeReceiverQuery::WindowHit(query) => {
+            NativeReceiverAnswer::WindowHit(if query.window() == receiver.window {
+                crate::runtime::NativeWindowHit::Surface(receiver.artifact)
+            } else {
+                crate::runtime::NativeWindowHit::Unknown
+            })
+        }
+        NativeReceiverQuery::Surface(query) => resolve(query),
+    }
 }
 
 fn receiver_answer(
-    query: NativeReceiverQuery,
-    descriptor: DockspaceReceiverDescriptor,
+    query: crate::runtime::NativeSurfaceReceiverQuery,
+    descriptor: impl Into<DockspaceReceiverDescriptor>,
 ) -> NativeReceiverAnswer {
     query
-        .bind_receiver(&descriptor)
+        .bind_receiver(&descriptor.into())
         .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
 }
 
@@ -1828,14 +1897,22 @@ fn measure_all_surfaces(session: &mut DockspaceSession) {
     frame.commit().expect("the complete measurements commit");
 }
 
-fn present_surface_outputs(session: &mut DockspaceSession, report: &mut HostFrameReport) {
+fn present_surface_outputs(
+    session: &mut DockspaceSession,
+    report: &mut HostFrameReport,
+) -> Option<SurfacePresentationArtifact> {
     let outputs = report.take_painted_outputs();
     assert!(!outputs.is_empty(), "the frame must emit a painted output");
+    let mut artifact = None;
     for output in outputs {
+        if output.surface() == SURFACE {
+            artifact = Some(output.presentation_artifact());
+        }
         session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .expect("the exact painted output presentation records");
     }
+    artifact
 }
 
 fn commit_managed_frame_report(session: &mut DockspaceSession) -> HostFrameReport {

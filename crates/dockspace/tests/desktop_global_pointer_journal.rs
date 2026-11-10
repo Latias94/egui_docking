@@ -1045,8 +1045,8 @@ fn pressed_desktop_close() -> PressedDesktopCloseFixture {
             POINTER,
             PointerEdgeKind::ButtonPressed(PointerButton::Primary),
             PointerEdgeLocation::Desktop { route },
-            Authority::Known(PointerEventDeliveryOwner::Native(*source_binding)),
-            Authority::Known(PointerCaptureOwner::Native(*source_binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+            Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
         )],
     )
     .expect("desktop close press is contiguous");
@@ -1122,8 +1122,8 @@ fn desktop_close_release_uses_delivery_receiver_independently_from_hover_route()
                 POINTER,
                 PointerEdgeKind::ButtonReleased(PointerButton::Primary),
                 PointerEdgeLocation::Desktop { route },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             )],
         )
         .expect("desktop close release follows the press watermark");
@@ -1466,7 +1466,7 @@ fn desktop_drag_threshold_uses_physical_distance_across_surface_local_spaces() {
                 PointerEdgeLocation::Desktop {
                     route: source_route,
                 },
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             ),
         )
         .expect("cross-surface press stages");
@@ -1503,7 +1503,7 @@ fn desktop_drag_threshold_uses_physical_distance_across_surface_local_spaces() {
                 PointerEdgeLocation::Desktop {
                     route: target_route,
                 },
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             ),
         )
         .expect("cross-surface move stages");
@@ -1557,7 +1557,7 @@ fn active_native_drag() -> ActiveNativeDragFixture {
 
 fn active_native_drag_with_work_area_scale(work_area_scale: f64) -> ActiveNativeDragFixture {
     active_native_drag_from_capture_and_work_area_scale(work_area_scale, |source| {
-        Authority::Known(PointerCaptureOwner::Native(source))
+        Authority::Known(PointerCaptureOwner::Native(source.window()))
     })
 }
 
@@ -1614,7 +1614,7 @@ fn arm_native_drag(
         target_binding,
         target_tabs,
         previous,
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     )
 }
 
@@ -1653,7 +1653,7 @@ fn submit_native_tab_press(
         provider,
         source_binding,
         item,
-        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
         capture,
     )
 }
@@ -1765,7 +1765,7 @@ fn arm_native_drag_with_capture(
         engine,
         host,
         provider,
-        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
         target_binding,
         target_tabs,
         target_point,
@@ -1843,7 +1843,7 @@ fn begin_native_drag_with_capture(
                 PointerEdgeLocation::Desktop {
                     route: source_route,
                 },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
                 capture,
             ),
         )
@@ -1886,7 +1886,7 @@ fn begin_native_drag_with_capture(
                 PointerEdgeLocation::Desktop {
                     route: target_route,
                 },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
                 capture,
             ),
         )
@@ -2035,7 +2035,7 @@ fn external_root_partial_tab_drag_preserves_input_and_continues_on_source() {
         &mut engine,
         &mut host,
         provider,
-        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
         source_binding,
         source_tabs,
         source_point,
@@ -2083,7 +2083,7 @@ fn external_root_partial_tab_drag_preserves_input_and_continues_on_source() {
         &mut engine,
         &mut host,
         provider,
-        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
         source_binding,
         source_tabs,
         LogicalPoint::new(source_point.x() + 8.0, source_point.y())
@@ -2283,7 +2283,7 @@ fn preserve_sources_cross_drop_without_pointer_hit_test_control() {
                 &mut host,
                 provider,
                 source_binding,
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             );
             let (_, target_point) =
                 center_drop_point(interaction(&engine, TARGET_SURFACE), target_tabs);
@@ -2291,12 +2291,12 @@ fn preserve_sources_cross_drop_without_pointer_hit_test_control() {
                 &mut engine,
                 &mut host,
                 provider,
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
                 target_binding,
                 target_tabs,
                 target_point,
                 PointerEdgeKind::Moved,
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
                 1,
             );
 
@@ -2381,7 +2381,7 @@ fn preserve_sources_cross_drop_without_pointer_hit_test_control() {
                 &mut engine,
                 &mut host,
                 provider,
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
                 target_binding,
                 target_tabs,
                 target_point,
@@ -2475,7 +2475,7 @@ fn complete_owned_child_without_pointer_hit_test_control_cannot_route_or_tear_of
             &mut host,
             provider,
             source_binding,
-            Authority::Known(PointerCaptureOwner::Native(source_binding)),
+            Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
         );
         let (_, target_point) =
             center_drop_point(interaction(&engine, TARGET_SURFACE), target_tabs);
@@ -2483,12 +2483,12 @@ fn complete_owned_child_without_pointer_hit_test_control_cannot_route_or_tear_of
             &mut engine,
             &mut host,
             provider,
-            Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
             target_binding,
             target_tabs,
             target_point,
             PointerEdgeKind::Moved,
-            Authority::Known(PointerCaptureOwner::Native(source_binding)),
+            Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             1,
         );
         assert!(matches!(
@@ -2514,8 +2514,8 @@ fn complete_owned_child_without_pointer_hit_test_control_cannot_route_or_tear_of
                 PointerEdgeLocation::Desktop {
                     route: outside_all_route(&engine, outside),
                 },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             );
             let mut frame = host.begin(&engine);
             frame
@@ -2578,7 +2578,7 @@ fn preserve_route_requires_independent_capture_and_exact_delivery_for_cross_drop
                 &mut host,
                 provider,
                 source_binding,
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             );
             let (_, target_point) =
                 center_drop_point(interaction(&engine, TARGET_SURFACE), target_tabs);
@@ -2586,12 +2586,12 @@ fn preserve_route_requires_independent_capture_and_exact_delivery_for_cross_drop
                 &mut engine,
                 &mut host,
                 provider,
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
                 target_binding,
                 target_tabs,
                 target_point,
                 PointerEdgeKind::Moved,
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
                 1,
             );
             assert!(matches!(
@@ -2612,13 +2612,13 @@ fn preserve_route_requires_independent_capture_and_exact_delivery_for_cross_drop
             assert_eq!(engine.viewport().drag_route_effect(POINTER), None);
             let (delivery, capture) = if missing_capture {
                 (
-                    Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                    Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
                     Authority::Unknown(AuthorityUnavailableReason::NotReported),
                 )
             } else {
                 (
                     Authority::Unknown(AuthorityUnavailableReason::NotReported),
-                    Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                    Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
                 )
             };
 
@@ -2721,7 +2721,7 @@ fn failed_pointer_passthrough_route_cancels_drag_and_requests_restore() {
             target_binding,
             target_tabs,
             0,
-            Authority::Known(PointerCaptureOwner::Native(source_binding)),
+            Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
         );
         let effect = effect.expect("a complete owned child must request passthrough");
         let InteractionStatus::Dragging { session } = engine.interaction().status() else {
@@ -2937,7 +2937,7 @@ fn active_control_loss_preserves_cross_drop_or_cancels_passthrough_with_restore(
                 target_tabs,
                 target_point,
                 PointerEdgeKind::Moved,
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             );
             assert!(matches!(
                 continued.reduced_pointer_edges()[0].interaction_outcomes(),
@@ -2968,7 +2968,7 @@ fn active_control_loss_preserves_cross_drop_or_cancels_passthrough_with_restore(
                 &mut engine,
                 &mut host,
                 provider,
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
                 target_binding,
                 target_tabs,
                 target_point,
@@ -3049,7 +3049,7 @@ fn pending_native_control_loss_preserves_exact_output_or_cancels_passthrough_wit
                 PointerEdgeLocation::Desktop {
                     route: outside_all_route(&engine, outside),
                 },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
                 Authority::Known(PointerCaptureOwner::None),
             );
             let mut frame = host.begin(&engine);
@@ -3219,7 +3219,7 @@ fn native_preview_cancels_when_exact_window_placement_is_lost() {
         PointerEdgeLocation::Desktop {
             route: outside_all_route(&engine, outside),
         },
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     let mut frame = host.begin(&engine);
     frame
@@ -3426,7 +3426,7 @@ fn submit_active_drag_edge(
         engine,
         host,
         provider,
-        Authority::Known(PointerEventDeliveryOwner::Native(delivery_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(delivery_binding.window())),
         target_binding,
         target_tabs,
         target_point,
@@ -3554,7 +3554,7 @@ fn native_preview_placement_for_work_area_scale(work_area_scale: f64) -> Physica
         PointerEdgeLocation::Desktop {
             route: outside_all_route(&engine, outside),
         },
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     let mut frame = host.begin(&engine);
     frame
@@ -3622,19 +3622,19 @@ fn native_preview_rejects_when_the_post_move_recovery_host_would_disappear() {
         &mut host,
         provider,
         source_binding,
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     let (_, target_point) = center_drop_point(interaction(&engine, TARGET_SURFACE), target_tabs);
     let _ = submit_active_drag_edge_after(
         &mut engine,
         &mut host,
         provider,
-        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
         target_binding,
         target_tabs,
         target_point,
         PointerEdgeKind::Moved,
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
         1,
     );
     let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
@@ -3644,7 +3644,7 @@ fn native_preview_rejects_when_the_post_move_recovery_host_would_disappear() {
         PointerEdgeLocation::Desktop {
             route: outside_all_route(&engine, outside),
         },
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     let mut frame = host.begin(&engine);
     frame
@@ -3741,7 +3741,7 @@ fn desktop_global_journal_requests_native_create_after_painted_outside_all_previ
             PointerEdgeLocation::Desktop {
                 route: outside_all_route(&engine, outside),
             },
-            Authority::Known(PointerCaptureOwner::Native(source_binding)),
+            Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
         );
         let mut move_frame = host.begin(&engine);
         move_frame
@@ -3801,7 +3801,7 @@ fn desktop_global_journal_requests_native_create_after_painted_outside_all_previ
             PointerEdgeLocation::Desktop {
                 route: outside_all_route(&engine, outside),
             },
-            Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
             Authority::Known(PointerCaptureOwner::None),
         );
         let mut release_frame = host.begin(&engine);
@@ -3887,7 +3887,7 @@ fn desktop_global_journal_unknown_work_area_clears_native_preview_without_fallba
                 Authority::Unknown(AuthorityUnavailableReason::NotReported),
             ),
         },
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     let mut frame = host.begin(&engine);
     frame
@@ -3943,7 +3943,7 @@ fn desktop_global_journal_stale_work_area_generation_cannot_authorize_native_pre
         ACTIVE_DRAG_POINTER_THROUGH,
         PointerEdgeKind::Moved,
         PointerEdgeLocation::Desktop { route },
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     let mut frame = host.begin(&engine);
     frame
@@ -4109,7 +4109,7 @@ fn native_release_pending_cancels_nonfatally_when_lifecycle_capability_is_lost()
         PointerEdgeLocation::Desktop {
             route: outside_all_route(&engine, outside),
         },
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     let mut frame = host.begin(&engine);
     frame
@@ -4189,7 +4189,7 @@ fn non_source_delivery_cancels_an_active_native_drag_fail_closed() {
         let before = engine.workspace().clone();
         let (delivery, expected_reason) = match case {
             0 => (
-                Authority::Known(PointerEventDeliveryOwner::Native(target_binding)),
+                Authority::Known(PointerEventDeliveryOwner::Native(target_binding.window())),
                 InteractionCancelReason::DeliveryOwnerLost,
             ),
             1 => (
@@ -4257,15 +4257,15 @@ fn wrong_known_capture_owner_rejects_primary_press_before_selection_or_gesture()
         provider,
         source_binding,
         ItemId::new(3),
-        Authority::Known(PointerCaptureOwner::Native(target_binding)),
+        Authority::Known(PointerCaptureOwner::Native(target_binding.window())),
     );
 
     assert!(matches!(
         transition.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::Rejected(
             InteractionRejection::CaptureOwnerMismatch { expected, actual }
-        )] if *expected == PointerCaptureOwner::Native(source_binding)
-            && *actual == PointerCaptureOwner::Native(target_binding)
+        )] if *expected == PointerCaptureOwner::Native(source_binding.window())
+            && *actual == PointerCaptureOwner::Native(target_binding.window())
     ));
     assert_eq!(engine.workspace(), &before);
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
@@ -4294,7 +4294,7 @@ fn wrong_native_capture_on_move_cancels_instead_of_updating_the_drag() {
         target_tabs,
         target_point,
         PointerEdgeKind::Moved,
-        Authority::Known(PointerCaptureOwner::Native(target_binding)),
+        Authority::Known(PointerCaptureOwner::Native(target_binding.window())),
     );
 
     assert!(matches!(
@@ -4378,7 +4378,7 @@ fn capture_change_to_another_current_native_window_cancels_desktop_drag() {
         TARGET_ORIGIN_X,
         TARGET_SCALE,
         target_point,
-        Authority::Known(PointerCaptureOwner::Native(target_binding)),
+        Authority::Known(PointerCaptureOwner::Native(target_binding.window())),
     );
 
     assert!(matches!(
@@ -4426,7 +4426,7 @@ fn capture_acquisition_from_unowned_state_is_retained_until_explicit_loss() {
         TARGET_ORIGIN_X,
         TARGET_SCALE,
         target_point,
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     assert!(
         acquired.reduced_pointer_edges()[0]
@@ -4443,12 +4443,12 @@ fn capture_acquisition_from_unowned_state_is_retained_until_explicit_loss() {
         &mut engine,
         &mut host,
         provider,
-        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
         target_binding,
         target_tabs,
         target_point,
         PointerEdgeKind::Moved,
-        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
         2,
     );
     assert!(matches!(
@@ -4523,7 +4523,7 @@ fn stale_native_capture_after_binding_reincarnation_cancels_without_reducing_lat
                     previous,
                     kind,
                     PointerEdgeLocation::Desktop { route },
-                    Authority::Known(PointerCaptureOwner::Native(stale_source_binding)),
+                    Authority::Known(PointerCaptureOwner::Native(stale_source_binding.window())),
                 ),
             )
             .expect("the provider may report the exact retired binding as a fact");
@@ -4604,8 +4604,10 @@ fn assert_stale_native_capture_semantic_edge_cancels(kind: PointerEdgeKind) {
             POINTER,
             kind,
             PointerEdgeLocation::Desktop { route },
-            Authority::Known(PointerEventDeliveryOwner::Native(stale_source_binding)),
-            Authority::Known(PointerCaptureOwner::Native(stale_source_binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native(
+                stale_source_binding.window(),
+            )),
+            Authority::Known(PointerCaptureOwner::Native(stale_source_binding.window())),
         )],
     )
     .expect("one delayed A1 semantic edge is contiguous");
@@ -4696,7 +4698,7 @@ fn stale_native_capture_without_a_gesture_is_a_consumed_no_op() {
             POINTER,
             PointerEdgeKind::CaptureChanged,
             PointerEdgeLocation::Desktop { route },
-            Authority::Known(PointerCaptureOwner::Native(stale_source_binding)),
+            Authority::Known(PointerCaptureOwner::Native(stale_source_binding.window())),
         )],
     )
     .expect("idle stale capture is contiguous");
@@ -4818,8 +4820,8 @@ fn source_coordinate_change_retains_journal_drag_but_requires_fresh_source_prese
             PointerEdgeLocation::Desktop {
                 route: target_route,
             },
-            Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
-            Authority::Known(PointerCaptureOwner::Native(source_binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+            Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
         )],
     )
     .expect("blocked move remains provider-contiguous");
@@ -4898,7 +4900,7 @@ fn target_coordinate_change_precedes_journal_release_and_blocks_delivery() {
             PointerEdgeLocation::Desktop {
                 route: stale_release_route,
             },
-            Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
             Authority::Known(PointerCaptureOwner::None),
         )],
     )
@@ -5109,7 +5111,7 @@ fn desktop_scroll_delivery_route_is_independent_from_hover_route() {
                 Authority::Known(desktop_position),
             ),
         },
-        Authority::Known(PointerEventDeliveryOwner::Native(*source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
         Authority::Known(PointerCaptureOwner::None),
     );
     let journal = PointerEdgeJournal::new(
@@ -5245,8 +5247,8 @@ fn desktop_press_delivery_route_is_independent_from_hover_route() {
                 Authority::Known(desktop_position),
             ),
         },
-        Authority::Known(PointerEventDeliveryOwner::Native(*source_binding)),
-        Authority::Known(PointerCaptureOwner::Native(*source_binding)),
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+        Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
     );
     let mut frame = host.begin(&engine);
     frame
@@ -5406,7 +5408,7 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
                 PointerEdgeLocation::Desktop {
                     route: source_route,
                 },
-                Authority::Known(PointerCaptureOwner::Native(*source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             ),
         )
         .expect("source press freezes one exact receiver candidate");
@@ -5444,7 +5446,7 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
                 PointerEdgeLocation::Desktop {
                     route: target_route,
                 },
-                Authority::Known(PointerCaptureOwner::Native(*source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
             ),
         )
         .expect("target move freezes one exact receiver candidate");
@@ -5543,8 +5545,8 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
             PointerEdgeLocation::Desktop {
                 route: release_route,
             },
-            Authority::Known(PointerEventDeliveryOwner::Native(*source_binding)),
-            Authority::Known(PointerCaptureOwner::Native(*source_binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
+            Authority::Known(PointerCaptureOwner::Native(source_binding.window())),
         )],
     )
     .expect("target-bound release journal is contiguous");
@@ -5641,7 +5643,7 @@ fn platform_destruction_before_release_prevents_stale_cross_window_drop() {
             PointerEdgeLocation::Desktop {
                 route: stale_release_route,
             },
-            Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native(source_binding.window())),
             Authority::Known(PointerCaptureOwner::None),
         )],
     )

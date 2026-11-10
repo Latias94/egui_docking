@@ -203,7 +203,7 @@ impl JournalPointerAuthority {
         let _ = self.captures.remove(&pointer);
     }
 
-    fn references_native_binding(&self, pointer: PointerId, binding: ViewportBinding) -> bool {
+    fn references_native_binding(&self, pointer: PointerId, binding: WindowBinding) -> bool {
         self.captures
             .get(&pointer)
             .is_some_and(|capture| capture.retained_native_binding == Some(binding))
@@ -457,7 +457,7 @@ impl PointerJournalLedger {
     pub(crate) fn native_primary_press_continuity(
         &self,
         stream: PointerStreamId,
-        binding: ViewportBinding,
+        binding: WindowBinding,
     ) -> bool {
         self.active_lease() == Some(stream.lease())
             && matches!(
@@ -598,7 +598,7 @@ impl PointerJournalLedger {
     pub(crate) fn retire_native_binding_input(
         &mut self,
         lease: PointerInputLease,
-        binding: ViewportBinding,
+        binding: WindowBinding,
     ) -> Result<Vec<PointerStreamId>, PointerJournalLedgerError> {
         self.require_active(lease)?;
         let next_version = self.next_version()?;
@@ -1204,7 +1204,7 @@ impl PointerJournalLedger {
             | PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope { .. }) => {
                 if let (Authority::Known(owner), Some(binding)) =
                     (edge.delivery_owner(), endpoint.binding())
-                    && owner != PointerEventDeliveryOwner::Native(binding)
+                    && owner != PointerEventDeliveryOwner::Native(binding.window())
                     && owner != PointerEventDeliveryOwner::ProviderEndpoint
                 {
                     return Err(PointerJournalLedgerError::ScrollDeliveryOwnerMismatch {
@@ -1497,10 +1497,9 @@ mod native_joined_tests {
     fn local_location(binding: ViewportBinding) -> PointerEdgeLocation {
         PointerEdgeLocation::NativeLocal {
             route: Authority::Known(NativeLocalPointerRoute::new(
-                binding,
+                (binding).window(),
                 CoordinateGeneration::new(7),
                 PhysicalPoint::new(40.0, 20.0).expect("physical point"),
-                LogicalPoint::new(20.0, 10.0).expect("logical point"),
             )),
         }
     }
@@ -1530,7 +1529,7 @@ mod native_joined_tests {
             PointerId::new(1),
             kind,
             local_location(binding),
-            Authority::Known(PointerEventDeliveryOwner::Native(binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native((binding).window())),
             Authority::Known(PointerCaptureOwner::None),
         )
     }
@@ -1598,15 +1597,11 @@ mod native_joined_tests {
         else {
             panic!("native client route");
         };
-        assert_eq!(route.binding(), binding);
+        assert_eq!(route.binding(), binding.window());
         assert_eq!(route.coordinate_generation(), CoordinateGeneration::new(7));
         assert_eq!(
             route.client_position(),
             PhysicalPoint::new(40.0, 20.0).unwrap()
-        );
-        assert_eq!(
-            route.surface_position(),
-            LogicalPoint::new(20.0, 10.0).unwrap()
         );
         let implicit = PointerEdge::new(
             PointerEdgeSequence::new(1),
@@ -1719,7 +1714,7 @@ mod native_joined_tests {
             Authority::Unknown(AuthorityUnavailableReason::NotReported)
         );
         let stream = commit_next_edge(&mut ledger, lease, moved);
-        assert!(!ledger.native_primary_press_continuity(stream, native));
+        assert!(!ledger.native_primary_press_continuity(stream, (native).window()));
         let press = edge(
             native,
             PointerEdgeKind::ButtonPressed(PointerButton::Primary),
@@ -1796,7 +1791,7 @@ mod native_joined_tests {
         ));
         for owner in [
             PointerCaptureOwner::ProviderEndpoint,
-            PointerCaptureOwner::Native(foreign),
+            PointerCaptureOwner::Native((foreign).window()),
         ] {
             let mut moved = edge(native, PointerEdgeKind::Moved);
             moved.location = handoff_location(native, native);
@@ -1831,7 +1826,7 @@ mod native_joined_tests {
         }
         for owner in [
             PointerEventDeliveryOwner::ProviderEndpoint,
-            PointerEventDeliveryOwner::Native(foreign),
+            PointerEventDeliveryOwner::Native((foreign).window()),
         ] {
             let mut moved = edge(native, PointerEdgeKind::Moved);
             moved.location = handoff_location(native, native);
@@ -1853,34 +1848,36 @@ mod native_joined_tests {
             native,
             PointerEdgeKind::ButtonPressed(PointerButton::Primary),
         );
-        press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        press.capture_owner = Authority::Known(PointerCaptureOwner::Native((native).window()));
         let stream = commit_next_edge(&mut ledger, lease, press);
         let mut other_pointer = edge(native, PointerEdgeKind::Moved);
         other_pointer.pointer = PointerId::new(2);
-        other_pointer.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        other_pointer.capture_owner =
+            Authority::Known(PointerCaptureOwner::Native((native).window()));
         let other_stream = commit_next_edge(&mut ledger, lease, other_pointer);
         let mut secondary = edge(
             native,
             PointerEdgeKind::ButtonPressed(PointerButton::Secondary),
         );
         secondary.pointer = PointerId::new(3);
-        secondary.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        secondary.capture_owner = Authority::Known(PointerCaptureOwner::Native((native).window()));
         let secondary_stream = commit_next_edge(&mut ledger, lease, secondary);
         let before = ledger.clone();
-        assert!(ledger.native_primary_press_continuity(stream, native));
+        assert!(ledger.native_primary_press_continuity(stream, (native).window()));
         assert_eq!(ledger.button_authority(), AnyButtonDownAuthority::KnownDown);
-        assert!(!ledger.native_primary_press_continuity(other_stream, native));
-        assert!(!ledger.native_primary_press_continuity(secondary_stream, native));
-        assert!(
-            !ledger.native_primary_press_continuity(stream, binding(lease.authority_domain(), 2))
-        );
+        assert!(!ledger.native_primary_press_continuity(other_stream, (native).window()));
+        assert!(!ledger.native_primary_press_continuity(secondary_stream, (native).window()));
+        assert!(!ledger.native_primary_press_continuity(
+            stream,
+            (binding(lease.authority_domain(), 2)).window()
+        ));
         assert!(!ledger.native_primary_press_continuity(
             PointerStreamId::new(lease, stream.pointer(), stream.incarnation() + 1),
-            native,
+            (native).window()
         ));
         assert!(!ledger.native_primary_press_continuity(
             PointerStreamId::new(lease, PointerId::new(4), stream.incarnation()),
-            native,
+            (native).window()
         ));
         let foreign_lease = PointerInputLease::new(
             EngineAuthorityDomainId::new_for_test(2),
@@ -1889,7 +1886,7 @@ mod native_joined_tests {
         );
         assert!(!ledger.native_primary_press_continuity(
             PointerStreamId::new(foreign_lease, stream.pointer(), stream.incarnation()),
-            native,
+            (native).window()
         ));
         assert_eq!(ledger, before);
     }
@@ -1907,39 +1904,40 @@ mod native_joined_tests {
                 native,
                 PointerEdgeKind::ButtonPressed(PointerButton::Primary),
             );
-            press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+            press.capture_owner = Authority::Known(PointerCaptureOwner::Native((native).window()));
             let stream = commit_next_edge(&mut ledger, lease, press);
-            assert!(ledger.native_primary_press_continuity(stream, native));
+            assert!(ledger.native_primary_press_continuity(stream, (native).window()));
             let mut changed = edge(native, PointerEdgeKind::CaptureChanged);
             changed.capture_owner = capture;
             assert_eq!(commit_next_edge(&mut ledger, lease, changed), stream);
             if matches!(capture, Authority::Unknown(_)) {
                 assert_eq!(
                     ledger.authority.captures[&stream.pointer()].retained_native_binding,
-                    Some(native)
+                    Some(native.window())
                 );
             }
             let before = ledger.clone();
-            assert!(!ledger.native_primary_press_continuity(stream, native));
+            assert!(!ledger.native_primary_press_continuity(stream, (native).window()));
             assert_eq!(ledger, before);
             let mut changed = edge(native, PointerEdgeKind::CaptureChanged);
-            changed.capture_owner = Authority::Known(PointerCaptureOwner::Native(binding(
-                lease.authority_domain(),
-                2,
-            )));
+            changed.capture_owner = Authority::Known(PointerCaptureOwner::Native(
+                (binding(lease.authority_domain(), 2)).window(),
+            ));
             commit_next_edge(&mut ledger, lease, changed);
-            assert!(!ledger.native_primary_press_continuity(stream, native));
+            assert!(!ledger.native_primary_press_continuity(stream, (native).window()));
             let mut changed = edge(native, PointerEdgeKind::CaptureChanged);
-            changed.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+            changed.capture_owner =
+                Authority::Known(PointerCaptureOwner::Native((native).window()));
             commit_next_edge(&mut ledger, lease, changed);
-            assert!(ledger.native_primary_press_continuity(stream, native));
+            assert!(ledger.native_primary_press_continuity(stream, (native).window()));
             let mut release = edge(
                 native,
                 PointerEdgeKind::ButtonReleased(PointerButton::Primary),
             );
-            release.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+            release.capture_owner =
+                Authority::Known(PointerCaptureOwner::Native((native).window()));
             commit_next_edge(&mut ledger, lease, release);
-            assert!(!ledger.native_primary_press_continuity(stream, native));
+            assert!(!ledger.native_primary_press_continuity(stream, (native).window()));
         }
     }
 
@@ -1951,10 +1949,9 @@ mod native_joined_tests {
             Authority::Unknown(AuthorityUnavailableReason::NotReported),
             Authority::Known(PointerEventDeliveryOwner::None),
             Authority::Known(PointerEventDeliveryOwner::Foreign),
-            Authority::Known(PointerEventDeliveryOwner::Native(binding(
-                lease.authority_domain(),
-                2,
-            ))),
+            Authority::Known(PointerEventDeliveryOwner::Native(
+                (binding(lease.authority_domain(), 2)).window(),
+            )),
         ] {
             let mut ledger = ledger.clone();
             let mut press = edge(
@@ -1962,9 +1959,9 @@ mod native_joined_tests {
                 PointerEdgeKind::ButtonPressed(PointerButton::Primary),
             );
             press.delivery_owner = delivery;
-            press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+            press.capture_owner = Authority::Known(PointerCaptureOwner::Native((native).window()));
             let stream = commit_next_edge(&mut ledger, lease, press);
-            assert!(!ledger.native_primary_press_continuity(stream, native));
+            assert!(!ledger.native_primary_press_continuity(stream, (native).window()));
         }
 
         let mut ledger = ledger;
@@ -1974,7 +1971,7 @@ mod native_joined_tests {
                 PointerStateObservation::new(
                     PointerId::new(1),
                     vec![PointerButton::Primary],
-                    Authority::Known(PointerCaptureOwner::Native(native)),
+                    Authority::Known(PointerCaptureOwner::Native((native).window())),
                 )
                 .unwrap(),
             ],
@@ -1982,14 +1979,14 @@ mod native_joined_tests {
         .unwrap();
         let mut moved = edge(native, PointerEdgeKind::Moved);
         moved.location = handoff_location(native, native);
-        moved.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        moved.capture_owner = Authority::Known(PointerCaptureOwner::Native((native).window()));
         let journal = journal(moved)
             .with_authority_checkpoint(checkpoint)
             .unwrap();
         let prepared = ledger.prepare_candidate(lease, journal).unwrap();
         let stream = ledger.commit_prepared(prepared).unwrap().accepted_edges()[0].stream();
         assert_eq!(ledger.button_authority(), AnyButtonDownAuthority::KnownDown);
-        assert!(!ledger.native_primary_press_continuity(stream, native));
+        assert!(!ledger.native_primary_press_continuity(stream, (native).window()));
     }
 
     #[test]
@@ -2000,9 +1997,9 @@ mod native_joined_tests {
             native,
             PointerEdgeKind::ButtonPressed(PointerButton::Primary),
         );
-        press.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+        press.capture_owner = Authority::Known(PointerCaptureOwner::Native((native).window()));
         let stream = commit_next_edge(&mut ledger, lease, press.clone());
-        assert!(ledger.native_primary_press_continuity(stream, native));
+        assert!(ledger.native_primary_press_continuity(stream, (native).window()));
         let cancelled = edge(
             native,
             PointerEdgeKind::StreamCancelled(
@@ -2010,19 +2007,19 @@ mod native_joined_tests {
             ),
         );
         assert_eq!(commit_next_edge(&mut ledger, lease, cancelled), stream);
-        assert!(!ledger.native_primary_press_continuity(stream, native));
+        assert!(!ledger.native_primary_press_continuity(stream, (native).window()));
         let successor = commit_next_edge(&mut ledger, lease, press.clone());
         assert_ne!(successor, stream);
-        assert!(ledger.native_primary_press_continuity(successor, native));
-        assert!(!ledger.native_primary_press_continuity(stream, native));
+        assert!(ledger.native_primary_press_continuity(successor, (native).window()));
+        assert!(!ledger.native_primary_press_continuity(stream, (native).window()));
         ledger.retire_provider(lease).unwrap();
-        assert!(!ledger.native_primary_press_continuity(successor, native));
+        assert!(!ledger.native_primary_press_continuity(successor, (native).window()));
         let replacement = ledger
             .create_provider(lease.scope(), PointerEdgeSequence::new(0))
             .unwrap();
         let current = commit_next_edge(&mut ledger, replacement, press);
-        assert!(ledger.native_primary_press_continuity(current, native));
-        assert!(!ledger.native_primary_press_continuity(successor, native));
+        assert!(ledger.native_primary_press_continuity(current, (native).window()));
+        assert!(!ledger.native_primary_press_continuity(successor, (native).window()));
     }
 
     #[test]
@@ -2090,13 +2087,14 @@ mod native_joined_tests {
             Err(PointerJournalLedgerError::CaptureScopeMismatch { .. })
         ));
         let mut sample = edge(native, PointerEdgeKind::Moved);
-        sample.delivery_owner = Authority::Known(PointerEventDeliveryOwner::Native(foreign));
+        sample.delivery_owner =
+            Authority::Known(PointerEventDeliveryOwner::Native((foreign).window()));
         assert!(matches!(
             ledger.prepare_candidate(lease, journal(sample)),
             Err(PointerJournalLedgerError::ForeignDeliveryBinding { .. })
         ));
         let mut sample = edge(native, PointerEdgeKind::Moved);
-        sample.capture_owner = Authority::Known(PointerCaptureOwner::Native(foreign));
+        sample.capture_owner = Authority::Known(PointerCaptureOwner::Native((foreign).window()));
         assert!(matches!(
             ledger.prepare_candidate(lease, journal(sample)),
             Err(PointerJournalLedgerError::ForeignCaptureBinding { .. })
@@ -2109,7 +2107,7 @@ mod native_joined_tests {
         ));
         for capture in [
             PointerCaptureOwner::ProviderEndpoint,
-            PointerCaptureOwner::Native(foreign),
+            PointerCaptureOwner::Native((foreign).window()),
         ] {
             let checkpoint = PointerAuthorityCheckpoint::known(
                 PointerEdgeSequence::new(0),
@@ -2206,7 +2204,8 @@ mod native_joined_tests {
             let native = binding(lease.authority_domain(), 1);
             let mut initial = if capture_only {
                 let mut sample = edge(native, PointerEdgeKind::Moved);
-                sample.capture_owner = Authority::Known(PointerCaptureOwner::Native(native));
+                sample.capture_owner =
+                    Authority::Known(PointerCaptureOwner::Native((native).window()));
                 sample
             } else {
                 edge(
@@ -2218,7 +2217,7 @@ mod native_joined_tests {
             // when the event was delivered through another native endpoint.
             if capture_only {
                 initial.delivery_owner = Authority::Known(PointerEventDeliveryOwner::Native(
-                    binding(lease.authority_domain(), 2),
+                    (binding(lease.authority_domain(), 2)).window(),
                 ));
                 initial.location = local_location(binding(lease.authority_domain(), 2));
             }
@@ -2249,7 +2248,7 @@ mod native_joined_tests {
                 .expect("commit continuation");
             assert_eq!(
                 ledger
-                    .retire_native_binding_input(lease, native)
+                    .retire_native_binding_input(lease, (native).window())
                     .expect("binding retirement"),
                 vec![stream]
             );
@@ -2375,14 +2374,17 @@ mod host_local_tests {
             Err(PointerJournalLedgerError::LocationScopeMismatch { .. })
         ));
         let mut edge = local_edge(PointerEdgeKind::Moved);
-        edge.capture_owner = Authority::Known(PointerCaptureOwner::Native(native_binding(lease)));
+        edge.capture_owner = Authority::Known(PointerCaptureOwner::Native(
+            (native_binding(lease)).window(),
+        ));
         assert!(matches!(
             ledger.prepare_candidate(lease, journal(edge)),
             Err(PointerJournalLedgerError::CaptureScopeMismatch { .. })
         ));
         let mut edge = local_edge(PointerEdgeKind::Moved);
-        edge.delivery_owner =
-            Authority::Known(PointerEventDeliveryOwner::Native(native_binding(lease)));
+        edge.delivery_owner = Authority::Known(PointerEventDeliveryOwner::Native(
+            (native_binding(lease)).window(),
+        ));
         assert!(matches!(
             ledger.prepare_candidate(lease, journal(edge)),
             Err(PointerJournalLedgerError::DeliveryScopeMismatch { .. })
@@ -2399,7 +2401,9 @@ mod host_local_tests {
                 PointerStateObservation::new(
                     PointerId::new(1),
                     Vec::new(),
-                    Authority::Known(PointerCaptureOwner::Native(native_binding(lease))),
+                    Authority::Known(PointerCaptureOwner::Native(
+                        (native_binding(lease)).window(),
+                    )),
                 )
                 .expect("pointer state"),
             ],

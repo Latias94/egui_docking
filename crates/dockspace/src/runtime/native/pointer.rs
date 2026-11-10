@@ -2,18 +2,17 @@
 
 use super::{
     NativeHostProfile, NativeLocalPointerLocation, NativeLocalPointerSample, NativePlatformError,
-    NativeSurfaceBinding, NativeWorkAreaBinding, RuntimeNativeState,
+    NativeWindowBinding, NativeWorkAreaBinding, RuntimeNativeState,
 };
 use crate::geometry::{LogicalPoint, PhysicalPoint};
 use crate::ids::SurfaceId;
 use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use crate::pointer_journal::{
     DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, NativeLocalPointerRoute,
-    PhysicalScrollCoordinates, PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge,
-    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEventDeliveryOwner,
-    PointerStateObservation, PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint,
-    ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase,
-    ScrollSequenceToken,
+    PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
+    PointerEdgeKind, PointerEdgeLocation, PointerEventDeliveryOwner, PointerStateObservation,
+    PointerStreamCancelReason, ScrollCancelReason, ScrollDelta, ScrollDeviceId, ScrollEdge,
+    ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
 };
 use crate::presentation_hit::PresentationPointerLane;
 
@@ -108,7 +107,7 @@ pub enum NativeDesktopPosition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativePointerHover {
     /// One exact docking-window incarnation was observed under the pointer.
-    Dock(NativeSurfaceBinding),
+    Dock(NativeWindowBinding),
     /// A foreign native window is under the pointer.
     Foreign,
     /// The host authoritatively observed no native window.
@@ -121,7 +120,7 @@ pub enum NativePointerHover {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativePointerOwner {
     /// One exact docking-window incarnation was observed as an owner.
-    Native(NativeSurfaceBinding),
+    Native(NativeWindowBinding),
     /// A receiver outside this dockspace.
     Foreign,
     /// No receiver owns the edge.
@@ -618,15 +617,37 @@ pub enum NativeReceiverPurpose {
     HoverHit,
 }
 
+/// One synchronous window selection or surface-qualified receiver query.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NativeReceiverQuery {
+pub enum NativeReceiverQuery {
+    /// Identify the actually exposed placement using the framework's final hit graph.
+    WindowHit(super::window_hit::NativeWindowHitQuery),
+    /// Resolve one semantic lane within an exact selected presented placement.
+    Surface(NativeSurfaceReceiverQuery),
+}
+
+impl From<NativeSurfaceReceiverQuery> for NativeReceiverQuery {
+    fn from(query: NativeSurfaceReceiverQuery) -> Self {
+        Self::Surface(query)
+    }
+}
+
+/// One semantic receiver question within an exact framework-selected placement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeSurfaceReceiverQuery {
     pub(in crate::runtime) purpose: NativeReceiverPurpose,
     pub(in crate::runtime) presented_surface: super::super::PresentedDockspaceSurface,
     pub(in crate::runtime) point: Option<LogicalPoint>,
+    pub(in crate::runtime) client_position: Option<PhysicalPoint>,
     pub(in crate::runtime) metadata: crate::runtime::PointerEventMetadata,
 }
 
-impl NativeReceiverQuery {
+impl NativeSurfaceReceiverQuery {
+    /// Returns the physical client point used by the window hit graph.
+    #[must_use]
+    pub const fn client_position(self) -> Option<PhysicalPoint> {
+        self.client_position
+    }
     /// Returns the exact receiver lane or hover question.
     #[must_use]
     pub const fn purpose(&self) -> &NativeReceiverPurpose {
@@ -735,6 +756,8 @@ impl NativeReceiverQuery {
 /// runtime boundary.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NativeReceiverAnswer {
+    /// Answer the physical window-to-placement question.
+    WindowHit(super::window_hit::NativeWindowHit),
     /// A concrete docking receiver accepted the edge.
     Dock(super::super::PresentedDockReceiver),
     /// The current surface proved that no docking receiver accepted the edge.
@@ -762,7 +785,7 @@ impl RuntimeNativeState {
         compile_pointer_authority(roster, self.recorder.pointer_through(), |owner| {
             // A recovery checkpoint asserts current capture, not historical facts.
             if let NativePointerOwner::Native(binding) = owner
-                && !self.contains_binding(binding)
+                && !self.contains_window_binding(binding)
             {
                 return Err(NativePlatformError::InvalidPointerFacts);
             }
@@ -948,9 +971,7 @@ impl RuntimeNativeState {
                 None,
             ),
         };
-        let delta = delta
-            .map(|delta| native_scroll_delta(delta, delivery))
-            .transpose()?;
+        let delta = delta.map(native_scroll_delta).transpose()?;
         let momentum = match event.momentum() {
             NativeScrollMomentum::Direct => Authority::Known(ScrollMomentum::Direct),
             NativeScrollMomentum::Momentum => Authority::Known(ScrollMomentum::Momentum),
@@ -1021,10 +1042,9 @@ impl RuntimeNativeState {
         // Do not reinterpret an old sample using recorder-time geometry.
         // Current coordinate and handoff authority belong to the reducer ordinal.
         Ok(NativeLocalPointerRoute::new(
-            coordinates.binding().binding,
+            coordinates.binding().window,
             coordinates.coordinate_generation(),
             sample.client_position(),
-            sample.surface_position(),
         ))
     }
 
@@ -1047,7 +1067,7 @@ impl RuntimeNativeState {
                 if work_area.is_some() {
                     return Err(NativePlatformError::InvalidPointerFacts);
                 }
-                DesktopRouteFact::dock_from_desktop_position(binding.binding, position)
+                DesktopRouteFact::window_from_desktop_position(binding.window, position)
             }
             NativePointerHover::Foreign => {
                 if work_area.is_some() {
@@ -1086,7 +1106,7 @@ impl RuntimeNativeState {
         Ok(match owner {
             NativePointerOwner::Native(binding) => {
                 self.validate_pointer_binding(binding)?;
-                Authority::Known(PointerEventDeliveryOwner::Native(binding.binding))
+                Authority::Known(PointerEventDeliveryOwner::Native(binding.window))
             }
             NativePointerOwner::Foreign => Authority::Known(PointerEventDeliveryOwner::Foreign),
             NativePointerOwner::None => Authority::Known(PointerEventDeliveryOwner::None),
@@ -1103,7 +1123,7 @@ impl RuntimeNativeState {
         Ok(match owner {
             NativePointerOwner::Native(binding) => {
                 self.validate_pointer_binding(binding)?;
-                Authority::Known(PointerCaptureOwner::Native(binding.binding))
+                Authority::Known(PointerCaptureOwner::Native(binding.window))
             }
             NativePointerOwner::Foreign => Authority::Known(PointerCaptureOwner::Foreign),
             NativePointerOwner::None => Authority::Known(PointerCaptureOwner::None),
@@ -1115,11 +1135,11 @@ impl RuntimeNativeState {
 
     fn validate_pointer_binding(
         &self,
-        binding: NativeSurfaceBinding,
+        binding: NativeWindowBinding,
     ) -> Result<(), NativePlatformError> {
         // Queued facts retain their exact incarnation until quiescence. Current
         // routing and action authority are checked at the reducer's ordinal.
-        if !self.recognizes_binding(binding) {
+        if binding.provider != self.provider() || self.producer.window(binding.window).is_none() {
             return Err(NativePlatformError::InvalidPointerFacts);
         }
         Ok(())
@@ -1231,10 +1251,7 @@ const fn native_scroll_cancel_reason(reason: NativeScrollCancelReason) -> Scroll
     }
 }
 
-fn native_scroll_delta(
-    delta: NativeScrollDelta,
-    delivery: Authority<ScrollDeliveryEndpoint>,
-) -> Result<ScrollDelta, NativePlatformError> {
+fn native_scroll_delta(delta: NativeScrollDelta) -> Result<ScrollDelta, NativePlatformError> {
     let (x, y) = match delta {
         NativeScrollDelta::PhysicalPixels { x, y }
         | NativeScrollDelta::LogicalPoints { x, y }
@@ -1244,24 +1261,10 @@ fn native_scroll_delta(
     let vector =
         FiniteScrollVector::new(x, y).map_err(|_| NativePlatformError::InvalidPointerFacts)?;
     Ok(match delta {
-        NativeScrollDelta::PhysicalPixels { .. } => {
-            let coordinates = match delivery {
-                Authority::Known(endpoint) => endpoint.binding().map_or(
-                    Authority::Unknown(AuthorityUnavailableReason::NotReported),
-                    |binding| {
-                        Authority::Known(PhysicalScrollCoordinates::new(
-                            binding,
-                            endpoint.coordinate_generation(),
-                        ))
-                    },
-                ),
-                Authority::Unknown(reason) => Authority::Unknown(reason),
-            };
-            ScrollDelta::PhysicalPixels {
-                delta: vector,
-                coordinates,
-            }
-        }
+        NativeScrollDelta::PhysicalPixels { .. } => ScrollDelta::PhysicalPixels {
+            delta: vector,
+            coordinates: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        },
         NativeScrollDelta::LogicalPoints { .. } => ScrollDelta::LogicalPoints(vector),
         NativeScrollDelta::Lines { .. } => ScrollDelta::Lines(vector),
         NativeScrollDelta::Pages { .. } => ScrollDelta::Pages(vector),
@@ -1279,8 +1282,8 @@ mod handoff_tests {
     use crate::policy::DockPolicy;
     use crate::runtime::{
         DockspaceSession, HostInputOutcome, HostWindowToken, NativeHostErrorKind,
-        NativeLocalCoordinates, NativeLocalPointerFact, PointerDeviceKind, PointerEventMetadata,
-        SurfaceUnavailableReason,
+        NativeLocalCoordinates, NativeLocalPointerFact, NativeSurfaceBinding, PointerDeviceKind,
+        PointerEventMetadata, SurfaceUnavailableReason,
     };
     use crate::viewport::{CoordinateGeneration, CoordinateObservationGeneration};
     use std::time::Duration;
@@ -1339,12 +1342,12 @@ mod handoff_tests {
         // gesture authority are intentionally left for the reducer to prove.
         let coordinates = NativeLocalCoordinates::new(
             session.native.as_ref().unwrap().recorder.lease(),
-            binding,
-            snapshot,
+            binding.window(),
+            snapshot.window_coordinates(),
         );
         let sample = coordinates
             .capture(
-                binding,
+                binding.window(),
                 NativeLocalPointerFact::new(
                     PhysicalPoint::new(60.0, 30.0).unwrap(),
                     size,
@@ -1359,7 +1362,7 @@ mod handoff_tests {
     fn desktop(binding: NativeSurfaceBinding) -> NativeDesktopPointerLocation {
         NativeDesktopPointerLocation::new(
             NativeDesktopPosition::Exact(PhysicalPoint::new(460.0, -270.0).unwrap()),
-            NativePointerHover::Dock(binding),
+            NativePointerHover::Dock((binding).window()),
             None,
         )
     }
@@ -1376,8 +1379,8 @@ mod handoff_tests {
             NativePointerId::new(11),
             NativePointerEvent::Moved,
             packet,
-            NativePointerOwner::Native(binding),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native((binding).window()),
+            NativePointerOwner::Native((binding).window()),
         )
         .with_metadata(metadata);
         assert_eq!(
@@ -1394,10 +1397,9 @@ mod handoff_tests {
         let PointerEdgeLocation::NativeLocalToDesktop { local, desktop } = edge.location() else {
             panic!("the raw journal retains the explicit dual location");
         };
-        assert_eq!(local.binding(), binding.binding);
+        assert_eq!(local.binding(), binding.binding.window());
         assert_eq!(local.coordinate_generation(), CoordinateGeneration::new(7));
         assert_eq!(local.client_position(), sample.client_position());
-        assert_eq!(local.surface_position(), sample.surface_position());
         assert_eq!(
             desktop.position(),
             Authority::Known(PhysicalPoint::new(460.0, -270.0).unwrap())
@@ -1405,7 +1407,7 @@ mod handoff_tests {
         assert_eq!(
             desktop.hovered(),
             Authority::Known(crate::pointer_journal::DesktopHoveredWindow::Dock(
-                binding.binding
+                binding.binding.window()
             ))
         );
         assert_eq!(edge.desktop_route(), None);
@@ -1414,11 +1416,11 @@ mod handoff_tests {
         assert_eq!(edge.metadata(), metadata);
         assert_eq!(
             edge.delivery_owner(),
-            Authority::Known(PointerEventDeliveryOwner::Native(binding.binding))
+            Authority::Known(PointerEventDeliveryOwner::Native(binding.binding.window()))
         );
         assert_eq!(
             edge.capture_owner(),
-            Authority::Known(PointerCaptureOwner::Native(binding.binding))
+            Authority::Known(PointerCaptureOwner::Native(binding.binding.window()))
         );
         assert_eq!(native.recorder.recorded_through(), recorded);
         assert_eq!(native.recorder.pointer_through(), through);
@@ -1432,7 +1434,7 @@ mod handoff_tests {
             NativePointerId::new(11),
             NativePointerEvent::Moved,
             NativeLocalPointerLocation::Exact(sample),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native((binding).window()),
             NativePointerOwner::None,
         );
         let native = session.native.as_ref().unwrap();
@@ -1447,7 +1449,7 @@ mod handoff_tests {
                 NativePointerId::new(11),
                 NativePointerEvent::Moved,
                 packet,
-                NativePointerOwner::Native(binding),
+                NativePointerOwner::Native((binding).window()),
                 NativePointerOwner::None,
             );
             let error = session
@@ -1463,7 +1465,7 @@ mod handoff_tests {
             NativePointerId::new(11),
             NativePointerEvent::Moved,
             NativeLocalToDesktopHandoff::new(sample, desktop(binding)),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native((binding).window()),
             NativePointerOwner::None,
         );
         session

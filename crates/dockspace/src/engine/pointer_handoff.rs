@@ -94,8 +94,13 @@ impl DockEngine {
             return local_fallback;
         };
         if drag.owner != owner
-            || drag.source_surface != binding.surface()
-            || drag.presentation.presented.binding() != Some(binding)
+            || drag.source_surface != drag.presentation.presented.surface()
+            || drag
+                .presentation
+                .presented
+                .binding()
+                .map(|binding| binding.window())
+                != Some(binding)
             || drag.journal_capture_authority
                 != Authority::Known(PointerCaptureOwner::Native(binding))
             || !self.drag_source_presentation_allows_targeting(drag)
@@ -105,8 +110,20 @@ impl DockEngine {
         let PointerProviderScope::NativeJoined(host) = stream.lease().scope() else {
             return local_fallback;
         };
+        let Some(source) = drag.presentation.presented.binding() else {
+            return local_fallback;
+        };
+        if self
+            .native_local_coordinate_snapshot(host, source)
+            .is_none_or(|coordinates| {
+                coordinates.coordinate_generation()
+                    != drag.presentation.presented.coordinate_generation()
+            })
+        {
+            return local_fallback;
+        }
         let Some(coordinates) = self
-            .native_local_coordinate_snapshot(host, binding)
+            .native_window_coordinate_snapshot(host, binding)
             .filter(|coordinates| coordinates.coordinate_generation() == coordinate_generation)
         else {
             return local_fallback;
@@ -118,7 +135,6 @@ impl DockEngine {
         };
         if point.x() - content.x() != local.client_position().x()
             || point.y() - content.y() != local.client_position().y()
-            || coordinates.desktop_to_surface(point).ok() != Some(local.surface_position())
         {
             return local_fallback;
         }
@@ -145,30 +161,13 @@ impl DockEngine {
         if !position.hover_probe_requested() {
             return PointerReceiverCandidateSpec::not_applicable(edge.sequence());
         }
-        let probe = position.hover_probe().filter(|probe| {
-            self.interaction_projection(probe.surface())
-                .is_some_and(|projection| {
-                    effective
-                        .desktop_route()
-                        .map(|route| {
-                            route.validate_against_registry(
-                                self.authority_domain,
-                                self.viewport.registry(),
-                            )
-                        })
-                        .and_then(DesktopRouteValidation::dock_route)
-                        .is_some_and(|route| {
-                            route
-                                .validate_presented_authority(projection.authority())
-                                .is_ok()
-                        })
-                })
-        });
-        PointerReceiverCandidateSpec::hover_hit(
-            edge.sequence(),
-            probe.map(|probe| probe.surface()),
-            probe.map(SurfacePointer::position),
-        )
+        let spec = PointerReceiverCandidateSpec::hover_hit(edge.sequence(), None, None);
+        native_window_pointer_probe(self, &effective, true).map_or(spec.clone(), |probe| {
+            spec.with_native_window(
+                probe,
+                crate::pointer_receiver::PointerReceiverDeliveryRequest::None,
+            )
+        })
     }
 
     pub(super) fn apply_native_handoff_projection(

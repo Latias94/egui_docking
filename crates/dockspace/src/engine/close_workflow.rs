@@ -391,6 +391,86 @@ impl DockEngine {
         };
         match prepared {
             PreparedCloseOperation::Content(_) => Ok(false),
+            PreparedCloseOperation::Window {
+                bindings,
+                operations,
+            } => {
+                if !self.native_close_roster_is_current(bindings)
+                    || operations.len() != bindings.len()
+                {
+                    return Ok(false);
+                }
+                let mut requirements = Vec::new();
+                let mut content = Vec::new();
+                let mut commands = Vec::new();
+                for operation in operations {
+                    match operation {
+                        PreparedCloseOperation::SurfaceRetain { roster, .. } => {
+                            if !roster.matches_workspace(&self.workspace) {
+                                return Ok(false);
+                            }
+                            let Ok(items) =
+                                self.capture_surface_close_requirements(roster, &self.policy)
+                            else {
+                                return Ok(false);
+                            };
+                            requirements.extend(items);
+                        }
+                        PreparedCloseOperation::SurfaceContent {
+                            roster, prepared, ..
+                        } => {
+                            if !roster.matches_workspace(&self.workspace) {
+                                return Ok(false);
+                            }
+                            requirements.extend_from_slice(prepared.requirements());
+                            content.push(prepared);
+                        }
+                        PreparedCloseOperation::SurfaceRehome {
+                            roster,
+                            transaction,
+                            ..
+                        } => {
+                            if !roster.matches_workspace(&self.workspace) {
+                                return Ok(false);
+                            }
+                            commands.extend_from_slice(transaction.commands());
+                        }
+                        PreparedCloseOperation::Content(_)
+                        | PreparedCloseOperation::Window { .. } => return Ok(false),
+                    }
+                }
+                let Some(plan) = self.close.plan(request) else {
+                    return Ok(false);
+                };
+                if requirements.len() != plan.items().len()
+                    || !requirements
+                        .iter()
+                        .zip(plan.items())
+                        .all(|(expected, actual)| {
+                            expected.item() == actual.item()
+                                && expected.capability() == actual.capability()
+                        })
+                {
+                    return Ok(false);
+                }
+                if !content.is_empty()
+                    && crate::operation::prepare_surface_content_closes(
+                        &self.workspace,
+                        &self.policy,
+                        &content,
+                    )
+                    .is_err()
+                {
+                    return Ok(false);
+                }
+                Ok(commands.is_empty()
+                    || crate::operation::prepare_transaction(
+                        &self.workspace,
+                        &self.policy,
+                        &commands,
+                    )
+                    .is_ok())
+            }
             PreparedCloseOperation::SurfaceRetain { roster, .. } => Ok(roster
                 .matches_workspace(&self.workspace)
                 && self.retain_close_requirements_match_plan(request, roster)),
@@ -547,23 +627,69 @@ impl DockEngine {
         let authority = self.close_authority();
         let workspace = self.workspace.as_ref();
         let policy = &self.policy;
-        self.close
-            .invalidate_stale_with(authority, |prepared| match prepared {
-                PreparedCloseOperation::Content(scope) => scope.matches(workspace, policy),
-                PreparedCloseOperation::SurfaceContent { prepared, .. } => {
-                    matches!(
+        let registry = self.viewport.registry();
+        self.close.invalidate_stale_with(authority, |prepared| {
+            Self::native_close_scope_matches(prepared, workspace, policy, registry)
+        });
+    }
+
+    fn native_close_scope_matches(
+        prepared: &PreparedCloseOperation,
+        workspace: &Workspace,
+        policy: &DockPolicySnapshot,
+        registry: &crate::viewport_registry::ViewportRegistry,
+    ) -> bool {
+        match prepared {
+            PreparedCloseOperation::Window {
+                bindings,
+                operations,
+            } => {
+                bindings.first().is_some_and(|first| {
+                    bindings
+                        .iter()
+                        .copied()
+                        .eq(registry.bindings_for_window(first.window()))
+                }) && bindings.len() == operations.len()
+                    && operations.iter().all(|operation| {
+                        !matches!(
+                            operation,
+                            PreparedCloseOperation::Window { .. }
+                                | PreparedCloseOperation::Content(_)
+                        ) && Self::native_close_scope_matches(
+                            operation, workspace, policy, registry,
+                        )
+                    })
+            }
+            PreparedCloseOperation::Content(scope) => scope.matches(workspace, policy),
+            PreparedCloseOperation::SurfaceContent {
+                roster, prepared, ..
+            } => {
+                roster.matches_workspace(workspace)
+                    && matches!(
                         policy.evaluate(&DockPolicyRequest::CloseSurface {
                             surface: prepared.surface(),
                         }),
                         PolicyDecision::Allow
-                    ) && prepared.requirements().iter().all(|requirement| {
+                    )
+                    && prepared.requirements().iter().all(|requirement| {
                         let capability = policy.pane_close_capability(requirement.item());
                         capability.allows_close() && capability == requirement.capability()
                     })
-                }
-                PreparedCloseOperation::SurfaceRetain { .. }
-                | PreparedCloseOperation::SurfaceRehome { .. } => true,
-            });
+            }
+            PreparedCloseOperation::SurfaceRetain { roster, .. }
+            | PreparedCloseOperation::SurfaceRehome { roster, .. } => {
+                roster.matches_workspace(workspace)
+            }
+        }
+    }
+
+    pub(super) fn native_close_roster_is_current(&self, bindings: &[ViewportBinding]) -> bool {
+        bindings.first().is_some_and(|binding| {
+            bindings.iter().copied().eq(self
+                .viewport
+                .registry()
+                .bindings_for_window(binding.window()))
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1023,7 +1149,12 @@ impl DockEngine {
         if !close_cancellation_supported && !accept_only_candidate {
             return Ok(self.reject_surface_close_without_cancellation(edge, request));
         }
-        let surface = edge.binding().surface();
+        let surface = self
+            .viewport
+            .registry()
+            .bindings_for_window(edge.binding().window())
+            .next()
+            .map_or(edge.binding().surface(), |binding| binding.surface());
         if self.workspace.surface(surface).is_none() {
             return Ok(InputOutcome::SurfaceCloseRejected {
                 edge,
@@ -1071,10 +1202,14 @@ impl DockEngine {
         }
         let plan = self
             .close
-            .open_surface(
+            .open_window(
                 self.close_authority(),
                 edge,
                 request.clone(),
+                self.viewport
+                    .registry()
+                    .bindings_for_window(edge.binding().window())
+                    .collect(),
                 capture.requirements,
                 capture.prepared,
             )
@@ -1110,22 +1245,22 @@ impl DockEngine {
         request: SurfaceCloseRequest,
         reason: SurfaceCloseRequestRejection,
     ) -> Result<InputOutcome, EngineError> {
-        let surface = edge.binding().surface();
-        let roster = self
-            .capture_surface_roster(surface)
+        let prepared = self
+            .capture_window_retention_for_cancellation(edge)
             .map_err(|source| EngineError::SurfaceRoster { input, source })?;
         let authority = self.close_authority();
         let plan = self
             .close
-            .open_surface(
+            .open_window(
                 authority,
                 edge,
                 SurfaceCloseRequest::RetainLayout,
+                self.viewport
+                    .registry()
+                    .bindings_for_window(edge.binding().window())
+                    .collect(),
                 [],
-                PreparedCloseOperation::SurfaceRetain {
-                    roster,
-                    recovery_focus: self.frozen_surface_recovery_focus(surface),
-                },
+                prepared,
             )
             .map_err(|source| EngineError::ClosePlanInvariant {
                 input,
@@ -1202,8 +1337,8 @@ impl DockEngine {
             Some(request_id) => request_id,
             None => {
                 let surface = edge.binding().surface();
-                let roster = match self.capture_surface_roster(surface) {
-                    Ok(roster) => roster,
+                let prepared = match self.capture_window_retention_for_cancellation(edge) {
+                    Ok(prepared) => prepared,
                     Err(_) => {
                         return Ok(InputOutcome::SurfaceCloseRejected {
                             edge,
@@ -1213,18 +1348,18 @@ impl DockEngine {
                         });
                     }
                 };
-                let recovery_focus = self.frozen_surface_recovery_focus(surface);
                 let plan = self
                     .close
-                    .open_surface(
+                    .open_window(
                         authority,
                         edge,
                         SurfaceCloseRequest::RetainLayout,
+                        self.viewport
+                            .registry()
+                            .bindings_for_window(edge.binding().window())
+                            .collect(),
                         [],
-                        PreparedCloseOperation::SurfaceRetain {
-                            roster,
-                            recovery_focus,
-                        },
+                        prepared,
                     )
                     .map_err(|source| EngineError::ClosePlanInvariant {
                         input,
@@ -1279,13 +1414,82 @@ impl DockEngine {
         PaneFocusDisposition::from_record(self.viewport_focus.panel_focus(surface))
     }
 
+    fn capture_window_retention_for_cancellation(
+        &self,
+        edge: NativeCloseEdge,
+    ) -> Result<PreparedCloseOperation, SurfaceRosterCaptureError> {
+        let bindings = self
+            .viewport
+            .registry()
+            .bindings_for_window(edge.binding().window())
+            .collect::<Vec<_>>();
+        let mut operations = Vec::with_capacity(bindings.len());
+        for binding in &bindings {
+            operations.push(PreparedCloseOperation::SurfaceRetain {
+                roster: self.capture_surface_roster(binding.surface())?,
+                recovery_focus: self.frozen_surface_recovery_focus(binding.surface()),
+            });
+        }
+        Ok(PreparedCloseOperation::Window {
+            bindings,
+            operations,
+        })
+    }
+
     pub(super) fn capture_surface_close(
         &self,
         edge: NativeCloseEdge,
         request: &SurfaceCloseRequest,
         policy: &DockPolicySnapshot,
     ) -> Result<SurfaceCloseCapture, SurfaceCloseRequestRejection> {
-        let surface = edge.binding().surface();
+        let bindings = self
+            .viewport
+            .registry()
+            .bindings_for_window(edge.binding().window())
+            .collect::<Vec<_>>();
+        if bindings.is_empty() {
+            return Err(SurfaceCloseRequestRejection::SurfaceUnavailable {
+                surface: edge.binding().surface(),
+            });
+        }
+        if bindings.len() > 1 && matches!(request, SurfaceCloseRequest::RehomeAll { .. }) {
+            // One surface's explicit main/contained program cannot describe a
+            // second independent surface. Recovery uses each member's anchor.
+            return Err(SurfaceCloseRequestRejection::RehomeProgramUnavailable);
+        }
+        let mut requirements = Vec::new();
+        let mut operations = Vec::with_capacity(bindings.len());
+        for binding in &bindings {
+            let capture =
+                self.capture_surface_close_member(*binding, request, policy, bindings.len() > 1)?;
+            requirements.extend(capture.requirements);
+            operations.push(capture.prepared);
+        }
+        if matches!(request, SurfaceCloseRequest::CloseContent) && requirements.is_empty() {
+            return Err(SurfaceCloseRequestRejection::CloseContentUnavailable);
+        }
+        Ok(SurfaceCloseCapture {
+            requirements,
+            prepared: PreparedCloseOperation::Window {
+                bindings,
+                operations,
+            },
+        })
+    }
+
+    fn capture_surface_close_member(
+        &self,
+        binding: ViewportBinding,
+        request: &SurfaceCloseRequest,
+        policy: &DockPolicySnapshot,
+        allow_empty_content: bool,
+    ) -> Result<SurfaceCloseCapture, SurfaceCloseRequestRejection> {
+        let surface = binding.surface();
+        if let PolicyDecision::Reject(reason) =
+            policy.evaluate(&DockPolicyRequest::CloseSurface { surface })
+        {
+            return Err(SurfaceCloseRequestRejection::PolicyRejected(reason));
+        }
         let roster = self
             .capture_surface_roster(surface)
             .map_err(|_| SurfaceCloseRequestRejection::SurfaceUnavailable { surface })?;
@@ -1316,7 +1520,7 @@ impl DockEngine {
                 let bound = self
                     .bound_surface_recoveries
                     .get(&surface)
-                    .filter(|bound| bound.binding == edge.binding())
+                    .filter(|bound| bound.binding == binding)
                     .ok_or(SurfaceCloseRequestRejection::RehomeProgramUnavailable)?;
                 let target = bound.obligation.target();
                 let facts = self
@@ -1337,7 +1541,7 @@ impl DockEngine {
             SurfaceCloseRequest::CloseContent => {
                 let mut roots = Vec::new();
                 let requirements = self.capture_surface_close_requirements(&roster, policy)?;
-                if requirements.is_empty() {
+                if requirements.is_empty() && !allow_empty_content {
                     return Err(SurfaceCloseRequestRejection::CloseContentUnavailable);
                 }
                 for source in roster.roster().main_source().into_iter().chain(

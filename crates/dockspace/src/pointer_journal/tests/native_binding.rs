@@ -17,7 +17,7 @@ fn sample(
                 AuthorityUnavailableReason::NotReported,
             ),
         },
-        Authority::Known(PointerEventDeliveryOwner::Native(delivery)),
+        Authority::Known(PointerEventDeliveryOwner::Native(delivery.window())),
         capture,
     )
 }
@@ -51,7 +51,7 @@ fn native_binding_retirement_uses_held_origins_and_retained_capture_without_idle
             2,
             PointerEdgeKind::Moved,
             other,
-            Authority::Known(PointerCaptureOwner::Native(first)),
+            Authority::Known(PointerCaptureOwner::Native(first.window())),
         ),
         sample(4, 2, PointerEdgeKind::Moved, other, unknown),
         sample(5, 3, PointerEdgeKind::Moved, first, none),
@@ -67,7 +67,7 @@ fn native_binding_retirement_uses_held_origins_and_retained_capture_without_idle
             5,
             PointerEdgeKind::Moved,
             other,
-            Authority::Known(PointerCaptureOwner::Native(first)),
+            Authority::Known(PointerCaptureOwner::Native(first.window())),
         ),
         sample(8, 5, PointerEdgeKind::CaptureChanged, other, none),
     ];
@@ -88,14 +88,16 @@ fn native_binding_retirement_uses_held_origins_and_retained_capture_without_idle
     );
     assert!(
         ledger
-            .retire_native_binding_input(lease, successor)
+            .retire_native_binding_input(lease, successor.window())
             .unwrap()
             .is_empty()
     );
     assert_eq!(ledger.active_streams.len(), 5);
 
     assert_eq!(
-        ledger.retire_native_binding_input(lease, first).unwrap(),
+        ledger
+            .retire_native_binding_input(lease, first.window())
+            .unwrap(),
         [first_stream, capture_stream],
     );
     assert_eq!(ledger.active_streams.len(), 3);
@@ -106,7 +108,7 @@ fn native_binding_retirement_uses_held_origins_and_retained_capture_without_idle
     assert_eq!(ledger.retained_committed_through(lease).unwrap().get(), 8);
     assert!(
         ledger
-            .retire_native_binding_input(lease, first)
+            .retire_native_binding_input(lease, first.window())
             .unwrap()
             .is_empty()
     );
@@ -146,13 +148,13 @@ fn native_binding_retirement_clears_checkpoint_dependencies_and_invalidates_old_
             PointerStateObservation::new(
                 PointerId::new(1),
                 vec![PointerButton::Primary],
-                Authority::Known(PointerCaptureOwner::Native(first)),
+                Authority::Known(PointerCaptureOwner::Native(first.window())),
             )
             .unwrap(),
             PointerStateObservation::new(
                 PointerId::new(2),
                 vec![PointerButton::Secondary],
-                Authority::Known(PointerCaptureOwner::Native(other)),
+                Authority::Known(PointerCaptureOwner::Native(other.window())),
             )
             .unwrap(),
         ],
@@ -180,7 +182,7 @@ fn native_binding_retirement_clears_checkpoint_dependencies_and_invalidates_old_
                     1,
                     PointerEdgeKind::Moved,
                     first,
-                    Authority::Known(PointerCaptureOwner::Native(first)),
+                    Authority::Known(PointerCaptureOwner::Native(first.window())),
                 )],
             )
             .unwrap(),
@@ -189,7 +191,7 @@ fn native_binding_retirement_clears_checkpoint_dependencies_and_invalidates_old_
 
     assert!(
         ledger
-            .retire_native_binding_input(lease, first)
+            .retire_native_binding_input(lease, first.window())
             .unwrap()
             .is_empty()
     );
@@ -216,7 +218,7 @@ fn native_binding_retirement_clears_checkpoint_dependencies_and_invalidates_old_
     ));
     assert!(
         ledger
-            .retire_native_binding_input(lease, other)
+            .retire_native_binding_input(lease, other.window())
             .unwrap()
             .is_empty()
     );
@@ -244,7 +246,7 @@ fn checkpoint_capture_does_not_invent_a_held_button_origin_after_capture_moves()
             PointerStateObservation::new(
                 PointerId::new(1),
                 vec![PointerButton::Primary],
-                Authority::Known(PointerCaptureOwner::Native(first)),
+                Authority::Known(PointerCaptureOwner::Native(first.window())),
             )
             .unwrap(),
         ],
@@ -258,7 +260,7 @@ fn checkpoint_capture_does_not_invent_a_held_button_origin_after_capture_moves()
             1,
             PointerEdgeKind::CaptureChanged,
             other,
-            Authority::Known(PointerCaptureOwner::Native(other)),
+            Authority::Known(PointerCaptureOwner::Native(other.window())),
         )],
     )
     .unwrap()
@@ -269,14 +271,16 @@ fn checkpoint_capture_does_not_invent_a_held_button_origin_after_capture_moves()
     let stream = committed.accepted_edges()[0].stream();
     assert!(
         ledger
-            .retire_native_binding_input(lease, first)
+            .retire_native_binding_input(lease, first.window())
             .unwrap()
             .is_empty()
     );
     assert_eq!(ledger.active_streams[&PointerId::new(1)].id, stream);
     assert_eq!(ledger.button_authority(), AnyButtonDownAuthority::KnownDown);
     assert_eq!(
-        ledger.retire_native_binding_input(lease, other).unwrap(),
+        ledger
+            .retire_native_binding_input(lease, other.window())
+            .unwrap(),
         [stream]
     );
     assert_eq!(

@@ -11,14 +11,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
-use crate::geometry::LogicalPoint;
+use crate::geometry::{LogicalPoint, PhysicalPoint};
 use crate::ids::{EngineAuthorityDomainId, SurfaceId};
 use crate::pointer_journal::{
-    FiniteScrollVector, PointerEdgeSequence, PointerEventMetadata, PointerInputLease,
+    FiniteScrollVector, NativeSurfacePointerRoute, PointerEdgeSequence, PointerEventMetadata,
+    PointerInputLease,
 };
 use crate::presentation_hit::{PresentationHitRegionId, PresentationPointerLane};
 use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
 use crate::scene::SurfaceInteractionProjection;
+use crate::viewport::{CoordinateGeneration, WindowBinding};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -260,7 +262,7 @@ pub enum ScrollReceiverChallenge {
 }
 
 impl ScrollReceiverChallenge {
-    const fn requires_receiver_probe(self) -> bool {
+    pub(crate) const fn requires_receiver_probe(self) -> bool {
         matches!(self, Self::Spatial { .. } | Self::Locked { .. })
     }
 
@@ -304,6 +306,59 @@ impl PointerReceiverProbeRequest {
 }
 
 /// One core-frozen receiver question for a provisional pointer edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeWindowPointerProbe {
+    window: WindowBinding,
+    coordinate_generation: CoordinateGeneration,
+    client_position: PhysicalPoint,
+}
+
+impl NativeWindowPointerProbe {
+    pub(crate) const fn new(
+        window: WindowBinding,
+        coordinate_generation: CoordinateGeneration,
+        client_position: PhysicalPoint,
+    ) -> Self {
+        Self {
+            window,
+            coordinate_generation,
+            client_position,
+        }
+    }
+
+    pub const fn window(self) -> WindowBinding {
+        self.window
+    }
+    pub const fn coordinate_generation(self) -> CoordinateGeneration {
+        self.coordinate_generation
+    }
+    pub const fn client_position(self) -> PhysicalPoint {
+        self.client_position
+    }
+}
+
+/// Exact placement selected by the framework for one physical window question.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NativeWindowHitReceipt {
+    Surface {
+        route: NativeSurfacePointerRoute,
+        output: SurfacePresentationOutputTicket,
+        authority: PresentedSurfaceAuthority,
+    },
+    WindowBackground,
+    Blocked,
+    Unknown,
+}
+
+impl NativeWindowHitReceipt {
+    pub(crate) const fn route(self) -> Option<NativeSurfacePointerRoute> {
+        match self {
+            Self::Surface { route, .. } => Some(route),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointerReceiverCandidate {
     id: PointerReceiverCandidateId,
@@ -315,9 +370,13 @@ pub struct PointerReceiverCandidate {
     hover_point: Option<LogicalPoint>,
     delivery_request: PointerReceiverDeliveryRequest,
     scroll_challenge: Option<ScrollReceiverChallenge>,
+    native_window: Option<NativeWindowPointerProbe>,
 }
 
 impl PointerReceiverCandidate {
+    pub const fn native_window(&self) -> Option<NativeWindowPointerProbe> {
+        self.native_window
+    }
     /// Returns the opaque identity adapters must echo in a receipt.
     #[must_use]
     pub const fn id(&self) -> PointerReceiverCandidateId {
@@ -396,7 +455,37 @@ impl PointerReceiverCandidate {
         PointerReceiverReceipt {
             candidate: self.id,
             observation,
+            native_hit: None,
         }
+    }
+
+    pub(crate) fn receipt_with_native_hit(
+        &self,
+        observation: PointerReceiverObservation,
+        native_hit: NativeWindowHitReceipt,
+    ) -> PointerReceiverReceipt {
+        PointerReceiverReceipt {
+            candidate: self.id,
+            observation,
+            native_hit: Some(native_hit),
+        }
+    }
+
+    pub(crate) fn with_native_selection(&self, hit: NativeWindowHitReceipt) -> Self {
+        let mut candidate = self.clone();
+        let route = hit.route();
+        match self.probes {
+            PointerReceiverProbeRequest::Delivery => {
+                candidate.delivery_surface = route.map(|route| route.binding().surface());
+                candidate.route_point = route.map(NativeSurfacePointerRoute::surface_position);
+            }
+            PointerReceiverProbeRequest::HoverHit => {
+                candidate.hover_surface = route.map(|route| route.binding().surface());
+                candidate.hover_point = route.map(NativeSurfacePointerRoute::surface_position);
+            }
+            PointerReceiverProbeRequest::NotApplicable => {}
+        }
+        candidate
     }
 }
 
@@ -415,6 +504,7 @@ pub(crate) struct PointerReceiverCandidateSpec {
     hover_point: Option<LogicalPoint>,
     delivery_request: PointerReceiverDeliveryRequest,
     scroll_challenge: Option<ScrollReceiverChallenge>,
+    native_window: Option<NativeWindowPointerProbe>,
 }
 
 #[allow(
@@ -422,6 +512,18 @@ pub(crate) struct PointerReceiverCandidateSpec {
     reason = "reserved for CoreHostFrame pointer-receiver integration"
 )]
 impl PointerReceiverCandidateSpec {
+    pub(crate) const fn with_native_window(
+        mut self,
+        probe: NativeWindowPointerProbe,
+        request: PointerReceiverDeliveryRequest,
+    ) -> Self {
+        self.native_window = Some(probe);
+        if !matches!(request, PointerReceiverDeliveryRequest::None) {
+            self.probes = PointerReceiverProbeRequest::Delivery;
+            self.delivery_request = request;
+        }
+        self
+    }
     pub(crate) const fn with_metadata(mut self, metadata: PointerEventMetadata) -> Self {
         self.metadata = metadata;
         self
@@ -438,6 +540,7 @@ impl PointerReceiverCandidateSpec {
             hover_point: None,
             delivery_request: PointerReceiverDeliveryRequest::None,
             scroll_challenge: None,
+            native_window: None,
         }
     }
 
@@ -465,6 +568,7 @@ impl PointerReceiverCandidateSpec {
                 PointerReceiverDeliveryRequest::None
             },
             scroll_challenge: None,
+            native_window: None,
         }
     }
 
@@ -492,6 +596,7 @@ impl PointerReceiverCandidateSpec {
                 PointerReceiverDeliveryRequest::None
             },
             scroll_challenge: Some(challenge),
+            native_window: None,
         }
     }
 
@@ -510,6 +615,7 @@ impl PointerReceiverCandidateSpec {
             hover_point,
             delivery_request: PointerReceiverDeliveryRequest::None,
             scroll_challenge: None,
+            native_window: None,
         }
     }
 
@@ -648,6 +754,7 @@ impl PointerReceiverCandidateRoster {
                 hover_point: spec.hover_point,
                 delivery_request: spec.delivery_request,
                 scroll_challenge: spec.scroll_challenge,
+                native_window: spec.native_window,
             })
             .collect();
         Self {
@@ -738,11 +845,64 @@ impl PointerReceiverCandidateRoster {
             .zip(&self.candidates)
             .map(|(receipt, candidate)| {
                 debug_assert_eq!(receipt.candidate, candidate.id);
-                self.validate_observation(candidate, &receipt.observation, presented_outputs)?;
+                let selected = if let Some(probe) = candidate.native_window {
+                    let hit = receipt
+                        .native_hit
+                        .unwrap_or(NativeWindowHitReceipt::Unknown);
+                    if let NativeWindowHitReceipt::Surface {
+                        route,
+                        output,
+                        authority,
+                    } = hit
+                    {
+                        if route.binding().window() != probe.window()
+                            || route.client_position() != probe.client_position()
+                            || authority.binding() != Some(route.binding())
+                            || authority.coordinate_generation() != route.coordinate_generation()
+                            || !authority.matches_output(output)
+                            || presented_outputs
+                                .get(&output.surface())
+                                .is_none_or(|current| {
+                                    current.ticket != output || current.authority != authority
+                                })
+                        {
+                            return Err(
+                                PointerReceiverReceiptValidationError::NativeWindowHitInvalid {
+                                    candidate: candidate.id,
+                                },
+                            );
+                        }
+                    } else if matches!(
+                        receipt.observation,
+                        PointerReceiverObservation::Presented(_)
+                    ) {
+                        return Err(
+                            PointerReceiverReceiptValidationError::NativeWindowHitInvalid {
+                                candidate: candidate.id,
+                            },
+                        );
+                    }
+                    Some(candidate.with_native_selection(hit))
+                } else {
+                    if receipt.native_hit.is_some() {
+                        return Err(
+                            PointerReceiverReceiptValidationError::NativeWindowHitInvalid {
+                                candidate: candidate.id,
+                            },
+                        );
+                    }
+                    None
+                };
+                self.validate_observation(
+                    selected.as_ref().unwrap_or(candidate),
+                    &receipt.observation,
+                    presented_outputs,
+                )?;
                 Ok(ValidatedPointerReceiverReceipt {
                     candidate: receipt.candidate,
                     delivery_request: candidate.delivery_request,
                     observation: receipt.observation,
+                    native_hit: receipt.native_hit,
                 })
             })
             .collect::<Result<Vec<_>, PointerReceiverReceiptValidationError>>()?;
@@ -840,6 +1000,7 @@ impl PointerReceiverCandidateRoster {
                                     output,
                                     authority,
                                     presented_outputs,
+                                    candidate.native_window.is_some(),
                                 )?;
                             }
                         }
@@ -873,6 +1034,7 @@ impl PointerReceiverCandidateRoster {
                                     output,
                                     authority,
                                     presented_outputs,
+                                    candidate.native_window.is_some(),
                                 )?;
                             }
                         }
@@ -910,11 +1072,17 @@ impl PointerReceiverCandidateRoster {
         submitted_output: SurfacePresentationOutputTicket,
         submitted_authority: PresentedSurfaceAuthority,
         presented_outputs: &BTreeMap<SurfaceId, PointerReceiverPresentedOutput>,
+        selected_native_window: bool,
     ) -> Result<(), PointerReceiverReceiptValidationError> {
         let frozen = self
             .presented_outputs
             .get(&submitted_output.surface())
-            .copied();
+            .copied()
+            .or_else(|| {
+                selected_native_window
+                    .then(|| presented_outputs.get(&submitted_output.surface()).copied())
+                    .flatten()
+            });
         let current = presented_outputs.get(&submitted_output.surface()).copied();
         if !submitted_authority.matches_output(submitted_output)
             || frozen.is_none_or(|frozen| {
@@ -1488,6 +1656,7 @@ fn validate_region_surface_and_behavior(
 pub struct PointerReceiverReceipt {
     candidate: PointerReceiverCandidateId,
     observation: PointerReceiverObservation,
+    native_hit: Option<NativeWindowHitReceipt>,
 }
 
 impl PointerReceiverReceipt {
@@ -1557,6 +1726,10 @@ pub enum PointerReceiverReceiptBatchError {
 /// Exact-set or authority failure while validating receiver receipts.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum PointerReceiverReceiptValidationError {
+    #[error("pointer receiver candidate {candidate:?} has invalid window placement evidence")]
+    NativeWindowHitInvalid {
+        candidate: PointerReceiverCandidateId,
+    },
     /// A receipt belongs to another pointer provider incarnation.
     #[error("pointer receiver receipt uses lease {submitted:?}, expected {expected:?}")]
     ForeignPointerLease {
@@ -1715,6 +1888,7 @@ pub(crate) struct ValidatedPointerReceiverReceipt {
     candidate: PointerReceiverCandidateId,
     delivery_request: PointerReceiverDeliveryRequest,
     observation: PointerReceiverObservation,
+    native_hit: Option<NativeWindowHitReceipt>,
 }
 
 #[allow(
@@ -1722,6 +1896,9 @@ pub(crate) struct ValidatedPointerReceiverReceipt {
     reason = "reserved for the journal-driven interaction reducer"
 )]
 impl ValidatedPointerReceiverReceipt {
+    pub(crate) const fn native_hit(&self) -> Option<NativeWindowHitReceipt> {
+        self.native_hit
+    }
     pub(crate) const fn candidate(&self) -> PointerReceiverCandidateId {
         self.candidate
     }

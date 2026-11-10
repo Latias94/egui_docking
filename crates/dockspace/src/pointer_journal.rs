@@ -17,7 +17,9 @@ use crate::ids::{EngineAuthorityDomainId, SurfaceId};
 use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use crate::platform_provider::PlatformObservationLease;
 use crate::presentation_observation::{PresentationHostLease, PresentedSurfaceAuthority};
-use crate::viewport::{CoordinateGeneration, ViewportBinding, WorkAreaGeneration, WorkAreaToken};
+use crate::viewport::{
+    CoordinateGeneration, ViewportBinding, WindowBinding, WorkAreaGeneration, WorkAreaToken,
+};
 
 mod desktop_route;
 mod ledger;
@@ -282,14 +284,14 @@ pub struct DesktopDockRoute {
 /// together. Core must validate the binding, coordinate generation, and exact
 /// conversion before using the route for manipulation or local hover.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NativeLocalPointerRoute {
+pub struct NativeSurfacePointerRoute {
     binding: ViewportBinding,
     coordinate_generation: CoordinateGeneration,
     client_position: PhysicalPoint,
     surface_position: LogicalPoint,
 }
 
-impl NativeLocalPointerRoute {
+impl NativeSurfacePointerRoute {
     #[must_use]
     pub(crate) const fn new(
         binding: ViewportBinding,
@@ -330,6 +332,53 @@ impl NativeLocalPointerRoute {
     }
 }
 
+/// Original physical client sample for one exact window coordinate generation.
+///
+/// A sample identifies neither a logical surface nor a hover target. Core derives
+/// those independently at the edge's reducer ordinal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeLocalPointerRoute {
+    binding: WindowBinding,
+    coordinate_generation: CoordinateGeneration,
+    client_position: PhysicalPoint,
+}
+
+impl NativeLocalPointerRoute {
+    pub(crate) const fn new(
+        binding: WindowBinding,
+        coordinate_generation: CoordinateGeneration,
+        client_position: PhysicalPoint,
+    ) -> Self {
+        Self {
+            binding,
+            coordinate_generation,
+            client_position,
+        }
+    }
+
+    #[must_use]
+    pub const fn binding(self) -> WindowBinding {
+        self.binding
+    }
+
+    #[must_use]
+    pub const fn coordinate_generation(self) -> CoordinateGeneration {
+        self.coordinate_generation
+    }
+
+    #[must_use]
+    pub const fn client_position(self) -> PhysicalPoint {
+        self.client_position
+    }
+}
+
+/// Reducer-local projections of one immutable physical edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct NativePointerRoutes {
+    pub(crate) manipulation: Option<NativeSurfacePointerRoute>,
+    pub(crate) hover: Option<NativeSurfacePointerRoute>,
+}
+
 /// Authoritative classification of the native window under a desktop pointer.
 ///
 /// `None` is an explicit provider fact that no native window was under the
@@ -343,7 +392,7 @@ pub enum DesktopHoveredWindow {
     /// The independent desktop-to-local coordinate route may still be
     /// unavailable. A known docking hover alone never authorizes a receiver
     /// hit or drop target.
-    Dock(ViewportBinding),
+    Dock(WindowBinding),
     /// A foreign native window is under the pointer.
     Foreign,
     /// The provider authoritatively observed no native window under the pointer.
@@ -376,6 +425,7 @@ pub struct DesktopRouteFact {
     hovered: Authority<DesktopHoveredWindow>,
     dock_route: Option<Authority<DesktopDockRoute>>,
     derive_dock_route_in_core: bool,
+    placement: Option<ViewportBinding>,
     work_area: Option<Authority<DesktopWorkAreaRoute>>,
 }
 
@@ -415,6 +465,11 @@ pub enum ValidatedDesktopRoute {
 /// Typed reason why a desktop route fact cannot authorize interaction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DesktopRouteUnavailable {
+    /// The physical window still requires an independently observed placement hit.
+    WindowPlacementUnresolved {
+        window: WindowBinding,
+        position: Authority<PhysicalPoint>,
+    },
     /// The native runtime did not know the hovered-window fact.
     HoverUnknown {
         /// The independently known or unavailable physical position.
@@ -722,7 +777,7 @@ pub enum PointerCaptureOwner {
     /// observation of an old window distinct from a successor which reused the
     /// same platform token; downstream inventory validation must still require
     /// the exact binding.
-    Native(ViewportBinding),
+    Native(WindowBinding),
     /// A receiver outside this docking engine owns capture.
     Foreign,
     /// No receiver owns capture.
@@ -741,7 +796,7 @@ pub enum PointerEventDeliveryOwner {
     /// The immutable host or surface endpoint of a local provider delivered the edge.
     ProviderEndpoint,
     /// One exact native viewport incarnation delivered the edge.
-    Native(ViewportBinding),
+    Native(WindowBinding),
     /// A receiver outside this docking engine delivered the edge.
     Foreign,
     /// The edge had no native-window delivery endpoint.
@@ -933,7 +988,7 @@ pub struct FiniteScrollVector {
 /// Exact coordinate authority used to convert one physical-pixel scroll sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PhysicalScrollCoordinates {
-    binding: ViewportBinding,
+    binding: WindowBinding,
     coordinate_generation: CoordinateGeneration,
 }
 
@@ -1105,6 +1160,7 @@ pub struct PointerEdge {
     delivery_owner: Authority<PointerEventDeliveryOwner>,
     capture_owner: Authority<PointerCaptureOwner>,
     metadata: PointerEventMetadata,
+    native_routes: Option<NativePointerRoutes>,
 }
 
 impl PointerEdge {
@@ -1160,6 +1216,7 @@ impl PointerEdge {
             delivery_owner,
             capture_owner,
             metadata: PointerEventMetadata::unknown(),
+            native_routes: None,
         }
     }
 
@@ -1217,6 +1274,16 @@ impl PointerEdge {
         let mut edge = self.clone();
         edge.location = location;
         edge
+    }
+
+    pub(crate) fn with_native_routes(&self, routes: NativePointerRoutes) -> Self {
+        let mut edge = self.clone();
+        edge.native_routes = Some(routes);
+        edge
+    }
+
+    pub(crate) const fn native_routes(&self) -> Option<NativePointerRoutes> {
+        self.native_routes
     }
 
     /// Returns the complete desktop route fact when this edge belongs to the
@@ -2065,14 +2132,14 @@ pub struct PointerEdgeTicket {
 struct JournalPointerAuthority {
     buttons_complete: bool,
     unavailable_reason: AuthorityUnavailableReason,
-    pressed_buttons: BTreeMap<(PointerId, PointerButton), Option<ViewportBinding>>,
+    pressed_buttons: BTreeMap<(PointerId, PointerButton), Option<WindowBinding>>,
     captures: BTreeMap<PointerId, JournalPointerCapture>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct JournalPointerCapture {
     observed: Authority<PointerCaptureOwner>,
-    retained_native_binding: Option<ViewportBinding>,
+    retained_native_binding: Option<WindowBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2386,7 +2453,7 @@ pub enum PointerJournalLedgerError {
     ForeignDeliveryBinding {
         lease: PointerInputLease,
         sequence: PointerEdgeSequence,
-        binding: ViewportBinding,
+        binding: WindowBinding,
         expected: EngineAuthorityDomainId,
         submitted: EngineAuthorityDomainId,
     },
@@ -2396,7 +2463,7 @@ pub enum PointerJournalLedgerError {
     ForeignCaptureBinding {
         lease: PointerInputLease,
         sequence: PointerEdgeSequence,
-        binding: ViewportBinding,
+        binding: WindowBinding,
         expected: EngineAuthorityDomainId,
         submitted: EngineAuthorityDomainId,
     },
@@ -2406,7 +2473,7 @@ pub enum PointerJournalLedgerError {
     ForeignDesktopRouteBinding {
         lease: PointerInputLease,
         sequence: PointerEdgeSequence,
-        binding: ViewportBinding,
+        binding: WindowBinding,
         expected: EngineAuthorityDomainId,
         submitted: EngineAuthorityDomainId,
     },
@@ -2416,7 +2483,7 @@ pub enum PointerJournalLedgerError {
     ForeignNativeLocalRouteBinding {
         lease: PointerInputLease,
         sequence: PointerEdgeSequence,
-        binding: ViewportBinding,
+        binding: WindowBinding,
         expected: EngineAuthorityDomainId,
         submitted: EngineAuthorityDomainId,
     },

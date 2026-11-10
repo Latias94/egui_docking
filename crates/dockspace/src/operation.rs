@@ -270,8 +270,65 @@ pub(crate) fn prepare_surface_content_close(
     policy: &DockPolicySnapshot,
     prepared: &PreparedSurfaceContentClose,
 ) -> Result<PreparedContentCloseCommit, TransactionError> {
+    let (candidate, mut outcomes) = prepare_surface_content_closes(workspace, policy, &[prepared])?;
+    Ok(PreparedContentCloseCommit {
+        candidate,
+        outcome: outcomes.remove(0),
+    })
+}
+
+/// Applies one complete native-window content roster to a single isolated draft.
+/// A rejected member discards the entire draft and every sibling mutation.
+pub(crate) fn prepare_surface_content_closes(
+    workspace: &Workspace,
+    policy: &DockPolicySnapshot,
+    prepared: &[&PreparedSurfaceContentClose],
+) -> Result<(Workspace, Vec<CloseCommitOutcome>), TransactionError> {
+    if prepared.iter().all(|prepared| prepared.items().is_empty()) {
+        return Err(close_invariant("validate frozen close-surface item order"));
+    }
+    let mut surfaces = BTreeSet::new();
+    for prepared in prepared {
+        if !surfaces.insert(prepared.surface()) {
+            return Err(close_invariant("validate duplicate close-window surface"));
+        }
+        validate_surface_content_close(workspace, policy, prepared)?;
+    }
     let mut candidate = clone_workspace_draft(workspace);
-    if !candidate.matches_surface_roster_source(prepared.roster()) {
+    let mut expected_after = workspace.item_multiset();
+    let mut outcomes = Vec::with_capacity(prepared.len());
+    for prepared in prepared {
+        for item in prepared.items() {
+            subtract_closed_item(&mut expected_after, *item)?;
+        }
+        for (source, _) in prepared.roots() {
+            let record = remove_root_and_presentation(&mut candidate, source.root())
+                .map_err(close_command_error)?;
+            remove_subtree_nodes(&mut candidate, record.node).map_err(close_command_error)?;
+        }
+        outcomes.push(CloseCommitOutcome::SurfaceClosed {
+            surface: prepared.surface(),
+            items: prepared.items().to_vec(),
+        });
+    }
+    prune_vacant_surfaces(&mut candidate);
+    canonicalize_draft(&mut candidate).map_err(TransactionError::from)?;
+    let actual_after = candidate.item_multiset();
+    if actual_after != expected_after {
+        return Err(TransactionError::ItemReconciliation {
+            expected: expected_after,
+            actual: actual_after,
+        });
+    }
+    Ok((candidate, outcomes))
+}
+
+fn validate_surface_content_close(
+    workspace: &Workspace,
+    policy: &DockPolicySnapshot,
+    prepared: &PreparedSurfaceContentClose,
+) -> Result<(), TransactionError> {
+    if !workspace.matches_surface_roster_source(prepared.roster()) {
         return Err(TransactionError::Precondition {
             index: 0,
             source: TransactionPreconditionError::StaleSurfaceRoster {
@@ -313,7 +370,7 @@ pub(crate) fn prepare_surface_content_close(
         .iter()
         .flat_map(|(_, items)| items.iter().copied())
         .collect::<Vec<_>>();
-    if roster_items.as_slice() != prepared.items() || prepared.items().is_empty() {
+    if roster_items.as_slice() != prepared.items() {
         return Err(close_invariant("validate frozen close-surface item order"));
     }
 
@@ -349,8 +406,8 @@ pub(crate) fn prepare_surface_content_close(
     }
     for (source, frozen_items) in prepared.roots() {
         let (_, root_node) =
-            validate_root_source(&candidate, source).map_err(close_command_error)?;
-        if candidate.collect_items_in_subtree(root_node) != *frozen_items {
+            validate_root_source(workspace, source).map_err(close_command_error)?;
+        if workspace.collect_items_in_subtree(root_node) != *frozen_items {
             return Err(close_invariant(
                 "validate frozen close-surface root item order",
             ));
@@ -360,7 +417,7 @@ pub(crate) fn prepare_surface_content_close(
     // The baseline is deliberately captured at apply time. A close plan owns
     // only its frozen source roster; unrelated surfaces may change while a
     // native close confirmation is pending.
-    let before_items = candidate.item_multiset();
+    let before_items = workspace.item_multiset();
     for item in prepared.items() {
         if before_items.get(item) != Some(&1) {
             return Err(close_invariant(
@@ -368,33 +425,7 @@ pub(crate) fn prepare_surface_content_close(
             ));
         }
     }
-    let mut expected_after = before_items;
-    for item in prepared.items() {
-        subtract_closed_item(&mut expected_after, *item)?;
-    }
-    for (source, _) in prepared.roots() {
-        let record = remove_root_and_presentation(&mut candidate, source.root())
-            .map_err(close_command_error)?;
-        remove_subtree_nodes(&mut candidate, record.node).map_err(close_command_error)?;
-    }
-
-    prune_vacant_surfaces(&mut candidate);
-    canonicalize_draft(&mut candidate).map_err(TransactionError::from)?;
-    let actual_after = candidate.item_multiset();
-    if actual_after != expected_after {
-        return Err(TransactionError::ItemReconciliation {
-            expected: expected_after,
-            actual: actual_after,
-        });
-    }
-
-    Ok(PreparedContentCloseCommit {
-        candidate,
-        outcome: CloseCommitOutcome::SurfaceClosed {
-            surface: prepared.surface(),
-            items: prepared.items().to_vec(),
-        },
-    })
+    Ok(())
 }
 
 /// Prepare one approved close against a fresh candidate workspace.
@@ -641,28 +672,39 @@ pub(crate) fn prepare_surface_recovery_transaction(
     workspace: &Workspace,
     transaction: &SurfaceRecoveryTransaction,
 ) -> Result<PreparedTransaction, TransactionError> {
-    if !transaction.is_exact_program() {
-        return Err(TransactionError::Command {
-            index: 0,
-            source: CommandError::Invariant {
-                stage: "authorize exact surface recovery program",
-            },
-        });
+    prepare_surface_recovery_transactions(workspace, &[transaction])
+}
+
+/// Validates complete recovery programs before executing their combined draft.
+pub(crate) fn prepare_surface_recovery_transactions(
+    workspace: &Workspace,
+    transactions: &[&SurfaceRecoveryTransaction],
+) -> Result<PreparedTransaction, TransactionError> {
+    let mut surfaces = BTreeSet::new();
+    for transaction in transactions {
+        if !transaction.is_exact_program() || !surfaces.insert(transaction.roster().surface()) {
+            return Err(TransactionError::Command {
+                index: 0,
+                source: CommandError::Invariant {
+                    stage: "authorize exact surface recovery program",
+                },
+            });
+        }
+        let roster = transaction.roster();
+        if !workspace.matches_surface_roster_source(roster) {
+            return Err(TransactionError::Precondition {
+                index: 0,
+                source: TransactionPreconditionError::StaleSurfaceRoster {
+                    surface: roster.surface(),
+                },
+            });
+        }
     }
-    let roster = transaction.roster();
-    if !workspace.matches_surface_roster_source(roster) {
-        return Err(TransactionError::Precondition {
-            index: 0,
-            source: TransactionPreconditionError::StaleSurfaceRoster {
-                surface: roster.surface(),
-            },
-        });
-    }
-    prepare_transaction_inner(
-        workspace,
-        TransactionAuthority::SurfaceRecovery,
-        transaction.commands(),
-    )
+    let commands = transactions
+        .iter()
+        .flat_map(|transaction| transaction.commands().iter().cloned())
+        .collect::<Vec<_>>();
+    prepare_transaction_inner(workspace, TransactionAuthority::SurfaceRecovery, &commands)
 }
 
 #[derive(Debug, Clone, Copy)]

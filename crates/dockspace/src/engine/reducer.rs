@@ -1130,6 +1130,7 @@ impl DockEngine {
                     InputOutcome::LogicalSurfaceAttached { .. }
                     | InputOutcome::LogicalSurfaceRetired { .. }
                     | InputOutcome::LogicalSurfaceRejected { .. }
+                    | InputOutcome::NativeSurfacePlacementsChanged { .. }
                     | InputOutcome::ViewportRegistered { .. }
                     | InputOutcome::NativeInputCancelledForOverload
                     | InputOutcome::NativeInputDeviceRemoval
@@ -1220,6 +1221,18 @@ impl DockEngine {
                     interaction_events,
                 ),
 
+            EngineInput::SetNativeSurfacePlacements {
+                provider,
+                expected,
+                window,
+                placements,
+            } => self.reduce_native_surface_placements(
+                input.sequence,
+                *provider,
+                *expected,
+                *window,
+                placements,
+            ),
             EngineInput::RegisterViewport {
                 provider,
                 expected,

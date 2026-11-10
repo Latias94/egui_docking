@@ -2,8 +2,8 @@
 
 use super::compiler::NativeSnapshotEntry;
 use super::{
-    NativeBindingState, NativePlatformError, NativeSurfaceBinding, PreparedNativeHostCommit,
-    RuntimeNativeState,
+    NativeBindingState, NativePlatformError, NativeSurfaceBinding, NativeWindowState,
+    PreparedNativeHostCommit, RuntimeNativeState,
 };
 use crate::backend_ingress::BackendIngressRecorder;
 use crate::platform::{ObservedWindow, ObservedWorkArea, PlatformSnapshot, WindowCloseObservation};
@@ -148,6 +148,7 @@ impl NativeProducerStorageLimit {
             .checked_add(size_of::<PlatformSnapshot>())?;
         let binding_bytes = size_of::<NativeBindingState>()
             .checked_mul(2)?
+            .checked_add(size_of::<NativeWindowState>().checked_mul(2)?)?
             .checked_add(size_of::<NativeSurfaceBinding>().checked_mul(2)?)?
             .checked_add(size_of::<NativeSnapshotEntry>())?
             .checked_add(size_of::<ViewportBinding>())?

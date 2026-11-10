@@ -76,7 +76,11 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         self.require_managed_input_provider(provider)?;
-        if !self.viewport.recognizes_input_binding(binding) {
+        if self.viewport.registry().window(binding.window()).is_none()
+            && !self
+                .viewport
+                .recognizes_retired_native_window(binding.window())
+        {
             return Err(EngineError::Viewport {
                 input: self.last_input,
                 source: ViewportCoordinatorError::Registry(
@@ -86,7 +90,7 @@ impl DockEngine {
         }
         let retired_streams = self
             .pointer_journal
-            .retire_native_binding_input(provider.pointer_provider(), binding)
+            .retire_native_binding_input(provider.pointer_provider(), binding.window())
             .map_err(|source| EngineError::PointerJournal { source })?;
         if let Some(owner) = self
             .interaction

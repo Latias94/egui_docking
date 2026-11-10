@@ -406,7 +406,7 @@ fn submit_native_reservation_edge(
     let capture = if kind == PointerEdgeKind::ButtonReleased(PointerButton::Primary) {
         PointerCaptureOwner::None
     } else {
-        PointerCaptureOwner::Native(binding)
+        PointerCaptureOwner::Native(binding.window())
     };
     let sequence = PointerEdgeSequence::new(previous + 1);
     let journal = PointerEdgeJournal::new(
@@ -417,7 +417,7 @@ fn submit_native_reservation_edge(
             TEST_POINTER,
             kind,
             PointerEdgeLocation::Desktop { route },
-            Authority::Known(PointerEventDeliveryOwner::Native(binding)),
+            Authority::Known(PointerEventDeliveryOwner::Native(binding.window())),
             Authority::Known(capture),
         )],
     )

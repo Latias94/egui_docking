@@ -1584,8 +1584,21 @@ impl DockspaceHostFrame<'_> {
                 None,
             ),
         };
+        let physical_coordinates = authority.and_then(|authority| {
+            let binding = authority.binding()?;
+            let coordinates = self
+                .frame
+                .view()
+                .viewport()
+                .registry()
+                .window_coordinates(binding.window())?;
+            Some(PhysicalScrollCoordinates::new(
+                binding.window(),
+                coordinates.coordinate_generation(),
+            ))
+        });
         let delta = delta
-            .map(|delta| surface_scroll_delta(delta, authority))
+            .map(|delta| surface_scroll_delta(delta, physical_coordinates))
             .transpose()?;
         ScrollEdge::new(
             ScrollDeviceId::new(event.device.get()),
@@ -1769,7 +1782,7 @@ const fn surface_scroll_cancel_reason(reason: SurfaceScrollCancelReason) -> Scro
 
 fn surface_scroll_delta(
     delta: SurfaceScrollDelta,
-    authority: Option<PresentedSurfaceAuthority>,
+    coordinates: Option<PhysicalScrollCoordinates>,
 ) -> Result<ScrollDelta, DockspaceRuntimeError> {
     let (x, y) = match delta {
         SurfaceScrollDelta::PhysicalPixels { x, y }
@@ -1782,16 +1795,10 @@ fn surface_scroll_delta(
     Ok(match delta {
         SurfaceScrollDelta::PhysicalPixels { .. } => ScrollDelta::PhysicalPixels {
             delta: vector,
-            coordinates: authority
-                .and_then(|authority| {
-                    authority.binding().map(|binding| {
-                        PhysicalScrollCoordinates::new(binding, authority.coordinate_generation())
-                    })
-                })
-                .map_or_else(
-                    || Authority::Unknown(AuthorityUnavailableReason::NotReported),
-                    Authority::Known,
-                ),
+            coordinates: coordinates.map_or_else(
+                || Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                Authority::Known,
+            ),
         },
         SurfaceScrollDelta::LogicalPoints { .. } => ScrollDelta::LogicalPoints(vector),
         SurfaceScrollDelta::Lines { .. } => ScrollDelta::Lines(vector),

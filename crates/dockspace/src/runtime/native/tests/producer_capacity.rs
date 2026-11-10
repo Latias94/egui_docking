@@ -122,6 +122,7 @@ fn producer_enrollment_prepays_the_complete_peak_and_one_byte_short_is_inert() {
         session.native_input_producer_storage_capacity_bytes(),
         super::super::storage::producer_inline_capacity_bytes()
             + 3 * size_of::<NativeBindingState>()
+            + 3 * size_of::<NativeWindowState>()
             + 2 * size_of::<WorkAreaToken>()
     );
     commit(&mut session);
@@ -315,7 +316,7 @@ fn finite_snapshot_ignores_hints_and_rejects_a_foreign_suffix_without_advancing_
         .as_ref()
         .unwrap()
         .producer
-        .binding(binding.binding)
+        .window(binding.binding.window())
         .unwrap();
     assert_eq!((state.window_generation, state.close_generation), (2, 2));
 }
@@ -327,7 +328,9 @@ fn work_area_length_is_checked_before_borrowing_the_snapshot_iterator() {
     session.prepare_native_pointer_capacity().unwrap();
     let before = format!("{:?}", session.native);
     let observations =
-        std::iter::from_fn(|| panic!("work-area admission precedes iterator access"));
+        std::iter::from_fn(|| -> Option<(NativeWindowBinding, NativeWindowFacts)> {
+            panic!("work-area admission precedes iterator access")
+        });
     assert_eq!(
         session
             .report_managed_native_snapshot(
@@ -576,10 +579,15 @@ fn accepted_pointer_release_rejects_tear_off_at_capacity_and_commits_once() {
     let version = session.version();
     let frontier = session.engine.presentation_identity_frontier();
     let before = session.native.as_ref().unwrap().producer.bindings.clone();
-    let resolve = |query: NativeReceiverQuery| {
-        query
-            .bind_receiver(&receiver)
-            .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock)
+    let artifact = receiver.artifact;
+    let resolve = |query: NativeReceiverQuery| match query {
+        NativeReceiverQuery::WindowHit(query) => {
+            assert_eq!(query.window(), binding.window());
+            NativeReceiverAnswer::WindowHit(crate::runtime::NativeWindowHit::Surface(artifact))
+        }
+        NativeReceiverQuery::Surface(query) => query
+            .bind_receiver(&receiver.descriptor)
+            .map_or(NativeReceiverAnswer::Unknown, NativeReceiverAnswer::Dock),
     };
     drop(session.begin_native_host_frame(resolve).unwrap());
     assert_eq!(

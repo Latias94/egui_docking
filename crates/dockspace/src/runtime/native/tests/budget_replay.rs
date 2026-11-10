@@ -461,7 +461,10 @@ fn uncommitted_roster_change_stays_unsettled_after_an_earlier_prefix_commit() {
     );
     assert_eq!(
         session
-            .report_managed_native_snapshot([], NativeWorkAreaRoster::Unknown)
+            .report_managed_native_snapshot(
+                std::iter::empty::<(NativeWindowBinding, NativeWindowFacts)>(),
+                NativeWorkAreaRoster::Unknown
+            )
             .expect_err("a partial commit cannot authorize another roster snapshot")
             .native_kind(),
         Some(NativeHostErrorKind::OperationConflict),

@@ -52,7 +52,9 @@ fn commit(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
     frame.commit().unwrap()
 }
 
-fn measure_and_present(session: &mut DockspaceSession) {
+fn measure_and_present(
+    session: &mut DockspaceSession,
+) -> Vec<(SurfaceId, crate::runtime::SurfacePresentationArtifact)> {
     let metrics = UniformSurfaceMetrics::new(
         rect(0.0, 0.0, 960.0, 720.0),
         LogicalSize::new(64.0, 48.0).unwrap(),
@@ -78,12 +80,15 @@ fn measure_and_present(session: &mut DockspaceSession) {
     let mut report = commit(painted);
     let outputs = report.take_painted_outputs();
     assert_eq!(outputs.len(), session.view().surfaces().count());
+    let mut artifacts = Vec::new();
     for output in outputs {
+        artifacts.push((output.surface(), output.presentation_artifact()));
         session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .unwrap();
     }
     commit(session.begin_host_frame().unwrap());
+    artifacts
 }
 
 #[derive(Debug, PartialEq)]
@@ -252,7 +257,7 @@ fn local_native_input(
     let geometry = coordinates.geometry();
     let sample = coordinates
         .capture(
-            binding,
+            binding.window(),
             NativeLocalPointerFact::new(
                 PhysicalPoint::new(point.x(), point.y()).unwrap(),
                 geometry.content_size(),
@@ -265,8 +270,8 @@ fn local_native_input(
         NativePointerId::new(1),
         event,
         NativeLocalPointerLocation::Exact(sample),
-        NativePointerOwner::Native(binding),
-        NativePointerOwner::Native(binding),
+        NativePointerOwner::Native(binding.window()),
+        NativePointerOwner::Native(binding.window()),
     )
 }
 
@@ -365,10 +370,15 @@ fn focused_root_controls_child_magnetism_but_unfocused_binding_is_inert() {
         .unwrap();
     commit(session.begin_host_frame().unwrap());
     session
-        .report_native_global_focus(NativeGlobalFocus::Dock(root))
+        .report_native_global_focus(NativeGlobalFocus::Dock(root.window()))
         .unwrap();
     commit(session.begin_host_frame().unwrap());
-    measure_and_present(&mut session);
+    let artifacts = measure_and_present(&mut session);
+    let artifact = artifacts
+        .iter()
+        .find(|(surface, _)| *surface == CHILD)
+        .unwrap()
+        .1;
 
     let mut inspect = session.begin_host_frame().unwrap();
     let plan = inspect.paint_plan(CHILD).unwrap().unwrap();
@@ -414,6 +424,15 @@ fn focused_root_controls_child_magnetism_but_unfocused_binding_is_inert() {
     session.record_native_pointer_batch([press, moved]).unwrap();
     let mut dragging = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                crate::runtime::NativeReceiverQuery::WindowHit(query) => {
+                    assert_eq!(query.window(), child.window());
+                    return NativeReceiverAnswer::WindowHit(
+                        crate::runtime::NativeWindowHit::Surface(artifact),
+                    );
+                }
+                crate::runtime::NativeReceiverQuery::Surface(query) => query,
+            };
             assert!(query.matches_native_binding(child));
             if matches!(query.purpose(), NativeReceiverPurpose::HoverHit) {
                 NativeReceiverAnswer::ClearHoverLane(query.presented_surface())
@@ -459,6 +478,15 @@ fn focused_root_controls_child_magnetism_but_unfocused_binding_is_inert() {
     session.record_native_pointer(moved).unwrap();
     let mut reacquired = session
         .begin_native_host_frame(|query| {
+            let query = match query {
+                crate::runtime::NativeReceiverQuery::WindowHit(query) => {
+                    assert_eq!(query.window(), child.window());
+                    return NativeReceiverAnswer::WindowHit(
+                        crate::runtime::NativeWindowHit::Surface(artifact),
+                    );
+                }
+                crate::runtime::NativeReceiverQuery::Surface(query) => query,
+            };
             assert!(matches!(query.purpose(), NativeReceiverPurpose::HoverHit));
             NativeReceiverAnswer::ClearHoverLane(query.presented_surface())
         })

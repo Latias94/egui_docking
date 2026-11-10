@@ -36,7 +36,7 @@ pub(super) fn compile_focus_observation(
             if binding.provider != provider {
                 return Err(NativePlatformError::ProviderSuperseded);
             }
-            Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+            Authority::Known(GlobalFocusedWindow::Dock(binding.window))
         }
         NativeGlobalFocus::Foreign => Authority::Known(GlobalFocusedWindow::Foreign),
         NativeGlobalFocus::None => Authority::Known(GlobalFocusedWindow::None),
@@ -400,7 +400,7 @@ fn input_acknowledgement(
                 surface: binding.surface(),
             })
         }
-        Some(acknowledgement) if acknowledgement.binding != binding => {
+        Some(acknowledgement) if acknowledgement.binding.window() != binding.window() => {
             Err(NativePlatformError::EffectAcknowledgementBindingMismatch {
                 surface: binding.surface(),
             })
@@ -423,7 +423,7 @@ fn create_acknowledgement(
                 surface: binding.surface(),
             })
         }
-        Some(acknowledgement) if acknowledgement.binding != binding => {
+        Some(acknowledgement) if acknowledgement.binding.window() != binding.window() => {
             Err(NativePlatformError::EffectAcknowledgementBindingMismatch {
                 surface: binding.surface(),
             })
@@ -456,7 +456,7 @@ fn known_close_acknowledgement(
                 surface: binding.surface(),
             })
         }
-        Some(acknowledgement) if acknowledgement.binding != binding => {
+        Some(acknowledgement) if acknowledgement.binding.window() != binding.window() => {
             Err(NativePlatformError::EffectAcknowledgementBindingMismatch {
                 surface: binding.surface(),
             })

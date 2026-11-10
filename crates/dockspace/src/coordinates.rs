@@ -1,5 +1,9 @@
 //! Typed conversions between surface logical, window client, and desktop physical space.
 
+mod surface_placement;
+
+pub use surface_placement::NativeSurfacePlacement;
+
 use thiserror::Error;
 
 use crate::geometry::{
@@ -11,8 +15,8 @@ use crate::platform::{NativeDragSourceInput, ObservedWorkArea, WindowCoordinateO
 use crate::platform_provider::PlatformObservationLease;
 use crate::pointer_journal::PointerInputLease;
 use crate::viewport::{
-    CoordinateGeneration, CoordinateObservationGeneration, ViewportBinding, WorkAreaGeneration,
-    WorkAreaToken,
+    CoordinateGeneration, CoordinateObservationGeneration, ViewportBinding, WindowBinding,
+    WorkAreaGeneration, WorkAreaToken,
 };
 
 /// Explicit geometry inputs for one native tear-off placement.
@@ -238,13 +242,20 @@ impl SurfaceClientGeometry {
         }
     }
 
-    fn whole_client(size: PhysicalSize, scale_factor: ScaleFactor) -> Result<Self, GeometryError> {
+    pub(crate) fn whole_client(
+        size: PhysicalSize,
+        scale_factor: ScaleFactor,
+    ) -> Result<Self, GeometryError> {
         let clip = PhysicalRect::from_min_size(PhysicalPoint::new(0.0, 0.0)?, size)?;
         Ok(Self::new(clip.min(), scale_factor, clip))
     }
 
     pub(crate) const fn scale_factor(self) -> ScaleFactor {
         self.scale_factor
+    }
+
+    pub(crate) const fn origin(self) -> PhysicalPoint {
+        self.origin
     }
 
     pub(crate) const fn clip(self) -> PhysicalRect {
@@ -267,11 +278,71 @@ impl SurfaceClientGeometry {
     }
 }
 
+/// Committed physical geometry, owned once by a real window incarnation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WindowCoordinateSnapshot {
+    binding: WindowBinding,
+    coordinate_generation: CoordinateGeneration,
+    observation_generation: CoordinateObservationGeneration,
+    content_size: PhysicalSize,
+    content_bounds: Authority<PhysicalRect>,
+    outer_bounds: Option<PhysicalRect>,
+    native_scale_factor: ScaleFactor,
+}
+
+impl WindowCoordinateSnapshot {
+    pub(crate) const fn coordinate_generation(self) -> CoordinateGeneration {
+        self.coordinate_generation
+    }
+    pub(crate) const fn content_size(self) -> PhysicalSize {
+        self.content_size
+    }
+    pub(crate) const fn content_bounds(self) -> Option<PhysicalRect> {
+        match self.content_bounds {
+            Authority::Known(bounds) => Some(bounds),
+            Authority::Unknown(_) => None,
+        }
+    }
+    pub(crate) const fn native_scale_factor(self) -> ScaleFactor {
+        self.native_scale_factor
+    }
+    pub(crate) fn from_observation(
+        binding: WindowBinding,
+        generation: CoordinateGeneration,
+        observation: WindowCoordinateObservation,
+    ) -> Option<Self> {
+        if binding != observation.binding().window() {
+            return None;
+        }
+        Some(Self {
+            binding,
+            coordinate_generation: generation,
+            observation_generation: observation.generation(),
+            content_size: observation.content_size().known().copied()?,
+            content_bounds: *observation.content_bounds(),
+            outer_bounds: observation.outer_bounds().known().copied(),
+            native_scale_factor: observation.native_scale_factor().known().copied()?,
+        })
+    }
+    pub(crate) const fn with_generation(mut self, generation: CoordinateGeneration) -> Self {
+        self.coordinate_generation = generation;
+        self
+    }
+    pub(crate) fn same_facts(self, other: Self) -> bool {
+        self.binding == other.binding
+            && self.content_size == other.content_size
+            && self.content_bounds() == other.content_bounds()
+            && self.outer_bounds == other.outer_bounds
+            && self.native_scale_factor == other.native_scale_factor
+    }
+}
+
 /// Local coordinate facts and optional desktop bounds for one exact native-window binding.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CoordinateSnapshot {
     binding: ViewportBinding,
     coordinate_generation: CoordinateGeneration,
+    window_coordinate_generation: CoordinateGeneration,
     observation_generation: CoordinateObservationGeneration,
     content_size: PhysicalSize,
     content_bounds: Authority<PhysicalRect>,
@@ -321,6 +392,39 @@ impl RecoveryCoordinateSnapshot {
 }
 
 impl CoordinateSnapshot {
+    pub(crate) const fn window_coordinates(self) -> WindowCoordinateSnapshot {
+        WindowCoordinateSnapshot {
+            binding: self.binding.window(),
+            coordinate_generation: self.window_coordinate_generation,
+            observation_generation: self.observation_generation,
+            content_size: self.content_size,
+            content_bounds: self.content_bounds,
+            outer_bounds: self.outer_bounds,
+            native_scale_factor: self.native_scale_factor,
+        }
+    }
+
+    pub(crate) fn from_window_coordinates(
+        binding: ViewportBinding,
+        generation: CoordinateGeneration,
+        window: WindowCoordinateSnapshot,
+        surface_client: SurfaceClientGeometry,
+    ) -> Option<Self> {
+        if binding.window() != window.binding {
+            return None;
+        }
+        Some(Self {
+            binding,
+            coordinate_generation: generation,
+            window_coordinate_generation: window.coordinate_generation,
+            observation_generation: window.observation_generation,
+            content_size: window.content_size,
+            content_bounds: window.content_bounds,
+            outer_bounds: window.outer_bounds,
+            native_scale_factor: window.native_scale_factor,
+            surface_client,
+        })
+    }
     pub(crate) const fn binding(self) -> ViewportBinding {
         self.binding
     }
@@ -368,6 +472,7 @@ impl CoordinateSnapshot {
         Ok(Self {
             binding,
             coordinate_generation,
+            window_coordinate_generation: coordinate_generation,
             observation_generation: observation.generation(),
             content_size,
             content_bounds: *observation.content_bounds(),

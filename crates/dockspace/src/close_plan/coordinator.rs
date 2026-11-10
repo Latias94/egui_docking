@@ -21,6 +21,8 @@ pub(crate) enum CloseCoordinatorError {
     },
     #[error("surface close plan requires an exact native close edge")]
     SurfaceRequiresNativeEdge,
+    #[error("native window close requires a non-empty exact placement roster")]
+    InvalidNativeRoster,
     #[error("close request identity space exhausted")]
     RequestIdExhausted,
     #[error("close decision token identity space exhausted")]
@@ -205,6 +207,26 @@ impl<P> CloseCoordinator<P> {
         requirements: impl IntoIterator<Item = CloseItemRequirement>,
         prepared: P,
     ) -> Result<ClosePlan, CloseCoordinatorError> {
+        self.open_window(
+            authority,
+            edge,
+            request,
+            vec![edge.binding],
+            requirements,
+            prepared,
+        )
+    }
+
+    /// Freezes one physical close obligation and every participating placement.
+    pub(crate) fn open_window(
+        &mut self,
+        authority: CloseAuthority,
+        edge: NativeCloseEdge,
+        request: SurfaceCloseRequest,
+        bindings: Vec<ViewportBinding>,
+        requirements: impl IntoIterator<Item = CloseItemRequirement>,
+        prepared: P,
+    ) -> Result<ClosePlan, CloseCoordinatorError> {
         if edge.domain != self.domain {
             return Err(CloseCoordinatorError::NativeEdgeDomainMismatch {
                 expected: self.domain,
@@ -212,10 +234,21 @@ impl<P> CloseCoordinator<P> {
             });
         }
 
+        if bindings.is_empty()
+            || bindings
+                .iter()
+                .any(|binding| binding.window() != edge.binding.window())
+            || bindings
+                .windows(2)
+                .any(|pair| pair[0].surface() >= pair[1].surface())
+        {
+            return Err(CloseCoordinatorError::InvalidNativeRoster);
+        }
+
         let plan = self.open_unbound(
             authority,
             ClosePlanTarget::Surface {
-                surface: edge.binding.surface(),
+                surface: bindings[0].surface(),
                 disposition: request.disposition(),
             },
             requirements,
@@ -225,6 +258,7 @@ impl<P> CloseCoordinator<P> {
             .requests
             .get_mut(&plan.request)
             .expect("a successfully opened close plan is retained");
+        record.plan.native_roster = Some(Arc::from(bindings));
         record.native = Some(NativeCloseCausality {
             binding: edge.binding,
             edge_observed_at: edge.observed_at,
@@ -232,7 +266,7 @@ impl<P> CloseCoordinator<P> {
             close: None,
             cancellation: None,
         });
-        Ok(plan)
+        Ok(record.plan.clone())
     }
 
     fn open_unbound(
@@ -289,6 +323,7 @@ impl<P> CloseCoordinator<P> {
             authority,
             target,
             items: Arc::from(items),
+            native_roster: None,
             destruction: CloseDestructionState::None,
             cancellation: CloseCancellationState::None,
             phase,
@@ -452,7 +487,7 @@ impl<P> CloseCoordinator<P> {
                 (!record.plan.is_terminal()
                     && record
                         .native
-                        .is_some_and(|native| native.binding == binding))
+                        .is_some_and(|native| native.binding.window() == binding.window()))
                 .then_some(record.plan.request)
             })
             .collect()
@@ -470,7 +505,7 @@ impl<P> CloseCoordinator<P> {
         self.requests.values().rev().find_map(|record| {
             let native = record.native?;
             (!record.plan.is_terminal()
-                && native.binding == binding
+                && native.binding.window() == binding.window()
                 && (native.close.is_some_and(|close| close.effect == effect)
                     || native
                         .cancellation
@@ -830,7 +865,9 @@ impl<P> CloseCoordinator<P> {
                 target: record.plan.target.kind(),
             });
         };
-        if binding.surface() != surface {
+        if !record.plan.native_bindings().is_empty()
+            && record.plan.native_bindings()[0].window() != binding.window()
+        {
             return CloseAdvanceOutcome::Inert(CloseInertReason::NativeSurfaceMismatch {
                 request,
                 expected: surface,
@@ -847,7 +884,7 @@ impl<P> CloseCoordinator<P> {
         let Some(native) = record.native.as_mut() else {
             return CloseAdvanceOutcome::Inert(CloseInertReason::NativeEdgeNotObserved { request });
         };
-        if native.binding != binding {
+        if native.binding.window() != binding.window() {
             return CloseAdvanceOutcome::Inert(CloseInertReason::NativeBindingMismatch {
                 request,
                 expected: native.binding,
@@ -1028,7 +1065,7 @@ impl<P> CloseCoordinator<P> {
         let Some(native) = record.native.as_mut() else {
             return CloseAdvanceOutcome::Inert(CloseInertReason::NativeEdgeNotObserved { request });
         };
-        if binding != native.binding {
+        if binding.window() != native.binding.window() {
             return CloseAdvanceOutcome::Inert(CloseInertReason::NativeBindingMismatch {
                 request,
                 expected: native.binding,
@@ -1160,7 +1197,7 @@ impl<P> CloseCoordinator<P> {
                 actual: record.plan.phase,
             });
         };
-        if proof.binding != native.binding {
+        if proof.binding.window() != native.binding.window() {
             return Err(CloseInertReason::NativeBindingMismatch {
                 request,
                 expected: native.binding,
@@ -1277,7 +1314,7 @@ impl<P> CloseCoordinator<P> {
                 actual: record.plan.phase,
             });
         };
-        if proof.binding != native.binding {
+        if proof.binding.window() != native.binding.window() {
             return Err(CloseInertReason::NativeBindingMismatch {
                 request,
                 expected: native.binding,
@@ -1464,7 +1501,7 @@ impl<P> CloseCoordinator<P> {
         let Some(native) = record.native else {
             return CloseAdvanceOutcome::Inert(CloseInertReason::NativeEdgeNotObserved { request });
         };
-        if native.binding != binding {
+        if native.binding.window() != binding.window() {
             return CloseAdvanceOutcome::Inert(CloseInertReason::NativeBindingMismatch {
                 request,
                 expected: native.binding,

@@ -5,11 +5,11 @@ use crate::graph::Workspace;
 use crate::ids::{InputSequence, NativeCreateSagaId, SurfaceId};
 use crate::presentation_observation::{
     HostPresentationEndpoint, NativeStagingResourceId, PresentationOutputSerial,
-    SurfacePresentationOutputTicket,
+    PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
 };
 use crate::scene::SurfaceCoordinateCapture;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
-use crate::viewport::{NativeSurfaceEstablishmentOrigin, ViewportBinding};
+use crate::viewport::{NativeSurfaceEstablishmentOrigin, ViewportBinding, WindowBinding};
 use crate::viewport_focus::{FocusCausalStamp, PaneFocusDisposition};
 use crate::viewport_registry::ViewportAdmission;
 
@@ -23,7 +23,7 @@ use super::{DockEngine, EngineError};
 /// their physical retirement remains a tick-final operation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct NativeAdmissionState {
-    barriers: BTreeMap<ViewportBinding, FirstLiveBarrier>,
+    barriers: BTreeMap<WindowBinding, FirstLiveWindow>,
     committed_vacancies: BTreeMap<NativeCreateSagaId, NativeCreateVacancies>,
 }
 
@@ -38,8 +38,22 @@ struct FirstLiveBarrier {
     ready_basis: crate::frame::NativeReadyBasis,
     owner: FirstLiveOwner,
     resource: Option<NativeStagingResourceId>,
-    output_floor: PresentationOutputSerial,
     recovery_activation: Option<(FocusCausalStamp, PaneFocusDisposition)>,
+}
+
+/// One readiness period owns the complete exact placement roster. Individual
+/// contributions cannot transfer content or admit a sibling on their own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FirstLiveWindow {
+    members: Vec<FirstLiveMember>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FirstLiveMember {
+    binding: ViewportBinding,
+    output_floor: PresentationOutputSerial,
+    owner: Option<FirstLiveBarrier>,
+    presented: Option<PresentedSurfaceAuthority>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,12 +91,146 @@ impl NativeAdmissionError {
 impl NativeAdmissionState {
     pub(super) fn reconcile_pending_creates(&mut self, viewport: &ViewportCoordinator) {
         self.barriers
-            .retain(|binding, barrier| viewport.native_ready_basis(*binding) == Some(barrier.ready_basis) && match barrier.owner {
-                FirstLiveOwner::NativeCreate(saga) => viewport
-                    .native_create_saga(saga)
-                    .is_some_and(|create| create.binding() == *binding && matches!(create.phase(), crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. })),
-                FirstLiveOwner::NativeSurface { .. } => true,
-            });
+            .retain(|window, roster| roster.members.iter().map(|member| member.binding).eq(viewport.registry().bindings_for_window(*window)) && roster.members.iter().all(|member| match member.owner {
+                Some(barrier) => viewport.native_ready_basis(member.binding) == Some(barrier.ready_basis) && match barrier.owner {
+                    FirstLiveOwner::NativeCreate(saga) => viewport.native_create_saga(saga).is_some_and(|create| create.binding() == member.binding && matches!(create.phase(), crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. })),
+                    FirstLiveOwner::NativeSurface { .. } => true,
+                },
+                None => true,
+            }));
+    }
+
+    pub(super) fn prepare_window_roster(
+        &mut self,
+        bindings: &[ViewportBinding],
+        output_floor: PresentationOutputSerial,
+    ) -> Result<(), NativeAdmissionError> {
+        let Some(first) = bindings.first() else {
+            return Err(NativeAdmissionError::MissingBarrier);
+        };
+        if bindings
+            .iter()
+            .any(|binding| binding.window() != first.window())
+            || bindings
+                .windows(2)
+                .any(|pair| pair[0].surface() >= pair[1].surface())
+        {
+            return Err(NativeAdmissionError::OwnerMismatch);
+        }
+        if let Some(roster) = self.barriers.get(&first.window()) {
+            return if roster
+                .members
+                .iter()
+                .map(|member| member.binding)
+                .eq(bindings.iter().copied())
+            {
+                Ok(())
+            } else {
+                Err(NativeAdmissionError::OwnerMismatch)
+            };
+        }
+        self.barriers.insert(
+            first.window(),
+            FirstLiveWindow {
+                members: bindings
+                    .iter()
+                    .map(|binding| FirstLiveMember {
+                        binding: *binding,
+                        output_floor,
+                        owner: None,
+                        presented: None,
+                    })
+                    .collect(),
+            },
+        );
+        Ok(())
+    }
+
+    fn member(&self, binding: ViewportBinding) -> Option<&FirstLiveMember> {
+        self.barriers
+            .get(&binding.window())?
+            .members
+            .iter()
+            .find(|member| member.binding == binding)
+    }
+
+    fn observe(&mut self, authority: PresentedSurfaceAuthority) -> bool {
+        let HostPresentationEndpoint::Native(binding) = authority.endpoint() else {
+            return false;
+        };
+        let Some(roster) = self.barriers.get_mut(&binding.window()) else {
+            return false;
+        };
+        let Some(member) = roster
+            .members
+            .iter_mut()
+            .find(|member| member.binding == binding)
+        else {
+            return false;
+        };
+        if !authority.ticket().was_issued_after(member.output_floor) {
+            return false;
+        }
+        member.presented = Some(authority);
+        roster
+            .members
+            .iter()
+            .all(|member| member.presented.is_some())
+    }
+
+    fn presented_roster(&self, binding: ViewportBinding) -> Option<Vec<PresentedSurfaceAuthority>> {
+        self.barriers
+            .get(&binding.window())?
+            .members
+            .iter()
+            .map(|member| member.presented)
+            .collect()
+    }
+
+    fn owns_required_output(
+        &self,
+        target: ViewportBinding,
+        ticket: SurfacePresentationOutputTicket,
+    ) -> bool {
+        self.member(target)
+            .is_some_and(|member| ticket.was_issued_after(member.output_floor))
+    }
+
+    pub(super) fn revoke_observed_streams(
+        &mut self,
+        streams: &BTreeSet<crate::presentation_observation::HostPresentationStreamId>,
+    ) {
+        for member in self
+            .barriers
+            .values_mut()
+            .flat_map(|roster| &mut roster.members)
+        {
+            if member
+                .presented
+                .is_some_and(|authority| streams.contains(&authority.stream()))
+            {
+                member.presented = None;
+            }
+        }
+    }
+
+    fn window_members(&self, binding: ViewportBinding) -> Option<&[FirstLiveMember]> {
+        Some(&self.barriers.get(&binding.window())?.members)
+    }
+
+    fn remove_owner(&mut self, target: ViewportBinding) {
+        if let Some(roster) = self.barriers.get_mut(&target.window()) {
+            if let Some(member) = roster
+                .members
+                .iter_mut()
+                .find(|member| member.binding == target)
+            {
+                member.owner = None;
+            }
+            if roster.members.iter().all(|member| member.owner.is_none()) {
+                self.barriers.remove(&target.window());
+            }
+        }
     }
 
     pub(super) fn finish_native_create_first_live(
@@ -113,10 +261,12 @@ impl NativeAdmissionState {
         binding: ViewportBinding,
         resource: NativeStagingResourceId,
     ) -> bool {
-        self.barriers.get(&binding).is_some_and(|barrier| {
-            barrier.owner == FirstLiveOwner::NativeCreate(saga)
-                && barrier.resource == Some(resource)
-        })
+        self.member(binding)
+            .and_then(|member| member.owner)
+            .is_some_and(|barrier| {
+                barrier.owner == FirstLiveOwner::NativeCreate(saga)
+                    && barrier.resource == Some(resource)
+            })
     }
 
     fn register_barrier(
@@ -128,21 +278,38 @@ impl NativeAdmissionState {
         output_floor: PresentationOutputSerial,
         recovery_activation: Option<(FocusCausalStamp, PaneFocusDisposition)>,
     ) -> Result<(), NativeAdmissionError> {
-        if self.barriers.contains_key(&target)
-            || self.barriers.values().any(|barrier| barrier.owner == owner)
+        if self
+            .member(target)
+            .is_some_and(|member| member.owner.is_some())
+            || self
+                .barriers
+                .values()
+                .flat_map(|roster| &roster.members)
+                .any(|member| member.owner.is_some_and(|barrier| barrier.owner == owner))
         {
             return Err(NativeAdmissionError::DuplicateBarrier);
         }
-        self.barriers.insert(
-            target,
-            FirstLiveBarrier {
-                ready_basis,
-                owner,
-                resource,
-                output_floor,
-                recovery_activation,
-            },
-        );
+        if !self.barriers.contains_key(&target.window()) {
+            self.prepare_window_roster(&[target], output_floor)?;
+        }
+        let member = self
+            .barriers
+            .get_mut(&target.window())
+            .and_then(|roster| {
+                roster
+                    .members
+                    .iter_mut()
+                    .find(|member| member.binding == target)
+            })
+            .ok_or(NativeAdmissionError::OwnerMismatch)?;
+        member.output_floor = output_floor;
+        member.presented = None;
+        member.owner = Some(FirstLiveBarrier {
+            ready_basis,
+            owner,
+            resource,
+            recovery_activation,
+        });
         Ok(())
     }
 
@@ -191,10 +358,9 @@ impl NativeAdmissionState {
         target: ViewportBinding,
         ticket: SurfacePresentationOutputTicket,
     ) -> Option<FirstLiveBarrier> {
-        self.barriers
-            .get(&target)
-            .copied()
-            .filter(|barrier| ticket.was_issued_after(barrier.output_floor))
+        self.member(target)
+            .filter(|member| ticket.was_issued_after(member.output_floor))
+            .and_then(|member| member.owner)
     }
 
     fn admit_first_live(
@@ -204,22 +370,21 @@ impl NativeAdmissionState {
         resource: Option<NativeStagingResourceId>,
     ) -> Result<(), NativeAdmissionError> {
         let barrier = self
-            .barriers
-            .remove(&target)
+            .member(target)
+            .and_then(|member| member.owner)
             .ok_or(NativeAdmissionError::MissingBarrier)?;
         if barrier.owner != owner {
-            self.barriers.insert(target, barrier);
             return Err(NativeAdmissionError::OwnerMismatch);
         }
         if barrier.resource != resource {
-            self.barriers.insert(target, barrier);
             return Err(NativeAdmissionError::ResourceMismatch);
         }
+        self.remove_owner(target);
         Ok(())
     }
 
     pub(super) fn target_destroyed(&mut self, target: ViewportBinding) {
-        self.barriers.remove(&target);
+        self.barriers.remove(&target.window());
     }
 
     pub(super) fn cancel_native_surface(
@@ -230,7 +395,7 @@ impl NativeAdmissionState {
     ) -> Result<(), NativeAdmissionError> {
         // Readiness withdrawal may already have revoked this output barrier.
         // A remaining barrier still requires the exact original recovery owner.
-        let Some(barrier) = self.barriers.get(&target).copied() else {
+        let Some(barrier) = self.member(target).and_then(|member| member.owner) else {
             return Ok(());
         };
         let expected = FirstLiveOwner::NativeSurface {
@@ -240,7 +405,7 @@ impl NativeAdmissionState {
         if barrier.owner != expected {
             return Err(NativeAdmissionError::OwnerMismatch);
         }
-        self.barriers.remove(&target);
+        self.barriers.remove(&target.window());
         Ok(())
     }
 
@@ -334,9 +499,75 @@ impl DockEngine {
         let HostPresentationEndpoint::Native(binding) = endpoint else {
             return Ok(false);
         };
-        Ok(self
-            .actionable_first_live_barrier(ticket, binding)?
-            .is_some())
+        if ticket.surface() != binding.surface() {
+            return Err(EngineError::ReductionCauseInvariant {
+                detail: "first-live native output binding does not match its logical surface",
+            });
+        }
+        Ok(self.native_admission.owns_required_output(binding, ticket)
+            && self
+                .viewport
+                .registry()
+                .placement_record(binding)
+                .is_some_and(|record| {
+                    record.admission() == ViewportAdmission::Pending && record.is_ready()
+                })
+            && self
+                .native_admission
+                .member(binding)
+                .and_then(|member| member.owner)
+                .is_none_or(|barrier| {
+                    self.viewport.native_ready_basis(binding) == Some(barrier.ready_basis)
+                }))
+    }
+
+    /// Retains exact presented evidence until every required placement is ready.
+    /// The caller has already checked the incoming scene and coordinate capture.
+    pub(super) fn observe_native_first_live_window(
+        &mut self,
+        authority: PresentedSurfaceAuthority,
+    ) -> Option<Vec<PresentedSurfaceAuthority>> {
+        let HostPresentationEndpoint::Native(binding) = authority.endpoint() else {
+            return None;
+        };
+        if !self.native_admission.observe(authority) {
+            return None;
+        }
+        let members = self.native_admission.window_members(binding)?;
+        if !members.iter().map(|member| member.binding).eq(self
+            .viewport
+            .registry()
+            .bindings_for_window(binding.window()))
+            || !members.iter().all(|member| {
+                self.viewport
+                    .registry()
+                    .placement_record(member.binding)
+                    .is_some_and(|record| {
+                        record.admission() == ViewportAdmission::Pending && record.is_ready()
+                    })
+                    && member.owner.is_none_or(|barrier| {
+                        self.viewport.native_ready_basis(member.binding)
+                            == Some(barrier.ready_basis)
+                    })
+                    && member.presented.is_some_and(|observed| {
+                        self.scene().validate_observed_authority(observed).is_ok()
+                            && self
+                                .scene()
+                                .retained_output_capture(observed.ticket())
+                                .is_ok_and(|capture| {
+                                    Self::coordinate_capture_matches_current(
+                                        capture,
+                                        self.viewport.viewport(member.binding.surface()),
+                                        self.viewport
+                                            .surface_coordinate_authority(member.binding.surface()),
+                                    )
+                                })
+                    })
+            })
+        {
+            return None;
+        }
+        self.native_admission.presented_roster(binding)
     }
 
     fn actionable_first_live_barrier(
@@ -358,7 +589,10 @@ impl DockEngine {
         }
         let binding_is_admissible = self.viewport.viewport(surface).is_some_and(|record| {
             record.binding() == binding
-                && record.admission() == ViewportAdmission::Pending
+                && matches!(
+                    record.admission(),
+                    ViewportAdmission::Pending | ViewportAdmission::Admitted
+                )
                 && record.is_ready()
                 && record
                     .presentation_observation()
@@ -477,6 +711,118 @@ mod tests {
 
     fn resource(saga: NativeCreateSagaId) -> NativeStagingResourceId {
         NativeStagingResourceId::mint(EngineAuthorityDomainId::new_for_test(1), saga)
+    }
+
+    fn authority(binding: ViewportBinding, serial: u64) -> PresentedSurfaceAuthority {
+        let requirement = crate::scene_manifest::SurfaceMeasurementTicket::new(
+            binding.authority_domain(),
+            binding.epoch(),
+            crate::presentation_config::PresentationConfigRevision::new(1),
+            crate::policy::PolicyRevision::new(1),
+            crate::scene_manifest::SurfaceRequirementRevision::new(1),
+            binding.surface(),
+        );
+        let ticket = SurfacePresentationOutputTicket::mint(
+            binding.authority_domain(),
+            PresentationOutputSerial::new_for_test(serial),
+            crate::scene::SurfaceSceneStamp::new(
+                requirement,
+                crate::scene_manifest::SurfaceSceneRevision::new(1),
+            ),
+        );
+        let observed = PresentedSurfaceAuthority::mint_observed_for_test(
+            ticket,
+            crate::viewport::CoordinateGeneration::new(1),
+        );
+        PresentedSurfaceAuthority::mint_observed(
+            ticket,
+            observed.stream(),
+            observed.emission(),
+            HostPresentationEndpoint::Native(binding),
+            observed.coordinate_generation(),
+        )
+    }
+
+    #[test]
+    fn window_first_live_requires_each_exact_member_above_its_own_floor() {
+        let first = binding(1, 1);
+        let second = ViewportBinding::from_window(first.window(), SurfaceId::new(2));
+        let mut state = NativeAdmissionState::default();
+        state
+            .prepare_window_roster(&[first, second], PresentationOutputSerial::new_for_test(3))
+            .unwrap();
+        assert!(!state.observe(authority(first, 4)));
+        assert!(
+            !state.observe(authority(first, 5)),
+            "a duplicate surface cannot satisfy its sibling"
+        );
+        assert!(
+            !state.observe(authority(second, 3)),
+            "the exact floor is not fresh output"
+        );
+        assert!(
+            !state.observe(authority(binding(2, 2), 6)),
+            "another window cannot complete the roster"
+        );
+        let different_placement = ViewportBinding::with_placement_generation(
+            second.window(),
+            second.surface(),
+            crate::viewport::PlacementGeneration::new(1),
+        );
+        assert!(
+            !state.observe(authority(different_placement, 6)),
+            "another placement in the same window cannot complete the roster"
+        );
+        assert!(state.presented_roster(first).is_none());
+        assert!(state.observe(authority(second, 6)));
+        assert_eq!(
+            state.presented_roster(first).unwrap(),
+            [authority(first, 5), authority(second, 6)]
+        );
+    }
+
+    #[test]
+    fn first_live_revocation_clears_the_whole_window_and_rejects_prior_output() {
+        let first = binding(1, 1);
+        let second = ViewportBinding::from_window(first.window(), SurfaceId::new(2));
+        let mut state = NativeAdmissionState::default();
+        state
+            .prepare_window_roster(&[first, second], PresentationOutputSerial::new_for_test(3))
+            .unwrap();
+        assert!(!state.observe(authority(first, 4)));
+        state.target_destroyed(second);
+        assert!(state.barriers.is_empty());
+        state
+            .prepare_window_roster(&[first, second], PresentationOutputSerial::new_for_test(5))
+            .unwrap();
+        assert!(!state.observe(authority(first, 4)));
+        assert!(!state.observe(authority(second, 6)));
+        assert!(state.observe(authority(first, 6)));
+        state.revoke_observed_streams(&BTreeSet::from([authority(first, 6).stream()]));
+        assert!(state.presented_roster(first).is_none());
+    }
+
+    #[test]
+    fn first_live_roster_rejects_partial_or_foreign_replacement_without_mutation() {
+        let first = binding(1, 1);
+        let second = ViewportBinding::from_window(first.window(), SurfaceId::new(2));
+        let mut state = NativeAdmissionState::default();
+        state
+            .prepare_window_roster(&[first, second], PresentationOutputSerial::new_for_test(3))
+            .unwrap();
+        let before = state.clone();
+        for bindings in [
+            vec![first],
+            vec![first, first],
+            vec![first, binding(2, 2)],
+            vec![second, first],
+        ] {
+            assert_eq!(
+                state.prepare_window_roster(&bindings, PresentationOutputSerial::new_for_test(3)),
+                Err(NativeAdmissionError::OwnerMismatch)
+            );
+            assert_eq!(state, before);
+        }
     }
 
     #[test]

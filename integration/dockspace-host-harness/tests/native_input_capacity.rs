@@ -565,7 +565,7 @@ fn one_public_binding_terminal_fact_fits_one_slot_after_five_independent_pressed
                 NativePointerHover::Unknown,
                 None,
             ),
-            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding.window()),
             NativePointerOwner::Unknown,
         )
     };
