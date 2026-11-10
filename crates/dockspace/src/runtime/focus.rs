@@ -1,6 +1,5 @@
 //! Opaque presentation-neutral pane-focus requests and observations.
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use thiserror::Error;
@@ -94,7 +93,7 @@ impl DockspaceHostFrame<'_> {
         let generation = self
             .session
             .focus
-            .next_for_surface(surface, baseline)
+            .next_after(baseline)
             .ok_or_else(DockspaceRuntimeError::pane_focus_observation_generation_exhausted)?;
         let observation = crate::viewport_focus::HostFocusObservation::new(
             generation,
@@ -282,7 +281,7 @@ pub(super) struct PreparedPaneFocusObservationAuthorityMismatch;
 
 #[derive(Debug, Default)]
 pub(super) struct RuntimePaneFocusState {
-    generations: BTreeMap<SurfaceId, PaneFocusObservationGeneration>,
+    generation: PaneFocusObservationGeneration,
 }
 
 impl RuntimePaneFocusState {
@@ -294,22 +293,18 @@ impl RuntimePaneFocusState {
             .intent
             .pane_observation_baseline()
             .unwrap_or_default();
-        self.next_for_surface(request.surface(), baseline)
+        self.next_after(baseline)
     }
 
-    fn next_for_surface(
+    fn next_after(
         &mut self,
-        surface: SurfaceId,
         baseline: PaneFocusObservationGeneration,
     ) -> Option<PaneFocusObservationGeneration> {
-        let current = self
-            .generations
-            .get(&surface)
-            .copied()
-            .unwrap_or_default()
-            .max(baseline);
-        let next = current.checked_next()?;
-        self.generations.insert(surface, next);
+        // Surface observations require increasing, not consecutive generations.
+        // One provider watermark also prevents reuse after an abandoned frame
+        // without retaining identities of surfaces that have been removed.
+        let next = self.generation.max(baseline).checked_next()?;
+        self.generation = next;
         Some(next)
     }
 }
