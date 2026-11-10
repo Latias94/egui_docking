@@ -2,7 +2,7 @@
 title: "Dockspace Platform Support"
 status: "Qualified finite profiles; clean-checkout delivery reproduced"
 reviewed: "2026-11-10"
-baseline_source_revision: "b6fc6e5"
+baseline_source_revision: "e159073"
 ---
 
 # Dockspace Platform Support
@@ -44,6 +44,13 @@ endpoint handoff and touch-menu cancellation across discarded passes at
 `b6fc6e5`. All fifteen serial gates, seven actual eframe processes, the 4 MiB
 redock profile and complete editor journeys pass. These repairs retain the
 platform scope below.
+
+The [focus-provider and menu review](VALIDATION.md#2026-11-10-focus-provider-storage-and-menu-review)
+qualifies bounded focus-provider storage and framework-owned overflow keyboard
+focus at `e159073`. Final serial gates, seven actual eframe processes, the 4 MiB
+redock profile and complete editor journeys pass. Twelve real focused edits, six
+destroyed child lifetimes and Root rebinding preserve the original Root and end
+quiescent. These results refresh the finite X11 profiles below.
 
 ## Core and public engine-host contract
 

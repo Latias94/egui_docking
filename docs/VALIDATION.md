@@ -15,6 +15,41 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-10 focus-provider storage and menu review
+
+The [focus-provider and menu review](audits/2026-11-10-focus-and-menu-review.md)
+confirms and repairs two P2 findings from baseline `a1af041`, with implementation
+complete at `e159073`. Runtime focus observation uses one session-wide checked
+watermark instead of retaining every retired surface identity. The public
+paired-control allocation regression reports 1,088 additional live focus bytes
+at both sixteen and 1,024 retired surfaces; before repair those measurements
+were 1,760 and 36,320 bytes. This measures retained focus storage.
+
+Overflow keyboard activation and navigation follow actual egui focus. One
+instance positioning marker prevents old core confirmations and repeated passes
+from reclaiming focus already moved by Tab, AccessKit or application UI. Core
+highlight and reveal still synchronize through the existing prepared action.
+Eight new public adapter regressions cover forward/reverse traversal, external
+button activation and application focus before or after docking, including two
+late discarded passes.
+
+Final serial qualification passes workspace 2,314 with three existing skips,
+independent persistence host 344, official consumer 24, product 114 default /
+119 persistence, and pinned native fork 593 with one existing skip. Workspace
+and native correctness/suspicious Clippy, strict documentation, eleven doctests,
+formatting and the core dependency boundary pass. Full affected host gates were
+repeated after independent review found the initial repair's focus-confirmation
+gap; its three clean failing reproductions and final 21-test focused group are
+retained with the command receipts.
+
+Actual Linux X11/Glow qualification passes seven isolated eframe processes,
+the 4 MiB create/first-live/redock/retirement profile, and both complete editor
+drivers. Twelve real focused edits, six destroyed child lifetimes and Root
+rebinding finish with the original Root preserved and final quiescence. Source
+matches `e159073` after qualification. Commands and before/after logs are linked
+from the review. Existing platform and ImGui performance scopes retain their
+recorded limits.
+
 ## 2026-11-10 deep-layout and endpoint-handoff review
 
 The [deep-layout and handoff review](audits/2026-11-10-depth-and-handoff-review.md)

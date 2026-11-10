@@ -1,0 +1,31 @@
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.10s
+────────────
+ Nextest run ID aabd4bb6-cd06-4cc6-86a9-1dc4ae5c06ff with nextest profile: default
+    Starting 1 test across 1 binary
+        FAIL [  17.892s] (1/1) dockspace-host-harness::focus_observation_storage focus_provider_storage_stays_bounded_when_logical_surfaces_are_replaced
+  stdout ───
+
+    running 1 test
+    test focus_provider_storage_stays_bounded_when_logical_surfaces_are_replaced ... FAILED
+
+    failures:
+
+    failures:
+        focus_provider_storage_stays_bounded_when_logical_surfaces_are_replaced
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.89s
+
+  stderr ───
+    retired_surfaces=16 focus_provider_and_current_focus_bytes=1760
+    retired_surfaces=1024 focus_provider_and_current_focus_bytes=36320
+
+    thread 'focus_provider_storage_stays_bounded_when_logical_surfaces_are_replaced' (88207932) panicked at tests/focus_observation_storage.rs:89:5:
+    focus history must remain bounded after exact surface retirement: [1760, 36320]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure:
+────────────
+     Summary [  17.897s] 1 test run: 0 passed, 1 failed, 0 skipped
+        FAIL [  17.892s] (1/1) dockspace-host-harness::focus_observation_storage focus_provider_storage_stays_bounded_when_logical_surfaces_are_replaced
+error: test run failed

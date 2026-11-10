@@ -1,0 +1,7 @@
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.86s
+────────────
+ Nextest run ID a53d6e40-4f2c-4021-a085-dc17385c8eba with nextest profile: default
+    Starting 181 tests across 5 binaries
+────────────
+     Summary [   3.690s] 181 tests run: 181 passed, 0 skipped
