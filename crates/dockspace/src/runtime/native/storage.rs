@@ -175,7 +175,8 @@ impl NativeProducerStorageLimit {
 /// Optional storage promised before affine native output/effect delivery.
 ///
 /// Presentation slots bound unsettled outputs and retained presentation stream
-/// history; effect slots bound requests, retryable negative results and queued
+/// history, with one additional prepaid stream for a drained same-surface
+/// endpoint handoff; effect slots bound requests, retryable negative results and queued
 /// abandoned requests. The byte allowance covers their retained backing,
 /// complete preparation/settlement work and overlapping returned capabilities.
 /// It excludes renderer artifacts, core authority and host lifecycle/command
@@ -207,7 +208,8 @@ impl NativeReportStorageLimit {
         }
     }
 
-    /// Returns the unsettled-output and retained-stream bound.
+    /// Returns the unsettled-output and ordinary retained-stream bound.
+    /// One additional stream is prepaid for a drained same-surface endpoint handoff.
     #[must_use]
     pub const fn presentation_slots(self) -> NonZeroUsize {
         self.presentation_slots

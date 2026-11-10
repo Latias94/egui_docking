@@ -164,12 +164,19 @@ fn present_native_successor(session: &mut DockspaceSession, output: PaintedSurfa
 }
 
 #[test]
-fn one_slot_defers_before_execution_preserves_authority_and_recovers_with_two_slots() {
+fn one_slot_handoff_needs_no_reconfiguration_and_retains_output_backpressure() {
     let Fixture {
         mut session,
         binding,
     } = fixture(1);
 
+    let (output, callbacks) = paint_native_successor(&mut session, binding);
+    assert!(callbacks > 0);
+    assert!(session.presented_surface(SURFACE).is_none());
+    // Reapplying the ordinary bound must accept its authorized handoff overlap.
+    session
+        .configure_output_capacity(NonZeroUsize::MIN)
+        .unwrap();
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
@@ -195,14 +202,10 @@ fn one_slot_defers_before_execution_preserves_authority_and_recovers_with_two_sl
     assert!(!report.published_state_changed());
     assert!(session.presented_surface(SURFACE).is_none());
 
-    session
-        .configure_output_capacity(NonZeroUsize::new(2).unwrap())
-        .unwrap();
-    measure_native_candidate(&mut session);
-    let (output, callbacks) = paint_native_successor(&mut session, binding);
-    assert!(callbacks > 0);
-    assert!(session.presented_surface(SURFACE).is_none());
     present_native_successor(&mut session, output);
+    let (redraw, callbacks) = paint_native_successor(&mut session, binding);
+    assert!(callbacks > 0);
+    present_native_successor(&mut session, redraw);
 }
 
 #[test]

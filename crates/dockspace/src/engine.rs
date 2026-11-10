@@ -2616,6 +2616,16 @@ impl DockEngine {
         self.presentation_authority.presentation.diagnostics()
     }
 
+    pub(crate) fn is_presentation_endpoint_handoff(
+        &self,
+        predecessor: HostPresentationStreamId,
+        successor: HostPresentationStreamId,
+    ) -> bool {
+        self.presentation_authority
+            .presentation
+            .is_endpoint_handoff(predecessor, successor)
+    }
+
     /// Derives the exact concrete presentation emissions whose adapter resources remain live.
     ///
     /// This is the sole reclamation authority for renderer receiver sidecars. In particular, a

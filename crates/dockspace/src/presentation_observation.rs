@@ -952,6 +952,16 @@ enum PresentationStreamRetirementCause {
     EndpointQuiesced,
 }
 
+/// Exact stream reuse or endpoint succession observed before encoding.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PresentationStreamAdmission {
+    Existing(HostPresentationStreamId),
+    New,
+    EndpointHandoff {
+        predecessor: HostPresentationStreamId,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PresentationHostLifecycle {
     Live,
@@ -1432,6 +1442,53 @@ impl PresentationLedger {
             state.host,
             state.endpoint,
         ))
+    }
+
+    pub(crate) fn stream_admission(
+        &self,
+        host: PresentationHostLease,
+        surface: SurfaceId,
+        endpoint: HostPresentationEndpoint,
+    ) -> PresentationStreamAdmission {
+        let Some((stream, active_host, active_endpoint)) = self.active_surface_scope(surface)
+        else {
+            return PresentationStreamAdmission::New;
+        };
+        if active_host != host {
+            return PresentationStreamAdmission::New;
+        }
+        if active_endpoint == endpoint {
+            return PresentationStreamAdmission::Existing(stream);
+        }
+        if self.streams[&stream].pending.is_empty() {
+            PresentationStreamAdmission::EndpointHandoff {
+                predecessor: stream,
+            }
+        } else {
+            PresentationStreamAdmission::New
+        }
+    }
+
+    pub(crate) fn is_endpoint_handoff(
+        &self,
+        predecessor: HostPresentationStreamId,
+        successor: HostPresentationStreamId,
+    ) -> bool {
+        let (Some(previous), Some(next)) =
+            (self.streams.get(&predecessor), self.streams.get(&successor))
+        else {
+            return false;
+        };
+        previous.host == next.host
+            && previous.surface == next.surface
+            && previous.endpoint != next.endpoint
+            && previous.lifecycle
+                == PresentationStreamLifecycle::Retiring(
+                    PresentationStreamRetirementCause::EndpointSuperseded,
+                )
+            && previous.pending.is_empty()
+            && next.lifecycle == PresentationStreamLifecycle::Active
+            && self.active_streams.get(&next.surface) == Some(&successor)
     }
 
     /// Retires active streams whose semantic surfaces are absent from the tick-final roster.

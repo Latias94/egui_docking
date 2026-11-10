@@ -1,7 +1,7 @@
 //! Owned suspension of the sole rollbackable host-frame candidate.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::document::PendingRuntimeDocumentRestore;
 use crate::engine::CoreHostFrame;
 use crate::ids::SurfaceId;
-use crate::presentation_observation::PresentationHostLease;
+use crate::presentation_observation::{PresentationHostLease, PresentationStreamAdmission};
 
 use super::presentation::SubmittedPresentationObservation;
 use super::{
@@ -34,7 +34,7 @@ pub struct DockspaceUpdate {
     native_input_pending: bool,
     submitted_presentation: SubmittedPresentationObservation,
     painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
-    encoding_surfaces: BTreeSet<SurfaceId>,
+    encoding_surfaces: BTreeMap<SurfaceId, PresentationStreamAdmission>,
     encoding_started: Cell<bool>,
     encoding_checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
     encoding_pass: u64,

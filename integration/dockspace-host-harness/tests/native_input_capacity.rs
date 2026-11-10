@@ -253,6 +253,174 @@ fn public_report_allowance_defers_encoding_and_reuses_a_prepaid_output_slot() {
 }
 
 #[test]
+fn prepaid_stream_capacity_allows_a_drained_headless_surface_to_acquire_a_native_endpoint() {
+    use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalSize, ScaleFactor};
+    use dockspace::runtime::{
+        NativeHostCapability, NativeReportStorageLimit, NativeWindowFacts, NativeWindowInputState,
+        NativeWindowPresentationState, NativeWorkAreaRoster, SurfacePresentationResult,
+        SurfaceWork, SurfaceWorkDeferred, UniformSurfaceMetrics,
+    };
+
+    let surface = SurfaceId::new(1);
+    let item = ItemId::new(1);
+    let metrics = || {
+        UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+            LogicalSize::new(32.0, 24.0).unwrap(),
+            80.0,
+        )
+        .unwrap()
+    };
+    let settle = |session: &mut DockspaceSession| {
+        let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap()
+    };
+    for settle_before_registration in [true, false] {
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            surface,
+            DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([item])),
+        )])
+        .unwrap();
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+        let reports = NativeReportStorageLimit::new(NonZeroUsize::MIN, NonZeroUsize::MIN, 1 << 20);
+        session
+            .enable_managed_native_host_with_input_storage_limit(
+                NativePointerRoster::Exact(Vec::new()),
+                NativeInputStorageLimit::new(NonZeroUsize::new(4).unwrap(), 1 << 20)
+                    .with_report_storage_limit(reports),
+            )
+            .unwrap();
+        session
+            .configure_managed_native_capabilities(
+                NativeHostCapabilities::none_supported()
+                    .with(NativeHostCapability::AuthoritativeInventory),
+            )
+            .unwrap();
+        let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+        frame.measure_surface(surface, metrics()).unwrap();
+        let plan = frame.paint_plan(surface).unwrap().unwrap();
+        let old_receiver = plan.tab_receiver(item).unwrap();
+        let receipt = plan.execute_surface_program(|_| Ok::<(), ()>(())).unwrap();
+        frame.confirm_surface_painted(receipt).unwrap();
+        let first = frame
+            .commit()
+            .unwrap()
+            .take_painted_outputs()
+            .pop()
+            .unwrap();
+        let first_artifact = first.presentation_artifact();
+        let mut first = Some(first);
+        if settle_before_registration {
+            session
+                .report_surface_presentation(
+                    first.take().unwrap(),
+                    SurfacePresentationResult::Presented,
+                )
+                .unwrap();
+            assert!(
+                settle(&mut session).surface_presentation_commits()[0].presents(first_artifact)
+            );
+        }
+
+        session
+            .register_native_root(surface, HostWindowToken::new(1))
+            .unwrap();
+        let registration = settle(&mut session);
+        let [binding] = registration.native_bindings() else {
+            panic!("registration must publish the exact native root binding");
+        };
+        let binding = *binding;
+        session
+            .report_managed_native_snapshot(
+                [(
+                    binding,
+                    NativeWindowFacts::live()
+                        .with_content_size(PhysicalSize::new(640.0, 480.0).unwrap())
+                        .with_native_scale_factor(ScaleFactor::new(1.0).unwrap())
+                        .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap())
+                        .with_input(NativeWindowInputState::ReceivesInput, None)
+                        .with_presentation(NativeWindowPresentationState::Visible),
+                )],
+                NativeWorkAreaRoster::Unknown,
+            )
+            .unwrap();
+        settle(&mut session);
+        if let Some(first) = first {
+            for _ in 0..2 {
+                let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+                frame.measure_surface(surface, metrics()).unwrap();
+                assert!(matches!(
+                    frame.surface_work(surface).unwrap(),
+                    SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity)
+                ));
+                assert!(frame.commit().unwrap().take_painted_outputs().is_empty());
+            }
+            session
+                .report_surface_presentation(first, SurfacePresentationResult::Presented)
+                .unwrap();
+        }
+
+        // Both abandonment and a rejected commit must leave the handoff retryable.
+        for attempt in 0..3 {
+            let version = session.version();
+            let presented = session.presented_surface(surface);
+            let mut frame = session.begin_native_host_frame(|_| unreachable!()).unwrap();
+            frame.measure_surface(surface, metrics()).unwrap();
+            let plan = match frame.surface_work(surface).unwrap() {
+                SurfaceWork::Ready(plan) => plan,
+                SurfaceWork::Deferred(reason) => {
+                    panic!("a drained predecessor must permit endpoint handoff: {reason:?}")
+                }
+            };
+            let receipt = plan.execute_surface_program(|_| Ok::<(), ()>(())).unwrap();
+            frame.confirm_surface_painted(receipt).unwrap();
+            if attempt == 2 {
+                let output = frame
+                    .commit()
+                    .unwrap()
+                    .take_painted_outputs()
+                    .pop()
+                    .unwrap();
+                assert!(output.matches_native_binding(binding));
+                let artifact = output.presentation_artifact();
+                session
+                    .report_surface_presentation(output, SurfacePresentationResult::Presented)
+                    .unwrap();
+                settle(&mut session);
+                assert!(
+                    session
+                        .presented_surface(surface)
+                        .unwrap()
+                        .matches_presentation_artifact(artifact)
+                );
+            } else if attempt == 1 {
+                assert!(frame.select_item_current(item).is_err());
+                assert!(
+                    frame
+                        .defer_surface(surface, SurfaceUnavailableReason::SurfaceUnavailable)
+                        .is_err()
+                );
+                assert!(frame.commit().is_err());
+                assert_eq!(session.presented_surface(surface), presented);
+            } else {
+                drop(frame);
+                assert_eq!(session.presented_surface(surface), presented);
+            }
+            assert_eq!(session.version(), version);
+            assert!(session.bind_presented_receiver(&old_receiver).is_none());
+        }
+        assert_eq!(
+            session.native_input_report_storage_reserved_bytes(),
+            Some(reports.byte_limit())
+        );
+        assert!(session.native_input_pending_report_capacity_bytes() <= reports.byte_limit());
+    }
+}
+
+#[test]
 fn bounded_native_host_retries_failed_enrollment_and_unaccepted_input_through_public_api() {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SurfaceId::new(1),

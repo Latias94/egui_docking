@@ -1,6 +1,6 @@
 //! Affine host-frame orchestration and atomic publication.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::close_plan::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
@@ -78,7 +78,8 @@ pub struct DockspaceHostFrame<'session> {
     pub(super) native_input_pending: bool,
     pub(super) submitted_presentation: presentation::SubmittedPresentationObservation,
     pub(super) painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
-    pub(super) encoding_surfaces: BTreeSet<SurfaceId>,
+    pub(super) encoding_surfaces:
+        BTreeMap<SurfaceId, crate::presentation_observation::PresentationStreamAdmission>,
     pub(super) encoding_started: std::cell::Cell<bool>,
     pub(super) encoding_checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
     pub(super) encoding_pass: u64,
@@ -887,7 +888,7 @@ impl DockspaceHostFrame<'_> {
             native_input_pending,
             submitted_presentation,
             painted_surfaces,
-            encoding_surfaces: _,
+            encoding_surfaces,
             encoding_started: _,
             encoding_checkpoint: _,
             encoding_pass: _,
@@ -948,9 +949,12 @@ impl DockspaceHostFrame<'_> {
                     )
                 })
                 .transpose()?;
-            let presentation = session
-                .presentation
-                .prepare_emissions(prepared.transition(), &submitted_presentation)?;
+            let presentation = session.presentation.prepare_emissions(
+                prepared.transition(),
+                &submitted_presentation,
+                &encoding_surfaces,
+                prepared.candidate_engine(),
+            )?;
             let effects = session
                 .abandoned_native_effects
                 .prepare_emissions(prepared.transition().platform_effects())?;
@@ -983,9 +987,12 @@ impl DockspaceHostFrame<'_> {
                     )
                 })
                 .transpose()?;
-            let presentation = session
-                .presentation
-                .prepare_emissions(prepared.transition(), &submitted_presentation)?;
+            let presentation = session.presentation.prepare_emissions(
+                prepared.transition(),
+                &submitted_presentation,
+                &encoding_surfaces,
+                prepared.candidate_engine(),
+            )?;
             let effects = session
                 .abandoned_native_effects
                 .prepare_emissions(prepared.transition().platform_effects())?;
@@ -1022,9 +1029,12 @@ impl DockspaceHostFrame<'_> {
                     )
                 })
                 .transpose()?;
-            let presentation = session
-                .presentation
-                .prepare_emissions(prepared.transition(), &submitted_presentation)?;
+            let presentation = session.presentation.prepare_emissions(
+                prepared.transition(),
+                &submitted_presentation,
+                &encoding_surfaces,
+                prepared.candidate_engine(),
+            )?;
             let effects = session
                 .abandoned_native_effects
                 .prepare_emissions(prepared.transition().platform_effects())?;

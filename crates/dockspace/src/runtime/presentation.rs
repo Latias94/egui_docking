@@ -14,7 +14,7 @@ use crate::presentation_observation::{
     HostPresentationObservation, HostPresentationObservationEntry,
     HostPresentationObservationOutcome, HostPresentationOutput, HostPresentationOutputPayload,
     HostPresentationProgress, HostPresentationStreamId, HostPresentationStreamObservation,
-    PresentationStreamQuiescence, PresentedSurfaceAuthority,
+    PresentationStreamAdmission, PresentationStreamQuiescence, PresentedSurfaceAuthority,
 };
 use crate::transition::EngineTransition;
 
@@ -430,19 +430,52 @@ fn required_output_slots(
 ) -> Option<usize> {
     let surviving = pending
         .iter()
-        .filter(|entry| {
-            !observations
-                .iter()
-                .filter_map(|outcome| submitted_retirement(outcome, submitted))
-                .any(|(stream, through)| {
-                    entry.output.stream() == stream && entry.output.key() <= through
-                })
-        })
+        .filter(|entry| !output_is_settled(entry.output, submitted, observations))
         .count();
     surviving.checked_add(reserved)?.checked_add(1)
 }
 
+fn output_is_settled(
+    output: HostPresentationOutput,
+    submitted: &SubmittedPresentationObservation,
+    observations: &[HostPresentationObservationOutcome],
+) -> bool {
+    observations
+        .iter()
+        .filter_map(|outcome| submitted_retirement(outcome, submitted))
+        .any(|(stream, through)| output.stream() == stream && output.key() <= through)
+}
+
 impl RuntimePresentationState {
+    fn stream_capacity_available(&self, new_streams: usize, handoffs: usize) -> bool {
+        self.slot_limit.is_none_or(|limit| {
+            let Some(total) = self.streams.len().checked_add(new_streams) else {
+                return false;
+            };
+            total <= limit
+                || (limit.checked_add(1).is_some_and(|ceiling| total <= ceiling)
+                    && self
+                        .streams
+                        .len()
+                        .checked_add(new_streams.saturating_sub(handoffs))
+                        .is_some_and(|ordinary| ordinary <= limit.max(self.streams.len())))
+        })
+    }
+
+    fn handoff_predecessor_is_drained(
+        &self,
+        predecessor: HostPresentationStreamId,
+        pending: &[PendingPresentationOutput],
+        submitted: &SubmittedPresentationObservation,
+        observations: &[HostPresentationObservationOutcome],
+    ) -> bool {
+        self.streams.iter().any(|state| state.stream == predecessor)
+            && pending.iter().all(|entry| {
+                entry.output.stream() != predecessor
+                    || output_is_settled(entry.output, submitted, observations)
+            })
+    }
+
     pub(super) fn blocks_pointer_authority(
         &self,
         surface: SurfaceId,
@@ -455,7 +488,14 @@ impl RuntimePresentationState {
         &mut self,
         slots: usize,
     ) -> Result<(), NativePlatformError> {
-        if self.pending.lock().len() > slots || self.streams.len() > slots {
+        let Some(stream_limit) = slots.checked_add(1) else {
+            return Err(NativePlatformError::InputCapacity);
+        };
+        let current_limit = self.slot_limit;
+        if self.pending.lock().len() > slots
+            || (self.streams.len() > slots
+                && (current_limit != Some(slots) || self.streams.len() > stream_limit))
+        {
             return Err(NativePlatformError::InputCapacity);
         }
         self.slot_limit = Some(slots);
@@ -477,22 +517,38 @@ impl RuntimePresentationState {
         submitted: &SubmittedPresentationObservation,
         observations: &[HostPresentationObservationOutcome],
         reserved: usize,
-        stream: Option<HostPresentationStreamId>,
-        reserved_streams: impl Iterator<Item = Option<HostPresentationStreamId>>,
+        stream: PresentationStreamAdmission,
+        reserved_streams: impl Iterator<Item = PresentationStreamAdmission>,
     ) -> Result<bool, NativePlatformError> {
         let mut pending = self.pending.lock();
         let Some(total) = required_output_slots(&pending, submitted, observations, reserved) else {
             return Ok(false);
         };
-        let new_streams = reserved_streams
-            .chain(std::iter::once(stream))
-            .filter(|stream| {
-                stream.is_none_or(|stream| !self.streams.iter().any(|state| state.stream == stream))
-            })
-            .count();
-        if self.slot_limit.is_some_and(|limit| {
-            total > limit || self.streams.len().saturating_add(new_streams) > limit
-        }) {
+        let (new_streams, handoffs) = reserved_streams.chain(std::iter::once(stream)).fold(
+            (0, 0),
+            |(new_streams, handoffs), admission| {
+                let (new, handoff) = match admission {
+                    PresentationStreamAdmission::Existing(stream) => (
+                        usize::from(!self.streams.iter().any(|state| state.stream == stream)),
+                        0,
+                    ),
+                    PresentationStreamAdmission::New => (1, 0),
+                    PresentationStreamAdmission::EndpointHandoff { predecessor } => (
+                        1,
+                        usize::from(self.handoff_predecessor_is_drained(
+                            predecessor,
+                            &pending,
+                            submitted,
+                            observations,
+                        )),
+                    ),
+                };
+                (new_streams + new, handoffs + handoff)
+            },
+        );
+        if self.slot_limit.is_some_and(|limit| total > limit)
+            || !self.stream_capacity_available(new_streams, handoffs)
+        {
             return Ok(false);
         }
         let additional = total.saturating_sub(pending.len());
@@ -523,6 +579,9 @@ impl RuntimePresentationState {
     }
 
     pub(super) fn with_capacity_limit(slots: usize) -> Result<Self, NativePlatformError> {
+        let stream_limit = slots
+            .checked_add(1)
+            .ok_or(NativePlatformError::InputCapacity)?;
         let mut pending = Vec::new();
         pending
             .try_reserve_exact(slots)
@@ -532,9 +591,9 @@ impl RuntimePresentationState {
         }
         let mut streams = Vec::new();
         streams
-            .try_reserve_exact(slots)
+            .try_reserve_exact(stream_limit)
             .map_err(|_| NativePlatformError::InputCapacity)?;
-        if streams.capacity() > slots {
+        if streams.capacity() > stream_limit {
             return Err(NativePlatformError::InputCapacity);
         }
         Ok(Self {
@@ -568,7 +627,8 @@ impl RuntimePresentationState {
             .checked_add(size_of::<PreparedPresentationEmissions>())?
             .checked_add(size_of::<SubmittedPresentationObservation>())?
             .checked_add(4 * size_of::<Vec<HostPresentationObservationEntry>>())?
-            .checked_add(slots.checked_mul(per_slot)?)
+            // The single endpoint-handoff slot also covers stream-sized scratch lists.
+            .checked_add(slots.checked_add(1)?.checked_mul(per_slot)?)
     }
 
     pub(super) fn reclaim_quiescent_streams(
@@ -888,19 +948,19 @@ impl RuntimePresentationState {
         &mut self,
         transition: &EngineTransition,
         submitted: &SubmittedPresentationObservation,
+        admissions: &std::collections::BTreeMap<SurfaceId, PresentationStreamAdmission>,
+        candidate: &DockEngine,
     ) -> Result<PreparedPresentationEmissions, NativePlatformError> {
         let emissions = transition.presentation_emissions();
         let mut pending = self.pending.lock();
         let surviving = pending
             .iter()
             .filter(|entry| {
-                !transition
-                    .presentation_observations()
-                    .iter()
-                    .filter_map(|outcome| submitted_retirement(outcome, submitted))
-                    .any(|(stream, through)| {
-                        entry.output.stream() == stream && entry.output.key() <= through
-                    })
+                !output_is_settled(
+                    entry.output,
+                    submitted,
+                    transition.presentation_observations(),
+                )
             })
             .count();
         let total = surviving
@@ -923,12 +983,25 @@ impl RuntimePresentationState {
         let new_stream_count = (0..emissions.len())
             .filter(|index| is_new_stream(*index))
             .count();
-        let stream_count = self
-            .streams
-            .len()
-            .checked_add(new_stream_count)
-            .ok_or(NativePlatformError::InputCapacity)?;
-        if self.slot_limit.is_some_and(|limit| stream_count > limit) {
+        let handoffs = (0..emissions.len())
+            .filter(|index| is_new_stream(*index))
+            .filter(|index| {
+                let output = emissions[*index].output();
+                let Some(PresentationStreamAdmission::EndpointHandoff { predecessor }) =
+                    admissions.get(&output.surface())
+                else {
+                    return false;
+                };
+                candidate.is_presentation_endpoint_handoff(*predecessor, output.stream())
+                    && self.handoff_predecessor_is_drained(
+                        *predecessor,
+                        &pending,
+                        submitted,
+                        transition.presentation_observations(),
+                    )
+            })
+            .count();
+        if !self.stream_capacity_available(new_stream_count, handoffs) {
             return Err(NativePlatformError::InputCapacity);
         }
         let mut streams = Vec::new();

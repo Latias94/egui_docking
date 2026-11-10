@@ -125,6 +125,13 @@ fails. Query `surface_work` before invoking expensive content callbacks.
 publish accepted logical input and protected terminal progress. Wake rendering
 when the output owner releases capacity rather than continuously retrying panes.
 
+An output limit of N permits N ordinary retained streams plus one global stream
+for a drained same-surface endpoint handoff. The handoff slot cannot admit an
+unrelated surface or another outstanding output. Core still retires the exact
+predecessor and reclaims it through quiescence. `NativeReportStorageLimit`
+prepays this extra stream and its temporary reporting storage; previously exact
+small byte allowances may need to increase. Its output limit remains N.
+
 ## Native readiness
 
 Remove `NativeCreateStrategy` from enrollment calls and effect matching. The

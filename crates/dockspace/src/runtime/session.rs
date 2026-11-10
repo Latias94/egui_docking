@@ -1,6 +1,6 @@
 //! Session ownership and host-frame preparation.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Weak};
 
 use crate::command::ContentCloseTarget;
@@ -158,7 +158,8 @@ impl DockspaceSession {
         self.engine.product_view()
     }
 
-    /// Sets the admitted output and retained stream bound, which defaults to 64.
+    /// Sets the admitted output and ordinary retained stream bound, which defaults to 64.
+    /// One additional stream is reserved for a drained same-surface endpoint handoff.
     /// Native transport owns this budget after bounded report storage is configured.
     pub fn configure_output_capacity(
         &mut self,
@@ -597,7 +598,7 @@ impl DockspaceSession {
             native_input_pending,
             submitted_presentation,
             painted_surfaces: BTreeMap::new(),
-            encoding_surfaces: BTreeSet::new(),
+            encoding_surfaces: BTreeMap::new(),
             encoding_started: std::cell::Cell::new(false),
             encoding_checkpoint: None,
             encoding_pass: 0,

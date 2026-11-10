@@ -1345,7 +1345,7 @@ impl DockspaceHostFrame<'_> {
             // An unmeasured scene still needs a free output slot. Checking it
             // now lets a native host keep input buffered across a resize.
             let (observations, _) = self.frame.output_admission_facts(surface);
-            let deferred = if self.encoding_surfaces.contains(&surface)
+            let deferred = if self.encoding_surfaces.contains_key(&surface)
                 || self.session.presentation.output_slot_available(
                     &self.submitted_presentation,
                     observations,
@@ -1357,20 +1357,18 @@ impl DockspaceHostFrame<'_> {
             };
             return Ok(SurfaceWork::Deferred(deferred));
         }
-        if !self.encoding_surfaces.contains(&surface) {
+        if !self.encoding_surfaces.contains_key(&surface) {
             let (observations, stream) = self.frame.output_admission_facts(surface);
             if !self.session.presentation.reserve_output(
                 &self.submitted_presentation,
                 observations,
                 self.encoding_surfaces.len(),
                 stream,
-                self.encoding_surfaces
-                    .iter()
-                    .map(|surface| self.frame.output_admission_facts(*surface).1),
+                self.encoding_surfaces.values().copied(),
             )? {
                 return Ok(SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity));
             }
-            self.encoding_surfaces.insert(surface);
+            self.encoding_surfaces.insert(surface, stream);
         }
         Ok(match self.prepared_paint_plan(surface)? {
             Some(plan) => SurfaceWork::Ready(plan),
