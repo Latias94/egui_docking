@@ -15,6 +15,43 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-10 native payload commands and multi-Root restoration
+
+Implementation: `1d1abe8`, based on `6a63fb6`. The
+[completed implementation record](audits/2026-11-10-native-command-root-refactor.md)
+retains source hashes, independent reviews, exact gate commands, timestamps and
+fresh logs. Item, captured Tabs and Root native commands now share creation,
+source reservation, default placement and exact first-live admission. Explicit
+multi-Root document restoration and layout reset publish complete continuation
+batches, including cycles, while each Child retains its declared recovery host.
+
+The change repairs central Tabs-content transfer, exhausted producer-budget
+preflight, partial-payload geometry/minimum selection and foreign-group native
+command rejection. `NativeCommand` and `PresentationCommandPaintRecord` now
+require deliberate Clone when retained. The original explicit Root convenience
+interfaces remain wrappers.
+
+All sixteen serial gates pass: core/conformance 2,135 with three existing skips,
+public persistence host 387, egui adapter 181, official consumer 24, product 114
+default / 119 persistence, and native workspace 603 with one existing skip.
+Correctness/suspicious Clippy, strict documentation, eleven doctests, formatting
+and the core dependency boundary pass. Intermediate failures remain in the
+evidence directory; final receipt sets identify the successful qualification.
+
+All thirteen real Linux X11 gates pass, including seven isolated eframe
+processes, the bounded 4 MiB redock profile and both actual-editor drivers.
+Twelve real focused edits, six Child lifetimes and Root rebinding preserve the
+original Root and finish quiescent. This is the existing single-screen,
+scale-one, one-surface-per-window physical profile. New multi-Root batch
+semantics have public-host/native protocol coverage; physical multi-Root swaps
+and shared-window composition are not established by this run.
+
+G01 remains the proposed
+[shared native window ownership design](plans/2026-11-10-shared-native-window-design.md).
+Window identity, placements, Joined routing, output ownership, unified close and
+final-placement retirement must be implemented together before exposing that
+composition. Existing platform and ImGui timing scope is unchanged.
+
 ## 2026-11-10 core lifecycle and persistence review
 
 The [core lifecycle and persistence review](audits/2026-11-10-core-lifecycle-persistence-review.md)

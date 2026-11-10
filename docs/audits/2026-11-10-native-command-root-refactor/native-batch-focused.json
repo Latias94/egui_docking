@@ -1,0 +1,23 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--manifest-path",
+    "integration/egui-fork-workspace/Cargo.toml",
+    "-p",
+    "egui_dockspace_native",
+    "--all-features",
+    "--lib",
+    "--locked",
+    "--target-dir",
+    "target",
+    "--test-threads=1",
+    "--no-fail-fast",
+    "-E",
+    "test(workspace_root_batch_) | test(workspace_root_continuation_)"
+  ],
+  "started": "2026-11-10T11:16:58.198655+00:00",
+  "ended": "2026-11-10T11:17:29.405165+00:00",
+  "exit_code": 101
+}

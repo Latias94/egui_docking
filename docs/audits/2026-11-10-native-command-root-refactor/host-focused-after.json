@@ -1,0 +1,33 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "--manifest-path",
+    "integration/dockspace-host-harness/Cargo.toml",
+    "--features",
+    "serde",
+    "--test",
+    "multi_root_restore",
+    "--test",
+    "programmatic_native_tear_off",
+    "--test",
+    "native_document_restore",
+    "--test",
+    "native_local_geometry",
+    "--test",
+    "replacement_native_settlement",
+    "--test",
+    "direct_prepared_native",
+    "--test",
+    "native_work_area_placement",
+    "--locked",
+    "--target-dir",
+    "target",
+    "--test-threads=1",
+    "--no-fail-fast"
+  ],
+  "started": "2026-11-10T11:14:23.469910+00:00",
+  "ended": "2026-11-10T11:15:33.961990+00:00",
+  "exit_code": 100
+}

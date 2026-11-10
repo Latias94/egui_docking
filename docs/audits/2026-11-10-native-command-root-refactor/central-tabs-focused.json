@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "dockspace",
+    "--lib",
+    "--all-features",
+    "--locked",
+    "--target-dir",
+    "target",
+    "--test-threads=1",
+    "--no-fail-fast",
+    "-E",
+    "test(transaction_atomicity::moving_) | test(operation::tests::checked_move) | test(native_lifecycle)"
+  ],
+  "started": "2026-11-10T11:21:27.760363+00:00",
+  "ended": "2026-11-10T11:22:14.464664+00:00",
+  "exit_code": 100
+}

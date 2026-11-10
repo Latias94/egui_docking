@@ -1,0 +1,31 @@
+[
+  {
+    "name": "x11-monitor-topology",
+    "command": [
+      "docker",
+      "exec",
+      "-e",
+      "DISPLAY=:99",
+      "354e85cb1d95",
+      "xrandr",
+      "--current",
+      "--verbose"
+    ],
+    "started": "2026-11-10T12:03:15.705427+00:00",
+    "ended": "2026-11-10T12:03:15.795051+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "x11-container-limits",
+    "command": [
+      "docker",
+      "inspect",
+      "--format",
+      "running={{.State.Running}} cpu_nanoseconds={{.HostConfig.NanoCpus}} memory_bytes={{.HostConfig.Memory}}",
+      "354e85cb1d95"
+    ],
+    "started": "2026-11-10T12:03:15.795071+00:00",
+    "ended": "2026-11-10T12:03:15.810785+00:00",
+    "exit_code": 0
+  }
+]

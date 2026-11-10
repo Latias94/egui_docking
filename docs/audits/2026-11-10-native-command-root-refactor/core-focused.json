@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "dockspace",
+    "--lib",
+    "--all-features",
+    "--locked",
+    "--target-dir",
+    "target",
+    "--test-threads=1",
+    "--no-fail-fast",
+    "-E",
+    "test(native_tear_off) | test(native_lifecycle) | test(root_continuation)"
+  ],
+  "started": "2026-11-10T11:11:44.401692+00:00",
+  "ended": "2026-11-10T11:12:31.137489+00:00",
+  "exit_code": 0
+}

@@ -1,0 +1,94 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.53s
+────────────
+ Nextest run ID 29088f13-bff1-41e1-b6e7-37d68d18559d with nextest profile: default
+    Starting 67 tests across 1 binary (2030 tests skipped)
+        FAIL [   0.012s] ( 1/67) dockspace behavior_tests::transaction_atomicity::moving_a_central_tabs_group_transfers_content_and_preserves_its_source_container
+  stdout ───
+
+    running 1 test
+    test behavior_tests::transaction_atomicity::moving_a_central_tabs_group_transfers_content_and_preserves_its_source_container ... FAILED
+
+    failures:
+
+    failures:
+        behavior_tests::transaction_atomicity::moving_a_central_tabs_group_transfers_content_and_preserves_its_source_container
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2096 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'behavior_tests::transaction_atomicity::moving_a_central_tabs_group_transfers_content_and_preserves_its_source_container' (88837165) panicked at crates/dockspace/src/../tests/transaction_atomicity.rs:452:72:
+    called `Result::unwrap()` on an `Err` value: Command { index: 0, source: Policy(PresentationModeDisabled { mode: Native }) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.007s] ( 2/67) dockspace behavior_tests::transaction_atomicity::moving_an_inner_central_subtree_is_rejected
+        PASS [   0.007s] ( 3/67) dockspace behavior_tests::transaction_atomicity::moving_an_item_to_a_contained_root_preserves_single_ownership
+        PASS [   0.013s] ( 4/67) dockspace engine::tests::native_lifecycle::active_surface_local_drag_rejects_programmatic_native_tear_off_atomically
+        PASS [   0.012s] ( 5/67) dockspace engine::tests::native_lifecycle::auto_focused_native_window_waits_for_first_live_before_pane_focus_is_admitted
+        PASS [   0.008s] ( 6/67) dockspace engine::tests::native_lifecycle::child_viewport_bootstrap_mints_its_recovery_identity_in_core
+        PASS [   0.005s] ( 7/67) dockspace engine::tests::native_lifecycle::contained_clamp_never_authorizes_a_non_positive_durable_rect
+        PASS [   0.009s] ( 8/67) dockspace engine::tests::native_lifecycle::definitive_create_failure_releases_the_reserved_surface_immediately
+        PASS [   0.012s] ( 9/67) dockspace engine::tests::native_lifecycle::delayed_auto_focus_from_a_superseded_native_create_reasserts_the_current_winner
+        PASS [   0.009s] (10/67) dockspace engine::tests::native_lifecycle::direct_surface_close_rejects_a_staging_native_create_without_a_plan
+        PASS [   0.008s] (11/67) dockspace engine::tests::native_lifecycle::engine_presented_drop_reuses_the_requirement_workspace_index
+        PASS [   0.006s] (12/67) dockspace engine::tests::native_lifecycle::explicit_tick_counter_exhaustion_is_atomic
+        PASS [   0.008s] (13/67) dockspace engine::tests::native_lifecycle::explicit_tick_fatal_reduction_rolls_back_provenance_and_complete_state
+        PASS [   0.010s] (14/67) dockspace engine::tests::native_lifecycle::headless_contribution_cannot_publish_after_native_registration
+        PASS [   0.010s] (15/67) dockspace engine::tests::native_lifecycle::indeterminate_create_survives_inventory_absence_and_its_origin_survives_restore
+        PASS [   0.007s] (16/67) dockspace engine::tests::native_lifecycle::main_departure_is_not_vacancy_until_the_last_contained_root_leaves
+        PASS [   0.010s] (17/67) dockspace engine::tests::native_lifecycle::native_contribution_requires_an_explicit_tombstone_before_binding_is_removed
+        PASS [   0.011s] (18/67) dockspace engine::tests::native_lifecycle::native_focus_reservation_replays_after_activation_control_becomes_available
+        PASS [   0.012s] (19/67) dockspace engine::tests::native_lifecycle::native_presentation_close_compiles_its_bound_recovery_obligation
+        PASS [   0.009s] (20/67) dockspace engine::tests::native_lifecycle::native_surface_without_coordinate_authority_prepares_only_unavailable_paint
+        PASS [   0.011s] (21/67) dockspace engine::tests::native_lifecycle::pending_native_create_reserves_complete_source_root_for_shared_and_public_commands
+        PASS [   0.009s] (22/67) dockspace engine::tests::native_lifecycle::pending_newer_native_reservation_preserves_ready_older_owner
+        PASS [   0.008s] (23/67) dockspace engine::tests::native_lifecycle::prepared_surface_plan_is_compiled_once_and_installed_without_recompilation
+        PASS [   0.010s] (24/67) dockspace engine::tests::native_lifecycle::product_main_root_skips_a_pending_native_root_reservation
+        PASS [   0.013s] (25/67) dockspace engine::tests::native_lifecycle::product_native_main_dock_back_uses_bound_recovery_after_target_presentation
+        PASS [   0.011s] (26/67) dockspace engine::tests::native_lifecycle::product_native_root_rehome_ignores_target_failure_without_preview_token
+        PASS [   0.013s] (27/67) dockspace engine::tests::native_lifecycle::product_native_root_rehome_terminates_on_exact_backend_failure
+        PASS [   0.012s] (28/67) dockspace engine::tests::native_lifecycle::product_native_root_to_contained_settles_when_the_source_host_retires
+        PASS [   0.013s] (29/67) dockspace engine::tests::native_lifecycle::product_native_root_to_contained_waits_for_presented_target_before_transfer
+        PASS [   0.013s] (30/67) dockspace engine::tests::native_lifecycle::product_single_item_native_child_dock_waits_for_target_presentation
+        PASS [   0.008s] (31/67) dockspace engine::tests::native_lifecycle::rejected_child_viewport_bootstrap_does_not_consume_a_floating_identity
+        PASS [   0.014s] (32/67) dockspace engine::tests::native_lifecycle::root_presentation_transitions_share_one_pending_reservation
+        PASS [   0.007s] (33/67) dockspace engine::tests::native_lifecycle::rootless_contained_surface_remains_focusable_routeable_and_registerable
+        PASS [   0.010s] (34/67) dockspace engine::tests::native_lifecycle::rootless_native_child_rehome_waits_for_target_presentation_before_release
+        PASS [   0.012s] (35/67) dockspace engine::tests::native_lifecycle::runtime_owned_native_main_dock_back_requires_window_lifecycle_capability
+        PASS [   0.012s] (36/67) dockspace engine::tests::native_lifecycle::source_recovery::source_recovery_cancels_first_live_projection_without_workspace_or_version_change
+        PASS [   0.013s] (37/67) dockspace engine::tests::native_lifecycle::source_recovery::source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot
+        PASS [   0.011s] (38/67) dockspace engine::tests::native_lifecycle::source_reservation::logical_attach_rejects_active_drag_reserved_root_with_another_free_surface
+        PASS [   0.013s] (39/67) dockspace engine::tests::native_lifecycle::source_reservation::logical_attach_rejects_active_drag_reserved_surface_with_another_free_root
+        PASS [   0.012s] (40/67) dockspace engine::tests::native_lifecycle::source_reservation::logical_attach_rejects_pending_release_reserved_root_with_another_free_surface
+        PASS [   0.012s] (41/67) dockspace engine::tests::native_lifecycle::source_reservation::logical_attach_rejects_pending_release_reserved_surface_with_another_free_root
+        PASS [   0.011s] (42/67) dockspace engine::tests::native_lifecycle::source_reservation::native_commit_exempts_only_its_own_partial_source_reservation
+        PASS [   0.020s] (43/67) dockspace engine::tests::native_lifecycle::source_reservation::partial_native_source_edits_are_typed_rejections_while_awaiting_first_live
+        PASS [   0.019s] (44/67) dockspace engine::tests::native_lifecycle::source_reservation::partial_native_source_edits_are_typed_rejections_while_awaiting_hidden
+        PASS [   0.011s] (45/67) dockspace engine::tests::native_lifecycle::staging_resource::another_bindings_presented_output_cannot_admit_or_release_first_live_resource
+        PASS [   0.010s] (46/67) dockspace engine::tests::native_lifecycle::staging_resource::cancelling_an_unemitted_create_releases_its_retained_resource
+        PASS [   0.013s] (47/67) dockspace engine::tests::native_lifecycle::staging_resource::cancelling_first_live_retains_cleanup_resource_despite_late_output
+        PASS [   0.011s] (48/67) dockspace engine::tests::native_lifecycle::staging_resource::prepared_continuity_survives_later_observation_without_repeated_create_ack
+        PASS [   0.011s] (49/67) dockspace engine::tests::native_lifecycle::staging_resource::retained_resource_spans_preparation_until_atomic_first_live_transfer
+        PASS [   0.011s] (50/67) dockspace engine::tests::native_lifecycle::staging_resource::unavailable_first_live_output_preserves_phase_and_resource
+        PASS [   0.007s] (51/67) dockspace engine::tests::native_lifecycle::stale_roster_precondition_is_a_nonpublishing_recovery_rejection
+        PASS [   0.009s] (52/67) dockspace engine::tests::native_lifecycle::surface_contribution_keeps_its_exact_authority_across_delayed_submission
+        PASS [   0.009s] (53/67) dockspace engine::tests::native_lifecycle::surface_resize_clips_presentation_without_rewriting_durable_contained_rects
+        PASS [   0.009s] (54/67) dockspace engine::tests::native_lifecycle::terminal_missing_newer_reservation_is_pruned_before_older_owner_settlement
+        PASS [   0.011s] (55/67) dockspace engine::tests::native_lifecycle::tick_final_runtime_child_vacancy_emits_one_release_before_effect_extraction
+        PASS [   0.012s] (56/67) dockspace engine::tests::native_lifecycle::tick_final_vacancy_suppresses_focus_for_a_newly_visible_native_binding
+        PASS [   0.008s] (57/67) dockspace engine::tests::native_lifecycle::zero_area_ready_surface_is_rejected_and_cannot_authorize_contained_placement
+        PASS [   0.007s] (58/67) dockspace graph::operation::tests::checked_move::current_fingerprint_cannot_authorize_forged_target_policy_facts
+        PASS [   0.007s] (59/67) dockspace graph::operation::tests::checked_move::current_same_root_source_does_not_accept_an_older_target_snapshot
+        PASS [   0.006s] (60/67) dockspace graph::operation::tests::checked_move::earlier_move_invalidates_later_target_without_reusing_batch_facts
+        PASS [   0.007s] (61/67) dockspace graph::operation::tests::checked_move::exact_main_move_recovery_bypasses_policy_but_rechecks_its_target
+        PASS [   0.006s] (62/67) dockspace graph::operation::tests::checked_move::moving_sibling_tabs_uses_parent_weights_after_detach
+        PASS [   0.007s] (63/67) dockspace graph::operation::tests::checked_move::one_move_uses_current_owner_refs_without_building_root_fingerprints
+        PASS [   0.007s] (64/67) dockspace graph::operation::tests::checked_move::same_tabs_noop_move_still_checks_tab_gap_policy
+        PASS [   0.006s] (65/67) dockspace graph::operation::tests::checked_move::scoped_facts_reject_foreign_nodes_for_both_reference_roles
+        PASS [   0.006s] (66/67) dockspace graph::operation::tests::checked_move::selection_before_move_rechecks_all_payload_kinds
+        PASS [   0.006s] (67/67) dockspace graph::operation::tests::checked_move::selection_before_move_rechecks_every_target_against_staged_state
+────────────
+     Summary [   0.680s] 67 tests run: 66 passed, 1 failed, 2030 skipped
+        FAIL [   0.012s] ( 1/67) dockspace behavior_tests::transaction_atomicity::moving_a_central_tabs_group_transfers_content_and_preserves_its_source_container
+error: test run failed
