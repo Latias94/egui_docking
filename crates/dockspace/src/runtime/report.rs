@@ -169,7 +169,11 @@ impl HostFrameReport {
                     Some(HostInputOutcome::NativeInputCancelledForOverload)
                 }
                 InputOutcome::ProductActionProcessed { outcome, .. } => {
-                    Some(product_action_host_outcome(outcome, reduced.cause()))
+                    Some(product_action_host_outcome(
+                        outcome,
+                        transition.authority_domain(),
+                        reduced.cause(),
+                    ))
                 }
                 InputOutcome::ProductActionRejected { reason, .. } => {
                     Some(HostInputOutcome::ProductActionRejected(*reason))
@@ -287,9 +291,12 @@ impl HostFrameReport {
                     expected: *expected,
                     accepted: *accepted_base,
                 }),
-                InputOutcome::InteractionProcessed { outcome, .. } => {
-                    interaction_host_outcome(outcome, reduced.cause(), transition.after())
-                }
+                InputOutcome::InteractionProcessed { outcome, .. } => interaction_host_outcome(
+                    outcome,
+                    transition.authority_domain(),
+                    reduced.cause(),
+                    transition.after(),
+                ),
                 _ => None,
             };
             if let Some(outcome) = outcome {
@@ -314,9 +321,12 @@ impl HostFrameReport {
         } else {
             for (edge_index, edge) in transition.reduced_pointer_edges().iter().enumerate() {
                 for (outcome_index, outcome) in edge.interaction_outcomes().iter().enumerate() {
-                    if let Some(outcome) =
-                        interaction_host_outcome(outcome, edge.cause(), transition.after())
-                    {
+                    if let Some(outcome) = interaction_host_outcome(
+                        outcome,
+                        transition.authority_domain(),
+                        edge.cause(),
+                        transition.after(),
+                    ) {
                         ordered_inputs.push((
                             edge.causal_ordinal().get(),
                             edge_index,
@@ -357,7 +367,10 @@ impl HostFrameReport {
                     return None;
                 };
                 Some(DockspacePresentationTransition {
-                    id: DockspacePresentationTransitionId::from_cause(event.cause()),
+                    id: DockspacePresentationTransitionId::from_cause(
+                        transition.authority_domain(),
+                        event.cause(),
+                    ),
                     root: *root,
                     source_surface: *source_surface,
                     target_surface: *target_surface,
@@ -423,6 +436,7 @@ impl HostFrameReport {
 
 fn product_action_host_outcome(
     outcome: &crate::model::DockspaceActionOutcome,
+    domain: crate::ids::EngineAuthorityDomainId,
     cause: crate::event::ReductionCause,
 ) -> HostInputOutcome {
     if matches!(
@@ -432,7 +446,7 @@ fn product_action_host_outcome(
     ) {
         HostInputOutcome::ProductPresentationActionRequested {
             outcome: outcome.clone(),
-            transition: DockspacePresentationTransitionId::from_cause(cause),
+            transition: DockspacePresentationTransitionId::from_cause(domain, cause),
         }
     } else {
         HostInputOutcome::ProductActionApplied(outcome.clone())
@@ -441,12 +455,13 @@ fn product_action_host_outcome(
 
 fn interaction_host_outcome(
     outcome: &InteractionOutcome,
+    domain: crate::ids::EngineAuthorityDomainId,
     cause: crate::event::ReductionCause,
     version: WorkspaceVersion,
 ) -> Option<HostInputOutcome> {
     match outcome {
         InteractionOutcome::ProductActionApplied(outcome) => {
-            Some(product_action_host_outcome(outcome, cause))
+            Some(product_action_host_outcome(outcome, domain, cause))
         }
         InteractionOutcome::ProductActionRejected(reason) => {
             Some(HostInputOutcome::ProductActionRejected(*reason))

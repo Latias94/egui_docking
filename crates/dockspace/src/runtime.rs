@@ -530,16 +530,23 @@ impl DockspacePresentationTransition {
     }
 }
 
-/// Opaque causal identity of one presentation-gated product transition.
+/// Opaque session-scoped causal identity of one presentation-gated product transition.
 ///
 /// Hosts may compare this value for equality, but cannot construct or inspect
-/// the core reducer authority encoded by it.
+/// the core reducer authority encoded by it. Independent sessions cannot alias
+/// even when they publish the same sequence of product actions.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct DockspacePresentationTransitionId(crate::event::ReductionCause);
+pub struct DockspacePresentationTransitionId {
+    domain: crate::ids::EngineAuthorityDomainId,
+    cause: crate::event::ReductionCause,
+}
 
 impl DockspacePresentationTransitionId {
-    pub(crate) const fn from_cause(cause: crate::event::ReductionCause) -> Self {
-        Self(cause)
+    pub(crate) const fn from_cause(
+        domain: crate::ids::EngineAuthorityDomainId,
+        cause: crate::event::ReductionCause,
+    ) -> Self {
+        Self { domain, cause }
     }
 }
 
