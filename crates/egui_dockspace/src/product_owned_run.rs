@@ -435,13 +435,18 @@ impl Dockspace {
                                 Some(&mut resources),
                             )?);
                         }
-                        self.ui_actions.stage_touch_menu(
-                            sequence,
-                            ui,
-                            self.id,
-                            surface,
-                            frame.version(),
-                        );
+                        if first {
+                            // Opening is an input intent, not repeated painting.
+                            // Later passes retain egui's popup state, including
+                            // cancellation. Failed runs keep the queued request.
+                            self.ui_actions.stage_touch_menu(
+                                sequence,
+                                ui,
+                                self.id,
+                                surface,
+                                frame.version(),
+                            );
+                        }
                         let capture = crate::output_proof::SurfaceOutputCapture::begin_multilayer(
                             ui.painter(),
                         );

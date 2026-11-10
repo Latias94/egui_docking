@@ -12,10 +12,10 @@ use dockspace::model::{
     SurfaceId,
 };
 use dockspace::runtime::{
-    DockspaceReceiverRole, HostPointerInput, HostPointerRoute, PointerDeviceKind,
-    PointerEventMetadata, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerReceiverFacts, SurfacePresentationResult, SurfaceUnavailableReason, SurfaceWork,
-    SurfaceWorkDeferred,
+    DockspaceContextMenuRequest, DockspaceReceiverRole, DockspaceTouchEvent, HostPointerInput,
+    HostPointerRoute, PointerDeviceKind, PointerEventMetadata, SurfacePointerCapture,
+    SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceUnavailableReason, SurfaceWork, SurfaceWorkDeferred,
 };
 use egui::accesskit::Role;
 use egui::{
@@ -1085,6 +1085,184 @@ fn escaping_a_presentation_menu_returns_focus_to_its_button_for_keyboard_reopeni
     assert_eq!(panes.0, ["first content", "second content"]);
 }
 
+fn owned_touch_frame(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut RunPanes,
+    time: f64,
+    events: Vec<Event>,
+) -> (FullOutput, Vec<DockspaceTouchEvent>) {
+    let (output, response) = dockspace
+        .run_single_surface(context, input(time, events), SURFACE, panes)
+        .unwrap();
+    let (mut output, receipt) = output.into_parts();
+    output.textures_delta.clear();
+    receipt.report(SurfacePresentationResult::Presented);
+    (output, response.touch_events().to_vec())
+}
+
+fn request_owned_touch_menu(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut RunPanes,
+    position: Pos2,
+    time: f64,
+) -> DockspaceContextMenuRequest {
+    let contact = |phase| Event::Touch {
+        device_id: egui::TouchDeviceId(1),
+        id: egui::TouchId(7),
+        phase,
+        pos: position,
+        force: None,
+    };
+    let (_, events) = owned_touch_frame(
+        context,
+        dockspace,
+        panes,
+        time,
+        vec![contact(egui::TouchPhase::Start)],
+    );
+    assert!(events.is_empty());
+    let (_, events) = owned_touch_frame(context, dockspace, panes, time + 0.35, Vec::new());
+    assert!(matches!(
+        events.as_slice(),
+        [DockspaceTouchEvent::Armed { .. }]
+    ));
+    let (_, events) = owned_touch_frame(
+        context,
+        dockspace,
+        panes,
+        time + 0.36,
+        vec![contact(egui::TouchPhase::End)],
+    );
+    let [DockspaceTouchEvent::ContextMenuRequested(request)] = events.as_slice() else {
+        panic!("a stationary armed release must request its real menu: {events:?}");
+    };
+    assert_eq!(request.item(), Some(SECOND));
+    *request
+}
+
+fn presentation_menu_count(output: &FullOutput) -> usize {
+    output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter(|(_, node)| {
+            node.role() == Role::Menu && node.label() == Some("Presentation commands")
+        })
+        .count()
+}
+
+#[test]
+fn owned_touch_menu_escape_survives_late_discards_and_a_new_long_press_can_reopen() {
+    for discarded_passes in [0, 2] {
+        let (context, mut dockspace, mut panes, position) =
+            presented_tabs("owned-touch-menu-cancellation");
+        let before = dockspace.version();
+        let first = request_owned_touch_menu(&context, &mut dockspace, &mut panes, position, 1.0);
+        assert_eq!(first.version(), before);
+        context.options_mut(|options| {
+            options.max_passes = NonZeroUsize::new(discarded_passes + 1).unwrap();
+        });
+        context.add_plugin(LateDiscard {
+            remaining: discarded_passes,
+        });
+        let (output, events) = owned_touch_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            1.4,
+            vec![Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(events.is_empty());
+        assert_eq!(
+            output.platform_output.num_completed_passes,
+            discarded_passes + 1
+        );
+        // A closing pass may still contain the menu's final accessibility nodes.
+        // Later outputs must stay closed, including after a discarded close pass.
+        for (time, events) in [
+            (
+                1.5,
+                vec![Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            ),
+            (1.6, Vec::new()),
+        ] {
+            let (output, events) =
+                owned_touch_frame(&context, &mut dockspace, &mut panes, time, events);
+            assert!(events.is_empty());
+            assert_eq!(
+                presentation_menu_count(&output),
+                0,
+                "Escape must remain effective after {discarded_passes} late discards"
+            );
+        }
+
+        let second = request_owned_touch_menu(&context, &mut dockspace, &mut panes, position, 2.0);
+        assert_ne!(second.pointer(), first.pointer());
+        // egui sizes a newly opened popup invisibly before exposing its widgets.
+        let (_, events) = owned_touch_frame(&context, &mut dockspace, &mut panes, 2.4, Vec::new());
+        assert!(events.is_empty());
+        assert!(egui::Popup::is_any_open(&context));
+        for time in [2.5, 2.6] {
+            let (output, events) =
+                owned_touch_frame(&context, &mut dockspace, &mut panes, time, Vec::new());
+            assert!(events.is_empty());
+            assert_eq!(
+                presentation_menu_count(&output),
+                1,
+                "a later contact must open a fresh presentation menu"
+            );
+        }
+        assert_eq!(dockspace.version(), before);
+        assert!(dockspace.view().item(FIRST).unwrap().is_selected());
+        assert!(!dockspace.view().item(SECOND).unwrap().is_selected());
+    }
+}
+
+#[test]
+fn owned_touch_menu_request_survives_an_output_hook_failure() {
+    let (context, mut dockspace, mut panes, position) =
+        presented_tabs("owned-touch-menu-failed-publication");
+    let before = dockspace.version();
+    request_owned_touch_menu(&context, &mut dockspace, &mut panes, position, 1.0);
+    context.add_plugin(PanicAfterPaint { armed: true });
+    let interrupted = catch_unwind(AssertUnwindSafe(|| {
+        let _ = dockspace.run_single_surface(&context, input(1.4, Vec::new()), SURFACE, &mut panes);
+    }));
+    assert!(interrupted.is_err());
+    assert!(egui::Popup::is_any_open(&context));
+    // Remove transient egui state so the retry must use the unpublished request.
+    egui::Popup::close_all(&context);
+    let (_, events) = owned_touch_frame(&context, &mut dockspace, &mut panes, 1.5, Vec::new());
+    assert!(events.is_empty());
+    assert!(egui::Popup::is_any_open(&context));
+    for time in [1.6, 1.7] {
+        let (output, events) =
+            owned_touch_frame(&context, &mut dockspace, &mut panes, time, Vec::new());
+        assert!(events.is_empty());
+        assert_eq!(presentation_menu_count(&output), 1);
+    }
+    assert_eq!(dockspace.version(), before);
+    assert!(dockspace.view().item(FIRST).unwrap().is_selected());
+    assert!(!dockspace.view().item(SECOND).unwrap().is_selected());
+}
+
 #[test]
 #[allow(
     clippy::cast_possible_truncation,
@@ -1209,8 +1387,10 @@ impl egui::plugin::Plugin for PanicAfterPaint {
         "product_owned_run_tests::panic_after_paint"
     }
 
-    fn output_hook(&mut self, _context: &Context, _output: &mut FullOutput) {
+    fn output_hook(&mut self, _context: &Context, output: &mut FullOutput) {
         if std::mem::take(&mut self.armed) {
+            // The fixture abandons this output, including newly rasterized menu glyphs.
+            output.textures_delta.clear();
             panic!("{OUTPUT_HOOK_PANIC}");
         }
     }
