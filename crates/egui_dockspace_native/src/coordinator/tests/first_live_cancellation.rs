@@ -1,7 +1,7 @@
 //! Tokenless shutdown cancels content-ready children without moving source ownership.
 
 use dockspace::model::{DockspaceContainedLayout, FloatingPresentationId, NativeWindowPlacement};
-use dockspace::runtime::{NativeStagingPresentationPhase, PaintedSurfaceOutput};
+use dockspace::runtime::PaintedSurfaceOutput;
 
 use super::*;
 use crate::window_snapshot::CompiledWindowObservation;
@@ -126,96 +126,26 @@ fn prepare_child_content(
     let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
         panic!("the create supplies its exact acknowledgement");
     };
-    let mut create_acknowledgement = Some(acknowledgement);
-    let mut show_acknowledgement = None;
-    // Reuse public staging receipts and effect acknowledgements, without fork tokens.
-    for (phase, presentation) in [
-        (
-            NativeStagingPresentationPhase::PreShow,
-            NativeWindowPresentationState::Hidden,
-        ),
-        (
-            NativeStagingPresentationPhase::PostShow,
-            NativeWindowPresentationState::Visible,
-        ),
-    ] {
-        if phase == NativeStagingPresentationPhase::PostShow {
-            native
-                .session
-                .report_managed_native_snapshot(
-                    observations.iter().copied().chain([(
-                        child,
-                        ready_window_facts(x)
-                            .with_create_readiness(
-                                dockspace::runtime::NativeCreateReadiness::Created,
-                                None,
-                            )
-                            .with_presentation(
-                                NativeWindowPresentationState::Hidden,
-                                show_acknowledgement.take(),
-                            ),
-                    )]),
-                    NativeWorkAreaRoster::Unknown,
-                )
-                .unwrap();
-            commit_model_frame(native);
-        }
-        native
-            .session
-            .report_managed_native_snapshot(
-                observations.iter().copied().chain([(
-                    child,
-                    ready_window_facts(x)
-                        .with_create_readiness(
-                            dockspace::runtime::NativeCreateReadiness::Created,
-                            create_acknowledgement.take(),
-                        )
-                        .with_presentation(presentation, None),
-                )]),
-                NativeWorkAreaRoster::Unknown,
-            )
-            .unwrap();
-        commit_model_frame(native);
-        let mut frame = native
-            .session
-            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-            .unwrap();
-        let request = frame
-            .native_staging_paints()
-            .find(|request| request.binding() == child && request.phase() == phase)
-            .unwrap();
-        frame.confirm_native_staging_painted(request).unwrap();
-        frame
-            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-            .unwrap();
-        let mut report = frame.commit().unwrap();
-        assert!(report.take_painted_outputs().is_empty());
-        let [output] = report
-            .take_painted_native_staging_outputs()
-            .try_into()
-            .unwrap();
-        native
-            .session
-            .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
-            .unwrap();
-        let mut report = commit_model_frame(native);
-        if phase == NativeStagingPresentationPhase::PreShow {
-            let [show] = report.take_native_effects().try_into().unwrap();
-            assert!(
-                matches!(show.operation(), NativeEffectOperation::ShowWindow { binding } if *binding == child)
-            );
-            let Some(NativeEffectAcknowledgement::Presentation(show_ack)) = show.accepted() else {
-                panic!("the show supplies its exact acknowledgement");
-            };
-            show_acknowledgement = Some(show_ack);
-        }
-    }
+    native
+        .session
+        .report_managed_native_snapshot(
+            observations.iter().copied().chain([(
+                child,
+                ready_window_facts(x).with_create_readiness(
+                    dockspace::runtime::NativeCreateReadiness::Prepared,
+                    Some(acknowledgement),
+                ),
+            )]),
+            NativeWorkAreaRoster::Unknown,
+        )
+        .unwrap();
+    commit_model_frame(native);
     assert_eq!(native.session.version(), version);
     for (item, location) in source_locations {
         assert_eq!(
             item_location(native, item),
             location,
-            "PostShow prepares child content without moving the source item, root or rect"
+            "Prepared permits child content without moving the source item, root or rect"
         );
     }
     assert!(native.session.view().surface(child.surface()).is_none());

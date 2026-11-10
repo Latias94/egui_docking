@@ -74,8 +74,7 @@ fn exact_dock_focus_requires_the_last_committed_visible_roster() {
     let visible = |binding| {
         crate::window_snapshot::CompiledWindowObservation::new(
             binding,
-            NativeWindowFacts::live()
-                .with_presentation(NativeWindowPresentationState::Visible, None),
+            NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible),
         )
         .with_focus_reportable_for_test()
     };
@@ -174,8 +173,7 @@ fn captured_dock_focus_is_unknown_after_hiding_and_preserves_the_foreign_success
     let visible = |binding| {
         crate::window_snapshot::CompiledWindowObservation::new(
             binding,
-            NativeWindowFacts::live()
-                .with_presentation(NativeWindowPresentationState::Visible, None),
+            NativeWindowFacts::live().with_presentation(NativeWindowPresentationState::Visible),
         )
         .with_focus_reportable_for_test()
     };
@@ -219,12 +217,12 @@ fn captured_dock_focus_is_unknown_after_hiding_and_preserves_the_foreign_success
                 (
                     root,
                     NativeWindowFacts::live()
-                        .with_presentation(NativeWindowPresentationState::Visible, None),
+                        .with_presentation(NativeWindowPresentationState::Visible),
                 ),
                 (
                     binding,
                     NativeWindowFacts::live()
-                        .with_presentation(NativeWindowPresentationState::Hidden, None),
+                        .with_presentation(NativeWindowPresentationState::Hidden),
                 ),
             ],
             NativeWorkAreaRoster::Unknown,
@@ -615,6 +613,10 @@ fn root_shutdown_releases_focus_owner_and_drains_its_exact_late_callback() {
 
         assert!(native.quarantine_after_fatal().is_empty());
         assert!(!native.focus_control.has_pending_work());
+        assert!(
+            !native.requires_terminal_snapshot(),
+            "a focus callback reservation does not change physical window facts"
+        );
         if !callback_before_shutdown {
             let advance = native.advance_shutdown_boundary(&context, &mut test_budget());
             assert!(advance.errors.is_empty(), "{:#?}", advance.errors);

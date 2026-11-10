@@ -671,7 +671,6 @@ fn late_property_receipts_keep_their_old_resource_until_their_exact_commits() {
     assert!(native.try_report_retirement_quiescence().unwrap());
     assert!(!native.session.recognizes_native_binding(predecessor));
     assert_eq!(native.bridge.create_ack_count(), 0);
-    assert_eq!(native.bridge.presentation_ack(next), None);
     assert_eq!(native.viewport_binding(viewport), Some(next));
     assert!(native.bridge.with_viewports(|routes| {
         routes

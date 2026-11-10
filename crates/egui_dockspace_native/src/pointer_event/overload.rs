@@ -97,10 +97,7 @@ fn binding() -> NativeSurfaceBinding {
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("test session initializes");
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Unknown,
-        )
+        .enable_managed_native_host(NativePointerRoster::Unknown)
         .expect("managed native host enrolls");
     session
         .register_native_root(surface, HostWindowToken::new(1))

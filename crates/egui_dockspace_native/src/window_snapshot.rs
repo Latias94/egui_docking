@@ -3,8 +3,7 @@
 use dockspace::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
 use dockspace::runtime::{
     NativeCreateEffectAcknowledgement, NativeCreateReadiness, NativeInputEffectAcknowledgement,
-    NativePresentationEffectAcknowledgement, NativeSurfaceBinding, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState,
+    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
 };
 use eframe::{
     NativePhysicalRect, NativeWindowInputState as EframeNativeWindowInputState,
@@ -12,6 +11,7 @@ use eframe::{
 };
 
 use crate::error::NativeHostProtocolError;
+use crate::mailbox::NativePreparationObservation;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CompiledWindowObservation {
@@ -19,8 +19,8 @@ pub(crate) struct CompiledWindowObservation {
     facts: NativeWindowFacts,
     input_acknowledged: bool,
     create_acknowledged: bool,
-    presentation_acknowledged: bool,
     focus_reportable: bool,
+    preparation: Option<NativePreparationObservation>,
 }
 
 impl CompiledWindowObservation {
@@ -30,8 +30,8 @@ impl CompiledWindowObservation {
             facts,
             input_acknowledged: false,
             create_acknowledged: false,
-            presentation_acknowledged: false,
             focus_reportable: false,
+            preparation: None,
         }
     }
 
@@ -41,10 +41,6 @@ impl CompiledWindowObservation {
 
     pub(crate) const fn facts(self) -> NativeWindowFacts {
         self.facts
-    }
-
-    pub(crate) const fn presentation_acknowledged(self) -> bool {
-        self.presentation_acknowledged
     }
 
     pub(crate) const fn create_acknowledged(self) -> bool {
@@ -57,6 +53,21 @@ impl CompiledWindowObservation {
 
     pub(crate) const fn focus_reportable(self) -> bool {
         self.focus_reportable
+    }
+
+    pub(crate) const fn preparation(self) -> Option<NativePreparationObservation> {
+        self.preparation
+    }
+
+    pub(crate) const fn with_preparation(
+        mut self,
+        observation: NativePreparationObservation,
+    ) -> Self {
+        self.facts = self
+            .facts
+            .with_create_readiness(observation.readiness, None);
+        self.preparation = Some(observation);
+        self
     }
 
     #[cfg(test)]
@@ -81,9 +92,13 @@ impl CompiledWindowObservation {
         mut self,
         acknowledgement: Option<NativeCreateEffectAcknowledgement>,
     ) -> Self {
-        self.facts = self
-            .facts
-            .with_create_readiness(NativeCreateReadiness::Created, acknowledgement);
+        self.facts = self.facts.with_create_readiness(
+            match self.preparation {
+                Some(observation) => observation.readiness,
+                None => NativeCreateReadiness::Created,
+            },
+            acknowledgement,
+        );
         self.create_acknowledged = acknowledgement.is_some();
         self
     }
@@ -119,24 +134,22 @@ impl From<NativeWindowSnapshot> for SnapshotParts {
 pub(crate) fn compile_window_observation(
     binding: NativeSurfaceBinding,
     snapshot: NativeWindowSnapshot,
-    acknowledgement: Option<NativePresentationEffectAcknowledgement>,
 ) -> Result<CompiledWindowObservation, NativeHostProtocolError> {
     let snapshot = SnapshotParts::from(snapshot);
     let focus_reportable = presentation_state(snapshot.visible, snapshot.minimized)
         == Some(NativeWindowPresentationState::Visible);
-    compile_window_facts(snapshot, acknowledgement).map(|facts| CompiledWindowObservation {
+    compile_window_facts(snapshot).map(|facts| CompiledWindowObservation {
         binding,
         facts,
         input_acknowledged: false,
         create_acknowledged: false,
-        presentation_acknowledged: acknowledgement.is_some(),
         focus_reportable,
+        preparation: None,
     })
 }
 
 fn compile_window_facts(
     snapshot: SnapshotParts,
-    acknowledgement: Option<NativePresentationEffectAcknowledgement>,
 ) -> Result<NativeWindowFacts, NativeHostProtocolError> {
     let native_scale_factor = ScaleFactor::new(snapshot.native_scale_factor)
         .map_err(|_| NativeHostProtocolError::InvalidWindowSnapshot)?;
@@ -163,9 +176,7 @@ fn compile_window_facts(
         facts = facts.with_outer_bounds(physical_rect(rect)?);
     }
     if let Some(presentation) = presentation_state(snapshot.visible, snapshot.minimized) {
-        facts = facts.with_presentation(presentation, acknowledgement);
-    } else if acknowledgement.is_some() {
-        return Err(NativeHostProtocolError::PresentationAcknowledgementWithoutState);
+        facts = facts.with_presentation(presentation);
     }
     Ok(facts)
 }
@@ -227,10 +238,7 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("test session initializes");
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("managed native host enrolls");
         session
             .register_native_root(surface, HostWindowToken::new(1))
@@ -281,10 +289,10 @@ mod tests {
             .with_native_scale_factor(ScaleFactor::new(2.0).expect("scale validates"))
             .with_presentation_scale_factor(ScaleFactor::new(2.5).expect("scale validates"))
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None);
+            .with_presentation(NativeWindowPresentationState::Visible);
         let observation = CompiledWindowObservation::new(
             binding,
-            compile_window_facts(parts(), None).expect("snapshot compiles"),
+            compile_window_facts(parts()).expect("snapshot compiles"),
         );
 
         assert_eq!(observation.binding(), binding);
@@ -293,19 +301,16 @@ mod tests {
 
     #[test]
     fn missing_snapshot_fields_remain_unknown() {
-        let facts = compile_window_facts(
-            SnapshotParts {
-                content_size: [640, 480],
-                inner_rect: None,
-                outer_rect: None,
-                native_scale_factor: 1.5,
-                presentation_scale_factor: 1.25,
-                visible: None,
-                minimized: None,
-                input_state: EframeNativeWindowInputState::ReceivesInput,
-            },
-            None,
-        )
+        let facts = compile_window_facts(SnapshotParts {
+            content_size: [640, 480],
+            inner_rect: None,
+            outer_rect: None,
+            native_scale_factor: 1.5,
+            presentation_scale_factor: 1.25,
+            visible: None,
+            minimized: None,
+            input_state: EframeNativeWindowInputState::ReceivesInput,
+        })
         .expect("partial snapshot compiles");
 
         assert_eq!(
@@ -323,7 +328,7 @@ mod tests {
         let mut snapshot = parts();
         snapshot.content_size = [801, 600];
         assert_eq!(
-            compile_window_facts(snapshot, None),
+            compile_window_facts(snapshot),
             Err(NativeHostProtocolError::InvalidWindowSnapshot)
         );
     }
@@ -333,14 +338,13 @@ mod tests {
         let mut snapshot = parts();
         snapshot.visible = None;
         snapshot.minimized = None;
-        let facts = compile_window_facts(snapshot, None).expect("partial snapshot compiles");
+        let facts = compile_window_facts(snapshot).expect("partial snapshot compiles");
         let observation = CompiledWindowObservation::new(binding(), facts).with_created(None);
         assert_eq!(
             observation.facts(),
             facts.with_create_readiness(NativeCreateReadiness::Created, None)
         );
         assert!(!observation.create_acknowledged());
-        assert!(!observation.presentation_acknowledged());
     }
 
     #[test]
@@ -348,7 +352,7 @@ mod tests {
         let mut snapshot = parts();
         snapshot.input_state = EframeNativeWindowInputState::PassThrough;
 
-        let facts = compile_window_facts(snapshot, None).expect("pass-through snapshot compiles");
+        let facts = compile_window_facts(snapshot).expect("pass-through snapshot compiles");
 
         let expected = NativeWindowFacts::live()
             .with_content_size(PhysicalSize::new(800.0, 600.0).unwrap())
@@ -361,7 +365,7 @@ mod tests {
             .with_native_scale_factor(ScaleFactor::new(2.0).expect("scale validates"))
             .with_presentation_scale_factor(ScaleFactor::new(2.5).expect("scale validates"))
             .with_input(NativeWindowInputState::PassThrough, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None);
+            .with_presentation(NativeWindowPresentationState::Visible);
 
         assert_eq!(facts, expected);
     }
@@ -370,7 +374,7 @@ mod tests {
     fn minimized_state_precedes_visibility() {
         let mut snapshot = parts();
         snapshot.minimized = Some(true);
-        let facts = compile_window_facts(snapshot, None).expect("minimized snapshot compiles");
+        let facts = compile_window_facts(snapshot).expect("minimized snapshot compiles");
         let expected = NativeWindowFacts::live()
             .with_content_size(PhysicalSize::new(800.0, 600.0).unwrap())
             .with_content_bounds(
@@ -382,7 +386,7 @@ mod tests {
             .with_native_scale_factor(ScaleFactor::new(2.0).expect("scale validates"))
             .with_presentation_scale_factor(ScaleFactor::new(2.5).expect("scale validates"))
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Minimized, None);
+            .with_presentation(NativeWindowPresentationState::Minimized);
 
         assert_eq!(facts, expected);
     }
@@ -393,14 +397,14 @@ mod tests {
             let mut snapshot = parts();
             snapshot.native_scale_factor = scale;
             assert_eq!(
-                compile_window_facts(snapshot, None),
+                compile_window_facts(snapshot),
                 Err(NativeHostProtocolError::InvalidWindowSnapshot)
             );
 
             let mut snapshot = parts();
             snapshot.presentation_scale_factor = scale;
             assert_eq!(
-                compile_window_facts(snapshot, None),
+                compile_window_facts(snapshot),
                 Err(NativeHostProtocolError::InvalidWindowSnapshot)
             );
         }

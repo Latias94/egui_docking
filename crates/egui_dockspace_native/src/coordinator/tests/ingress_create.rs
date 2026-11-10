@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
@@ -78,7 +76,7 @@ fn ready_window_observation_with_input(
         .with_outer_bounds(bounds)
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None);
     CompiledWindowObservation::new(binding, facts).with_input(state, acknowledgement)
 }
@@ -734,7 +732,7 @@ fn create_acknowledgement_survives_a_dropped_snapshot_frame_and_settles_without_
                     ready_window_facts(720.0)
                         .with_content_bounds(placement)
                         .with_outer_bounds(placement)
-                        .with_presentation(NativeWindowPresentationState::Hidden, None),
+                        .with_presentation(NativeWindowPresentationState::Hidden),
                 )
                 .with_created(Some(acknowledgement)),
             ],
@@ -745,7 +743,7 @@ fn create_acknowledgement_survives_a_dropped_snapshot_frame_and_settles_without_
     assert!(native.reduce_next_viewport_roster().unwrap());
     assert!(matches!(
         native.queued_snapshot.as_ref().unwrap().acknowledgements.as_slice(),
-        [NativeSnapshotAcknowledgements { binding, create: true, presentation: false }]
+        [NativeSnapshotAcknowledgements { binding, create: true, .. }]
             if *binding == child
     ));
     let mut frame = native
@@ -757,259 +755,24 @@ fn create_acknowledgement_survives_a_dropped_snapshot_frame_and_settles_without_
         .unwrap();
     drop(frame);
     assert_eq!(native.bridge.create_ack_count(), 1);
-    assert_eq!(native.bridge.presentation_ack_count(), 0);
     assert!(native.queued_snapshot.is_some());
 
     let mut frame = native
         .session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
-    assert!(
-        frame
-            .native_staging_paints()
-            .any(|request| request.binding() == child)
-    );
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     let mut report = frame.commit().unwrap();
     assert!(report.take_native_effects().is_empty());
-    assert!(report.take_painted_native_staging_outputs().is_empty());
     assert!(native.settle_host_frame_report(&report).unwrap());
     assert_eq!(native.bridge.create_ack_count(), 0);
-    assert_eq!(native.bridge.presentation_ack_count(), 0);
     assert!(!native.bridge.can_retain_create_ack(viewport, child));
     assert!(native.queued_snapshot.is_none());
     assert!(native.bridge.viewport_roster_dirty());
     assert!(native.session.has_pending_native_create());
     assert!(native.session.view().surface(child.surface()).is_none());
-}
-
-#[test]
-fn staging_resource_owner_retains_empty_frames_and_rejects_foreign_batches_atomically() {
-    let mut native = tear_off_coordinator();
-    let source = register_source(&mut native);
-    publish_desktop_authority(&mut native, source);
-    let receiver = measure_and_present_source(&mut native);
-    let child = request_native_child(&mut native, receiver);
-    let viewport = viewport_id_for(child);
-    let placement = native.deferred_viewport_specs()[0].placement();
-    let create = native.effects.take_for_output(viewport, child).unwrap();
-    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
-        panic!("a create effect supplies its exact create acknowledgement");
-    };
-    let scale = ScaleFactor::new(1.0).unwrap();
-    native
-        .session
-        .report_managed_native_snapshot(
-            [
-                (source, ready_window_facts(0.0)),
-                (
-                    child,
-                    NativeWindowFacts::live()
-                        .with_content_bounds(placement)
-                        .with_outer_bounds(placement)
-                        .with_native_scale_factor(scale)
-                        .with_presentation_scale_factor(scale)
-                        .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
-                        .with_create_readiness(
-                            dockspace::runtime::NativeCreateReadiness::Created,
-                            Some(acknowledgement),
-                        )
-                        .with_close(NativeCloseState::Clear, None),
-                ),
-            ],
-            NativeWorkAreaRoster::Unknown,
-        )
-        .unwrap();
-    let mut frame = native
-        .session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    let request = frame
-        .native_staging_paints()
-        .into_iter()
-        .find(|request| request.binding() == child)
-        .expect("the exact hidden-create observation requests staging");
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    frame.commit().unwrap();
-
-    let conflict = ViewportId::from_hash_of("staging-conflicting-owner");
-    assert!(
-        native
-            .bridge
-            .reserve_create(conflict, source, native_rect())
-    );
-    let requests = BTreeMap::from([(viewport, request), (conflict, request)]);
-    assert!(!native.bridge.can_publish_staging_requests(&requests));
-    assert!(native.bridge.publish_staging_requests(requests).is_err());
-    assert_eq!(
-        native
-            .bridge
-            .publish_staging_requests(BTreeMap::from([(viewport, request)]))
-            .unwrap(),
-        vec![viewport],
-        "the rejected batch must not partly install the otherwise valid slot"
-    );
-    assert!(
-        native
-            .bridge
-            .publish_staging_requests(BTreeMap::new())
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        native
-            .bridge
-            .publish_staging_requests(BTreeMap::from([(viewport, request)]))
-            .unwrap()
-            .is_empty(),
-        "an empty control frame must not revoke the pending staging slot"
-    );
-    assert!(native.bridge.clear_create(viewport, child));
-    assert!(native.bridge.references_binding(child));
-    assert!(native.bridge.clear_hidden_render(viewport, child));
-    assert!(
-        native.bridge.references_binding(child),
-        "staging still retains its binding"
-    );
-    native.bridge.retire_deferred_binding(viewport, source);
-    assert!(native.bridge.references_binding(child));
-    native.bridge.retire_deferred_binding(viewport, child);
-    assert!(
-        native.bridge.references_binding(child),
-        "the current route retains its prepaid resource slot"
-    );
-    assert_eq!(native.viewport_binding(viewport), Some(child));
-    native.unbind_viewport(viewport, child).unwrap();
-    assert!(!native.bridge.references_binding(child));
-}
-
-#[test]
-fn delayed_same_value_visibility_callback_cannot_claim_a_later_show_request() {
-    let mut native = tear_off_coordinator();
-    let source = register_source(&mut native);
-    publish_desktop_authority(&mut native, source);
-    let receiver = measure_and_present_source(&mut native);
-    let child = request_native_child(&mut native, receiver);
-    let viewport = viewport_id_for(child);
-    let window = WindowId::from(72);
-    native
-        .attach_viewport_window(viewport, child, window)
-        .unwrap();
-    let context = egui::Context::default();
-    let older_token = eframe::queue_native_viewport_visibility(&context, viewport, true);
-    let placement = native.deferred_viewport_specs()[0].placement();
-    let create = native.effects.take_for_output(viewport, child).unwrap();
-    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = create.accepted() else {
-        panic!("the exact create request owns its create acknowledgement");
-    };
-    let scale = ScaleFactor::new(1.0).unwrap();
-    native
-        .session
-        .report_managed_native_snapshot(
-            [
-                (source, ready_window_facts(0.0)),
-                (
-                    child,
-                    NativeWindowFacts::live()
-                        .with_content_bounds(placement)
-                        .with_outer_bounds(placement)
-                        .with_native_scale_factor(scale)
-                        .with_presentation_scale_factor(scale)
-                        .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
-                        .with_create_readiness(
-                            dockspace::runtime::NativeCreateReadiness::Created,
-                            Some(acknowledgement),
-                        )
-                        .with_close(NativeCloseState::Clear, None),
-                ),
-            ],
-            NativeWorkAreaRoster::Unknown,
-        )
-        .unwrap();
-    let mut staging = native
-        .session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    let request = staging
-        .native_staging_paints()
-        .into_iter()
-        .find(|request| request.binding() == child)
-        .unwrap();
-    staging.confirm_native_staging_painted(request).unwrap();
-    staging
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    let mut report = staging.commit().unwrap();
-    let output = report.take_painted_native_staging_outputs().pop().unwrap();
-    native
-        .session
-        .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
-        .unwrap();
-    let mut presented = native
-        .session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    presented
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    let mut report = presented.commit().unwrap();
-    let effects = report.take_native_effects();
-    assert!(
-        matches!(effects.as_slice(), [request] if matches!(request.operation(), NativeEffectOperation::ShowWindow { binding } if *binding == child))
-    );
-
-    // This result was captured before the new show request acquired an owner.
-    // It has the same route and value, so only the command identity separates it.
-    native.bridge.push_record(HostRecord::ViewportVisibility(
-        NativeViewportVisibilityRecord::for_test(
-            older_token,
-            viewport,
-            window,
-            child,
-            true,
-            NativeViewportVisibilityStatus::Dispatched,
-        ),
-    ));
-    native.accept_native_effects(&context, effects).unwrap();
-    let token = native.effects.show_token(child).unwrap();
-    assert_ne!(older_token, token);
-    assert!(native.reduce_next_viewport_visibility().unwrap());
-    assert!(native.effects.has_pending_show(child));
-    assert!(native.bridge.presentation_ack(child).is_none());
-    assert!(native.bridge.front_viewport_visibility().is_none());
-
-    let exact = NativeViewportVisibilityRecord::for_test(
-        token,
-        viewport,
-        window,
-        child,
-        true,
-        NativeViewportVisibilityStatus::Dispatched,
-    );
-    native
-        .bridge
-        .push_record(HostRecord::ViewportVisibility(exact));
-    assert!(native.reduce_next_viewport_visibility().unwrap());
-    assert!(!native.effects.has_pending_show(child));
-    assert!(native.bridge.presentation_ack(child).is_some());
-    assert_eq!(
-        native.lifecycle_progress().first_live_admissions(),
-        0,
-        "a dispatch result cannot replace first-live presentation"
-    );
-    native
-        .bridge
-        .push_record(HostRecord::ViewportVisibility(exact));
-    assert!(
-        native.bridge.front_viewport_visibility().is_none(),
-        "the reserved terminal callback is admitted once"
-    );
 }
 
 #[test]
@@ -1666,6 +1429,7 @@ fn shutdown_cancels_unadmitted_create_without_declaring_a_window() {
     assert!(native.pending_effect_results.is_empty());
     assert!(native.queued_snapshot.is_none());
     assert_eq!(native.lifecycle_progress().first_live_admissions(), 0);
+    assert!(!native.bridge.has_pending_coordinator_work());
     assert!(native.is_quiescent());
 }
 
@@ -2026,6 +1790,9 @@ mod fatal_pre_transfer {
             panic!("the exact create supplies its create acknowledgement");
         };
         assert!(native.bridge.clear_create(viewport, child));
+        native
+            .bridge
+            .begin_window_preparation(viewport, child, window);
         native.bridge.invalidate_viewport_roster();
         let scale = ScaleFactor::new(1.0).unwrap();
         // The compiled for_test snapshot carries the real effect acknowledgement
@@ -2041,7 +1808,7 @@ mod fatal_pre_transfer {
                         .with_native_scale_factor(scale)
                         .with_presentation_scale_factor(scale)
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Hidden, None)
+                        .with_presentation(NativeWindowPresentationState::Hidden)
                         .with_create_readiness(
                             dockspace::runtime::NativeCreateReadiness::Created,
                             Some(acknowledgement),
@@ -2176,7 +1943,7 @@ mod fatal_pre_transfer {
     }
 
     #[test]
-    fn model_shutdown_cancels_pre_show_without_staging_terminal() {
+    fn model_shutdown_cancels_renderer_preparation_without_a_renderer_terminal() {
         let (mut native, source, child, window) = captured_child();
         let roster = hidden_create_roster(&mut native, source, child, window);
         native.bridge.push_viewport_roster(roster);
@@ -2189,18 +1956,11 @@ mod fatal_pre_transfer {
         let mut frame = native
             .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
             .unwrap();
-        assert!(
-            frame
-                .frame
-                .native_staging_paints()
-                .any(|request| request.binding() == child)
-        );
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .unwrap();
         let mut report = frame.commit().unwrap();
         assert!(report.take_painted_outputs().is_empty());
-        assert!(report.take_painted_native_staging_outputs().is_empty());
         assert!(report.take_native_effects().is_empty());
         assert!(native.settle_host_frame_report(&report).unwrap());
         assert_eq!(native.output_backlog().awaiting_staging(), 1);

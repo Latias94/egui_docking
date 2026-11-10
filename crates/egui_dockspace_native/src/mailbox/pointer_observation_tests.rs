@@ -10,8 +10,7 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    HostInputOutcome, HostWindowToken, NativeCreateStrategy, NativePointerRoster,
-    SurfaceUnavailableReason,
+    HostInputOutcome, HostWindowToken, NativePointerRoster, SurfaceUnavailableReason,
 };
 use eframe::{NativeViewportPointerObservation, NativeViewportPropertyCommandRetirement};
 use winit::dpi::PhysicalPosition;
@@ -32,10 +31,7 @@ fn registered_session() -> (DockspaceSession, [NativeSurfaceBinding; 3]) {
     .unwrap();
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     for id in [1, 2, 3] {
         session

@@ -14,8 +14,8 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    HostWindowToken, NativeCreateStrategy, NativePointerRoster, NativeReceiverAnswer,
-    SurfacePresentationResult, SurfaceUnavailableReason,
+    HostWindowToken, NativePointerRoster, NativeReceiverAnswer, SurfacePresentationResult,
+    SurfaceUnavailableReason,
 };
 use eframe::egui;
 use egui::accesskit::{Action, ActionRequest, NodeId, Role, TreeId};
@@ -409,7 +409,7 @@ fn publication_retires_removed_surfaces_and_preserves_unpresented_owners(
     fixture.submit(Vec::new());
     fixture
         .session
-        .enable_managed_native_host(NativeCreateStrategy::Staged, NativePointerRoster::Unknown)
+        .enable_managed_native_host(NativePointerRoster::Unknown)
         .unwrap();
     fixture
         .session

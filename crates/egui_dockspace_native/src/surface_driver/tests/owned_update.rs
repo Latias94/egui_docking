@@ -33,7 +33,10 @@ fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-struct CountingPanes(Arc<AtomicUsize>);
+struct CountingPanes {
+    calls: Arc<AtomicUsize>,
+    expected_content_top: Option<f32>,
+}
 
 impl PaneView for CountingPanes {
     fn title(&self, _item: ItemId) -> Option<egui::WidgetText> {
@@ -41,7 +44,15 @@ impl PaneView for CountingPanes {
     }
 
     fn ui(&mut self, _item: ItemId, ui: &mut egui::Ui) -> egui_dockspace::PaneResponse {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(expected) = self.expected_content_top {
+            let actual = ui.max_rect().top();
+            // Pane child bounds are rounded inward to egui's layout grid.
+            assert!(
+                (actual - expected).abs() <= egui::emath::GUI_ROUNDING,
+                "each style pass must place content below the new 44-point bar: expected {expected}, actual {actual}"
+            );
+        }
         ui.label("Each actual pass paints this pane exactly once.");
         egui_dockspace::PaneResponse::default()
     }
@@ -398,6 +409,9 @@ impl eframe::App for DriverApp {
             probe.reports_before = self.reports.load(Ordering::SeqCst);
             probe.callbacks_before = self.calls.load(Ordering::SeqCst);
         }
+        state.panes.expected_content_top =
+            (probe.style_change && probe.token == Some(token) && !probe.published)
+                .then(|| ui.available_rect_before_wrap().top() + 44.0);
         let update = state.update_surface(ui, SURFACE).unwrap();
         if probe.token == Some(token) && !probe.published {
             assert_eq!(state.style.tab_bar_height, 28.0);
@@ -475,7 +489,10 @@ fn run_owned_update(style_change: bool) {
         egui::Id::unique("native-owned-update-regression"),
         session,
         SURFACE,
-        CountingPanes(Arc::clone(&calls)),
+        CountingPanes {
+            calls: Arc::clone(&calls),
+            expected_content_top: None,
+        },
         DockStyle::default(),
         NativeWindowClosePolicy::RetainLayout,
     )

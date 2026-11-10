@@ -8,20 +8,19 @@ use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspacePresentationTransition, DockspaceSession, HostFrameReport, HostInputOutcome,
     HostWindowToken, NativeCloseDisposition, NativeCloseEffectAcknowledgement, NativeCloseState,
-    NativeCreateEffectAcknowledgement, NativeCreateStrategy, NativeDispatchFailure,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
-    NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind, NativeIndeterminateReason,
-    NativeInputBudget, NativeInputStorageLimit, NativePointerInput, NativePointerRoster,
-    NativePresentationEffectAcknowledgement, NativeReceiverAnswer, NativeReceiverQuery,
-    NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts, NativeWorkAreaBinding,
-    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
+    NativeCreateEffectAcknowledgement, NativeDispatchFailure, NativeEffectAcknowledgement,
+    NativeEffectOperation, NativeEffectRequest, NativeEffectResult, NativeEffectSubmissionError,
+    NativeGlobalFocus, NativeHostErrorKind, NativeIndeterminateReason, NativeInputBudget,
+    NativeInputStorageLimit, NativePointerInput, NativePointerRoster, NativeReceiverAnswer,
+    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts,
+    NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
     SurfaceUnavailableReason,
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
     NativeViewportCreateAttempt, NativeViewportCreateFailureKind, NativeViewportFocusStatus,
     NativeViewportPointerPassthroughCommandToken, NativeViewportPointerPassthroughStatus,
-    NativeViewportVisibilityStatus, egui::ViewportId,
+    egui::ViewportId,
 };
 use winit::window::WindowId;
 
@@ -48,7 +47,7 @@ use crate::lifecycle_progress::{
 };
 use crate::mailbox::{
     DeferredViewportPaint, NativeDispatch, NativeHostBridge, NativeOutputPrefix,
-    NativeStagingPaintRecord, NativeViewportRosterEnvelope, NativeViewportRosterRecord,
+    NativePreparationObservation, NativeViewportRosterEnvelope, NativeViewportRosterRecord,
     OutputAbandonment, PendingNativeOutput, PreparedRouteRetirements,
 };
 #[cfg(test)]
@@ -76,21 +75,6 @@ pub(crate) use storage::{
 };
 
 pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StagingPaintFailureDisposition {
-    Obsolete,
-    Fatal,
-}
-
-const fn staging_paint_failure_disposition(
-    kind: Option<NativeHostErrorKind>,
-) -> StagingPaintFailureDisposition {
-    match kind {
-        Some(NativeHostErrorKind::StaleBinding) => StagingPaintFailureDisposition::Obsolete,
-        _ => StagingPaintFailureDisposition::Fatal,
-    }
-}
 
 /// Sole native coordinator for one renderer-neutral docking session.
 ///
@@ -320,7 +304,7 @@ struct QueuedNativeSnapshot {
 struct NativeSnapshotAcknowledgements {
     binding: NativeSurfaceBinding,
     create: bool,
-    presentation: bool,
+    preparation: Option<NativePreparationObservation>,
 }
 
 pub(crate) type PreparedNativeRetirements = PreparedRouteRetirements;
@@ -341,10 +325,6 @@ impl std::fmt::Debug for NativeCoordinator {
             .field(
                 "pending_create_acknowledgements",
                 &self.bridge.create_ack_count(),
-            )
-            .field(
-                "pending_presentation_acknowledgements",
-                &self.bridge.presentation_ack_count(),
             )
             .field(
                 "queued_snapshot_window_acknowledgements",
@@ -413,16 +393,6 @@ impl NativeCoordinator {
         result: SurfacePresentationResult,
     ) -> Result<(), dockspace::runtime::SurfacePresentationReportError> {
         self.session.report_surface_presentation(output, result)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn report_model_staging_presentation_for_test(
-        &mut self,
-        output: dockspace::runtime::PaintedNativeStagingOutput,
-        result: SurfacePresentationResult,
-    ) -> Result<(), dockspace::runtime::NativeStagingPresentationReportError> {
-        self.session
-            .report_native_staging_presentation(output, result)
     }
 
     /// Enrolls the one managed desktop provider for a session.
@@ -620,14 +590,13 @@ impl NativeCoordinator {
             native
                 .session
                 .enable_managed_native_host_with_input_storage_limit(
-                    NativeCreateStrategy::Staged,
                     initial_pointer_roster,
                     limit,
                 )?;
         } else {
             native
                 .session
-                .enable_managed_native_host(NativeCreateStrategy::Staged, initial_pointer_roster)?;
+                .enable_managed_native_host(initial_pointer_roster)?;
         }
         native.session.report_native_inventory_unknown()?;
         Ok(native)
@@ -869,6 +838,23 @@ impl NativeCoordinator {
         &mut self,
         context: &eframe::egui::Context,
     ) -> Result<bool, NativeRuntimeError> {
+        if let Some((viewport, binding, window)) = self.bridge.next_preparation_show() {
+            if self.exact_window_route_for_binding(binding) != Some((viewport, window)) {
+                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+            }
+            let prepared = eframe::prepare_native_viewport_visibility(viewport, true);
+            if !self
+                .bridge
+                .dispatch_preparation_show(viewport, binding, window, prepared.token())
+            {
+                return Ok(false);
+            }
+            if self.deferred_viewports.set_visible(binding) != Some(viewport) {
+                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+            }
+            prepared.enqueue(context);
+            return Ok(true);
+        }
         if let Some((viewport, binding, window)) = self.focus_control.queued_route() {
             if self.exact_window_route_for_binding(binding) != Some((viewport, window)) {
                 return Err(NativeHostProtocolError::NativeFocusCorrelationChanged.into());
@@ -1020,8 +1006,6 @@ impl NativeCoordinator {
         for retirement in &committed {
             let binding = retirement.binding();
             self.bridge.clear_create_ack(binding);
-            self.bridge.clear_presentation_ack(binding);
-            self.effects.remove_show(binding);
             self.terminalize_focus(binding);
             self.bridge
                 .with_close_control(|control| control.retire_binding(binding));
@@ -1116,13 +1100,14 @@ impl NativeCoordinator {
         if snapshot_applied {
             self.work_areas.commit(queued.work_areas, &self.session);
             self.bridge.set_focus_reportable(&queued.focus_reportable);
-            let window_acknowledged = !queued.acknowledgements.is_empty();
+            let window_acknowledged = queued.acknowledgements.iter().any(|ack| ack.create);
             for acknowledgement in queued.acknowledgements {
+                if let Some(preparation) = acknowledgement.preparation {
+                    self.bridge
+                        .settle_window_preparation(acknowledgement.binding, preparation);
+                }
                 if acknowledgement.create {
                     self.bridge.clear_create_ack(acknowledgement.binding);
-                }
-                if acknowledgement.presentation {
-                    self.bridge.clear_presentation_ack(acknowledgement.binding);
                 }
             }
             if window_acknowledged {
@@ -1137,6 +1122,7 @@ impl NativeCoordinator {
             }
             Ok(true)
         } else {
+            self.bridge.revoke_preparation_inventory();
             Ok(queued.roster.is_terminal())
         }
     }
@@ -1611,7 +1597,7 @@ impl NativeCoordinator {
 
     fn reduce_callback_prefix_inner(
         &mut self,
-        context: &eframe::egui::Context,
+        _context: &eframe::egui::Context,
         budget: &mut NativeInputBudget,
     ) -> Result<Option<std::num::NonZeroUsize>, NativeRuntimeError> {
         if budget.is_exhausted() || self.bridge.callback_boundary_pending() {
@@ -1636,9 +1622,6 @@ impl NativeCoordinator {
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_viewport_created()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_staging_painted(context, budget)? {
             return Ok(Some(std::num::NonZeroUsize::MIN));
         }
         if self.reduce_next_viewport_pointer_passthrough()? {
@@ -2037,72 +2020,11 @@ impl NativeCoordinator {
         let Some(record) = self.next_viewport_visibility()? else {
             return Ok(false);
         };
+        self.bridge.reduce_preparation_visibility(record);
         self.bridge.invalidate_viewport_roster();
-        let current = self.bridge.with_viewports(|viewports| {
-            viewports.binding_for_event(record.window(), Some(record.viewport()))
-        });
-        if current != Some(record.binding())
-            || !self.session.is_current_native_binding(record.binding())
-        {
-            let callback_error = self.effects.take_show(record).and_then(|request| {
-                self.report_callback_terminal_result(
-                    request.indeterminate(NativeIndeterminateReason::AcknowledgementLost),
-                )
-            });
-            self.acknowledge_viewport_visibility(record)?;
-            if let Some(error) = callback_error {
-                self.callback_errors.push_back(error);
-            }
-            return Ok(true);
-        }
-        if !record.visible() {
-            self.acknowledge_viewport_visibility(record)?;
-            return Ok(true);
-        }
-        if record.status() == NativeViewportVisibilityStatus::Dispatched
-            && self.effects.matches_show(record)
-            && !self
-                .bridge
-                .can_retain_presentation_ack(record.viewport(), record.binding())
-        {
-            return Err(NativeHostProtocolError::PresentationAcknowledgementAlreadyPending.into());
-        }
-        let Some(request) = self.effects.take_show(record) else {
-            self.acknowledge_viewport_visibility(record)?;
-            return Ok(true);
-        };
-        let callback_error = match record.status() {
-            NativeViewportVisibilityStatus::Dispatched => {
-                let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) =
-                    request.accepted()
-                else {
-                    return Err(
-                        NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into(),
-                    );
-                };
-                self.bridge
-                    .retain_presentation_ack(record.viewport(), record.binding(), acknowledgement)
-                    .expect("the exact visibility callback retained its prepaid presentation slot");
-                self.bridge.invalidate_viewport_roster();
-                None
-            }
-            NativeViewportVisibilityStatus::Unsupported => {
-                let result = request.unsupported(NativeUnsupportedReason::BackendUnsupported);
-                self.report_callback_terminal_result(result)
-            }
-            NativeViewportVisibilityStatus::Retired => self.report_callback_terminal_result(
-                request.not_applied(NativeDispatchFailure::AdapterRejected),
-            ),
-        };
+        // Dispatch completion never substitutes for a later real visible snapshot.
         self.acknowledge_viewport_visibility(record)?;
-        if let Some(error) = callback_error {
-            self.callback_errors.push_back(error);
-        }
         Ok(true)
-    }
-
-    fn has_pending_presentation_effect(&self, binding: NativeSurfaceBinding) -> bool {
-        self.bridge.presentation_ack(binding).is_some() || self.effects.has_pending_show(binding)
     }
 
     fn reduce_next_viewport_created(&mut self) -> Result<bool, NativeRuntimeError> {
@@ -2140,6 +2062,11 @@ impl NativeCoordinator {
                 acknowledgement,
             )
             .expect("the exact create callback retained its prepaid creation observation");
+        self.bridge.begin_window_preparation(
+            created.token().viewport_id(),
+            created.binding(),
+            created.token().window_id(),
+        );
         self.bridge.invalidate_viewport_roster();
         if !self.bridge.acknowledge_viewport_created(created) {
             return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
@@ -2149,108 +2076,6 @@ impl NativeCoordinator {
                 .clear_create(created.token().viewport_id(), created.binding())
         );
         Ok(true)
-    }
-
-    fn reduce_next_staging_painted(
-        &mut self,
-        context: &eframe::egui::Context,
-        budget: &mut NativeInputBudget,
-    ) -> Result<bool, NativeRuntimeError> {
-        let Some(staging) = self.bridge.front_staging_painted() else {
-            return Ok(false);
-        };
-        if self.bridge.has_pending_output(staging.token()) {
-            return Err(NativeHostProtocolError::OutputAwaitingAttachment.into());
-        }
-        let Some(mut frame) = self
-            .session
-            .poll_native_host_frame(budget, |_| NativeReceiverAnswer::Unknown)?
-        else {
-            self.bridge.hold_native_boundary();
-            return Ok(false);
-        };
-        // Replay and the staging callback are distinct records. Spending the
-        // final credit on its predecessors must leave staging at the raw head.
-        if frame.native_input_pending() || budget.is_exhausted() {
-            let mut frame =
-                NativeHostFrame::new(frame, self.bridge.clone(), &mut self.receivers, None);
-            frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-            let report = frame.commit()?;
-            self.finish_internal_report(context, report)?;
-            return Ok(false);
-        }
-        if !self.bridge.accepts_staging_paint(staging.token()) {
-            drop(frame);
-            self.discard_obsolete_staging_paint(staging)?;
-            budget.complete_unsequenced_records(1);
-            return Ok(true);
-        }
-        if let Err(error) = frame.confirm_native_staging_painted(staging.request()) {
-            if staging_paint_failure_disposition(error.native_kind())
-                == StagingPaintFailureDisposition::Fatal
-            {
-                return Err(error.into());
-            }
-            drop(frame);
-            self.discard_obsolete_staging_paint(staging)?;
-            budget.complete_unsequenced_records(1);
-            return Ok(true);
-        }
-        frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-        let mut report = frame.commit()?;
-        self.receivers
-            .commit_presentations(report.surface_presentation_commits());
-        self.retain_internal_presentation_transitions(&report);
-        self.settle_host_frame_report(&report)?;
-        self.settle_close_control_report(&report)?;
-        self.settle_native_admissions(report.native_admissions())?;
-        let mut outputs = report.take_painted_native_staging_outputs();
-        if outputs.len() != 1 {
-            let actual = outputs.len();
-            drop(outputs);
-            return Err(NativeHostProtocolError::PaintedStagingOutputCountMismatch {
-                expected: 1,
-                actual,
-            }
-            .into());
-        }
-        let output = outputs.pop().expect("one staging output was checked");
-        if output.binding() != staging.request().binding()
-            || !self
-                .bridge
-                .attach_output_binding(staging.token(), output.binding())
-            || !self
-                .bridge
-                .require_output_wake_after_current(staging.token())
-        {
-            drop(output);
-            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-        }
-        if let Err(output) = self.bridge.bind_staging_output(staging.token(), output) {
-            drop(output);
-            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-        }
-        if !self.bridge.acknowledge_staging_painted(staging) {
-            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-        }
-        self.accept_native_effects(context, report.take_native_effects())?;
-        self.bridge
-            .commit_frame_boundary(report.native_input_pending());
-        budget.complete_unsequenced_records(1);
-        Ok(true)
-    }
-
-    fn discard_obsolete_staging_paint(
-        &mut self,
-        staging: NativeStagingPaintRecord,
-    ) -> Result<(), NativeRuntimeError> {
-        if !self.bridge.acknowledge_staging_painted(staging) {
-            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-        }
-        // The terminal may have already retired an abandoned output. Its exact
-        // staging ingress still transfers and commits without reopening paint.
-        let _ = self.abandon_output_token(staging.token());
-        Ok(())
     }
 
     fn reduce_non_pointer_event(
@@ -2367,14 +2192,15 @@ impl NativeCoordinator {
         envelope: NativeViewportRosterEnvelope,
         work_areas: Result<&FrozenWorkAreaRoster, NativeHostProtocolError>,
     ) -> Result<(), NativeRuntimeError> {
+        self.bridge.observe_window_preparations(roster);
         let compiled = self.bridge.with_retirement_destroyed_observations(
-            |destroyed_count, destroyed, created_ack, presentation_ack| {
+            |destroyed_count, destroyed, created_ack, preparation| {
                 self.preflight_snapshot_storage(roster, destroyed_count)?;
                 let mut observations = self.compile_viewport_roster(
                     roster,
                     destroyed_count,
                     created_ack,
-                    presentation_ack,
+                    preparation,
                 )?;
                 observations.extend(
                     destroyed
@@ -2413,11 +2239,11 @@ impl NativeCoordinator {
             let mut input_acknowledgement = None;
             for observation in &observations {
                 let binding = observation.binding();
-                if observation.create_acknowledged() || observation.presentation_acknowledged() {
+                if observation.create_acknowledged() || observation.preparation().is_some() {
                     acknowledgements.push(NativeSnapshotAcknowledgements {
                         binding,
                         create: observation.create_acknowledged(),
-                        presentation: observation.presentation_acknowledged(),
+                        preparation: observation.preparation(),
                     });
                 }
                 if observation.input_acknowledged() {
@@ -2464,6 +2290,7 @@ impl NativeCoordinator {
                 Err(error) => return Err(error.into()),
             }
         }
+        self.bridge.revoke_preparation_inventory();
         let (_, prepared_work_areas) = self.work_areas.prepare(&FrozenWorkAreaRoster::Unknown)?;
         self.session.report_native_inventory_unknown()?;
         debug_assert!(self.queued_snapshot.is_none());
@@ -2485,9 +2312,7 @@ impl NativeCoordinator {
         created_ack: &dyn Fn(
             NativeSurfaceBinding,
         ) -> Option<Option<NativeCreateEffectAcknowledgement>>,
-        presentation_ack: &dyn Fn(
-            NativeSurfaceBinding,
-        ) -> Option<NativePresentationEffectAcknowledgement>,
+        preparation: &dyn Fn(NativeSurfaceBinding) -> Option<NativePreparationObservation>,
     ) -> Result<Vec<CompiledWindowObservation>, NativeRuntimeError> {
         let capacity = roster
             .observation_count()
@@ -2514,11 +2339,11 @@ impl NativeCoordinator {
             return Ok(observations);
         }
         for observation in roster.observations().iter().copied() {
-            let compiled = compile_window_observation(
-                observation.binding(),
-                observation.snapshot(),
-                presentation_ack(observation.binding()),
-            )?;
+            let compiled =
+                compile_window_observation(observation.binding(), observation.snapshot())?;
+            let compiled = preparation(observation.binding()).map_or(compiled, |preparation| {
+                compiled.with_preparation(preparation)
+            });
             let compiled = created_ack(observation.binding()).map_or(compiled, |acknowledgement| {
                 compiled.with_created(acknowledgement)
             });
@@ -2971,7 +2796,6 @@ impl NativeCoordinator {
 
     fn requires_terminal_snapshot(&self) -> bool {
         self.bridge.create_ack_count() != 0
-            || self.bridge.presentation_ack_count() != 0
             || self.input_control.requires_snapshot()
             || self.bridge.retirement_requires_snapshot()
             || self.bridge.viewport_roster_dirty()
@@ -3053,6 +2877,12 @@ impl NativeCoordinator {
             };
             match output {
                 PendingNativeOutput::Surface(output) => {
+                    if result.status() != NativeOutputStatus::Presented {
+                        if let Some(binding) = binding {
+                            self.bridge
+                                .preparation_renderer_lost(result.token(), binding);
+                        }
+                    }
                     if let Err(error) = self
                         .session
                         .report_surface_presentation(output, presentation)
@@ -3072,15 +2902,12 @@ impl NativeCoordinator {
                         }
                     }
                 }
-                PendingNativeOutput::Staging(output) => {
-                    if let Err(error) = self
-                        .session
-                        .report_native_staging_presentation(output, presentation)
-                    {
-                        let abandoned = self.bridge.abandon_output(result.token());
-                        debug_assert!(abandoned, "failed staging presentation was not submitted");
-                        return Err(error.into());
-                    }
+                PendingNativeOutput::Staging(request) => {
+                    self.bridge.finish_preparation_output(
+                        result.token(),
+                        request,
+                        result.status() == NativeOutputStatus::Presented,
+                    );
                 }
             }
             if !self.bridge.mark_output_submitted(result.token()) {

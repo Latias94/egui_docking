@@ -16,7 +16,7 @@ fn exact_live_window(x: f64) -> NativeWindowFacts {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None)
 }
 
@@ -123,7 +123,6 @@ fn request_replacement_on_existing_viewport() -> (
                 binding,
                 placement: _,
                 role: _,
-                strategy: NativeCreateStrategy::Staged,
             } => *binding,
             operation => panic!("expected one replacement request, got {operation:?}"),
         },

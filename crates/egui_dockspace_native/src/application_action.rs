@@ -427,6 +427,14 @@ pub(crate) enum NativeSubmittedApplicationAction {
 }
 
 impl NativeSubmittedApplicationAction {
+    /// Uses the candidate style for this update's encoding before publication.
+    pub(crate) fn encoding_style(&self) -> Option<&DockStyle> {
+        match self {
+            Self::Style { style, .. } => Some(style),
+            _ => None,
+        }
+    }
+
     /// Extracts adapter styling only after the matching core frame committed.
     pub(crate) fn commit_style(
         &mut self,

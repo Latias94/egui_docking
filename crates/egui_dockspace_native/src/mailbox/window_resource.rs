@@ -1,13 +1,8 @@
 //! One exact binding owns creation, staging, callbacks and pending observations.
 
-#[cfg(test)]
-use std::collections::BTreeMap;
 use std::mem::size_of;
 
-use dockspace::runtime::{
-    NativeCreateEffectAcknowledgement, NativePresentationEffectAcknowledgement,
-    NativeStagingPaintRequest, NativeSurfaceBinding,
-};
+use dockspace::runtime::{NativeCreateEffectAcknowledgement, NativeSurfaceBinding};
 use eframe::{
     NativePhysicalRect, NativeViewportFocusCommandToken,
     NativeViewportPointerPassthroughCommandToken, NativeViewportPropertyCommandRetirement,
@@ -17,7 +12,9 @@ use winit::window::WindowId;
 
 use super::command_callback::{CommandCallbackAdmission, NativeCommandCallbacks};
 use super::journal::ReservedHostRecord;
-use super::{HostRecord, NativeCreateReservation, NativeStagingPaintRecord};
+use super::{HostRecord, NativeCreateReservation};
+
+mod preparation;
 use crate::coordinator::PendingNoFrameInvalidation;
 use crate::error::NativeHostProtocolError;
 use crate::focus_control::NativeViewportFocusRecord;
@@ -25,48 +22,10 @@ use crate::input_control::NativePointerPassthroughRecord;
 use crate::pointer_capture::{NativePointerCaptureKey, NativePointerCaptureRecord};
 use crate::pointer_observation::{NativePointerObservationKey, NativePointerObservationRecord};
 use crate::viewport_callback::NativeViewportVisibilityRecord;
-
-#[derive(Debug)]
-struct StagingReceipt {
-    request: NativeStagingPaintRequest,
-    ingress: Option<ReservedHostRecord>,
-    transferred: bool,
-}
-
-impl StagingReceipt {
-    const fn new(request: NativeStagingPaintRequest) -> Self {
-        Self {
-            request,
-            ingress: None,
-            transferred: false,
-        }
-    }
-
-    fn is_awaiting(&self) -> bool {
-        self.ingress.is_none() && !self.transferred
-    }
-
-    fn receive(
-        &mut self,
-        expected: NativeStagingPaintRequest,
-        reserve: impl FnOnce() -> ReservedHostRecord,
-    ) -> bool {
-        if self.request != expected || !self.is_awaiting() {
-            return false;
-        }
-        self.ingress = Some(reserve());
-        true
-    }
-
-    fn take_ingress(&mut self, ordinal: u64) -> Option<ReservedHostRecord> {
-        if self.transferred || self.ingress.as_ref()?.ordinal() != ordinal {
-            return None;
-        }
-        let ingress = self.ingress.take()?;
-        self.transferred = true;
-        Some(ingress)
-    }
-}
+use preparation::WindowPreparation;
+pub(crate) use preparation::{
+    NativePreparationObservation, NativePreparationPaint, NativePreparationPaintPhase,
+};
 
 #[derive(Debug)]
 struct NativeWindowResource {
@@ -78,11 +37,10 @@ struct NativeWindowResource {
     workspace_replacement: WorkspaceReplacementResource,
     create_rect: Option<NativePhysicalRect>,
     hidden_render: bool,
-    staging: Option<StagingReceipt>,
+    preparation: Option<WindowPreparation>,
     callbacks: NativeCommandCallbacks,
     created: bool,
     create_ack: Option<NativeCreateEffectAcknowledgement>,
-    presentation_ack: Option<NativePresentationEffectAcknowledgement>,
     no_frame: Option<PendingNoFrameInvalidation>,
 }
 
@@ -100,11 +58,13 @@ impl NativeWindowResource {
             && self.workspace_replacement == WorkspaceReplacementResource::None
             && (!self.created || self.retired)
             && self.create_ack.is_none()
-            && self.presentation_ack.is_none()
             && self.no_frame.is_none()
             && self.create_rect.is_none()
             && !self.hidden_render
-            && self.staging.is_none()
+            && self
+                .preparation
+                .as_ref()
+                .is_none_or(|preparation| !preparation.is_pending())
             && if self.retired {
                 !self.callbacks.has_pending_work()
             } else {
@@ -116,11 +76,13 @@ impl NativeWindowResource {
         self.capture_duty_held
             || self.workspace_replacement != WorkspaceReplacementResource::None
             || self.create_ack.is_some()
-            || self.presentation_ack.is_some()
             || self.no_frame.is_some()
             || self.create_rect.is_some()
             || self.hidden_render
-            || self.staging.is_some()
+            || self
+                .preparation
+                .as_ref()
+                .is_some_and(WindowPreparation::is_pending)
             || self.callbacks.has_pending_work()
     }
 }
@@ -129,28 +91,6 @@ impl NativeWindowResource {
 pub(super) struct NativeWindowResources {
     entries: Vec<NativeWindowResource>,
     slot_limit: Option<usize>,
-}
-
-/// Prepared request data and wake backing, without callback or lifetime authority.
-/// The caller must serialize owner activation and retirement between preparation
-/// and publication on the same resource store.
-#[derive(Debug)]
-#[must_use = "prepared staging must be published after core commit or dropped"]
-pub(crate) struct PreparedWindowStaging {
-    requests: Vec<(ViewportId, NativeStagingPaintRequest)>,
-    wake: Vec<ViewportId>,
-}
-
-impl PreparedWindowStaging {
-    pub(crate) fn owned_data_capacity_bytes(&self) -> usize {
-        size_of::<Self>()
-            .saturating_add(
-                self.requests
-                    .capacity()
-                    .saturating_mul(size_of::<(ViewportId, NativeStagingPaintRequest)>()),
-            )
-            .saturating_add(self.wake.capacity().saturating_mul(size_of::<ViewportId>()))
-    }
 }
 
 impl NativeWindowResources {
@@ -184,16 +124,13 @@ impl NativeWindowResources {
         size_of::<Self>().checked_add(slots.checked_mul(size_of::<NativeWindowResource>())?)
     }
 
-    /// Finite staging reserves both vectors once, so construction has no
-    /// overlapping old request or wake allocation beyond these capacities.
+    /// Preparation state is inline in the already prepaid exact window slot.
     pub(super) fn staging_reservation_bytes(slots: usize) -> Option<usize> {
-        let per_slot = size_of::<(ViewportId, NativeStagingPaintRequest)>()
-            .checked_add(size_of::<ViewportId>())?;
-        size_of::<PreparedWindowStaging>().checked_add(slots.checked_mul(per_slot)?)
+        size_of::<Vec<ViewportId>>().checked_add(slots.checked_mul(size_of::<ViewportId>())?)
     }
 
     /// Counts inline storage and actual retained entry backing capacity.
-    /// Callback and staging receipts include their supported ingress payloads inline.
+    /// Callback payloads and renderer preparation state remain inline.
     pub(super) fn owned_data_capacity_bytes(&self) -> usize {
         size_of::<Self>().saturating_add(
             self.entries
@@ -338,17 +275,6 @@ impl NativeWindowResources {
         });
     }
 
-    pub(super) fn presentation_ack(
-        &self,
-        binding: NativeSurfaceBinding,
-    ) -> Option<NativePresentationEffectAcknowledgement> {
-        self.entries.iter().find_map(|resource| {
-            (resource.binding == binding)
-                .then_some(resource.presentation_ack)
-                .flatten()
-        })
-    }
-
     /// An outer Some preserves Created even after its acknowledgement is consumed.
     pub(super) fn created_ack(
         &self,
@@ -409,50 +335,6 @@ impl NativeWindowResources {
 
     /// Must succeed before taking the affine request that produces its ACK.
     /// Aliases on other viewports share the exact binding's single observation.
-    pub(super) fn can_retain_presentation_ack(
-        &self,
-        viewport: ViewportId,
-        binding: NativeSurfaceBinding,
-    ) -> bool {
-        self.resource(viewport, binding).is_some() && self.presentation_ack(binding).is_none()
-    }
-
-    pub(super) fn retain_presentation_ack(
-        &mut self,
-        viewport: ViewportId,
-        binding: NativeSurfaceBinding,
-        acknowledgement: NativePresentationEffectAcknowledgement,
-    ) -> Result<(), NativePresentationEffectAcknowledgement> {
-        if !self.can_retain_presentation_ack(viewport, binding) {
-            return Err(acknowledgement);
-        }
-        self.resource_mut(viewport, binding)
-            .expect("presentation ACK admission requires its exact owner")
-            .presentation_ack = Some(acknowledgement);
-        Ok(())
-    }
-
-    pub(super) fn clear_presentation_ack(&mut self, binding: NativeSurfaceBinding) -> bool {
-        let Some(resource) = self
-            .entries
-            .iter_mut()
-            .find(|resource| resource.binding == binding && resource.presentation_ack.is_some())
-        else {
-            return false;
-        };
-        resource.presentation_ack = None;
-        let viewport = resource.viewport;
-        self.prune(viewport, binding);
-        true
-    }
-
-    pub(super) fn presentation_ack_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|resource| resource.presentation_ack.is_some())
-            .count()
-    }
-
     pub(super) fn pending_no_frame(&self) -> impl Iterator<Item = &PendingNoFrameInvalidation> {
         self.entries
             .iter()
@@ -576,11 +458,10 @@ impl NativeWindowResources {
             workspace_replacement: WorkspaceReplacementResource::None,
             create_rect: None,
             hidden_render: false,
-            staging: None,
+            preparation: None,
             callbacks: NativeCommandCallbacks::default(),
             created: false,
             create_ack: None,
-            presentation_ack: None,
             no_frame: None,
         });
     }
@@ -598,9 +479,9 @@ impl NativeWindowResources {
         resource.hidden_render.then_some(resource.binding)
     }
 
-    pub(super) fn staging(&self, viewport: ViewportId) -> Option<NativeStagingPaintRequest> {
-        let staging = self.active_resource(viewport)?.staging.as_ref()?;
-        staging.is_awaiting().then_some(staging.request)
+    pub(super) fn staging(&self, viewport: ViewportId) -> Option<NativePreparationPaint> {
+        let resource = self.active_resource(viewport)?;
+        resource.preparation.as_ref()?.paint(resource.binding)
     }
 
     pub(super) fn awaiting_staging_count(&self) -> usize {
@@ -609,11 +490,215 @@ impl NativeWindowResources {
             .filter(|resource| {
                 !resource.retired
                     && resource
-                        .staging
+                        .preparation
                         .as_ref()
-                        .is_some_and(StagingReceipt::is_awaiting)
+                        .is_some_and(WindowPreparation::is_pending)
             })
             .count()
+    }
+
+    pub(super) fn prepare_repaints(
+        &self,
+        enabled: bool,
+    ) -> Result<Vec<ViewportId>, NativeHostProtocolError> {
+        let viewports = || {
+            self.entries
+                .iter()
+                .filter(|resource| {
+                    enabled
+                        && !resource.retired
+                        && resource.preparation.as_ref().is_some_and(|preparation| {
+                            preparation.paint(resource.binding).is_some() || preparation.is_ready()
+                        })
+                })
+                .map(|resource| resource.viewport)
+        };
+        let count = viewports().count();
+        let mut wake = Vec::new();
+        wake.try_reserve_exact(count)
+            .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        if wake.capacity() > count {
+            return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
+        }
+        wake.extend(viewports());
+        Ok(wake)
+    }
+
+    pub(super) fn begin_preparation(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+    ) {
+        if let Some(resource) = self.resource_mut(viewport, binding) {
+            resource
+                .preparation
+                .get_or_insert_with(|| WindowPreparation::new(window));
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn ready_preparation_for_test(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+    ) {
+        let resource = self
+            .resource_mut(viewport, binding)
+            .expect("the existing exact window slot is pinned");
+        assert!(resource.preparation.is_none());
+        resource.preparation = Some(WindowPreparation::ready_for_test(viewport, window, binding));
+    }
+
+    #[cfg(test)]
+    pub(super) fn present_preparation_for_test(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
+        let preparation = self
+            .resource_mut(viewport, binding)
+            .and_then(|resource| resource.preparation.as_mut())
+            .expect("the exact window owns renderer preparation");
+        assert_eq!(
+            preparation.present_for_test(binding).phase(),
+            NativePreparationPaintPhase::PostShow
+        );
+    }
+
+    pub(super) fn observe_preparations(
+        &mut self,
+        roster: &super::roster::NativeViewportRosterRecord,
+        ordinal: u64,
+    ) {
+        for resource in self.entries.iter_mut().filter(|resource| !resource.retired) {
+            if let Some(preparation) = &mut resource.preparation {
+                preparation.observe(
+                    roster
+                        .observations()
+                        .iter()
+                        .find(|observation| observation.binding() == resource.binding)
+                        .map(|observation| observation.snapshot()),
+                    ordinal,
+                );
+            }
+        }
+    }
+
+    pub(super) fn revoke_preparation_inventory(&mut self) {
+        for resource in &mut self.entries {
+            if let Some(preparation) = &mut resource.preparation {
+                preparation.inventory_unknown();
+            }
+        }
+    }
+
+    pub(super) fn preparation_observation(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativePreparationObservation> {
+        self.entries
+            .iter()
+            .find(|resource| resource.binding == binding)?
+            .preparation
+            .as_ref()
+            .map(WindowPreparation::observation)
+    }
+
+    pub(super) fn settle_preparation(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        observation: NativePreparationObservation,
+    ) -> bool {
+        self.entries
+            .iter_mut()
+            .find(|resource| resource.binding == binding)
+            .and_then(|resource| resource.preparation.as_mut())
+            .is_some_and(|preparation| preparation.settle_observation(observation))
+    }
+
+    pub(super) fn validate_preparation_output(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        snapshot: eframe::NativeWindowSnapshot,
+    ) -> bool {
+        self.resource_mut(viewport, binding)
+            .and_then(|resource| resource.preparation.as_mut())
+            .is_none_or(|preparation| preparation.validate_output(snapshot))
+    }
+
+    pub(super) fn begin_preparation_paint(
+        &mut self,
+        viewport: ViewportId,
+        request: NativePreparationPaint,
+    ) -> bool {
+        self.resource_mut(viewport, request.binding())
+            .and_then(|resource| resource.preparation.as_mut())
+            .is_some_and(|preparation| preparation.begin_paint(request))
+    }
+
+    pub(super) fn finish_preparation_paint(
+        &mut self,
+        viewport: ViewportId,
+        request: NativePreparationPaint,
+        presented: bool,
+    ) -> bool {
+        self.resource_mut(viewport, request.binding())
+            .and_then(|resource| resource.preparation.as_mut())
+            .is_some_and(|preparation| preparation.finish_paint(request, presented))
+    }
+
+    pub(super) fn renderer_lost(&mut self, viewport: ViewportId, binding: NativeSurfaceBinding) {
+        if let Some(preparation) = self
+            .resource_mut(viewport, binding)
+            .and_then(|resource| resource.preparation.as_mut())
+        {
+            preparation.renderer_lost();
+        }
+    }
+
+    pub(super) fn preparation_allows_semantic(&self, viewport: ViewportId) -> bool {
+        self.active_resource(viewport)
+            .and_then(|resource| resource.preparation.as_ref())
+            .is_none_or(WindowPreparation::is_ready)
+    }
+
+    pub(super) fn next_preparation_show(
+        &self,
+    ) -> Option<(ViewportId, NativeSurfaceBinding, WindowId)> {
+        self.entries
+            .iter()
+            .filter(|resource| !resource.retired)
+            .find_map(|resource| {
+                Some((
+                    resource.viewport,
+                    resource.binding,
+                    resource.preparation.as_ref()?.show_window()?,
+                ))
+            })
+    }
+
+    pub(super) fn dispatch_preparation_show(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        token: NativeViewportVisibilityCommandToken,
+    ) -> bool {
+        self.resource_mut(viewport, binding)
+            .and_then(|resource| resource.preparation.as_mut())
+            .is_some_and(|preparation| preparation.dispatch_show(token))
+    }
+
+    pub(super) fn preparation_visibility(
+        &mut self,
+        record: NativeViewportVisibilityRecord,
+        ordinal: u64,
+    ) -> bool {
+        self.resource_mut(record.viewport(), record.binding())
+            .and_then(|resource| resource.preparation.as_mut())
+            .is_some_and(|preparation| preparation.visibility(record, ordinal))
     }
 
     pub(super) fn reserve_create(
@@ -660,172 +745,19 @@ impl NativeWindowResources {
             return false;
         }
         resource.hidden_render = false;
+        resource.preparation = None;
         self.prune(viewport, binding);
         true
     }
 
-    #[cfg(test)]
-    pub(super) fn can_publish_staging(
-        &self,
-        requests: &BTreeMap<ViewportId, NativeStagingPaintRequest>,
-    ) -> bool {
-        self.staging_missing_entries(requests)
-            .is_some_and(|missing| self.can_add_entries(missing))
-    }
-
-    #[cfg(test)]
-    fn staging_missing_entries(
-        &self,
-        requests: &BTreeMap<ViewportId, NativeStagingPaintRequest>,
-    ) -> Option<usize> {
-        let mut missing = 0;
-        // BTreeMap already guarantees one request per viewport, hence unique exact keys.
-        for (viewport, request) in requests {
-            if !self.can_activate(*viewport, request.binding()) {
-                return None;
-            }
-            if self.resource(*viewport, request.binding()).is_none() {
-                missing += 1;
+    pub(super) fn clear_staging(&mut self) -> bool {
+        let mut changed = false;
+        for resource in &mut self.entries {
+            if let Some(preparation) = &mut resource.preparation {
+                changed |= preparation.cancel();
             }
         }
-        Some(missing)
-    }
-
-    /// Reserves all construction backing without changing owners or staging receipts.
-    /// Finite preparation pays its full slot limit before reading the iterator;
-    /// duplicate viewports and excess keys reject without unbounded collection.
-    /// Dropping the preparation leaves only the store's charged spare capacity.
-    pub(super) fn prepare_staging(
-        &mut self,
-        requests: impl IntoIterator<Item = (ViewportId, NativeStagingPaintRequest)>,
-    ) -> Result<PreparedWindowStaging, NativeHostProtocolError> {
-        let mut prepared_requests = Vec::new();
-        let mut wake = Vec::new();
-        if let Some(limit) = self.slot_limit {
-            Self::staging_reservation_bytes(limit)
-                .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
-            prepared_requests
-                .try_reserve_exact(limit)
-                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
-            wake.try_reserve_exact(limit)
-                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
-            if prepared_requests.capacity() > limit || wake.capacity() > limit {
-                return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
-            }
-        }
-        let mut missing = 0;
-        for (viewport, request) in requests {
-            if !self.can_activate(viewport, request.binding())
-                || prepared_requests
-                    .iter()
-                    .any(|(previous, _)| *previous == viewport)
-            {
-                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed);
-            }
-            if self.resource(viewport, request.binding()).is_none() {
-                missing += 1;
-            }
-            if !self.can_add_entries(missing) {
-                return Err(NativeHostProtocolError::NativeReportStorageUnavailable);
-            }
-            if self.slot_limit.is_none() {
-                prepared_requests
-                    .try_reserve_exact(1)
-                    .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
-            }
-            prepared_requests.push((viewport, request));
-        }
-        if self.slot_limit.is_none() {
-            wake.try_reserve_exact(prepared_requests.len())
-                .map_err(|_| NativeHostProtocolError::NativeReportStorageUnavailable)?;
-        }
-        self.reserve_entries(missing)?;
-        Ok(PreparedWindowStaging {
-            requests: prepared_requests,
-            wake,
-        })
-    }
-
-    /// Publishes a serialized preparation without allocating. Received and
-    /// transferred staging keeps its exact basis until the full commit.
-    pub(super) fn commit_staging(&mut self, prepared: PreparedWindowStaging) -> Vec<ViewportId> {
-        let PreparedWindowStaging { requests, mut wake } = prepared;
-        assert!(
-            requests
-                .iter()
-                .all(|(viewport, request)| self.can_activate(*viewport, request.binding())),
-            "prepared staging owners must remain compatible until publication"
-        );
-        let missing = requests
-            .iter()
-            .filter(|(viewport, request)| self.resource(*viewport, request.binding()).is_none())
-            .count();
-        assert!(
-            self.can_add_entries(missing)
-                && missing <= self.entries.capacity() - self.entries.len()
-                && wake.capacity() >= requests.len(),
-            "prepared staging backing must remain reserved until publication"
-        );
-        for (viewport, request) in requests {
-            if self.resource(viewport, request.binding()).is_none() {
-                self.insert_owner(viewport, request.binding());
-            }
-            let resource = self
-                .resource_mut(viewport, request.binding())
-                .expect("the exact prepared staging owner is present");
-            match &mut resource.staging {
-                Some(staging) if staging.request == request || !staging.is_awaiting() => {}
-                Some(staging) => *staging = StagingReceipt::new(request),
-                None => {
-                    resource.staging = Some(StagingReceipt::new(request));
-                    wake.push(viewport);
-                }
-            }
-        }
-        wake
-    }
-
-    /// Compatibility wrapper for immediate preparation and publication.
-    #[cfg(test)]
-    pub(super) fn publish_staging(
-        &mut self,
-        requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
-    ) -> Option<Vec<ViewportId>> {
-        let prepared = self.prepare_staging(requests).ok()?;
-        Some(self.commit_staging(prepared))
-    }
-
-    /// Only the first exact paint captures ingress into the existing staging owner.
-    pub(super) fn receive_staging(
-        &mut self,
-        record: NativeStagingPaintRecord,
-        reserve: impl FnOnce() -> ReservedHostRecord,
-    ) -> bool {
-        let Some(resource) =
-            self.resource_mut(record.token().viewport_id(), record.request().binding())
-        else {
-            return false;
-        };
-        if resource.retired {
-            return false;
-        }
-        let Some(staging) = &mut resource.staging else {
-            return false;
-        };
-        staging.receive(record.request(), reserve)
-    }
-
-    pub(super) fn clear_staging(&mut self) {
-        self.entries.retain_mut(|resource| {
-            if resource
-                .staging
-                .as_ref()
-                .is_some_and(StagingReceipt::is_awaiting)
-            {
-                resource.staging = None;
-            }
-            !resource.is_empty()
-        });
+        changed
     }
 
     pub(super) fn retire(&mut self, viewport: ViewportId, binding: NativeSurfaceBinding) {
@@ -835,13 +767,7 @@ impl NativeWindowResources {
         resource.retired = true;
         resource.create_rect = None;
         resource.hidden_render = false;
-        if resource
-            .staging
-            .as_ref()
-            .is_some_and(StagingReceipt::is_awaiting)
-        {
-            resource.staging = None;
-        }
+        resource.preparation = None;
         // Dispatched terminals and pending observations keep their original owner
         // through their respective full commits, including during quarantine.
         self.prune(viewport, binding);
@@ -1232,37 +1158,20 @@ impl NativeWindowResources {
     }
 
     pub(super) fn callback_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
-        self.entries.iter().flat_map(|owner| {
-            owner.callbacks.callback_ingress().chain(
-                owner
-                    .staging
-                    .iter()
-                    .filter_map(|staging| staging.ingress.as_ref()),
-            )
-        })
+        self.entries
+            .iter()
+            .flat_map(|owner| owner.callbacks.callback_ingress())
     }
 
     pub(super) fn take_callback_ingress(&mut self, ordinal: u64) -> Option<ReservedHostRecord> {
-        self.entries.iter_mut().find_map(|owner| {
-            owner.callbacks.take_callback_ingress(ordinal).or_else(|| {
-                owner
-                    .staging
-                    .as_mut()
-                    .and_then(|staging| staging.take_ingress(ordinal))
-            })
-        })
+        self.entries
+            .iter_mut()
+            .find_map(|owner| owner.callbacks.take_callback_ingress(ordinal))
     }
 
     pub(super) fn commit_transferred_callbacks(&mut self) {
         for owner in &mut self.entries {
             owner.callbacks.commit_transferred();
-            if owner
-                .staging
-                .as_ref()
-                .is_some_and(|staging| staging.transferred)
-            {
-                owner.staging = None;
-            }
         }
         self.entries.retain(|resource| !resource.is_empty());
     }
@@ -1315,17 +1224,8 @@ mod tests {
         frame.commit().unwrap()
     }
 
-    // Obtain two real bases from the public create lifecycle, without constructing
-    // opaque staging requests or eframe output tokens in the adapter tests.
-    pub(super) fn reissued_staging_requests() -> [NativeStagingPaintRequest; 2] {
-        staging_observations().0
-    }
-
-    pub(super) fn staging_observations() -> (
-        [NativeStagingPaintRequest; 2],
-        NativeCreateEffectAcknowledgement,
-        NativePresentationEffectAcknowledgement,
-    ) {
+    pub(super) fn creation_observation() -> (NativeSurfaceBinding, NativeCreateEffectAcknowledgement)
+    {
         let surface = SurfaceId::new(1);
         let root = RootId::new(2);
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
@@ -1345,10 +1245,7 @@ mod tests {
         policy.set_allow_native_surfaces(true);
         let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -1375,7 +1272,7 @@ mod tests {
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
             .with_close(NativeCloseState::Clear, None);
         session
             .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
@@ -1431,227 +1328,7 @@ mod tests {
         let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
             panic!("the create request must provide its create acknowledgement")
         };
-        let mut acknowledgement = Some(created);
-        let requests = std::array::from_fn(|index| {
-            // Distinct requests require changed durable facts. Consuming a
-            // one-shot ACK while geometry stays equal preserves the same basis.
-            let observed = PhysicalRect::new(
-                placement.x() + f64::from(u32::try_from(index).unwrap()),
-                placement.y(),
-                placement.width(),
-                placement.height(),
-            )
-            .unwrap();
-            let child_facts = NativeWindowFacts::live()
-                .with_content_bounds(observed)
-                .with_outer_bounds(observed)
-                .with_native_scale_factor(scale)
-                .with_presentation_scale_factor(scale)
-                .with_input(NativeWindowInputState::ReceivesInput, None)
-                .with_presentation(NativeWindowPresentationState::Hidden, None)
-                .with_create_readiness(
-                    dockspace::runtime::NativeCreateReadiness::Created,
-                    acknowledgement.take(),
-                )
-                .with_close(NativeCloseState::Clear, None);
-            session
-                .report_managed_native_snapshot(
-                    [(binding, facts), (child, child_facts)],
-                    NativeWorkAreaRoster::Unknown,
-                )
-                .unwrap();
-            let mut frame = session
-                .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-                .unwrap();
-            let request = frame
-                .native_staging_paints()
-                .into_iter()
-                .find(|request| request.binding() == child)
-                .expect("the hidden child must request an exact staging paint");
-            frame
-                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-                .unwrap();
-            frame.commit().unwrap();
-            request
-        });
-        assert_ne!(requests[0], requests[1]);
-        let mut frame = session
-            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-            .unwrap();
-        let request = frame
-            .native_staging_paints()
-            .find(|request| request.binding() == child)
-            .unwrap();
-        frame.confirm_native_staging_painted(request).unwrap();
-        frame
-            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-            .unwrap();
-        let mut report = frame.commit().unwrap();
-        let output = report.take_painted_native_staging_outputs().pop().unwrap();
-        session
-            .report_native_staging_presentation(output, SurfacePresentationResult::Presented)
-            .unwrap();
-        let mut report = commit_deferred(&mut session);
-        let [show] = report.take_native_effects().try_into().unwrap();
-        assert!(matches!(
-            show.operation(),
-            NativeEffectOperation::ShowWindow { binding } if *binding == child
-        ));
-        let Some(NativeEffectAcknowledgement::Presentation(shown)) = show.accepted() else {
-            panic!("the show request must provide its presentation acknowledgement")
-        };
-        (requests, created, shown)
-    }
-
-    // The private receipt protocol only needs the journal envelope. Callback
-    // target/token qualification remains in receive_staging and mailbox tests.
-    fn staging_ingress(journal: &mut HostIngressJournal) -> ReservedHostRecord {
-        journal.reserve(HostRecord::DeviceRemoval(
-            crate::event::NativeDeviceRemovalRecord::for_test(1),
-        ))
-    }
-
-    #[test]
-    fn staging_receipt_only_mints_ingress_for_the_first_exact_basis() {
-        let [first, newer] = reissued_staging_requests();
-        let mut receipt = StagingReceipt::new(first);
-        let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
-        assert!(!receipt.receive(newer, || panic!("a different basis cannot reserve ingress")));
-        assert_eq!(journal.captured_through(), 0);
-        assert!(receipt.receive(first, || staging_ingress(&mut journal)));
-        let ordinal = receipt.ingress.as_ref().unwrap().ordinal();
-        assert!(!receipt.is_awaiting());
-        assert!(!receipt.receive(first, || panic!("a duplicate cannot reserve ingress")));
-        assert!(!receipt.receive(newer, || panic!(
-            "a different basis cannot overwrite ingress"
-        )));
-        assert!(receipt.take_ingress(ordinal + 1).is_none());
-        let ingress = receipt.take_ingress(ordinal).unwrap();
-        assert_eq!(ingress.ordinal(), ordinal);
-        journal.transfer_reserved(ingress);
-        assert_eq!(journal.captured_through(), ordinal);
-        assert_eq!(journal.retained_record_count(), 1);
-        assert!(receipt.transferred);
-        assert!(!receipt.is_awaiting());
-        assert!(receipt.take_ingress(ordinal).is_none());
-        assert!(!receipt.receive(first, || panic!("handoff cannot reopen the receipt")));
-    }
-
-    #[test]
-    fn staging_received_and_transferred_survive_clear_and_retirement_until_full_commit() {
-        let [request, _] = reissued_staging_requests();
-        let viewport = ViewportId::from_hash_of("staging-retirement");
-        let binding = request.binding();
-        for retire_before_transfer in [false, true] {
-            let mut resources = NativeWindowResources::default();
-            let empty = resources.owned_data_capacity_bytes();
-            let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
-            resources
-                .publish_staging(BTreeMap::from([(viewport, request)]))
-                .unwrap();
-            let retained = resources.owned_data_capacity_bytes();
-            assert!(retained > empty);
-            resources.clear_staging();
-            assert!(!resources.references_binding(binding));
-            assert_eq!(resources.owned_data_capacity_bytes(), retained);
-            resources
-                .publish_staging(BTreeMap::from([(viewport, request)]))
-                .unwrap();
-            let receipt = resources
-                .resource_mut(viewport, binding)
-                .unwrap()
-                .staging
-                .as_mut()
-                .unwrap();
-            assert!(receipt.receive(request, || staging_ingress(&mut journal)));
-            let ordinal = resources.callback_ingress().next().unwrap().ordinal();
-            resources.clear_staging();
-            if retire_before_transfer {
-                resources.retire(viewport, binding);
-            }
-            resources.commit_transferred_callbacks();
-            assert!(resources.references_binding(binding));
-            assert!(resources.has_pending_work());
-            assert!(resources.staging(viewport).is_none());
-            assert_eq!(resources.callback_ingress().count(), 1);
-            assert_eq!(resources.owned_data_capacity_bytes(), retained);
-            let ingress = resources.take_callback_ingress(ordinal).unwrap();
-            journal.transfer_reserved(ingress);
-            resources.clear_staging();
-            resources.retire(viewport, binding);
-            assert!(resources.references_binding(binding));
-            assert!(resources.has_pending_work());
-            assert!(resources.callback_ingress().next().is_none());
-            assert_eq!(resources.owned_data_capacity_bytes(), retained);
-            assert!(resources.take_callback_ingress(ordinal).is_none());
-            assert_eq!(journal.retained_record_count(), 1);
-            resources.commit_transferred_callbacks();
-            journal.commit_transferred();
-            assert!(!resources.references_binding(binding));
-            assert!(!resources.has_pending_work());
-            assert_eq!(journal.retained_record_count(), 0);
-            assert_eq!(resources.owned_data_capacity_bytes(), retained);
-        }
-    }
-
-    #[test]
-    fn staging_new_basis_waits_for_full_commit_then_reissues_without_a_second_slot() {
-        let [first, newer] = reissued_staging_requests();
-        let viewport = ViewportId::from_hash_of("staging-reissued-basis");
-        let binding = first.binding();
-        let mut resources = NativeWindowResources::default();
-        let mut journal = HostIngressJournal::new(NativeMonotonicClock::system());
-        assert_eq!(
-            resources.publish_staging(BTreeMap::from([(viewport, first)])),
-            Some(vec![viewport]),
-        );
-        let receipt = resources
-            .resource_mut(viewport, binding)
-            .unwrap()
-            .staging
-            .as_mut()
-            .unwrap();
-        assert!(receipt.receive(first, || staging_ingress(&mut journal)));
-        let ordinal = resources.callback_ingress().next().unwrap().ordinal();
-        for request in [first, newer] {
-            assert_eq!(
-                resources.publish_staging(BTreeMap::from([(viewport, request)])),
-                Some(Vec::new()),
-            );
-        }
-        resources.commit_transferred_callbacks();
-        assert_eq!(resources.callback_ingress().count(), 1);
-        assert_eq!(
-            resources.callback_ingress().next().unwrap().ordinal(),
-            ordinal
-        );
-        assert!(resources.staging(viewport).is_none());
-        let ingress = resources.take_callback_ingress(ordinal).unwrap();
-        journal.transfer_reserved(ingress);
-        assert_eq!(
-            resources.publish_staging(BTreeMap::from([(viewport, newer)])),
-            Some(Vec::new()),
-        );
-        assert!(resources.staging(viewport).is_none());
-        assert_eq!(journal.captured_through(), ordinal);
-        resources.commit_transferred_callbacks();
-        journal.commit_transferred();
-        assert_eq!(
-            resources.publish_staging(BTreeMap::from([(viewport, newer)])),
-            Some(vec![viewport]),
-        );
-        assert_eq!(resources.staging(viewport), Some(newer));
-        let receipt = resources
-            .resource_mut(viewport, binding)
-            .unwrap()
-            .staging
-            .as_mut()
-            .unwrap();
-        assert!(!receipt.receive(first, || panic!("the old basis cannot claim its successor")));
-        assert!(receipt.receive(newer, || staging_ingress(&mut journal)));
-        assert_eq!(journal.captured_through(), ordinal + 1);
-        assert_eq!(resources.callback_ingress().count(), 1);
-        assert!(resources.staging(viewport).is_none());
+        (child, created)
     }
 
     pub(super) fn bindings() -> (NativeSurfaceBinding, NativeSurfaceBinding) {
@@ -1668,10 +1345,7 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("test session initializes");
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("native host enrolls");
         for id in [1, 2] {
             session

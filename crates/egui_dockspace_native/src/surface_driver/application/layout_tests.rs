@@ -363,10 +363,9 @@ mod persistence {
     use dockspace::geometry::{PhysicalRect, ScaleFactor};
     use dockspace::runtime::{
         DockspaceDocumentBootstrap, DockspaceDocumentId, DockspacePersistenceError,
-        DockspacePersistenceErrorKind, HostWindowToken, NativeCloseState, NativeCreateStrategy,
-        NativeInputBudget, NativeMonotonicClock, NativePointerRoster, NativeSurfaceRole,
-        NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-        NativeWorkAreaRoster,
+        DockspacePersistenceErrorKind, HostWindowToken, NativeCloseState, NativeInputBudget,
+        NativeMonotonicClock, NativePointerRoster, NativeSurfaceRole, NativeWindowFacts,
+        NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
     };
     use eframe::{NativeHostWake, NativeWindowingBackend};
     use winit::window::WindowId;
@@ -409,7 +408,7 @@ mod persistence {
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
             .with_close(NativeCloseState::Clear, None)
     }
 
@@ -426,10 +425,7 @@ mod persistence {
     fn saved_child_document() -> Vec<u8> {
         let mut session = persistent_session(child_layout(), DockPolicy::default());
         session
-            .enable_managed_native_host(
-                NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(

@@ -31,10 +31,7 @@ fn bridge_with_clock() -> (
     .unwrap();
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .register_native_root(SurfaceId::new(1), HostWindowToken::new(1))
@@ -215,10 +212,7 @@ fn three_bindings() -> [NativeSurfaceBinding; 3] {
     .unwrap();
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     for id in 1..=3 {
         session

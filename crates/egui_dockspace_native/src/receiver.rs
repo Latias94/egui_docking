@@ -491,10 +491,7 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("receiver test session initializes");
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("managed native host enrolls");
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -979,10 +976,7 @@ mod tests {
         )
         .expect("overflow control session initializes");
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("managed native host enrolls");
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -1016,7 +1010,7 @@ mod tests {
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
             .with_close(NativeCloseState::Clear, None);
         session
             .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
@@ -1773,10 +1767,7 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("hover receiver session initializes");
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("managed native host enrolls");
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -1813,7 +1804,7 @@ mod tests {
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
             .with_close(NativeCloseState::Clear, None);
         session
             .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
@@ -2238,10 +2229,7 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("scroll receiver session initializes");
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("managed native host enrolls");
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -2278,7 +2266,7 @@ mod tests {
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
             .with_close(NativeCloseState::Clear, None);
         session
             .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)

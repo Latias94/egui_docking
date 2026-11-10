@@ -7,11 +7,10 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, HostWindowToken, HostWorkAreaToken,
-    NativeCloseState, NativeEffectAcknowledgement, NativeInputStorageLimit, NativePointerRoster,
-    NativeReceiverAnswer, NativeReportStorageLimit, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPlacement, NativeWindowPresentationState, NativeWorkAreaFacts,
-    NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
-    UniformSurfaceMetrics,
+    NativeCloseState, NativeInputStorageLimit, NativePointerRoster, NativeReceiverAnswer,
+    NativeReportStorageLimit, NativeWindowFacts, NativeWindowInputState, NativeWindowPlacement,
+    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use std::num::NonZeroUsize;
 
@@ -20,7 +19,6 @@ const TEAR_OFF_ROOT: RootId = RootId::new(2);
 
 struct CreateFixture {
     session: DockspaceSession,
-    root: NativeSurfaceBinding,
     request: NativeEffectRequest,
 }
 
@@ -47,7 +45,7 @@ fn window_facts(bounds: PhysicalRect, state: NativeWindowPresentationState) -> N
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(state, None)
+        .with_presentation(state)
         .with_close(NativeCloseState::Clear, None)
 }
 
@@ -58,7 +56,7 @@ fn root_facts() -> NativeWindowFacts {
     )
 }
 
-fn root_session(strategy: NativeCreateStrategy) -> (DockspaceSession, NativeSurfaceBinding) {
+fn root_session() -> (DockspaceSession, NativeSurfaceBinding) {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(
@@ -77,7 +75,6 @@ fn root_session(strategy: NativeCreateStrategy) -> (DockspaceSession, NativeSurf
     let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
     session
         .enable_managed_native_host_with_input_storage_limit(
-            strategy,
             NativePointerRoster::Exact(Vec::new()),
             NativeInputStorageLimit::new(NonZeroUsize::new(32).unwrap(), 1 << 20)
                 .with_report_storage_limit(NativeReportStorageLimit::new(
@@ -147,11 +144,7 @@ fn root_session(strategy: NativeCreateStrategy) -> (DockspaceSession, NativeSurf
 /// Mint real affine requests with one core report lease; no opaque effect or
 /// visibility-command identity is reconstructed by the storage tests.
 fn create_fixture() -> CreateFixture {
-    create_fixture_with_strategy(NativeCreateStrategy::Staged)
-}
-
-fn create_fixture_with_strategy(strategy: NativeCreateStrategy) -> CreateFixture {
-    let (mut session, root) = root_session(strategy);
+    let (mut session, _) = root_session();
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
@@ -171,94 +164,9 @@ fn create_fixture_with_strategy(strategy: NativeCreateStrategy) -> CreateFixture
     let request = requests.pop().unwrap();
     assert!(matches!(
         request.operation(),
-        NativeEffectOperation::CreateWindow { strategy: actual, .. } if *actual == strategy
+        NativeEffectOperation::CreateWindow { .. }
     ));
-    CreateFixture {
-        session,
-        root,
-        request,
-    }
-}
-
-fn show_fixture() -> (DockspaceSession, NativeSurfaceBinding, NativeEffectRequest) {
-    let CreateFixture {
-        mut session,
-        root,
-        request,
-    } = create_fixture();
-    let (binding, placement) = match request.operation() {
-        NativeEffectOperation::CreateWindow {
-            binding, placement, ..
-        } => (*binding, *placement),
-        operation => panic!("unexpected fixture operation: {operation:?}"),
-    };
-    let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = request.accepted() else {
-        panic!("the real create request must carry a create acknowledgement");
-    };
-    session
-        .report_managed_native_snapshot(
-            [
-                (root, root_facts()),
-                (
-                    binding,
-                    window_facts(placement, NativeWindowPresentationState::Hidden)
-                        .with_create_readiness(
-                            dockspace::runtime::NativeCreateReadiness::Created,
-                            Some(acknowledgement),
-                        ),
-                ),
-            ],
-            NativeWorkAreaRoster::Unknown,
-        )
-        .unwrap();
-    commit(&mut session);
-    let mut staging = session
-        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap();
-    let paint = staging
-        .native_staging_paints()
-        .find(|paint| paint.binding() == binding)
-        .unwrap();
-    staging.confirm_native_staging_painted(paint).unwrap();
-    let mut report = complete(staging);
-    let mut outputs = report.take_painted_native_staging_outputs();
-    assert_eq!(outputs.len(), 1);
-    session
-        .report_native_staging_presentation(
-            outputs.pop().unwrap(),
-            SurfacePresentationResult::Presented,
-        )
-        .unwrap();
-    let mut report = commit(&mut session);
-    let mut requests = report.take_native_effects();
-    assert_eq!(requests.len(), 1);
-    let request = requests.pop().unwrap();
-    assert!(
-        matches!(request.operation(), NativeEffectOperation::ShowWindow { binding: exact } if *exact == binding)
-    );
-    (session, binding, request)
-}
-
-#[test]
-fn direct_prepared_create_cannot_acquire_deferred_effect_storage() {
-    let fixture = create_fixture_with_strategy(NativeCreateStrategy::DirectPrepared);
-    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1)).unwrap();
-    let baseline = effects.owned_data_capacity_bytes();
-    let backing = effects.pending_viewports.as_ptr();
-    assert!(
-        effects
-            .plan(
-                ViewportId::from_hash_of("unsupported direct create"),
-                &fixture.request
-            )
-            .is_none()
-    );
-    assert!(!effects.has_pending_work());
-    assert_eq!(effects.pending_viewports.as_ptr(), backing);
-    assert_eq!(effects.owned_data_capacity_bytes(), baseline);
-    let _ = fixture
-        .request
-        .unsupported(NativeUnsupportedReason::BackendUnsupported);
+    CreateFixture { session, request }
 }
 
 #[test]
@@ -267,10 +175,7 @@ fn one_effect_slot_returns_the_original_request_for_retry_without_growing_backin
     let second = create_fixture();
     let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1)).unwrap();
     let baseline = effects.owned_data_capacity_bytes();
-    let pointers = (
-        effects.pending_viewports.as_ptr(),
-        effects.pending_shows.as_ptr(),
-    );
+    let pointers = effects.pending_viewports.as_ptr();
     let first_viewport = ViewportId::from_hash_of("first finite create");
     let second_viewport = ViewportId::from_hash_of("second finite create");
     let first_plan = effects.plan(first_viewport, &first.request).unwrap();
@@ -315,124 +220,11 @@ fn one_effect_slot_returns_the_original_request_for_retry_without_growing_backin
     commit(&mut session);
     assert!(!effects.has_pending_work());
     assert_eq!(effects.owned_data_capacity_bytes(), baseline);
-    assert_eq!(
-        (
-            effects.pending_viewports.as_ptr(),
-            effects.pending_shows.as_ptr()
-        ),
-        pointers
-    );
+    assert_eq!(effects.pending_viewports.as_ptr(), pointers);
 }
 
 #[test]
-fn create_and_show_share_one_slot_and_only_exact_visibility_can_settle_it() {
-    let create = create_fixture();
-    let (_session, binding, show) = show_fixture();
-    let mut effects = NativeEffectCoordinator::with_storage_limits(Some(1)).unwrap();
-    let baseline = effects.owned_data_capacity_bytes();
-    let create_viewport = ViewportId::from_hash_of("held create");
-    let show_viewport = ViewportId::from_hash_of("held show");
-    let window = WindowId::from(17);
-    let token = eframe::prepare_native_viewport_visibility(show_viewport, true).token();
-    let plan = effects.plan(create_viewport, &create.request).unwrap();
-    effects.insert(plan, create.request).unwrap();
-    let operation = show.operation().clone();
-    assert!(!effects.preflight_can_retain_show(binding));
-    let show = effects
-        .retain_show(binding, show_viewport, window, token, show)
-        .unwrap_err();
-    assert_eq!(show.operation(), &operation);
-    let create_request = effects
-        .take_for_output(create_viewport, plan.binding())
-        .unwrap();
-    assert!(effects.preflight_can_retain_show(binding));
-    let show = effects
-        .retain_show(plan.binding(), show_viewport, window, token, show)
-        .unwrap_err();
-    assert_eq!(show.operation(), &operation);
-    assert!(!effects.has_pending_show(plan.binding()));
-    effects
-        .retain_show(binding, show_viewport, window, token, show)
-        .unwrap();
-    assert!(effects.plan(create_viewport, &create_request).is_none());
-    let stale_token = eframe::prepare_native_viewport_visibility(show_viewport, true).token();
-    assert_ne!(token, stale_token);
-    let record = |token, viewport, window, binding, visible| {
-        NativeViewportVisibilityRecord::for_test(
-            token,
-            viewport,
-            window,
-            binding,
-            visible,
-            eframe::NativeViewportVisibilityStatus::Dispatched,
-        )
-    };
-    for wrong in [
-        record(stale_token, show_viewport, window, binding, true),
-        record(token, create_viewport, window, binding, true),
-        record(token, show_viewport, WindowId::from(18), binding, true),
-        record(token, show_viewport, window, plan.binding(), true),
-        record(token, show_viewport, window, binding, false),
-    ] {
-        assert!(effects.take_show(wrong).is_none());
-        assert!(effects.has_pending_show(binding));
-        assert_eq!(effects.show_token(binding), Some(token));
-        assert_eq!(effects.owned_data_capacity_bytes(), baseline);
-    }
-    effects.remove_show(plan.binding());
-    assert!(effects.has_pending_show(binding));
-    let show = effects
-        .take_show(record(token, show_viewport, window, binding, true))
-        .unwrap();
-    assert_eq!(show.operation(), &operation);
-    assert!(
-        effects
-            .take_show(record(token, show_viewport, window, binding, true))
-            .is_none()
-    );
-    effects.insert(plan, create_request).unwrap();
-    let _ = effects.remove_unstarted(plan).unwrap().accepted();
-    let _ = show.accepted();
-    assert!(!effects.has_pending_work());
-    assert_eq!(effects.owned_data_capacity_bytes(), baseline);
-}
-
-#[test]
-fn unlimited_create_and_show_preflight_reserve_backing_before_retaining_requests() {
-    let create = create_fixture();
-    let (_session, binding, show) = show_fixture();
-    let mut effects = NativeEffectCoordinator::default();
-    let create_viewport = ViewportId::from_hash_of("preflight create");
-    let show_viewport = ViewportId::from_hash_of("preflight show");
-    assert_eq!(effects.pending_viewports.capacity(), 0);
-    let plan = effects.plan(create_viewport, &create.request).unwrap();
-    let create_backing = effects.pending_viewports.as_ptr();
-    let create_capacity = effects.pending_viewports.capacity();
-    let prepared_bytes = effects.owned_data_capacity_bytes();
-    assert!(create_capacity > 0);
-    effects.insert(plan, create.request).unwrap();
-    assert_eq!(effects.pending_viewports.as_ptr(), create_backing);
-    assert_eq!(effects.pending_viewports.capacity(), create_capacity);
-    assert_eq!(effects.owned_data_capacity_bytes(), prepared_bytes);
-
-    assert_eq!(effects.pending_shows.capacity(), 0);
-    assert!(effects.preflight_can_retain_show(binding));
-    let show_backing = effects.pending_shows.as_ptr();
-    let show_capacity = effects.pending_shows.capacity();
-    let prepared_bytes = effects.owned_data_capacity_bytes();
-    assert!(show_capacity > 0);
-    let token = eframe::prepare_native_viewport_visibility(show_viewport, true).token();
-    effects
-        .retain_show(binding, show_viewport, WindowId::from(19), token, show)
-        .unwrap();
-    assert!(!effects.preflight_can_retain_show(binding));
-    assert_eq!(effects.pending_shows.as_ptr(), show_backing);
-    assert_eq!(effects.pending_shows.capacity(), show_capacity);
-    assert_eq!(effects.owned_data_capacity_bytes(), prepared_bytes);
-}
-
-#[test]
-fn reservations_count_both_effect_stores_with_checked_arithmetic() {
+fn reservations_count_the_create_store_with_checked_arithmetic() {
     for effect_slots in [None, Some(0), Some(1), Some(2), Some(7)] {
         let effects = NativeEffectCoordinator::with_storage_limits(effect_slots).unwrap();
         let required = NativeEffectCoordinator::reservation_bytes(effect_slots).unwrap();
@@ -441,7 +233,6 @@ fn reservations_count_both_effect_stores_with_checked_arithmetic() {
             effects.pending_viewports.capacity(),
             effect_slots.unwrap_or(0)
         );
-        assert_eq!(effects.pending_shows.capacity(), effect_slots.unwrap_or(0));
     }
     assert_eq!(
         NativeEffectCoordinator::reservation_bytes(Some(usize::MAX)),

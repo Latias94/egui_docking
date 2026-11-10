@@ -5,8 +5,8 @@ use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, RootId,
 };
 use dockspace::runtime::{
-    DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseState, NativeCreateStrategy,
-    NativePointerRoster, NativeWindowFacts, NativeWindowPresentationState, NativeWorkAreaRoster,
+    DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseState, NativePointerRoster,
+    NativeWindowFacts, NativeWindowPresentationState, NativeWorkAreaRoster,
     SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use egui_dockspace::{PaneResponse, PaneView};
@@ -52,10 +52,7 @@ fn minimized_surface_keeps_editor_focus_without_presented_receiver_authority() {
     .unwrap();
     let mut session = DockspaceSession::from_layout(layout, Default::default()).unwrap();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -85,7 +82,7 @@ fn minimized_surface_keeps_editor_focus_without_presented_receiver_authority() {
         .with_outer_bounds(bounds)
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None);
     session
         .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
@@ -200,7 +197,7 @@ fn minimized_surface_keeps_editor_focus_without_presented_receiver_authority() {
         .report_managed_native_snapshot(
             [(
                 binding,
-                facts.with_presentation(NativeWindowPresentationState::Minimized, None),
+                facts.with_presentation(NativeWindowPresentationState::Minimized),
             )],
             NativeWorkAreaRoster::Unknown,
         )

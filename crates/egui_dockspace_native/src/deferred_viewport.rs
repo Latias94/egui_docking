@@ -231,12 +231,8 @@ pub(crate) fn paint_placeholder(
     let label = match disposition {
         Some(DeferredViewportPaint::Created) => "Creating dockspace window…",
         Some(DeferredViewportPaint::Staging(request)) => match request.phase() {
-            dockspace::runtime::NativeStagingPresentationPhase::PreShow => {
-                "Preparing dockspace window…"
-            }
-            dockspace::runtime::NativeStagingPresentationPhase::PostShow => {
-                "Activating dockspace window…"
-            }
+            crate::mailbox::NativePreparationPaintPhase::PreShow => "Preparing dockspace window…",
+            crate::mailbox::NativePreparationPaintPhase::PostShow => "Activating dockspace window…",
         },
         Some(DeferredViewportPaint::Semantic(_)) => "Waiting for semantic dockspace rendering…",
         Some(DeferredViewportPaint::Retain(_)) => "Retaining the last dockspace frame…",

@@ -31,6 +31,7 @@ mod local_pointer;
 mod magnetic_targeting;
 mod overload;
 mod owner_storage;
+mod preparation_revocation;
 mod replacement;
 mod retirement;
 mod storage;
@@ -67,7 +68,7 @@ fn ready_window_facts(x: f64) -> NativeWindowFacts {
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None)
 }
 
@@ -105,26 +106,6 @@ fn deferred_viewport_request_rejects_empty_and_out_of_range_geometry() {
         PhysicalRect::new(0.0, 0.0, 10.0, f64::from(u32::MAX) + 0.25).unwrap(),
     ] {
         assert!(native_create_rect(rect).is_none(), "{rect:?}");
-    }
-}
-
-#[test]
-fn stale_staging_callback_is_obsolete_but_other_native_failures_remain_fatal() {
-    assert_eq!(
-        staging_paint_failure_disposition(Some(NativeHostErrorKind::StaleBinding)),
-        StagingPaintFailureDisposition::Obsolete
-    );
-    for kind in [
-        None,
-        Some(NativeHostErrorKind::InvalidFacts),
-        Some(NativeHostErrorKind::OperationConflict),
-        Some(NativeHostErrorKind::Internal),
-    ] {
-        assert_eq!(
-            staging_paint_failure_disposition(kind),
-            StagingPaintFailureDisposition::Fatal,
-            "only an obsolete affine staging callback is recoverable"
-        );
     }
 }
 
@@ -1255,7 +1236,6 @@ fn visibility_callbacks_preserve_order_and_ignore_unowned_requests() {
         "the live route retains its prepaid resource slot"
     );
     assert!(!native.bridge.has_pending_callback_records());
-    assert!(native.bridge.presentation_ack(second).is_none());
     assert_eq!(native.viewport_binding(child), Some(second));
     assert!(native.session.is_current_native_binding(first));
     assert!(native.session.is_current_native_binding(second));
@@ -1413,7 +1393,7 @@ fn a_trailing_rejected_snapshot_does_not_commit_an_earlier_applied_outcome() {
 }
 
 #[test]
-fn settled_presentation_acknowledgement_rearms_identical_roster_capture() {
+fn settled_creation_acknowledgement_rearms_identical_roster_capture() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);
     native
@@ -1431,8 +1411,8 @@ fn settled_presentation_acknowledgement_rearms_identical_roster_capture() {
         .acknowledgements
         .push(NativeSnapshotAcknowledgements {
             binding: second,
-            create: false,
-            presentation: true,
+            create: true,
+            preparation: None,
         });
 
     let mut frame = native

@@ -118,7 +118,6 @@ impl NativeCoordinator {
             }
         });
         self.deferred_viewports.remove(binding);
-        self.effects.remove_show(binding);
         self.terminalize_focus(binding);
         self.retain_retired_input_results(binding);
         self.receivers.retire_binding(binding);
@@ -165,7 +164,6 @@ impl NativeCoordinator {
     ///
     /// New and replacement child windows retain their affine request until
     /// eframe reports the first exact callback or a typed create failure.
-    /// `ShowWindow` is accepted only for an existing exact retained viewport.
     /// `ReleaseChild` stops re-declaring the child but retains its route until
     /// an exact destruction callback commits.
     /// Unrelated platform operations remain explicitly unsupported.
@@ -180,7 +178,6 @@ impl NativeCoordinator {
                     request.operation(),
                     NativeEffectOperation::CreateWindow { .. }
                         | NativeEffectOperation::RequestReplacement { .. }
-                        | NativeEffectOperation::ShowWindow { .. }
                         | NativeEffectOperation::RequestFocus { .. }
                         | NativeEffectOperation::SetPointerPassthrough { enabled: true, .. }
                 )
@@ -193,18 +190,12 @@ impl NativeCoordinator {
                     binding,
                     placement,
                     role,
-                    strategy,
                 }
                 | NativeEffectOperation::RequestReplacement {
                     binding,
                     placement,
                     role,
-                    strategy,
                 } => {
-                    if *strategy != NativeCreateStrategy::Staged {
-                        self.submit_unsupported_effect(request)?;
-                        continue;
-                    }
                     let binding = *binding;
                     let placement = *placement;
                     let role = *role;
@@ -275,41 +266,6 @@ impl NativeCoordinator {
                         }
                     });
                     assert!(declared, "the admitted viewport retains its exact effect");
-                }
-                NativeEffectOperation::ShowWindow { binding } => {
-                    let binding = *binding;
-                    let Some(viewport) = self.deferred_viewports.viewport_for(binding) else {
-                        self.submit_unsupported_effect(request)?;
-                        continue;
-                    };
-                    let route = self.exact_window_route_for_binding(binding);
-                    if route.is_none_or(|route| route.0 != viewport)
-                        || self.has_pending_presentation_effect(binding)
-                        || !self.effects.preflight_can_retain_show(binding)
-                    {
-                        self.submit_unsupported_effect(request)?;
-                        continue;
-                    }
-                    let (_, window) = route.expect("the exact show route was checked");
-                    let prepared = eframe::prepare_native_viewport_visibility(viewport, true);
-                    let token = prepared.token();
-                    if !self
-                        .bridge
-                        .reserve_visibility_callback(viewport, binding, window, token, true)
-                    {
-                        self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
-                        continue;
-                    }
-                    let deferred_viewports = &mut self.deferred_viewports;
-                    self.effects
-                        .dispatch_show(binding, viewport, window, token, request, || {
-                            let shown = deferred_viewports.set_visible(binding);
-                            assert_eq!(shown, Some(viewport));
-                            prepared.enqueue(context);
-                        })
-                        .map_err(|_| {
-                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
-                        })?;
                 }
                 NativeEffectOperation::ReleaseChild { binding }
                 | NativeEffectOperation::CompensatingClose { binding } => {

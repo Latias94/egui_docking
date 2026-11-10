@@ -1,7 +1,5 @@
 //! Ordered callback mailbox for the fork-backed native host.
 
-#[cfg(test)]
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use winit::window::WindowId;
 
@@ -14,8 +12,8 @@ use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, NativeCleanupObservation,
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeEffectResult,
-    NativeInputBudget, NativeMonotonicClock, NativePresentationEffectAcknowledgement,
-    NativeRootContinuation, NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowFacts,
+    NativeInputBudget, NativeMonotonicClock, NativeRootContinuation, NativeSurfaceBinding,
+    NativeWindowFacts,
 };
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
@@ -75,6 +73,9 @@ use roster::NativeViewportRosterKey;
 pub(crate) use roster::{NativeViewportRosterEnvelope, NativeViewportRosterRecord};
 use terminal_roster::TerminalRosterState;
 use window_resource::NativeWindowResources;
+pub(crate) use window_resource::{
+    NativePreparationObservation, NativePreparationPaint, NativePreparationPaintPhase,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) enum HostRecord {
@@ -90,7 +91,6 @@ pub(crate) enum HostRecord {
     ViewportCreateFailed(NativeViewportCreateFailureRecord),
     ViewportVisibility(NativeViewportVisibilityRecord),
     ViewportCreated(NativeViewportCreatedRecord),
-    StagingPainted(NativeStagingPaintRecord),
     Output { token: NativeOutputToken },
 }
 
@@ -111,7 +111,6 @@ impl HostRecord {
             | Self::ViewportCloseCancelled(_)
             | Self::ViewportRoster(_)
             | Self::ViewportCreateFailed(_)
-            | Self::StagingPainted(_)
             | Self::Output { .. } => false,
         }
     }
@@ -138,15 +137,9 @@ impl NativeViewportCreatedRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct NativeStagingPaintRecord {
-    token: NativeOutputToken,
-    request: NativeStagingPaintRequest,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeferredViewportPaint {
     Created,
-    Staging(NativeStagingPaintRequest),
+    Staging(NativePreparationPaint),
     Semantic(NativeSurfaceBinding),
     Retain(NativeSurfaceBinding),
     Waiting,
@@ -159,24 +152,9 @@ pub(crate) enum NativeViewportReplacement {
     Attach(winit::window::WindowId),
 }
 
-impl NativeStagingPaintRecord {
-    const fn new(token: NativeOutputToken, request: NativeStagingPaintRequest) -> Self {
-        Self { token, request }
-    }
-
-    pub(crate) const fn token(self) -> NativeOutputToken {
-        self.token
-    }
-
-    pub(crate) const fn request(self) -> NativeStagingPaintRequest {
-        self.request
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutputReservation {
     binding: Option<NativeSurfaceBinding>,
-    window: Option<NativeWindowSnapshot>,
     terminal_recorded: bool,
     abandoned: bool,
     wake_on_terminal: bool,
@@ -191,10 +169,9 @@ pub(crate) enum OutputAbandonment {
 }
 
 impl OutputReservation {
-    pub(crate) const fn unbound(window: NativeWindowSnapshot) -> Self {
+    pub(crate) const fn unbound() -> Self {
         Self {
             binding: None,
-            window: Some(window),
             terminal_recorded: false,
             abandoned: false,
             wake_on_terminal: true,
@@ -202,10 +179,9 @@ impl OutputReservation {
         }
     }
 
-    pub(crate) const fn bound(binding: NativeSurfaceBinding, window: NativeWindowSnapshot) -> Self {
+    pub(crate) const fn bound(binding: NativeSurfaceBinding) -> Self {
         Self {
             binding: Some(binding),
-            window: Some(window),
             terminal_recorded: false,
             abandoned: false,
             wake_on_terminal: true,
@@ -213,13 +189,9 @@ impl OutputReservation {
         }
     }
 
-    const fn diagnostic(
-        binding: Option<NativeSurfaceBinding>,
-        window: NativeWindowSnapshot,
-    ) -> Self {
+    const fn diagnostic(binding: Option<NativeSurfaceBinding>) -> Self {
         Self {
             binding,
-            window: Some(window),
             terminal_recorded: false,
             abandoned: true,
             wake_on_terminal: false,
@@ -227,10 +199,9 @@ impl OutputReservation {
         }
     }
 
-    const fn terminal_create(binding: NativeSurfaceBinding, window: NativeWindowSnapshot) -> Self {
+    const fn terminal_create(binding: NativeSurfaceBinding) -> Self {
         Self {
             binding: Some(binding),
-            window: Some(window),
             terminal_recorded: false,
             abandoned: true,
             wake_on_terminal: true,
@@ -254,32 +225,14 @@ impl OutputReservation {
         self.abandoned
     }
 
-    pub(crate) const fn window(self) -> Option<NativeWindowSnapshot> {
-        self.window
-    }
-
     #[cfg(test)]
     pub(crate) const fn unbound_for_test() -> Self {
-        Self {
-            binding: None,
-            window: None,
-            terminal_recorded: false,
-            abandoned: false,
-            wake_on_terminal: true,
-            wake_after_current: false,
-        }
+        Self::unbound()
     }
 
     #[cfg(test)]
     const fn bound_for_test(binding: NativeSurfaceBinding) -> Self {
-        Self {
-            binding: Some(binding),
-            window: None,
-            terminal_recorded: false,
-            abandoned: false,
-            wake_on_terminal: true,
-            wake_after_current: false,
-        }
+        Self::bound(binding)
     }
 
     fn abandon(&mut self) -> bool {
@@ -811,10 +764,7 @@ mod tests {
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
             .expect("test session initializes");
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                dockspace::runtime::NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(dockspace::runtime::NativePointerRoster::Exact(Vec::new()))
             .expect("native host enrolls");
         session
             .register_native_root(
@@ -861,10 +811,10 @@ mod tests {
     fn workspace_root_fixture() -> (DockspaceSession, NativeHostBridge, NativeSurfaceBinding) {
         use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
         use dockspace::runtime::{
-            HostInputOutcome, HostWindowToken, NativeCloseState, NativeCreateStrategy,
-            NativePointerRoster, NativeReceiverAnswer, NativeWindowInputState,
-            NativeWindowPresentationState, NativeWorkAreaRoster, SurfacePresentationResult,
-            SurfaceUnavailableReason, UniformSurfaceMetrics,
+            HostInputOutcome, HostWindowToken, NativeCloseState, NativePointerRoster,
+            NativeReceiverAnswer, NativeWindowInputState, NativeWindowPresentationState,
+            NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
+            UniformSurfaceMetrics,
         };
 
         let mut session = DockspaceSession::from_layout(
@@ -873,10 +823,7 @@ mod tests {
         )
         .unwrap();
         session
-            .enable_managed_native_host(
-                NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -907,7 +854,7 @@ mod tests {
             .with_native_scale_factor(scale)
             .with_presentation_scale_factor(scale)
             .with_input(NativeWindowInputState::ReceivesInput, None)
-            .with_presentation(NativeWindowPresentationState::Visible, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
             .with_close(NativeCloseState::Clear, None);
         session
             .report_managed_native_snapshot([(predecessor, facts)], NativeWorkAreaRoster::Unknown)
@@ -1163,7 +1110,6 @@ mod tests {
 
         assert!(!reservation.attach(second));
         assert_eq!(reservation.binding(), Some(first));
-        assert!(reservation.window().is_none());
     }
 
     #[test]
@@ -2574,7 +2520,6 @@ impl NativeHostState {
         &mut self,
         token: NativeOutputToken,
         binding: Option<NativeSurfaceBinding>,
-        window: NativeWindowSnapshot,
         budget: NativeInputBudget,
     ) -> bool {
         if matches!(self.mode, HostIngressMode::Frozen)
@@ -2602,15 +2547,14 @@ impl NativeHostState {
                         .is_some_and(|request| request.binding() == *binding)
             });
             promised_staging.map_or_else(
-                || OutputReservation::diagnostic(binding, window),
-                |binding| OutputReservation::bound(binding, window),
+                || OutputReservation::diagnostic(binding),
+                OutputReservation::bound,
             )
         } else {
             match self.mode {
-                HostIngressMode::Active => binding.map_or_else(
-                    || OutputReservation::unbound(window),
-                    |binding| OutputReservation::bound(binding, window),
-                ),
+                HostIngressMode::Active => {
+                    binding.map_or_else(OutputReservation::unbound, OutputReservation::bound)
+                }
                 HostIngressMode::Quarantined => {
                     let terminal_create = binding.filter(|binding| {
                         token.create_attempt().is_some()
@@ -2620,8 +2564,8 @@ impl NativeHostState {
                                 .is_some_and(|reservation| reservation.binding == *binding)
                     });
                     terminal_create.map_or_else(
-                        || OutputReservation::diagnostic(binding, window),
-                        |binding| OutputReservation::terminal_create(binding, window),
+                        || OutputReservation::diagnostic(binding),
+                        OutputReservation::terminal_create,
                     )
                 }
                 HostIngressMode::Frozen => unreachable!("frozen outputs return before reservation"),
@@ -2906,21 +2850,6 @@ impl NativeHostState {
         true
     }
 
-    fn record_staging_painted(&mut self, record: NativeStagingPaintRecord) -> bool {
-        if !self.mode.accepts_terminal_callbacks() {
-            return false;
-        }
-        let Some(reservation) = self.output_resources.get(&record.token) else {
-            return false;
-        };
-        if reservation.reservation.binding() != Some(record.request.binding()) {
-            return false;
-        }
-        self.window_resources.receive_staging(record, || {
-            self.journal.reserve(HostRecord::StagingPainted(record))
-        })
-    }
-
     fn semantic_prelude_ready(&self) -> bool {
         !self.event_boundary_pending
             && deferred_semantic_prelude_ready(self.front_record().into_iter())
@@ -2941,6 +2870,21 @@ impl NativeHostState {
             .is_some_and(|resource| resource.submitted)
         {
             return false;
+        }
+        if let Some(PendingNativeOutput::Staging(request)) = self
+            .output_resources
+            .get(&token)
+            .and_then(|resource| resource.paint.as_ref())
+        {
+            let request = *request;
+            self.window_resources
+                .finish_preparation_paint(token.viewport_id(), request, false);
+            self.output_resources
+                .get_mut(&token)
+                .expect("the output is retained")
+                .paint
+                .take();
+            self.invalidate_viewport_roster();
         }
         if self
             .output_resources
@@ -2987,7 +2931,11 @@ impl NativeHostState {
         // Quarantine cannot accept another staging or semantic paint. Release
         // adapter-owned wake obligations here; exact output reservations and
         // binding retirement continue to carry terminal lifetime authority.
-        self.window_resources.clear_staging();
+        if self.window_resources.clear_staging() {
+            // Only an actual preparation cancellation changes this roster's
+            // context. Callback-only or undeclared routes owe no new snapshot.
+            self.invalidate_viewport_roster();
+        }
         self.viewports.clear_semantic_wakes();
         if self
             .journal
@@ -3171,8 +3119,7 @@ impl NativeHostState {
                     | HostRecord::ViewportRoster(_)
                     | HostRecord::ViewportCreateFailed(_)
                     | HostRecord::ViewportVisibility(_)
-                    | HostRecord::ViewportCreated(_)
-                    | HostRecord::StagingPainted(_) => IdleCursorPrefixEntry::Boundary,
+                    | HostRecord::ViewportCreated(_) => IdleCursorPrefixEntry::Boundary,
                 }),
         ) else {
             return false;
@@ -3439,7 +3386,6 @@ impl NativeHostState {
                 HostRecord::ViewportCreateFailed(failure) => failure.binding() == binding,
                 HostRecord::ViewportVisibility(visibility) => visibility.binding() == binding,
                 HostRecord::ViewportCreated(created) => created.binding() == binding,
-                HostRecord::StagingPainted(staging) => staging.request().binding() == binding,
                 HostRecord::Output { .. } => false,
             })
             || self
@@ -4017,13 +3963,6 @@ impl NativeHostBridge {
         action(&mut self.lock().close_control)
     }
 
-    pub(crate) fn presentation_ack(
-        &self,
-        binding: NativeSurfaceBinding,
-    ) -> Option<NativePresentationEffectAcknowledgement> {
-        self.lock().window_resources.presentation_ack(binding)
-    }
-
     pub(crate) fn can_retain_create_ack(
         &self,
         viewport: ViewportId,
@@ -4051,35 +3990,6 @@ impl NativeHostBridge {
 
     pub(crate) fn create_ack_count(&self) -> usize {
         self.lock().window_resources.create_ack_count()
-    }
-
-    pub(crate) fn can_retain_presentation_ack(
-        &self,
-        viewport: ViewportId,
-        binding: NativeSurfaceBinding,
-    ) -> bool {
-        self.lock()
-            .window_resources
-            .can_retain_presentation_ack(viewport, binding)
-    }
-
-    pub(crate) fn retain_presentation_ack(
-        &self,
-        viewport: ViewportId,
-        binding: NativeSurfaceBinding,
-        acknowledgement: NativePresentationEffectAcknowledgement,
-    ) -> Result<(), NativePresentationEffectAcknowledgement> {
-        self.lock()
-            .window_resources
-            .retain_presentation_ack(viewport, binding, acknowledgement)
-    }
-
-    pub(crate) fn clear_presentation_ack(&self, binding: NativeSurfaceBinding) -> bool {
-        self.lock().window_resources.clear_presentation_ack(binding)
-    }
-
-    pub(crate) fn presentation_ack_count(&self) -> usize {
-        self.lock().window_resources.presentation_ack_count()
     }
 
     pub(crate) fn pending_no_frame_count(&self) -> usize {
@@ -4346,39 +4256,12 @@ impl NativeHostBridge {
             records.window_resources.abort_workspace_replacement();
             return Err(error);
         }
-        let include_staging = include_staging && records.mode.accepts_new_work();
         let committed = (|| {
-            let NativeHostState {
-                viewports,
-                window_resources,
-                ..
-            } = &mut *records;
-            let mut route_error = None;
-            let requests = frame
-                .native_staging_paints()
-                .filter(|_| include_staging)
-                .map_while(|request| {
-                    let viewport = viewports.viewport(request.surface());
-                    match viewport {
-                        Some(viewport)
-                            if viewports.binding(viewport) == Some(request.binding()) =>
-                        {
-                            Some((viewport, request))
-                        }
-                        _ => {
-                            route_error =
-                                Some(NativeHostProtocolError::OutputRouteAttachmentFailed);
-                            None
-                        }
-                    }
-                });
-            let prepared = window_resources.prepare_staging(requests)?;
-            if let Some(error) = route_error {
-                return Err(error.into());
-            }
+            let wake = records
+                .window_resources
+                .prepare_repaints(include_staging && records.mode.accepts_new_work())?;
             let report = frame.commit()?;
-            let wake = window_resources.commit_staging(prepared);
-            Ok((report, wake))
+            Ok::<_, NativeRuntimeError>((report, wake))
         })();
         match committed {
             Ok((report, wake)) => {
@@ -4471,7 +4354,6 @@ impl NativeHostBridge {
                 | HostRecord::ViewportCreateFailed(_)
                 | HostRecord::ViewportVisibility(_)
                 | HostRecord::ViewportCreated(_)
-                | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -4493,7 +4375,6 @@ impl NativeHostBridge {
                 | HostRecord::ViewportCreateFailed(_)
                 | HostRecord::ViewportVisibility(_)
                 | HostRecord::ViewportCreated(_)
-                | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -4515,7 +4396,6 @@ impl NativeHostBridge {
                 | HostRecord::ViewportCreateFailed(_)
                 | HostRecord::ViewportVisibility(_)
                 | HostRecord::ViewportCreated(_)
-                | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -4539,7 +4419,6 @@ impl NativeHostBridge {
                 | HostRecord::ViewportCreateFailed(_)
                 | HostRecord::ViewportVisibility(_)
                 | HostRecord::ViewportCreated(_)
-                | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -4563,7 +4442,6 @@ impl NativeHostBridge {
                 | HostRecord::ViewportCreateFailed(_)
                 | HostRecord::ViewportVisibility(_)
                 | HostRecord::ViewportCreated(_)
-                | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -4589,29 +4467,6 @@ impl NativeHostBridge {
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
                 | HostRecord::ViewportVisibility(_)
-                | HostRecord::StagingPainted(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
-        }
-    }
-
-    pub(crate) fn front_staging_painted(&self) -> Option<NativeStagingPaintRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::StagingPainted(record)) => Some(*record),
-            Some(
-                HostRecord::WindowEvent(_)
-                | HostRecord::DeviceRemoval(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::PointerObservation(_)
-                | HostRecord::PointerCapture(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::ViewportCreated(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -4635,7 +4490,6 @@ impl NativeHostBridge {
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreated(_)
                 | HostRecord::ViewportVisibility(_)
-                | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -4658,7 +4512,6 @@ impl NativeHostBridge {
                     | HostRecord::ViewportCreateFailed(_)
                     | HostRecord::ViewportVisibility(_)
                     | HostRecord::ViewportCreated(_)
-                    | HostRecord::StagingPainted(_)
             )
         )
     }
@@ -4855,7 +4708,6 @@ impl NativeHostBridge {
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
                 | HostRecord::ViewportCreated(_)
-                | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -4911,19 +4763,6 @@ impl NativeHostBridge {
             ) {
                 return false;
             }
-            records.transfer_front_record();
-            records.event_boundary_pending = true;
-        }
-        matches
-    }
-
-    pub(crate) fn acknowledge_staging_painted(&self, expected: NativeStagingPaintRecord) -> bool {
-        let mut records = self.lock();
-        let matches = matches!(
-            records.front_dispatch_record(),
-            Some(HostRecord::StagingPainted(record)) if *record == expected
-        );
-        if matches {
             records.transfer_front_record();
             records.event_boundary_pending = true;
         }
@@ -5185,6 +5024,7 @@ impl NativeHostBridge {
                 .reserve_focus_callback(viewport, binding, window, token)
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve_visibility_callback(
         &self,
         viewport: ViewportId,
@@ -5234,29 +5074,6 @@ impl NativeHostBridge {
             .cancel_cancellation_callback_reservation(binding, request);
     }
 
-    #[cfg(test)]
-    pub(crate) fn can_publish_staging_requests(
-        &self,
-        requests: &BTreeMap<ViewportId, NativeStagingPaintRequest>,
-    ) -> bool {
-        self.lock().window_resources.can_publish_staging(requests)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn publish_staging_requests(
-        &self,
-        requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
-    ) -> Result<Vec<ViewportId>, NativeHostProtocolError> {
-        let mut records = self.lock();
-        // Empty control frames do not revoke a pending callback. A later
-        // request for the same viewport does replace its basis, because core
-        // reissues staging after newer exact window observations.
-        records
-            .window_resources
-            .publish_staging(requests)
-            .ok_or(NativeHostProtocolError::OutputRouteAttachmentFailed)
-    }
-
     pub(crate) fn record_deferred_viewport_paint(
         &self,
         token: NativeOutputToken,
@@ -5269,6 +5086,18 @@ impl NativeHostBridge {
         else {
             return DeferredViewportPaint::Waiting;
         };
+        if reservation.is_abandoned() {
+            return DeferredViewportPaint::Waiting;
+        }
+        if let Some(PendingNativeOutput::Staging(request)) = records
+            .output_resources
+            .get(&token)
+            .and_then(|resource| resource.paint.as_ref())
+        {
+            // Multipass callbacks reuse the original output owner. They repaint
+            // the placeholder without consuming or abandoning its preparation.
+            return DeferredViewportPaint::Staging(*request);
+        }
         if let Some(create) = records.window_resources.create(token.viewport_id())
             && reservation.binding() == Some(create.binding)
         {
@@ -5287,6 +5116,18 @@ impl NativeHostBridge {
             };
         }
         let Some(request) = records.window_resources.staging(token.viewport_id()) else {
+            if !records
+                .window_resources
+                .preparation_allows_semantic(token.viewport_id())
+            {
+                records
+                    .output_resources
+                    .get_mut(&token)
+                    .expect("the current output remains reserved")
+                    .reservation
+                    .abandon_silently();
+                return DeferredViewportPaint::Waiting;
+            }
             if let Some(binding) = reservation.binding() {
                 if records.output_resources.is_control(token) {
                     records.block_semantic_viewport(token.viewport_id());
@@ -5309,18 +5150,186 @@ impl NativeHostBridge {
                 .abandon();
             return DeferredViewportPaint::Waiting;
         };
-        let record = NativeStagingPaintRecord::new(token, request);
-        if records.record_staging_painted(record) {
-            DeferredViewportPaint::Staging(request)
-        } else {
-            records
+        if records
+            .window_resources
+            .begin_preparation_paint(token.viewport_id(), request)
+        {
+            let resource = records
                 .output_resources
                 .get_mut(&token)
-                .expect("the deferred output reservation remains present")
-                .reservation
-                .abandon();
-            DeferredViewportPaint::Waiting
+                .expect("the deferred output reservation remains present");
+            if resource
+                .bind_paint(PendingNativeOutput::Staging(request))
+                .is_ok()
+            {
+                resource.reservation.require_wake_after_current();
+                return DeferredViewportPaint::Staging(request);
+            }
+            records
+                .window_resources
+                .finish_preparation_paint(token.viewport_id(), request, false);
         }
+        records
+            .output_resources
+            .get_mut(&token)
+            .expect("the deferred output reservation remains present")
+            .reservation
+            .abandon();
+        DeferredViewportPaint::Waiting
+    }
+
+    pub(crate) fn begin_window_preparation(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+    ) {
+        self.lock()
+            .window_resources
+            .begin_preparation(viewport, binding, window);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ready_window_preparation_for_test(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+    ) {
+        self.lock()
+            .window_resources
+            .ready_preparation_for_test(viewport, binding, window);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lose_preparation_renderer_for_test(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
+        let mut records = self.lock();
+        records.window_resources.renderer_lost(viewport, binding);
+        records.invalidate_viewport_roster();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn present_window_preparation_for_test(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
+        let mut records = self.lock();
+        records
+            .window_resources
+            .present_preparation_for_test(viewport, binding);
+        records.invalidate_viewport_roster();
+    }
+
+    pub(crate) fn observe_window_preparations(&self, roster: &NativeViewportRosterRecord) {
+        let mut records = self.lock();
+        let Some(ordinal) = records.front_ingress().map(ReservedHostRecord::ordinal) else {
+            return;
+        };
+        records
+            .window_resources
+            .observe_preparations(roster, ordinal);
+    }
+
+    pub(crate) fn revoke_preparation_inventory(&self) {
+        let mut records = self.lock();
+        records.window_resources.revoke_preparation_inventory();
+        records.invalidate_viewport_roster();
+    }
+
+    pub(crate) fn settle_window_preparation(
+        &self,
+        binding: NativeSurfaceBinding,
+        observation: NativePreparationObservation,
+    ) {
+        let mut records = self.lock();
+        if records
+            .window_resources
+            .settle_preparation(binding, observation)
+        {
+            records.invalidate_viewport_roster();
+        }
+    }
+
+    pub(crate) fn next_preparation_show(
+        &self,
+    ) -> Option<(ViewportId, NativeSurfaceBinding, WindowId)> {
+        let records = self.lock();
+        records
+            .mode
+            .accepts_new_work()
+            .then(|| records.window_resources.next_preparation_show())
+            .flatten()
+    }
+
+    pub(crate) fn dispatch_preparation_show(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+        token: eframe::NativeViewportVisibilityCommandToken,
+    ) -> bool {
+        let mut records = self.lock();
+        if !records.mode.accepts_new_work()
+            || records.window_resources.next_preparation_show() != Some((viewport, binding, window))
+            || !records
+                .window_resources
+                .reserve_visibility_callback(viewport, binding, window, token, true)
+        {
+            return false;
+        }
+        records
+            .window_resources
+            .dispatch_preparation_show(viewport, binding, token)
+    }
+
+    pub(crate) fn reduce_preparation_visibility(
+        &self,
+        record: NativeViewportVisibilityRecord,
+    ) -> bool {
+        let mut records = self.lock();
+        let Some(ordinal) = records.front_ingress().map(ReservedHostRecord::ordinal) else {
+            return false;
+        };
+        let changed = records
+            .window_resources
+            .preparation_visibility(record, ordinal);
+        if changed {
+            records.invalidate_viewport_roster();
+        }
+        changed
+    }
+
+    pub(crate) fn finish_preparation_output(
+        &self,
+        token: NativeOutputToken,
+        request: NativePreparationPaint,
+        presented: bool,
+    ) {
+        let mut records = self.lock();
+        if records.window_resources.finish_preparation_paint(
+            token.viewport_id(),
+            request,
+            presented,
+        ) {
+            records.invalidate_viewport_roster();
+        }
+    }
+
+    pub(crate) fn preparation_renderer_lost(
+        &self,
+        token: NativeOutputToken,
+        binding: NativeSurfaceBinding,
+    ) {
+        let mut records = self.lock();
+        records
+            .window_resources
+            .renderer_lost(token.viewport_id(), binding);
+        records.invalidate_viewport_roster();
     }
 
     pub(crate) fn reserve_output(
@@ -5338,6 +5347,15 @@ impl NativeHostBridge {
             token.window_id(),
             token.create_attempt(),
         );
+        if let Some(binding) = binding {
+            if !records.window_resources.validate_preparation_output(
+                token.viewport_id(),
+                binding,
+                window,
+            ) {
+                records.invalidate_viewport_roster();
+            }
+        }
         if let Some(binding) = binding
             && records
                 .prepare_window_resource_reference(token.viewport_id(), binding)
@@ -5347,7 +5365,7 @@ impl NativeHostBridge {
             return false;
         }
         let ordinary_roster = root_roster.is_some() && records.admit_ordinary();
-        if !records.reserve_output(token, binding, window, budget) {
+        if !records.reserve_output(token, binding, budget) {
             if token.viewport_id() != ViewportId::ROOT
                 && binding.is_some()
                 && records.mode.accepts_terminal_callbacks()
@@ -5450,23 +5468,6 @@ impl NativeHostBridge {
             .is_some_and(|resource| resource.paint.is_some())
     }
 
-    pub(crate) fn accepts_staging_paint(&self, token: NativeOutputToken) -> bool {
-        let records = self.lock();
-        records
-            .output_resources
-            .get(&token)
-            .is_some_and(|resource| {
-                !resource.reservation.abandoned
-                    && !resource.submitted
-                    && match records.mode {
-                        HostIngressMode::Active => true,
-                        // A captured terminal settles an already accepted staging paint.
-                        HostIngressMode::Quarantined => resource.terminal.is_some(),
-                        HostIngressMode::Frozen => false,
-                    }
-            })
-    }
-
     pub(crate) fn output_has_staging_request(&self, token: NativeOutputToken) -> bool {
         let records = self.lock();
         records
@@ -5529,24 +5530,6 @@ impl NativeHostBridge {
             Ok(()) => Ok(()),
             Err(PendingNativeOutput::Surface(output)) => Err(output),
             Err(PendingNativeOutput::Staging(_)) => {
-                unreachable!("binding returns its original paint")
-            }
-        }
-    }
-
-    pub(crate) fn bind_staging_output(
-        &self,
-        token: NativeOutputToken,
-        output: dockspace::runtime::PaintedNativeStagingOutput,
-    ) -> Result<(), dockspace::runtime::PaintedNativeStagingOutput> {
-        let mut records = self.lock();
-        let Some(resource) = records.output_resources.get_mut(&token) else {
-            return Err(output);
-        };
-        match resource.bind_paint(PendingNativeOutput::Staging(output)) {
-            Ok(()) => Ok(()),
-            Err(PendingNativeOutput::Staging(output)) => Err(output),
-            Err(PendingNativeOutput::Surface(_)) => {
                 unreachable!("binding returns its original paint")
             }
         }
@@ -5834,7 +5817,7 @@ impl NativeHostBridge {
             usize,
             &mut dyn Iterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
             &dyn Fn(NativeSurfaceBinding) -> Option<Option<NativeCreateEffectAcknowledgement>>,
-            &dyn Fn(NativeSurfaceBinding) -> Option<NativePresentationEffectAcknowledgement>,
+            &dyn Fn(NativeSurfaceBinding) -> Option<NativePreparationObservation>,
         ) -> R,
     ) -> R {
         let state = self.lock();
@@ -5843,7 +5826,7 @@ impl NativeHostBridge {
             count,
             &mut state.retirements.destroyed_observations(),
             &|binding| state.window_resources.created_ack(binding),
-            &|binding| state.window_resources.presentation_ack(binding),
+            &|binding| state.window_resources.preparation_observation(binding),
         )
     }
 

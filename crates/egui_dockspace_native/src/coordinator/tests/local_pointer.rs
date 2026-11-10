@@ -257,7 +257,7 @@ fn fixture_with_capabilities(
         .with_native_scale_factor(geometry.native_scale_factor())
         .with_presentation_scale_factor(geometry.presentation_scale_factor())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None);
+        .with_presentation(NativeWindowPresentationState::Visible);
     if desktop {
         facts = facts.with_content_bounds(PhysicalRect::new(400.0, -300.0, 1200.0, 900.0).unwrap());
     }

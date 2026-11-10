@@ -331,7 +331,7 @@ fn present_geometry(state: &mut NativeRuntimeState<Panes>, bounds: LogicalRect) 
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None);
     state
         .coordinator
@@ -731,6 +731,86 @@ fn style_requests_share_the_command_slot_and_publish_only_after_commit() {
             geometry_changed: true
         }
     );
+}
+
+#[test]
+fn candidate_style_and_core_geometry_encode_together_across_repeat_passes() {
+    use dockspace::runtime::{
+        SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
+    };
+
+    let mut state = state();
+    let bounds = LogicalRect::new(0.0, 0.0, 180.0, 480.0).unwrap();
+    present_geometry(&mut state, bounds);
+    let original = state.style.clone();
+    let updated = DockStyle {
+        tab_bar_height: 44.0,
+        ..original.clone()
+    };
+    state.request_style(updated.clone()).unwrap();
+    let action = state.application_actions.take().unwrap();
+    let version = state.coordinator.session().version();
+    let mut frame = state
+        .coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    let submitted = action
+        .submit(&mut frame.frame, version)
+        .unwrap()
+        .finish(&mut frame.frame)
+        .unwrap();
+    assert_eq!(state.style, original);
+    let style = submitted.encoding_style().unwrap();
+    assert_eq!(style, &updated);
+    let context = egui::Context::default();
+    frame.frame.begin_encoding_pass().unwrap();
+    for repeat in [false, true] {
+        if repeat {
+            frame.frame.restart_encoding_pass().unwrap();
+        }
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(180.0, 480.0));
+                frame
+                    .measure_surface(SURFACE, ui, rect, rect, &state.panes, style)
+                    .unwrap();
+            })
+            .drop_without_applying_deltas();
+        let plan = frame.frame.paint_plan(SURFACE).unwrap().unwrap();
+        let mut bars = 0;
+        let mut controls = 0;
+        plan.visit_surface_program(|step| {
+            if let Step::Operation { operation, .. } = step {
+                match operation {
+                    Operation::TabBar(bar) => {
+                        assert_eq!(bar.bounds().height(), 44.0);
+                        bars += 1;
+                    }
+                    Operation::TabStripControl(control) => {
+                        assert_eq!(control.bounds().width(), 44.0);
+                        controls += 1;
+                    }
+                    _ => {}
+                }
+            }
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        assert!(bars > 0 && controls > 0);
+    }
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    let mut submitted = Some(submitted);
+    state
+        .publish_application_style(&context, &mut submitted, &report)
+        .unwrap();
+    state
+        .application_actions
+        .settle_submission(submitted, &report)
+        .unwrap();
+    assert_eq!(state.style, updated);
 }
 
 #[test]

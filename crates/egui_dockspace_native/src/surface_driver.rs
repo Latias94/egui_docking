@@ -890,13 +890,17 @@ impl<P: PaneView> NativeRuntimeState<P> {
         };
 
         let mut retain_previous = publication.retain_previous;
-        let active_gesture = host_frame.frame.has_active_gesture();
+        let encoding_style = publication
+            .application_action
+            .as_ref()
+            .and_then(NativeSubmittedApplicationAction::encoding_style)
+            .unwrap_or(&self.style);
         let should_measure = if retain_previous {
             false
         } else {
             match host_frame.frame.surface_work(surface)? {
                 dockspace::runtime::SurfaceWork::Ready(plan) => {
-                    !(active_gesture || plan.has_manipulation_preview())
+                    plan.measurement_refresh().is_allowed()
                 }
                 dockspace::runtime::SurfaceWork::Deferred(
                     dockspace::runtime::SurfaceWorkDeferred::Unmeasured,
@@ -918,7 +922,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 dock_rect,
                 popup_rect,
                 &self.panes,
-                &self.style,
+                encoding_style,
             )?;
         }
         if !retain_previous
@@ -947,7 +951,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 surface,
                 ui,
                 &mut self.panes,
-                &self.style,
+                encoding_style,
             )?;
             let owner = host_frame
                 .frame

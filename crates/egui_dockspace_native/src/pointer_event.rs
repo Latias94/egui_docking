@@ -1148,8 +1148,8 @@ mod tests {
         };
         use dockspace::policy::DockPolicy;
         use dockspace::runtime::{
-            DockspaceSession, HostInputOutcome, HostWindowToken, NativeCreateStrategy,
-            NativePointerRoster, SurfaceUnavailableReason,
+            DockspaceSession, HostInputOutcome, HostWindowToken, NativePointerRoster,
+            SurfaceUnavailableReason,
         };
 
         let surface = SurfaceId::new(1);
@@ -1163,7 +1163,7 @@ mod tests {
         .unwrap();
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
         session
-            .enable_managed_native_host(NativeCreateStrategy::Staged, NativePointerRoster::Unknown)
+            .enable_managed_native_host(NativePointerRoster::Unknown)
             .unwrap();
         session
             .register_native_root(surface, HostWindowToken::new(1))

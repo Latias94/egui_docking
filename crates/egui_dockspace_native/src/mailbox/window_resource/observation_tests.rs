@@ -1,14 +1,10 @@
 use crate::coordinator::NoFrameTerminal;
 
-use super::tests::{bindings, staging_observations};
+use super::tests::{bindings, creation_observation};
 use super::*;
 
-fn observation() -> (
-    NativeSurfaceBinding,
-    NativePresentationEffectAcknowledgement,
-) {
-    let ([request, _], _, acknowledgement) = staging_observations();
-    (request.binding(), acknowledgement)
+fn observation() -> (NativeSurfaceBinding, NativeCreateEffectAcknowledgement) {
+    creation_observation()
 }
 
 fn no_frame(
@@ -32,8 +28,7 @@ fn pin(resources: &mut NativeWindowResources, viewport: ViewportId, binding: Nat
 
 #[test]
 fn creation_stays_known_after_acknowledgement_without_claiming_renderer_preparation() {
-    let ([request, _], created, shown) = staging_observations();
-    let binding = request.binding();
+    let (binding, created) = creation_observation();
     let viewport = ViewportId::ROOT;
     let peer = ViewportId::from_hash_of("created-observation-alias");
     let mut resources = NativeWindowResources::with_capacity_limit(2).unwrap();
@@ -60,7 +55,6 @@ fn creation_stays_known_after_acknowledgement_without_claiming_renderer_preparat
     assert!(!resources.can_retain_create_ack(peer, binding));
     assert_eq!(resources.created_ack(binding), Some(Some(created)));
     assert_eq!(resources.create_ack_count(), 1);
-    assert_eq!(resources.presentation_ack_count(), 0);
     assert!(resources.has_pending_work());
 
     let facts = dockspace::runtime::NativeWindowFacts::live();
@@ -70,7 +64,6 @@ fn creation_stays_known_after_acknowledgement_without_claiming_renderer_preparat
     };
     let observation = compile(resources.created_ack(binding).unwrap());
     assert!(observation.create_acknowledged());
-    assert!(!observation.presentation_acknowledged());
     assert_eq!(
         observation.facts(),
         facts.with_create_readiness(
@@ -78,13 +71,9 @@ fn creation_stays_known_after_acknowledgement_without_claiming_renderer_preparat
             Some(created),
         )
     );
-    resources
-        .retain_presentation_ack(viewport, binding, shown)
-        .unwrap();
     assert!(resources.clear_create_ack(binding));
     assert!(!resources.clear_create_ack(binding));
     assert_eq!(resources.create_ack_count(), 0);
-    assert_eq!(resources.presentation_ack(binding), Some(shown));
     assert_eq!(resources.created_ack(binding), Some(None));
     assert!(!resources.can_retain_create_ack(viewport, binding));
     let observation = compile(resources.created_ack(binding).unwrap());
@@ -93,7 +82,6 @@ fn creation_stays_known_after_acknowledgement_without_claiming_renderer_preparat
         observation.facts(),
         facts.with_create_readiness(dockspace::runtime::NativeCreateReadiness::Created, None)
     );
-    assert!(resources.clear_presentation_ack(binding));
     resources.refresh_host_references(|_, _| false);
     assert_eq!(resources.created_ack(binding), Some(None));
     assert!(!resources.has_pending_work());
@@ -106,10 +94,8 @@ fn creation_stays_known_after_acknowledgement_without_claiming_renderer_preparat
 
 #[test]
 fn retired_create_ack_keeps_its_exact_owner_until_settlement_beside_the_successor() {
-    let ([first, _], first_ack, _) = staging_observations();
-    let ([next, _], next_ack, _) = staging_observations();
-    let predecessor = first.binding();
-    let successor = next.binding();
+    let (predecessor, first_ack) = creation_observation();
+    let (successor, next_ack) = creation_observation();
     let viewport = ViewportId::ROOT;
     let rect = NativePhysicalRect::new(0, 0, 640, 480);
     let mut resources = NativeWindowResources::with_capacity_limit(2).unwrap();
@@ -252,7 +238,7 @@ fn pin_only_retention_is_idle_and_refresh_does_not_retire_an_unrouted_create() {
 }
 
 #[test]
-fn presentation_ack_needs_an_existing_row_and_rejects_conflicts_across_viewport_aliases() {
+fn create_ack_needs_an_existing_row_and_rejects_conflicts_across_viewport_aliases() {
     let (binding, acknowledgement) = observation();
     let (foreign, conflict) = observation();
     assert_ne!(acknowledgement, conflict);
@@ -261,33 +247,36 @@ fn presentation_ack_needs_an_existing_row_and_rejects_conflicts_across_viewport_
     let mut resources = NativeWindowResources::with_capacity_limit(2).unwrap();
     let bytes = resources.owned_data_capacity_bytes();
     let backing = resources.entries.as_ptr();
-    assert!(!resources.can_retain_presentation_ack(viewport, binding));
+    assert!(!resources.can_retain_create_ack(viewport, binding));
     assert_eq!(
-        resources.retain_presentation_ack(viewport, binding, acknowledgement),
+        resources.retain_create_ack(viewport, binding, acknowledgement),
         Err(acknowledgement),
     );
     assert!(resources.entries.is_empty());
 
     pin(&mut resources, viewport, binding);
     pin(&mut resources, peer, binding);
-    assert!(resources.can_retain_presentation_ack(viewport, binding));
-    assert!(resources.can_retain_presentation_ack(peer, binding));
+    assert!(resources.can_retain_create_ack(viewport, binding));
+    assert!(resources.can_retain_create_ack(peer, binding));
     resources
-        .retain_presentation_ack(viewport, binding, acknowledgement)
+        .retain_create_ack(viewport, binding, acknowledgement)
         .unwrap();
-    assert!(!resources.can_retain_presentation_ack(viewport, binding));
-    assert!(!resources.can_retain_presentation_ack(peer, binding));
+    assert!(!resources.can_retain_create_ack(viewport, binding));
+    assert!(!resources.can_retain_create_ack(peer, binding));
     assert_eq!(
-        resources.retain_presentation_ack(peer, binding, conflict),
+        resources.retain_create_ack(peer, binding, conflict),
         Err(conflict),
     );
-    assert_eq!(resources.presentation_ack(binding), Some(acknowledgement));
-    assert_eq!(resources.presentation_ack(foreign), None);
-    assert_eq!(resources.presentation_ack_count(), 1);
+    assert_eq!(
+        resources.created_ack(binding).flatten(),
+        Some(acknowledgement)
+    );
+    assert_eq!(resources.created_ack(foreign), None);
+    assert_eq!(resources.create_ack_count(), 1);
     assert!(resources.has_pending_work());
-    assert!(resources.clear_presentation_ack(binding));
-    assert!(!resources.clear_presentation_ack(binding));
-    assert_eq!(resources.presentation_ack_count(), 0);
+    assert!(resources.clear_create_ack(binding));
+    assert!(!resources.clear_create_ack(binding));
+    assert_eq!(resources.create_ack_count(), 0);
     assert!(!resources.has_pending_work());
     assert_eq!(resources.entries.len(), 2);
     assert_eq!(resources.entries.as_ptr(), backing);
@@ -348,7 +337,7 @@ fn retirement_preserves_both_observations_until_exact_settlement_and_then_prunes
     let backing = resources.entries.as_ptr();
     assert!(resources.reserve_create(viewport, binding, rect));
     resources
-        .retain_presentation_ack(viewport, binding, acknowledgement)
+        .retain_create_ack(viewport, binding, acknowledgement)
         .unwrap();
     resources
         .retain_no_frame(viewport, binding, record)
@@ -359,10 +348,13 @@ fn retirement_preserves_both_observations_until_exact_settlement_and_then_prunes
     resources.clear_staging();
     resources.commit_transferred_callbacks();
     assert!(resources.references_binding(binding));
-    assert_eq!(resources.presentation_ack(binding), Some(acknowledgement));
+    assert_eq!(
+        resources.created_ack(binding).flatten(),
+        Some(acknowledgement)
+    );
     assert_eq!(resources.pending_no_frame().next(), Some(&record));
 
-    assert!(resources.clear_presentation_ack(binding));
+    assert!(resources.clear_create_ack(binding));
     assert!(resources.references_binding(binding));
     assert!(!resources.clear_no_frame_if(no_frame(viewport, binding, 22)));
     assert!(resources.clear_no_frame_if(record));
@@ -392,7 +384,7 @@ fn borrowed_no_frame_filtering_prunes_only_empty_rows_without_releasing_prepaid_
     resources.retain_no_frame(viewport, binding, first).unwrap();
     resources.retain_no_frame(peer, other, second).unwrap();
     resources
-        .retain_presentation_ack(viewport, binding, acknowledgement)
+        .retain_create_ack(viewport, binding, acknowledgement)
         .unwrap();
     resources.retire(viewport, binding);
     resources.retire(peer, other);
@@ -414,7 +406,7 @@ fn borrowed_no_frame_filtering_prunes_only_empty_rows_without_releasing_prepaid_
     assert!(!resources.references_binding(other));
     assert!(resources.references_binding(binding));
     assert!(resources.has_pending_work());
-    assert!(resources.clear_presentation_ack(binding));
+    assert!(resources.clear_create_ack(binding));
     assert!(resources.entries.is_empty());
     assert!(!resources.has_pending_work());
     assert_eq!(resources.entries.as_ptr(), backing);
@@ -436,10 +428,10 @@ fn foreign_provider_bindings_with_reused_public_ids_keep_independent_observation
     pin(&mut resources, viewport, predecessor);
     pin(&mut resources, viewport, successor);
     resources
-        .retain_presentation_ack(viewport, predecessor, first_ack)
+        .retain_create_ack(viewport, predecessor, first_ack)
         .unwrap();
     resources
-        .retain_presentation_ack(viewport, successor, next_ack)
+        .retain_create_ack(viewport, successor, next_ack)
         .unwrap();
     resources
         .retain_no_frame(viewport, predecessor, first)
@@ -447,15 +439,15 @@ fn foreign_provider_bindings_with_reused_public_ids_keep_independent_observation
     resources
         .retain_no_frame(viewport, successor, next)
         .unwrap();
-    assert_eq!(resources.presentation_ack_count(), 2);
+    assert_eq!(resources.create_ack_count(), 2);
     assert_eq!(resources.pending_no_frame().count(), 2);
 
     resources.retire(viewport, predecessor);
     resources.refresh_host_references(|_, binding| binding == successor);
-    assert!(resources.clear_presentation_ack(predecessor));
+    assert!(resources.clear_create_ack(predecessor));
     assert!(resources.clear_no_frame_if(first));
     assert!(!resources.references_binding(predecessor));
-    assert_eq!(resources.presentation_ack(successor), Some(next_ack));
+    assert_eq!(resources.created_ack(successor).flatten(), Some(next_ack));
     assert_eq!(resources.pending_no_frame().next(), Some(&next));
     assert_eq!(resources.entries.len(), 1);
 }

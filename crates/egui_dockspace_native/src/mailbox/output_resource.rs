@@ -1,8 +1,7 @@
 //! One output token owns its dispatch budget, affine paint and renderer terminal.
 
 use dockspace::runtime::{
-    DockspaceSession, NativeInputBudget, NativeSurfaceBinding, PaintedNativeStagingOutput,
-    PaintedSurfaceOutput,
+    DockspaceSession, NativeInputBudget, NativeSurfaceBinding, PaintedSurfaceOutput,
 };
 use eframe::NativeOutputResult;
 use eframe::{NativeOutputToken, egui::ViewportId};
@@ -16,7 +15,7 @@ const ORDINARY_OUTPUT_CAPACITY: usize = 256;
 
 pub(crate) enum PendingNativeOutput {
     Surface(PaintedSurfaceOutput),
-    Staging(PaintedNativeStagingOutput),
+    Staging(super::NativePreparationPaint),
 }
 
 impl std::fmt::Debug for PendingNativeOutput {
@@ -28,7 +27,7 @@ impl std::fmt::Debug for PendingNativeOutput {
                 .finish(),
             Self::Staging(output) => formatter
                 .debug_tuple("Staging")
-                .field(&output.surface())
+                .field(&output.binding())
                 .field(&output.phase())
                 .finish(),
         }
@@ -425,10 +424,7 @@ mod tests {
         .unwrap();
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         session
             .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -465,7 +461,7 @@ mod tests {
                         .with_native_scale_factor(scale)
                         .with_presentation_scale_factor(scale)
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Visible, None)
+                        .with_presentation(NativeWindowPresentationState::Visible)
                         .with_close(NativeCloseState::Clear, None),
                 )],
                 NativeWorkAreaRoster::Unknown,

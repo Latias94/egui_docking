@@ -193,8 +193,8 @@ mod tests {
     };
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::{
-        DockspaceSession, HostInputOutcome, HostWindowToken, NativeCreateStrategy,
-        NativePointerRoster, SurfaceUnavailableReason,
+        DockspaceSession, HostInputOutcome, HostWindowToken, NativePointerRoster,
+        SurfaceUnavailableReason,
     };
     use winit::dpi::PhysicalPosition;
     use winit::event::PointerEventFacts;
@@ -214,10 +214,7 @@ mod tests {
         .unwrap();
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
         session
-            .enable_managed_native_host(
-                NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         for id in [1, 2] {
             session

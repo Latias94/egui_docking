@@ -2,7 +2,7 @@ use dockspace::runtime::NativeMonotonicClock;
 use eframe::{NativeViewportPointerPassthroughStatus, egui};
 
 use super::super::journal::HostIngressJournal;
-use super::tests::{bindings, reissued_staging_requests};
+use super::tests::bindings;
 use super::*;
 
 #[test]
@@ -171,123 +171,24 @@ fn settled_capture_retains_retired_cleanup_backing_until_its_exact_release() {
 }
 
 #[test]
-fn oversized_staging_batch_preserves_existing_basis_and_every_owner() {
-    let [first, newer] = reissued_staging_requests();
+fn renderer_preparation_uses_the_existing_prepaid_exact_window_slot() {
+    let (binding, successor) = bindings();
     let viewport = ViewportId::ROOT;
-    let first_peer = ViewportId::from_hash_of("bounded-first-staging-peer");
-    let second_peer = ViewportId::from_hash_of("bounded-second-staging-peer");
-    let mut resources = NativeWindowResources::with_capacity_limit(2).unwrap();
-    resources
-        .publish_staging(BTreeMap::from([(viewport, first)]))
-        .unwrap();
+    let mut resources = NativeWindowResources::with_capacity_limit(1).unwrap();
     let bytes = resources.owned_data_capacity_bytes();
     let backing = resources.entries.as_ptr();
-    let requests = BTreeMap::from([(viewport, newer), (first_peer, newer), (second_peer, newer)]);
-    assert!(!resources.can_publish_staging(&requests));
-    assert_eq!(
-        resources.prepare_staging(requests.clone()).unwrap_err(),
-        NativeHostProtocolError::NativeReportStorageUnavailable,
-    );
-    assert!(resources.publish_staging(requests).is_none());
-    assert_eq!(resources.entries.len(), 1);
-    assert_eq!(resources.staging(viewport), Some(first));
-    assert_eq!(resources.staging(first_peer), None);
-    assert_eq!(resources.staging(second_peer), None);
-    assert_eq!(resources.callback_ingress().count(), 0);
-    assert_eq!(resources.owned_data_capacity_bytes(), bytes);
+    let rect = NativePhysicalRect::new(0, 0, 640, 480);
+    assert!(resources.reserve_create(viewport, binding, rect));
+    resources.begin_preparation(viewport, binding, WindowId::from(17));
+    assert!(resources.has_pending_work());
+    assert!(!resources.reserve_create(viewport, successor, rect));
     assert_eq!(resources.entries.as_ptr(), backing);
-}
-
-#[test]
-fn staging_preparation_pays_backing_before_publication_and_empty_storage_keeps_its_charge() {
-    let [request, _] = reissued_staging_requests();
-    let viewport = ViewportId::ROOT;
-    let peer = ViewportId::from_hash_of("prepared-staging-peer");
-    for finite in [false, true] {
-        let mut resources = if finite {
-            NativeWindowResources::with_capacity_limit(2).unwrap()
-        } else {
-            NativeWindowResources::default()
-        };
-        let requests = BTreeMap::from([(viewport, request), (peer, request)]);
-        let dropped = resources.prepare_staging(requests.clone()).unwrap();
-        let bytes = resources.owned_data_capacity_bytes();
-        let backing = resources.entries.as_ptr();
-        drop(dropped);
-        assert!(resources.entries.is_empty());
-        assert!(resources.can_configure_capacity_limit());
-        assert!(!resources.has_pending_work());
-        assert_eq!(resources.owned_data_capacity_bytes(), bytes);
-
-        let prepared = resources.prepare_staging(requests.clone()).unwrap();
-        assert_eq!(
-            prepared.owned_data_capacity_bytes(),
-            size_of::<PreparedWindowStaging>()
-                + prepared.requests.capacity()
-                    * size_of::<(ViewportId, NativeStagingPaintRequest)>()
-                + prepared.wake.capacity() * size_of::<ViewportId>(),
-        );
-        if finite {
-            assert_eq!(
-                NativeWindowResources::staging_reservation_bytes(2),
-                Some(prepared.owned_data_capacity_bytes()),
-            );
-        }
-        let wake_backing = prepared.wake.as_ptr();
-        let wake_capacity = prepared.wake.capacity();
-        assert_eq!(resources.staging(viewport), None);
-        assert_eq!(resources.staging(peer), None);
-        let wake = resources.commit_staging(prepared);
-        assert_eq!(wake.as_ptr(), wake_backing);
-        assert_eq!(wake.capacity(), wake_capacity);
-        assert_eq!(wake.len(), 2);
-        assert!(wake.contains(&viewport));
-        assert!(wake.contains(&peer));
-        assert_eq!(resources.entries.as_ptr(), backing);
-        assert_eq!(resources.owned_data_capacity_bytes(), bytes);
-        assert!(resources.can_publish_staging(&requests));
-        resources.clear_staging();
-        resources.commit_transferred_callbacks();
-        assert!(resources.entries.is_empty());
-        assert!(resources.can_configure_capacity_limit());
-        assert_eq!(resources.entries.as_ptr(), backing);
-        assert_eq!(resources.owned_data_capacity_bytes(), bytes);
-        if finite {
-            assert_eq!(NativeWindowResources::reservation_bytes(2), Some(bytes));
-        }
-    }
-}
-
-#[test]
-fn repeated_staging_viewport_rejects_before_an_unbounded_iterator_can_grow_storage() {
-    use std::cell::Cell;
-
-    let [request, _] = reissued_staging_requests();
-    let viewport = ViewportId::ROOT;
-    for finite in [false, true] {
-        let mut resources = if finite {
-            NativeWindowResources::with_capacity_limit(2).unwrap()
-        } else {
-            NativeWindowResources::default()
-        };
-        let bytes = resources.owned_data_capacity_bytes();
-        let read = Cell::new(0);
-        let requests = std::iter::from_fn(|| {
-            read.set(read.get() + 1);
-            assert!(
-                read.get() <= 2,
-                "the first duplicate must terminate preparation"
-            );
-            Some((viewport, request))
-        });
-        assert_eq!(
-            resources.prepare_staging(requests).unwrap_err(),
-            NativeHostProtocolError::OutputRouteAttachmentFailed,
-        );
-        assert_eq!(read.get(), 2);
-        assert!(resources.entries.is_empty());
-        assert_eq!(resources.owned_data_capacity_bytes(), bytes);
-    }
+    assert_eq!(resources.owned_data_capacity_bytes(), bytes);
+    resources.retire(viewport, binding);
+    resources.refresh_host_references(|_, _| false);
+    assert!(resources.entries.is_empty());
+    assert_eq!(resources.entries.as_ptr(), backing);
+    assert_eq!(resources.owned_data_capacity_bytes(), bytes);
 }
 
 #[test]
@@ -304,14 +205,8 @@ fn zero_entry_limit_and_reservation_overflow_are_explicit() {
         binding,
         NativePhysicalRect::new(0, 0, 640, 480),
     ));
-    let prepared = resources.prepare_staging(BTreeMap::new()).unwrap();
-    assert!(resources.commit_staging(prepared).is_empty());
     assert_eq!(resources.entries.capacity(), 0);
     assert_eq!(NativeWindowResources::reservation_bytes(usize::MAX), None);
-    assert_eq!(
-        NativeWindowResources::staging_reservation_bytes(usize::MAX),
-        None,
-    );
     assert_eq!(
         NativeWindowResources::with_capacity_limit(usize::MAX).unwrap_err(),
         NativeHostProtocolError::NativeReportStorageUnavailable,

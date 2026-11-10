@@ -15,9 +15,9 @@ use dockspace::runtime::{
     DockspaceReceiverDescriptor, NativeCreateReadiness, NativeEffectAcknowledgement,
     NativeEffectOperation, NativeInputStorageLimit, NativeLocalGeometry,
     NativeLocalPointerLocation, NativeProducerStorageLimit, NativeReceiverPurpose,
-    NativeReceiverQuery, NativeReportStorageLimit, NativeStagingPresentationPhase,
-    NativeSurfaceBinding, PaintedSurfaceOutput, SurfacePaintProgramOperation,
-    SurfacePaintProgramStep, SurfacePresentationResult, UniformSurfaceMetrics,
+    NativeReceiverQuery, NativeReportStorageLimit, NativeSurfaceBinding, PaintedSurfaceOutput,
+    SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePresentationResult,
+    UniformSurfaceMetrics,
 };
 use winit::dpi::{PhysicalPosition, PhysicalSize as WinitPhysicalSize};
 use winit::event::{
@@ -74,10 +74,7 @@ fn saved_three_domain_document() -> Vec<u8> {
     .unwrap();
     let mut session = profile_session(candidate);
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -156,82 +153,27 @@ fn establish_source(state: &mut NativeRuntimeState<Panes>) -> NativeSurfaceBindi
     let Some(NativeEffectAcknowledgement::Create(created)) = create.accepted() else {
         panic!("the source bootstrap must supply its exact create acknowledgement");
     };
-    // Snapshot reduction can publish staging requests at its commit boundary,
-    // so their real binding must already have a viewport route before PreShow.
+    // The model host owns preparation and publishes readiness on its exact route.
     state
         .coordinator
         .bind_viewport(source_viewport(), source_window(), source)
         .unwrap();
-    let mut created = Some(created);
-    let mut shown = None;
-    // These are public lifecycle receipts, without eframe output tokens or a
-    // live tear-off saga. The other bootstrap stays queued throughout setup.
-    for (phase, presentation) in [
-        (
-            NativeStagingPresentationPhase::PreShow,
-            NativeWindowPresentationState::Hidden,
-        ),
-        (
-            NativeStagingPresentationPhase::PostShow,
-            NativeWindowPresentationState::Visible,
-        ),
-    ] {
-        if phase == NativeStagingPresentationPhase::PostShow {
-            observe_source(
-                state,
-                root,
-                source,
-                ready_window_facts(720.0)
-                    .with_create_readiness(NativeCreateReadiness::Created, None)
-                    .with_presentation(NativeWindowPresentationState::Hidden, shown.take()),
-            );
-        }
-        observe_source(
-            state,
-            root,
-            source,
-            ready_window_facts(720.0)
-                .with_create_readiness(NativeCreateReadiness::Created, created.take())
-                .with_presentation(presentation, None),
-        );
-        let mut frame = state
-            .coordinator
-            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
-            .unwrap();
-        let request = frame
-            .frame
-            .native_staging_paints()
-            .find(|request| request.binding() == source && request.phase() == phase)
-            .unwrap();
-        frame.frame.confirm_native_staging_painted(request).unwrap();
-        let mut painted = finish(frame);
-        assert!(painted.take_painted_outputs().is_empty());
-        let [output] = painted
-            .take_painted_native_staging_outputs()
-            .try_into()
-            .unwrap();
-        state
-            .coordinator
-            .report_model_staging_presentation_for_test(
-                output,
-                SurfacePresentationResult::Presented,
-            )
-            .unwrap();
-        let mut presented = commit_native_prefix(state);
-        if phase == NativeStagingPresentationPhase::PreShow {
-            let [show] = presented.take_native_effects().try_into().unwrap();
-            assert!(matches!(
-                show.operation(),
-                NativeEffectOperation::ShowWindow { binding } if *binding == source
-            ));
-            let Some(NativeEffectAcknowledgement::Presentation(ack)) = show.accepted() else {
-                panic!("the source show must supply its exact presentation acknowledgement");
-            };
-            shown = Some(ack);
-        } else {
-            assert!(presented.take_native_effects().is_empty());
-        }
-    }
+    // Creation can settle before renderer readiness. These public model facts
+    // carry no eframe output token; the other bootstrap stays queued throughout.
+    observe_source(
+        state,
+        root,
+        source,
+        ready_window_facts(720.0)
+            .with_create_readiness(NativeCreateReadiness::Created, Some(created))
+            .with_presentation(NativeWindowPresentationState::Hidden),
+    );
+    observe_source(
+        state,
+        root,
+        source,
+        ready_window_facts(720.0).with_create_readiness(NativeCreateReadiness::Prepared, None),
+    );
     source
 }
 

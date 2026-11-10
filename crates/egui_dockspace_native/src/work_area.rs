@@ -577,10 +577,7 @@ mod tests {
             DockspaceSession::from_layout(DockspaceLayout::empty(), DockPolicy::default())
                 .expect("empty test session initializes");
         session
-            .enable_managed_native_host(
-                dockspace::runtime::NativeCreateStrategy::Staged,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("managed native host enrolls");
         session
             .configure_managed_native_capabilities(

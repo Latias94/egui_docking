@@ -65,7 +65,6 @@ fn native_session(layout: DockspaceLayout, effect_slots: usize) -> DockspaceSess
     let mut session = DockspaceSession::from_layout(layout, policy).unwrap();
     session
         .enable_managed_native_host_with_input_storage_limit(
-            dockspace::runtime::NativeCreateStrategy::Staged,
             NativePointerRoster::Exact(Vec::new()),
             NativeInputStorageLimit::new(NonZeroUsize::new(64).unwrap(), 4 << 20)
                 .with_report_storage_limit(NativeReportStorageLimit::new(
@@ -95,7 +94,7 @@ fn window_facts(
         .with_native_scale_factor(scale)
         .with_presentation_scale_factor(scale)
         .with_input(state, acknowledgement)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None)
 }
 

@@ -25,10 +25,7 @@ fn layout() -> DockspaceLayout {
 fn session() -> (DockspaceSession, NativeSurfaceBinding) {
     let mut session = DockspaceSession::from_layout(layout(), DockPolicy::default()).unwrap();
     session
-        .enable_managed_native_host(
-            dockspace::runtime::NativeCreateStrategy::Staged,
-            NativePointerRoster::Unknown,
-        )
+        .enable_managed_native_host(NativePointerRoster::Unknown)
         .unwrap();
     session
         .register_native_root(SURFACE, HostWindowToken::new(41))

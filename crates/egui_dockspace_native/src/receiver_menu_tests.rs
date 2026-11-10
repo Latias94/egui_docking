@@ -8,14 +8,13 @@ use dockspace::model::{
 };
 use dockspace::runtime::{
     DockPresentationConfig, DockspaceReceiverRole, DockspaceSession, HostInputOutcome,
-    HostWindowToken, NativeCloseState, NativeCreateStrategy, NativeDesktopPointerLocation,
-    NativeDesktopPosition, NativePointerButton, NativePointerEvent, NativePointerHover,
-    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
-    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
-    NativeScrollMomentum, NativeScrollPhase, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaRoster, SurfacePaintProgramOperation,
-    SurfacePaintProgramStep, SurfacePresentationResult, SurfaceUnavailableReason,
-    TabStripControlKind,
+    HostWindowToken, NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition,
+    NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
+    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+    NativeWorkAreaRoster, SurfacePaintProgramOperation, SurfacePaintProgramStep,
+    SurfacePresentationResult, SurfaceUnavailableReason, TabStripControlKind,
 };
 use egui::{Id, Pos2, RawInput, Rect, Vec2};
 use egui_dockspace::{DockStyle, native_support};
@@ -615,10 +614,7 @@ fn managed_session_with_item_count(
     )
     .unwrap();
     session
-        .enable_managed_native_host(
-            NativeCreateStrategy::Staged,
-            NativePointerRoster::Exact(Vec::new()),
-        )
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .unwrap();
     session
         .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
@@ -648,7 +644,7 @@ fn managed_session_with_item_count(
         .with_native_scale_factor(ScaleFactor::new(1.0).unwrap())
         .with_presentation_scale_factor(ScaleFactor::new(f64::from(zoom)).unwrap())
         .with_input(NativeWindowInputState::ReceivesInput, None)
-        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_presentation(NativeWindowPresentationState::Visible)
         .with_close(NativeCloseState::Clear, None);
     session
         .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)

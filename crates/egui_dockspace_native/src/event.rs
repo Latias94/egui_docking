@@ -558,14 +558,13 @@ mod tests {
     };
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::{
-        DockspaceSession, HostWindowToken, NativeCreateStrategy, NativeDesktopPointerLocation,
-        NativeDesktopPosition, NativeLocalToDesktopHandoff, NativePointerButton,
-        NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
-        NativePointerLocation, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
-        NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
-        NativeScrollMomentum, NativeScrollPhase, NativeWindowFacts, NativeWindowInputState,
-        NativeWindowPresentationState, NativeWorkAreaRoster, PointerDeviceKind,
-        PointerEventMetadata, SurfaceUnavailableReason,
+        DockspaceSession, HostWindowToken, NativeDesktopPointerLocation, NativeDesktopPosition,
+        NativeLocalToDesktopHandoff, NativePointerButton, NativePointerEvent, NativePointerHover,
+        NativePointerId, NativePointerInput, NativePointerLocation, NativePointerOwner,
+        NativePointerRoster, NativeReceiverAnswer, NativeScrollDelta, NativeScrollDeviceId,
+        NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
+        NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+        NativeWorkAreaRoster, PointerDeviceKind, PointerEventMetadata, SurfaceUnavailableReason,
     };
     use winit::dpi::{PhysicalPosition, PhysicalSize as WinitPhysicalSize};
     use winit::event::{
@@ -597,7 +596,7 @@ mod tests {
                         .with_native_scale_factor(geometry.native_scale_factor())
                         .with_presentation_scale_factor(geometry.presentation_scale_factor())
                         .with_input(NativeWindowInputState::ReceivesInput, None)
-                        .with_presentation(NativeWindowPresentationState::Visible, None),
+                        .with_presentation(NativeWindowPresentationState::Visible),
                 )],
                 NativeWorkAreaRoster::Unknown,
             )
@@ -623,10 +622,7 @@ mod tests {
         .unwrap();
         let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
         session
-            .enable_managed_native_host(
-                NativeCreateStrategy::DirectPrepared,
-                NativePointerRoster::Exact(Vec::new()),
-            )
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .unwrap();
         session
             .configure_managed_native_capabilities(
