@@ -58,7 +58,11 @@ proptest! {
             let work = structural_work::snapshot();
             prop_assert_eq!(work.item_multiset_scans, 0);
             prop_assert_eq!(work.transaction_prepares, 1);
-            prop_assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
+            prop_assert_eq!(
+                work.workspace_deep_clones.transaction_candidates.calls,
+                usize::from(report.changed()),
+            );
+            prop_assert_eq!(Arc::ptr_eq(actual.as_arc(), snapshot.as_arc()), !report.changed());
             prop_assert_eq!(&*actual, &expected);
             prop_assert_eq!(report, expected_report);
             prop_assert_eq!(&snapshot, &original);
@@ -236,6 +240,28 @@ fn mixed_and_multi_command_batches_preserve_general_atomicity() {
         assert!(structural_work::snapshot().item_multiset_scans > 0);
         assert_eq!(snapshot, original);
     }
+}
+
+#[test]
+fn unchanged_selection_batches_keep_their_transaction_candidate() {
+    let snapshot = WorkspaceSnapshot::validated(selection_fixture()).unwrap();
+    let command = selection(&snapshot, 1);
+    structural_work::reset();
+    let (candidate, report) = snapshot
+        .prepare_transaction(&default_policy(), &[command.clone(), command])
+        .unwrap()
+        .into_snapshot_parts();
+
+    assert!(!report.changed());
+    assert_eq!(candidate, snapshot);
+    assert!(!Arc::ptr_eq(candidate.as_arc(), snapshot.as_arc()));
+    assert_eq!(
+        structural_work::snapshot()
+            .workspace_deep_clones
+            .transaction_candidates
+            .calls,
+        1
+    );
 }
 
 #[test]

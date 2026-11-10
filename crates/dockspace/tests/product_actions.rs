@@ -1243,6 +1243,97 @@ fn live_native_root_to_contained_preserves_multi_item_product_state_until_exact_
 }
 
 #[test]
+fn equal_presentation_configuration_preserves_pending_native_rehome() {
+    let (mut session, child_binding) = live_managed_native_root();
+    let original = session.presentation_config().clone();
+    let before = session.version();
+    let prepared = session.prepare_float_root(NATIVE_SOURCE_ROOT, MAIN_SURFACE);
+    let mut stage = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("native rehome staging frame begins");
+    stage
+        .submit_prepared_action(prepared)
+        .expect("native rehome stages before configuration");
+    let replacement = stage
+        .replace_presentation_config(original.clone())
+        .expect("equal presentation configuration stages");
+    let staged = commit(stage);
+
+    assert!(matches!(
+        staged.submitted_action_outcome(replacement),
+        Some(HostInputOutcome::PresentationConfigReplaced { changed: false, .. })
+    ));
+    assert_eq!(session.version(), before);
+    assert_eq!(session.presentation_config(), &original);
+    assert!(session.has_pending_presentation());
+    assert!(staged.presentation_transitions().is_empty());
+    assert!(session.is_current_native_binding(child_binding));
+
+    let settled =
+        present_surfaces_with_report(&mut session, &[MAIN_SURFACE, NATIVE_SOURCE_SURFACE]);
+    assert!(matches!(
+        settled.presentation_transitions(),
+        [terminal] if terminal.result() == DockspacePresentationTransitionResult::Applied
+    ));
+    assert!(!session.has_pending_presentation());
+    assert_one_revision_advance(before, settled.after());
+}
+
+#[test]
+fn changed_presentation_configuration_cancels_pending_native_rehome_only_on_commit() {
+    for publish in [false, true] {
+        let (mut session, child_binding) = live_managed_native_root();
+        let original = session.presentation_config().clone();
+        let changed = original
+            .to_builder()
+            .tab_bar_height(original.tab_bar_height() + 8.0)
+            .build()
+            .expect("changed presentation configuration validates");
+        let prepared = session.prepare_float_root(NATIVE_SOURCE_ROOT, MAIN_SURFACE);
+        let mut stage = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("native rehome staging frame begins");
+        stage
+            .submit_prepared_action(prepared)
+            .expect("native rehome stages");
+        commit(stage);
+        assert!(session.has_pending_presentation());
+
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("configuration frame begins");
+        frame
+            .replace_presentation_config(changed.clone())
+            .expect("changed presentation configuration stages");
+        if publish {
+            let report = commit(frame);
+            assert!(matches!(
+                report.inputs(),
+                [HostInputOutcome::PresentationConfigReplaced { changed: true, .. }]
+            ));
+            assert!(matches!(
+                report.presentation_transitions(),
+                [terminal] if terminal.result()
+                    == DockspacePresentationTransitionResult::TargetNotPresented
+            ));
+            assert_eq!(session.presentation_config(), &changed);
+            assert!(!session.has_pending_presentation());
+            assert!(session.is_current_native_binding(child_binding));
+        } else {
+            drop(frame);
+            assert_eq!(session.presentation_config(), &original);
+            assert!(session.has_pending_presentation());
+            let settled =
+                present_surfaces_with_report(&mut session, &[MAIN_SURFACE, NATIVE_SOURCE_SURFACE]);
+            assert!(matches!(
+                settled.presentation_transitions(),
+                [terminal] if terminal.result() == DockspacePresentationTransitionResult::Applied
+            ));
+        }
+    }
+}
+
+#[test]
 fn staged_native_rehome_rejects_inventory_loss_before_target_presentation() {
     let (mut session, child_binding) = live_managed_native_root();
     let before = session.version();

@@ -17,6 +17,7 @@ fn local_selection_and_reselection_preserve_revision_events_and_focus() {
         let (mut engine, host, tabs) = fixture();
         for changed in [true, false] {
             let before = engine.version();
+            let original = engine.workspace.clone();
             let source = engine
                 .workspace()
                 .capture_item_source(SOURCE_ROOT, tabs, ItemId::new(2))
@@ -34,7 +35,17 @@ fn local_selection_and_reselection_preserve_revision_events_and_focus() {
                 }
             };
             let transition = submit_test_input(&mut engine, host, input).unwrap();
-            assert_eq!(structural_work::snapshot().item_multiset_scans, 0);
+            let work = structural_work::snapshot();
+            assert_eq!(work.item_multiset_scans, 0);
+            assert_eq!(work.root_fingerprint_builds, 0);
+            assert_eq!(
+                work.workspace_deep_clones.transaction_candidates.calls,
+                usize::from(changed)
+            );
+            assert_eq!(
+                Arc::ptr_eq(engine.workspace.as_arc(), original.as_arc()),
+                !changed
+            );
             if !product_action {
                 assert!(matches!(transition.reduced_inputs()[0].outcome(),
                 InputOutcome::CommandProcessed { changed: actual, .. } if *actual == changed));
@@ -69,6 +80,49 @@ fn local_selection_and_reselection_preserve_revision_events_and_focus() {
                 product_action
             );
         }
+    }
+}
+
+#[test]
+fn reselection_keeps_the_index_source_for_later_unchanged_actions() {
+    let (mut engine, host, _) = fixture();
+    let original = engine.workspace.clone();
+    let version = engine.version();
+    submit_test_input(
+        &mut engine,
+        host,
+        EngineInput::SelectItem {
+            expected: version,
+            item: ItemId::new(1),
+        },
+    )
+    .unwrap();
+
+    for _ in 0..2 {
+        structural_work::reset();
+        submit_test_input(
+            &mut engine,
+            host,
+            EngineInput::OpenItem {
+                expected: version,
+                item: ItemId::new(1),
+                placement: crate::model::DockPlacement::Center(crate::model::DockAnchor::Item(
+                    ItemId::new(1),
+                )),
+            },
+        )
+        .unwrap();
+        assert_eq!(engine.version(), version);
+        assert!(Arc::ptr_eq(engine.workspace.as_arc(), original.as_arc()));
+        assert!(
+            engine
+                .presentation_authority
+                .workspace_index_for(engine.workspace.as_arc(), version)
+                .is_some()
+        );
+        let work = structural_work::snapshot();
+        assert_eq!(work.root_fingerprint_builds, 0);
+        assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 0);
     }
 }
 

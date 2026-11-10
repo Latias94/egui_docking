@@ -33,10 +33,54 @@ fn fixture() -> DockEngine {
     DockEngine::new(builder.build().unwrap(), DockPolicy::default()).unwrap()
 }
 
+fn assert_snapshot_fingerprints_share_the_index(engine: &DockEngine) {
+    let index = engine.presentation_requirements().workspace_index();
+    for (surface, presentation) in engine.workspace.surfaces() {
+        let snapshot = &engine.presentation_authority.surface_semantic_snapshots[&surface];
+        if let Some(root) = presentation.main_root {
+            assert!(Arc::ptr_eq(
+                &snapshot.main.as_ref().unwrap().0,
+                &index.root_fingerprint(root).unwrap().0
+            ));
+        } else {
+            assert!(snapshot.main.is_none());
+        }
+        assert_eq!(snapshot.contained.len(), presentation.contained.len());
+        for (entry, floating) in snapshot.contained.iter().zip(&presentation.contained) {
+            let root = engine.workspace.contained_floating(*floating).unwrap().root;
+            assert_eq!(entry.floating, *floating);
+            assert!(Arc::ptr_eq(
+                &entry.root.0,
+                &index.root_fingerprint(root).unwrap().0
+            ));
+        }
+    }
+}
+
+#[test]
+fn initialization_derives_each_root_once_for_the_index_and_surface_snapshots() {
+    structural_work::reset();
+    let engine = fixture();
+    let work = structural_work::snapshot();
+    assert_eq!(
+        work.root_fingerprint_builds,
+        engine.workspace.roots().count()
+    );
+    assert_eq!(
+        work.root_fingerprint_node_visits,
+        engine.workspace.nodes().count()
+    );
+    assert_snapshot_fingerprints_share_the_index(&engine);
+}
+
 #[test]
 fn exact_snapshot_reuses_live_semantics_and_excludes_prospective_surfaces() {
     let mut engine = fixture();
-    let expected = DockEngine::capture_surface_semantic_snapshots(engine.workspace()).unwrap();
+    let expected = DockEngine::capture_surface_semantic_snapshots(
+        engine.workspace(),
+        engine.presentation_requirements().workspace_index(),
+    )
+    .unwrap();
     let extra = expected[&SURFACE].clone();
     engine
         .presentation_authority
@@ -68,11 +112,12 @@ fn exact_snapshot_reuses_live_semantics_and_excludes_prospective_surfaces() {
     );
     structural_work::reset();
     engine.try_rebuild_presentation_requirements(None).unwrap();
-    assert!(structural_work::snapshot().root_fingerprint_builds > 0);
+    assert_eq!(structural_work::snapshot().root_fingerprint_builds, 0);
     assert_eq!(
         engine.presentation_authority.surface_semantic_snapshots,
         expected
     );
+    assert_snapshot_fingerprints_share_the_index(&engine);
 }
 
 #[test]
@@ -116,8 +161,25 @@ fn snapshot_source_version_and_same_version_mutation_keep_live_fallback() {
     candidate
         .try_rebuild_presentation_requirements(None)
         .unwrap();
-    assert!(structural_work::snapshot().root_fingerprint_builds > 0);
-    let expected = DockEngine::capture_surface_semantic_snapshots(candidate.workspace()).unwrap();
+    let work = structural_work::snapshot();
+    assert_eq!(
+        work.root_fingerprint_builds,
+        candidate.workspace.roots().count()
+    );
+    assert_eq!(
+        work.root_fingerprint_node_visits,
+        candidate.workspace.nodes().count()
+    );
+    assert_snapshot_fingerprints_share_the_index(&candidate);
+    assert_ne!(
+        candidate.presentation_authority.surface_semantic_snapshots[&SURFACE],
+        engine.presentation_authority.surface_semantic_snapshots[&SURFACE]
+    );
+    let expected = DockEngine::capture_surface_semantic_snapshots(
+        candidate.workspace(),
+        candidate.presentation_requirements().workspace_index(),
+    )
+    .unwrap();
     structural_work::reset();
     assert_eq!(
         candidate

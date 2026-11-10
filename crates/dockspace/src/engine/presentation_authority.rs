@@ -393,12 +393,31 @@ impl DockEngine {
         }
         self.native_admission
             .reconcile_pending_creates(&self.viewport);
+        let workspace_index = if self
+            .presentation_authority
+            .workspace_index_for(self.workspace.as_arc(), self.version)
+            .is_some()
+        {
+            self.presentation_requirements().shared_workspace_index()
+        } else {
+            Arc::new(
+                crate::workspace::WorkspaceIndex::build(&self.workspace, self.version).map_err(
+                    |source| {
+                        let error =
+                            crate::scene_compiler::SceneRequirementDerivationError::WorkspaceIndex {
+                                source,
+                            };
+                        PresentationRequirementFailure::Invariant(error.to_string())
+                    },
+                )?,
+            )
+        };
         let mut surface_semantic_snapshots = match self
             .presentation_authority
             .surface_semantic_snapshots_for(self.workspace.as_arc(), self.version)
         {
             Some(snapshots) => snapshots,
-            None => Self::capture_surface_semantic_snapshots(&self.workspace)
+            None => Self::capture_surface_semantic_snapshots(&self.workspace, &workspace_index)
                 .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?,
         };
         let mut native_projections = BTreeMap::new();
@@ -464,7 +483,12 @@ impl DockEngine {
                 let _ = self.viewport_focus.cancel_activation_reservation(saga);
                 continue;
             };
-            let mut snapshots = Self::capture_surface_semantic_snapshots(projection.workspace())
+            // A prospective workspace has independent topology and issuance.
+            // Its roots must never borrow the live index by matching RootId.
+            let mut snapshots =
+                Self::capture_surface_semantic_snapshots_with(projection.workspace(), |root| {
+                    projection.workspace().root_fingerprint(root)
+                })
                 .map_err(|source| PresentationRequirementFailure::Invariant(source.to_string()))?;
             let surface = projection.surface();
             let snapshot = snapshots.remove(&surface).ok_or_else(|| {
@@ -554,26 +578,6 @@ impl DockEngine {
                 revised_surfaces.insert(surface);
             }
         }
-        let workspace_index = if self
-            .presentation_authority
-            .workspace_index_for(self.workspace.as_arc(), self.version)
-            .is_some()
-        {
-            self.presentation_requirements().shared_workspace_index()
-        } else {
-            Arc::new(
-                crate::workspace::WorkspaceIndex::build(&self.workspace, self.version).map_err(
-                    |source| {
-                        PresentationRequirementFailure::Invariant(
-                        crate::scene_compiler::SceneRequirementDerivationError::WorkspaceIndex {
-                            source,
-                        }
-                        .to_string(),
-                    )
-                    },
-                )?,
-            )
-        };
         let mut draft = derive_scene_requirement_draft_with_index(
             self.authority_domain,
             &self.workspace,
@@ -781,13 +785,27 @@ impl DockEngine {
 
     pub(super) fn capture_surface_semantic_snapshots(
         workspace: &Workspace,
+        workspace_index: &crate::workspace::WorkspaceIndex,
+    ) -> Result<BTreeMap<crate::ids::SurfaceId, SurfaceSemanticSnapshot>, crate::error::CommandError>
+    {
+        Self::capture_surface_semantic_snapshots_with(workspace, |root| {
+            workspace_index
+                .root_fingerprint(root)
+                .cloned()
+                .ok_or(crate::error::CommandError::MissingRoot { root })
+        })
+    }
+
+    fn capture_surface_semantic_snapshots_with(
+        workspace: &Workspace,
+        mut root_fingerprint: impl FnMut(RootId) -> Result<NodeFingerprint, crate::error::CommandError>,
     ) -> Result<BTreeMap<crate::ids::SurfaceId, SurfaceSemanticSnapshot>, crate::error::CommandError>
     {
         let mut snapshots = BTreeMap::new();
         for (surface, presentation) in workspace.surfaces() {
             let main = presentation
                 .main_root
-                .map(|root| workspace.root_fingerprint(root))
+                .map(&mut root_fingerprint)
                 .transpose()?;
             let mut contained = Vec::with_capacity(presentation.contained.len());
             for floating in presentation.contained.iter().copied() {
@@ -799,7 +817,7 @@ impl DockEngine {
                 let rect = record.rect;
                 contained.push(ContainedSemanticSnapshot {
                     floating,
-                    root: workspace.root_fingerprint(record.root)?,
+                    root: root_fingerprint(record.root)?,
                     rect_bits: [
                         rect.min().x().to_bits(),
                         rect.min().y().to_bits(),

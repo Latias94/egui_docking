@@ -31,32 +31,62 @@ use crate::workspace::WorkspaceIndex;
 /// A completed candidate paired with the report frozen by its prepare owner.
 #[derive(Debug)]
 pub(crate) struct PreparedTransaction {
-    candidate: Workspace,
+    candidate: PreparedWorkspace,
     report: TransactionReport,
+}
+
+#[derive(Debug)]
+enum PreparedWorkspace {
+    Owned(Workspace),
+    Unchanged(WorkspaceSnapshot),
 }
 
 impl PreparedTransaction {
     fn new(candidate: Workspace, outcomes: Vec<CommandOutcome>, changed: bool) -> Self {
         Self {
-            candidate,
+            candidate: PreparedWorkspace::Owned(candidate),
             report: TransactionReport::new(outcomes, changed),
+        }
+    }
+
+    fn unchanged_selection(candidate: WorkspaceSnapshot, source: &ItemSource) -> Self {
+        Self {
+            candidate: PreparedWorkspace::Unchanged(candidate),
+            report: TransactionReport::new(
+                vec![CommandOutcome::Selected {
+                    item: source.item(),
+                    tabs: source.tabs(),
+                    changed: false,
+                }],
+                false,
+            ),
         }
     }
 
     /// Borrows the completed candidate without allowing its report to drift.
     pub(crate) fn candidate(&self) -> &Workspace {
-        &self.candidate
+        match &self.candidate {
+            PreparedWorkspace::Owned(workspace) => workspace,
+            PreparedWorkspace::Unchanged(snapshot) => snapshot,
+        }
     }
 
     /// Consumes this candidate and its preparation-relative report.
     /// Publication barriers still run before the engine publishes the candidate.
     pub(crate) fn into_parts(self) -> (Workspace, TransactionReport) {
-        (self.candidate, self.report)
+        let workspace = match self.candidate {
+            PreparedWorkspace::Owned(workspace) => workspace,
+            PreparedWorkspace::Unchanged(snapshot) => snapshot.into_workspace(),
+        };
+        (workspace, self.report)
     }
 
     pub(crate) fn into_snapshot_parts(self) -> (WorkspaceSnapshot, TransactionReport) {
-        let (candidate, report) = self.into_parts();
-        (candidate.into(), report)
+        let snapshot = match self.candidate {
+            PreparedWorkspace::Owned(workspace) => workspace.into(),
+            PreparedWorkspace::Unchanged(snapshot) => snapshot,
+        };
+        (snapshot, self.report)
     }
 
     pub(crate) fn publish(self, workspace: &mut Workspace) -> TransactionReport {
@@ -103,6 +133,23 @@ impl WorkspaceSnapshot {
         policy: &DockPolicySnapshot,
         commands: &[WorkspaceCommand],
     ) -> Result<PreparedTransaction, TransactionError> {
+        if let [command @ WorkspaceCommand::Select { source }] = commands
+            && matches!(self.node(source.tabs()), Some(Node::Tabs { selected, .. })
+                if *selected == Some(source.item()))
+        {
+            #[cfg(test)]
+            crate::drop_resolver::structural_work::record_transaction_prepare(commands.len());
+            authorize_workspace_command(self, policy, command)
+                .and_then(|()| validate_item_source(self, source))
+                .map_err(|source| TransactionError::Command { index: 0, source })?;
+            // A validated snapshot has selected-first MRU. This exact command
+            // cannot change values or issuance; batches retain their own draft
+            // even when their final durable values equal the original (ABA).
+            return Ok(PreparedTransaction::unchanged_selection(
+                self.clone(),
+                source,
+            ));
+        }
         prepare_transaction(self, policy, commands)
     }
 }

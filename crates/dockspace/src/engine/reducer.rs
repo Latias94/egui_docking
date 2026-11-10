@@ -1118,7 +1118,10 @@ impl DockEngine {
         )?;
         self.cancel_invalid_pending_release_obligations_caused(cause, interaction_events);
         self.invalidate_pending_presentation_rehome();
-        if matches!(&input.input, EngineInput::ReplacePresentationConfig { .. }) {
+        if matches!(
+            &outcome,
+            InputOutcome::PresentationConfigReplaced { changed: true, .. }
+        ) {
             let _ = self.cancel_pending_release_obligations_caused(
                 cause,
                 InteractionCancelReason::SceneUnavailable,

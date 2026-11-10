@@ -2137,20 +2137,35 @@ impl DockEngine {
         let policy = policy.snapshot(PolicyRevision::default());
         let requirement_revision = RequirementRevision::default();
         let interaction = InteractionState::default();
-        let surface_semantic_snapshots = Self::capture_surface_semantic_snapshots(&workspace)
-            .map_err(|source| EngineError::PresentationRequirementInvariant {
-                input: None,
-                detail: format!("{source:?}"),
-            })?;
+        let workspace_index = Arc::new(
+            crate::workspace::WorkspaceIndex::build(&workspace, version).map_err(|source| {
+                EngineError::PresentationRequirementInvariant {
+                    input: None,
+                    detail:
+                        crate::scene_compiler::SceneRequirementDerivationError::WorkspaceIndex {
+                            source,
+                        }
+                        .to_string(),
+                }
+            })?,
+        );
+        let surface_semantic_snapshots =
+            Self::capture_surface_semantic_snapshots(&workspace, &workspace_index).map_err(
+                |source| EngineError::PresentationRequirementInvariant {
+                    input: None,
+                    detail: format!("{source:?}"),
+                },
+            )?;
         let surface_requirement_revisions = workspace
             .surfaces()
             .map(|(surface, _)| (surface, SurfaceRequirementRevision::default()))
             .collect::<BTreeMap<_, _>>();
         let mut tab_strip_states = TabStripStateStore::default();
-        let requirement_draft = derive_scene_requirement_draft(
+        let requirement_draft = derive_scene_requirement_draft_with_index(
             authority_domain,
             &workspace,
             version,
+            workspace_index,
             presentation_config_revision,
             &policy,
             requirement_revision,
