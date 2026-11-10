@@ -1,0 +1,49 @@
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.76s
+────────────
+ Nextest run ID f4a624c1-3bd7-419e-abcd-3193bc937668 with nextest profile: default
+    Starting 3 tests across 1 binary
+        FAIL [   0.012s] (1/3) dockspace-host-harness::migrated_receiver_inputs scroll_on_a_migrated_receiver_does_not_poison_an_independent_action
+  stdout ───
+
+    running 1 test
+    test scroll_on_a_migrated_receiver_does_not_poison_an_independent_action ... FAILED
+
+    failures:
+
+    failures:
+        scroll_on_a_migrated_receiver_does_not_poison_an_independent_action
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'scroll_on_a_migrated_receiver_does_not_poison_an_independent_action' (88641615) panicked at tests/migrated_receiver_inputs.rs:266:10:
+    an obsolete visible receiver must suppress scrolling without poisoning the frame: DockspaceRuntimeError { source: Engine(PointerInteractionInvariant { cause: PointerEdge { tick: ReducerTickId(5), ordinal: ReducerCausalOrdinal(0), stream: PointerStreamId { lease: PointerInputLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PointerProviderIncarnation(1), scope: HostLocal(PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) }) }, pointer: PointerId(1), incarnation: PointerStreamIncarnation(1) }, ticket: PointerEdgeTicket { lease: PointerInputLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PointerProviderIncarnation(1), scope: HostLocal(PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) }) }, sequence: PointerEdgeSequence(1) } }, detail: "tab-strip scroll state is unavailable" }) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] (2/3) dockspace-host-harness::migrated_receiver_inputs touch_started_after_root_migration_cannot_request_a_menu_from_the_retained_receiver
+  stdout ───
+
+    running 1 test
+    test touch_started_after_root_migration_cannot_request_a_menu_from_the_retained_receiver ... FAILED
+
+    failures:
+
+    failures:
+        touch_started_after_root_migration_cannot_request_a_menu_from_the_retained_receiver
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'touch_started_after_root_migration_cannot_request_a_menu_from_the_retained_receiver' (88641618) panicked at tests/migrated_receiver_inputs.rs:179:5:
+    a migrated receiver cannot request a menu on its previous surface: HostFrameReport { before: WorkspaceVersion { epoch: WorkspaceEpoch(0), revision: WorkspaceRevision(1) }, after: WorkspaceVersion { epoch: WorkspaceEpoch(0), revision: WorkspaceRevision(1) }, workspace_changed: false, published_state_changed: true, affected_surfaces: [], surface_commits: [], inputs: [Touch(ContextMenuRequested(DockspaceContextMenuRequest { cause: PointerEdge { tick: ReducerTickId(7), ordinal: ReducerCausalOrdinal(0), stream: PointerStreamId { lease: PointerInputLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PointerProviderIncarnation(1), scope: HostLocal(PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) }) }, pointer: PointerId(1), incarnation: PointerStreamIncarnation(1) }, ticket: PointerEdgeTicket { lease: PointerInputLease { authority_domain: EngineAuthorityDomainId(1), incarnation: PointerProviderIncarnation(1), scope: HostLocal(PresentationHostLease { authority_domain: EngineAuthorityDomainId(1), serial: PresentationHostSerial(1) }) }, sequence: PointerEdgeSequence(3) } }, version: WorkspaceVersion { epoch: WorkspaceEpoch(0), revision: WorkspaceRevision(1) }, pointer: SurfacePointerId(1), surface: SurfaceId(2), root: RootId(2), item: Some(ItemId(10)), position: LogicalPoint { x: 51.0, y: 14.0 } }))], submitted_actions: [], presentation_transitions: [], manipulation_feedback: [], painted_outputs: [], surface_presentation_commits: [], native_admissions: [], native_bindings: [], native_root_continuations: [], native_input_pending: false, native_effects: [], repaint_surfaces: [] }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] (3/3) dockspace-host-harness::migrated_receiver_inputs waiting_or_armed_touch_cannot_request_a_menu_after_its_root_migrates
+────────────
+     Summary [   0.035s] 3 tests run: 1 passed, 2 failed, 0 skipped
+        FAIL [   0.012s] (1/3) dockspace-host-harness::migrated_receiver_inputs scroll_on_a_migrated_receiver_does_not_poison_an_independent_action
+        FAIL [   0.009s] (2/3) dockspace-host-harness::migrated_receiver_inputs touch_started_after_root_migration_cannot_request_a_menu_from_the_retained_receiver
+error: test run failed

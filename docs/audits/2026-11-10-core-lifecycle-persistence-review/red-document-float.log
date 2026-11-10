@@ -1,0 +1,48 @@
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.25s
+────────────
+ Nextest run ID 8172f648-7870-4133-8fad-f5887a0686b7 with nextest profile: default
+    Starting 2 tests across 1 binary
+        FAIL [   0.010s] (1/2) dockspace-host-harness::document_float_roundtrip saved_document_prepares_and_restores_exact_fractional_geometry
+  stdout ───
+
+    running 1 test
+    test saved_document_prepares_and_restores_exact_fractional_geometry ... FAILED
+
+    failures:
+
+    failures:
+        saved_document_prepares_and_restores_exact_fractional_geometry
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'saved_document_prepares_and_restores_exact_fractional_geometry' (88614089) panicked at tests/document_float_roundtrip.rs:69:10:
+    a successfully saved document must prepare from its unchanged bytes: DockspacePersistenceError { source: Session(Restore(BindingHashMismatch)) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.006s] (2/2) dockspace-host-harness::document_float_roundtrip saved_document_reloads_with_exact_fractional_geometry
+  stdout ───
+
+    running 1 test
+    test saved_document_reloads_with_exact_fractional_geometry ... FAILED
+
+    failures:
+
+    failures:
+        saved_document_reloads_with_exact_fractional_geometry
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'saved_document_reloads_with_exact_fractional_geometry' (88614092) panicked at tests/document_float_roundtrip.rs:58:10:
+    a successfully saved document must reload from its unchanged bytes: DockspacePersistenceError { source: Restore(BindingHashMismatch) }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.019s] 2 tests run: 0 passed, 2 failed, 0 skipped
+        FAIL [   0.010s] (1/2) dockspace-host-harness::document_float_roundtrip saved_document_prepares_and_restores_exact_fractional_geometry
+        FAIL [   0.006s] (2/2) dockspace-host-harness::document_float_roundtrip saved_document_reloads_with_exact_fractional_geometry
+error: test run failed

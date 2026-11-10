@@ -1,0 +1,15 @@
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.19s
+────────────
+ Nextest run ID 6fcee99c-7f7b-4f71-8bf6-d6163c52970c with nextest profile: default
+    Starting 8 tests across 3 binaries
+        PASS [   0.010s] (1/8) dockspace-host-harness::document_float_roundtrip saved_document_prepares_and_restores_exact_fractional_geometry
+        PASS [   0.007s] (2/8) dockspace-host-harness::document_float_roundtrip saved_document_reloads_with_exact_fractional_geometry
+        PASS [   0.011s] (3/8) dockspace-host-harness::native_close_content_scope deferred_to_immediate_policy_after_native_accept_does_not_poison_destruction
+        PASS [   0.007s] (4/8) dockspace-host-harness::native_close_content_scope immediate_to_deferred_policy_after_native_accept_does_not_poison_destruction
+        PASS [   0.007s] (5/8) dockspace-host-harness::native_close_content_scope native_close_content_includes_a_nonempty_contained_root_beside_an_empty_central_main
+        PASS [   0.006s] (6/8) dockspace-host-harness::presentation_fraction positive_model_subnormal_fraction_is_accepted
+        PASS [   0.005s] (7/8) dockspace-host-harness::presentation_fraction rejects_fractions_that_round_to_model_endpoints
+        PASS [   0.010s] (8/8) dockspace-host-harness::presentation_fraction representable_fractions_measure_a_surface
+────────────
+     Summary [   0.067s] 8 tests run: 8 passed, 0 skipped

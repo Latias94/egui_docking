@@ -15,6 +15,44 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-10 core lifecycle and persistence review
+
+The [core lifecycle and persistence review](audits/2026-11-10-core-lifecycle-persistence-review.md)
+confirms and repairs seven P2 findings from baseline `822930f`, with final
+qualification at `444d618`. Document JSON now decodes floating-point geometry
+exactly, preserving its existing integrity hash through direct and prepared
+restoration. Presentation configuration rejects docking fractions that round to
+model endpoints before they can prevent surface compilation.
+
+Native CloseContent accepts an empty central main beside nonempty contained
+content. Effective capability drift becomes an expected rejection rather than
+poisoning destruction input, and the existing close owner permanently revokes
+obsolete content-deletion approval while retaining exact native effect and
+destruction obligations. Returning policy to its original value cannot revive
+that approval; an unrelated pane policy change still allows approved closure.
+
+Touch and initial scroll validate the current target behind retained actual
+pixels. Migrated receivers cannot open a menu on their previous surface or turn
+missing live strip state into a frame-wide invariant failure. Independent valid
+input, same-output scrolling, ordinary long press and popup continuity remain
+qualified. Three independent review lanes and follow-up cross-reviews finish
+without another confirmed P2 in the inspected adjacent sequences.
+
+All sixteen serial gates pass: workspace 2,315 with three existing skips,
+independent persistence host 366, official consumer 24, product 114 default /
+119 persistence, and pinned native fork 593 with one existing skip. Fourteen new
+public cases, 51 focused regressions/controls, correctness/suspicious Clippy,
+strict documentation, eleven doctests, formatting and the core dependency
+constraint pass. The review retains exact commands, failing reproductions,
+before/after results and corrections to two initial probe assumptions.
+
+Actual Linux X11/Glow qualification passes seven isolated eframe processes, the
+4 MiB create/first-live/redock/retirement profile and both complete editor drivers.
+Twelve real focused edits, six destroyed child lifetimes and Root rebinding
+preserve the original Root and finish quiescent. Source matches `444d618` after
+qualification. These bounded reviews and finite physical profiles retain their
+recorded limits; existing ImGui timing scope is unchanged.
+
 ## 2026-11-10 core action authority and split normalization review
 
 The [core action and layout review](audits/2026-11-10-core-action-and-layout-review.md)

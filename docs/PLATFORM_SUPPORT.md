@@ -2,7 +2,7 @@
 title: "Dockspace Platform Support"
 status: "Qualified finite profiles; clean-checkout delivery reproduced"
 reviewed: "2026-11-10"
-baseline_source_revision: "4cb90d2"
+baseline_source_revision: "444d618"
 ---
 
 # Dockspace Platform Support
@@ -60,6 +60,15 @@ editor drivers pass. The original Root survives rebinding; all six Child windows
 are destroyed and final quiescence holds. The finite platform scope below remains.
 
 ## Core and public engine-host contract
+
+The [core lifecycle and persistence review](VALIDATION.md#2026-11-10-core-lifecycle-and-persistence-review)
+qualifies exact JSON geometry, representable docking configuration, native
+content-close scope and monotonic approval revocation, and current touch/scroll
+targets behind retained outputs at `444d618`. All sixteen serial gates, seven
+real eframe processes, the 4 MiB redock profile and complete editor drivers pass.
+Twelve actual focused edits and six destroyed Child lifetimes finish quiescent;
+the original Root survives rebinding. These repairs refresh the existing finite
+X11 profiles.
 
 | Boundary | Current contract and evidence | Host responsibility |
 | --- | --- | --- |

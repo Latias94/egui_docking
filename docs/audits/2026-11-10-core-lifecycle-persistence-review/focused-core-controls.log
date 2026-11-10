@@ -1,0 +1,22 @@
+   Compiling serde_json v1.0.150
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 56.28s
+────────────
+ Nextest run ID 092a5a49-49b0-44ee-86ff-4505bfbf011c with nextest profile: default
+    Starting 14 tests across 1 binary (2082 tests skipped)
+        PASS [   0.011s] ( 1/14) dockspace graph::operation::tests::changed_close_capability_is_an_expected_frozen_surface_close_rejection
+        PASS [   0.007s] ( 2/14) dockspace graph::operation::tests::invalid_frozen_root_item_order_does_not_mutate_workspace
+        PASS [   0.006s] ( 3/14) dockspace presentation_config::tests::baseline_geometry_is_valid_and_renderer_neutral
+        PASS [   0.006s] ( 4/14) dockspace presentation_config::tests::hover_selection_delay_can_be_disabled_or_customized
+        PASS [   0.005s] ( 5/14) dockspace presentation_config::tests::nominal_guide_size_may_exceed_the_pane_minimum_because_compilation_compacts_it
+        PASS [   0.005s] ( 6/14) dockspace presentation_config::tests::presentation_revision_never_wraps
+        PASS [   0.005s] ( 7/14) dockspace presentation_config::tests::rejects_cross_field_geometry_conflicts
+        PASS [   0.005s] ( 8/14) dockspace presentation_config::tests::rejects_non_finite_and_negative_metrics
+        PASS [   0.006s] ( 9/14) dockspace presentation_config::tests::tab_strip_edge_scroll_configuration_accepts_custom_and_disabled_values
+        PASS [   0.006s] (10/14) dockspace presentation_config::tests::tab_strip_edge_scroll_configuration_rejects_zero_interval_and_invalid_band
+        PASS [   0.005s] (11/14) dockspace presentation_config::tests::touch_configuration_accepts_custom_values_and_zero
+        PASS [   0.005s] (12/14) dockspace presentation_config::tests::touch_configuration_rejects_non_finite_and_negative_slop
+        PASS [   0.005s] (13/14) dockspace presentation_config::tests::touch_resize_hit_extent_accepts_minimum_and_custom_values
+        PASS [   0.005s] (14/14) dockspace presentation_config::tests::touch_resize_hit_extent_rejects_non_finite_and_below_minimum_values
+────────────
+     Summary [   0.085s] 14 tests run: 14 passed, 2082 skipped

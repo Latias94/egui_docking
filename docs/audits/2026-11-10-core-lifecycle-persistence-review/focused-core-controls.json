@@ -1,0 +1,21 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "dockspace",
+    "--lib",
+    "--all-features",
+    "--locked",
+    "--target-dir",
+    "target",
+    "--test-threads=1",
+    "--no-fail-fast",
+    "-E",
+    "test(presentation_config::tests) | test(changed_close_capability_is_an_expected_frozen_surface_close_rejection) | test(invalid_frozen_root_item_order_does_not_mutate_workspace)"
+  ],
+  "started": "2026-11-10T09:47:29.174323+00:00",
+  "ended": "2026-11-10T09:48:26.027079+00:00",
+  "exit_code": 0
+}

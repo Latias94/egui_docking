@@ -1,0 +1,11 @@
+   Compiling serde_json v1.0.151
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+   Compiling dockspace_host_conformance v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace_host_conformance)
+   Compiling egui-dockspace-product-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-product-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 18s
+────────────
+ Nextest run ID 3d20b6bb-2b6f-4410-8840-9db756fce979 with nextest profile: default
+    Starting 119 tests across 6 binaries
+────────────
+     Summary [   9.631s] 119 tests run: 119 passed, 0 skipped

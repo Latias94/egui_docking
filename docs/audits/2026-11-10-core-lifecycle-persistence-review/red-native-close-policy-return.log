@@ -1,0 +1,48 @@
+   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.64s
+────────────
+ Nextest run ID c267e6d6-0fb3-49d1-861d-9857ca0dc6e1 with nextest profile: default
+    Starting 2 tests across 1 binary (3 tests skipped)
+        FAIL [   0.013s] (1/2) dockspace-host-harness::native_close_content_scope immediate_deferred_immediate_policy_after_native_accept_never_revives_content_approval
+  stdout ───
+
+    running 1 test
+    test immediate_deferred_immediate_policy_after_native_accept_never_revives_content_approval ... FAILED
+
+    failures:
+
+    failures:
+        immediate_deferred_immediate_policy_after_native_accept_never_revives_content_approval
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'immediate_deferred_immediate_policy_after_native_accept_never_revives_content_approval' (88639264) panicked at tests/native_close_content_scope.rs:267:5:
+    assertion failed: !destroyed.workspace_changed()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.008s] (2/2) dockspace-host-harness::native_close_content_scope immediate_disabled_immediate_policy_after_native_accept_never_revives_content_approval
+  stdout ───
+
+    running 1 test
+    test immediate_disabled_immediate_policy_after_native_accept_never_revives_content_approval ... FAILED
+
+    failures:
+
+    failures:
+        immediate_disabled_immediate_policy_after_native_accept_never_revives_content_approval
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'immediate_disabled_immediate_policy_after_native_accept_never_revives_content_approval' (88639267) panicked at tests/native_close_content_scope.rs:267:5:
+    assertion failed: !destroyed.workspace_changed()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.025s] 2 tests run: 0 passed, 2 failed, 3 skipped
+        FAIL [   0.013s] (1/2) dockspace-host-harness::native_close_content_scope immediate_deferred_immediate_policy_after_native_accept_never_revives_content_approval
+        FAIL [   0.008s] (2/2) dockspace-host-harness::native_close_content_scope immediate_disabled_immediate_policy_after_native_accept_never_revives_content_approval
+error: test run failed
