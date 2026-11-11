@@ -47,6 +47,8 @@ jobs:
         run: >-
           cargo nextest run --workspace --all-features --all-targets
           --no-fail-fast --locked
+      - name: Run core layout example
+        run: cargo run --package dockspace --example layout_commands --locked
       - name: Run documentation tests
         run: cargo test --doc --workspace --all-features --locked
       - name: Package core crate

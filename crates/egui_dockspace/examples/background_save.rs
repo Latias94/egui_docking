@@ -20,6 +20,10 @@ const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const DOCUMENT: ItemId = ItemId::new(1);
 
+fn editor_id() -> egui::Id {
+    egui::Id::unique("background-save-document")
+}
+
 fn main() -> eframe::Result {
     eframe::run_native(
         "Dockspace background save",
@@ -228,9 +232,15 @@ impl PaneView for Document {
     fn ui(&mut self, _item: ItemId, ui: &mut egui::Ui) -> PaneResponse {
         let editor = ui.add_enabled(
             !self.saving,
-            egui::TextEdit::multiline(&mut self.text).desired_width(f32::INFINITY),
+            egui::TextEdit::multiline(&mut self.text)
+                .id(editor_id())
+                .desired_width(f32::INFINITY),
         );
         PaneResponse::from(&editor)
+    }
+
+    fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
+        (item == DOCUMENT).then(editor_id)
     }
 }
 
@@ -258,6 +268,45 @@ mod tests {
     use super::*;
     use egui_dockspace::DockspaceCloseRequestStatus;
     use std::sync::mpsc::SyncSender;
+
+    #[test]
+    fn pinyin_composition_commits_chinese_text_in_the_example_editor() {
+        let mut app = SaveApp::new();
+        app.document.text.clear();
+        let context = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut run = |app: &mut SaveApp, events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| eframe::App::ui(app, ui, &mut frame),
+            );
+            output.textures_delta.clear();
+        };
+        run(&mut app, Vec::new());
+        run(&mut app, Vec::new());
+        context.memory_mut(|memory| memory.request_focus(editor_id()));
+        run(
+            &mut app,
+            vec![egui::Event::Ime(egui::ImeEvent::Preedit {
+                text: "nihao".to_owned(),
+                active_range_chars: Some(0..5),
+            })],
+        );
+        run(
+            &mut app,
+            vec![egui::Event::Ime(egui::ImeEvent::Commit("你好".to_owned()))],
+        );
+        run(&mut app, Vec::new());
+        assert_eq!(app.document.text, "你好");
+        assert!(app.dockspace.view().item(DOCUMENT).is_some());
+    }
 
     fn pending_save() -> (SaveApp, SyncSender<io::Result<()>>) {
         let mut app = SaveApp::new();
