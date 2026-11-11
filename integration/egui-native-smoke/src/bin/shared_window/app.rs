@@ -182,6 +182,7 @@ struct App {
     shared: State,
     started: Instant,
     discard: bool,
+    placement_run: Option<(eframe::NativeOutputToken, bool)>,
 }
 
 #[derive(Default)]
@@ -418,7 +419,17 @@ impl eframe::App for App {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
-        let shifted = lock(&self.shared).shifted;
+        // The physical driver may request a change between repeated passes.
+        // Adopt it at the next output, keeping this run's declaration stable.
+        let shifted = match (eframe::current_native_output_token(), self.placement_run) {
+            (Some(token), Some((admitted, shifted))) if token == admitted => shifted,
+            (Some(token), _) => {
+                let shifted = lock(&self.shared).shifted;
+                self.placement_run = Some((token, shifted));
+                shifted
+            }
+            (None, _) => lock(&self.shared).shifted,
+        };
         self.dockspace.show_root_surfaces(ui, &placements(shifted));
         if lock(&self.shared).error.is_some() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -558,6 +569,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
                 shared: Arc::clone(&shared),
                 started: Instant::now(),
                 discard,
+                placement_run: None,
             }))
         }),
     );
@@ -675,25 +687,76 @@ fn origin(window: &str) -> Result<[i32; 2], String> {
     Ok([i32::from(origin.dst_x), i32::from(origin.dst_y)])
 }
 
-fn drag(from: [i32; 2], to: [i32; 2]) -> Result<(), String> {
+fn move_pointer(point: [i32; 2]) -> Result<(), String> {
+    let (connection, screen) = x11rb::connect(None).map_err(|error| error.to_string())?;
+    let root = connection
+        .setup()
+        .roots
+        .get(screen)
+        .ok_or("X11 display returned no screen")?
+        .root;
+    let current = connection
+        .query_pointer(root)
+        .map_err(|error| error.to_string())?
+        .reply()
+        .map_err(|error| error.to_string())?;
+    // xdotool --sync waits for motion even when the pointer is already there.
+    if [i32::from(current.root_x), i32::from(current.root_y)] == point {
+        return Ok(());
+    }
     xdo(&[
         "mousemove".into(),
         "--sync".into(),
-        from[0].to_string(),
-        from[1].to_string(),
+        point[0].to_string(),
+        point[1].to_string(),
     ])?;
+    Ok(())
+}
+
+fn request_close(window: &str) -> Result<(), String> {
+    let window = window.parse::<u32>().map_err(|error| error.to_string())?;
+    let (connection, _) = x11rb::connect(None).map_err(|error| error.to_string())?;
+    let protocols = connection
+        .intern_atom(false, b"WM_PROTOCOLS")
+        .map_err(|error| error.to_string())?
+        .reply()
+        .map_err(|error| error.to_string())?
+        .atom;
+    let delete = connection
+        .intern_atom(false, b"WM_DELETE_WINDOW")
+        .map_err(|error| error.to_string())?
+        .reply()
+        .map_err(|error| error.to_string())?
+        .atom;
+    // Request normal close delivery to this client, preserving native approval.
+    let event = x11rb::protocol::xproto::ClientMessageEvent::new(
+        32,
+        window,
+        protocols,
+        [delete, x11rb::CURRENT_TIME, 0, 0, 0],
+    );
+    connection
+        .send_event(
+            false,
+            window,
+            x11rb::protocol::xproto::EventMask::NO_EVENT,
+            event,
+        )
+        .map_err(|error| error.to_string())?
+        .check()
+        .map_err(|error| error.to_string())?;
+    connection.flush().map_err(|error| error.to_string())
+}
+
+fn drag(from: [i32; 2], to: [i32; 2]) -> Result<(), String> {
+    move_pointer(from)?;
     xdo(&["mousedown".into(), "1".into()])?;
     for step in 1..=12 {
         let point = [
             from[0] + (to[0] - from[0]) * step / 12,
             from[1] + (to[1] - from[1]) * step / 12,
         ];
-        xdo(&[
-            "mousemove".into(),
-            "--sync".into(),
-            point[0].to_string(),
-            point[1].to_string(),
-        ])?;
+        move_pointer(point)?;
         thread::sleep(Duration::from_millis(25));
     }
     thread::sleep(Duration::from_millis(250));
@@ -786,7 +849,6 @@ fn drive(state: &State) -> Result<(), String> {
     eprintln!(
         "shared-window: real A -> B -> native Child -> B, placement change and Root replacement passed"
     );
-    xdo(&["windowactivate".into(), "--sync".into(), root])?;
-    xdo(&["key".into(), "alt+F4".into()])?;
+    request_close(&root)?;
     Ok(())
 }
