@@ -349,12 +349,22 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     decision,
                 },
             ),
+            NativeCommand::SetPolicy { policy } => NativeApplicationAction::new(
+                session.version(),
+                NativeApplicationCommand::Policy {
+                    policy,
+                    arrangement_lock: None,
+                },
+            ),
             NativeCommand::SetArrangementLocked { locked } => {
                 let mut policy = session.policy().clone();
                 policy.set_arrangement_locked(locked);
                 NativeApplicationAction::new(
                     session.version(),
-                    NativeApplicationCommand::ArrangementLock(Box::new(policy)),
+                    NativeApplicationCommand::Policy {
+                        policy: Box::new(policy),
+                        arrangement_lock: Some(locked),
+                    },
                 )
             }
         };

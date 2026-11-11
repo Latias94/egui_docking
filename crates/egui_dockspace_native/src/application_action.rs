@@ -162,7 +162,14 @@ pub enum NativeActionStatus {
         /// Whether this decision changed durable topology.
         changed: bool,
     },
-    /// The arrangement policy committed at its terminal configuration boundary.
+    /// A complete runtime policy committed at its configuration boundary.
+    PolicyChanged {
+        /// Whether the policy differed from its previous value.
+        changed: bool,
+        /// Workspace version after the configuration input.
+        version: WorkspaceVersion,
+    },
+    /// The arrangement lock committed while preserving all other policy rules.
     ArrangementLockChanged {
         /// Requested arrangement lock state.
         locked: bool,
@@ -227,7 +234,10 @@ pub(crate) enum NativeApplicationCommand {
         token: DeferredCloseToken,
         decision: DeferredCloseDecision,
     },
-    ArrangementLock(Box<DockPolicy>),
+    Policy {
+        policy: Box<DockPolicy>,
+        arrangement_lock: Option<bool>,
+    },
     Style {
         style: Box<DockStyle>,
         presentation: Box<DockPresentationConfig>,
@@ -312,7 +322,7 @@ impl NativeApplicationAction {
                 token,
                 decision,
             } => frame.continue_deferred_close(request, token, decision)?,
-            NativeApplicationCommand::ArrangementLock(policy) => {
+            NativeApplicationCommand::Policy { policy, .. } => {
                 return Ok(NativeApplicationSubmission::Configuration(policy));
             }
             NativeApplicationCommand::Style {
@@ -370,9 +380,9 @@ impl NativeApplicationAction {
             | NativeApplicationCommand::ContinueClose { .. } => {
                 NativeActionExpectation::CloseDecision
             }
-            NativeApplicationCommand::ArrangementLock(policy) => {
-                NativeActionExpectation::ArrangementLock(policy.arrangement_locked())
-            }
+            NativeApplicationCommand::Policy {
+                arrangement_lock, ..
+            } => NativeActionExpectation::Policy(*arrangement_lock),
             NativeApplicationCommand::Style { .. } => NativeActionExpectation::Style,
             NativeApplicationCommand::LayoutReset(_)
             | NativeApplicationCommand::LayoutResetRebindingRoot { .. } => {
@@ -570,7 +580,7 @@ enum NativeActionExpectation {
     Dock,
     Close,
     CloseDecision,
-    ArrangementLock(bool),
+    Policy(Option<bool>),
     Style,
     LayoutReset,
     #[cfg(feature = "serde")]
@@ -813,15 +823,19 @@ impl NativeApplicationActions {
                         },
                     ),
                     (
-                        NativeActionExpectation::ArrangementLock(locked),
+                        NativeActionExpectation::Policy(arrangement_lock),
                         HostInputOutcome::PolicyReplaced { changed, version },
-                    ) => ReductionSettlement::ApplicationTerminal(
-                        NativeActionStatus::ArrangementLockChanged {
+                    ) => ReductionSettlement::ApplicationTerminal(match arrangement_lock {
+                        Some(locked) => NativeActionStatus::ArrangementLockChanged {
                             locked: *locked,
                             changed: *changed,
                             version: *version,
                         },
-                    ),
+                        None => NativeActionStatus::PolicyChanged {
+                            changed: *changed,
+                            version: *version,
+                        },
+                    }),
                     (
                         NativeActionExpectation::LayoutReset,
                         HostInputOutcome::LayoutReset { previous, current },

@@ -25,6 +25,8 @@ use crate::{NativeActionRequestError, NativeActionStatus, NativeWindowClosePolic
 
 use super::NativeRuntimeState;
 
+mod policy;
+
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const FIRST: ItemId = ItemId::new(1);

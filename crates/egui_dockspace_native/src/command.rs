@@ -6,6 +6,7 @@ use dockspace::close::{
 use dockspace::model::{
     DockPlacement, ItemId, NativeTearOffSource, NativeWindowPlacement, RootId, SurfaceId,
 };
+use dockspace::policy::DockPolicy;
 
 /// One application intent for [`NativeDockspaceApp::request_command`](crate::NativeDockspaceApp::request_command).
 ///
@@ -141,7 +142,32 @@ pub enum NativeCommand {
         /// Explicit continuation decision.
         decision: DeferredCloseDecision,
     },
+    /// Replace the complete runtime docking policy, including all per-pane rules.
+    ///
+    /// Admission leaves the published policy unchanged until the host frame
+    /// commits. Earlier input keeps its original policy; measurement and encoding
+    /// use the replacement after the configuration boundary. Consume
+    /// [`NativeActionStatus::PolicyChanged`](crate::NativeActionStatus::PolicyChanged)
+    /// before submitting another command. An identical policy reports no change.
+    ///
+    /// Retain an application-owned copy when later updates should preserve rules.
+    /// The boxed value keeps ordinary command values small.
+    ///
+    /// ```
+    /// use dockspace::policy::DockPolicy;
+    /// use egui_dockspace_native::NativeCommand;
+    ///
+    /// let mut policy = DockPolicy::default();
+    /// policy.set_allow_native_surfaces(true);
+    /// let command = NativeCommand::SetPolicy { policy: Box::new(policy) };
+    /// ```
+    SetPolicy {
+        /// Complete replacement policy, owned by this command until submission.
+        policy: Box<DockPolicy>,
+    },
     /// Change arrangement locking while preserving selection and content input.
+    ///
+    /// All other currently committed policy rules remain unchanged.
     SetArrangementLocked {
         /// Requested lock state.
         locked: bool,

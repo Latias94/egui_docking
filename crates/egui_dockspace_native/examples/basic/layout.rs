@@ -694,6 +694,9 @@ pub(super) fn describe_status(status: &NativeActionStatus, panes: &ExamplePanes)
                 }
             }
         }
+        NativeActionStatus::PolicyChanged { changed, .. } => {
+            format!("Docking policy committed; changed={changed}.")
+        }
         NativeActionStatus::ArrangementLockChanged {
             locked, changed, ..
         } => format!(
