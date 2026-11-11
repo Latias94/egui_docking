@@ -6,18 +6,19 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use dockspace::runtime::{
     PaintedSurfaceOutput, PreparedPaneFocusObservation, SurfacePresentationResult,
 };
-use egui::{
-    Context, FullOutput, Id, RawInput, TexturesDelta, Ui, UiBuilder, UiStackInfo, ViewportId,
-};
+use egui::{Context, FullOutput, Id, RawInput, Ui, UiBuilder, UiStackInfo, ViewportId};
 
 use crate::output_proof::{
     OwnedOutputCheck, SurfaceOutputProof, final_paint_layer_order, scrub_private_markers,
     spans_follow_paint_order,
 };
 use crate::pane::PaneFocusState;
-use crate::product_pointer::ProductPointerInputSnapshot;
+mod run_input;
+mod textures;
 
-pub(super) const RUN_SCOPE_TAG: &str = "egui_dockspace::official_run_scope";
+pub(super) use run_input::{ProductPointerPacket, RUN_SCOPE_TAG, RunScope, pointer_packet};
+use run_input::{RunInput, RunInputSnapshot, ui_run_scope};
+use textures::{OutputTexturesGuard, restore_retained_textures};
 
 /// Complete egui output and the affine receipt for its docking emissions.
 ///
@@ -646,148 +647,6 @@ struct ActiveRunPortal {
     participants: Vec<Weak<Mutex<PassSettlementState>>>,
 }
 
-struct RunInput {
-    events: Vec<egui::Event>,
-    receivers: ProductPointerInputSnapshot,
-}
-
-struct RunInputSnapshot;
-
-impl egui::plugin::Plugin for RunInputSnapshot {
-    fn debug_name(&self) -> &'static str {
-        "egui_dockspace::run_input_snapshot"
-    }
-
-    fn input_hook(&mut self, context: &Context, _input: &mut RawInput) {
-        // egui can reject recursive root borrowing before on_begin_pass runs.
-        if in_run_callback(context)
-            && let Some(portal) = active_run_portal(context)
-        {
-            portal
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .poisoned = true;
-        }
-    }
-
-    fn on_begin_pass(&mut self, ui: &mut Ui) {
-        let Some(portal) = active_run_portal(ui.ctx()) else {
-            return;
-        };
-        let mut portal = portal.lock().unwrap_or_else(PoisonError::into_inner);
-        if in_run_callback(ui.ctx()) {
-            // A raw recursive Context::run_ui has no inherited Ui stack tag.
-            portal.poisoned = true;
-            return;
-        }
-        if portal.viewport == ui.ctx().viewport_id() && portal.input.is_none() {
-            portal.input = Some(Arc::new(RunInput {
-                events: ui.ctx().input(|input| input.raw.events.clone()),
-                receivers: ProductPointerInputSnapshot::capture(ui.ctx()),
-            }));
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(super) struct ProductPointerPacket {
-    run: Arc<RunIdentity>,
-    input: Arc<RunInput>,
-    observed_at: Option<std::time::Duration>,
-}
-
-impl ProductPointerPacket {
-    pub(super) fn same_run(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.run, &other.run)
-    }
-
-    pub(super) fn events(&self) -> &[egui::Event] {
-        &self.input.events
-    }
-
-    pub(super) fn receivers(&self) -> &ProductPointerInputSnapshot {
-        &self.input.receivers
-    }
-
-    pub(super) const fn observed_at(&self) -> Option<std::time::Duration> {
-        self.observed_at
-    }
-}
-
-pub(super) fn pointer_packet(ui: &Ui) -> Option<ProductPointerPacket> {
-    let portal = active_run_portal(ui.ctx())?;
-    let portal = portal.lock().unwrap_or_else(PoisonError::into_inner);
-    let scope = ui_run_scope(ui)?;
-    if portal.poisoned
-        || portal.current_pass != Some(scope.pass)
-        || portal.viewport != ui.ctx().viewport_id()
-        || !Arc::ptr_eq(&scope.run, &portal.run)
-    {
-        return None;
-    }
-    let input = Arc::clone(portal.input.as_ref()?);
-    Some(ProductPointerPacket {
-        run: Arc::clone(&portal.run),
-        input,
-        observed_at: portal.observed_at,
-    })
-}
-
-#[derive(Clone)]
-pub(super) struct RunScope {
-    run: Arc<RunIdentity>,
-    pass: u64,
-}
-
-thread_local! {
-    static RUN_CALLBACKS: RefCell<Vec<RunCallback>> = const { RefCell::new(Vec::new()) };
-}
-
-struct RunCallback {
-    context: Context,
-    viewport: ViewportId,
-    frame: u64,
-    completed_pass: u64,
-    pass_index: usize,
-    scope: RunScope,
-}
-
-fn in_run_callback(context: &Context) -> bool {
-    RUN_CALLBACKS.with(|callbacks| {
-        callbacks
-            .borrow()
-            .iter()
-            .any(|callback| callback.context == *context)
-    })
-}
-
-#[must_use = "keep the guard alive until the synchronous application callback returns"]
-pub(super) struct RunCallbackGuard;
-
-impl RunScope {
-    pub(super) fn enter(&self, ui: &Ui) -> RunCallbackGuard {
-        RUN_CALLBACKS.with(|callbacks| {
-            callbacks.borrow_mut().push(RunCallback {
-                context: ui.ctx().clone(),
-                viewport: ui.ctx().viewport_id(),
-                frame: ui.ctx().cumulative_frame_nr(),
-                completed_pass: ui.ctx().cumulative_pass_nr(),
-                pass_index: ui.ctx().current_pass_index(),
-                scope: self.clone(),
-            });
-        });
-        RunCallbackGuard
-    }
-}
-
-impl Drop for RunCallbackGuard {
-    fn drop(&mut self) {
-        RUN_CALLBACKS.with(|callbacks| {
-            callbacks.borrow_mut().pop();
-        });
-    }
-}
-
 struct RunIdentity;
 struct ContextIdentity;
 struct LaneIdentity;
@@ -845,102 +704,8 @@ fn active_run_portal_id() -> Id {
     Id::unique(("egui_dockspace", "active_official_run_portal"))
 }
 
-fn retained_textures_id() -> Id {
-    Id::unique(("egui_dockspace", "retained_renderer_textures"))
-}
-
-#[derive(Clone, Default)]
-struct RetainedTexturesDelta(TexturesDelta);
-
-impl Drop for RetainedTexturesDelta {
-    fn drop(&mut self) {
-        self.0.clear();
-    }
-}
-
-fn retain_texture_delta(context: &Context, delta: TexturesDelta) {
-    if delta.is_empty() {
-        return;
-    }
-    context.data_mut(|data| {
-        data.get_temp_mut_or_default::<RetainedTexturesDelta>(retained_textures_id())
-            .0
-            .append(delta);
-    });
-}
-
-pub(super) struct OutputTexturesGuard<'a> {
-    context: &'a Context,
-    delta: Option<TexturesDelta>,
-}
-
-impl<'a> OutputTexturesGuard<'a> {
-    pub(super) fn take(context: &'a Context, output: &mut FullOutput) -> Self {
-        Self {
-            context,
-            delta: Some(std::mem::take(&mut output.textures_delta)),
-        }
-    }
-
-    pub(super) fn restore_into_output(mut self, output: &mut FullOutput) {
-        output.textures_delta = self.delta.take().unwrap_or_default();
-    }
-}
-
-impl Drop for OutputTexturesGuard<'_> {
-    fn drop(&mut self) {
-        if let Some(delta) = self.delta.take() {
-            retain_texture_delta(self.context, delta);
-        }
-    }
-}
-
-fn restore_retained_textures(context: &Context, output: &mut FullOutput) {
-    let Some(mut retained) =
-        context.data_mut(|data| data.remove_temp::<RetainedTexturesDelta>(retained_textures_id()))
-    else {
-        return;
-    };
-    retained
-        .0
-        .append(std::mem::take(&mut output.textures_delta));
-    output.textures_delta = std::mem::take(&mut retained.0);
-}
-
 fn active_run_portal(context: &Context) -> Option<Arc<Mutex<ActiveRunPortal>>> {
     context.data(|data| data.get_temp(active_run_portal_id()))
-}
-fn ui_run_scope(ui: &Ui) -> Option<RunScope> {
-    let tagged = ui.stack().iter().find_map(|stack| {
-        stack
-            .tags()
-            .get_downcast::<RunScope>(RUN_SCOPE_TAG)
-            .cloned()
-    });
-    RUN_CALLBACKS.with(|callbacks| {
-        let callbacks = callbacks.borrow();
-        let callback = callbacks.last()?;
-        let source_matches = match tagged {
-            Some(scope) => {
-                scope.pass == callback.scope.pass && Arc::ptr_eq(&scope.run, &callback.scope.run)
-            }
-            None => {
-                // Areas create independent root Uis. Limit the callback-local
-                // fallback to their declared area root and matching layer ID.
-                ui.stack()
-                    .iter()
-                    .last()
-                    .is_some_and(|root| root.is_area_ui() && root.unique_id == ui.layer_id().id)
-            }
-        };
-        (callback.context == *ui.ctx()
-            && callback.viewport == ui.ctx().viewport_id()
-            && callback.frame == ui.ctx().cumulative_frame_nr()
-            && callback.completed_pass == ui.ctx().cumulative_pass_nr()
-            && callback.pass_index == ui.ctx().current_pass_index()
-            && source_matches)
-            .then(|| callback.scope.clone())
-    })
 }
 fn context_identity(context: &Context) -> Arc<ContextIdentity> {
     let id = Id::unique(("egui_dockspace", "pass_settlement_context_identity"));
@@ -958,105 +723,3 @@ fn context_identity(context: &Context) -> Arc<ContextIdentity> {
 #[cfg(test)]
 #[path = "pass_settlement_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-mod output_textures_guard_tests {
-    use super::*;
-
-    #[test]
-    fn owned_output_keeps_texture_retirement_before_ordered_user_payload_release() {
-        struct Released {
-            label: u8,
-            context: Context,
-            events: Arc<Mutex<Vec<(u8, bool)>>>,
-        }
-        impl Drop for Released {
-            fn drop(&mut self) {
-                let retained = self.context.data(|data| {
-                    data.get_temp::<RetainedTexturesDelta>(retained_textures_id())
-                        .is_some_and(|delta| !delta.0.is_empty())
-                });
-                self.events.lock().unwrap().push((self.label, retained));
-            }
-        }
-        let context = Context::default();
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let result: Result<(), ()> = (|| {
-            let mut raw = FullOutput::default();
-            for label in [1, 2] {
-                raw.shapes.push(egui::epaint::ClippedShape::new(
-                    egui::Rect::EVERYTHING,
-                    egui::Shape::Callback(egui::epaint::PaintCallback {
-                        rect: egui::Rect::EVERYTHING,
-                        callback: Arc::new(Released {
-                            label,
-                            context: context.clone(),
-                            events: Arc::clone(&events),
-                        }),
-                    }),
-                ));
-            }
-            raw.textures_delta.free(egui::TextureId::User(99));
-            let mut output = OwnedRunOutput::new(raw);
-            let _guard = output.take_textures(&context);
-            // A later local capture holds the first payload, as the terminal
-            // pass proof does. It must release before the owned output itself.
-            let _frozen = output.output.shapes[0].clone();
-            Err(())
-        })();
-        assert!(result.is_err());
-        assert_eq!(*events.lock().unwrap(), [(1, true), (2, true)]);
-        let mut retired = FullOutput::default();
-        restore_retained_textures(&context, &mut retired);
-        retired.drop_without_applying_deltas();
-    }
-
-    #[test]
-    fn output_delta_is_retained_when_a_later_result_path_returns_early() {
-        let context = Context::default();
-        let texture = egui::TextureId::User(42);
-        let mut output = FullOutput::default();
-        output.textures_delta.push(
-            texture,
-            egui::epaint::ImageDelta::full(
-                egui::ColorImage::filled([1, 1], egui::Color32::RED),
-                egui::TextureOptions::NEAREST,
-            ),
-        );
-
-        let result: Result<(), ()> = (|| {
-            let _guard = OutputTexturesGuard::take(&context, &mut output);
-            Err(())
-        })();
-
-        assert!(result.is_err());
-        restore_retained_textures(&context, &mut output);
-        assert!(output.textures_delta.set.contains_key(&texture));
-        output.drop_without_applying_deltas();
-    }
-
-    #[test]
-    fn consecutive_failed_outputs_preserve_set_and_free_append_semantics() {
-        let context = Context::default();
-        let texture = egui::TextureId::User(43);
-        let mut first = TexturesDelta::default();
-        first.push(
-            texture,
-            egui::epaint::ImageDelta::full(
-                egui::ColorImage::filled([1, 1], egui::Color32::RED),
-                egui::TextureOptions::NEAREST,
-            ),
-        );
-        retain_texture_delta(&context, first);
-
-        let mut second = TexturesDelta::default();
-        second.free(texture);
-        retain_texture_delta(&context, second);
-
-        let mut output = FullOutput::default();
-        restore_retained_textures(&context, &mut output);
-        assert!(!output.textures_delta.set.contains_key(&texture));
-        assert!(output.textures_delta.free.contains(&texture));
-        output.drop_without_applying_deltas();
-    }
-}

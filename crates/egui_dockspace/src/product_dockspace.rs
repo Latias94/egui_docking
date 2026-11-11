@@ -13,9 +13,8 @@ use dockspace::policy::DockPolicy;
 #[cfg(feature = "serde")]
 use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use dockspace::runtime::{
-    DockspaceSession, HostFrameReport, PreparedCloseRequest, PreparedPaneFocusObservation,
-    SurfacePresentationArtifact, SurfaceUnavailableReason, SurfaceWork, SurfaceWorkDeferred,
-    WorkspaceVersion,
+    DockspaceSession, HostFrameReport, PreparedCloseRequest, SurfaceUnavailableReason, SurfaceWork,
+    SurfaceWorkDeferred, WorkspaceVersion,
 };
 use egui::emath::GuiRounding;
 use egui::{Id, Sense, Ui};
@@ -50,7 +49,7 @@ pub struct Dockspace {
     style: DockStyle,
     pass_settlement: ProductPassSettlement,
     measurement_deferred: bool,
-    pending_focus: Vec<(SurfacePresentationArtifact, PreparedPaneFocusObservation)>,
+    pending_focus: crate::product_focus::PendingFocusObservations,
     pointer: crate::product_pointer::ProductPointer,
     ui_actions: owned_run::UiActionQueue,
     #[cfg(test)]
@@ -70,7 +69,7 @@ impl Dockspace {
             style,
             pass_settlement: ProductPassSettlement::default(),
             measurement_deferred: false,
-            pending_focus: Vec::new(),
+            pending_focus: crate::product_focus::PendingFocusObservations::default(),
             pointer: crate::product_pointer::ProductPointer::default(),
             ui_actions: owned_run::UiActionQueue::default(),
             #[cfg(test)]
@@ -757,7 +756,7 @@ impl Dockspace {
                 .is_ok()
                 && let Some(focus) = presentation.pane_focus_observation
             {
-                self.pending_focus.push((artifact, focus));
+                self.pending_focus.push(artifact, focus);
             }
         }
         if presentation_settlement_available {
@@ -807,17 +806,10 @@ impl Dockspace {
                     pointer.presented_focus_bindings(&frame, surface),
                 )
             });
-            for (artifact, focus) in &self.pending_focus {
-                if frame
-                    .presented_surface(surface)
-                    .is_some_and(|current| current.matches_presentation_artifact(*artifact))
-                {
-                    frame
-                        .submit_pane_focus_observation(focus.clone())
-                        .map_err(DockspaceError::from_detail)?;
-                    accepted_focus.push(*artifact);
-                }
-            }
+            accepted_focus = self
+                .pending_focus
+                .submit_current(&mut frame, surface)
+                .map_err(DockspaceError::from_detail)?;
             if let Some(actual_focus) = actual_focus {
                 frame
                     .report_host_focus(surface, actual_focus)
@@ -952,13 +944,7 @@ impl Dockspace {
             );
         }
         self.pointer = pointer;
-        self.pending_focus.retain(|(artifact, _)| {
-            !accepted_focus.contains(artifact)
-                && !report
-                    .surface_presentation_commits()
-                    .iter()
-                    .any(|commit| commit.settles(*artifact))
-        });
+        self.pending_focus.settle(&accepted_focus, &report);
         for id in deferred_focus {
             let target = ui
                 .ctx()

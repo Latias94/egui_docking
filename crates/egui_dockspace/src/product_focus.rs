@@ -1,4 +1,8 @@
-//! Current framework focus sampling for the native adapter.
+//! Framework focus sampling and exact pending-observation ownership.
+
+mod pending_observations;
+
+pub(crate) use pending_observations::PendingFocusObservations;
 
 #[cfg(test)]
 #[path = "product_focus_tests.rs"]

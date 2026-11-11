@@ -7,7 +7,7 @@ use crate::pass_settlement::{
 };
 use dockspace::runtime::{
     DeferredSurfaceAction, DockspaceContextMenuRequest, DockspaceUpdate,
-    SurfaceProgramExecutionReceipt, SurfaceWork, SurfaceWorkDeferred,
+    PreparedPaneFocusObservation, SurfaceProgramExecutionReceipt, SurfaceWork, SurfaceWorkDeferred,
 };
 use egui::{Context, RawInput, UiBuilder, UiStackInfo};
 
@@ -339,7 +339,7 @@ impl Dockspace {
                                     )
                                     .map_err(DockspaceError::from_detail)?;
                                 if let Some(focus) = presentation.pane_focus_observation {
-                                    self.pending_focus.push((artifact, focus));
+                                    self.pending_focus.push(artifact, focus);
                                 }
                             }
                             self.session
@@ -374,16 +374,10 @@ impl Dockspace {
                                     pointer.presented_focus_bindings(&frame, surface),
                                 )
                             });
-                            for (artifact, focus) in &self.pending_focus {
-                                if frame.presented_surface(surface).is_some_and(|current| {
-                                    current.matches_presentation_artifact(*artifact)
-                                }) {
-                                    frame
-                                        .submit_pane_focus_observation(focus.clone())
-                                        .map_err(DockspaceError::from_detail)?;
-                                    accepted_focus.push(*artifact);
-                                }
-                            }
+                            accepted_focus = self
+                                .pending_focus
+                                .submit_current(&mut frame, surface)
+                                .map_err(DockspaceError::from_detail)?;
                             if let Some(actual_focus) = actual_focus {
                                 frame
                                     .report_host_focus(surface, actual_focus)
@@ -573,13 +567,7 @@ impl Dockspace {
         }
         self.pointer = pointer;
         self.measurement_deferred = pass.defer_measurement;
-        self.pending_focus.retain(|(artifact, _)| {
-            !accepted_focus.contains(artifact)
-                && !report
-                    .surface_presentation_commits()
-                    .iter()
-                    .any(|commit| commit.settles(*artifact))
-        });
+        self.pending_focus.settle(&accepted_focus, &report);
         for id in deferred_focus {
             // run_ui has ended, so prev_pass contains its terminal registrations.
             let target = context.viewport(|viewport| viewport.prev_pass.widgets.get(id).copied());
