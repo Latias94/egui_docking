@@ -213,10 +213,7 @@ fn validated_native_local_hover(
         && coordinates.client_to_surface(route.client_position()).ok()
             == Some(route.surface_position())
         && native_local_route_matches_authority(route, projection.authority())
-        && projection
-            .plan()
-            .bounds()
-            .contains(route.surface_position()))
+        && DockEngine::native_surface_hit_contains(projection, route.surface_position()))
     .then_some(route)
 }
 
@@ -257,7 +254,12 @@ pub(super) fn resolve_native_pointer_edge(
                         .contains(route.client_position())
                     && coordinates.client_to_surface(route.client_position()).ok()
                         == Some(route.surface_position())
-            });
+            })
+            && engine
+                .interaction_projection(route.binding().surface())
+                .is_some_and(|projection| {
+                    DockEngine::native_surface_hit_contains(projection, route.surface_position())
+                });
         if !valid {
             return Err(EngineError::PointerReceiverGeometry {
                 source: PointerReceiverGeometryError::LogicalPointUnavailable {
@@ -792,6 +794,25 @@ impl DockEngine {
             _ => return None,
         };
         Some(GestureOwner::new(stream, lane))
+    }
+
+    pub(crate) fn native_surface_hit_contains(
+        projection: SurfaceInteractionProjection<'_>,
+        point: LogicalPoint,
+    ) -> bool {
+        if projection.plan().bounds().contains(point) {
+            return true;
+        }
+        let popup = projection.plan().popup();
+        // Admit exact active popup receivers outside the dock layout. Its
+        // semantic backdrop still blocks docking in otherwise blank space.
+        popup.revision() == projection.popup_revision()
+            && popup.session().is_some_and(|session| {
+                projection
+                    .hit_manifest()
+                    .region_for_kind(PresentationHitRegionKind::TabListMenuBackdrop(session))
+                    .is_some_and(|backdrop| backdrop.hit().contains(point))
+            })
     }
 
     pub(crate) fn native_window_coordinate_snapshot(

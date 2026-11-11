@@ -1,6 +1,6 @@
 //! Window hit facts are selected independently from the retained source placement.
 
-use crate::engine::CoreHostFrame;
+use crate::engine::{CoreHostFrame, DockEngine};
 use crate::geometry::PhysicalPoint;
 use crate::pointer_journal::NativeSurfacePointerRoute;
 use crate::pointer_receiver::{
@@ -135,7 +135,7 @@ pub(super) fn validate_window_hit(
     let Ok(point) = coordinates.client_to_surface(probe.client_position()) else {
         return NativeWindowHitReceipt::Unknown;
     };
-    if !projection.plan().bounds().contains(point) {
+    if !DockEngine::native_surface_hit_contains(projection, point) {
         return NativeWindowHitReceipt::Unknown;
     }
     NativeWindowHitReceipt::Surface {
