@@ -1251,12 +1251,21 @@ fn stale_pointer_callback_retires_only_the_predecessor_without_a_session_fatal()
         .viewport_binding(successor_recovery_viewport)
         .expect("the successor retains its exact recovery root binding");
     std::mem::swap(&mut native.session, &mut replacement.session);
-    native
-        .reserve_viewport_replacement(recovery_viewport, recovery, successor_recovery)
-        .expect("the recovery viewport continues with its exact successor root binding");
-    native
-        .reserve_viewport_replacement(viewport, source, successor)
-        .expect("the successor reserves the exact viewport before the late callback");
+    for (viewport, predecessor, successor) in [
+        (recovery_viewport, recovery, successor_recovery),
+        (viewport, source, successor),
+    ] {
+        assert!(
+            native.bridge.with_viewports_mut(|routes| {
+                routes.suppress_pointer_route(viewport, predecessor)
+            })
+        );
+        native
+            .bridge
+            .reserve_retired_viewport_replacement(viewport, predecessor, successor)
+            .expect("the retired predecessor reserves its successor before the late callback");
+        native.receivers.retire_binding(predecessor);
+    }
     let record = NativePointerPassthroughRecord::for_test(
         token,
         viewport,
@@ -1338,8 +1347,8 @@ fn unavailable_effect_provider_retains_the_result_and_remains_session_fatal() {
     native.session = tear_off_session();
 
     let error = native
-        .report_effect_result(result)
-        .expect_err("an unavailable native provider remains a fatal configuration boundary");
+        .report_callback_terminal_result(result)
+        .expect("an unavailable native provider remains a fatal configuration boundary");
     assert_eq!(error.kind(), crate::NativeRuntimeErrorKind::Unsupported);
     assert_eq!(native.pending_effect_results.len(), 1);
 }
@@ -1683,7 +1692,10 @@ fn assert_pre_admission_compensating_close(frozen: bool) {
     let receiver = measure_and_present_source(&mut native);
     let child = request_native_child(&mut native, receiver);
     native
-        .attach_viewport_window(viewport_id_for(child), child, WindowId::from(95))
+        .bridge
+        .with_viewports_mut(|routes| {
+            routes.attach_output(viewport_id_for(child), child, WindowId::from(95), None)
+        })
         .expect("the host observes the real child before any output is admitted");
 
     native
@@ -1840,7 +1852,8 @@ mod fatal_pre_transfer {
         let viewport = viewport_id_for(child);
         let placement = native.deferred_viewport_specs()[0].placement();
         native
-            .attach_viewport_window(viewport, child, window)
+            .bridge
+            .with_viewports_mut(|routes| routes.attach_output(viewport, child, window, None))
             .expect("the captured model window publishes its exact route");
         let create = native
             .effects

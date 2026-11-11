@@ -593,14 +593,9 @@ impl NativeCoordinator {
             (NativeViewportEffectKind::Create, None) => {
                 self.bridge.reserve_viewport_route(viewport, plan.binding())
             }
-            (NativeViewportEffectKind::Replacement, Some(predecessor)) => {
-                self.bridge.replace_viewport_route(
-                    viewport,
-                    predecessor,
-                    plan.binding(),
-                    crate::mailbox::NativeViewportReplacement::ReserveRetired,
-                )
-            }
+            (NativeViewportEffectKind::Replacement, Some(predecessor)) => self
+                .bridge
+                .reserve_retired_viewport_replacement(viewport, predecessor, plan.binding()),
             (NativeViewportEffectKind::Create, Some(_)) => {
                 Err(NativeViewportBindingError::ViewportAlreadyBound {
                     viewport,

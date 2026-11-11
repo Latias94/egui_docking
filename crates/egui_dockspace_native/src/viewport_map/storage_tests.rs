@@ -98,11 +98,9 @@ fn finite_routes_reject_new_keys_and_reuse_removed_slots_without_losing_backing(
 }
 
 #[test]
-fn full_route_store_attaches_and_replaces_before_moving_only_the_exact_receipt() {
+fn full_route_store_reserves_retired_replacements_before_moving_the_exact_receipt() {
     let (first, other_surface) = bindings();
     let second = bindings().0;
-    let third = bindings().0;
-    let fourth = bindings().0;
     let viewport = ViewportId::ROOT;
     let window = WindowId::from(21);
     let mut routes = NativeViewportMap::with_capacity_limit(1).unwrap();
@@ -117,60 +115,46 @@ fn full_route_store_attaches_and_replaces_before_moving_only_the_exact_receipt()
     );
     assert!(
         routes
-            .replace(viewport, first, window, other_surface)
+            .reserve_retired_replacement(viewport, first, second)
             .is_err()
     );
     assert_eq!(routes.binding(viewport), Some(first));
     assert!(routes.has_window_receipt(viewport, first));
-
+    assert!(routes.suppress_pointer_route(viewport, first));
     assert!(
         routes
-            .replace(viewport, first, window, second)
-            .unwrap()
-            .is_none()
+            .reserve_retired_replacement(viewport, first, other_surface)
+            .is_err()
     );
-    assert_eq!(
-        routes
-            .route(viewport)
-            .unwrap()
-            .terminal
-            .as_ref()
-            .unwrap()
-            .binding(),
-        second
-    );
-    assert_eq!(routes.focus_binding_for_event(window, None), None);
-    assert!(routes.attach(viewport, first, window).is_err());
-    assert!(routes.take_window_receipt(viewport, first).is_none());
     let receipt = routes
-        .reserve_replacement(viewport, second, third)
+        .reserve_retired_replacement(viewport, first, second)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.binding(), first);
+    assert_eq!(receipt.window(), window);
+    assert_eq!(routes.route_for_event(window, None), None);
+    assert_eq!(routes.focus_binding_for_event(window, None), None);
+    assert_eq!(routes.binding(viewport), Some(second));
+    assert_eq!(routes.window(viewport), None);
+    assert!(routes.attach_output(viewport, first, window, None).is_err());
+    assert!(routes.take_window_receipt(viewport, first).is_none());
+    let second_window = WindowId::from(22);
+    routes
+        .attach_output(viewport, second, second_window, None)
+        .unwrap();
+    assert!(routes.suppress_pointer_route(viewport, second));
+    let third = bindings().0;
+    let receipt = routes
+        .reserve_retired_replacement(viewport, second, third)
         .unwrap()
         .unwrap();
     assert_eq!(receipt.binding(), second);
-    assert_eq!(receipt.window(), window);
-    assert_eq!(routes.route_for_event(window, None), None);
-    let third_window = WindowId::from(22);
-    routes.attach(viewport, third, third_window).unwrap();
-    assert!(routes.suppress_pointer_route(viewport, third));
-    let receipt = routes
-        .reserve_retired_replacement(viewport, third, fourth)
-        .unwrap()
+    assert_eq!(receipt.window(), second_window);
+    assert_eq!(routes.route_for_event(second_window, None), None);
+    assert_eq!(routes.binding(viewport), Some(third));
+    routes
+        .attach_output(viewport, third, WindowId::from(23), None)
         .unwrap();
-    assert_eq!(receipt.binding(), third);
-    assert_eq!(receipt.window(), third_window);
-    assert_eq!(routes.binding(viewport), Some(fourth));
-    assert_eq!(routes.window(viewport), None);
-    assert_eq!(routes.route_for_event(third_window, None), None);
-    routes.attach(viewport, fourth, WindowId::from(23)).unwrap();
-    let fifth = bindings().0;
-    let receipt = routes
-        .replace(viewport, fourth, WindowId::from(24), fifth)
-        .unwrap()
-        .unwrap();
-    assert_eq!(receipt.binding(), fourth);
-    assert_eq!(receipt.window(), WindowId::from(23));
-    assert_eq!(routes.route_for_event(WindowId::from(23), None), None);
-    assert_eq!(routes.binding(viewport), Some(fifth));
     assert_eq!(routes.owned_data_capacity_bytes(), bytes);
     assert_eq!(routes.viewports.as_ptr(), backing);
 }
@@ -316,13 +300,6 @@ fn capture_preserves_fallback_without_publishing_or_recreating_the_window_receip
     );
     routes.bind(viewport, window, binding).unwrap();
     assert!(!routes.route(viewport).unwrap().window_published);
-    assert!(
-        routes
-            .replace(viewport, binding, window, binding)
-            .unwrap()
-            .is_none()
-    );
-    assert!(!routes.route(viewport).unwrap().window_published);
 
     let mut journal = crate::mailbox::journal::HostIngressJournal::new(
         dockspace::runtime::NativeMonotonicClock::system(),
@@ -374,12 +351,16 @@ fn foreign_provider_handles_with_reused_public_ids_do_not_match_exact_guards() {
     let bytes = routes.owned_data_capacity_bytes();
     routes.bind(viewport, window, predecessor).unwrap();
     assert!(routes.set_focus_reportable(&[predecessor]));
-    assert!(
+    assert!(routes.suppress_pointer_route(viewport, predecessor));
+    drop(
         routes
-            .replace(viewport, predecessor, window, successor)
-            .unwrap()
-            .is_none()
+            .reserve_retired_replacement(viewport, predecessor, successor)
+            .unwrap(),
     );
+    let successor_window = WindowId::from(42);
+    routes
+        .attach_output(viewport, successor, successor_window, None)
+        .unwrap();
     assert_eq!(routes.focus_binding_for_event(window, None), None);
     assert!(!routes.set_focus_reportable(&[predecessor]));
     assert_eq!(routes.focus_binding_for_event(window, None), None);
@@ -390,7 +371,7 @@ fn foreign_provider_handles_with_reused_public_ids_do_not_match_exact_guards() {
     routes.prepare_retirements(&committed).unwrap();
     assert!(routes.set_focus_reportable(&[successor]));
     assert_eq!(
-        routes.focus_binding_for_event(window, None),
+        routes.focus_binding_for_event(successor_window, None),
         Some(successor.window())
     );
     routes.commit_retirements(&committed);

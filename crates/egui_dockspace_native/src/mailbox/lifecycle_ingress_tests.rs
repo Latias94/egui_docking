@@ -337,9 +337,12 @@ fn retired_window_terminal_cannot_replace_or_release_the_active_successor() {
     bridge
         .bind_viewport_route(viewport, old_window, first)
         .unwrap();
-    bridge.unbind_viewport_route(viewport, first).unwrap();
+    assert!(bridge.with_viewports_mut(|routes| routes.suppress_pointer_route(viewport, first)));
     bridge
-        .bind_viewport_route(viewport, new_window, next)
+        .reserve_retired_viewport_replacement(viewport, first, next)
+        .unwrap();
+    bridge
+        .with_viewports_mut(|routes| routes.attach_output(viewport, next, new_window, None))
         .unwrap();
     now.store(10, Ordering::SeqCst);
     bridge.push_record(destroyed(401, old_window));

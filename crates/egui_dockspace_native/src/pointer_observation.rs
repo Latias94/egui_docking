@@ -201,8 +201,8 @@ mod tests {
 
     use super::*;
 
-    fn bindings() -> (NativeSurfaceBinding, NativeSurfaceBinding) {
-        let layout = DockspaceLayout::new([1, 2].map(|id| {
+    fn layout() -> DockspaceLayout {
+        DockspaceLayout::new([1, 2].map(|id| {
             DockspaceSurfaceLayout::new(
                 SurfaceId::new(id),
                 DockspaceRootLayout::new(
@@ -211,10 +211,21 @@ mod tests {
                 ),
             )
         }))
-        .unwrap();
-        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+        .unwrap()
+    }
+
+    fn binding_session() -> (
+        DockspaceSession,
+        (NativeSurfaceBinding, NativeSurfaceBinding),
+    ) {
+        let mut session = DockspaceSession::from_layout(layout(), DockPolicy::default()).unwrap();
         session
             .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .unwrap();
+        session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                eframe::NativeWindowingBackend::Windows,
+            ))
             .unwrap();
         for id in [1, 2] {
             session
@@ -230,7 +241,12 @@ mod tests {
             HostInputOutcome::NativeSurfaceRegistered { binding } => Some(*binding),
             _ => None,
         });
-        (bindings.next().unwrap(), bindings.next().unwrap())
+        let pair = (bindings.next().unwrap(), bindings.next().unwrap());
+        (session, pair)
+    }
+
+    fn bindings() -> (NativeSurfaceBinding, NativeSurfaceBinding) {
+        binding_session().1
     }
 
     fn key() -> NativePointerObservationKey {
@@ -284,8 +300,6 @@ mod tests {
 
     #[test]
     fn frozen_routes_keep_receipt_binding_after_map_replacement() {
-        let (source, target) = bindings();
-        let (current_source, successor) = bindings();
         let key = key();
         let target_viewport = ViewportId::from_hash_of("observed-target");
         let target_window = WindowId::from(71);
@@ -307,6 +321,8 @@ mod tests {
                 observed,
             ),
         ] {
+            let (mut session, (source, target)) = binding_session();
+            let (current_source, _) = bindings();
             let mut viewports = NativeViewportMap::default();
             viewports
                 .bind(key.viewport, key.window, current_source)
@@ -348,12 +364,29 @@ mod tests {
                 }),
             );
 
-            assert!(
-                viewports
-                    .replace(target_viewport, target, target_window, successor)
-                    .unwrap()
-                    .is_none()
-            );
+            let reset = session.prepare_layout_reset(layout()).unwrap();
+            let mut frame = session.begin_host_frame().unwrap();
+            frame.submit_layout_reset(&reset).unwrap();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            let prepared = frame.prepare_commit().unwrap();
+            let continuations = prepared
+                .native_root_continuations()
+                .filter(|continuation| continuation.predecessor() == target)
+                .collect::<Vec<_>>();
+            assert_eq!(continuations.len(), 1);
+            let successor = continuations[0].successor();
+            viewports
+                .validate_workspace_root_continuation_rosters(
+                    || continuations.iter().copied(),
+                    &[],
+                    |window| prepared.committed_native_surface_bindings_for_window(window),
+                    |window| prepared.native_surface_bindings_for_window(window),
+                )
+                .unwrap();
+            prepared.commit().unwrap();
+            viewports.commit_workspace_root_continuations(&continuations);
 
             assert_eq!(
                 viewports.pointer_binding_for_window(target_window),

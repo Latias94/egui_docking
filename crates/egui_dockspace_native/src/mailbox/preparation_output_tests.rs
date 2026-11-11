@@ -2,41 +2,14 @@
 
 use std::num::NonZeroUsize;
 
-use dockspace::model::{
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
-};
-use dockspace::policy::DockPolicy;
 use dockspace::runtime::NativeCreateReadiness;
 use winit::platform::x11::EventLoopBuilderExtX11;
 
 use super::*;
 
-fn binding() -> NativeSurfaceBinding {
-    let surface = SurfaceId::new(1);
-    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
-        surface,
-        DockspaceRootLayout::new(
-            RootId::new(1),
-            DockspaceNode::central_tabs([ItemId::new(1)]),
-        ),
-    )])
-    .unwrap();
-    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
-    session
-        .enable_managed_native_host(dockspace::runtime::NativePointerRoster::Exact(Vec::new()))
-        .unwrap();
-    session
-        .register_native_root(surface, dockspace::runtime::HostWindowToken::new(1))
-        .unwrap();
-    let mut frame = session.begin_host_frame().unwrap();
-    frame
-        .complete_unpainted_surfaces(dockspace::runtime::SurfaceUnavailableReason::Deferred)
-        .unwrap();
-    frame.commit().unwrap().native_bindings()[0]
-}
-
 struct Fixture {
     bridge: NativeHostBridge,
+    session: DockspaceSession,
     predecessor: NativeSurfaceBinding,
     successor: NativeSurfaceBinding,
     old_token: Option<NativeOutputToken>,
@@ -142,15 +115,31 @@ impl eframe::App for App {
         let mut fixture = self.0.lock().unwrap();
         if fixture.old_token.is_none() {
             fixture.old_token = Some(token);
-            fixture
-                .bridge
-                .replace_viewport_route(
-                    token.viewport_id(),
-                    fixture.predecessor,
-                    fixture.successor,
-                    NativeViewportReplacement::Attach(token.window_id()),
-                )
-                .unwrap();
+            let predecessor = fixture.predecessor;
+            let successor = {
+                let Fixture {
+                    bridge, session, ..
+                } = &mut *fixture;
+                let reset = session
+                    .prepare_layout_reset(super::tests::workspace_root_layout(
+                        predecessor.surface(),
+                    ))
+                    .unwrap();
+                let mut frame = session.begin_host_frame().unwrap();
+                frame.submit_layout_reset(&reset).unwrap();
+                frame
+                    .complete_unpainted_surfaces(
+                        dockspace::runtime::SurfaceUnavailableReason::Deferred,
+                    )
+                    .unwrap();
+                let (report, _) = bridge
+                    .commit_host_frame_with_staging(frame, false, None)
+                    .unwrap();
+                bridge.finish_workspace_replacement(token.viewport_id(), predecessor);
+                report.native_bindings()[0]
+            };
+            assert_ne!(predecessor, successor);
+            fixture.successor = successor;
             fixture.bridge.ready_window_preparation_for_test(
                 token.viewport_id(),
                 fixture.successor,
@@ -235,16 +224,14 @@ impl eframe::App for App {
 #[test]
 #[ignore = "requires a real X11 display and renderer; output identities are minted by eframe"]
 fn real_old_output_cannot_revoke_successor_preparation_and_its_exact_created_receipt() {
-    let predecessor = binding();
-    let successor = binding();
-    assert_ne!(predecessor, successor);
-    assert_eq!(predecessor.surface(), successor.surface());
+    let (session, _, predecessor) = super::tests::workspace_root_fixture();
     let bridge = NativeHostBridge::new(NativeViewportMap::default());
     bridge.lock().window_resources = NativeWindowResources::with_capacity_limit(2).unwrap();
     let fixture = Arc::new(Mutex::new(Fixture {
         bridge,
+        session,
         predecessor,
-        successor,
+        successor: predecessor,
         old_token: None,
         successor_token: None,
         revoked: None,

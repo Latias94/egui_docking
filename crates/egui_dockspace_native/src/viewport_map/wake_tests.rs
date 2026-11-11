@@ -111,13 +111,13 @@ fn retained_pass_reblocks_a_ready_or_claimed_route_until_the_next_release() {
 }
 
 #[test]
-fn every_same_viewport_replacement_preserves_blocked_and_ready_wakes() {
+fn retired_replacement_preserves_blocked_and_ready_wakes() {
     let (predecessor, _) = bindings();
     let successor = bindings().0;
     let viewport = ViewportId::ROOT;
     let window = WindowId::from(93);
     for ready in [false, true] {
-        for replacement in 0..4 {
+        for attached in [false, true] {
             let mut routes = NativeViewportMap::with_capacity_limit(1).unwrap();
             routes.bind(viewport, window, predecessor).unwrap();
             let bytes = routes.owned_data_capacity_bytes();
@@ -126,23 +126,17 @@ fn every_same_viewport_replacement_preserves_blocked_and_ready_wakes() {
             if ready {
                 routes.release_blocked_semantic_viewports();
             }
-            let displaced = match replacement {
-                0 => routes.reserve_replacement(viewport, predecessor, successor),
-                1 => {
-                    assert!(routes.suppress_pointer_route(viewport, predecessor));
-                    routes.reserve_retired_replacement(viewport, predecessor, successor)
-                }
-                2 => routes.replace(viewport, predecessor, WindowId::from(94), successor),
-                3 => routes.replace(viewport, predecessor, window, successor),
-                _ => unreachable!(),
-            }
-            .unwrap();
-            if let Some(receipt) = displaced {
-                assert_eq!(receipt.binding(), predecessor);
-                assert_eq!(receipt.window(), window);
-            } else {
-                assert_eq!(replacement, 3);
-                assert!(routes.has_window_receipt(viewport, successor));
+            assert!(routes.suppress_pointer_route(viewport, predecessor));
+            let receipt = routes
+                .reserve_retired_replacement(viewport, predecessor, successor)
+                .unwrap()
+                .unwrap();
+            assert_eq!(receipt.binding(), predecessor);
+            assert_eq!(receipt.window(), window);
+            if attached {
+                routes
+                    .attach_output(viewport, successor, WindowId::from(94), None)
+                    .unwrap();
             }
             assert_eq!(routes.binding(viewport), Some(successor));
             assert!(!routes.clear_semantic_wake(viewport, predecessor));
@@ -169,9 +163,13 @@ fn predecessor_retirement_cannot_clear_successor_wake_and_exact_retirement_ends_
         .unwrap();
     let bytes = routes.owned_data_capacity_bytes();
     assert!(routes.block_semantic_viewport(viewport));
+    assert!(routes.suppress_pointer_route(viewport, predecessor));
     let predecessor_receipt = routes
-        .replace(viewport, predecessor, WindowId::from(96), successor)
+        .reserve_retired_replacement(viewport, predecessor, successor)
         .unwrap()
+        .unwrap();
+    routes
+        .attach_output(viewport, successor, WindowId::from(96), None)
         .unwrap();
     let retired = committed_retirement(predecessor_receipt);
     assert!(!routes.clear_semantic_wake(viewport, predecessor));

@@ -1472,7 +1472,7 @@ fn assert_close_create_and_output_pressure(
     let successor_capture = |native: &NativeCoordinator, binding| {
         native.bridge.with_close_control(|control| {
             control
-                .deferred_ingress()
+                .deferred_ingress_for_test()
                 .find(|ingress| ingress.window_event().unwrap().binding() == Some(binding))
                 .map(|ingress| (ingress.ordinal(), ingress.captured_at()))
         })

@@ -112,8 +112,6 @@ pub(crate) enum NativeHostProtocolError {
     NativeInputCorrelationChanged,
     #[error("native pointer pass-through dispatch changed before it was registered")]
     NativeInputDispatchChanged,
-    #[error("native surface {0} still has a retained host route, callback or sidecar")]
-    NativeBindingNotQuiescent(SurfaceId),
     #[error("finite native host-owner storage requires both producer and effect-report bounds")]
     NativeOwnerStorageConfiguration,
     #[error("an exact native close cancellation was not accepted by the core")]
@@ -131,9 +129,9 @@ impl NativeHostProtocolError {
             | Self::RootSurfaceUnavailable(_)
             | Self::StylePresentationMismatch { .. }
             | Self::NativeOwnerStorageConfiguration => NativeRuntimeErrorKind::InvalidConfiguration,
-            Self::MultipassLocalActionConflict
-            | Self::NativeReportStorageUnavailable
-            | Self::NativeBindingNotQuiescent(_) => NativeRuntimeErrorKind::OperationConflict,
+            Self::MultipassLocalActionConflict | Self::NativeReportStorageUnavailable => {
+                NativeRuntimeErrorKind::OperationConflict
+            }
             Self::NativeEffectResultRejected(kind) => kind.runtime_error_kind(),
             Self::OutputBudgetUnavailable
             | Self::CallbackRecordPending

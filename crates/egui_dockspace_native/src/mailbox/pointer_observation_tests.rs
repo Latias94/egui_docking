@@ -384,11 +384,8 @@ fn retired_observation_keeps_exact_owner_and_frozen_routes() {
     }
 
     for terminal in [Terminal::Callback, Terminal::Retirement, Terminal::Detach] {
-        let (_session, [source, target, _]) = registered_session();
-        let (_successor_session, [successor, _, _]) = registered_session();
-        // Rebinding one window requires distinct real bindings for the same surface.
-        assert_eq!(source.surface(), successor.surface());
-        assert_ne!(source, successor);
+        let (mut session, _, source) = super::tests::workspace_root_fixture();
+        let (_peer_session, [_, target, _]) = registered_session();
         let (bridge, now) = bridge_with_clock();
         let viewport = ViewportId::ROOT;
         let window = WindowId::from(31);
@@ -420,14 +417,21 @@ fn retired_observation_keeps_exact_owner_and_frozen_routes() {
                 NativePointerObservationRecord::retired(first, source)
             }
         };
-        bridge
-            .replace_viewport_route(
-                viewport,
-                source,
-                successor,
-                NativeViewportReplacement::Attach(window),
-            )
+        let reset = session
+            .prepare_layout_reset(super::tests::workspace_root_layout(source.surface()))
             .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.submit_layout_reset(&reset).unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let (report, _) = bridge
+            .commit_host_frame_with_staging(frame, false, None)
+            .unwrap();
+        let successor = report.native_bindings()[0];
+        assert_eq!(source.surface(), successor.surface());
+        assert_ne!(source, successor);
+        bridge.finish_workspace_replacement(viewport, source);
         bridge
             .bind_viewport_route(late_viewport, late_window, target)
             .unwrap();

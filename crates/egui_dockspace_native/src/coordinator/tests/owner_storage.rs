@@ -123,9 +123,13 @@ fn zero_resource_capacity_refuses_a_root_route_before_any_backend_work_or_source
 }
 
 #[test]
-fn manual_quiescence_shares_the_automatic_guard_for_stable_input_observations() {
+fn stable_input_observations_block_automatic_exact_quiescence() {
     let mut native = bounded(1);
     let (binding, _) = register_roots(&mut native);
+    native
+        .bridge
+        .reserve_viewport_route(ViewportId::ROOT, binding)
+        .unwrap();
     let prepared = eframe::prepare_native_viewport_pointer_passthrough(ViewportId::ROOT, false);
     // Install a stable sidecar directly to isolate the quiescence boundary.
     // This fixture does not claim a physical callback or window destruction.
@@ -157,21 +161,24 @@ fn manual_quiescence_shares_the_automatic_guard_for_stable_input_observations() 
     frame.commit().unwrap();
     assert!(!native.session.is_current_native_binding(binding));
     assert!(native.session.recognizes_native_binding(binding));
+    assert!(
+        native
+            .bridge
+            .retire_unstarted_viewport(ViewportId::ROOT, binding)
+    );
+    assert!(native.bridge.retirement_is_quiescence_candidate(binding));
     let recorded = native.session.native_input_recorded_count();
     let backing = native.input_control.owned_data_capacity_bytes();
     assert!(native.binding_has_retained_host_references(binding));
-    assert_eq!(
-        native
-            .report_binding_quiescence(binding)
-            .unwrap_err()
-            .kind(),
-        crate::NativeRuntimeErrorKind::OperationConflict
-    );
+    assert!(!native.try_report_retirement_quiescence().unwrap());
     assert_eq!(native.session.native_input_recorded_count(), recorded);
     assert!(native.session.recognizes_native_binding(binding));
     assert_eq!(native.input_control.owned_data_capacity_bytes(), backing);
     native.retain_retired_input_results(binding);
     assert!(!native.binding_has_retained_host_references(binding));
+    assert!(native.try_report_retirement_quiescence().unwrap());
+    assert!(!native.session.recognizes_native_binding(binding));
+    assert!(!native.bridge.retirement_is_quiescence_candidate(binding));
     assert_eq!(native.input_control.owned_data_capacity_bytes(), backing);
 }
 

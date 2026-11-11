@@ -363,22 +363,6 @@ impl NativeViewportMap {
         Ok(())
     }
 
-    pub(crate) fn reserve_replacement(
-        &mut self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-        successor: NativeSurfaceBinding,
-    ) -> Result<Option<NativeWindowReceipt>, NativeViewportBindingError> {
-        let current = self.validate_replacement(viewport, expected, successor)?;
-        if current.binding == successor {
-            return Ok(None);
-        }
-        self.prepare_route_slot(viewport)?;
-        let terminal = self.take_window_receipt(viewport, expected);
-        self.insert(viewport, None, successor);
-        Ok(terminal)
-    }
-
     pub(crate) fn reserve_retired_replacement(
         &mut self,
         viewport: ViewportId,
@@ -407,67 +391,6 @@ impl NativeViewportMap {
         let terminal = self.take_window_receipt(viewport, expected);
         self.insert(viewport, None, successor);
         Ok(terminal)
-    }
-
-    pub(crate) fn replace(
-        &mut self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-        successor_window: WindowId,
-        successor: NativeSurfaceBinding,
-    ) -> Result<Option<NativeWindowReceipt>, NativeViewportBindingError> {
-        let same_window = self.window(viewport) == Some(successor_window);
-        let current = if same_window {
-            self.validate_same_window_replacement(viewport, expected, successor)?;
-            self.route(viewport)
-                .expect("validated same-window replacement retains its route")
-                .snapshot()
-        } else {
-            self.validate_replacement(viewport, expected, successor)?
-        };
-        self.validate_window_unclaimed(viewport, successor_window)?;
-        self.prepare_route_slot(viewport)?;
-        if current.window == Some(successor_window) {
-            self.rebind_same_window(viewport, successor);
-            return Ok(None);
-        }
-        if expected == successor {
-            return Err(NativeViewportBindingError::BindingNotCurrent {
-                viewport,
-                surface: expected.surface(),
-            });
-        }
-        let terminal = self.take_window_receipt(viewport, expected);
-        self.insert(viewport, Some(successor_window), successor);
-        Ok(terminal)
-    }
-
-    /// Validates the allocation-free receipt migration before a core publication.
-    pub(crate) fn validate_same_window_replacement(
-        &self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-        successor: NativeSurfaceBinding,
-    ) -> Result<(), NativeViewportBindingError> {
-        let route = self
-            .route(viewport)
-            .ok_or(NativeViewportBindingError::ViewportUnbound { viewport })?;
-        Self::validate_binding(viewport, expected, route.snapshot())?;
-        self.validate_create_settled(viewport, expected)?;
-        if successor.surface() != expected.surface()
-            || route.window.is_none()
-            || self.prepared_retirements.contains(&expected)
-            || !route
-                .terminal
-                .as_ref()
-                .is_some_and(NativeWindowReceipt::is_awaiting)
-        {
-            return Err(NativeViewportBindingError::BindingNotCurrent {
-                viewport,
-                surface: expected.surface(),
-            });
-        }
-        self.validate_window_unclaimed(viewport, route.window.expect("the window was checked"))
     }
 
     /// Resolves the exact physical predecessor independently of placement changes.
@@ -645,10 +568,8 @@ impl NativeViewportMap {
         &mut self,
         continuations: &[NativeRootContinuation],
     ) {
-        self.validate_workspace_root_continuations(|| continuations.iter().copied())
-            .expect("same-lock Root continuations were validated before core publication");
         // One original physical route moves once, even when every placement
-        // changed generation. The surface tag only correlates legacy receipts.
+        // changed generation. The surface tag correlates original physical callbacks.
         for route in &mut self.viewports {
             let same_window = |continuation: &&NativeRootContinuation| {
                 continuation.predecessor().window() == route.binding.window()
@@ -664,13 +585,6 @@ impl NativeViewportMap {
                 route.rebind_same_window(continuation.successor());
             }
         }
-    }
-
-    fn rebind_same_window(&mut self, viewport: ViewportId, successor: NativeSurfaceBinding) {
-        let route = self
-            .route_mut(viewport)
-            .expect("validated replacement retains its route");
-        route.rebind_same_window(successor);
     }
 
     pub(crate) fn remove_viewport(
@@ -1218,38 +1132,6 @@ impl NativeViewportMap {
             });
         }
         Ok(())
-    }
-
-    fn validate_replacement(
-        &self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-        successor: NativeSurfaceBinding,
-    ) -> Result<RouteSnapshot, NativeViewportBindingError> {
-        let Some(current) = self.route(viewport).map(NativeViewportRoute::snapshot) else {
-            return Err(NativeViewportBindingError::ViewportUnbound { viewport });
-        };
-        if self.prepared_retirements.contains(&current.binding) {
-            return Err(NativeViewportBindingError::BindingNotCurrent {
-                viewport,
-                surface: current.binding.surface(),
-            });
-        }
-        self.validate_create_settled(viewport, current.binding)?;
-        Self::validate_binding(viewport, expected, current)?;
-        if successor.surface() != expected.surface() {
-            return Err(NativeViewportBindingError::ReplacementSurfaceMismatch {
-                viewport,
-                expected: expected.surface(),
-                successor: successor.surface(),
-            });
-        }
-        debug_assert_eq!(
-            self.viewport(successor.surface()),
-            Some(viewport),
-            "viewport and surface indexes must remain symmetric",
-        );
-        Ok(current)
     }
 
     fn validate_create_settled(

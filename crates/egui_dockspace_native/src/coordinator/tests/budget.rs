@@ -295,7 +295,10 @@ fn deferred_child_paint_survives_repeated_partial_commits_and_a_dropped_final_fr
     let (_, binding) = register_roots(&mut native);
     let context = egui::Context::default();
     let child = ViewportId::from_hash_of("partial-native-child");
-    native.reserve_viewport(child, binding).unwrap();
+    native
+        .bridge
+        .reserve_viewport_route(child, binding)
+        .unwrap();
     let wakes = Arc::new(AtomicU64::new(0));
     context.set_request_repaint_callback({
         let wakes = Arc::clone(&wakes);

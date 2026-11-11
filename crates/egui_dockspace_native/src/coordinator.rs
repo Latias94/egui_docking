@@ -12,10 +12,11 @@ use dockspace::runtime::{
     NativeEffectOperation, NativeEffectRequest, NativeEffectResult, NativeEffectSubmissionError,
     NativeGlobalFocus, NativeHostErrorKind, NativeIndeterminateReason, NativeInputBudget,
     NativeInputStorageLimit, NativePointerInput, NativePointerRoster, NativeReceiverAnswer,
-    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts,
-    NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
-    SurfaceUnavailableReason,
+    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, PaintedSurfaceOutput,
+    SurfacePresentationResult, SurfaceUnavailableReason,
 };
+#[cfg(test)]
+use dockspace::runtime::{NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster};
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
     NativeViewportCreateAttempt, NativeViewportCreateFailureKind, NativeViewportFocusStatus,
@@ -732,124 +733,6 @@ impl NativeCoordinator {
             });
         }
         self.bridge.bind_viewport_route(viewport, window, binding)
-    }
-
-    /// Reserves one eframe viewport for an exact binding before eframe creates its window.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the binding is stale or the viewport/surface is already reserved by
-    /// another exact peer.
-    pub fn reserve_viewport(
-        &mut self,
-        viewport: ViewportId,
-        binding: NativeSurfaceBinding,
-    ) -> Result<(), NativeViewportBindingError> {
-        if !self.session.is_current_native_binding(binding) {
-            return Err(NativeViewportBindingError::BindingNotCurrent {
-                viewport,
-                surface: binding.surface(),
-            });
-        }
-        self.bridge.reserve_viewport_route(viewport, binding)
-    }
-
-    /// Attaches the native window created for an exact reserved viewport binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the reservation changed or the window is already attached elsewhere.
-    pub fn attach_viewport_window(
-        &mut self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-        window: WindowId,
-    ) -> Result<(), NativeViewportBindingError> {
-        if !self.session.is_current_native_binding(expected) {
-            return Err(NativeViewportBindingError::BindingNotCurrent {
-                viewport,
-                surface: expected.surface(),
-            });
-        }
-        self.bridge
-            .attach_viewport_route(viewport, window, expected)
-    }
-
-    /// Replaces one viewport association only after proving its predecessor.
-    ///
-    /// This explicit compare-and-replace operation prevents a delayed A1
-    /// callback from overwriting a recreated A2 native binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the predecessor is stale, the successor changes
-    /// the logical surface, or a peer identity is already bound elsewhere.
-    pub fn replace_viewport(
-        &mut self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-        successor_window: WindowId,
-        successor: NativeSurfaceBinding,
-    ) -> Result<(), NativeViewportBindingError> {
-        if !self.session.is_current_native_binding(successor) {
-            return Err(NativeViewportBindingError::BindingNotCurrent {
-                viewport,
-                surface: successor.surface(),
-            });
-        }
-        self.bridge.replace_viewport_route(
-            viewport,
-            expected,
-            successor,
-            crate::mailbox::NativeViewportReplacement::Attach(successor_window),
-        )?;
-        self.receivers.retire_binding(expected);
-        Ok(())
-    }
-
-    /// Replaces one exact viewport reservation before the successor window exists.
-    ///
-    /// The predecessor window route is removed immediately, so any late callback from it becomes
-    /// unknown rather than acquiring the successor's authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the predecessor is stale or the successor changes logical surface.
-    pub fn reserve_viewport_replacement(
-        &mut self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-        successor: NativeSurfaceBinding,
-    ) -> Result<(), NativeViewportBindingError> {
-        if !self.session.is_current_native_binding(successor) {
-            return Err(NativeViewportBindingError::BindingNotCurrent {
-                viewport,
-                surface: successor.surface(),
-            });
-        }
-        self.bridge.replace_viewport_route(
-            viewport,
-            expected,
-            successor,
-            crate::mailbox::NativeViewportReplacement::Reserve,
-        )?;
-        self.receivers.retire_binding(expected);
-        Ok(())
-    }
-
-    /// Removes one viewport association after proving its exact incarnation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the viewport is absent or `expected` is stale.
-    pub fn unbind_viewport(
-        &mut self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-    ) -> Result<NativeSurfaceBinding, NativeViewportBindingError> {
-        let removed = self.bridge.unbind_viewport_route(viewport, expected)?;
-        self.receivers.retire_binding(removed);
-        Ok(removed)
     }
 
     /// Returns the current exact binding for one eframe viewport.
@@ -2533,6 +2416,7 @@ impl NativeCoordinator {
     ///
     /// Returns an error when the roster is incomplete, stale, or internally
     /// contradictory.
+    #[cfg(test)]
     pub fn report_snapshot(
         &mut self,
         windows: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
@@ -2544,25 +2428,6 @@ impl NativeCoordinator {
         self.session
             .report_managed_native_snapshot(windows, work_areas)?;
         Ok(())
-    }
-
-    /// Explicitly revokes authoritative native inventory for the next frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no managed native provider is active.
-    pub fn report_inventory_unknown(&mut self) -> Result<(), NativeRuntimeError> {
-        self.session.report_native_inventory_unknown()?;
-        Ok(())
-    }
-
-    /// Returns a current exact work-area binding for outside-all routing.
-    #[must_use]
-    pub fn native_work_area(
-        &self,
-        token: dockspace::runtime::HostWorkAreaToken,
-    ) -> Option<NativeWorkAreaBinding> {
-        self.session.native_work_area(token)
     }
 
     #[cfg(test)]
@@ -2597,46 +2462,6 @@ impl NativeCoordinator {
     ) -> Result<(), NativeRuntimeError> {
         self.session
             .publish_native_close(binding, state, acknowledgement)?;
-        Ok(())
-    }
-
-    /// Records one negative or indeterminate result for an emitted native effect.
-    ///
-    /// Successful dispatch acknowledgements are attached to the subsequent
-    /// exact property observation instead of being reported through this lane.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only when a retained rejection is not retryable.
-    /// Stale-binding and operation-conflict results remain pending for an exact
-    /// retry or binding retirement boundary.
-    pub fn report_effect_result(
-        &mut self,
-        result: NativeEffectResult,
-    ) -> Result<(), NativeRuntimeError> {
-        let binding = result.binding();
-        if let Err(error) = self.session.report_native_effect_result(result) {
-            return self.retain_or_return_effect_result(binding, error);
-        }
-        Ok(())
-    }
-
-    /// Records permanent host quiescence for one retired binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error while any callback, route, or sidecar may still name
-    /// the binding, or when the binding remains live.
-    pub fn report_binding_quiescence(
-        &mut self,
-        binding: NativeSurfaceBinding,
-    ) -> Result<(), NativeRuntimeError> {
-        if self.binding_has_retained_host_references(binding) {
-            return Err(
-                NativeHostProtocolError::NativeBindingNotQuiescent(binding.surface()).into(),
-            );
-        }
-        self.session.report_native_binding_quiescence(binding)?;
         Ok(())
     }
 

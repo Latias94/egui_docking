@@ -1126,7 +1126,7 @@ mod persistence {
                         control
                             .unsubmitted_requests()
                             .any(|request| request == close),
-                        control.decision_count(),
+                        control.decision_requests().count(),
                         control.has_runnable_policy_work(),
                     )
                 });

@@ -859,9 +859,8 @@ pub enum EngineInput {
     },
     /// Request a close plan from one exact scene-bound semantic activation.
     ///
-    /// Pointer close activation remains part of the legacy pointer reducer until
-    /// the pointer journal owns close-control receivers. This input cannot forge
-    /// pointer hit authority.
+    /// Pointer close activation uses the pointer journal's exact close-control
+    /// receiver. This semantic input cannot forge pointer hit authority.
     RequestSceneClose {
         /// Workspace version from which the scene action was captured.
         expected: WorkspaceVersion,

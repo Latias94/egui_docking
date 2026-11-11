@@ -358,7 +358,7 @@ fn decision_count_and_borrowed_requests_preserve_exact_ids_and_capacity_through_
         requests.push((binding, close, plan.request()));
     }
     requests.sort_unstable_by_key(|(binding, _, _)| *binding);
-    assert_eq!(control.decision_count(), 2);
+    assert_eq!(control.decision_requests().count(), 2);
     assert!(
         control
             .decision_requests()
@@ -367,19 +367,19 @@ fn decision_count_and_borrowed_requests_preserve_exact_ids_and_capacity_through_
     assert!(control.unsubmitted_requests().next().is_none());
     assert_eq!(control.unresolved_requests().next(), Some(requests[0].1));
     control.settle_decision_requests(&[]);
-    assert_eq!(control.decision_count(), 2);
+    assert_eq!(control.decision_requests().count(), 2);
     control.settle_decision_requests(&[requests[0].2]);
     control.settle_decision_requests(&[requests[0].2]);
-    assert_eq!(control.decision_count(), 1);
+    assert_eq!(control.decision_requests().count(), 1);
     assert_eq!(control.decision_requests().next(), Some(requests[1].2));
     assert_eq!(
         control.request_for_binding(requests[0].0),
         Some(requests[0].1)
     );
     control.retire_binding(requests[0].0);
-    assert_eq!(control.decision_count(), 1);
+    assert_eq!(control.decision_requests().count(), 1);
     control.settle_decision_requests(&[requests[1].2]);
-    assert_eq!(control.decision_count(), 0);
+    assert_eq!(control.decision_requests().count(), 0);
     assert!(!control.has_runnable_policy_work());
     assert!(control.references_binding(requests[1].0));
     assert_eq!(control.pending.as_ptr(), backing);

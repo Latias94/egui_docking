@@ -136,7 +136,7 @@ impl DockspaceHostFrame<'_> {
             document_restore,
         } = self;
         // Borrowed-only frames rely on `&mut` exclusivity. Acquire a lease only
-        // when ownership escapes, so an ended legacy borrow cannot block begin.
+        // when ownership escapes, so an ended borrowed frame cannot block begin.
         let update_lease = update_lease.unwrap_or_else(|| session.lease_update());
         DockspaceUpdate {
             update_lease,

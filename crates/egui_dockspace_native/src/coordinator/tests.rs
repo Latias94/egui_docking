@@ -603,7 +603,7 @@ fn local_route_coordinates_advance_only_after_commit_and_revoke_without_queued_s
 }
 
 #[test]
-fn local_route_coordinates_are_cleared_by_exact_suppression_and_every_successor_path() {
+fn local_route_coordinates_are_cleared_by_exact_suppression_and_retired_replacement() {
     let (native, first, second) = presented_local_coordinate_routes();
     let (replacement, successor, _) = presented_local_coordinate_routes();
     let viewport = ViewportId::ROOT;
@@ -629,39 +629,21 @@ fn local_route_coordinates_are_cleared_by_exact_suppression_and_every_successor_
     assert_eq!(routes.local_coordinates_for_event(window, None), None);
     drop(routes.remove_viewport(viewport, first).unwrap());
 
-    for path in 0..4 {
+    for successor_window in [window, WindowId::from(33)] {
         routes.bind(viewport, window, first).unwrap();
         routes.refresh_local_coordinates(&native.session);
         assert_eq!(
             routes.local_coordinates_for_event(window, None),
             Some(original)
         );
-        let successor_window = if path == 0 {
-            window
-        } else {
-            WindowId::from(33)
-        };
-        let displaced = match path {
-            0 | 1 => routes
-                .replace(viewport, first, successor_window, successor)
-                .unwrap(),
-            2 => routes
-                .reserve_replacement(viewport, first, successor)
-                .unwrap(),
-            3 => {
-                assert!(routes.suppress_pointer_route(viewport, first));
-                routes
-                    .reserve_retired_replacement(viewport, first, successor)
-                    .unwrap()
-            }
-            _ => unreachable!(),
-        };
+        assert!(routes.suppress_pointer_route(viewport, first));
+        let displaced = routes
+            .reserve_retired_replacement(viewport, first, successor)
+            .unwrap();
         drop(displaced);
-        if path >= 2 {
-            routes
-                .attach(viewport, successor, successor_window)
-                .unwrap();
-        }
+        routes
+            .attach_output(viewport, successor, successor_window, None)
+            .unwrap();
         assert_eq!(
             routes.pointer_binding_for_event(successor_window, None),
             Some(successor.window())
@@ -751,13 +733,6 @@ fn coordinator_owns_registration_and_viewport_identity() {
 
     assert_eq!(native.viewport_binding(ViewportId::ROOT), Some(first));
     assert_eq!(native.surface_viewport(SECOND_SURFACE), Some(child));
-    assert_eq!(
-        native
-            .unbind_viewport(child, second)
-            .expect("exact child binding retires"),
-        second
-    );
-    assert_eq!(native.surface_viewport(SECOND_SURFACE), None);
 }
 
 #[test]
@@ -941,42 +916,6 @@ fn core_active_gesture_prevents_idle_cursor_prefix_coalescing() {
 }
 
 #[test]
-fn viewport_reservation_requires_exact_window_attachment() {
-    let mut native = coordinator();
-    let (_, second) = register_roots(&mut native);
-    let child = ViewportId::from_hash_of("reserved-native-surface");
-    let window = WindowId::from(22);
-
-    native
-        .reserve_viewport(child, second)
-        .expect("child viewport reserves before OS creation");
-    assert_eq!(native.viewport_binding(child), Some(second));
-    assert_eq!(
-        native
-            .bridge
-            .with_viewports(|routes| routes.binding_for_event(window, Some(child))),
-        None
-    );
-
-    native
-        .attach_viewport_window(child, second, window)
-        .expect("exact created window attaches");
-    assert_eq!(
-        native
-            .bridge
-            .with_viewports(|routes| routes.binding_for_event(window, Some(child))),
-        Some(second)
-    );
-    assert!(matches!(
-        native.attach_viewport_window(child, second, WindowId::from(23)),
-        Err(NativeViewportBindingError::ViewportWindowAlreadyAttached {
-            viewport,
-            existing,
-        }) if viewport == child && existing == window
-    ));
-}
-
-#[test]
 fn native_admission_releases_the_exact_hidden_render_lease() {
     let mut native = coordinator();
     assert_eq!(
@@ -987,7 +926,8 @@ fn native_admission_releases_the_exact_hidden_render_lease() {
     let child = ViewportId::from_hash_of("first-live-hidden-render");
 
     native
-        .reserve_viewport(child, binding)
+        .bridge
+        .reserve_viewport_route(child, binding)
         .expect("the deferred viewport reserves its exact binding");
     assert!(
         native.bridge.reserve_create(child, binding, native_rect()),
@@ -1073,23 +1013,6 @@ fn viewport_mapping_rejects_a_foreign_same_surface_binding() {
 }
 
 #[test]
-fn stale_unbind_cannot_remove_the_current_viewport_binding() {
-    let mut native = coordinator();
-    let (first, second) = register_roots(&mut native);
-    let child = ViewportId::from_hash_of("second-native-surface");
-    native
-        .bind_viewport(child, WindowId::from(22), second)
-        .expect("child viewport binds");
-
-    assert!(matches!(
-        native.unbind_viewport(child, first),
-        Err(NativeViewportBindingError::BindingMismatch { viewport, .. })
-            if viewport == child
-    ));
-    assert_eq!(native.viewport_binding(child), Some(second));
-}
-
-#[test]
 fn reserved_replacement_revokes_the_predecessor_window_route() {
     let mut native = coordinator();
     let (_, predecessor) = register_roots(&mut native);
@@ -1101,14 +1024,14 @@ fn reserved_replacement_revokes_the_predecessor_window_route() {
 
     let mut successor_source = coordinator();
     let (_, successor) = register_roots(&mut successor_source);
+    assert!(
+        native
+            .bridge
+            .with_viewports_mut(|routes| { routes.suppress_pointer_route(child, predecessor) })
+    );
     native
         .bridge
-        .replace_viewport_route(
-            child,
-            predecessor,
-            successor,
-            crate::mailbox::NativeViewportReplacement::Reserve,
-        )
+        .reserve_retired_viewport_replacement(child, predecessor, successor)
         .expect("successor reservation replaces the exact predecessor");
 
     native.bridge.with_viewports(|routes| {
@@ -1126,7 +1049,8 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
     let (_, failed_binding) = register_roots(&mut native);
     let child = ViewportId::from_hash_of("failed-native-surface");
     native
-        .reserve_viewport(child, failed_binding)
+        .bridge
+        .reserve_viewport_route(child, failed_binding)
         .expect("failed viewport was reserved before scheduling");
     assert!(
         native
@@ -1162,7 +1086,10 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
     assert!(matches!(
         native
             .bridge
-            .with_viewports_mut(|routes| routes.reserve_replacement(child, failed_binding, successor)),
+            .with_viewports_mut(|routes| {
+                assert!(routes.suppress_pointer_route(child, failed_binding));
+                routes.reserve_retired_replacement(child, failed_binding, successor)
+            }),
         Err(NativeViewportBindingError::BindingNotCurrent { viewport, .. })
             if viewport == child
     ));
@@ -1200,7 +1127,8 @@ fn shutdown_preserves_callback_error_when_reduction_fails() {
     let (_, failed_binding) = register_roots(&mut native);
     let failed_viewport = ViewportId::from_hash_of("shutdown-partial-create");
     native
-        .reserve_viewport(failed_viewport, failed_binding)
+        .bridge
+        .reserve_viewport_route(failed_viewport, failed_binding)
         .expect("the test viewport route reserves");
     assert!(
         native
@@ -1493,7 +1421,8 @@ fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
     let (_, failed_binding) = register_roots(&mut native);
     let child = ViewportId::from_hash_of("failed-native-surface-aba");
     native
-        .reserve_viewport(child, failed_binding)
+        .bridge
+        .reserve_viewport_route(child, failed_binding)
         .expect("failed viewport was reserved before scheduling");
     assert!(
         native
@@ -1514,22 +1443,23 @@ fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
     assert!(
         native
             .bridge
-            .with_viewports_mut(|routes| routes.reserve_replacement(
-                child,
-                failed_binding,
-                successor
-            ))
+            .with_viewports_mut(|routes| {
+                assert!(routes.suppress_pointer_route(child, failed_binding));
+                routes.reserve_retired_replacement(child, failed_binding, successor)
+            })
             .is_err(),
         "an uncommitted create receipt cannot be overwritten by a successor"
     );
     native
         .acknowledge_viewport_create_failure(failure, true)
         .unwrap();
-    // The replacement session is the provider handoff which makes this
-    // successor current to the coordinator. A binding minted by an unrelated
-    // session must remain rejected by the public reservation API.
+    // The replacement session makes this successor current before the
+    // production create reservation can admit its exact binding.
     std::mem::swap(&mut native.session, &mut successor_source.session);
-    native.reserve_viewport(child, successor).unwrap();
+    native
+        .bridge
+        .reserve_viewport_route(child, successor)
+        .unwrap();
     assert!(
         native
             .bridge
@@ -1568,7 +1498,8 @@ fn staged_viewport_output_requires_an_admitted_create_attempt() {
     let window = WindowId::from(99);
 
     native
-        .reserve_viewport(viewport, binding)
+        .bridge
+        .reserve_viewport_route(viewport, binding)
         .expect("the deferred viewport reserves its exact binding");
 
     native.bridge.with_viewports(|routes| {
@@ -1954,15 +1885,21 @@ fn pointer_routes_are_frozen_before_viewport_replacement() {
 
     let mut successor_source = coordinator();
     let (successor, _) = register_roots(&mut successor_source);
+    assert!(
+        native.bridge.with_viewports_mut(|routes| {
+            routes.suppress_pointer_route(ViewportId::ROOT, first)
+        })
+    );
     native
         .bridge
-        .replace_viewport_route(
-            ViewportId::ROOT,
-            first,
-            successor,
-            crate::mailbox::NativeViewportReplacement::Attach(WindowId::from(33)),
-        )
+        .reserve_retired_viewport_replacement(ViewportId::ROOT, first, successor)
         .expect("test viewport replacement succeeds");
+    native
+        .bridge
+        .with_viewports_mut(|routes| {
+            routes.attach_output(ViewportId::ROOT, successor, WindowId::from(33), None)
+        })
+        .unwrap();
 
     let routes = record.pointer_routes().expect("pointer routes are frozen");
     assert_eq!(

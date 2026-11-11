@@ -65,10 +65,6 @@ impl NativeViewportCloseCancellationRecord {
     pub(crate) fn from_eframe(request: NativeViewportCloseRequest) -> Self {
         Self { request }
     }
-
-    pub(crate) const fn request(self) -> NativeViewportCloseRequest {
-        self.request
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -487,15 +483,6 @@ impl NativeCloseControl {
         })
     }
 
-    pub(crate) fn deferred_ingress(&self) -> impl Iterator<Item = &ReservedHostRecord> {
-        self.pending.iter().flat_map(|(_, pending)| {
-            pending
-                .successor_ingress
-                .iter()
-                .chain(pending.promoted_ingress.iter())
-        })
-    }
-
     pub(crate) fn needs_request_recording(
         &self,
         event: &NativeWindowEventRecord,
@@ -606,11 +593,6 @@ impl NativeCloseControl {
         self.pending
             .iter()
             .filter_map(|(_, pending)| pending.decision_request)
-    }
-
-    /// Counts retained decision identifiers without constructing a snapshot.
-    pub(crate) fn decision_count(&self) -> usize {
-        self.decision_requests().count()
     }
 
     /// Releases only requests proven complete by a successfully committed frame.

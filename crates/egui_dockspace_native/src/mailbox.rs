@@ -152,13 +152,6 @@ pub(crate) enum DeferredViewportPaint {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum NativeViewportReplacement {
-    Reserve,
-    ReserveRetired,
-    Attach(winit::window::WindowId),
-}
-
-#[derive(Debug, Clone, Copy)]
 pub(crate) struct OutputReservation {
     binding: Option<NativeSurfaceBinding>,
     terminal_recorded: bool,
@@ -360,13 +353,18 @@ mod tests {
         let mut routes = NativeViewportMap::default();
         routes.bind(viewport, old_window, predecessor).unwrap();
         let bridge = Arc::new(NativeHostBridge::new(routes));
+        assert!(
+            bridge.with_viewports_mut(|routes| {
+                routes.suppress_pointer_route(viewport, predecessor)
+            })
+        );
         bridge
-            .replace_viewport_route(
-                viewport,
-                predecessor,
-                successor,
-                NativeViewportReplacement::Attach(new_window),
-            )
+            .reserve_retired_viewport_replacement(viewport, predecessor, successor)
+            .unwrap();
+        bridge
+            .with_viewports_mut(|routes| {
+                routes.attach_output(viewport, successor, new_window, None)
+            })
             .unwrap();
         let destroyed = |ordinal| {
             NativeWindowEventRecord::for_test(
@@ -430,13 +428,23 @@ mod tests {
 
     #[test]
     fn same_physical_window_rebind_rejects_a_received_destroyed_receipt() {
-        let predecessor = bindings().0;
-        let successor = bindings().0;
-        let viewport = ViewportId::from_hash_of("same-window-rebind-receipt");
-        let window = WindowId::from(83);
-        let mut routes = NativeViewportMap::default();
-        routes.bind(viewport, window, predecessor).unwrap();
-        let bridge = NativeHostBridge::new(routes);
+        let (mut session, bridge, predecessor) = workspace_root_fixture();
+        let viewport = ViewportId::ROOT;
+        let window = WindowId::from(91);
+        let reset = session
+            .prepare_layout_reset(workspace_root_layout(predecessor.surface()))
+            .unwrap();
+        let version = session.version();
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.submit_layout_reset(&reset).unwrap();
+        let successor = frame
+            .proposed_native_root_continuations()
+            .next()
+            .unwrap()
+            .successor();
+        frame
+            .complete_unpainted_surfaces(dockspace::runtime::SurfaceUnavailableReason::Deferred)
+            .unwrap();
         bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
             1,
             window,
@@ -446,14 +454,10 @@ mod tests {
         )));
         assert!(
             bridge
-                .replace_viewport_route(
-                    viewport,
-                    predecessor,
-                    successor,
-                    NativeViewportReplacement::Attach(window),
-                )
+                .commit_host_frame_with_staging(frame, false, None)
                 .is_err()
         );
+        assert_eq!(session.version(), version);
         assert_eq!(bridge.front_event().unwrap().binding(), Some(predecessor));
         assert!(!bridge.with_viewports(|routes| routes.has_window_receipt(viewport, successor)));
         assert!(bridge.with_viewports(|routes| routes.has_window_receipt(viewport, predecessor)));
@@ -489,7 +493,14 @@ mod tests {
         bridge
             .bind_viewport_route(viewport, old_window, predecessor)
             .unwrap();
-        bridge.unbind_viewport_route(viewport, predecessor).unwrap();
+        assert!(
+            bridge.with_viewports_mut(|routes| {
+                routes.suppress_pointer_route(viewport, predecessor)
+            })
+        );
+        bridge
+            .reserve_retired_viewport_replacement(viewport, predecessor, successor)
+            .unwrap();
         assert!(
             bridge
                 .bind_viewport_route(viewport, WindowId::from(87), predecessor)
@@ -500,14 +511,15 @@ mod tests {
                 .bind_viewport_route(viewport, old_window, successor)
                 .is_err()
         );
-        assert!(
-            bridge
-                .with_viewports(|viewports| viewports.binding(viewport))
-                .is_none()
+        assert_eq!(
+            bridge.with_viewports(|viewports| viewports.binding(viewport)),
+            Some(successor)
         );
         assert!(bridge.lock().retirements.has_window(viewport, predecessor));
         bridge
-            .bind_viewport_route(viewport, WindowId::from(87), successor)
+            .with_viewports_mut(|routes| {
+                routes.attach_output(viewport, successor, WindowId::from(87), None)
+            })
             .unwrap();
         assert_eq!(
             bridge.with_viewports(|viewports| viewports.binding(viewport)),
@@ -517,22 +529,21 @@ mod tests {
 
     #[test]
     fn awaiting_physical_window_rebind_preserves_one_terminal_owner() {
-        let predecessor = bindings().0;
-        let successor = bindings().0;
-        let viewport = ViewportId::from_hash_of("awaiting-window-rebind");
-        let window = WindowId::from(88);
-        let bridge = NativeHostBridge::new(NativeViewportMap::default());
-        bridge
-            .bind_viewport_route(viewport, window, predecessor)
+        let (mut session, bridge, predecessor) = workspace_root_fixture();
+        let viewport = ViewportId::ROOT;
+        let window = WindowId::from(91);
+        let reset = session
+            .prepare_layout_reset(workspace_root_layout(predecessor.surface()))
             .unwrap();
-        bridge
-            .replace_viewport_route(
-                viewport,
-                predecessor,
-                successor,
-                NativeViewportReplacement::Attach(window),
-            )
+        let mut frame = session.begin_host_frame().unwrap();
+        frame.submit_layout_reset(&reset).unwrap();
+        frame
+            .complete_unpainted_surfaces(dockspace::runtime::SurfaceUnavailableReason::Deferred)
             .unwrap();
+        let (report, _) = bridge
+            .commit_host_frame_with_staging(frame, false, None)
+            .unwrap();
+        let successor = report.native_bindings()[0];
         bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
             1,
             window,
@@ -549,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn unbind_preserves_destroyed_owner_and_unattached_create_cannot_be_discarded() {
+    fn retired_replacement_preserves_destroyed_owner_and_unattached_create_cannot_be_discarded() {
         let predecessor = bindings().0;
         let successor = bindings().0;
         let viewport = ViewportId::from_hash_of("unbound-window-receipt");
@@ -557,12 +568,18 @@ mod tests {
         let mut routes = NativeViewportMap::default();
         routes.bind(viewport, window, predecessor).unwrap();
         let bridge = NativeHostBridge::new(routes);
-        assert_eq!(
-            bridge.unbind_viewport_route(viewport, predecessor).unwrap(),
-            predecessor
+        assert!(
+            bridge.with_viewports_mut(|routes| {
+                routes.suppress_pointer_route(viewport, predecessor)
+            })
         );
         bridge
-            .with_viewports_mut(|routes| routes.bind(viewport, WindowId::from(85), successor))
+            .reserve_retired_viewport_replacement(viewport, predecessor, successor)
+            .unwrap();
+        bridge
+            .with_viewports_mut(|routes| {
+                routes.attach_output(viewport, successor, WindowId::from(85), None)
+            })
             .unwrap();
         bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
             1,
@@ -585,7 +602,7 @@ mod tests {
             .with_viewports_mut(|routes| routes.reserve(pending, binding))
             .unwrap();
         assert!(bridge.with_viewports_mut(|routes| routes.admit_test_create(pending, binding)));
-        assert!(bridge.unbind_viewport_route(pending, binding).is_err());
+        assert!(!bridge.retire_unstarted_viewport(pending, binding));
         assert_eq!(
             bridge.with_viewports(|routes| routes.binding(pending)),
             Some(binding)
@@ -701,7 +718,7 @@ mod tests {
             );
             assert!(
                 routes
-                    .reserve_replacement(viewport, binding, successor)
+                    .reserve_retired_replacement(viewport, binding, successor)
                     .is_err()
             );
         }
@@ -725,13 +742,12 @@ mod tests {
             )),
             CreateAdmission::Duplicate
         );
+        assert!(
+            bridge
+                .with_viewports_mut(|routes| { routes.suppress_pointer_route(viewport, binding) })
+        );
         bridge
-            .replace_viewport_route(
-                viewport,
-                binding,
-                successor,
-                NativeViewportReplacement::Reserve,
-            )
+            .reserve_retired_viewport_replacement(viewport, binding, successor)
             .unwrap();
         assert_eq!(
             bridge.with_viewports_mut(|routes| routes.receive_create_terminal(
@@ -805,7 +821,7 @@ mod tests {
         )
     }
 
-    fn workspace_root_layout(surface: SurfaceId) -> DockspaceLayout {
+    pub(super) fn workspace_root_layout(surface: SurfaceId) -> DockspaceLayout {
         DockspaceLayout::new([DockspaceSurfaceLayout::new(
             surface,
             DockspaceRootLayout::new(
@@ -816,7 +832,8 @@ mod tests {
         .unwrap()
     }
 
-    fn workspace_root_fixture() -> (DockspaceSession, NativeHostBridge, NativeSurfaceBinding) {
+    pub(super) fn workspace_root_fixture()
+    -> (DockspaceSession, NativeHostBridge, NativeSurfaceBinding) {
         use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
         use dockspace::runtime::{
             HostInputOutcome, HostWindowToken, NativeCloseState, NativePointerRoster,
@@ -1013,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_root_continuation_preserves_legacy_commits_and_rejects_invalid_publication() {
+    fn workspace_root_continuation_preserves_bootstrap_and_rejects_invalid_publication() {
         use dockspace::runtime::{NativeReceiverAnswer, SurfaceUnavailableReason};
 
         for target_conflict in [true, false] {
@@ -3874,38 +3891,25 @@ impl NativeHostBridge {
         Ok(())
     }
 
-    pub(crate) fn attach_viewport_route(
+    /// Moves a displaced physical window into its existing retirement owner.
+    pub(crate) fn reserve_retired_viewport_replacement(
         &self,
         viewport: ViewportId,
-        window: WindowId,
-        binding: NativeSurfaceBinding,
+        expected: NativeSurfaceBinding,
+        successor: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
         let mut records = self.lock();
-        if !records.can_admit_binding(binding) {
+        if !records.can_admit_binding(successor) {
             return Err(NativeViewportBindingError::CapacityExceeded {
                 limit: records.terminal_roster.window_capacity(),
             });
         }
-        if !records.retirements.can_retain_window(binding, window) {
+        if records.retirements.has_quiescence_owner(successor) {
             return Err(NativeViewportBindingError::BindingNotCurrent {
                 viewport,
-                surface: binding.surface(),
+                surface: successor.surface(),
             });
         }
-        records.prepare_window_resource_reference(viewport, binding)?;
-        records.viewports.attach(viewport, binding, window)?;
-        records
-            .window_resources
-            .commit_host_reference(viewport, binding);
-        Ok(())
-    }
-
-    pub(crate) fn unbind_viewport_route(
-        &self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-    ) -> Result<NativeSurfaceBinding, NativeViewportBindingError> {
-        let mut records = self.lock();
         if records.viewports.has_window_receipt(viewport, expected)
             && records.viewports.window(viewport).is_some_and(|window| {
                 !records
@@ -3918,74 +3922,10 @@ impl NativeHostBridge {
                 surface: expected.surface(),
             });
         }
-        let (binding, receipt) = records.viewports.remove_viewport(viewport, expected)?;
-        if let Some(receipt) = receipt {
-            records
-                .retirements
-                .retain_window(receipt)
-                .expect("preflighted unbind retains its physical owner");
-        }
-        records.window_resources.retire(viewport, binding);
-        records.refresh_window_resource_references();
-        Ok(binding)
-    }
-
-    /// Moves a displaced physical window into its existing retirement owner.
-    pub(crate) fn replace_viewport_route(
-        &self,
-        viewport: ViewportId,
-        expected: NativeSurfaceBinding,
-        successor: NativeSurfaceBinding,
-        replacement: NativeViewportReplacement,
-    ) -> Result<(), NativeViewportBindingError> {
-        let mut records = self.lock();
-        if !records.can_admit_binding(successor) {
-            return Err(NativeViewportBindingError::CapacityExceeded {
-                limit: records.terminal_roster.window_capacity(),
-            });
-        }
-        let same_window = match replacement {
-            NativeViewportReplacement::Attach(window)
-                if records.viewports.window(viewport) == Some(window) =>
-            {
-                Some(window)
-            }
-            _ => None,
-        };
-        if records.retirements.has_quiescence_owner(successor)
-            || same_window.is_some_and(|window| records.retirements.owns_window(window, None))
-            || matches!(replacement, NativeViewportReplacement::Attach(window) if same_window.is_none() && records.retirements.owns_window(window, None))
-        {
-            return Err(NativeViewportBindingError::BindingNotCurrent {
-                viewport,
-                surface: successor.surface(),
-            });
-        }
-        if same_window.is_none()
-            && records.viewports.has_window_receipt(viewport, expected)
-            && records.viewports.window(viewport).is_some_and(|window| {
-                !records
-                    .retirements
-                    .can_retain_window_receipt(expected, window)
-            })
-        {
-            return Err(NativeViewportBindingError::BindingNotCurrent {
-                viewport,
-                surface: expected.surface(),
-            });
-        }
         records.prepare_window_resource_reference(viewport, successor)?;
-        let displaced = match replacement {
-            NativeViewportReplacement::Reserve => records
-                .viewports
-                .reserve_replacement(viewport, expected, successor)?,
-            NativeViewportReplacement::ReserveRetired => records
-                .viewports
-                .reserve_retired_replacement(viewport, expected, successor)?,
-            NativeViewportReplacement::Attach(window) => records
-                .viewports
-                .replace(viewport, expected, window, successor)?,
-        };
+        let displaced = records
+            .viewports
+            .reserve_retired_replacement(viewport, expected, successor)?;
         if let Some(receipt) = displaced {
             records
                 .retirements
@@ -5002,15 +4942,6 @@ impl NativeHostBridge {
         binding: NativeSurfaceBinding,
     ) -> bool {
         self.lock().window_resources.clear_hidden(viewport, binding)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn retire_deferred_binding(
-        &self,
-        viewport: ViewportId,
-        binding: NativeSurfaceBinding,
-    ) -> Vec<NativeOutputToken> {
-        self.lock().retire_deferred_binding(viewport, binding)
     }
 
     /// Receiver retirement already removes every exact binding artifact. Drop

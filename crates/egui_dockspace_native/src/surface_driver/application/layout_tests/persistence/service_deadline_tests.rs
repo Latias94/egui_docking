@@ -731,7 +731,7 @@ fn elapsed_service_refill_preserves_release_close_and_ready_bootstrap_owners() {
                         .unsubmitted_requests()
                         .any(|request| request == close)
                 );
-                assert_eq!(control.decision_count(), 0);
+                assert_eq!(control.decision_requests().count(), 0);
             }
         });
         let specs = state.coordinator.deferred_viewport_specs();

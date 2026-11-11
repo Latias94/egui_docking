@@ -1001,7 +1001,7 @@ struct NativeBindingState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeWindowState {
     binding: WindowBinding,
-    // Legacy platform envelopes retain their original correlation tag. It is
+    // Physical observation envelopes retain their original correlation tag. It is
     // never used to select a placement or to grant surface input authority.
     observation_binding: ViewportBinding,
     current: bool,

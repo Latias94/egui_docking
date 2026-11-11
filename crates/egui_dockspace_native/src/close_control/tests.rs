@@ -19,6 +19,17 @@ use super::*;
 use crate::mailbox::{HostRecord, NativeHostBridge};
 use crate::viewport_map::NativeViewportMap;
 
+impl NativeCloseControl {
+    pub(crate) fn deferred_ingress_for_test(&self) -> impl Iterator<Item = &ReservedHostRecord> {
+        self.pending.iter().flat_map(|(_, pending)| {
+            pending
+                .successor_ingress
+                .iter()
+                .chain(pending.promoted_ingress.iter())
+        })
+    }
+}
+
 fn commit(session: &mut DockspaceSession) -> HostFrameReport {
     let mut frame = session.begin_host_frame().unwrap();
     frame
@@ -429,7 +440,7 @@ fn promoted_successor_keeps_its_owner_and_capture_until_exact_take() {
         let captured_at = parked.captured_at();
         assert_eq!(parked.window_event(), Some(&successor));
         assert_eq!(control.parked_ingress().count(), 1);
-        assert_eq!(control.deferred_ingress().count(), 1);
+        assert_eq!(control.deferred_ingress_for_test().count(), 1);
         assert_eq!(control.callback_ingress().count(), 0);
         assert!(control.take_callback_ingress(ordinal).is_none());
         assert_eq!(control.settle_clear(true), 0);
@@ -440,7 +451,7 @@ fn promoted_successor_keeps_its_owner_and_capture_until_exact_take() {
         assert_eq!(control.callback_ingress().count(), 0);
         assert_eq!(control.settle_clear(true), 1);
         assert_eq!(control.parked_ingress().count(), 0);
-        assert_eq!(control.deferred_ingress().count(), 1);
+        assert_eq!(control.deferred_ingress_for_test().count(), 1);
         let promoted = control.callback_ingress().next().unwrap();
         assert_eq!(promoted.ordinal(), ordinal);
         assert_eq!(promoted.captured_at(), captured_at);
@@ -456,7 +467,7 @@ fn promoted_successor_keeps_its_owner_and_capture_until_exact_take() {
         assert_eq!(taken.window_event(), Some(&successor));
         assert!(control.take_callback_ingress(ordinal).is_none());
         assert_eq!(control.callback_ingress().count(), 0);
-        assert_eq!(control.deferred_ingress().count(), 0);
+        assert_eq!(control.deferred_ingress_for_test().count(), 0);
         assert!(
             control
                 .pending_for_binding(binding)
@@ -470,7 +481,7 @@ fn promoted_successor_keeps_its_owner_and_capture_until_exact_take() {
 }
 
 #[test]
-fn legacy_observe_uses_the_same_owner_and_accepted_close_cannot_capture_a_successor() {
+fn tokenless_model_uses_the_same_owner_and_accepted_close_cannot_capture_a_successor() {
     let (mut session, binding) = fixture();
     let first = event(binding, 31, 11);
     let mut control = NativeCloseControl::default();

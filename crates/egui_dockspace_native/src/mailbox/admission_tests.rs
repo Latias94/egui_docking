@@ -241,7 +241,7 @@ fn three_bindings() -> [NativeSurfaceBinding; 3] {
 #[test]
 fn new_window_lifetimes_require_complete_roster_capacity_before_route_or_create_admission() {
     let [first, second, third] = three_bindings();
-    let bridge = NativeHostBridge::new(NativeViewportMap::default());
+    let bridge = Arc::new(NativeHostBridge::new(NativeViewportMap::default()));
     bridge.lock().terminal_roster = TerminalRosterState::with_capacity(2, 1);
     let viewport = |id| ViewportId::from_hash_of(id);
     bridge
@@ -262,8 +262,30 @@ fn new_window_lifetimes_require_complete_roster_capacity_before_route_or_create_
     );
     assert!(bridge.lock().window_resources.create(viewport(3)).is_none());
 
-    // Moving the first window to retirement does not return its commitment.
-    bridge.unbind_viewport_route(viewport(1), first).unwrap();
+    // Real destruction and route retirement still keep the exact commitment
+    // until permanent quiescence, independently of the freed viewport slot.
+    bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+        1,
+        WindowId::from(11),
+        Some(viewport(1)),
+        Some(first),
+        WindowEvent::Destroyed,
+    )));
+    assert_eq!(
+        bridge.retirement_observe_destroyed(viewport(1), first, WindowId::from(11), 1),
+        DestroyedObservation::Recorded
+    );
+    assert!(bridge.acknowledge_event(1));
+    bridge.commit_frame_boundary(false);
+    bridge.retirement_mark_snapshot_queued();
+    bridge.retirement_settle_snapshot(true);
+    let (retirements, abandoned) = bridge
+        .prepare_committed_route_retirements()
+        .unwrap()
+        .unwrap()
+        .commit_with_routes();
+    assert!(abandoned.is_empty());
+    bridge.retirement_commit_routes(&retirements);
     assert_eq!(bridge.lock().viewports.bindings().count(), 1);
     assert_eq!(bridge.lock().retirements.bindings().count(), 1);
     assert!(matches!(
@@ -273,7 +295,8 @@ fn new_window_lifetimes_require_complete_roster_capacity_before_route_or_create_
 
     assert!(bridge.clear_create(viewport(2), second));
     assert!(bridge.clear_hidden_render(viewport(2), second));
-    bridge.unbind_viewport_route(viewport(2), second).unwrap();
+    assert!(bridge.retire_unstarted_viewport(viewport(2), second));
+    assert!(bridge.retirement_finish_quiescence(second));
     bridge.reserve_viewport_route(viewport(3), third).unwrap();
     assert_eq!(
         bridge.lock().viewports.bindings().collect::<Vec<_>>(),
@@ -303,11 +326,6 @@ fn admitted_window_retains_prepaid_retirement_backing_through_terminal_retry() {
         bridge.reserve_viewport_route(ViewportId::from_hash_of(2), second),
         Err(NativeViewportBindingError::CapacityExceeded { limit: 1 }),
     ));
-    bridge.unbind_viewport_route(viewport, first).unwrap();
-    assert_eq!(
-        bridge.lock().retirements.owned_data_capacity_bytes(),
-        backing
-    );
     let captured = bridge.lock().journal.captured_through();
     bridge.push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
         41,
