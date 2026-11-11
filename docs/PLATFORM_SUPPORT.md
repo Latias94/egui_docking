@@ -2,7 +2,7 @@
 title: "Dockspace Platform Support"
 status: "Finite profiles, including shared-window Linux X11"
 reviewed: "2026-11-11"
-baseline_source_revision: "3136d5e"
+baseline_source_revision: "ad3c4ce"
 ---
 
 # Dockspace Platform Support
@@ -23,6 +23,13 @@ placement changes and Root reset in ordinary and late-discard runs. Native DPI
 remains one; independent placement scales are 1, 1.25 and 1.4. Public protocol
 tests separately qualify DPI invalidation, atomic close decisions and exact
 resource retirement. Earlier platform records retain their stated scope.
+
+The [publication and retirement follow-up](audits/2026-11-11-shared-window-retirement-followup.md)
+repairs final-reduction preparation, independent placement draining, physical
+all-lane retirement, committed Root roster selection, popup coverage and Child
+output-scale publication. Its fresh results are incremental to G01. Controlled
+1x/2x receiver tests use actual Child tokens; they do not certify physical
+mixed-DPI monitors or extend the recorded backend scope.
 
 This snapshot follows the [canonical engine-host plan](plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md)
 and the dated [validation record](VALIDATION.md). The source-input capability

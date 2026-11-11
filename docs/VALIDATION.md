@@ -15,6 +15,29 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-11 shared-window publication and retirement follow-up
+
+The [incremental review](audits/2026-11-11-shared-window-retirement-followup.md)
+records repairs after baseline `b174192`, through core `26084e4` and native
+`ad3c4ce`. Final core reduction now precedes
+native resource preparation through `DockspaceHostFrame::prepare_commit`.
+Removed placements drain independently from the shared physical window, and
+physical retirement drains all retained exact producer lanes, including when
+the original callback tag no longer belongs to the placement roster. Root
+requests, committed composition and token-frozen geometry have separate roles.
+Popup input uses presented popup coverage, and Child receiver publication uses
+the finalized output scale.
+
+The linked record owns this follow-up's fresh serial and real-X11 results.
+All thirteen serial gates pass: workspace 2,356 with three existing skips,
+public persistence host 430, five affected default-feature host suites 38, and
+native workspace 654 with one existing skip. Both correctness/suspicious Clippy
+checks, strict documentation, eleven doctests, formatting and the core
+dependency boundary pass. Nine isolated actual-eframe processes, bounded 4 MiB
+redock and both shared-window physical journeys pass on Linux X11.
+The G01 results below retain their original source scope. Physical mixed-DPI
+monitors, additional backends and ImGui timings are not qualified by this review.
+
 ## 2026-11-11 shared native window composition
 
 Baseline: `78c1eaa`. Core and public-host implementation: `270d81b`; native

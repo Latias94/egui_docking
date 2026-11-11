@@ -78,13 +78,14 @@ These are the implemented entry points covered by the qualification record:
 
 | Boundary | Migration contract |
 | --- | --- |
-| Complete Root placement roster | Enroll the existing native host and register the real Root once. Call `DockspaceHostFrame::set_native_surface_placements(window, placements)` before measurement/encoding to replace its complete nonempty roster atomically. Entries must name unique existing logical surfaces. An empty roster is rejected; it is not a request to retain a window without any surface. |
+| Complete Root placement roster | Enroll the existing native host and register the real Root once. Call `DockspaceHostFrame::set_native_surface_placements(window, placements)` before measurement/encoding to replace its complete nonempty roster atomically. Entries must name unique existing logical surfaces without a pending native establishment. Publish changed placements before reset or restore; an equivalent declaration preserves its exact identities and may precede replacement. An empty roster is rejected; it is not a request to retain a window without any surface. |
 | Candidate and committed queries | `native_surface_bindings_for_window` and `native_surface_placement` are available on the frame and session. Frame queries expose the private candidate; session queries expose committed exact bindings. `DockspaceSession::native_window_bindings` enumerates real windows once each. |
 | Reference Root UI | Call `NativeDockspaceApp::show_root_surfaces(ui, placements)` once from the Root UI callback. The complete roster must contain `root_surface()`, and repeated passes must supply the same roster. The ordinary app callback starts as the single-surface convenience path; after composition it honors the admitted or retained complete Root roster. Child callbacks remain whole-client. |
 | Physical observations and input | Snapshot entries describe real windows once, rather than repeating facts for sibling surfaces. `NativeGlobalFocus::Dock`, `NativePointerHover::Dock` and `NativePointerOwner::Native` now take `NativeWindowBinding`. Use `binding.window()` when migrating an existing surface handle. Duplicate sibling entries for one physical window are rejected. |
 | Event-time client geometry | `NativeLocalGeometry::new(content_size, native_scale_factor)` describes physical client geometry. Obtain local coordinate authority for the window; the surface's placement scale is applied later by core. Keep the original event geometry and avoid applying native DPI a second time. |
 | Receiver callback | `NativeReceiverQuery` is now an enum. Answer `WindowHit` from the completed framework hit graph with `NativeReceiverAnswer::WindowHit`; only its `Surface` variant exposes the surface-qualified receiver question. |
 | Renderer terminal | `report_surface_presentations(outputs, result)` validates and settles a complete owned collection. On error, `SurfacePresentationBatchReportError::into_outputs` returns every original affine output in order. The single-output method remains available for independently owned outputs. |
+| Native publication preparation | `DockspaceHostFrame::prepare_commit` finishes the final reduction without publishing. Its exact Root pairs, placement detachments and complete proposed rosters let the host prepay resource migration and independent exact retirement lanes. Call the prepared value's `commit` only after preparation succeeds; dropping it rolls back the frame. The matching report confirms both pairs and detachments. |
 
 An identical complete placement roster is a no-op, including while a native
 close request or its cancellation is pending. Actual membership or geometry
@@ -221,6 +222,14 @@ it atomically, and install host routes only from the matching committed report.
 Old callbacks cannot mutate successor placements. Physical focus may follow a
 proven continuation; pane focus, coordinates, receivers and output authority need
 fresh evidence. Recovery availability must be checked before dropping old scope.
+
+A replacement may keep A while removing B from their shared window. The complete
+published predecessor roster must equal continuation predecessors plus exact
+placement detachments. The final successor roster must equal the continuation
+successors. Migrate the physical receipt once per window, while each old exact
+placement retains its own drain obligation. Ordinary docking vacancies use the
+same final-reduction detachment proof; absence from a logical surface list is
+insufficient to release callback storage.
 
 ## Public acceptance journey
 

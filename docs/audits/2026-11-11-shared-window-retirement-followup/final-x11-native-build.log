@@ -1,0 +1,41 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+   Compiling egui_dockspace_native v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native)
+warning: method `request` is never used
+  --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/close_control.rs:69:25
+   |
+64 | impl NativeViewportCloseCancellationRecord {
+   | ------------------------------------------ method in this implementation
+...
+69 |     pub(crate) const fn request(self) -> NativeViewportCloseRequest {
+   |                         ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `replace_viewport`, `report_inventory_unknown`, and `native_work_area` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator.rs:787:12
+     |
+ 420 | impl NativeCoordinator {
+     | ---------------------- methods in this implementation
+...
+ 787 |     pub fn replace_viewport(
+     |            ^^^^^^^^^^^^^^^^
+...
+2554 |     pub fn report_inventory_unknown(&mut self) -> Result<(), NativeRuntimeError> {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2561 |     pub fn native_work_area(
+     |            ^^^^^^^^^^^^^^^^
+
+warning: method `retire_deferred_binding` is never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:5008:19
+     |
+3671 | impl NativeHostBridge {
+     | --------------------- method in this implementation
+...
+5008 |     pub(crate) fn retire_deferred_binding(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `egui_dockspace_native` (lib test) generated 3 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.79s
+  Executable unittests src/lib.rs (/native-target/debug/deps/egui_dockspace_native-05f904eca2449078)

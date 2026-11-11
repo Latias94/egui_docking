@@ -1,0 +1,28 @@
+[
+  {
+    "name": "public-host",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--features",
+      "serde",
+      "--locked",
+      "--offline",
+      "--target-dir",
+      "target",
+      "--test-threads=1",
+      "--no-fail-fast",
+      "--status-level",
+      "fail",
+      "--final-status-level",
+      "fail"
+    ],
+    "started": "2026-11-11T02:39:40.094163+00:00",
+    "finished": "2026-11-11T02:47:34.586391+00:00",
+    "exit": 100,
+    "log": "intermediate-public-host-failure.log"
+  }
+]

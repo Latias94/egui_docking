@@ -48,6 +48,39 @@ candidate's compiled plan; it needs no measurement-only publication. Later
 semantic commands belong to a subsequent update after encoding starts.
 Unrelated surfaces may remain deferred.
 
+Hosts which own fallible native resource preparation can replace `frame.commit()`
+with `frame.prepare_commit()`. The returned `PreparedDockspaceHostFrameCommit`
+contains the final reduction, including ordinary docking vacancies. Inspect its
+exact Root continuations, placement detachments and complete proposed window
+rosters, reserve the host's callback and retirement storage, then call its
+`commit()`. Dropping either frame rolls back the same input prefix and workspace.
+No proposed binding authorizes callbacks before publication.
+
+`native_placement_detachments()` lists previously published exact placements
+which now own terminal guards while another binding retains the shared window's
+physical obligations, or the window continues through a Root pair. Drain their
+exact outputs and callbacks, then report binding quiescence. A surviving sibling's
+physical window needs no destruction. Root continuation predecessors are listed
+in their pairs instead; the matching committed report confirms both collections.
+Placement detachment never releases a physical destruction obligation.
+The producer byte reservation includes the detachment report backing; an
+allowance set to the previous exact minimum may need to increase.
+
+The original physical callback tag can outlive its placement generation. Validate
+window-close dispatch with `recognizes_native_window_binding`, together with the
+exact close token and physical receipt. After physical destruction is committed,
+`retained_native_surface_bindings_for_window` enumerates the producer's remaining
+exact lanes. Check their host references and report each one's quiescence before
+releasing the physical retirement owner. A full input buffer delays this drain;
+it does not release that owner or recreate a second roster.
+
+Publish changed `set_native_surface_placements` in a separate frame from layout
+reset or document restore. A replacement after a placement change returns
+`OperationConflict` before consuming the replacement; the placement candidate
+may still commit or be dropped. This keeps continuation and retirement
+predecessors tied to published exact bindings. An equivalent declaration keeps
+its exact identities, saves explicit geometry and may precede replacement.
+
 Submit `replace_policy` and `replace_presentation_config` after the accepted
 semantic input prefix and before measurement or encoding. They update the same
 private candidate immediately and close semantic input. Earlier pointer input
