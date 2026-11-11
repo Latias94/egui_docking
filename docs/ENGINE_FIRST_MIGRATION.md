@@ -327,5 +327,19 @@ Successful document publications reconcile hosting and recovery-host references.
 Retired recovery hosts do not leave a save operation with dangling references;
 live native resources still finish their explicit transfer or recovery protocol.
 
+The complete persistence document has one schema, encoded as `[1, payload]`.
+Workspace, application-key assignments and viewport preferences are ordinary
+objects inside that payload. They have no independent format versions or
+migration decoders. This unreleased format accepts only the current schema.
+The document envelope rejects unsupported versions before decoding their
+payload or recognizing application identities.
+
+Every field is explicit, including nullable fields. `null` records an intentional
+absence; a missing field is malformed input. Unknown and duplicate fields are
+rejected. Schema checks and the binding hash complete before application-key
+recognition; the complete candidate validates before live publication. Save
+generation and runtime identity frontiers remain monotonic; they describe
+document lineage and prevent stale authority from being reused.
+
 The complete-update cost methodology and retained-memory definitions are in
 [`performance/2026-11-03-engine-first-methodology.md`](performance/2026-11-03-engine-first-methodology.md).

@@ -60,15 +60,17 @@ surface and protected-control clipping; mouse/pen/unknown-device geometry keeps
 its existing profile. Native Touch stationary capture remains unqualified.
 
 Several logical docking areas can share a HostLocal input producer. Managed
-native hosting currently binds one logical surface to one OS window; combining
-several independent surfaces inside a single OS window with managed native Child
-docking is not yet supported. Programmatic native tear-off accepts an item,
+native hosting also supports several logical surfaces in one external Root OS
+window through an explicit complete placement roster. Each runtime-owned Child
+keeps one whole-client surface. Shared Root docking and Child round trips have a
+finite Linux X11 qualification. Programmatic native tear-off accepts an item,
 an opaque captured tabs group or a complete root, with explicit or core-derived
 placement. Renderer-neutral native document restore accepts explicit mappings
 for multiple external Roots and preserves each Child's declared recovery host.
-The reference application's automatic restore profile remains one Root. See the
-[multiview composition limits](docs/PLATFORM_SUPPORT.md#multiview-composition-limits)
-for the distinction between supported journeys and remaining core interface work.
+The reference application's automatic restore continues its existing Root's
+complete surface roster. See the
+[multiview composition contract](docs/PLATFORM_SUPPORT.md#multiview-composition)
+for supported journeys and platform qualification limits.
 
 Local drags use the same finite continuation for tab hover selection and
 overflow-edge scrolling. Each automatic scroll step waits for exact presentation
@@ -242,13 +244,15 @@ persistent session, and save or restore one versioned JSON document. The
 document atomically binds topology, append-only external pane keys, allocator
 frontiers, lineage and generation, and viewport placement.
 
-Document V2 also binds explicit native root/child hosting preferences and each
+The document also binds explicit native root/child hosting preferences and each
 child's recovery-host surface. `surface_presentation_preferences()` on a session,
 prepared restore or candidate frame returns these declarations and optional
 physical placement hints. The content graph remains in `view()`. Submission
 preserves declared surface and recovery-host identities; reading a declaration
-does not create an OS window or grant native authority. V1 documents are rejected
-as unsupported because their placement records cannot prove native ownership.
+does not create an OS window or grant native authority. The format has one
+version, `[1, payload]`, covering the workspace, keys and surface preferences
+together. These internal components are ordinary strict objects. Fields with
+no value are explicitly `null`; missing, duplicate and unknown fields reject.
 Managed native restore can explicitly queue the declared Child windows through
 the existing preparation, first-live and cleanup owners. Ordinary document
 restore alone does not create OS windows; native restore waits for fresh Root

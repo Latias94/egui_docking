@@ -1,0 +1,19 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+warning: method `presentation_identity_frontier` is never used
+   --> crates/dockspace/src/engine/host_frame.rs:476:25
+    |
+459 | impl<'frame> HostFrameView<'frame> {
+    | ---------------------------------- method in this implementation
+...
+476 |     pub(crate) const fn presentation_identity_frontier(&self) -> PresentationIdentityFrontier {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `dockspace` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.51s
+────────────
+ Nextest run ID 78936793-996b-42c4-95f1-766628b224e8 with nextest profile: default
+    Starting 2056 tests across 1 binary (3 tests skipped)
+────────────
+     Summary [  23.176s] 2056 tests run: 2056 passed, 3 skipped

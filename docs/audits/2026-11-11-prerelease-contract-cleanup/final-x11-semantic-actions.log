@@ -1,0 +1,9 @@
+
+running 1 test
+test pass_actions::tests::real_native_ui_ingress_retries_acknowledges_bounds_retires_and_deduplicates_actual_passes ...
+thread 'pass_actions::tests::real_native_ui_ingress_retries_acknowledges_bounds_retires_and_deduplicates_actual_passes' (31301) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/pass_actions/tests.rs:230:13:
+the output hook fails after the queued event entered its candidate
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 646 filtered out; finished in 0.17s

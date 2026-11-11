@@ -1,0 +1,110 @@
+   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
+   Compiling egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
+   Compiling egui_dockspace_native v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native)
+warning: method `surface` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/coordinator.rs:130:25
+    |
+119 | impl PendingNoFrameInvalidation {
+    | ------------------------------- method in this implementation
+...
+130 |     pub(crate) const fn surface(self) -> SurfaceId {
+    |                         ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated functions `active`, `with_clock`, and `try_with_clock` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:2243:8
+     |
+2055 | impl NativeHostState {
+     | -------------------- associated functions in this implementation
+...
+2243 |     fn active() -> Self {
+     |        ^^^^^^
+...
+2247 |     fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
+     |        ^^^^^^^^^^
+...
+2251 |     fn try_with_clock(
+     |        ^^^^^^^^^^^^^^
+
+warning: associated items `pointer_capture_pending`, `new`, `try_new_with_capacity`, and `with_clock` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox.rs:3796:19
+     |
+3688 | impl NativeHostBridge {
+     | --------------------- associated items in this implementation
+...
+3796 |     pub(crate) fn pointer_capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+3945 |     pub(crate) fn new(viewports: NativeViewportMap) -> Self {
+     |                   ^^^
+...
+3965 |     pub(crate) fn try_new_with_capacity(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+3996 |     fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
+     |        ^^^^^^^^^^
+
+warning: method `capture_pending` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/command_callback.rs:301:19
+    |
+143 | impl NativeCommandCallbacks {
+    | --------------------------- method in this implementation
+...
+301 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: methods `is_empty` and `front` are never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/journal.rs:93:19
+    |
+ 57 | impl HostIngressJournal {
+    | ----------------------- methods in this implementation
+...
+ 93 |     pub(super) fn is_empty(&self) -> bool {
+    |                   ^^^^^^^^
+...
+188 |     pub(super) fn front(&self) -> Option<&HostRecord> {
+    |                   ^^^^^
+
+warning: method `work_area_capacity_exceeded` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/terminal_roster.rs:134:25
+    |
+ 49 | impl TerminalRosterState {
+    | ------------------------ method in this implementation
+...
+134 |     pub(super) const fn work_area_capacity_exceeded(&self) -> bool {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `references_viewport_binding` and `capture_pending` are never used
+    --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/window_resource.rs:171:19
+     |
+ 101 | impl NativeWindowResources {
+     | -------------------------- methods in this implementation
+...
+ 171 |     pub(super) fn references_viewport_binding(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1118 |     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
+     |                   ^^^^^^^^^^^^^^^
+
+warning: method `quiescence_candidates` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/retirement.rs:936:19
+    |
+188 | impl NativeRetirementState {
+    | -------------------------- method in this implementation
+...
+936 |     pub(crate) fn quiescence_candidates(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `has_admitted_create_attempt` is never used
+   --> /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/viewport_map.rs:943:19
+    |
+ 85 | impl NativeViewportMap {
+    | ---------------------- method in this implementation
+...
+943 |     pub(crate) fn has_admitted_create_attempt(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `egui_dockspace_native` (lib) generated 9 warnings
+   Compiling egui-native-smoke v0.1.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-native-smoke)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 34.64s

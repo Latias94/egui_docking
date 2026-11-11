@@ -15,6 +15,29 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-11 prerelease contract cleanup
+
+The [cleanup qualification](audits/2026-11-11-prerelease-contract-cleanup.md)
+records the breaking changes after `7ccc1a5`. One schema-1 atomic document
+replaces independently versioned private components; required nullable fields
+and strict decoding preserve the persistence contract without migration readers.
+Egui retains three concrete pointer modes and core-owned cancellation, removes
+the empty presentation-action channel and repairs disabled-tab hover and
+accessibility geometry. Native replacement uses the existing retired-predecessor
+and Prepared continuation protocols; superseded manual wrappers were removed.
+
+All nineteen final serial gates pass: workspace 2,354, no-optional-feature core
+2,056, public persistence host 430, affected default host suites 55, product
+114 default / 119 persistence, official consumer 27 and native workspace 652.
+Existing skips remain explicit in the linked record. Correctness/suspicious
+Clippy, strict documentation, eleven doctests, formatting and dependency checks
+pass. Linux adds 629 non-window unit tests, fourteen isolated actual-eframe
+processes, bounded 4 MiB redock and both shared-window physical journeys.
+The corrected per-process execution and an intermediate event-loop launch error
+are retained separately. Three review lanes and cross-review leave no confirmed
+P1/P2 in this change set. Platform, mixed-monitor DPI and ImGui performance
+qualification retain their previous scope.
+
 ## 2026-11-11 shared-window publication and retirement follow-up
 
 The [incremental review](audits/2026-11-11-shared-window-retirement-followup.md)
