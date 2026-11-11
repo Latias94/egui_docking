@@ -1,0 +1,95 @@
+[
+  {
+    "name": "final-owned-native-fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui_dockspace_native",
+      "--package",
+      "egui-native-smoke"
+    ],
+    "started_at": 1794392105.722396,
+    "elapsed_seconds": 0.7074100971221924,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-owned-native-fmt.log"
+  },
+  {
+    "name": "final-fmt-workspace",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "started_at": 1794392106.430272,
+    "elapsed_seconds": 1.8435571193695068,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-fmt-workspace.log"
+  },
+  {
+    "name": "final-fmt-host",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/dockspace-host-harness/Cargo.toml",
+      "--all",
+      "--check"
+    ],
+    "started_at": 1794392108.274084,
+    "elapsed_seconds": 2.0989599227905273,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-fmt-host.log"
+  },
+  {
+    "name": "final-fmt-product",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/egui-product-harness/Cargo.toml",
+      "--all",
+      "--check"
+    ],
+    "started_at": 1794392110.373316,
+    "elapsed_seconds": 1.8790857791900635,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-fmt-product.log"
+  },
+  {
+    "name": "final-fmt-official",
+    "command": [
+      "cargo",
+      "fmt",
+      "--manifest-path",
+      "integration/egui-official-harness/Cargo.toml",
+      "--all",
+      "--check"
+    ],
+    "started_at": 1794392112.252688,
+    "elapsed_seconds": 1.8728649616241455,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-fmt-official.log"
+  },
+  {
+    "name": "final-official",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-official-harness/Cargo.toml",
+      "--all-features",
+      "--all-targets",
+      "--test-threads",
+      "2"
+    ],
+    "started_at": 1794392114.125955,
+    "elapsed_seconds": 7.287234783172607,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-official.log"
+  }
+]

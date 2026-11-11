@@ -15,6 +15,30 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-11 release ergonomics and native-host validation
+
+The [ergonomics qualification](audits/2026-11-11-release-ergonomics.md) records
+current-action outcome identities, atomic native policy replacement, preserved
+rich-title colors and local popup styling after `7555bea`. Native preparation
+and product proof tests have private modules under their existing owners.
+
+Final workspace 2,356, minimal core 2,057, external host 377 default / 432 serde,
+product 114 default / 119 serde, official consumer 27 and complete native
+workspace 695 tests pass; existing skips remain explicit in the linked record.
+Correctness/suspicious Clippy, strict documentation, thirteen workspace/native
+doctests, formatting and the core dependency boundary pass. Four independent
+review lenses and the separate physical-driver review find no confirmed P1/P2,
+with mechanical-diff sampling limits retained.
+
+Linux adds eighteen isolated real regression processes, the complete editor's
+twelve focused edits and six Child lifetimes, the command/style smoke, both
+continuity profiles, bounded 4 MiB redock and both shared-window physical
+journeys. Test fixtures now remeasure committed geometry, freeze declarations
+per actual output token and send ordinary WM close to the exact Root. Final
+clean ordinary and late-discard runs exit naturally. The profile remains
+Xvfb/Openbox/Glow, one screen, native scale one and explicit per-placement scales;
+no new physical platform, mixed-monitor DPI or ImGui timing claim follows.
+
 ## 2026-11-11 prerelease maintenance refactor
 
 The [maintenance qualification](audits/2026-11-11-prerelease-maintenance.md)

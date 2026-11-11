@@ -1,0 +1,52 @@
+[
+  {
+    "name": "final-driver-tests",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui-native-smoke",
+      "--all-features",
+      "--all-targets",
+      "--test-threads",
+      "2"
+    ],
+    "environment": {
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "started_at": 1794393720.3267531,
+    "elapsed_seconds": 30.411402940750122,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-driver-tests.log"
+  },
+  {
+    "name": "final-driver-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--package",
+      "egui-native-smoke",
+      "--all-features",
+      "--all-targets",
+      "--",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "environment": {
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "started_at": 1794393750.7387478,
+    "elapsed_seconds": 23.986337184906006,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-driver-clippy.log"
+  }
+]

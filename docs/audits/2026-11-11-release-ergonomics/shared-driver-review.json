@@ -1,0 +1,186 @@
+{
+  "review": "Independent cross-review of the real X11 shared-window driver repair",
+  "generated_at": "2026-11-11T10:45:01.233452+00:00",
+  "base_commit": "7555bea",
+  "scope": {
+    "file": "integration/egui-native-smoke/src/bin/shared_window/app.rs",
+    "source_sha256": "96a105eb8e06c0641351d68ca3079901ce080e0a9b465477f7e2a355a516ee9b",
+    "source_git_blob": "81f20dc068ea0d6f17d2d3d8972393ce13213b64",
+    "reviewed_changes": [
+      "Per-native-output placement declaration snapshot in App",
+      "Query-before-move guard around the existing physical xdotool drag",
+      "Direct ICCCM WM_PROTOCOLS/WM_DELETE_WINDOW request for the final Root close"
+    ],
+    "method": "Read-only source and dependency semantics review, with caller-supplied diagnostic logs",
+    "finding_threshold": "P2 or higher"
+  },
+  "verdict": "N0",
+  "findings": [],
+  "coverage": [
+    {
+      "topic": "Placement changes across repeated passes",
+      "result": "The consumer-side race is corrected without changing the production multipass guard.",
+      "file": "integration/egui-native-smoke/src/bin/shared_window/app.rs",
+      "lines": [
+        185,
+        424,
+        425,
+        426,
+        427,
+        428,
+        433
+      ],
+      "evidence": [
+        "App snapshots Shared.shifted on the first UI call for a new NativeOutputToken and reuses that bool while token equality holds.",
+        "The pinned eframe host_seam.rs begin_output (2621-2674) mints one token with a fresh nonce and keeps it active until NativeOutputScope leaves. glow_integration.rs (869 onward) opens that scope before epi_integration.rs (398) runs run_ui_with_pass_finalizer.",
+        "epi_integration.rs (379-396) invokes App.ui only for the Root; deferred Child callbacks execute their own viewport_ui_cb, so their tokens do not overwrite App.placement_run.",
+        "crates/egui_dockspace_native/src/surface_driver/root_placements.rs:413-414 still rejects a changed valid declaration during a repeated run. crates/egui_dockspace_native/src/app.rs:474 still documents equal repeated rosters.",
+        "/tmp/dockspace-release-multipass-yield-red-repeat.log:24-25 identifies RootPlacements::declare at line 414; line 135 records HostProtocol(MultipassOutputChanged), followed by EXIT 1."
+      ]
+    },
+    {
+      "topic": "Placement change remains part of the real journey",
+      "result": "The snapshot delays adoption until a later output; it does not suppress the placement-change assertion.",
+      "file": "integration/egui-native-smoke/src/bin/shared_window/app.rs",
+      "lines": [
+        486,
+        489,
+        491,
+        494,
+        495,
+        501,
+        504,
+        827,
+        830,
+        832
+      ],
+      "evidence": [
+        "The driver still sets shifted=true after Child -> B, then waits for shifted_ready before requesting the layout reset.",
+        "shifted_ready still requires both surfaces presented and completed Root geometry from a different output token with the changed origin and scale.",
+        "A periodic 10 ms repaint remains, allowing the new desired declaration to be adopted on subsequent output tokens."
+      ]
+    },
+    {
+      "topic": "Physical pointer movement",
+      "result": "The no-op movement guard removes the known --sync stall while preserving real pointer/button delivery.",
+      "file": "integration/egui-native-smoke/src/bin/shared_window/app.rs",
+      "lines": [
+        690,
+        698,
+        704,
+        707,
+        751,
+        752,
+        753,
+        754,
+        759,
+        760,
+        762,
+        763
+      ],
+      "evidence": [
+        "The guard compares requested global coordinates against XQueryPointer root_x/root_y, rather than against cached pane or intended pointer positions.",
+        "If the coordinates differ it still executes xdotool mousemove --sync with the same target. Only an already-reached coordinate omits the motion request.",
+        "drag still performs mousedown 1, all twelve interpolation iterations with their original 25 ms pauses, the original 250 ms dwell, and mouseup 1.",
+        "x11rb-protocol 0.13.2 xproto.rs:13440-13456 defines root_x/root_y as the actual pointer coordinates relative to the logical root.",
+        "The three docking transitions still use drag and still wait for observed item ownership/presentation; no semantic docking action or synthetic egui/winit pointer input was substituted."
+      ]
+    },
+    {
+      "topic": "X11 close message construction and delivery",
+      "result": "The final close uses the normal ICCCM client protocol with the actual Root client XID.",
+      "file": "integration/egui-native-smoke/src/bin/shared_window/app.rs",
+      "lines": [
+        716,
+        719,
+        725,
+        732,
+        733,
+        735,
+        736,
+        738,
+        740,
+        741,
+        742,
+        746,
+        748,
+        852
+      ],
+      "evidence": [
+        "ClientMessageEvent uses format 32, type WM_PROTOCOLS, data[0]=WM_DELETE_WINDOW, data[1]=CURRENT_TIME, and the Root client window as both event.window and send_event destination.",
+        "send_event uses propagate=false and EventMask::NO_EVENT, the direct client delivery convention for a window protocol message. Request errors are checked and the connection is flushed.",
+        "Pinned winit revision 2664589 event_processor.rs:765-778 turns a ClientMessage with data[0]=wm_delete_window into WindowEvent::CloseRequested for that exact XID.",
+        "The changed code does not call XDestroyWindow, windowclose, windowkill, or a process termination API."
+      ]
+    },
+    {
+      "topic": "Close retention and approval contract",
+      "result": "The close continues through the native held-close/Allow path.",
+      "file": "integration/egui-native-smoke/src/bin/shared_window/app.rs",
+      "lines": [
+        529,
+        547,
+        852
+      ],
+      "evidence": [
+        "The app still installs dockspace.native_host_handler() in NativeOptions.native_host.",
+        "Pinned eframe run.rs:519-547 calls observe_window_event before ordinary renderer event handling; HoldClose schedules repaint and prevents immediate Root CloseRequested shutdown.",
+        "crates/egui_dockspace_native/src/mailbox.rs:4308-4314 produces HoldClose for a bound native close request and captures the event; close_control.rs:146 onward qualifies the exact close request.",
+        "crates/egui_dockspace_native/src/coordinator.rs:1785 onward publishes the requested native close; coordinator/effect_dispatch.rs:326-327 resolves an accepted close through NativeViewportCloseDecision::Allow.",
+        "Pinned eframe host_seam.rs:2420 onward settles held decisions, and epi_integration.rs:435 invokes root shutdown only when that settlement allows it.",
+        "/tmp/dockspace-release-shared-close-original-red.log:16-18 records retained requests increasing from 0 to 1 after the discriminating protocol close. /tmp/dockspace-release-shared-close-discriminating-control.log records the stalled attempt, the exact WM_PROTOCOLS/WM_DELETE_WINDOW message, and rc_after_true_WM_DELETE=0."
+      ]
+    },
+    {
+      "topic": "Success cannot be inferred from the journey log or an external kill alone",
+      "result": "The in-process final result retains its explicit completion/error checks.",
+      "file": "integration/egui-native-smoke/src/bin/shared_window/app.rs",
+      "lines": [
+        417,
+        418,
+        533,
+        535,
+        536,
+        576,
+        579,
+        580,
+        581,
+        584,
+        587,
+        848,
+        852
+      ],
+      "evidence": [
+        "run waits for the driver, propagates the eframe result, rejects Shared.error, and rejects an incomplete journey before returning Ok.",
+        "request_close failures propagate from drive and are stored in Shared.error by the driver wrapper, even though completed is set before that call.",
+        "The App timeout records an error, so its own timeout-driven Close cannot turn into a successful final result.",
+        "The preexisting Alt+F4 failure cleanup remains, but it is not the final success close path and cannot clear Shared.error."
+      ]
+    },
+    {
+      "topic": "Patch hygiene",
+      "result": "No temporary yield or diagnostic instrumentation remains in the reviewed file.",
+      "file": "integration/egui-native-smoke/src/bin/shared_window/app.rs",
+      "evidence": [
+        "The diff against 7555bea contains only the three driver fixes and placement_run initialization.",
+        "An exact-file search found no temporary DOCKSPACE_DIAG/yield instrumentation or destructive close API.",
+        "git diff --check 7555bea -- integration/egui-native-smoke/src/bin/shared_window/app.rs passed."
+      ]
+    }
+  ],
+  "dependencies_checked": {
+    "eframe_egui_git_revision": "0d9c48d765954dd3eff99c0d3cfa686e9d8591cf",
+    "winit_git_revision": "2664589f0bd6fd03b2a5490f23bcd692853e63dd",
+    "x11rb_version": "0.13.2",
+    "source": "Pinned workspace Cargo configuration and local Cargo git/registry cache only"
+  },
+  "limits": [
+    "No Cargo build, test, clippy, or formatter was run, as instructed.",
+    "No additional X11 app run or pointer/close event was launched by this reviewer; the caller owns final clean ordinary and late-discard runtime acceptance.",
+    "Diagnostic logs were inspected as root-cause/control evidence; their temporary instrumentation does not constitute acceptance evidence for the final clean source.",
+    "The approximately 19-second xdotool no-op --sync delay was reported by the caller and was not independently timed in this review.",
+    "The direct WM_DELETE_WINDOW request covers the X11 client protocol, Winit close event, native retention, and approval flow; it does not test window-manager Alt+F4 shortcut mapping or focus activation.",
+    "Neither timeout termination nor forced process cleanup is counted as a natural successful exit in this review.",
+    "docs/reviews/** and repo-ref/** were not read or searched. No source, documentation, Cargo file, commit, or subagent was created or modified; the only write is this requested /tmp artifact."
+  ]
+}

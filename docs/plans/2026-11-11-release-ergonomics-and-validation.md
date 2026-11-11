@@ -23,6 +23,8 @@ existing exact-output, retry and atomic-publication contracts.
 3. Apply existing floating-menu visual overrides to the presentation command
    popup. Preserve the local egui frame geometry, shadow and defaults. Prove
    the actual rendered menu both with overrides and with only local theme.
+   Preserve application-supplied rich title colors across tabs, overflow rows
+   and drag feedback unless an explicit docking or egui text override applies.
 4. Split cohesive responsibilities out of remaining long implementation or
    product-test files. Keep state in the existing owners, preserve method/test
    bodies and registration, and use only the private visibility needed by
@@ -31,7 +33,8 @@ existing exact-output, retry and atomic-publication contracts.
 5. Run the actual eight-pane editor, shared-Root/native-Child journeys and
    renderer/backpressure regressions in the existing isolated Linux X11
    container. Exercise the native style and policy configuration paths.
-   Record actual commands, source identity, platform profile and limits.
+   Fix confirmed qualification-driver errors without weakening the host
+   contract. Record actual commands, source identity, platform profile and limits.
 
 ## Verification
 

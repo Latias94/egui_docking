@@ -1,0 +1,93 @@
+[
+  {
+    "name": "final-native-tests",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--test-threads",
+      "2"
+    ],
+    "environment": {
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "started_at": 1794391960.181474,
+    "elapsed_seconds": 81.91606783866882,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-native-tests.log"
+  },
+  {
+    "name": "final-native-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--",
+      "-D",
+      "clippy::correctness",
+      "-D",
+      "clippy::suspicious"
+    ],
+    "environment": {
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "started_at": 1794392042.098748,
+    "elapsed_seconds": 70.66851806640625,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-native-clippy.log"
+  },
+  {
+    "name": "final-native-doc",
+    "command": [
+      "cargo",
+      "doc",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "--no-deps",
+      "-p",
+      "egui_dockspace_native",
+      "--all-features"
+    ],
+    "environment": {
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0",
+      "RUSTDOCFLAGS": "-D warnings"
+    },
+    "started_at": 1794392112.76757,
+    "elapsed_seconds": 7.7975640296936035,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-native-doc.log"
+  },
+  {
+    "name": "final-native-doctest",
+    "command": [
+      "cargo",
+      "test",
+      "--manifest-path",
+      "integration/egui-fork-workspace/Cargo.toml",
+      "-p",
+      "egui_dockspace_native",
+      "--all-features",
+      "--doc"
+    ],
+    "environment": {
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "started_at": 1794392120.565546,
+    "elapsed_seconds": 19.138734102249146,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-native-doctest.log"
+  }
+]

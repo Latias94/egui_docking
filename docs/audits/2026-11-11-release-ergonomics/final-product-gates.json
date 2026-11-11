@@ -1,0 +1,46 @@
+[
+  {
+    "name": "final-product-default",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-product-harness/Cargo.toml",
+      "--all-targets",
+      "--test-threads",
+      "2"
+    ],
+    "environment": {
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "started_at": 1794391908.155892,
+    "elapsed_seconds": 11.125333070755005,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-product-default.log"
+  },
+  {
+    "name": "final-product-serde",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--manifest-path",
+      "integration/egui-product-harness/Cargo.toml",
+      "--all-targets",
+      "--features",
+      "serde",
+      "--test-threads",
+      "2"
+    ],
+    "environment": {
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "started_at": 1794391919.282357,
+    "elapsed_seconds": 11.962090969085693,
+    "exit_code": 0,
+    "log": "/tmp/dockspace-release-final-product-serde.log"
+  }
+]
