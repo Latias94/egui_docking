@@ -1,7 +1,15 @@
 # Public host contract harness
 
-This independent workspace depends only on `dockspace` through its public API.
+This independent workspace uses `dockspace`'s public API as its only production dependency.
 Its `serde` feature forwards to `dockspace/serde`; it has no UI or platform dependencies.
+
+`tests/shared_local_scenario.rs` consumes the same L08 semantic scenario as the
+core conformance and egui product executors. It resolves prepared actions from
+the current public paint plan, checks real selection/close/resize results and
+settles exact recorded outputs. The conformance crate is a test-only dependency;
+production integration still depends only on `dockspace`. See the
+[adapter testing guide](../../docs/ADAPTER_TESTING.md) for the boundary between
+these recording checks and qualification of a concrete UI framework.
 
 `RecordingRenderer` accepts the complete ordered surface program, copies geometry,
 opaque identity, receiver descriptors, and pane-content requests into owned records,

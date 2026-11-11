@@ -121,6 +121,14 @@ version = "0.0.0"
 dependencies = [
  "dhat",
  "dockspace",
+ "dockspace_host_conformance",
+]
+
+[[package]]
+name = "dockspace_host_conformance"
+version = "0.1.0"
+dependencies = [
+ "dockspace",
 ]
 
 [[package]]

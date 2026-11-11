@@ -20,12 +20,21 @@ affine output capabilities only after an exact final-presentation result, and
 then reports framework delivery or hover facts through the public runtime
 facade. It does not import a core hit resolver or construct provider receipts.
 
-The crate also owns the private-workspace semantic description for
+The unpublished crate also exports a shared semantic description for
 `LocalTabCloseSplitterAndContained`. The `core-host` test in this crate and the
 `egui-product-headless` kittest harness both map the same tab selection, close,
 splitter adjustment, and contained-resize steps without sharing runtime IDs,
 coordinates, or output authority. The OGC cases above remain `core-host`
 evidence only and do not claim native-window coverage.
+
+The independent
+[public host consumer](../../integration/dockspace-host-harness/tests/shared_local_scenario.rs)
+also executes this L08 scenario using prepared actions from public paint plans
+and the complete recording sink. The shared `scenario` module supplies semantic
+data and capability admission; executors in this crate remain private tests.
+It is not an external adapter runner. The
+[adapter testing guide](../../docs/ADAPTER_TESTING.md) explains how another
+framework can supply its own thin executor and actual input observations.
 
 The fixed U1 `JOURNEY_CATALOG` names L01-L08, N01, and P01 plus their cadence
 and admission requirements. It is deliberately not a GUI driver language.

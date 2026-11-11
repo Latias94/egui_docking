@@ -43,6 +43,9 @@ assert!(session.view().item(item).is_some());
 
 ## Engine host integration
 
+See the [adapter testing guide](../../docs/ADAPTER_TESTING.md) for integration
+responsibilities, retained UI publication and reusable semantic scenarios.
+
 1. Begin a host frame, submit ordered input and application commands, then
    begin encoding and supply surface measurements in logical coordinates.
    A surface is a logical layout and input domain; it need not be a platform

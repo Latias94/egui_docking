@@ -17,6 +17,7 @@ dockspace = { path = "../../crates/dockspace", default-features = false }
 
 [dev-dependencies]
 dhat = "=0.3.3"
+dockspace_host_conformance = { path = "../../crates/dockspace_host_conformance" }
 
 [lints.rust]
 unsafe_code = "forbid"
