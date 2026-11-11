@@ -15,6 +15,23 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-11 module boundaries and background completion
+
+The [module qualification](audits/2026-11-11-module-boundaries.md) records the
+private surface compiler, engine, viewport coordinator and native mailbox
+extractions through `7250619`. Original state owners, input order, atomic
+publication, locks and affine resource lifetimes remain intact. Boxed pane
+providers preserve custom callbacks, and the background-save example completes
+an exact deferred close from application-owned worker results.
+
+Workspace 2,360, minimal core 2,057, independent host 377 default / 432 serde,
+product 114 default / 119 serde, official consumers 24 plus 3 demo workflows,
+and native workspace 696 tests pass, with existing skips recorded separately.
+The final provider/save tests pass all eight cases after the example's last
+startup adjustment. Both Clippy checks, strict documentation, thirteen doctests,
+formatting and the core dependency check pass. This adds no timing or physical
+platform qualification.
+
 ## 2026-11-11 release ergonomics and native-host validation
 
 The [ergonomics qualification](audits/2026-11-11-release-ergonomics.md) records
