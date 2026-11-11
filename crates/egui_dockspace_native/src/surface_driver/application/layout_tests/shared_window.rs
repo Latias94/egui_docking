@@ -5,7 +5,9 @@ use dockspace::runtime::{
     NativeCloseState, NativeSurfaceBinding, NativeSurfacePlacement, NativeWindowFacts,
     NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
 };
+use std::sync::Arc;
 
+use super::super::super::{NativeRootPlacementUpdate, apply_root_placements};
 use super::*;
 
 fn commit_prefix(state: &mut NativeRuntimeState<Panes>) -> HostFrameReport {
@@ -20,6 +22,7 @@ fn commit_prefix(state: &mut NativeRuntimeState<Panes>) -> HostFrameReport {
         .commit_publishing_root(&mut state.root_surface)
         .unwrap();
     state.coordinator.settle_host_frame_report(&report).unwrap();
+    state.commit_root_placements(&report);
     report
 }
 
@@ -238,6 +241,421 @@ fn representative_root_rebinding_continues_its_shared_sibling_in_the_same_batch(
     assert!(state.shutdown.is_none());
 }
 
+fn request_placements(
+    state: &mut NativeRuntimeState<Panes>,
+    placements: &[NativeSurfacePlacement],
+) {
+    state
+        .reserve_root_placement_storage(size_of_val(placements))
+        .unwrap();
+    state.root_placement_request = Some(Arc::from(placements));
+    state.root_placements_explicit = true;
+    state.refresh_root_placement_storage();
+}
+
+fn assert_ordinary_root_roster(
+    state: &mut NativeRuntimeState<Panes>,
+    expected: &[SurfaceId],
+) -> Arc<[NativeSurfacePlacement]> {
+    // This is the ordinary entry's selection path, including runs without input.
+    let placements = state.next_root_placements().unwrap().unwrap();
+    assert_eq!(
+        placements
+            .iter()
+            .map(|placement| placement.surface())
+            .collect::<std::collections::BTreeSet<_>>(),
+        expected.iter().copied().collect()
+    );
+    assert!(state.root_placements_match_committed(&placements));
+    let window = current_roster(state)[0].window();
+    let frame = state
+        .coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    assert!(super::super::super::root_placements_match_frame(
+        &frame.frame,
+        window,
+        &placements,
+    ));
+    drop(frame);
+    placements
+}
+
+#[test]
+fn ordinary_root_entry_uses_the_committed_roster_after_shared_reset_shrinks_it() {
+    let mut state = shared_state();
+    let old = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
+    request_placements(&mut state, &old);
+    let old_bytes = state.root_placement_capacity_bytes();
+    drop(old);
+
+    state
+        .request_layout_reset(layout(PRESET_ROOT, &[FIRST], FIRST))
+        .unwrap();
+    commit_queued(&mut state, None);
+    assert!(matches!(
+        take(&mut state),
+        NativeActionStatus::LayoutReset { .. }
+    ));
+    assert!(state.root_placement_request.is_none());
+    assert!(state.root_placement_cache.is_none());
+    assert_eq!(state.root_placement_capacity_bytes(), 0);
+
+    let current = assert_ordinary_root_roster(&mut state, &[SURFACE]);
+    let reused = assert_ordinary_root_roster(&mut state, &[SURFACE]);
+    assert!(Arc::ptr_eq(&current, &reused));
+    assert!(state.root_placement_capacity_bytes() < old_bytes);
+    assert!(state.shutdown.is_none());
+}
+
+#[test]
+fn ordinary_root_entry_uses_the_committed_surface_after_representative_rebinding() {
+    let mut state = shared_state();
+    let old = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
+    request_placements(&mut state, &old);
+    drop(old);
+    let incoming = SurfaceId::new(3);
+    state
+        .request_layout_reset_rebinding_root(
+            DockspaceLayout::new([
+                surface(incoming, PRESET_ROOT, &[FIRST], FIRST),
+                surface(OTHER_SURFACE, RootId::new(12), &[SECOND], SECOND),
+            ])
+            .unwrap(),
+            incoming,
+        )
+        .unwrap();
+    commit_queued(&mut state, None);
+    assert!(matches!(
+        take(&mut state),
+        NativeActionStatus::LayoutReset { .. }
+    ));
+    assert_eq!(state.root_surface, incoming);
+    assert!(state.root_placement_request.is_none());
+    assert_ordinary_root_roster(&mut state, &[incoming, OTHER_SURFACE]);
+    assert!(state.shutdown.is_none());
+}
+
+#[test]
+fn ordinary_root_entry_drops_a_pending_declaration_after_docking_vacates_its_sibling() {
+    let initial = DockspaceLayout::new([
+        surface(SURFACE, ROOT, &[FIRST], FIRST),
+        DockspaceSurfaceLayout::new(
+            OTHER_SURFACE,
+            DockspaceRootLayout::new(RootId::new(11), DockspaceNode::tabs([SECOND])),
+        ),
+    ])
+    .unwrap();
+    let mut state = shared_state_from_session(
+        DockspaceSession::from_layout(initial, DockPolicy::default()).unwrap(),
+    );
+    let old = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
+    request_placements(&mut state, &old);
+    drop(old);
+    state
+        .request_command(NativeCommand::DockItem {
+            item: SECOND,
+            placement: dockspace::model::DockPlacement::Center(
+                dockspace::model::DockAnchor::Central(ROOT),
+            ),
+        })
+        .unwrap();
+    let report = commit_queued(&mut state, None);
+    assert_eq!(report.native_placement_detachments().len(), 1);
+    assert!(matches!(take(&mut state), NativeActionStatus::Dock(_)));
+    assert!(state.view().surface(OTHER_SURFACE).is_none());
+    assert!(state.root_placement_request.is_none());
+    assert_eq!(state.root_placement_capacity_bytes(), 0);
+    assert_ordinary_root_roster(&mut state, &[SURFACE]);
+    assert!(state.shutdown.is_none());
+}
+
+#[test]
+fn equivalent_explicit_root_declaration_survives_native_resize_on_the_ordinary_entry() {
+    let mut state = state_from_session(
+        DockspaceSession::from_layout(layout(ROOT, &[FIRST], FIRST), DockPolicy::default())
+            .unwrap(),
+    );
+    let registration = commit_prefix(&mut state);
+    let root = registration.native_bindings()[0];
+    state
+        .coordinator
+        .bind_viewport(
+            egui::ViewportId::ROOT,
+            winit::window::WindowId::from(31),
+            root,
+        )
+        .unwrap();
+    let facts = |width, height| {
+        let scale = ScaleFactor::new(1.0).unwrap();
+        NativeWindowFacts::live()
+            .with_content_bounds(PhysicalRect::new(0.0, 0.0, width, height).unwrap())
+            .with_outer_bounds(PhysicalRect::new(0.0, 0.0, width, height).unwrap())
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
+            .with_close(NativeCloseState::Clear, None)
+    };
+    let capabilities =
+        || crate::capabilities::capabilities_for_backend(eframe::NativeWindowingBackend::Windows);
+    state
+        .coordinator
+        .report_snapshot(
+            [(root, facts(700.0, 480.0))],
+            NativeWorkAreaRoster::Unknown,
+            capabilities(),
+        )
+        .unwrap();
+    commit_prefix(&mut state);
+    let implicit = state
+        .coordinator
+        .session()
+        .native_surface_placement(root)
+        .unwrap();
+    let bridge = state.coordinator.dispatch_bridge();
+    let mut frame = state
+        .coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    assert!(matches!(
+        apply_root_placements(&mut frame.frame, &bridge, root.window(), &[implicit], true).unwrap(),
+        NativeRootPlacementUpdate::Unchanged
+    ));
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    state.coordinator.settle_host_frame_report(&report).unwrap();
+    state.commit_root_placements(&report);
+    state.root_placements_explicit = true;
+
+    state
+        .coordinator
+        .report_snapshot(
+            [(root, facts(900.0, 600.0))],
+            NativeWorkAreaRoster::Unknown,
+            capabilities(),
+        )
+        .unwrap();
+    commit_prefix(&mut state);
+    assert_eq!(
+        state.coordinator.session().native_surface_placement(root),
+        Some(implicit)
+    );
+    assert_eq!(
+        &*assert_ordinary_root_roster(&mut state, &[SURFACE]),
+        &[implicit]
+    );
+    assert!(state.shutdown.is_none());
+}
+
+#[test]
+fn tight_root_placement_storage_shares_cached_backing_and_releases_it_before_new_snapshots() {
+    let mut state = shared_state();
+    let placements = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
+    let bytes = size_of_val(&*placements);
+    state.root_placement_request = Some(Arc::clone(&placements));
+    state.refresh_root_placement_storage();
+    drop(placements);
+    assert_eq!(state.root_placement_capacity_bytes(), bytes);
+
+    let bridge = state.coordinator.dispatch_bridge();
+    assert!(bridge.configure_input_storage_allowance(usize::MAX, 0));
+    let reserved = bridge.selected_storage_reserved_bytes().unwrap();
+    assert!(bridge.configure_input_storage_allowance(reserved, 0));
+    let reused = state.next_root_placements().unwrap().unwrap();
+    assert_eq!(bridge.selected_storage_reserved_bytes(), Some(reserved));
+    assert!(
+        state
+            .reserve_root_placement_storage(bytes)
+            .unwrap_err()
+            .is_input_capacity()
+    );
+    drop(reused);
+
+    state.root_placement_request = None;
+    state.root_placement_cache = None;
+    state.refresh_root_placement_storage();
+    assert_eq!(state.root_placement_capacity_bytes(), 0);
+    assert_eq!(
+        bridge.selected_storage_reserved_bytes(),
+        Some(reserved - bytes)
+    );
+    assert!(
+        state
+            .next_root_placements()
+            .unwrap_err()
+            .is_input_capacity()
+    );
+    state.refresh_root_placement_storage();
+    assert_eq!(
+        bridge.selected_storage_reserved_bytes(),
+        Some(reserved - bytes)
+    );
+
+    // Vec-to-Arc conversion pays its temporary overlap before allocating.
+    assert!(bridge.configure_input_storage_allowance(reserved + bytes, 0));
+    state.next_root_placements().unwrap().unwrap();
+    assert_eq!(state.root_placement_capacity_bytes(), bytes);
+    assert_eq!(bridge.selected_storage_reserved_bytes(), Some(reserved));
+}
+
+#[test]
+fn queued_replacement_uses_committed_placements_and_keeps_the_declaration_out_of_its_frame() {
+    let mut state = shared_state();
+    let committed = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
+    let mut resized = committed.to_vec();
+    resized[0] = NativeSurfacePlacement::new(
+        SURFACE,
+        LogicalSize::new(300.0, 440.0).unwrap(),
+        PhysicalPoint::new(5.0, 20.0).unwrap(),
+        ScaleFactor::new(1.0).unwrap(),
+        PhysicalRect::new(5.0, 20.0, 300.0, 440.0).unwrap(),
+    );
+    request_placements(&mut state, &resized);
+    state.request_layout_reset(shared_layout()).unwrap();
+    let selected = state.next_root_placements().unwrap().unwrap();
+    assert!(Arc::ptr_eq(&selected, &committed));
+    assert_ne!(&*selected, &*resized);
+    let window = current_roster(&state)[0].window();
+    let bridge = state.coordinator.dispatch_bridge();
+    let mut frame = state
+        .coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    assert!(matches!(
+        apply_root_placements(&mut frame.frame, &bridge, window, &selected, false).unwrap(),
+        NativeRootPlacementUpdate::Unchanged
+    ));
+    let published = frame.frame.version();
+    let action = state
+        .application_actions
+        .take_after_placements(false)
+        .unwrap();
+    assert!(state.application_actions.has_pending_replacement());
+    let submitted = action
+        .submit(&mut frame.frame, published)
+        .unwrap()
+        .finish(&mut frame.frame)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame
+        .commit_publishing_root(&mut state.root_surface)
+        .unwrap();
+    state
+        .application_actions
+        .settle_submission(Some(submitted), &report)
+        .unwrap();
+    state.coordinator.settle_host_frame_report(&report).unwrap();
+    state.commit_root_placements(&report);
+    assert!(matches!(
+        take(&mut state),
+        NativeActionStatus::LayoutReset { .. }
+    ));
+    assert!(state.root_placement_request.is_none());
+    assert_eq!(
+        &*assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]),
+        &*committed
+    );
+    assert!(state.shutdown.is_none());
+}
+
+#[test]
+fn replacement_queued_after_frozen_geometry_waits_and_keeps_explicit_predecessors_exact() {
+    for explicit in [false, true] {
+        let mut state = shared_state();
+        let committed = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
+        let mut resized = committed.to_vec();
+        resized[0] = NativeSurfacePlacement::new(
+            SURFACE,
+            LogicalSize::new(300.0, 440.0).unwrap(),
+            PhysicalPoint::new(5.0, 20.0).unwrap(),
+            ScaleFactor::new(1.0).unwrap(),
+            PhysicalRect::new(5.0, 20.0, 300.0, 440.0).unwrap(),
+        );
+        request_placements(&mut state, &resized);
+        let frozen = state.next_root_placements().unwrap().unwrap();
+        let predecessor = current_roster(&state)
+            .into_iter()
+            .find(|binding| binding.surface() == SURFACE)
+            .unwrap();
+        let incoming = SurfaceId::new(3);
+        if explicit {
+            state
+                .request_layout_reset_rebinding_root(
+                    DockspaceLayout::new([
+                        surface(incoming, PRESET_ROOT, &[FIRST], FIRST),
+                        surface(OTHER_SURFACE, RootId::new(12), &[SECOND], SECOND),
+                    ])
+                    .unwrap(),
+                    incoming,
+                )
+                .unwrap();
+        } else {
+            state.request_layout_reset(shared_layout()).unwrap();
+        }
+        let bridge = state.coordinator.dispatch_bridge();
+        let mut frame = state
+            .coordinator
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        assert!(matches!(
+            apply_root_placements(
+                &mut frame.frame,
+                &bridge,
+                predecessor.window(),
+                &frozen,
+                true
+            )
+            .unwrap(),
+            NativeRootPlacementUpdate::Applied
+        ));
+        assert!(
+            state
+                .application_actions
+                .take_after_placements(true)
+                .is_none()
+        );
+        assert!(state.application_actions.has_queued_replacement());
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = frame.commit().unwrap();
+        state.coordinator.settle_host_frame_report(&report).unwrap();
+        state.commit_root_placements(&report);
+        assert_ne!(
+            current_roster(&state)
+                .into_iter()
+                .find(|binding| binding.surface() == SURFACE),
+            Some(predecessor)
+        );
+        assert_eq!(state.root_surface, SURFACE);
+        assert_eq!(&*frozen, &*resized);
+        assert!(state.root_placements_match_committed(&frozen));
+
+        commit_queued(&mut state, None);
+        let status = take(&mut state);
+        if explicit {
+            assert!(matches!(
+                status,
+                NativeActionStatus::RootContinuationRejected {
+                    predecessor: rejected,
+                    incoming_root,
+                    ..
+                } if rejected == predecessor && incoming_root == incoming
+            ));
+            assert!(state.view().surface(incoming).is_none());
+        } else {
+            assert!(matches!(status, NativeActionStatus::LayoutReset { .. }));
+        }
+        assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
+        assert!(state.shutdown.is_none());
+    }
+}
+
 #[cfg(feature = "serde")]
 mod document {
     use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
@@ -325,6 +743,9 @@ mod document {
     #[test]
     fn restore_rebinding_the_representative_keeps_the_shared_sibling_on_its_real_window() {
         let mut state = shared_state_from_session(persistent_session(shared_layout()));
+        let old = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
+        request_placements(&mut state, &old);
+        drop(old);
         let incoming = SurfaceId::new(3);
         let candidate = DockspaceLayout::new([
             surface(incoming, PRESET_ROOT, &[FIRST], FIRST),
@@ -379,6 +800,9 @@ mod document {
             take(&mut state),
             NativeActionStatus::DocumentRestored { .. }
         ));
+        assert!(state.root_placement_request.is_none());
+        let current_root = state.root_surface;
+        assert_ordinary_root_roster(&mut state, &[current_root, OTHER_SURFACE]);
         assert!(
             state
                 .coordinator
@@ -387,6 +811,29 @@ mod document {
                     routes.window(egui::ViewportId::ROOT) == Some(winit::window::WindowId::from(31))
                 })
         );
+        assert!(state.shutdown.is_none());
+    }
+
+    #[test]
+    fn ordinary_root_entry_uses_committed_placements_after_restore_removes_a_shared_sibling() {
+        let mut state = shared_state_from_session(persistent_session(shared_layout()));
+        let old = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
+        request_placements(&mut state, &old);
+        drop(old);
+        let saved = persistent_session(layout(PRESET_ROOT, &[FIRST], FIRST))
+            .save_document_json()
+            .unwrap();
+        state
+            .request_document_restore_json(&saved, recognize)
+            .unwrap();
+        commit_queued(&mut state, None);
+        assert!(matches!(
+            take(&mut state),
+            NativeActionStatus::DocumentRestored { .. }
+        ));
+        assert!(state.root_placement_request.is_none());
+        let current_root = state.root_surface;
+        assert_ordinary_root_roster(&mut state, &[current_root]);
         assert!(state.shutdown.is_none());
     }
 

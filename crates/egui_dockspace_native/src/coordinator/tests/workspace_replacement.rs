@@ -2,10 +2,12 @@
 
 use std::num::NonZeroUsize;
 
+use dockspace::close::CloseDecision;
 use dockspace::runtime::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativeInputStorageLimit,
-    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerOwner,
-    NativeProducerStorageLimit, NativeReportStorageLimit,
+    NativeCloseDisposition, NativeDesktopPointerLocation, NativeDesktopPosition,
+    NativeInputStorageLimit, NativePointerEvent, NativePointerHover, NativePointerId,
+    NativePointerOwner, NativeProducerStorageLimit, NativeReportStorageLimit,
+    NativeSurfaceCloseAction,
 };
 
 use super::*;
@@ -510,6 +512,525 @@ fn continuation_layout(surface: SurfaceId) -> DockspaceLayout {
         ),
     )])
     .unwrap()
+}
+
+fn shared_noncentral_sibling() -> (NativeCoordinator, Vec<NativeSurfaceBinding>) {
+    shared_noncentral_sibling_with_input_storage(None)
+}
+
+fn shared_noncentral_sibling_with_input_storage(
+    input_storage: Option<NativeInputStorageLimit>,
+) -> (NativeCoordinator, Vec<NativeSurfaceBinding>) {
+    let session = DockspaceSession::from_layout(
+        DockspaceLayout::new([
+            DockspaceSurfaceLayout::new(
+                FIRST_SURFACE,
+                DockspaceRootLayout::new(
+                    RootId::new(1),
+                    DockspaceNode::central_tabs([ItemId::new(1)]),
+                ),
+            ),
+            DockspaceSurfaceLayout::new(
+                SECOND_SURFACE,
+                DockspaceRootLayout::new(RootId::new(2), DockspaceNode::tabs([ItemId::new(2)])),
+            ),
+        ])
+        .unwrap(),
+        DockPolicy::default(),
+    )
+    .unwrap();
+    let mut native = NativeCoordinator::new_with_storage_limits(
+        session,
+        NativePointerRoster::Exact(Vec::new()),
+        input_storage,
+        None,
+    )
+    .unwrap();
+    native
+        .register_native_root(FIRST_SURFACE, HostWindowToken::new(11))
+        .unwrap();
+    let original = commit(&mut native).native_bindings()[0];
+    native
+        .bind_viewport(ViewportId::ROOT, WindowId::from(11), original)
+        .unwrap();
+    native
+        .report_snapshot(
+            [(original, ready_window_facts(0.0))],
+            NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
+        )
+        .unwrap();
+    commit(&mut native);
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .frame
+        .set_native_surface_placements(
+            original.window(),
+            &[FIRST_SURFACE, SECOND_SURFACE].map(|surface| {
+                let x = if surface == FIRST_SURFACE { 0.0 } else { 320.0 };
+                dockspace::runtime::NativeSurfacePlacement::new(
+                    surface,
+                    LogicalSize::new(320.0, 480.0).unwrap(),
+                    dockspace::geometry::PhysicalPoint::new(x, 0.0).unwrap(),
+                    ScaleFactor::new(1.0).unwrap(),
+                    PhysicalRect::new(x, 0.0, 320.0, 480.0).unwrap(),
+                )
+            }),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    native.settle_host_frame_report(&report).unwrap();
+    let bindings = native
+        .session
+        .native_surface_bindings_for_window(original.window())
+        .collect();
+    (native, bindings)
+}
+
+fn vacate_shared_sibling(native: &mut NativeCoordinator) -> HostFrameReport {
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .frame
+        .dock_item_current(
+            ItemId::new(2),
+            DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap()
+}
+
+#[test]
+fn ordinary_sibling_vacancy_retires_its_exact_lane_while_the_window_and_input_stay_live() {
+    let (mut native, bindings) = shared_noncentral_sibling();
+    let original = native.viewport_binding(ViewportId::ROOT).unwrap();
+    let sibling = bindings[1];
+    let input = eframe::prepare_native_viewport_pointer_passthrough(ViewportId::ROOT, false);
+    let observation = crate::input_control::NativePointerPassthroughRecord::for_test(
+        input.token(),
+        ViewportId::ROOT,
+        WindowId::from(11),
+        Some(bindings[0]),
+        false,
+        eframe::NativeViewportPointerPassthroughStatus::Applied,
+    );
+    assert!(
+        native
+            .input_control
+            .observe_unowned_applied(observation)
+            .unwrap()
+    );
+    let report = vacate_shared_sibling(&mut native);
+    assert_eq!(report.native_placement_detachments(), &[sibling]);
+    assert!(report.native_root_continuations().is_empty());
+    assert!(native.settle_host_frame_report(&report).unwrap());
+    assert!(native.bridge.references_binding(sibling));
+    assert!(!native.binding_has_retained_host_references(sibling));
+    assert!(native.input_control.snapshot_fact(bindings[0]).is_some());
+    assert!(native.try_report_retirement_quiescence().unwrap());
+    commit(&mut native);
+    assert!(!native.session.recognizes_native_binding(sibling));
+    assert_eq!(native.viewport_binding(ViewportId::ROOT), Some(original));
+    assert_eq!(
+        native
+            .session
+            .native_surface_bindings_for_window(original.window())
+            .collect::<Vec<_>>(),
+        &bindings[..1]
+    );
+    assert!(native.session.view().surface(SECOND_SURFACE).is_none());
+    assert_eq!(
+        native
+            .session
+            .view()
+            .item(ItemId::new(2))
+            .unwrap()
+            .surface(),
+        FIRST_SURFACE
+    );
+}
+
+#[test]
+fn detached_sibling_waits_for_its_exact_callback_and_committed_ingress() {
+    let (mut native, bindings) = shared_noncentral_sibling();
+    let sibling = bindings[1];
+    let command = eframe::prepare_native_viewport_pointer_passthrough(ViewportId::ROOT, false);
+    assert!(native.bridge.reserve_pointer_callback(
+        ViewportId::ROOT,
+        sibling,
+        WindowId::from(11),
+        command.token(),
+        false,
+    ));
+    let report = vacate_shared_sibling(&mut native);
+    native.settle_host_frame_report(&report).unwrap();
+    assert!(native.binding_has_retained_host_references(sibling));
+    assert!(!native.try_report_retirement_quiescence().unwrap());
+    native
+        .bridge
+        .push_record(HostRecord::ViewportPointerPassthrough(
+            crate::input_control::NativePointerPassthroughRecord::for_test(
+                command.token(),
+                ViewportId::ROOT,
+                WindowId::from(11),
+                None,
+                false,
+                eframe::NativeViewportPointerPassthroughStatus::Applied,
+            ),
+        ));
+    assert!(native.binding_has_retained_host_references(sibling));
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    assert!(native.binding_has_retained_host_references(sibling));
+    let report = commit(&mut native);
+    native.settle_host_frame_report(&report).unwrap();
+    assert!(!native.binding_has_retained_host_references(sibling));
+    assert!(native.try_report_retirement_quiescence().unwrap());
+    commit(&mut native);
+    assert!(!native.session.recognizes_native_binding(sibling));
+    assert!(native.session.is_current_native_binding(bindings[0]));
+}
+
+fn shared_window_close_effect(
+    native: &mut NativeCoordinator,
+    transport: NativeSurfaceBinding,
+) -> NativeEffectRequest {
+    native
+        .publish_close(transport, NativeCloseState::Requested, None)
+        .unwrap();
+    let observed = commit(native);
+    let close = observed
+        .inputs()
+        .iter()
+        .find_map(|input| match input {
+            HostInputOutcome::NativeCloseObservationApplied { close_requests } => {
+                close_requests.first().copied()
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(close.binding(), transport);
+    native
+        .session
+        .request_native_surface_close(close, NativeSurfaceCloseAction::RetainLayout)
+        .unwrap();
+    let requested = commit(native);
+    let plan = requested
+        .inputs()
+        .iter()
+        .find_map(|input| match input {
+            HostInputOutcome::NativeSurfaceCloseRequested { plan, .. } => Some(plan.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(plan.items().len(), 2);
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    for item in plan.items() {
+        frame
+            .frame
+            .resolve_close(plan.request(), item.token(), CloseDecision::Allow)
+            .unwrap();
+    }
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut approved = frame.commit().unwrap();
+    native.settle_host_frame_report(&approved).unwrap();
+    let [effect]: [NativeEffectRequest; 1] = approved.take_native_effects().try_into().unwrap();
+    assert!(matches!(
+        effect.operation(),
+        NativeEffectOperation::ResolveNativeClose { close, resolution }
+            if close.binding() == transport && *resolution == NativeCloseDisposition::Accept
+    ));
+    effect
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression carries one real core close effect through physical retirement, exact sibling callback drainage and duplicate Destroyed capture"
+)]
+fn shared_close_keeps_its_transport_owner_outside_the_placement_roster() {
+    let (mut native, bindings) = shared_noncentral_sibling();
+    let transport = native.viewport_binding(ViewportId::ROOT).unwrap();
+    let sibling = bindings[1];
+    let window = WindowId::from(11);
+    assert!(!bindings.contains(&transport));
+    assert!(!native.session.recognizes_native_binding(transport));
+    assert!(
+        native
+            .session
+            .recognizes_native_window_binding(transport.window())
+    );
+
+    let command = eframe::prepare_native_viewport_pointer_passthrough(ViewportId::ROOT, false);
+    assert!(native.bridge.reserve_pointer_callback(
+        ViewportId::ROOT,
+        sibling,
+        window,
+        command.token(),
+        false,
+    ));
+    let effect = shared_window_close_effect(&mut native, transport);
+    assert!(!native.session.recognizes_native_binding(transport));
+    assert!(
+        native
+            .bridge
+            .retirement_can_begin_release(ViewportId::ROOT, transport)
+    );
+    // This exercises receipt admission after a real core close effect. Fork
+    // Allow delivery requires an opaque close token and is not modeled here.
+    native.accept_retirement_effect(effect, transport).unwrap();
+    assert!(
+        !native
+            .bridge
+            .with_viewports(|routes| { routes.has_window_receipt(ViewportId::ROOT, transport) })
+    );
+    assert!(native.bridge.retirement_blocks_quiescence(transport));
+    assert!(!native.bridge.retirement_is_detached_placement(transport));
+
+    let report = vacate_shared_sibling(&mut native);
+    assert_eq!(report.native_placement_detachments(), &[sibling]);
+    assert!(report.native_root_continuations().is_empty());
+    native.settle_host_frame_report(&report).unwrap();
+    assert!(native.bridge.retirement_is_detached_placement(sibling));
+    assert!(native.binding_has_retained_host_references(sibling));
+    assert!(!native.try_report_retirement_quiescence().unwrap());
+    assert!(!native.bridge.retirement_finish_quiescence(transport));
+    assert!(native.session.view().surface(SECOND_SURFACE).is_none());
+
+    native
+        .bridge
+        .push_record(HostRecord::ViewportPointerPassthrough(
+            crate::input_control::NativePointerPassthroughRecord::for_test(
+                command.token(),
+                ViewportId::ROOT,
+                window,
+                None,
+                false,
+                eframe::NativeViewportPointerPassthroughStatus::Applied,
+            ),
+        ));
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    assert!(native.binding_has_retained_host_references(sibling));
+    commit(&mut native);
+    assert!(!native.binding_has_retained_host_references(sibling));
+    assert!(native.try_report_retirement_quiescence().unwrap());
+    commit(&mut native);
+    assert!(!native.session.recognizes_native_binding(sibling));
+    assert!(native.bridge.retirement_blocks_quiescence(transport));
+    assert!(!native.bridge.retirement_is_detached_placement(transport));
+    assert!(native.bridge.retirement_committed_routes().is_empty());
+
+    let destroyed = NativeWindowEventRecord::for_test(
+        2,
+        window,
+        Some(ViewportId::ROOT),
+        Some(transport),
+        WindowEvent::Destroyed,
+    );
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(destroyed.clone()));
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(destroyed));
+    native.bridge.push_viewport_roster(live_roster([]));
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(native.lifecycle_progress().destroyed_observations(), 1);
+    assert!(native.bridge.retirement_destroyed_observations().is_empty());
+    commit(&mut native);
+    let observations = native.bridge.retirement_destroyed_observations();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].0, transport);
+    assert_ne!(observations[0].1, NativeWindowFacts::destroyed());
+    assert!(native.bridge.retirement_blocks_quiescence(transport));
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    commit(&mut native);
+    let committed = native.bridge.retirement_committed_routes();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].viewport(), ViewportId::ROOT);
+    assert_eq!(committed[0].binding(), transport);
+    assert!(native.bridge.retirement_destroyed_observations().is_empty());
+    assert!(!native.bridge.retirement_is_detached_placement(transport));
+    assert!(native.bridge.retirement_blocks_quiescence(transport));
+    assert!(!native.session.is_current_native_binding(bindings[0]));
+
+    let prepared = native.prepare_committed_retirements().unwrap().unwrap();
+    commit(&mut native);
+    assert!(native.commit_retirements(prepared).is_empty());
+    assert_eq!(native.viewport_binding(ViewportId::ROOT), None);
+    assert!(native.try_report_retirement_quiescence().unwrap());
+    commit(&mut native);
+    commit(&mut native);
+    for binding in bindings {
+        assert!(
+            !native.session.recognizes_native_binding(binding),
+            "physical retirement must quiesce every exact placement in its window"
+        );
+    }
+    assert!(
+        !native
+            .session
+            .recognizes_native_window_binding(transport.window())
+    );
+    assert!(!native.bridge.retirement_has_pending_work());
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression carries two exact placement guards through callback commit, a partial quiescence append and its bounded retry"
+)]
+fn physical_shared_close_retries_only_unrecorded_lanes_after_input_capacity_refusal() {
+    let (mut native, bindings) = shared_noncentral_sibling_with_input_storage(Some(
+        NativeInputStorageLimit::new(NonZeroUsize::new(4).unwrap(), 1 << 20),
+    ));
+    let transport = native.viewport_binding(ViewportId::ROOT).unwrap();
+    assert!(!bindings.contains(&transport));
+    let callback = eframe::prepare_native_viewport_pointer_passthrough(ViewportId::ROOT, false);
+    assert!(native.bridge.reserve_pointer_callback(
+        ViewportId::ROOT,
+        bindings[1],
+        WindowId::from(11),
+        callback.token(),
+        false,
+    ));
+    let effect = shared_window_close_effect(&mut native, transport);
+    native.accept_retirement_effect(effect, transport).unwrap();
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            1,
+            WindowId::from(11),
+            Some(ViewportId::ROOT),
+            Some(transport),
+            WindowEvent::Destroyed,
+        )));
+    native.bridge.push_viewport_roster(live_roster([]));
+    for _ in 0..2 {
+        assert!(
+            native
+                .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+                .unwrap()
+                .is_some()
+        );
+        commit(&mut native);
+    }
+    let committed = native.bridge.retirement_committed_routes();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].binding(), transport);
+    let prepared = native.prepare_committed_retirements().unwrap().unwrap();
+    commit(&mut native);
+    assert!(native.commit_retirements(prepared).is_empty());
+    assert_eq!(
+        native
+            .session
+            .retained_native_surface_bindings_for_window(transport.window())
+            .collect::<Vec<_>>(),
+        bindings
+    );
+    assert!(native.session.native_window_bindings().next().is_none());
+    assert!(native.binding_has_retained_host_references(bindings[1]));
+    assert!(!native.try_report_retirement_quiescence().unwrap());
+    assert!(
+        bindings
+            .iter()
+            .all(|&binding| { native.session.recognizes_native_binding(binding) })
+    );
+    native
+        .bridge
+        .push_record(HostRecord::ViewportPointerPassthrough(
+            crate::input_control::NativePointerPassthroughRecord::for_test(
+                callback.token(),
+                ViewportId::ROOT,
+                WindowId::from(11),
+                None,
+                false,
+                eframe::NativeViewportPointerPassthroughStatus::Applied,
+            ),
+        ));
+    assert!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .is_some()
+    );
+    assert!(native.binding_has_retained_host_references(bindings[1]));
+    commit(&mut native);
+    assert!(bindings.iter().all(|&binding| {
+        !native.session.is_current_native_binding(binding)
+            && !native.binding_has_retained_host_references(binding)
+    }));
+    for _ in 0..3 {
+        native
+            .session
+            .report_native_global_focus(NativeGlobalFocus::Unknown)
+            .unwrap();
+    }
+    let recorded = native.session.native_input_recorded_count();
+    assert!(native.try_report_retirement_quiescence().unwrap());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(!native.session.recognizes_native_binding(bindings[0]));
+    assert!(native.session.recognizes_native_binding(bindings[1]));
+    assert!(native.bridge.retirement_is_quiescence_candidate(transport));
+    assert!(native.bridge.retirement_has_pending_work());
+    assert!(!native.try_report_retirement_quiescence().unwrap());
+    let mut refused = None;
+    assert!(!native.try_report_retirement_quiescence_into(|error| {
+        assert!(refused.replace(error).is_none());
+    }));
+    assert!(refused.unwrap().is_input_capacity());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
+    assert!(native.session.recognizes_native_binding(bindings[1]));
+    commit(&mut native);
+    assert!(native.try_report_retirement_quiescence().unwrap());
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 2);
+    assert!(!native.bridge.retirement_has_pending_work());
+    assert!(
+        !native
+            .session
+            .recognizes_native_window_binding(transport.window())
+    );
+    commit(&mut native);
+    commit(&mut native);
+    assert!(
+        native
+            .session
+            .retained_native_surface_bindings_for_window(transport.window())
+            .next()
+            .is_none()
+    );
 }
 
 #[test]
@@ -1019,7 +1540,7 @@ mod native_output {
             &self,
             finalization: eframe::NativeOutputPassFinalization<'_>,
         ) -> NativeHostWake {
-            let (context, token, _, _, _) = finalization.into_parts();
+            let (context, token, _, _, full_output) = finalization.into_parts();
             let mut fixture = self.0.lock().unwrap();
             let Some((output, paint)) = fixture.paint.take() else {
                 return NativeHostWake::Wait;
@@ -1027,7 +1548,13 @@ mod native_output {
             assert!(fixture.native.bridge.prepare_surface_outputs(token, 1));
             fixture
                 .native
-                .bind_painted_surfaces(context, token, vec![output], std::slice::from_ref(&paint))
+                .bind_painted_surfaces(
+                    context,
+                    token,
+                    full_output.pixels_per_point,
+                    vec![output],
+                    std::slice::from_ref(&paint),
+                )
                 .unwrap();
             let root = fixture.root;
             assert!(fixture.native.receivers.references_binding(root));

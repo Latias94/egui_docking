@@ -148,7 +148,9 @@ fn initial_registration_can_continue_before_a_route_or_committed_roster_exists()
         routes
             .validate_workspace_root_continuation_rosters(
                 || continuations.iter().copied(),
+                &[],
                 |_| std::iter::empty(),
+                |window| frame.native_surface_bindings_for_window(window),
             )
             .is_ok()
     );
@@ -160,7 +162,9 @@ fn initial_registration_can_continue_before_a_route_or_committed_roster_exists()
         routes
             .validate_workspace_root_continuation_rosters(
                 || continuations.iter().copied(),
+                &[],
                 |_| std::iter::empty(),
+                |window| frame.native_surface_bindings_for_window(window),
             )
             .is_err(),
         "an attached route still requires its complete committed predecessor roster"
@@ -193,7 +197,9 @@ fn changed_placement_generation_continues_one_window_with_its_complete_exact_ros
         routes
             .validate_workspace_root_continuation_rosters(
                 || continuations.iter().copied(),
+                &[],
                 committed,
+                |window| frame.native_surface_bindings_for_window(window),
             )
             .is_ok()
     );
@@ -201,7 +207,9 @@ fn changed_placement_generation_continues_one_window_with_its_complete_exact_ros
         routes
             .validate_workspace_root_continuation_rosters(
                 || continuations[..1].iter().copied(),
+                &[],
                 committed,
+                |window| frame.native_surface_bindings_for_window(window),
             )
             .is_err(),
         "physical equality cannot authorize a partial placement roster"
@@ -218,6 +226,67 @@ fn changed_placement_generation_continues_one_window_with_its_complete_exact_ros
             .iter()
             .all(|continuation| routes.window_binding(ViewportId::ROOT)
                 == Some(continuation.successor().window()))
+    );
+}
+
+#[test]
+fn shrinking_a_shared_root_requires_its_exact_detachment_and_complete_successor_roster() {
+    let (mut session, routes, current) = fixture();
+    let reset = session
+        .prepare_layout_reset(
+            DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                SurfaceId::new(1),
+                DockspaceRootLayout::new(
+                    RootId::new(1),
+                    DockspaceNode::central_tabs([ItemId::new(1)]),
+                ),
+            )])
+            .unwrap(),
+        )
+        .unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_layout_reset(&reset).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let prepared = frame.prepare_commit().unwrap();
+    let continuations = prepared.native_root_continuations().collect::<Vec<_>>();
+    let detachments = prepared.native_placement_detachments();
+    assert_eq!(continuations.len(), 1);
+    assert_eq!(detachments, &current[1..]);
+    let committed = |window| prepared.committed_native_surface_bindings_for_window(window);
+    let proposed = |window| prepared.native_surface_bindings_for_window(window);
+    assert!(
+        routes
+            .validate_workspace_root_continuation_rosters(
+                || continuations.iter().copied(),
+                detachments,
+                committed,
+                proposed,
+            )
+            .is_ok()
+    );
+    for invalid in [Vec::new(), vec![current[0]], vec![current[1], current[1]]] {
+        assert!(
+            routes
+                .validate_workspace_root_continuation_rosters(
+                    || continuations.iter().copied(),
+                    &invalid,
+                    committed,
+                    proposed,
+                )
+                .is_err()
+        );
+    }
+    assert!(
+        routes
+            .validate_workspace_root_continuation_rosters(
+                || continuations.iter().copied(),
+                detachments,
+                committed,
+                |_| std::iter::empty(),
+            )
+            .is_err()
     );
 }
 

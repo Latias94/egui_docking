@@ -80,6 +80,9 @@ pub(super) struct NativeOutputResource {
     // Keep the exact callback order and age through submission until full commit.
     terminal_ingress: Option<ReservedHostRecord>,
     pub(super) submitted: bool,
+    // An admitted old pass may temporarily hold its outputs outside this lock.
+    // Later passes in the same live window do not inherit that retirement pin.
+    pub(super) retains_detached_placements: bool,
     budget: Option<NativeInputBudget>,
 }
 
@@ -331,6 +334,7 @@ impl NativeOutputResource {
             terminal: None,
             terminal_ingress: None,
             submitted: false,
+            retains_detached_placements: false,
             budget: Some(budget),
         }
     }

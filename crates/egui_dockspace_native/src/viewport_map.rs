@@ -545,14 +545,17 @@ impl NativeViewportMap {
 
     /// Joins physical-route validation with the complete committed core roster.
     /// The caller borrows the published registry; this map owns no placement index.
-    pub(crate) fn validate_workspace_root_continuation_rosters<I, R>(
+    pub(crate) fn validate_workspace_root_continuation_rosters<I, R, F>(
         &self,
         continuations: impl Fn() -> I,
+        detachments: &[NativeSurfaceBinding],
         committed: impl Fn(NativeWindowBinding) -> R,
+        proposed: impl Fn(NativeWindowBinding) -> F,
     ) -> Result<(), NativeHostProtocolError>
     where
         I: Iterator<Item = NativeRootContinuation>,
         R: Iterator<Item = NativeSurfaceBinding>,
+        F: Iterator<Item = NativeSurfaceBinding>,
     {
         self.validate_workspace_root_continuations(&continuations)?;
         for continuation in continuations() {
@@ -569,10 +572,33 @@ impl NativeViewportMap {
             if !committed(predecessor.window()).any(|binding| binding == predecessor)
                 || committed(predecessor.window()).any(|binding| {
                     !continuations().any(|participant| participant.predecessor() == binding)
+                        && !detachments.contains(&binding)
+                })
+                || !proposed(continuation.successor().window())
+                    .any(|binding| binding == continuation.successor())
+                || proposed(continuation.successor().window()).any(|binding| {
+                    !continuations().any(|participant| participant.successor() == binding)
                 })
             {
                 return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
                     predecessor.surface(),
+                ));
+            }
+        }
+        for (index, &binding) in detachments.iter().enumerate() {
+            let continued = continuations()
+                .find(|continuation| continuation.predecessor().window() == binding.window());
+            let final_window = continued.map_or(binding.window(), |continuation| {
+                continuation.successor().window()
+            });
+            if detachments[..index].contains(&binding)
+                || continuations().any(|continuation| continuation.predecessor() == binding)
+                || !committed(binding.window()).any(|current| current == binding)
+                || proposed(binding.window()).any(|current| current == binding)
+                || proposed(final_window).next().is_none()
+            {
+                return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                    binding.surface(),
                 ));
             }
         }

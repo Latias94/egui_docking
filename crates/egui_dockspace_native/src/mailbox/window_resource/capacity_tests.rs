@@ -75,7 +75,10 @@ fn shared_placements_reuse_one_window_slot_without_retagging_pending_callbacks()
         resources.prepare_host_reference(viewport, binding).unwrap();
         resources.commit_host_reference(viewport, binding);
         assert!(resources.references_viewport_binding(viewport, binding));
+        assert!(resources.references_binding(binding));
+        assert!(!resources.references_placement(binding));
     }
+    assert!(resources.references_placement(original));
     assert_eq!(resources.entries.len(), 1);
     assert_eq!(resources.entries[0].binding, original);
     assert_eq!(resources.owned_data_capacity_bytes(), bytes);

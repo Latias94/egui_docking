@@ -233,6 +233,14 @@ impl NativeCommandCallbacks {
                 .is_some_and(|record| record.references_binding(binding))
     }
 
+    /// Window hover and capture facts cannot retain an unrelated detached sibling.
+    /// The exact dispatched source remains pinned until its callback commits.
+    pub(super) fn references_placement(&self, binding: NativeSurfaceBinding) -> bool {
+        (self.pointer_binding == Some(binding) && self.pointer.has_pending_work())
+            || (self.observation_binding == Some(binding) && self.observation.has_pending_work())
+            || (self.capture_binding == Some(binding) && self.capture.has_pending_work())
+    }
+
     pub(super) fn accept_observation(
         &mut self,
         record: NativePointerObservationRecord,

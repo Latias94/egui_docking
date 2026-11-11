@@ -160,6 +160,14 @@ impl NativeWindowResources {
         })
     }
 
+    /// A live sibling shares the physical owner without owning this exact lane.
+    /// The resource's original tag still pins its own physical callback duties.
+    pub(super) fn references_placement(&self, binding: NativeSurfaceBinding) -> bool {
+        self.entries.iter().any(|resource| {
+            resource.binding == binding || resource.callbacks.references_placement(binding)
+        })
+    }
+
     pub(super) fn references_viewport_binding(
         &self,
         viewport: ViewportId,

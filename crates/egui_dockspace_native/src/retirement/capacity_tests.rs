@@ -2,16 +2,17 @@ use super::*;
 use crate::mailbox::{HostRecord, NativeHostBridge, journal::HostIngressJournal};
 use crate::viewport_callback::NativeViewportCreateFailureRecord;
 use crate::viewport_map::{CreateAdmission, CreateTerminal, NativeViewportMap};
+use dockspace::close::CloseDecision;
 use dockspace::geometry::{LogicalSize, PhysicalPoint, PhysicalRect, PhysicalSize, ScaleFactor};
 use dockspace::model::{
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
-    SurfaceId,
+    DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
 };
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, HostInputOutcome, HostWindowToken,
-    NativeCloseState, NativeEffectAcknowledgement, NativePointerRoster, NativeSurfacePlacement,
-    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
-    SurfaceUnavailableReason,
+    NativeCloseState, NativeEffectAcknowledgement, NativePointerRoster, NativeSurfaceCloseAction,
+    NativeSurfacePlacement, NativeWindowInputState, NativeWindowPresentationState,
+    NativeWorkAreaRoster, SurfaceUnavailableReason,
 };
 use eframe::NativeViewportCreateFailureKind;
 
@@ -213,6 +214,398 @@ fn shared_replacement<'a>(
     frame
 }
 
+fn shrinking_replacement(session: &mut DockspaceSession) -> DockspaceHostFrame<'_> {
+    let reset = session
+        .prepare_layout_reset(
+            DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                SurfaceId::new(1),
+                DockspaceRootLayout::new(
+                    RootId::new(1),
+                    DockspaceNode::central_tabs([ItemId::new(1)]),
+                ),
+            )])
+            .unwrap(),
+        )
+        .unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_layout_reset(&reset).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame
+}
+
+#[test]
+fn shrinking_shared_root_prepays_and_drains_both_exact_predecessors() {
+    let (mut session, original, bindings) = shared_placements();
+    let bridge =
+        NativeHostBridge::try_new_with_capacity(NativeViewportMap::default(), 2, 1).unwrap();
+    bridge.configure_lifecycle_storage(2, 1).unwrap();
+    bridge.configure_window_resource_storage(2, 0).unwrap();
+    bridge
+        .bind_viewport_route(ViewportId::ROOT, WindowId::from(95), original)
+        .unwrap();
+    let version = session.version();
+    drop(
+        shrinking_replacement(&mut session)
+            .prepare_commit()
+            .unwrap(),
+    );
+    assert_eq!(session.version(), version);
+    let (mut report, _) = bridge
+        .commit_host_frame_with_staging(shrinking_replacement(&mut session), true, None)
+        .unwrap();
+    assert_eq!(report.native_root_continuations().len(), 1);
+    assert_eq!(report.native_placement_detachments(), &bindings[1..]);
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(bridge.retirement_quiescence_candidates(), bindings);
+    let successor = report.native_root_continuations()[0].successor();
+    assert_eq!(
+        bridge.with_viewports(|routes| routes.window(ViewportId::ROOT)),
+        Some(WindowId::from(95))
+    );
+    assert_eq!(
+        session
+            .native_surface_bindings_for_window(successor.window())
+            .count(),
+        1
+    );
+    for binding in bindings.into_iter().rev() {
+        session.report_native_binding_quiescence(binding).unwrap();
+        commit(&mut session);
+        session.prepare_native_pointer_capacity().unwrap();
+        assert!(bridge.retirement_finish_quiescence(binding));
+        assert!(!session.recognizes_native_binding(binding));
+    }
+    assert!(session.is_current_native_binding(successor));
+}
+
+#[test]
+fn shrinking_shared_root_refuses_a_missing_detachment_slot_before_publication() {
+    let (mut session, original, bindings) = shared_placements();
+    let bridge =
+        NativeHostBridge::try_new_with_capacity(NativeViewportMap::default(), 2, 1).unwrap();
+    bridge.configure_lifecycle_storage(1, 1).unwrap();
+    bridge.configure_window_resource_storage(2, 0).unwrap();
+    bridge
+        .bind_viewport_route(ViewportId::ROOT, WindowId::from(96), original)
+        .unwrap();
+    let version = session.version();
+    assert!(
+        bridge
+            .commit_host_frame_with_staging(shrinking_replacement(&mut session), true, None)
+            .is_err()
+    );
+    assert_eq!(session.version(), version);
+    assert_eq!(
+        bridge.with_viewports(|routes| routes.binding(ViewportId::ROOT)),
+        Some(original)
+    );
+    assert!(bridge.retirement_quiescence_candidates().is_empty());
+    assert!(
+        bindings
+            .into_iter()
+            .all(|binding| session.is_current_native_binding(binding))
+    );
+}
+
+fn shared_window_waiting_for_destruction(
+    receipt_owner_is_sibling: bool,
+) -> (
+    DockspaceSession,
+    NativeSurfaceBinding,
+    NativeSurfaceBinding,
+    NativeCloseEffectAcknowledgement,
+) {
+    let layout = DockspaceLayout::new([1, 2].map(|id| {
+        DockspaceSurfaceLayout::new(
+            SurfaceId::new(id),
+            DockspaceRootLayout::new(
+                RootId::new(id),
+                if id == 1 {
+                    DockspaceNode::central_tabs([ItemId::new(id)])
+                } else {
+                    DockspaceNode::tabs([ItemId::new(id)])
+                },
+            ),
+        )
+    }))
+    .unwrap();
+    let mut session =
+        DockspaceSession::from_layout(layout, dockspace::policy::DockPolicy::default()).unwrap();
+    session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .unwrap();
+    session
+        .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+            eframe::NativeWindowingBackend::Windows,
+        ))
+        .unwrap();
+    let owner_surface = SurfaceId::new(if receipt_owner_is_sibling { 2 } else { 1 });
+    session
+        .register_native_root(owner_surface, HostWindowToken::new(1))
+        .unwrap();
+    let owner = commit(&mut session).native_bindings()[0];
+    let scale = ScaleFactor::new(1.0).unwrap();
+    session
+        .report_managed_native_snapshot(
+            [(
+                owner.window(),
+                NativeWindowFacts::live()
+                    .with_content_size(PhysicalSize::new(800.0, 600.0).unwrap())
+                    .with_native_scale_factor(scale)
+                    .with_presentation_scale_factor(scale)
+                    .with_input(NativeWindowInputState::ReceivesInput, None)
+                    .with_presentation(NativeWindowPresentationState::Visible),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .unwrap();
+    commit(&mut session);
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .set_native_surface_placements(
+            owner.window(),
+            &[1, 2].map(|id| {
+                NativeSurfacePlacement::new(
+                    SurfaceId::new(id),
+                    LogicalSize::new(800.0, 600.0).unwrap(),
+                    PhysicalPoint::new(0.0, 0.0).unwrap(),
+                    scale,
+                    PhysicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+                )
+            }),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+    let sibling = session
+        .native_surface_bindings_for_window(owner.window())
+        .find(|binding| binding.surface() == SurfaceId::new(2))
+        .unwrap();
+    assert!(
+        session.is_current_native_binding(owner),
+        "the equivalent declaration preserves the physical receipt's exact tag"
+    );
+    assert_eq!(owner == sibling, receipt_owner_is_sibling);
+    let acknowledgement = approve_shared_retention(&mut session, owner);
+    (session, owner, sibling, acknowledgement)
+}
+
+fn approve_shared_retention(
+    session: &mut DockspaceSession,
+    owner: NativeSurfaceBinding,
+) -> NativeCloseEffectAcknowledgement {
+    session
+        .publish_native_close(owner, NativeCloseState::Requested, None)
+        .unwrap();
+    let observed = commit(session);
+    let close = observed
+        .inputs()
+        .iter()
+        .find_map(|input| match input {
+            HostInputOutcome::NativeCloseObservationApplied { close_requests } => {
+                close_requests.first().copied()
+            }
+            _ => None,
+        })
+        .unwrap();
+    session
+        .request_native_surface_close(close, NativeSurfaceCloseAction::RetainLayout)
+        .unwrap();
+    let requested = commit(session);
+    let plan = requested
+        .inputs()
+        .iter()
+        .find_map(|input| match input {
+            HostInputOutcome::NativeSurfaceCloseRequested { plan, .. } => Some(plan.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    for item in plan.items() {
+        frame
+            .resolve_close(plan.request(), item.token(), CloseDecision::Allow)
+            .unwrap();
+    }
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let [effect] = frame
+        .commit()
+        .unwrap()
+        .take_native_effects()
+        .try_into()
+        .unwrap();
+    let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = effect.accepted() else {
+        panic!("the real close plan must freeze this shared window pending destruction");
+    };
+    acknowledgement
+}
+
+fn vacate_closing_sibling(session: &mut DockspaceSession) -> DockspaceHostFrame<'_> {
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .dock_item_current(
+            ItemId::new(2),
+            DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+        )
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame
+}
+
+#[test]
+fn closing_shared_window_accepts_detachment_before_or_after_its_physical_receipt() {
+    for receipt_owner_is_sibling in [false, true] {
+        for physical_first in [false, true] {
+            let (mut session, owner, sibling, acknowledgement) =
+                shared_window_waiting_for_destruction(receipt_owner_is_sibling);
+            let slots = if receipt_owner_is_sibling { 1 } else { 2 };
+            let bridge =
+                NativeHostBridge::try_new_with_capacity(NativeViewportMap::default(), 2, 1)
+                    .unwrap();
+            bridge.configure_lifecycle_storage(slots, 1).unwrap();
+            bridge
+                .bind_viewport_route(ViewportId::ROOT, WindowId::from(98), owner)
+                .unwrap();
+            let backing = bridge.owned_input_capacity_bytes(None);
+            if physical_first {
+                assert!(bridge.retirement_begin_release(ViewportId::ROOT, owner, acknowledgement));
+            }
+            let (mut report, _) = bridge
+                .commit_host_frame_with_staging(vacate_closing_sibling(&mut session), true, None)
+                .unwrap();
+            assert_eq!(report.native_placement_detachments(), &[sibling]);
+            assert!(report.native_root_continuations().is_empty());
+            assert!(report.take_native_effects().is_empty());
+            if !physical_first {
+                assert!(bridge.retirement_begin_release(ViewportId::ROOT, owner, acknowledgement));
+            }
+            assert_eq!(bridge.owned_input_capacity_bytes(None), backing);
+            assert!(!bridge.retirement_can_begin_release(ViewportId::ROOT, owner));
+            assert!(!bridge.retirement_is_quiescence_candidate(owner));
+            assert!(!bridge.retirement_finish_quiescence(owner));
+            assert_eq!(
+                bridge.retirement_is_detached_placement(sibling),
+                !receipt_owner_is_sibling
+            );
+            assert!(session.view().surface(SurfaceId::new(2)).is_none());
+            assert_eq!(
+                session
+                    .native_surface_bindings_for_window(owner.window())
+                    .count(),
+                1
+            );
+            assert_eq!(
+                bridge.with_viewports(|routes| routes.window(ViewportId::ROOT)),
+                Some(WindowId::from(98))
+            );
+        }
+    }
+}
+
+#[test]
+fn closing_sibling_detachment_refuses_only_a_genuinely_new_missing_exact_slot() {
+    let (mut session, owner, sibling, acknowledgement) =
+        shared_window_waiting_for_destruction(false);
+    let bridge =
+        NativeHostBridge::try_new_with_capacity(NativeViewportMap::default(), 2, 1).unwrap();
+    bridge.configure_lifecycle_storage(1, 1).unwrap();
+    bridge
+        .bind_viewport_route(ViewportId::ROOT, WindowId::from(99), owner)
+        .unwrap();
+    assert!(bridge.retirement_begin_release(ViewportId::ROOT, owner, acknowledgement));
+    let version = session.version();
+    let backing = bridge.owned_input_capacity_bytes(None);
+    for _ in 0..2 {
+        let error = bridge
+            .commit_host_frame_with_staging(vacate_closing_sibling(&mut session), true, None)
+            .unwrap_err();
+        assert!(error.is_input_capacity());
+        assert_eq!(session.version(), version);
+        assert!(session.is_current_native_binding(sibling));
+        assert_eq!(bridge.owned_input_capacity_bytes(None), backing);
+        assert!(!bridge.retirement_is_quiescence_candidate(owner));
+        assert!(!bridge.retirement_finish_quiescence(owner));
+        assert!(!bridge.retirement_is_detached_placement(sibling));
+    }
+}
+
+#[test]
+fn physical_receipt_and_detachment_keep_the_destroyed_gate_in_both_orders() {
+    let (_session, _, bindings) = shared_placements();
+    for receipt_owner_is_detached in [false, true] {
+        for physical_first in [false, true] {
+            let slots = if receipt_owner_is_detached { 1 } else { 2 };
+            let mut state = NativeRetirementState::with_capacity_limit(slots).unwrap();
+            let backing = state.entries.as_ptr();
+            let owner = bindings[usize::from(receipt_owner_is_detached)];
+            let window = WindowId::from(97);
+            if physical_first {
+                state
+                    .retain_window(window_receipt(ViewportId::ROOT, window, owner))
+                    .unwrap();
+            }
+            assert!(state.can_detach_binding(bindings[1]));
+            assert_eq!(
+                state.detachment_needs_entry(bindings[1]),
+                !physical_first || !receipt_owner_is_detached
+            );
+            state.commit_detachment(bindings[1]);
+            if !physical_first {
+                assert!(state.can_retain_window_receipt(owner, window));
+                state
+                    .retain_window(window_receipt(ViewportId::ROOT, window, owner))
+                    .unwrap();
+            }
+            assert!(state.owns_window(window, Some(ViewportId::ROOT)));
+            assert_eq!(state.bindings().count(), slots);
+            assert!(!state.is_detached_placement(owner));
+            assert!(!state.is_quiescence_candidate(owner));
+            assert!(!state.finish_quiescence(owner));
+            assert!(!state.can_retain_window_receipt(bindings[0], window));
+            assert_eq!(state.entries.as_ptr(), backing);
+            assert_eq!(
+                state.receive_destroyed(window, Some(ViewportId::ROOT), 5, |viewport, binding| {
+                    super::tests::destroyed_ingress(viewport, binding, window, 5)
+                }),
+                Some((ViewportId::ROOT, owner)),
+            );
+            let capture = state.window_ingress().next().unwrap().ordinal();
+            assert_eq!(
+                state.observe_destroyed(ViewportId::ROOT, owner, window, 5),
+                DestroyedObservation::Recorded
+            );
+            assert!(!state.finish_quiescence(owner));
+            assert!(state.transfer_destroyed(owner, window, 5));
+            state.commit_destroyed_callbacks();
+            assert!(!state.requires_snapshot());
+            drop(state.take_window_ingress(capture).unwrap());
+            state.commit_destroyed_callbacks();
+            assert!(state.requires_snapshot());
+            state.mark_snapshot_queued();
+            state.settle_snapshot(false);
+            assert!(!state.finish_quiescence(owner));
+            state.mark_snapshot_queued();
+            state.settle_snapshot(true);
+            assert!(!state.finish_quiescence(owner));
+            let committed = state.committed_routes().collect::<Vec<_>>();
+            state.commit_routes(&committed);
+            assert!(state.finish_quiescence(owner));
+            if !receipt_owner_is_detached {
+                assert!(state.is_quiescence_candidate(bindings[1]));
+                assert!(state.finish_quiescence(bindings[1]));
+            }
+            assert!(!state.has_pending_work());
+        }
+    }
+}
+
 #[test]
 fn shared_placement_detachment_keeps_exact_quiescence_and_physical_owner_exclusion() {
     let (_session, _, bindings) = shared_placements();
@@ -248,8 +641,10 @@ fn shared_placement_detachment_keeps_exact_quiescence_and_physical_owner_exclusi
             bindings[0],
         ))
         .unwrap();
-    assert!(!physical.can_detach_binding(bindings[0]));
-    assert!(!physical.can_detach_binding(bindings[1]));
+    assert!(physical.can_detach_binding(bindings[0]));
+    assert!(!physical.detachment_needs_entry(bindings[0]));
+    assert!(physical.can_detach_binding(bindings[1]));
+    assert!(physical.detachment_needs_entry(bindings[1]));
     let mut unmaterialized = NativeRetirementState::with_capacity_limit(2).unwrap();
     unmaterialized
         .begin_unmaterialized_quiescence(bindings[0], NativeCreateReceipt::new(None))

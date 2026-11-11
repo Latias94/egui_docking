@@ -1104,10 +1104,30 @@ impl NativeCoordinator {
             report.native_input_pending(),
         )?;
         let rebound = self.settle_workspace_replacement(report)?;
+        if !report.native_input_pending() {
+            let mut after = None;
+            while let Some(binding) = self.bridge.next_retirement_quiescence_candidate(after) {
+                after = Some(binding);
+                if !self.bridge.retirement_is_detached_placement(binding) {
+                    continue;
+                }
+                self.terminalize_focus(binding);
+                self.bridge
+                    .with_close_control(|control| control.retire_binding(binding));
+                let results = &mut self.pending_effect_results;
+                self.input_control.retire_placement_into(binding, |result| {
+                    results.push_back(PendingNativeEffectResult {
+                        result,
+                        last_rejection: None,
+                    });
+                });
+                self.receivers.retire_binding(binding);
+            }
+        }
         // First-live output acknowledgements and partial input commits can
         // change authority without settling a queued platform snapshot.
         self.refresh_local_coordinates();
-        Ok(settled || rebound)
+        Ok(settled || rebound || !report.native_placement_detachments().is_empty())
     }
 
     fn refresh_local_coordinates(&self) {
@@ -1311,9 +1331,18 @@ impl NativeCoordinator {
     pub(crate) fn try_report_retirement_quiescence(&mut self) -> Result<bool, NativeRuntimeError> {
         let mut first_error = None;
         let recorded = self.try_report_retirement_quiescence_into(|error| {
-            first_error.get_or_insert(error);
+            if first_error
+                .as_ref()
+                .is_none_or(NativeRuntimeError::is_input_capacity)
+            {
+                first_error = Some(error);
+            }
         });
         match first_error {
+            Some(error) if error.is_input_capacity() && self.session.has_pending_native_input() => {
+                self.bridge.defer_for_core_input_capacity();
+                Ok(recorded)
+            }
             Some(error) => Err(error),
             None => Ok(recorded),
         }
@@ -1329,24 +1358,62 @@ impl NativeCoordinator {
         }
         let mut recorded = false;
         let mut after = None;
-        while let Some(binding) = self.bridge.next_retirement_quiescence_candidate(after) {
+        'retirements: while let Some(binding) =
+            self.bridge.next_retirement_quiescence_candidate(after)
+        {
             after = Some(binding);
+            let placement_only = self.detached_placement_keeps_window(binding);
             if self.session.is_current_native_binding(binding)
                 || self.binding_has_retained_host_references(binding)
             {
                 continue;
             }
-            if self.session.recognizes_native_binding(binding)
-                && let Err(error) = self.session.report_native_binding_quiescence(binding)
-            {
-                on_error(error.into());
-                continue;
+            if self.bridge.retirement_is_detached_placement(binding) {
+                if self.session.recognizes_native_binding(binding)
+                    && let Err(error) = self.session.report_native_binding_quiescence(binding)
+                {
+                    on_error(error.into());
+                    continue;
+                }
+            } else {
+                // A physical receipt may retain an original transport tag which
+                // no longer names any placement. Its terminal boundary must drain
+                // every retained exact lane, using each lane's own reference proof.
+                if self
+                    .session
+                    .retained_native_surface_bindings_for_window(binding.window())
+                    .any(|retained| {
+                        self.session.is_current_native_binding(retained)
+                            || self.binding_has_retained_host_references(retained)
+                    })
+                {
+                    continue;
+                }
+                loop {
+                    let retained = self
+                        .session
+                        .retained_native_surface_bindings_for_window(binding.window())
+                        .next();
+                    let Some(retained) = retained else {
+                        break;
+                    };
+                    if let Err(error) = self.session.report_native_binding_quiescence(retained) {
+                        on_error(error.into());
+                        continue 'retirements;
+                    }
+                    // Successful appends remove their producer entry immediately.
+                    // A capacity refusal keeps the receipt and retries only the
+                    // remaining lanes after the accepted prefix commits.
+                    recorded = true;
+                }
             }
             let finished = self.bridge.retirement_finish_quiescence(binding);
             debug_assert!(finished, "quiescence candidate remains pending");
             if finished {
-                self.pending_effect_results
-                    .retain(|pending| !pending.can_be_consumed_by_quiescence(binding));
+                self.pending_effect_results.retain(|pending| {
+                    (placement_only && pending.result.binding() != binding)
+                        || !pending.can_be_consumed_by_quiescence(binding)
+                });
                 self.lifecycle_progress.record_quiescent_retirement();
             }
             recorded = true;
@@ -1355,23 +1422,35 @@ impl NativeCoordinator {
     }
 
     fn binding_has_retained_host_references(&self, binding: NativeSurfaceBinding) -> bool {
-        self.bridge.references_binding(binding)
-            || self.bridge.retirement_blocks_quiescence(binding)
+        let placement_only = self.detached_placement_keeps_window(binding);
+        (if placement_only {
+            self.bridge.references_detached_placement(binding)
+        } else {
+            self.bridge.references_binding(binding)
+        }) || self.bridge.retirement_blocks_quiescence(binding)
             || self
                 .bridge
                 .with_viewports(|routes| routes.bindings().any(|route| route == binding))
-            || self.pointer_translator.references_binding(binding.window())
+            || (!placement_only && self.pointer_translator.references_binding(binding.window()))
             || self.receivers.references_binding(binding)
             || self.deferred_viewports.viewport_for(binding).is_some()
             || self.effects.references_binding(binding)
-            || self
-                .pending_effect_results
-                .iter()
-                .any(|pending| pending.blocks_quiescence(binding))
+            || self.pending_effect_results.iter().any(|pending| {
+                (!placement_only || pending.result.binding() == binding)
+                    && pending.blocks_quiescence(binding)
+            })
             || self.bridge.retirement_references_cleanup(binding)
             || self.focus_control.references_binding(binding)
             || self.input_control.references_binding(binding)
             || self.capture_references_binding(binding)
+    }
+
+    fn detached_placement_keeps_window(&self, binding: NativeSurfaceBinding) -> bool {
+        self.bridge.retirement_is_detached_placement(binding)
+            && self
+                .session
+                .native_window_bindings()
+                .any(|window| window == binding.window())
     }
 
     pub(crate) fn try_report_pending_effect_results(&mut self) -> Result<bool, NativeRuntimeError> {
@@ -2663,10 +2742,13 @@ impl NativeCoordinator {
 
     /// Binds every contribution from one final pass as one affine token owner.
     /// Refusal returns the complete collection and publishes no receiver set.
+    /// The scale must come from this token's finalized `FullOutput`; the ambient
+    /// context may have already returned to another viewport.
     pub(crate) fn bind_painted_surfaces(
         &mut self,
         context: &eframe::egui::Context,
         token: NativeOutputToken,
+        pixels_per_point: f32,
         outputs: Vec<PaintedSurfaceOutput>,
         paints: &[crate::host_frame::NativeSurfacePaint],
     ) -> Result<(), (NativeOutputBindingErrorKind, Vec<PaintedSurfaceOutput>)> {
@@ -2718,9 +2800,16 @@ impl NativeCoordinator {
                     .session
                     .native_pointer_continuation_awaits_presentation(output.surface())
         });
+        let Ok(pass) = crate::receiver::NativeReceiverPass::capture(
+            context,
+            token.viewport_id(),
+            pixels_per_point,
+        ) else {
+            return Err((NativeOutputBindingErrorKind::ReceiverMismatch, outputs));
+        };
         if self
             .receivers
-            .stage_outputs(context, token, binding, &bindings, &outputs, paints)
+            .stage_outputs(&pass, token, binding, &bindings, &outputs, paints)
             .is_err()
         {
             return Err((NativeOutputBindingErrorKind::ReceiverMismatch, outputs));

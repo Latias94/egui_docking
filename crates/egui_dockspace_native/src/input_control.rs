@@ -647,10 +647,26 @@ impl NativeInputControl {
     pub(crate) fn retire_binding_into(
         &mut self,
         binding: NativeSurfaceBinding,
+        emit: impl FnMut(NativeEffectResult),
+    ) {
+        self.retire_matching_into(|current| current.window() == binding.window(), emit);
+    }
+
+    pub(crate) fn retire_placement_into(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        emit: impl FnMut(NativeEffectResult),
+    ) {
+        self.retire_matching_into(|current| current == binding, emit);
+    }
+
+    fn retire_matching_into(
+        &mut self,
+        retire: impl Fn(NativeSurfaceBinding) -> bool,
         mut emit: impl FnMut(NativeEffectResult),
     ) {
         self.observations
-            .retain(|observation| observation.binding.window() != binding.window());
+            .retain(|observation| !retire(observation.binding));
         // Visit the original queue exactly once. Survivors return to the same
         // backing in order; affine results move directly into the prepaid sink.
         let count = self.pending.len();
@@ -659,7 +675,7 @@ impl NativeInputControl {
                 .pending
                 .pop_front()
                 .expect("each original input entry is visited once");
-            if pending.binding.window() != binding.window() {
+            if !retire(pending.binding) {
                 self.pending.push_back(pending);
                 continue;
             }

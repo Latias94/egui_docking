@@ -13,7 +13,7 @@ use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, NativeCleanupObservation,
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeEffectResult,
     NativeInputBudget, NativeMonotonicClock, NativeSurfaceBinding, NativeWindowBinding,
-    NativeWindowFacts,
+    NativeWindowFacts, PreparedDockspaceHostFrameCommit,
 };
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
@@ -2038,18 +2038,20 @@ impl CursorPrefixClaim<'_> {
 impl NativeHostState {
     /// The speculative rows carry backing promises, never callback authority.
     /// Holding this lock through publication prevents another owner spending them.
-    fn prepare_workspace_replacement(
+    fn prepare_native_placement_changes(
         &mut self,
-        frame: &DockspaceHostFrame<'_>,
+        frame: &PreparedDockspaceHostFrameCommit<'_>,
     ) -> Result<(), NativeRuntimeError> {
         self.viewports
             .validate_workspace_root_continuation_rosters(
-                || frame.proposed_native_root_continuations(),
+                || frame.native_root_continuations(),
+                frame.native_placement_detachments(),
                 |window| frame.committed_native_surface_bindings_for_window(window),
+                |window| frame.native_surface_bindings_for_window(window),
             )?;
         self.refresh_window_resource_references();
         let mut detached_placements = 0_usize;
-        for continuation in frame.proposed_native_root_continuations() {
+        for continuation in frame.native_root_continuations() {
             let predecessor = continuation.predecessor();
             let successor = continuation.successor();
             let Some(viewport) = self
@@ -2075,6 +2077,19 @@ impl NativeHostState {
                 .checked_add(1)
                 .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
         }
+        for &binding in frame.native_placement_detachments() {
+            if !self.retirements.can_detach_binding(binding) {
+                return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                    binding.surface(),
+                )
+                .into());
+            }
+            detached_placements = detached_placements
+                .checked_add(usize::from(
+                    self.retirements.detachment_needs_entry(binding),
+                ))
+                .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        }
         // One physical continuation can retire several exact placements. Pay
         // the complete batch before publication, independently of window slots.
         if detached_placements > 0 {
@@ -2093,7 +2108,7 @@ impl NativeHostState {
             self.retirements
                 .prepare_capacity_for_retained_lifetimes(required)?;
         }
-        for (index, continuation) in frame.proposed_native_root_continuations().enumerate() {
+        for (index, continuation) in frame.native_root_continuations().enumerate() {
             let predecessor = continuation.predecessor();
             let successor = continuation.successor();
             let Some(viewport) = self
@@ -2103,7 +2118,7 @@ impl NativeHostState {
                 continue;
             };
             if frame
-                .proposed_native_root_continuations()
+                .native_root_continuations()
                 .take(index)
                 .any(|previous| previous.predecessor().window() == predecessor.window())
             {
@@ -2119,10 +2134,9 @@ impl NativeHostState {
     }
 
     /// Every fallible capacity and receipt check ran under this same lock.
-    fn commit_workspace_replacement(&mut self, report: &HostFrameReport) {
+    fn commit_native_placement_changes(&mut self, report: &HostFrameReport) {
         if report.native_root_continuations().is_empty() {
             self.window_resources.abort_workspace_replacement();
-            return;
         }
         self.viewports
             .commit_workspace_root_continuations(report.native_root_continuations());
@@ -2154,8 +2168,24 @@ impl NativeHostState {
             // its own independently drainable core terminal guard.
             self.retirements.commit_detachment(predecessor);
         }
+        for &binding in report.native_placement_detachments() {
+            self.retirements.commit_detachment(binding);
+            for (_, resource) in self.output_resources.iter_mut() {
+                if resource
+                    .reservation
+                    .binding()
+                    .is_some_and(|owner| owner.window() == binding.window())
+                {
+                    resource.retains_detached_placements = true;
+                }
+            }
+        }
         self.refresh_window_resource_references();
-        self.invalidate_viewport_roster();
+        if !report.native_root_continuations().is_empty()
+            || !report.native_placement_detachments().is_empty()
+        {
+            self.invalidate_viewport_roster();
+        }
     }
 
     fn refresh_window_resource_references(&mut self) {
@@ -3445,6 +3475,51 @@ impl NativeHostState {
             || self.window_resources.references_binding(binding)
             || self.close_control.references_binding(binding)
     }
+
+    fn references_detached_placement(&self, binding: NativeSurfaceBinding) -> bool {
+        self.journal
+            .iter()
+            .chain(self.owner_ingress().map(ReservedHostRecord::record))
+            .any(|record| match record {
+                HostRecord::WindowEvent(event) => event.binding() == Some(binding),
+                HostRecord::ViewportPointerPassthrough(input) => input.binding() == Some(binding),
+                HostRecord::ViewportRoster(roster) => roster
+                    .roster()
+                    .observations()
+                    .iter()
+                    .any(|observation| observation.binding() == binding),
+                HostRecord::ViewportCreateFailed(failure) => failure.binding() == binding,
+                HostRecord::ViewportVisibility(visibility) => visibility.binding() == binding,
+                HostRecord::ViewportCreated(created) => created.binding() == binding,
+                HostRecord::DeviceRemoval(_)
+                | HostRecord::GlobalFocus(_)
+                | HostRecord::ViewportFocus(_)
+                | HostRecord::ViewportCloseCancelled(_)
+                | HostRecord::PointerObservation(_)
+                | HostRecord::PointerCapture(_)
+                | HostRecord::Output { .. } => false,
+            })
+            || self.output_resources.values().any(|resource| {
+                resource.reservation.binding() == Some(binding)
+                    || match &resource.paint {
+                        Some(PendingNativeOutput::Surfaces(outputs)) => outputs
+                            .iter()
+                            .any(|output| output.matches_native_binding(binding)),
+                        Some(PendingNativeOutput::Staging(output)) => output.binding() == binding,
+                        // An admitted pass or an in-flight terminal temporarily owns
+                        // its contribution collection outside this lock.
+                        None => {
+                            resource.retains_detached_placements
+                                && resource
+                                    .reservation
+                                    .binding()
+                                    .is_some_and(|owner| owner.window() == binding.window())
+                        }
+                    }
+            })
+            || self.window_resources.references_placement(binding)
+            || self.close_control.references_binding(binding)
+    }
 }
 
 fn deferred_semantic_prelude_ready<T>(mut records: impl Iterator<Item = T>) -> bool {
@@ -3832,10 +3907,11 @@ impl NativeHostBridge {
     ) -> Result<NativeSurfaceBinding, NativeViewportBindingError> {
         let mut records = self.lock();
         if records.viewports.has_window_receipt(viewport, expected)
-            && records
-                .viewports
-                .window(viewport)
-                .is_some_and(|window| !records.retirements.can_retain_window(expected, window))
+            && records.viewports.window(viewport).is_some_and(|window| {
+                !records
+                    .retirements
+                    .can_retain_window_receipt(expected, window)
+            })
         {
             return Err(NativeViewportBindingError::BindingNotCurrent {
                 viewport,
@@ -3887,10 +3963,11 @@ impl NativeHostBridge {
         }
         if same_window.is_none()
             && records.viewports.has_window_receipt(viewport, expected)
-            && records
-                .viewports
-                .window(viewport)
-                .is_some_and(|window| !records.retirements.can_retain_window(expected, window))
+            && records.viewports.window(viewport).is_some_and(|window| {
+                !records
+                    .retirements
+                    .can_retain_window_receipt(expected, window)
+            })
         {
             return Err(NativeViewportBindingError::BindingNotCurrent {
                 viewport,
@@ -4284,36 +4361,33 @@ impl NativeHostBridge {
         include_staging: bool,
         root_surface: Option<&mut SurfaceId>,
     ) -> Result<(HostFrameReport, Vec<ViewportId>), NativeRuntimeError> {
+        let frame = frame.prepare_commit()?;
         let mut records = self.lock();
-        let root_continuation = frame
-            .proposed_native_root_continuations()
-            .find(|continuation| {
-                records.viewports.window_binding(ViewportId::ROOT)
-                    == Some(continuation.predecessor().window())
-                    && root_surface.as_deref().map_or_else(
-                        || {
-                            records
-                                .viewports
-                                .binding(ViewportId::ROOT)
-                                .is_some_and(|binding| {
-                                    binding.surface() == continuation.predecessor().surface()
-                                })
-                        },
-                        |surface| *surface == continuation.predecessor().surface(),
-                    )
-            });
+        let root_continuation = frame.native_root_continuations().find(|continuation| {
+            records.viewports.window_binding(ViewportId::ROOT)
+                == Some(continuation.predecessor().window())
+                && root_surface.as_deref().map_or_else(
+                    || {
+                        records
+                            .viewports
+                            .binding(ViewportId::ROOT)
+                            .is_some_and(|binding| {
+                                binding.surface() == continuation.predecessor().surface()
+                            })
+                    },
+                    |surface| *surface == continuation.predecessor().surface(),
+                )
+        });
         if root_continuation.is_none()
             && let Some(root_surface) = root_surface.as_deref()
-            && frame
-                .proposed_native_root_continuations()
-                .any(|continuation| {
-                    records.viewports.window_binding(ViewportId::ROOT)
-                        == Some(continuation.predecessor().window())
-                })
+            && frame.native_root_continuations().any(|continuation| {
+                records.viewports.window_binding(ViewportId::ROOT)
+                    == Some(continuation.predecessor().window())
+            })
         {
             return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(*root_surface).into());
         }
-        if let Err(error) = records.prepare_workspace_replacement(&frame) {
+        if let Err(error) = records.prepare_native_placement_changes(&frame) {
             records.window_resources.abort_workspace_replacement();
             return Err(error);
         }
@@ -4326,7 +4400,7 @@ impl NativeHostBridge {
         })();
         match committed {
             Ok((report, wake)) => {
-                records.commit_workspace_replacement(&report);
+                records.commit_native_placement_changes(&report);
                 if let Some(root_surface) = root_surface
                     && let Some(continuation) = report
                         .native_root_continuations()
@@ -5035,6 +5109,10 @@ impl NativeHostBridge {
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.lock().references_binding(binding)
+    }
+
+    pub(crate) fn references_detached_placement(&self, binding: NativeSurfaceBinding) -> bool {
+        self.lock().references_detached_placement(binding)
     }
 
     fn hidden_render_enabled(&self, viewport: ViewportId) -> bool {
@@ -5847,6 +5925,10 @@ impl NativeHostBridge {
         self.lock().retirements.is_quiescence_candidate(binding)
     }
 
+    pub(crate) fn retirement_is_detached_placement(&self, binding: NativeSurfaceBinding) -> bool {
+        self.lock().retirements.is_detached_placement(binding)
+    }
+
     pub(crate) fn retirement_blocks_quiescence(&self, binding: NativeSurfaceBinding) -> bool {
         let records = self.lock();
         records
@@ -5898,7 +5980,9 @@ impl NativeHostBridge {
     ) -> DestroyedObservation {
         let mut records = self.lock();
         if !records.retirements.owns_window(window, Some(viewport)) {
-            if !records.retirements.can_retain_window(binding, window)
+            if !records
+                .retirements
+                .can_retain_window_receipt(binding, window)
                 || !records
                     .viewports
                     .has_received_destroyed(viewport, binding, window, ordinal)

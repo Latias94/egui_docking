@@ -294,24 +294,37 @@ impl NativeRetirementState {
             .any(|entry| entry.binding.same_window_lifetime(binding))
     }
 
-    /// Detached placements may share a window only after its physical receipt
-    /// has transferred elsewhere. Each exact placement still retires once.
+    /// A detached sibling may share a retiring window's sole physical receipt.
+    /// An exact physical owner already covers its guard and must not be downgraded.
     pub(crate) fn can_detach_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.entries.iter().all(|entry| {
             !entry.binding.same_window_lifetime(binding)
-                || (entry.binding != binding && matches!(entry.kind, RetirementKind::Quiescing))
+                || match entry.kind {
+                    RetirementKind::Window(_) => true,
+                    RetirementKind::Quiescing => entry.binding != binding,
+                    RetirementKind::Unmaterialized(_) => false,
+                }
         })
     }
 
-    /// The exact route has detached without a remaining physical terminal:
-    /// its successor owns the receipt, or native creation was never admitted.
-    /// Exact old outputs, callbacks, sidecars and core commit still gate quiescence.
-    /// Route admission already prepaid this lifetime's terminal backing.
+    /// Only a newly installed exact row spends additional retirement backing.
+    pub(crate) fn detachment_needs_entry(&self, binding: NativeSurfaceBinding) -> bool {
+        self.pending_for_binding(binding).is_none()
+    }
+
+    /// Retains one exact detached lane using prepaid backing. A physical owner
+    /// already at this key preserves its stricter destruction obligation;
+    /// otherwise old outputs, callbacks, sidecars and core commit gate quiescence.
     pub(crate) fn commit_detachment(&mut self, binding: NativeSurfaceBinding) {
         assert!(
             self.can_detach_binding(binding),
-            "a detached placement cannot duplicate an exact or physical retirement owner"
+            "a detached placement cannot duplicate an exact quiescence or failed-create owner"
         );
+        if !self.detachment_needs_entry(binding) {
+            // A physical retirement may start before semantic vacancy. Preserve
+            // its receipt, close acknowledgement, phase and Destroyed threshold.
+            return;
+        }
         assert!(
             self.entries.len() < self.entries.capacity()
                 && self
@@ -337,6 +350,13 @@ impl NativeRetirementState {
             .binary_search_by_key(&binding, |entry| entry.binding)
             .ok()
             .is_some_and(|index| self.entries[index].is_quiescence_candidate())
+    }
+
+    pub(crate) fn is_detached_placement(&self, binding: NativeSurfaceBinding) -> bool {
+        self.entries
+            .binary_search_by_key(&binding, |entry| entry.binding)
+            .ok()
+            .is_some_and(|index| matches!(self.entries[index].kind, RetirementKind::Quiescing))
     }
 
     pub(crate) fn mark_create_failure_recorded(&mut self, binding: NativeSurfaceBinding) {
@@ -391,11 +411,10 @@ impl NativeRetirementState {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        match self
-            .entries
-            .iter()
-            .find(|entry| entry.binding.same_window_lifetime(binding))
-        {
+        match self.entries.iter().find(|entry| {
+            entry.binding.same_window_lifetime(binding)
+                && !matches!(entry.kind, RetirementKind::Quiescing)
+        }) {
             Some(entry) => {
                 entry.binding == binding
                     && entry.pending().is_some_and(|pending| {
@@ -404,9 +423,12 @@ impl NativeRetirementState {
                             && pending.acknowledgement.is_none()
                     })
             }
-            None => self
-                .entry_limit
-                .is_none_or(|limit| self.entries.len() < limit),
+            None => {
+                self.is_detached_placement(binding)
+                    || self
+                        .entry_limit
+                        .is_none_or(|limit| self.entries.len() < limit)
+            }
         }
     }
 
@@ -439,29 +461,20 @@ impl NativeRetirementState {
         if receipt.viewport() != viewport
             || receipt.binding() != binding
             || self.owns_window(receipt.window(), None)
-            || self
-                .prepare_capacity_for_retained_lifetimes(self.entries.len() + 1)
-                .is_err()
+            || (!self.is_detached_placement(binding)
+                && self
+                    .prepare_capacity_for_retained_lifetimes(self.entries.len() + 1)
+                    .is_err())
         {
             return Err((acknowledgement, window));
         }
-        let index = self
-            .entries
-            .binary_search_by_key(&binding, |entry| entry.binding)
-            .expect_err("a new lifetime has no exact retirement owner");
-        self.entries.insert(
-            index,
-            RetirementEntry {
-                binding,
-                kind: RetirementKind::Window(PendingRetirement {
-                    viewport,
-                    window: window.expect("the new retirement retains its supplied window"),
-                    acknowledgement: Some(acknowledgement),
-                    phase: RetirementPhase::AwaitingDestroyed,
-                    cleanup: CleanupRelay::default(),
-                }),
-            },
-        );
+        self.install_window_retirement(PendingRetirement {
+            viewport,
+            window: window.expect("the new retirement retains its supplied window"),
+            acknowledgement: Some(acknowledgement),
+            phase: RetirementPhase::AwaitingDestroyed,
+            cleanup: CleanupRelay::default(),
+        });
         Ok(())
     }
 
@@ -501,36 +514,67 @@ impl NativeRetirementState {
                 .is_none_or(|limit| self.entries.len() < limit)
     }
 
+    /// An already admitted window can terminate while detached siblings still drain.
+    /// Its original correlation tag may itself own one of those exact guards.
+    pub(crate) fn can_retain_window_receipt(
+        &self,
+        binding: NativeSurfaceBinding,
+        window: WindowId,
+    ) -> bool {
+        self.entries.iter().all(|entry| {
+            !entry.binding.same_window_lifetime(binding)
+                || matches!(entry.kind, RetirementKind::Quiescing)
+        }) && !self.owns_window(window, None)
+            && (self.is_detached_placement(binding)
+                || self
+                    .entry_limit
+                    .is_none_or(|limit| self.entries.len() < limit))
+    }
+
     pub(crate) fn retain_window(
         &mut self,
         window: NativeWindowReceipt,
     ) -> Result<(), NativeWindowReceipt> {
         let binding = window.binding();
-        if !self.can_retain_window(binding, window.window())
-            || self
-                .prepare_capacity_for_retained_lifetimes(self.entries.len() + 1)
-                .is_err()
+        if !self.can_retain_window_receipt(binding, window.window())
+            || (!self.is_detached_placement(binding)
+                && self
+                    .prepare_capacity_for_retained_lifetimes(self.entries.len() + 1)
+                    .is_err())
         {
             return Err(window);
         }
-        let index = self
+        self.install_window_retirement(PendingRetirement {
+            viewport: window.viewport(),
+            window,
+            acknowledgement: None,
+            phase: RetirementPhase::AwaitingDestroyed,
+            cleanup: CleanupRelay::default(),
+        });
+        Ok(())
+    }
+
+    fn install_window_retirement(&mut self, pending: PendingRetirement) {
+        let binding = pending.window.binding();
+        match self
             .entries
             .binary_search_by_key(&binding, |entry| entry.binding)
-            .expect_err("a new lifetime has no exact retirement owner");
-        self.entries.insert(
-            index,
-            RetirementEntry {
-                binding,
-                kind: RetirementKind::Window(PendingRetirement {
-                    viewport: window.viewport(),
-                    window,
-                    acknowledgement: None,
-                    phase: RetirementPhase::AwaitingDestroyed,
-                    cleanup: CleanupRelay::default(),
-                }),
-            },
-        );
-        Ok(())
+        {
+            Ok(index) => {
+                debug_assert!(matches!(
+                    self.entries[index].kind,
+                    RetirementKind::Quiescing
+                ));
+                self.entries[index].kind = RetirementKind::Window(pending);
+            }
+            Err(index) => self.entries.insert(
+                index,
+                RetirementEntry {
+                    binding,
+                    kind: RetirementKind::Window(pending),
+                },
+            ),
+        }
     }
 
     pub(crate) fn receive_destroyed(

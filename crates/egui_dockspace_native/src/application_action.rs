@@ -636,6 +636,33 @@ impl NativeApplicationActions {
         matches!(self.state, NativeApplicationActionState::Queued(_))
     }
 
+    pub(crate) const fn has_queued_replacement(&self) -> bool {
+        matches!(
+            &self.state,
+            NativeApplicationActionState::Queued(action) if action.is_replacement()
+        )
+    }
+
+    pub(crate) const fn has_pending_replacement(&self) -> bool {
+        self.has_queued_replacement()
+            || matches!(
+                self.state,
+                NativeApplicationActionState::UncommittedFrame { kind, .. }
+                    if kind.is_replacement()
+            )
+    }
+
+    /// A terminal replacement waits for frozen placement geometry to commit.
+    pub(crate) fn take_after_placements(
+        &mut self,
+        placements_unsettled: bool,
+    ) -> Option<NativeApplicationAction> {
+        if placements_unsettled && self.has_queued_replacement() {
+            return None;
+        }
+        self.take()
+    }
+
     pub(crate) fn take(&mut self) -> Option<NativeApplicationAction> {
         let state = std::mem::take(&mut self.state);
         let NativeApplicationActionState::Queued(action) = state else {

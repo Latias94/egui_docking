@@ -227,8 +227,11 @@ pub(crate) struct NativeRuntimeState<P> {
     application_actions: NativeApplicationActions,
     pass_actions: NativePassActions,
     owned_update: Option<NativeOwnedUpdate>,
+    // A declaration is pending work; only core grants current roster authority.
     root_placement_request: Option<Arc<[NativeSurfacePlacement]>>,
+    root_placement_cache: Option<Arc<[NativeSurfacePlacement]>>,
     root_input_placements: Option<NativeRootInputPlacements>,
+    root_placements_explicit: bool,
     invalid_root_placement_request: bool,
     pending_service: bool,
     close_policy: NativeWindowClosePolicy,
@@ -239,6 +242,14 @@ pub(crate) struct NativeRuntimeState<P> {
 struct NativeRootInputPlacements {
     token: NativeOutputToken,
     placements: Option<Arc<[NativeSurfacePlacement]>>,
+    declare_explicit: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeRootPlacementUpdate {
+    Unchanged,
+    Applied,
+    Deferred,
 }
 
 fn apply_root_placements(
@@ -246,15 +257,12 @@ fn apply_root_placements(
     bridge: &NativeHostBridge,
     window: dockspace::runtime::NativeWindowBinding,
     placements: &[NativeSurfacePlacement],
-) -> Result<bool, NativeRuntimeError> {
-    let unchanged = frame.native_surface_bindings_for_window(window).count() == placements.len()
-        && placements.iter().all(|placement| {
-            frame
-                .native_surface_bindings_for_window(window)
-                .find(|binding| binding.surface() == placement.surface())
-                .and_then(|binding| frame.native_surface_placement(binding))
-                == Some(*placement)
-        });
+    declare_explicit: bool,
+) -> Result<NativeRootPlacementUpdate, NativeRuntimeError> {
+    let unchanged = root_placements_match_frame(frame, window, placements);
+    if unchanged && !declare_explicit {
+        return Ok(NativeRootPlacementUpdate::Unchanged);
+    }
     let close_pending = bridge.with_close_control(|control| {
         control
             .unresolved_requests()
@@ -266,19 +274,37 @@ fn apply_root_placements(
     // A held close freezes the whole window. Responsive geometry waits for its
     // decision instead of making an ordinary resize a fatal configuration error.
     if !unchanged && close_pending {
-        return Ok(false);
+        return Ok(NativeRootPlacementUpdate::Deferred);
     }
     frame.set_native_surface_placements(window, placements)?;
-    Ok(true)
+    Ok(if unchanged {
+        NativeRootPlacementUpdate::Unchanged
+    } else {
+        NativeRootPlacementUpdate::Applied
+    })
+}
+
+fn root_placements_match_frame(
+    frame: &dockspace::runtime::DockspaceHostFrame<'_>,
+    window: dockspace::runtime::NativeWindowBinding,
+    placements: &[NativeSurfacePlacement],
+) -> bool {
+    frame.native_surface_bindings_for_window(window).count() == placements.len()
+        && placements.iter().all(|placement| {
+            frame
+                .native_surface_bindings_for_window(window)
+                .find(|binding| binding.surface() == placement.surface())
+                .and_then(|binding| frame.native_surface_placement(binding))
+                == Some(*placement)
+        })
 }
 
 fn snapshot_root_placements(
-    frame: &dockspace::runtime::DockspaceHostFrame<'_>,
     bridge: &NativeHostBridge,
-    window: dockspace::runtime::NativeWindowBinding,
     retained_bytes: usize,
+    count: usize,
+    source: impl Iterator<Item = Option<NativeSurfacePlacement>>,
 ) -> Result<Option<Arc<[NativeSurfacePlacement]>>, NativeRuntimeError> {
-    let count = frame.native_surface_bindings_for_window(window).count();
     let bytes = count
         .checked_mul(size_of::<NativeSurfacePlacement>())
         // Vec-to-Arc conversion briefly owns both complete backings.
@@ -292,12 +318,8 @@ fn snapshot_root_placements(
     if placements.try_reserve_exact(count).is_err() || placements.capacity() > count {
         return Ok(None);
     }
-    for binding in frame.native_surface_bindings_for_window(window) {
-        placements.push(
-            frame
-                .native_surface_placement(binding)
-                .ok_or(NativeHostProtocolError::InvalidWindowSnapshot)?,
-        );
+    for placement in source {
+        placements.push(placement.ok_or(NativeHostProtocolError::InvalidWindowSnapshot)?);
     }
     Ok(Some(Arc::from(placements)))
 }
@@ -310,20 +332,30 @@ struct NativeShutdownState {
 
 impl<P: PaneView> NativeRuntimeState<P> {
     fn root_placement_capacity_bytes(&self) -> usize {
-        let request = self.root_placement_request.as_ref();
-        let admitted = self
-            .root_input_placements
-            .as_ref()
-            .and_then(|admitted| admitted.placements.as_ref());
-        request
-            .map_or(0, |placements| size_of_val(&**placements))
-            .saturating_add(
-                admitted
-                    .filter(|admitted| {
-                        request.is_none_or(|request| !Arc::ptr_eq(request, admitted))
-                    })
-                    .map_or(0, |placements| size_of_val(&**placements)),
-            )
+        let rosters = [
+            self.root_placement_request.as_ref(),
+            self.root_placement_cache.as_ref(),
+            self.root_input_placements
+                .as_ref()
+                .and_then(|admitted| admitted.placements.as_ref()),
+        ];
+        rosters
+            .iter()
+            .enumerate()
+            .fold(0_usize, |bytes, (index, roster)| {
+                let Some(roster) = roster else {
+                    return bytes;
+                };
+                if rosters[..index]
+                    .iter()
+                    .flatten()
+                    .any(|previous| Arc::ptr_eq(previous, roster))
+                {
+                    bytes
+                } else {
+                    bytes.saturating_add(size_of_val(&***roster))
+                }
+            })
     }
 
     fn reserve_root_placement_storage(&self, additional: usize) -> Result<(), NativeRuntimeError> {
@@ -352,6 +384,182 @@ impl<P: PaneView> NativeRuntimeState<P> {
         );
     }
 
+    fn root_placements_match_committed(&self, placements: &[NativeSurfacePlacement]) -> bool {
+        let Some(route) = self.coordinator.viewport_binding(ViewportId::ROOT) else {
+            return false;
+        };
+        let session = self.coordinator.session();
+        session
+            .native_surface_bindings_for_window(route.window())
+            .count()
+            == placements.len()
+            && placements.iter().all(|placement| {
+                session
+                    .native_surface_bindings_for_window(route.window())
+                    .find(|binding| binding.surface() == placement.surface())
+                    .and_then(|binding| session.native_surface_placement(binding))
+                    == Some(*placement)
+            })
+    }
+
+    fn declared_root_placements(&self) -> Option<&[NativeSurfacePlacement]> {
+        self.root_placement_request.as_deref().or_else(|| {
+            self.root_placement_cache
+                .as_deref()
+                .filter(|cache| self.root_placements_match_committed(cache))
+        })
+    }
+
+    fn root_placement_request_is_current(&self, placements: &[NativeSurfacePlacement]) -> bool {
+        let session = self.coordinator.session();
+        let window = self
+            .coordinator
+            .viewport_binding(ViewportId::ROOT)
+            .map(|binding| binding.window());
+        placements
+            .iter()
+            .any(|placement| placement.surface() == self.root_surface)
+            && placements.iter().all(|placement| {
+                session.view().surface(placement.surface()).is_some()
+                    && session.native_window_bindings().all(|owner| {
+                        Some(owner) == window
+                            || session
+                                .native_surface_bindings_for_window(owner)
+                                .all(|binding| binding.surface() != placement.surface())
+                    })
+            })
+    }
+
+    fn next_root_placements(
+        &mut self,
+    ) -> Result<Option<Arc<[NativeSurfacePlacement]>>, NativeRuntimeError> {
+        if !self.application_actions.has_queued_replacement()
+            && let Some(request) = &self.root_placement_request
+        {
+            return Ok(Some(Arc::clone(request)));
+        }
+        let Some(route) = self.coordinator.viewport_binding(ViewportId::ROOT) else {
+            return Ok(None);
+        };
+        let count = self
+            .coordinator
+            .session()
+            .native_surface_bindings_for_window(route.window())
+            .count();
+        if !self.root_placements_explicit && count <= 1 {
+            return Ok(None);
+        }
+        self.root_placements_explicit = true;
+        if let Some(cache) = &self.root_placement_cache
+            && self.root_placements_match_committed(cache)
+        {
+            return Ok(Some(Arc::clone(cache)));
+        }
+        self.root_placement_cache = None;
+        self.refresh_root_placement_storage();
+        let bridge = self.coordinator.dispatch_bridge();
+        let session = self.coordinator.session();
+        let placements = snapshot_root_placements(
+            &bridge,
+            self.root_placement_capacity_bytes(),
+            count,
+            session
+                .native_surface_bindings_for_window(route.window())
+                .map(|binding| session.native_surface_placement(binding)),
+        )?
+        .ok_or(NativeHostProtocolError::NativeReportStorageUnavailable)?;
+        self.root_placement_cache = Some(Arc::clone(&placements));
+        self.refresh_root_placement_storage();
+        Ok(Some(placements))
+    }
+
+    fn root_placements_for_run(
+        &mut self,
+        token: NativeOutputToken,
+    ) -> Result<Option<Arc<[NativeSurfacePlacement]>>, NativeRuntimeError> {
+        if self
+            .owned_update
+            .as_ref()
+            .is_some_and(|update| update.run.token != token)
+        {
+            return Ok(None);
+        }
+        if let Some(admitted) = &self.root_input_placements
+            && admitted.token == token
+        {
+            return Ok(admitted.placements.clone());
+        }
+        self.root_input_placements = None;
+        self.refresh_root_placement_storage();
+        let placements = self.next_root_placements()?;
+        let declare_explicit = !self.application_actions.has_queued_replacement()
+            && placements.as_ref().is_some_and(|placements| {
+                self.root_placement_request
+                    .as_ref()
+                    .is_some_and(|request| Arc::ptr_eq(request, placements))
+            });
+        self.root_input_placements = Some(NativeRootInputPlacements {
+            token,
+            placements: placements.clone(),
+            declare_explicit,
+        });
+        self.refresh_root_placement_storage();
+        Ok(placements)
+    }
+
+    fn finish_root_input_placements(&mut self, token: NativeOutputToken) {
+        if self
+            .root_input_placements
+            .as_ref()
+            .is_some_and(|admitted| admitted.token == token)
+        {
+            self.root_input_placements = None;
+            self.refresh_root_placement_storage();
+        }
+    }
+
+    fn commit_root_placements(&mut self, report: &HostFrameReport) {
+        let replaced = report.inputs().iter().any(|input| match input {
+            HostInputOutcome::LayoutReset { .. } => true,
+            #[cfg(feature = "serde")]
+            HostInputOutcome::DocumentRestored { .. } => true,
+            _ => false,
+        });
+        let request_expired = self
+            .root_placement_request
+            .as_ref()
+            .is_some_and(|request| !self.root_placement_request_is_current(request));
+        if replaced || request_expired {
+            // A declaration from the preceding workspace cannot revive it.
+            self.root_placement_request = None;
+        } else if self.root_placement_request.as_ref().is_some_and(|request| {
+            self.root_input_placements
+                .as_ref()
+                .and_then(|admitted| admitted.placements.as_deref())
+                == Some(&**request)
+                && self.root_placements_match_committed(request)
+        }) {
+            self.root_placement_request = None;
+        }
+        if let Some(placements) = self
+            .root_input_placements
+            .as_ref()
+            .and_then(|admitted| admitted.placements.as_ref())
+            .filter(|placements| self.root_placements_match_committed(placements))
+        {
+            self.root_placement_cache = Some(Arc::clone(placements));
+        } else if self
+            .root_placement_cache
+            .as_ref()
+            .is_some_and(|cache| !self.root_placements_match_committed(cache))
+        {
+            self.root_placement_cache = None;
+        }
+        // Cache publication only shares already prepaid backing. Replacements
+        // may release it; they never allocate after the core committed.
+        self.refresh_root_placement_storage();
+    }
+
     #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn boundary_coordinator(&mut self) -> &mut NativeCoordinator {
         &mut self.coordinator
@@ -375,6 +583,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 return Ok(eframe::NativeOutputInputAdmission::Proceed);
             }
             return self.defer_output_input(token);
+        }
+        if self
+            .root_input_placements
+            .as_ref()
+            .is_some_and(|admitted| admitted.token != token)
+        {
+            self.root_input_placements = None;
+            self.refresh_root_placement_storage();
         }
         if token.viewport_id() == ViewportId::ROOT && self.invalid_root_placement_request {
             return Err(NativeHostProtocolError::InvalidWindowSnapshot.into());
@@ -413,8 +629,12 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         if has_input {
             let root_placement_request = self.root_placement_request.clone();
+            let root_placement_cache = self.root_placement_cache.clone();
+            let replacement_queued = self.application_actions.has_queued_replacement();
+            let mut root_placements_explicit = self.root_placements_explicit;
             let root_placement_capacity_bytes = self.root_placement_capacity_bytes();
             let mut input_placements = None;
+            let mut declare_explicit = false;
             let mut placement_storage_blocked = false;
             let blocked = if bridge.is_control_output(token) {
                 true
@@ -433,6 +653,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                         if token.viewport_id() == ViewportId::ROOT {
                             if let Some(window) = window {
                                 if let Some(placements) = root_placement_request.as_ref()
+                                    && !replacement_queued
                                     && !frame.native_input_pending()
                                     && placements
                                         .iter()
@@ -446,18 +667,39 @@ impl<P: PaneView> NativeRuntimeState<P> {
                                         &bridge,
                                         window,
                                         placements,
-                                    )? {
+                                        true,
+                                    )? != NativeRootPlacementUpdate::Deferred
+                                    {
                                         input_placements = Some(Arc::clone(placements));
+                                        declare_explicit = true;
                                     }
                                 }
-                                if input_placements.is_none() && root_placement_request.is_some() {
-                                    input_placements = snapshot_root_placements(
-                                        &frame.frame,
-                                        &bridge,
-                                        window,
-                                        root_placement_capacity_bytes,
-                                    )?;
-                                    placement_storage_blocked = input_placements.is_none();
+                                let count = frame
+                                    .frame
+                                    .native_surface_bindings_for_window(window)
+                                    .count();
+                                root_placements_explicit |= count > 1;
+                                if input_placements.is_none() && root_placements_explicit {
+                                    input_placements = root_placement_cache
+                                        .as_ref()
+                                        .filter(|cache| {
+                                            root_placements_match_frame(&frame.frame, window, cache)
+                                        })
+                                        .cloned();
+                                    if input_placements.is_none() {
+                                        input_placements = snapshot_root_placements(
+                                            &bridge,
+                                            root_placement_capacity_bytes,
+                                            count,
+                                            frame
+                                                .frame
+                                                .native_surface_bindings_for_window(window)
+                                                .map(|binding| {
+                                                    frame.frame.native_surface_placement(binding)
+                                                }),
+                                        )?;
+                                        placement_storage_blocked = input_placements.is_none();
+                                    }
                                 }
                             }
                         }
@@ -492,6 +734,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     None => true,
                 }
             };
+            self.root_placements_explicit = root_placements_explicit;
             if blocked
                 || placement_storage_blocked
                 || self.coordinator.session().has_pending_native_input()
@@ -505,6 +748,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 self.root_input_placements = Some(NativeRootInputPlacements {
                     token,
                     placements: input_placements,
+                    declare_explicit,
                 });
                 self.refresh_root_placement_storage();
             }
@@ -657,6 +901,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         &mut self,
         token: NativeOutputToken,
     ) -> Result<eframe::NativeOutputInputAdmission, NativeRuntimeError> {
+        self.finish_root_input_placements(token);
         self.coordinator.abandon_stationary_output(token);
         if !self.coordinator.dispatch_bridge().defer_output_input(token) {
             return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
@@ -730,7 +975,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             pass_actions: NativePassActions::default(),
             owned_update: None,
             root_placement_request: None,
+            root_placement_cache: None,
             root_input_placements: None,
+            root_placements_explicit: false,
             invalid_root_placement_request: false,
             pending_service: false,
             close_policy,
@@ -911,17 +1158,25 @@ impl<P: PaneView> NativeRuntimeState<P> {
         token: NativeOutputToken,
         budget: &mut NativeInputBudget,
     ) -> Result<NativeSurfaceUpdate, NativeRuntimeError> {
-        let placements = (surface == self.root_surface && token.viewport_id() == ViewportId::ROOT)
-            .then(|| {
-                self.root_input_placements
-                    .as_ref()
-                    .filter(|admitted| admitted.token == token)
-                    .map_or_else(
-                        || self.root_placement_request.clone(),
-                        |admitted| admitted.placements.clone(),
-                    )
-            })
-            .flatten();
+        let placements = if surface == self.root_surface && token.viewport_id() == ViewportId::ROOT
+        {
+            match self.root_placements_for_run(token) {
+                Ok(placements) => placements,
+                Err(error) if error.is_input_capacity() => {
+                    // No input was taken for a new snapshot. Existing lifetime
+                    // cleanup may release its backing; keep the exact pixels.
+                    self.refresh_root_placement_storage();
+                    self.pending_service = true;
+                    self.stage_retain_previous(ui.ctx(), token, surface)?;
+                    require_durable_root_cycle(&self.coordinator, token, true)?;
+                    ui.ctx().request_repaint_once_of(ViewportId::ROOT);
+                    return Ok(NativeSurfaceUpdate::RetainPrevious);
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
         self.update_window_budgeted(ui, surface, placements.as_deref(), token, budget)
     }
 
@@ -934,6 +1189,21 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
         if token.viewport_id() != ViewportId::ROOT {
             return Err(NativeHostProtocolError::InvalidWindowSnapshot.into());
+        }
+        if self.application_actions.has_queued_replacement()
+            || (self
+                .owned_update
+                .as_ref()
+                .is_some_and(|update| update.run.token == token)
+                && self.application_actions.has_pending_replacement())
+        {
+            // Replacement owns this boundary. A new layout declaration cannot
+            // change either its predecessor roster or already admitted input.
+            let bridge = self.coordinator.dispatch_bridge();
+            let mut budget = bridge
+                .dispatch_budget(token)
+                .ok_or(NativeHostProtocolError::OutputBudgetUnavailable)?;
+            return self.update_surface_budgeted(ui, self.root_surface, token, &mut budget);
         }
         let admitted_this_run = self
             .root_input_placements
@@ -960,13 +1230,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .as_ref()
             .is_some_and(|update| update.run.token == token)
             && !invalid
-            && self.root_placement_request.as_deref() != Some(placements)
+            && self.declared_root_placements() != Some(placements)
         {
             return Err(NativeHostProtocolError::MultipassOutputChanged.into());
         }
         if invalid {
             self.invalid_root_placement_request = true;
-        } else if self.root_placement_request.as_deref() != Some(placements) {
+        } else if self.declared_root_placements() != Some(placements) {
             let additional = size_of_val(placements);
             if let Err(error) = self.reserve_root_placement_storage(additional) {
                 if !admitted_this_run {
@@ -978,18 +1248,17 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 self.refresh_root_placement_storage();
             }
         }
+        self.root_placements_explicit = true;
         // Raw input belongs to the roster admitted before eframe took it. A
         // layout announced by this callback becomes eligible for the next run;
         // the current run still paints the complete preflighted roster once.
-        let admitted = self
-            .root_input_placements
-            .as_ref()
-            .filter(|admitted| admitted.token == token);
-        let effective = admitted.map_or_else(
-            || self.root_placement_request.clone(),
-            |admitted| admitted.placements.clone(),
-        );
-        if admitted.is_some() && effective.as_deref() != Some(placements) {
+        if admitted_this_run
+            && self
+                .root_input_placements
+                .as_ref()
+                .and_then(|admitted| admitted.placements.as_deref())
+                != Some(placements)
+        {
             self.pending_service = true;
             ui.ctx().request_repaint_once_of(ViewportId::ROOT);
         }
@@ -997,13 +1266,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let mut budget = bridge
             .dispatch_budget(token)
             .ok_or(NativeHostProtocolError::OutputBudgetUnavailable)?;
-        self.update_window_budgeted(
-            ui,
-            self.root_surface,
-            effective.as_deref(),
-            token,
-            &mut budget,
-        )
+        self.update_surface_budgeted(ui, self.root_surface, token, &mut budget)
     }
 
     fn update_window_budgeted(
@@ -1175,7 +1438,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     ui_actions.push(acknowledgement);
                 }
             }
-            let mut placement_update_deferred = false;
+            let mut placement_update = NativeRootPlacementUpdate::Unchanged;
             if !native_input_pending
                 && !control_output
                 && let Some(placements) = placements
@@ -1191,26 +1454,37 @@ impl<P: PaneView> NativeRuntimeState<P> {
                             .and_then(|reservation| reservation.binding())
                             .map(|binding| binding.window())
                     });
-                placement_update_deferred = if let Some(window) = window {
-                    !apply_root_placements(&mut host_frame.frame, &bridge, window, placements)?
+                placement_update = if let Some(window) = window {
+                    apply_root_placements(
+                        &mut host_frame.frame,
+                        &bridge,
+                        window,
+                        placements,
+                        self.root_input_placements.as_ref().is_some_and(|admitted| {
+                            admitted.token == token && admitted.declare_explicit
+                        }),
+                    )?
                 } else {
                     // The initial registration can still belong to this very
                     // candidate. Publish that existing bootstrap first; only its
                     // committed route can supply the real window for placement.
-                    true
+                    NativeRootPlacementUpdate::Deferred
                 };
             }
+            // A replacement queued after preflight cannot reinterpret the raw
+            // input admitted for changed geometry. Commit that geometry first;
+            // the queued command keeps its exact identities for the next run.
+            let replacement_deferred = self.application_actions.has_queued_replacement()
+                && placement_update != NativeRootPlacementUpdate::Unchanged;
             let application_submission = if !native_input_pending
                 && !control_output
                 && surface == self.root_surface
                 && self.application_actions.has_queued()
             {
-                Some(
-                    self.application_actions
-                        .take()
-                        .ok_or(NativeHostProtocolError::MultipassOutputChanged)?
-                        .submit(&mut host_frame.frame, published)?,
-                )
+                self.application_actions
+                    .take_after_placements(placement_update != NativeRootPlacementUpdate::Unchanged)
+                    .map(|action| action.submit(&mut host_frame.frame, published))
+                    .transpose()?
             } else {
                 None
             };
@@ -1223,7 +1497,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 context.request_repaint_once_of(*viewport);
             }
             let retain_previous = control_output
-                || placement_update_deferred
+                || placement_update == NativeRootPlacementUpdate::Deferred
                 || (surface == self.root_surface
                     && context.input(|input| input.viewport().close_requested()))
                 || bridge
@@ -1258,6 +1532,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                         || quiescence_recorded
                         || reduced_callback
                         || internal_action_settled
+                        || replacement_deferred
                         || native_input_pending,
                 },
             )
@@ -1395,6 +1670,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .map_err(map_pass_action_error)?;
             self.coordinator.abandon_stationary_output(token);
             let wake = self.coordinator.abandon_output_token(token);
+            self.finish_root_input_placements(token);
             debug_assert_eq!(
                 wake,
                 NativeHostWake::RepaintRoot,
@@ -1509,7 +1785,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     return Err(NativeHostProtocolError::MultipassOutputChanged.into());
                 }
             };
-            return self.settle_retained_egui_output(context, output, token, kind);
+            let settled = self.settle_retained_egui_output(context, output, token, kind);
+            self.finish_root_input_placements(token);
+            return settled;
         };
         let surface = *publication
             .surfaces
@@ -1609,6 +1887,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             budget,
             true,
         )?;
+        self.finish_root_input_placements(token);
         let mut focus_pending = false;
         if !outputs.is_empty() {
             // Freeze each observation's exact artifact before transferring the
@@ -1617,10 +1896,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .iter()
                 .map(|output| (output.surface(), output.presentation_artifact()))
                 .collect::<Vec<_>>();
-            if let Err((kind, outputs)) = self
-                .coordinator
-                .bind_painted_surfaces(context, token, outputs, &paints)
-            {
+            if let Err((kind, outputs)) = self.coordinator.bind_painted_surfaces(
+                context,
+                token,
+                output.pixels_per_point,
+                outputs,
+                &paints,
+            ) {
                 drop(outputs);
                 let _ = self.coordinator.abandon_output_token(token);
                 return Err(NativeHostProtocolError::OutputBindingFailed(kind).into());
@@ -1769,6 +2051,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 report.inputs(),
             )?;
         }
+        self.commit_root_placements(&report);
         let native_effects = report.take_native_effects();
         let native_effects_emitted = !native_effects.is_empty();
         let outputs = report.take_painted_outputs();
@@ -1898,6 +2181,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
             return;
         }
         self.owned_update = None;
+        self.root_placement_request = None;
+        self.root_placement_cache = None;
+        self.root_input_placements = None;
+        self.refresh_root_placement_storage();
         self.pending_service = false;
         let kind = error.kind();
         let internal_transition_error = self.settle_internal_application_transitions().err();
@@ -2104,6 +2391,7 @@ fn committed_boundary_is_quiescent(
 mod tests {
     mod output_backpressure;
     mod owned_update;
+    mod retirement_backpressure;
     use std::error::Error as _;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

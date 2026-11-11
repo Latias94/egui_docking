@@ -22,8 +22,36 @@ pub(crate) enum NativeReceiverStageError {
     BindingMismatch,
     SemanticOutputMismatch,
     HitAuthorityMismatch,
+    InvalidPixelsPerPoint,
     PassRegressed,
     StorageUnavailable,
+}
+
+/// Hit authority and pixel scale from the same completed output pass.
+pub(crate) struct NativeReceiverPass {
+    viewport: egui::ViewportId,
+    hit_authority: Arc<egui::CompletedPassHitAuthority>,
+    pixels_per_point: f64,
+}
+
+impl NativeReceiverPass {
+    pub(crate) fn capture(
+        context: &egui::Context,
+        viewport: egui::ViewportId,
+        pixels_per_point: f32,
+    ) -> Result<Self, NativeReceiverStageError> {
+        if !pixels_per_point.is_finite() || pixels_per_point <= 0.0 {
+            return Err(NativeReceiverStageError::InvalidPixelsPerPoint);
+        }
+        let hit_authority = context
+            .capture_completed_pass_hit_authority(viewport)
+            .ok_or(NativeReceiverStageError::HitAuthorityMismatch)?;
+        Ok(Self {
+            viewport,
+            hit_authority: Arc::new(hit_authority),
+            pixels_per_point: f64::from(pixels_per_point),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -41,14 +69,12 @@ struct PendingReceiverSet {
 
 impl PendingReceiverSet {
     fn from_paint(
-        hit_authority: &Arc<egui::CompletedPassHitAuthority>,
-        pixels_per_point: f64,
-        token: NativeOutputToken,
+        pass: &NativeReceiverPass,
         binding: NativeSurfaceBinding,
         output: &PaintedSurfaceOutput,
         paint: &NativeSurfacePaint,
     ) -> Result<Self, NativeReceiverStageError> {
-        if token.viewport_id() != paint.viewport_id() {
+        if pass.viewport != paint.viewport_id() {
             return Err(NativeReceiverStageError::ViewportMismatch);
         }
         if binding.surface() != paint.surface() {
@@ -64,7 +90,7 @@ impl PendingReceiverSet {
         }
         let viewport = paint.viewport_id();
         let cumulative_pass_nr = paint.cumulative_pass_nr();
-        if hit_authority.cumulative_pass_nr() != cumulative_pass_nr {
+        if pass.hit_authority.cumulative_pass_nr() != cumulative_pass_nr {
             return Err(NativeReceiverStageError::HitAuthorityMismatch);
         }
         let receivers = paint.receivers().collect::<Vec<_>>();
@@ -77,8 +103,8 @@ impl PendingReceiverSet {
             surface: paint.surface(),
             binding,
             viewport,
-            hit_authority: Arc::clone(hit_authority),
-            pixels_per_point,
+            hit_authority: Arc::clone(&pass.hit_authority),
+            pixels_per_point: pass.pixels_per_point,
             artifact: output.presentation_artifact(),
             receivers,
             scroll_receivers,
@@ -143,7 +169,7 @@ impl NativeReceiverStore {
 
     pub(crate) fn stage_outputs(
         &mut self,
-        context: &egui::Context,
+        pass: &NativeReceiverPass,
         token: NativeOutputToken,
         window: NativeWindowBinding,
         bindings: &[NativeSurfaceBinding],
@@ -153,11 +179,9 @@ impl NativeReceiverStore {
         if outputs.is_empty() || outputs.len() != paints.len() {
             return Err(NativeReceiverStageError::SemanticOutputMismatch);
         }
-        let authority = Arc::new(
-            context
-                .capture_completed_pass_hit_authority(token.viewport_id())
-                .ok_or(NativeReceiverStageError::HitAuthorityMismatch)?,
-        );
+        if pass.viewport != token.viewport_id() {
+            return Err(NativeReceiverStageError::ViewportMismatch);
+        }
         let mut next = Vec::new();
         next.try_reserve_exact(outputs.len())
             .map_err(|_| NativeReceiverStageError::StorageUnavailable)?;
@@ -183,12 +207,7 @@ impl NativeReceiverStore {
                 .find(|binding| binding.surface() == output.surface() && binding.window() == window)
                 .ok_or(NativeReceiverStageError::BindingMismatch)?;
             next.push(PendingReceiverSet::from_paint(
-                &authority,
-                f64::from(context.pixels_per_point()),
-                token,
-                binding,
-                output,
-                paint,
+                pass, binding, output, paint,
             )?);
         }
         if let Some(current) = self.pending.get(&token) {
@@ -851,6 +870,399 @@ mod tests {
         fn ui(&mut self, _item: ItemId, _ui: &mut Ui) -> egui_dockspace::PaneResponse {
             egui_dockspace::PaneResponse::default()
         }
+    }
+
+    #[test]
+    fn completed_child_receiver_pass_uses_output_scale_in_root_context() {
+        let context = egui::Context::default();
+        let child = egui::ViewportId::from_hash_of("receiver-output-scale-child");
+        let mut input = RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(256.0))),
+            ..RawInput::default()
+        };
+        input.viewports.insert(
+            egui::ViewportId::ROOT,
+            egui::ViewportInfo {
+                native_pixels_per_point: Some(1.0),
+                ..Default::default()
+            },
+        );
+        input.viewports.insert(
+            child,
+            egui::ViewportInfo {
+                parent: Some(egui::ViewportId::ROOT),
+                native_pixels_per_point: Some(2.0),
+                ..Default::default()
+            },
+        );
+        let mut root_output = context.run_ui(input.clone(), |_| {});
+        root_output.textures_delta.clear();
+        input.viewport_id = child;
+        let widget = Id::unique("receiver-output-scale-widget");
+        let mut child_output = context.run_ui(input, |ui| {
+            ui.interact(
+                Rect::from_min_size(egui::pos2(64.0, 32.0), Vec2::splat(16.0)),
+                widget,
+                Sense::click_and_drag(),
+            );
+        });
+        child_output.textures_delta.clear();
+
+        assert_eq!(context.viewport_id(), egui::ViewportId::ROOT);
+        assert_eq!(context.pixels_per_point().to_bits(), 1.0_f32.to_bits());
+        assert_eq!(child_output.pixels_per_point.to_bits(), 2.0_f32.to_bits());
+        let pass = NativeReceiverPass::capture(&context, child, child_output.pixels_per_point)
+            .expect("the completed child pass captures with its own output scale");
+        let point = PhysicalPoint::new(144.0, 80.0).expect("the physical test point validates");
+        let hit_widget = |pixels_per_point| {
+            pass.hit_authority
+                .hit_test(physical_pos(point, pixels_per_point).unwrap())
+                .and_then(|hit| hit.click())
+                .map(|identity| identity.id())
+        };
+        assert_eq!(pass.viewport, child);
+        assert_eq!(hit_widget(pass.pixels_per_point), Some(widget));
+        assert_ne!(
+            hit_widget(f64::from(context.pixels_per_point())),
+            Some(widget),
+            "the ambient root scale projects outside the completed child widget"
+        );
+        for invalid in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
+            assert!(matches!(
+                NativeReceiverPass::capture(&context, child, invalid),
+                Err(NativeReceiverStageError::InvalidPixelsPerPoint)
+            ));
+        }
+    }
+
+    #[test]
+    fn committed_child_receivers_use_output_scale_for_window_and_surface_queries() {
+        assert_completed_child_receiver_pipeline(None);
+    }
+
+    fn assert_completed_child_receiver_pipeline(token: Option<NativeOutputToken>) {
+        use crate::host_frame::NativeHostFrame;
+        use crate::mailbox::NativeHostBridge;
+        use crate::viewport_map::NativeViewportMap;
+
+        let child = token.map_or_else(
+            || egui::ViewportId::from_hash_of("receiver-output-scale-pipeline-child"),
+            NativeOutputToken::viewport_id,
+        );
+        assert_ne!(child, egui::ViewportId::ROOT);
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .unwrap();
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+        session
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .unwrap();
+        session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                eframe::NativeWindowingBackend::Windows,
+            ))
+            .unwrap();
+        session
+            .register_native_root(SURFACE, HostWindowToken::new(103))
+            .unwrap();
+        let mut registration = session.begin_host_frame().unwrap();
+        registration
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let registration = registration.commit().unwrap();
+        let [binding] = registration.native_bindings() else {
+            panic!("the pipeline fixture registers one exact native binding");
+        };
+        let binding = *binding;
+        let bounds = PhysicalRect::new(0.0, 0.0, 1280.0, 960.0).unwrap();
+        let scale = ScaleFactor::new(2.0).unwrap();
+        let facts = NativeWindowFacts::live()
+            .with_content_bounds(bounds)
+            .with_outer_bounds(bounds)
+            .with_native_scale_factor(scale)
+            .with_presentation_scale_factor(scale)
+            .with_input(NativeWindowInputState::ReceivesInput, None)
+            .with_presentation(NativeWindowPresentationState::Visible)
+            .with_close(NativeCloseState::Clear, None);
+        session
+            .report_managed_native_snapshot([(binding, facts)], NativeWorkAreaRoster::Unknown)
+            .unwrap();
+        let mut measured = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        measured
+            .measure_surface(
+                SURFACE,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        measured
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        measured.commit().unwrap();
+
+        let context = egui::Context::default();
+        let mut input = RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(640.0, 480.0),
+            )),
+            ..RawInput::default()
+        };
+        for (viewport, parent, pixels) in [
+            (egui::ViewportId::ROOT, None, 1.0),
+            (child, Some(egui::ViewportId::ROOT), 2.0),
+        ] {
+            input.viewports.insert(
+                viewport,
+                egui::ViewportInfo {
+                    parent,
+                    native_pixels_per_point: Some(pixels),
+                    ..Default::default()
+                },
+            );
+        }
+        let mut root_output = context.run_ui(input.clone(), |_| {});
+        root_output.textures_delta.clear();
+        input.viewport_id = child;
+        let bridge = Arc::new(NativeHostBridge::new(NativeViewportMap::default()));
+        let mut store = NativeReceiverStore::default();
+        let mut painted = None;
+        let mut painted_output = None;
+        let mut logical_point = None;
+        let mut full_output = context.run_ui(input, |ui| {
+            let mut frame = NativeHostFrame::new(
+                session
+                    .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+                    .unwrap(),
+                Arc::clone(&bridge),
+                &mut store,
+                None,
+            );
+            let plan = frame.frame.paint_plan(SURFACE).unwrap().unwrap();
+            let tab = plan.tab_receiver(ItemId::new(1)).unwrap().bounds();
+            logical_point = Some(
+                LogicalPoint::new(tab.x() + tab.width() * 0.25, tab.y() + tab.height() * 0.75)
+                    .unwrap(),
+            );
+            let mut paint = frame
+                .paint_surface(
+                    Id::unique("receiver-output-scale-pipeline"),
+                    SURFACE,
+                    ui,
+                    &mut TestPanes,
+                    &DockStyle::default(),
+                )
+                .unwrap();
+            assert!(paint.confirm_into(&mut frame.frame).unwrap());
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            painted_output = frame.commit().unwrap().take_painted_outputs().pop();
+            painted = Some(paint);
+        });
+        full_output.textures_delta.clear();
+        assert_eq!(context.viewport_id(), egui::ViewportId::ROOT);
+        assert_eq!(context.pixels_per_point().to_bits(), 1.0_f32.to_bits());
+        assert_eq!(full_output.pixels_per_point.to_bits(), 2.0_f32.to_bits());
+        let paint = painted.unwrap();
+        let output = painted_output.unwrap();
+        let artifact = output.presentation_artifact();
+        let point = logical_point.unwrap();
+        let pass =
+            NativeReceiverPass::capture(&context, child, full_output.pixels_per_point).unwrap();
+        let identity = pass
+            .hit_authority
+            .hit_test(logical_pos(point).unwrap())
+            .unwrap()
+            .click()
+            .unwrap();
+        let receiver = paint
+            .receivers()
+            .find(|receiver| {
+                receiver.widget_id() == identity.id() && receiver.layer_id() == identity.layer_id()
+            })
+            .unwrap();
+        assert_eq!(receiver.role(), DockspaceReceiverRole::TabBody);
+        if let Some(token) = token {
+            store
+                .stage_outputs(
+                    &pass,
+                    token,
+                    binding.window(),
+                    &[binding],
+                    std::slice::from_ref(&output),
+                    std::slice::from_ref(&paint),
+                )
+                .unwrap();
+            assert_eq!(store.pending[&token][0].pixels_per_point, 2.0);
+            assert!(store.awaiting_core.is_empty() && store.presented.is_empty());
+            store.renderer_presented(token, binding.window());
+            assert!(!store.pending.contains_key(&token));
+        } else {
+            // Portable coverage starts at the same validated paint payload;
+            // opaque eframe token correlation is exercised by the X11 test.
+            let pending = PendingReceiverSet::from_paint(&pass, binding, &output, &paint).unwrap();
+            store.finish_renderer_presented(Some(pending), child, binding);
+        }
+        assert_eq!(store.awaiting_core.len(), 1);
+        assert_eq!(store.awaiting_core[0].pixels_per_point, 2.0);
+        assert!(store.presented.is_empty());
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        let mut presented = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        presented
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let report = presented.commit().unwrap();
+        assert!(
+            store.presented.is_empty(),
+            "a renderer terminal alone cannot promote the payload"
+        );
+        store.commit_presentations(report.surface_presentation_commits());
+        assert!(store.awaiting_core.is_empty());
+        assert_eq!(store.presented[&SURFACE][0].artifact, artifact);
+        assert_eq!(store.presented[&SURFACE][0].pixels_per_point, 2.0);
+
+        let physical = PhysicalPoint::new(point.x() * 2.0, point.y() * 2.0).unwrap();
+        session
+            .record_native_pointer(NativePointerInput::new(
+                NativePointerId::new(1),
+                NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+                NativeDesktopPointerLocation::new(
+                    NativeDesktopPosition::Exact(physical),
+                    NativePointerHover::Dock(binding.window()),
+                    None,
+                ),
+                NativePointerOwner::Native(binding.window()),
+                NativePointerOwner::Native(binding.window()),
+            ))
+            .unwrap();
+        let mut window_resolved = false;
+        let mut surface_lanes = [false; 2];
+        let mut press = session
+            .begin_native_host_frame(|query| {
+                let answer = store.resolve(query);
+                match query {
+                    NativeReceiverQuery::WindowHit(query) => {
+                        assert_eq!(query.point(), physical);
+                        assert_eq!(
+                            answer,
+                            NativeReceiverAnswer::WindowHit(NativeWindowHit::Surface(artifact))
+                        );
+                        window_resolved = true;
+                    }
+                    NativeReceiverQuery::Surface(query) => {
+                        assert_eq!(query.client_position(), Some(physical));
+                        assert!(query.matches_presentation_artifact(artifact));
+                        let expected = receiver.bind_for_query(query).unwrap();
+                        assert_eq!(answer, NativeReceiverAnswer::Dock(expected));
+                        let lane = match query.purpose() {
+                            NativeReceiverPurpose::ClickDelivery => 0,
+                            NativeReceiverPurpose::DragDelivery => 1,
+                            _ => panic!("a press asks only its two delivery lanes"),
+                        };
+                        surface_lanes[lane] = true;
+                    }
+                }
+                store.presented.get_mut(&SURFACE).unwrap()[0].pixels_per_point =
+                    f64::from(context.pixels_per_point());
+                let ambient_answer = store.resolve(query);
+                store.presented.get_mut(&SURFACE).unwrap()[0].pixels_per_point = 2.0;
+                assert_ne!(
+                    ambient_answer, answer,
+                    "both query kinds must use the completed Child output scale"
+                );
+                answer
+            })
+            .unwrap();
+        press
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        press.commit().unwrap();
+        assert!(window_resolved);
+        assert_eq!(surface_lanes, [true, true]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a real X11 display and renderer to mint a Child output token"]
+    fn real_child_token_preserves_output_scale_through_receiver_publication() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+        use winit::platform::x11::EventLoopBuilderExtX11 as _;
+
+        struct TokenHost;
+        impl eframe::NativeHostHandler for TokenHost {}
+
+        struct App {
+            done: Arc<AtomicBool>,
+            started: Instant,
+        }
+
+        impl eframe::App for App {
+            fn ui(&mut self, ui: &mut Ui, _: &mut eframe::Frame) {
+                assert!(self.started.elapsed() < Duration::from_secs(15));
+                if self.done.load(Ordering::SeqCst) {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                let done = Arc::clone(&self.done);
+                ui.ctx().show_viewport_deferred(
+                    egui::ViewportId::from_hash_of("receiver-output-scale-real-child"),
+                    egui::ViewportBuilder::default().with_title("Receiver pipeline Child"),
+                    move |ui, class| {
+                        assert!(class == egui::ViewportClass::Deferred);
+                        if done.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        let token = eframe::current_native_output_token().unwrap();
+                        assert_eq!(token.viewport_id(), ui.ctx().viewport_id());
+                        // The real callback supplies identity only. The shared
+                        // fixture controls logical DPI, independent of monitors.
+                        assert_completed_child_receiver_pipeline(Some(token));
+                        done.store(true, Ordering::SeqCst);
+                        ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                    },
+                );
+                ui.ctx().request_repaint_after(Duration::from_millis(10));
+            }
+        }
+
+        let done = Arc::new(AtomicBool::new(false));
+        let app_done = Arc::clone(&done);
+        eframe::run_native(
+            "Receiver publication DPI regression",
+            eframe::NativeOptions {
+                native_host: Some(Arc::new(TokenHost)),
+                renderer: eframe::Renderer::Glow,
+                event_loop_builder: Some(Box::new(|builder| {
+                    builder.with_x11().with_any_thread(true);
+                })),
+                ..Default::default()
+            },
+            Box::new(move |_| {
+                Ok(Box::new(App {
+                    done: app_done,
+                    started: Instant::now(),
+                }))
+            }),
+        )
+        .unwrap();
+        assert!(done.load(Ordering::SeqCst));
     }
 
     #[test]

@@ -354,6 +354,9 @@ impl<'session> NativeHostFrame<'session> {
             bridge.release_pointer_translation_capacity(cancellation.translator);
         }
         receivers.commit_presentations(report.surface_presentation_commits());
+        for &binding in report.native_placement_detachments() {
+            receivers.retire_binding(binding);
+        }
         bridge.commit_frame_boundary(report.native_input_pending());
         if let Some(context) = repaint_context {
             request_native_viewport_repaints(&context, &staging_viewports, &[]);

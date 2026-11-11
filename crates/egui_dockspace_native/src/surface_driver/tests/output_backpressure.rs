@@ -65,6 +65,8 @@ struct Probe {
     text_reached_retained_ui: bool,
     expand_roster_on_text: bool,
     ordinary_entry_on_text: bool,
+    root_rebound: bool,
+    rebound_idle_seen: bool,
     final_text: Option<String>,
 }
 
@@ -123,6 +125,9 @@ impl NativeHostHandler for DelayedTerminalHost {
     ) -> eframe::NativeOutputInputAdmission {
         let admission = self.inner.before_output_input(context, token, has_input);
         let mut probe = lock(&self.probe);
+        if probe.root_rebound && !has_input {
+            probe.rebound_idle_seen = true;
+        }
         if probe.text_mode
             && (probe.holding || probe.ordinary_entry_on_text)
             && probe.native_text_seen
@@ -938,6 +943,243 @@ fn real_eframe_output_capacity_preserves_text_when_shared_root_switches_to_the_o
         probe.final_text.as_deref(),
         Some("a"),
         "the ordinary Root entry must deliver the admitted sibling Text event exactly once: {probe:?}"
+    );
+}
+
+struct RebindingRootEntryTextApp {
+    app: NativeDockspaceApp<EditorPanes>,
+    host: Arc<DelayedTerminalHost>,
+    calls: Arc<AtomicUsize>,
+    reset_queued: bool,
+    rebound: bool,
+    key_sent: bool,
+    recovered_passes: usize,
+    started: Instant,
+}
+
+impl eframe::App for RebindingRootEntryTextApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        use dockspace::geometry::{LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
+        use dockspace::model::{
+            DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+            RootId, SurfaceId,
+        };
+        use dockspace::runtime::NativeSurfacePlacement;
+
+        const SIBLING: SurfaceId = SurfaceId::new(2);
+        const INCOMING: SurfaceId = SurfaceId::new(3);
+        assert!(
+            self.started.elapsed() < Duration::from_secs(20),
+            "the rebound Root must keep painting its sibling through idle runs: {:?}",
+            lock(&self.host.probe)
+        );
+        let token = eframe::current_native_output_token().unwrap();
+        let text_input = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Text(text) if text == "a"))
+        });
+        if self.rebound && !self.key_sent {
+            let target = self.app.with_panes(|panes| panes.target);
+            ui.memory_mut(|memory| memory.request_focus(target));
+        }
+        let before = self.calls.load(Ordering::SeqCst);
+        if self.reset_queued {
+            eframe::App::ui(&mut self.app, ui, frame);
+        } else {
+            let scale = f64::from(ui.ctx().pixels_per_point());
+            let placements = [SURFACE, SIBLING].map(|surface| {
+                let x = if surface == SURFACE { 0.0 } else { 320.0 };
+                NativeSurfacePlacement::new(
+                    surface,
+                    LogicalSize::new(300.0, 440.0).unwrap(),
+                    PhysicalPoint::new(x * scale, 0.0).unwrap(),
+                    ScaleFactor::new(scale).unwrap(),
+                    PhysicalRect::new(x * scale, 0.0, 300.0 * scale, 440.0 * scale).unwrap(),
+                )
+            });
+            self.app.show_root_surfaces(ui, &placements);
+        }
+        self.app.with_errors(|primary, cleanup| {
+            assert!(
+                primary.is_none() && cleanup.is_empty(),
+                "Root rebinding must keep the ordinary entry live: primary={primary:?}; cleanup={cleanup:?}"
+            );
+        });
+        if let Some(status) = self.app.take_action_status() {
+            assert!(matches!(
+                status.unwrap(),
+                crate::NativeActionStatus::LayoutReset { .. }
+            ));
+            assert_eq!(self.app.root_surface(), INCOMING);
+            self.rebound = true;
+            lock(&self.host.probe).root_rebound = true;
+        }
+        let after = self.calls.load(Ordering::SeqCst);
+        let retained = self.app.current_output_is_retained();
+        if !self.reset_queued
+            && !retained
+            && self.app.is_surface_presented(SURFACE)
+            && self.app.is_surface_presented(SIBLING)
+        {
+            let candidate = DockspaceLayout::new([
+                DockspaceSurfaceLayout::new(
+                    INCOMING,
+                    DockspaceRootLayout::new(
+                        RootId::new(3),
+                        DockspaceNode::central_tabs([ItemId::new(1)]),
+                    ),
+                ),
+                DockspaceSurfaceLayout::new(
+                    SIBLING,
+                    DockspaceRootLayout::new(
+                        RootId::new(2),
+                        DockspaceNode::central_tabs([ItemId::new(2)]),
+                    ),
+                ),
+            ])
+            .unwrap();
+            self.app
+                .request_layout_reset_rebinding_root(candidate, INCOMING)
+                .unwrap();
+            self.reset_queued = true;
+        }
+        let focused = ui.memory(|memory| memory.focused());
+        let editor_focused = self.app.with_panes(|panes| focused == Some(panes.target));
+        let mut probe = lock(&self.host.probe);
+        if text_input {
+            assert!(self.rebound && self.key_sent && probe.rebound_idle_seen);
+            assert_eq!(probe.text_input_token, Some(token));
+            assert!(matches!(
+                probe.text_input_admission,
+                Some(eframe::NativeOutputInputAdmission::Proceed)
+            ));
+            assert!(!retained && after > before);
+            if let Some(previous) = probe.resumed {
+                assert_eq!(
+                    previous, token,
+                    "repeated encoding keeps the original input token"
+                );
+            } else {
+                probe.resumed = Some(token);
+            }
+        }
+        if self.rebound
+            && !self.key_sent
+            && probe.rebound_idle_seen
+            && editor_focused
+            && !retained
+            && after > before
+            && self.app.is_surface_presented(INCOMING)
+            && self.app.is_surface_presented(SIBLING)
+        {
+            self.key_sent = true;
+            drop(probe);
+            let window = u64::from(token.window_id()).to_string();
+            let result = Command::new("xdotool")
+                .args(["windowactivate", "--sync", &window, "key", "a"])
+                .output()
+                .expect("the rebound Root entry regression requires xdotool");
+            assert!(result.status.success(), "{result:?}");
+        } else if probe.resumed_presented && !retained {
+            self.recovered_passes += 1;
+            if self.recovered_passes == 3 {
+                probe.done = true;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(5));
+    }
+
+    fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
+        lock(&self.host.probe).final_text = Some(self.app.with_panes(|panes| panes.text.clone()));
+    }
+}
+
+#[test]
+#[ignore = "requires isolated X11/XTest renderer, an EWMH WM, and xdotool"]
+fn real_eframe_rebound_shared_root_keeps_idle_sibling_input_on_the_ordinary_entry() {
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
+    };
+
+    assert!(std::env::var_os("DISPLAY").is_some());
+    let mut session = dockspace::runtime::DockspaceSession::from_layout(
+        DockspaceLayout::new([1, 2].map(|id| {
+            DockspaceSurfaceLayout::new(
+                SurfaceId::new(id),
+                DockspaceRootLayout::new(
+                    RootId::new(id),
+                    DockspaceNode::central_tabs([ItemId::new(id)]),
+                ),
+            )
+        }))
+        .unwrap(),
+        dockspace::policy::DockPolicy::default(),
+    )
+    .unwrap();
+    session
+        .configure_output_capacity(NonZeroUsize::new(3).unwrap())
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = NativeDockspaceApp::new_with_close_policy(
+        egui::Id::unique("real-rebound-root-idle-text"),
+        session,
+        SURFACE,
+        EditorPanes {
+            text: String::new(),
+            editor_item: ItemId::new(2),
+            target: egui::Id::unique("real-rebound-root-sibling-editor"),
+            calls: Arc::clone(&calls),
+        },
+        DockStyle::default(),
+        NativeWindowClosePolicy::RetainLayout,
+    )
+    .unwrap();
+    let probe = Arc::new(Mutex::new(Probe {
+        text_mode: true,
+        ordinary_entry_on_text: true,
+        ..Probe::default()
+    }));
+    let host = Arc::new(DelayedTerminalHost {
+        inner: app.native_host_handler(),
+        probe: Arc::clone(&probe),
+    });
+    eframe::run_native(
+        "Dockspace rebound Root ordinary entry text regression",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([640.0, 480.0]),
+            native_host: Some(host.clone()),
+            renderer: eframe::Renderer::Glow,
+            event_loop_builder: Some(Box::new(|builder| {
+                builder.with_x11().with_any_thread(true);
+            })),
+            ..Default::default()
+        },
+        Box::new(move |_| {
+            Ok(Box::new(RebindingRootEntryTextApp {
+                app,
+                host,
+                calls,
+                reset_queued: false,
+                rebound: false,
+                key_sent: false,
+                recovered_passes: 0,
+                started: Instant::now(),
+            }))
+        }),
+    )
+    .unwrap();
+    let probe = lock(&probe);
+    assert!(probe.root_rebound && probe.rebound_idle_seen && probe.native_text_seen);
+    assert!(probe.resumed_presented && probe.done, "{probe:?}");
+    assert!(!probe.holding && probe.buffered.is_empty());
+    assert_eq!(
+        probe.final_text.as_deref(),
+        Some("a"),
+        "the retained sibling receives native Text exactly once: {probe:?}"
     );
 }
 

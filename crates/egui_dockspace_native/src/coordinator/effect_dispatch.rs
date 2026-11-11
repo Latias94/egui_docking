@@ -142,7 +142,7 @@ impl NativeCoordinator {
             .retire_deferred_binding_paints(viewport, binding);
     }
 
-    fn accept_retirement_effect(
+    pub(super) fn accept_retirement_effect(
         &mut self,
         request: NativeEffectRequest,
         binding: NativeSurfaceBinding,
@@ -155,7 +155,9 @@ impl NativeCoordinator {
                 NativeHostProtocolError::RetiredViewportRouteChanged(binding.surface()).into(),
             );
         };
-        if !self.session.recognizes_native_binding(binding)
+        if !self
+            .session
+            .recognizes_native_window_binding(binding.window())
             || !self.bridge.retirement_can_begin_release(viewport, binding)
         {
             return self.submit_unsupported_effect(request);
@@ -304,7 +306,8 @@ impl NativeCoordinator {
                             let can_retire = self
                                 .exact_viewport_for_binding(close.binding())
                                 .is_some_and(|viewport| {
-                                    self.session.recognizes_native_binding(close.binding())
+                                    self.session
+                                        .recognizes_native_window_binding(close.binding().window())
                                         && self
                                             .bridge
                                             .retirement_can_begin_release(viewport, close.binding())
