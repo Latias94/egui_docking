@@ -2,6 +2,7 @@ use super::*;
 use crate::graph::Axis;
 use crate::policy::DockPolicy;
 use crate::scene::SurfaceProgramBlock;
+use crate::scene_manifest::PolicyRevision;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 

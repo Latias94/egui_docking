@@ -1,5 +1,6 @@
 use super::*;
 use crate::engine::DockEngine;
+use crate::geometry::LogicalSize;
 use crate::ids::ItemId;
 use crate::model::{
     DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,

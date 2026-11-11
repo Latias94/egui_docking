@@ -1,6 +1,6 @@
 use super::*;
 use crate::drop_target::DropTargetLocation;
-use crate::geometry::{LogicalRect, LogicalSize};
+use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use crate::graph::{Axis, ContainedFloating, RootRecord, SurfacePresentation};
 use crate::ids::{ItemId, WorkspaceEpoch, WorkspaceRevision};
 use crate::interaction::{DragGeneration, DragSessionId};
@@ -11,13 +11,14 @@ use crate::presentation_hit::{
 };
 use crate::presentation_observation::{PresentationOutputSerial, SurfacePresentationOutputTicket};
 use crate::scene::{
-    PresentationPlanValidator, SurfaceProgramRootOperation, SurfaceSceneStamp,
-    TabStripMemberVisibility,
+    PresentationMenuAnchorHost, PresentationPlanValidator, SurfaceProgramRootOperation,
+    SurfaceSceneStamp, TabListMenuGeometryAvailability, TabStripMemberVisibility,
 };
 use crate::scene_manifest::{
-    Measurement, SurfaceSceneRevision, TabIntrinsic, TabListMenuMetrics, TabStripControlMetric,
-    TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
+    Measurement, PolicyRevision, SurfaceSceneRevision, TabIntrinsic, TabListMenuMetrics,
+    TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
 };
+use crate::tab_strip::{TabStripControlId, TabStripStateKey};
 
 fn version() -> WorkspaceVersion {
     WorkspaceVersion::new(WorkspaceEpoch::new(3), WorkspaceRevision::new(5))

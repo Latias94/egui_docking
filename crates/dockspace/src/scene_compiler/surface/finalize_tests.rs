@@ -1,9 +1,10 @@
 use super::*;
+use crate::geometry::LogicalSize;
 use crate::graph::{Axis, ContainedFloating, RootRecord, SurfacePresentation};
 use crate::ids::ItemId;
 use crate::policy::{DockPolicy, TabBarPolicy};
 use crate::scene::{ContainedLayoutOwner, PresentationPlanValidator};
-use crate::scene_manifest::{Measurement, TabIntrinsic, TabStripMetrics};
+use crate::scene_manifest::{Measurement, PolicyRevision, TabIntrinsic, TabStripMetrics};
 use proptest::prelude::*;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
