@@ -1,3 +1,5 @@
+//! Tab-strip layout, optional chrome, overflow menus and pane scene records.
+
 use std::{collections::BTreeSet, sync::Arc};
 
 use super::guides::{

@@ -1,5 +1,7 @@
 //! Presentation requirements, scene authority, and output reconciliation.
 
+mod continuation;
+
 use super::native_projection::NativeFirstLiveProjection;
 use super::presentation_roster::PresentationAllocationIssuer;
 use super::*;

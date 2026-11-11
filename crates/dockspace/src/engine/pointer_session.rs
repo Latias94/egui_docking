@@ -1,5 +1,7 @@
 //! Pointer ownership gates and interaction-session retirement.
 
+mod source;
+
 use super::*;
 
 impl DockEngine {
@@ -493,5 +495,88 @@ impl DockEngine {
             ));
         }
         Ok(())
+    }
+}
+
+impl DockEngine {
+    pub(super) fn cancel_drag(
+        &mut self,
+        input: InputSequence,
+        session: crate::interaction::DragSessionId,
+        reason: InteractionCancelReason,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let pointer = self
+            .interaction
+            .active_drag(session)
+            .ok()
+            .and_then(|drag| Some(drag.owner.pointer()));
+        match self.interaction.cancel_drag(session) {
+            Ok(status) => {
+                if let Some(pointer) = pointer {
+                    let _ = self
+                        .viewport
+                        .end_drag_routing(pointer)
+                        .map_err(|source| EngineError::Viewport { input, source })?;
+                }
+                interaction_events.push(InteractionEvent::new(
+                    input,
+                    self.version,
+                    InteractionEventKind::Cancelled { status, reason },
+                ));
+                Ok(InteractionOutcome::Cancelled { status, reason })
+            }
+            Err(error) => Ok(InteractionOutcome::Rejected(error)),
+        }
+    }
+
+    pub(super) fn cancel_click(
+        &mut self,
+        input: InputSequence,
+        session: ClickSessionId,
+        reason: InteractionCancelReason,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> InteractionOutcome {
+        match self.interaction.cancel_click(session) {
+            Ok(status) => {
+                interaction_events.push(InteractionEvent::new(
+                    input,
+                    self.version,
+                    InteractionEventKind::Cancelled { status, reason },
+                ));
+                InteractionOutcome::Cancelled { status, reason }
+            }
+            Err(error) => InteractionOutcome::Rejected(error),
+        }
+    }
+}
+
+impl DockEngine {
+    pub(super) fn freeze_payload_focus(
+        &self,
+        payload: &MovePayload,
+    ) -> Result<PaneFocusDisposition, crate::error::CommandError> {
+        self.validate_payload(payload)?;
+        let surface =
+            self.payload_surface(payload)
+                .ok_or(crate::error::CommandError::Invariant {
+                    stage: "freezing pane focus for an unpresented payload",
+                })?;
+        let record = self.viewport_focus.panel_focus(surface);
+        let PanelFocusRecord::Item(item) = record else {
+            return Ok(PaneFocusDisposition::from_record(record));
+        };
+        let payload_contains_item = match payload {
+            MovePayload::Item(source) => source.item() == item,
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => self
+                .workspace
+                .collect_items_in_subtree(source.node())
+                .contains(&item),
+        };
+        if payload_contains_item {
+            Ok(PaneFocusDisposition::Set(item))
+        } else {
+            Ok(PaneFocusDisposition::Clear)
+        }
     }
 }

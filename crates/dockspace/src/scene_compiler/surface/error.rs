@@ -1,3 +1,5 @@
+//! Typed surface and presentation compilation failures.
+
 use thiserror::Error;
 
 use crate::drop_guide::DropGuideClusterId;

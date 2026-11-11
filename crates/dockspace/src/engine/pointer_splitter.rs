@@ -427,3 +427,315 @@ impl DockEngine {
         }
     }
 }
+
+impl DockEngine {
+    pub(super) fn check_resize_policy(
+        &self,
+        split: &NodeSource,
+        policy: &DockPolicySnapshot,
+    ) -> Result<(), CommandError> {
+        self.validate_node_source(split)?;
+        let axis = match self.workspace.node(split.node()) {
+            Some(Node::Split { axis, .. }) => *axis,
+            Some(Node::Tabs { .. }) => {
+                return Err(CommandError::NodeIsNotSplit { node: split.node() });
+            }
+            None => {
+                return Err(CommandError::MissingNode {
+                    role: ReferenceRole::Source,
+                    node: split.node(),
+                });
+            }
+        };
+        let surface = self.root_surface(split.root());
+        match policy.evaluate(&DockPolicyRequest::Resize(DockResizePolicyRequest::new(
+            axis, surface,
+        ))) {
+            PolicyDecision::Allow => Ok(()),
+            PolicyDecision::Reject(reason) => Err(reason.into()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn adjust_splitter_resize(
+        &mut self,
+        input: InputSequence,
+        scene: SurfaceSceneStamp,
+        splitter: SplitterSceneId,
+        delta: f64,
+        authority: SplitterAdjustmentAuthority,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let surface = scene.surface();
+        let painted = match authority {
+            SplitterAdjustmentAuthority::PresentedCoordinates => self
+                .presentation_authority
+                .scene
+                .ready_surface(surface)
+                .filter(|painted| {
+                    painted.stamp() == scene
+                        && scene.requirement().workspace_epoch() == self.version.epoch()
+                })
+                .ok_or(InteractionRejection::StaleScene),
+            SplitterAdjustmentAuthority::CurrentCandidate => self.semantic_candidate(scene),
+        };
+        let painted = match painted {
+            Ok(painted) => painted,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        if authority == SplitterAdjustmentAuthority::PresentedCoordinates
+            && !Self::coordinate_capture_matches_current(
+                painted.coordinate_capture(),
+                self.viewport.viewport(surface),
+                self.viewport.surface_coordinate_authority(surface),
+            )
+        {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SplitterGestureCoordinateAuthorityUnavailable { surface },
+            ));
+        }
+        let painted = painted.frozen_witness();
+        self.adjust_splitter_from_candidate(
+            input,
+            &painted,
+            splitter,
+            delta,
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn adjust_splitter_from_candidate(
+        &mut self,
+        input: InputSequence,
+        painted: &crate::scene::SurfacePlanScene,
+        splitter: SplitterSceneId,
+        delta: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let surface = painted.stamp().surface();
+        let record = match painted.plan().splitter_record(splitter).cloned() {
+            Some(record) if record.operable() => record,
+            None => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::SplitterGestureHitUnavailable { surface },
+                ));
+            }
+            Some(_) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::SplitterGestureHitUnavailable { surface },
+                ));
+            }
+        };
+        let source = match self
+            .workspace
+            .capture_node_source(splitter.root, splitter.split)
+        {
+            Ok(source) => source,
+            Err(error) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::ResizeRejected(error),
+                ));
+            }
+        };
+        let axis = record.axis();
+        let groups = match self.prepare_checked_resize_axis_groups(
+            painted.plan(),
+            vec![(source, record)],
+            policy,
+        ) {
+            Ok(groups) => groups,
+            Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
+        };
+        let delta = match axis {
+            Axis::Horizontal => [delta, 0.0],
+            Axis::Vertical => [0.0, delta],
+        };
+        let Some(updates) = resize_axis_group_updates(&groups, delta) else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SplitterResizeGeometryUnavailable,
+            ));
+        };
+        let command = WorkspaceCommand::ResizeSplits { splits: updates };
+        match self.apply_interaction_command_with_policy(input, policy, &command, events)? {
+            CommandApplication::Applied { outcome, changed } => {
+                if changed {
+                    self.invalidate_transient(
+                        input,
+                        InteractionCancelReason::WorkspaceChanged,
+                        interaction_events,
+                    )?;
+                }
+                Ok(InteractionOutcome::SplitterAdjusted { outcome, changed })
+            }
+            CommandApplication::Rejected(error) => Ok(InteractionOutcome::Rejected(
+                InteractionRejection::ResizeRejected(error),
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn adjust_splitter_junction_resize(
+        &mut self,
+        input: InputSequence,
+        scene: SurfaceSceneStamp,
+        junction: crate::scene::SplitterJunctionId,
+        axis: crate::model::DockspaceAxis,
+        delta: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let painted = match self.semantic_candidate(scene) {
+            Ok(painted) => painted.frozen_witness(),
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        self.adjust_splitter_junction_from_candidate(
+            input,
+            &painted,
+            junction,
+            axis,
+            delta,
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn adjust_splitter_junction_from_candidate(
+        &mut self,
+        input: InputSequence,
+        painted: &crate::scene::SurfacePlanScene,
+        junction: crate::scene::SplitterJunctionId,
+        axis: crate::model::DockspaceAxis,
+        delta: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let surface = painted.stamp().surface();
+        let axis = axis.into();
+        let handles = {
+            let Some(record) = painted
+                .plan()
+                .splitter_junction_records()
+                .iter()
+                .find(|record| record.id() == junction)
+            else {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::SplitterGestureHitUnavailable { surface },
+                ));
+            };
+
+            let directions = match axis {
+                crate::graph::Axis::Horizontal => [
+                    crate::scene::SplitterJunctionDirection::North,
+                    crate::scene::SplitterJunctionDirection::South,
+                ],
+                crate::graph::Axis::Vertical => [
+                    crate::scene::SplitterJunctionDirection::East,
+                    crate::scene::SplitterJunctionDirection::West,
+                ],
+            };
+            let mut ids = directions
+                .into_iter()
+                .filter_map(|direction| record.id().arm(direction))
+                .collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids.dedup();
+            if ids.is_empty() {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::SplitterGestureHitUnavailable { surface },
+                ));
+            }
+            let mut handles = Vec::with_capacity(ids.len());
+            for id in ids {
+                let Some(handle) = painted
+                    .plan()
+                    .splitter_record(id)
+                    .filter(|splitter| splitter.axis() == axis && splitter.operable())
+                else {
+                    return Ok(InteractionOutcome::Rejected(
+                        InteractionRejection::SplitterGestureHitUnavailable { surface },
+                    ));
+                };
+                handles.push(handle.clone());
+            }
+            handles
+        };
+
+        let mut sources = Vec::with_capacity(handles.len());
+        for record in handles {
+            let source = match self
+                .workspace
+                .capture_node_source(record.id().root, record.id().split)
+            {
+                Ok(source) => source,
+                Err(error) => {
+                    return Ok(InteractionOutcome::Rejected(
+                        InteractionRejection::ResizeRejected(error),
+                    ));
+                }
+            };
+            sources.push((source, record));
+        }
+
+        let groups = match self.prepare_checked_resize_axis_groups(painted.plan(), sources, policy)
+        {
+            Ok(groups) => groups,
+            Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
+        };
+        let delta = match axis {
+            Axis::Horizontal => [delta, 0.0],
+            Axis::Vertical => [0.0, delta],
+        };
+        let Some(updates) = resize_axis_group_updates(&groups, delta) else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SplitterResizeGeometryUnavailable,
+            ));
+        };
+        let command = WorkspaceCommand::ResizeSplits { splits: updates };
+        match self.apply_interaction_command_with_policy(input, policy, &command, events)? {
+            CommandApplication::Applied { outcome, changed } => {
+                if changed {
+                    self.invalidate_transient(
+                        input,
+                        InteractionCancelReason::WorkspaceChanged,
+                        interaction_events,
+                    )?;
+                }
+                Ok(InteractionOutcome::SplitterAdjusted { outcome, changed })
+            }
+            CommandApplication::Rejected(error) => Ok(InteractionOutcome::Rejected(
+                InteractionRejection::ResizeRejected(error),
+            )),
+        }
+    }
+
+    pub(super) fn cancel_resize(
+        &mut self,
+        input: InputSequence,
+        session: crate::interaction::ResizeSessionId,
+        reason: InteractionCancelReason,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> InteractionOutcome {
+        match self.interaction.cancel_resize(session) {
+            Ok(status) => {
+                interaction_events.push(InteractionEvent::new(
+                    input,
+                    self.version,
+                    InteractionEventKind::Cancelled { status, reason },
+                ));
+                InteractionOutcome::Cancelled { status, reason }
+            }
+            Err(error) => InteractionOutcome::Rejected(error),
+        }
+    }
+}

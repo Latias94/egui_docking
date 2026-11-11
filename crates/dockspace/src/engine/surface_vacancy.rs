@@ -1,11 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::error::CommandError;
 use crate::frame::SurfaceVacancyAuthority;
-use crate::ids::SurfaceId;
+use crate::graph::Workspace;
+use crate::ids::{InputSequence, SurfaceId};
+use crate::policy::{
+    DockPolicyRequest, DockPolicySnapshot, DockPresentationMode, DockSurfaceRecoveryPolicyRequest,
+    DockSurfaceRecoveryRootFacts, PolicyDecision,
+};
+use crate::surface_recovery::{
+    SurfaceRecoveryObligation, SurfaceRecoveryObligationId, SurfaceRecoveryTarget,
+};
 use crate::transition::InputOutcome;
 use crate::viewport::ViewportBinding;
 
-use super::DockEngine;
+use super::{DockEngine, EngineError};
 
 /// Exact binding history needed to settle physical resources from the final
 /// logical surface roster of one reducer tick.
@@ -121,5 +130,122 @@ impl TickVacancyLedger {
                     .is_none_or(|binding| !self.reconciled_retirements.contains(&binding))
             })
             .collect()
+    }
+}
+
+impl DockEngine {
+    pub(super) fn recovery_policy_request(
+        workspace: &Workspace,
+        source_surface: crate::ids::SurfaceId,
+        host_surface: crate::ids::SurfaceId,
+    ) -> Result<DockSurfaceRecoveryPolicyRequest, CommandError> {
+        let presentation =
+            workspace
+                .surface(source_surface)
+                .ok_or(CommandError::MissingSurface {
+                    surface: source_surface,
+                })?;
+        let mut roots = BTreeMap::new();
+        if let Some(root) = presentation.main_root {
+            Self::insert_recovery_root_facts(
+                workspace,
+                &mut roots,
+                root,
+                DockPresentationMode::Native,
+            )?;
+        }
+        for floating in &presentation.contained {
+            let contained =
+                workspace
+                    .contained_floating(*floating)
+                    .ok_or(CommandError::MissingFloating {
+                        floating: *floating,
+                    })?;
+            Self::insert_recovery_root_facts(
+                workspace,
+                &mut roots,
+                contained.root,
+                DockPresentationMode::Contained,
+            )?;
+        }
+        Ok(DockSurfaceRecoveryPolicyRequest::new(
+            source_surface,
+            host_surface,
+            roots,
+        ))
+    }
+
+    pub(super) fn insert_recovery_root_facts(
+        workspace: &Workspace,
+        roots: &mut BTreeMap<crate::ids::RootId, DockSurfaceRecoveryRootFacts>,
+        root: crate::ids::RootId,
+        presentation: DockPresentationMode,
+    ) -> Result<(), CommandError> {
+        let record = workspace
+            .root(root)
+            .ok_or(CommandError::MissingRoot { root })?;
+        let facts = DockSurfaceRecoveryRootFacts::new(
+            presentation,
+            workspace.collect_items_in_subtree(record.node),
+        );
+        if roots.insert(root, facts).is_some() {
+            return Err(CommandError::Invariant {
+                stage: "normalize surface recovery roots",
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn next_surface_recovery_obligation_id(
+        &self,
+        input: InputSequence,
+    ) -> Result<SurfaceRecoveryObligationId, EngineError> {
+        self.last_surface_recovery_obligation
+            .checked_next()
+            .ok_or(EngineError::SurfaceRecoveryObligationExhausted { input })
+    }
+
+    pub(super) fn authorize_surface_recovery_obligation(
+        &self,
+        input: InputSequence,
+        id: SurfaceRecoveryObligationId,
+        workspace: &Workspace,
+        source_surface: crate::ids::SurfaceId,
+        target: SurfaceRecoveryTarget,
+        policy: &DockPolicySnapshot,
+    ) -> Result<SurfaceRecoveryObligation, CommandError> {
+        if workspace.surface(target.host_surface()).is_none() {
+            return Err(CommandError::SurfaceLifecycleFrozen {
+                surface: target.host_surface(),
+            });
+        }
+        let request =
+            Self::recovery_policy_request(workspace, source_surface, target.host_surface())?;
+        self.authorize_surface_recovery_obligation_for_request(input, id, request, target, policy)
+    }
+
+    pub(super) fn authorize_surface_recovery_obligation_for_request(
+        &self,
+        _input: InputSequence,
+        id: SurfaceRecoveryObligationId,
+        request: DockSurfaceRecoveryPolicyRequest,
+        target: SurfaceRecoveryTarget,
+        policy: &DockPolicySnapshot,
+    ) -> Result<SurfaceRecoveryObligation, CommandError> {
+        if let PolicyDecision::Reject(reason) =
+            policy.evaluate(&DockPolicyRequest::RecoverSurface(request.clone()))
+        {
+            return Err(CommandError::Policy(reason));
+        }
+        SurfaceRecoveryObligation::new(
+            id,
+            self.authority_domain,
+            request,
+            target,
+            policy.revision(),
+        )
+        .map_err(|_| CommandError::SurfaceLifecycleFrozen {
+            surface: target.host_surface(),
+        })
     }
 }

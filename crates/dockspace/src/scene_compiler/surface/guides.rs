@@ -1,3 +1,5 @@
+//! Docking target geometry, guide placement and occlusion clipping.
+
 use std::sync::Arc;
 
 use super::{

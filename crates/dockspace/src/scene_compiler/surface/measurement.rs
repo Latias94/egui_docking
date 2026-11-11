@@ -1,3 +1,5 @@
+//! Pane minimums and selection-dependent layout measurements.
+
 use std::collections::BTreeMap;
 
 use super::SceneCompilationError;

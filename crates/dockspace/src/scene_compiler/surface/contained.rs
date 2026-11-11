@@ -1,3 +1,5 @@
+//! Contained-window chrome and resize geometry.
+
 use std::collections::BTreeSet;
 
 use super::{SceneCompilationError, clip_rect, rect_has_area};
