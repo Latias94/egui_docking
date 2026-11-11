@@ -1,5 +1,0 @@
-
-running 1 test
-test app::retained_focus_tests::real_eframe_retained_output_keeps_editor_focus_without_pane_callbacks ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 646 filtered out; finished in 0.18s

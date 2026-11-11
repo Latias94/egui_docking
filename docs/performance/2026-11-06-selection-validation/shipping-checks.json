@@ -1,9 +1,0 @@
-{
-  "checked_utc": "2026-11-06T03:29:17.592086+00:00",
-  "protected_user_files_unchanged": 49,
-  "measured_production_sources_unchanged": 2,
-  "scanned_files": 158,
-  "specific_secret_signature_findings": 0,
-  "debug_instrumentation_in_production": "absent",
-  "staging_before_commit": "empty"
-}

@@ -1,8 +1,0 @@
-Baseline: 2289c889b30343bb705d9b6786f09dc09d633619
-Command: CARGO_BUILD_JOBS=1 cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --lib --all-features --locked --no-capture --no-fail-fast --target-dir target -E test(architecture_audit)
-Nextest run: 48428594-3846-4948-9ad7-f2cf95eea819
-1 passed; 570 filtered out.
-successor_focus_emitted_by_core=true dispatched=false owner=first
-shutdown_turn=1/2/3/4 focus_pending=true quiescent=false errors=[]
-
-The exact callback is model-injected after real adapter dispatch/reservation. This does not exercise an OS window manager. Quarantine rejection of production global-focus ingress is established by code inspection, not by bypassing its admission with the test push_record helper.

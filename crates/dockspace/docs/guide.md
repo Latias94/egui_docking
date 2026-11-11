@@ -436,11 +436,8 @@ affordance, timer and position state. A destination on another window uses its
 own desktop hover projection, with separately confirmed physical routing and
 exact target-output presentation. A rejected packet follows its original local
 event; the real release/cancel remains consumable. No ordinary Desktop packet
-implicitly upgrades a native-local gesture. This public host contract is locally
-qualified in `docs/VALIDATION.md`. The reference adapter also has qualified
-same-event callback capture/emission and complete raw-to-output handoff traces;
-native-local OS handoff and native stationary scheduling remain separate work.
-The public host API does not establish platform callback qualification. The
+implicitly upgrades a native-local gesture. The public host API does not
+establish platform callback qualification. The
 reference adapter's committed capability, callback geometry and event-generation
 geometry must all agree. Unknown local samples cannot authorize idle compaction;
 exact samples can compare authority with `NativeLocalPointerSample::same_coordinates`.
@@ -461,8 +458,8 @@ source routing. Each edge-scroll step waits for exact target-output acceptance.
 Unknown capture revokes the challenge, including capture facts carried by
 secondary buttons or same-pointer scrolling; restoring capture does not revive
 the old token. Obsolete same-stream tokens do not reinterpret an old lane.
-The public contract is locally qualified in `docs/VALIDATION.md`; automatic
-adapter wakes and fresh OS stationary/Touch observations remain separate work.
+The host must implement automatic wakes and fresh OS stationary/Touch
+observations to exercise this contract on a platform.
 
 `native_input_owned_capacity_bytes()` on the session or an open host frame
 reports recorded input transport data: recorder envelopes and buffers, shared
@@ -567,10 +564,10 @@ still validate the actual payloads and complete batch admission.
 The synchronous `begin_native_host_frame` convenience remains available for
 hosts deliberately draining a complete interval; it does not enforce a time
 budget. The working egui native coordinator uses the budgeted protocol and
-exact neutral close holds. Its aligned Git dependency pins resolve the qualified
-local forks without path overrides, but those commits remain unpublished and
-remote-only checkout reproduction is not established. See `docs/VALIDATION.md`
-for the separately qualified core, adapter-model, and real-window evidence.
+exact neutral close holds. Its isolated workspace pins the required Git
+dependencies. See [platform support](../../../docs/PLATFORM_SUPPORT.md) for
+backend capabilities and the distinction between host-contract tests and
+real-window qualification.
 
 When a buffered managed host exhausts its own ingress capacity, it must freeze
 ordinary admission and commit all previously accepted input before invoking

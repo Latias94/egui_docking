@@ -1,8 +1,0 @@
-{
-  "checked_utc": "2026-11-05T16:21:13.394455+00:00",
-  "review": "reviews/final-twenty-review.md",
-  "P2_portable_paths": "Resolved by byte-exact root copies; provenance/portable-reference-check.json verifies all 8 final references.",
-  "final_gates": "All 22 groups passed on 31b1759; qualification/final-summary.json and qualification/qualification-followup retain the completed records.",
-  "official_control": "official-current-final/verification.json verifies the completed final-source official ABBA control.",
-  "code_changed_after_review": false
-}

@@ -1,8 +1,0 @@
-{
-  "review": "independent-review.md",
-  "result": "Core ownership change PASS; one P2 documentation finding corrected.",
-  "P2": "Clarify exact hit-geometry reuse before eager touch compilation; table and section5 now limit the eager path to reuse misses.",
-  "source_changes_after_review": false,
-  "regression_groups_passed": 8,
-  "checked_utc": "2026-11-06T01:35:55.844403+00:00"
-}

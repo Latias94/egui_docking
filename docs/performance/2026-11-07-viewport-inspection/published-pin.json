@@ -1,9 +1,0 @@
-{
-  "fork_commit": "f94ee58b3914de7ad71dab36919b329ef36b4035",
-  "remote_branch": "fix/inspection-await-viewport-paint",
-  "parent": "60c40304dab75305d2ac0f54a1cabfc354669006",
-  "source_sha256": "902fae4ba28ace39c3cc30dad3afa8cd7124ab733b8a9b6fc3a8fe97ab74a447",
-  "runtime_pin_and_lock_sources_updated": true,
-  "workflow_checkout_updated": true,
-  "historical_performance_inputs_unchanged": true
-}

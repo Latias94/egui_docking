@@ -1,5 +1,0 @@
-{
-  "baseline_lock_sha256": "08e314cbf5e40b7a9dba1fa092350aa46a625ce20c88b74c7c60088b44c5948c",
-  "candidate_initial_lock_sha256": "08e314cbf5e40b7a9dba1fa092350aa46a625ce20c88b74c7c60088b44c5948c",
-  "purpose": "Keep baseline dependency versions while replacing the egui family source with the local tracking prototype."
-}

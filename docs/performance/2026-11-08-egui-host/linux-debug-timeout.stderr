@@ -1,4 +1,0 @@
-egui-host-exercise: adapter=AdapterInfo { name: "llvmpipe (LLVM 15.0.6, 128 bits)", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: "", driver: "", driver_info: "4.5 (Core Profile) Mesa 22.3.6", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }; physical_size=PhysicalSize { width: 1280, height: 820 }; scale=1; present_mode=AutoVsync; format=Rgba8Unorm
-egui-host-exercise: window event Focused(false)
-egui-host-exercise: window event Occluded(false)
-Error: "exercise exceeded its bound at Scroll/1"

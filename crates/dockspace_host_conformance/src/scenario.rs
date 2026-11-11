@@ -48,7 +48,7 @@ pub enum CadenceProfile {
     TouchLongPress,
 }
 
-/// Thin fixed catalog entry; semantic checkpoints live in `docs/VALIDATION.md`.
+/// Fixed journey entry describing its input cadences and required capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JourneySpec {
     id: JourneyId,

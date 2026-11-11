@@ -1,6 +1,0 @@
-SurfacePaintPlan 1392
-SurfacePaintProgramStep 264
-SurfacePaintProgramOperation 112
-DockspaceReceiverDescriptor 248
-DockspaceVisualId 112
-SurfacePaintDisposition 1

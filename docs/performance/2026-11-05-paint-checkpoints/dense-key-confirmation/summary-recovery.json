@@ -1,6 +1,0 @@
-{
-  "reason": "Corrected stale summary-only condition labels after all four measured processes completed successfully. Recomputed from the unchanged complete raw CSV; no measurement repeated.",
-  "utc": "2026-11-05T12:54:37.607818+00:00",
-  "raw_sha256": "6ba79f2da95ec52cd1a4aa825f1f388caad4262a6c768663d7e58539b2732e0b",
-  "summary_sha256": "a9f6336fed0a86a72bb71dc387e40ef1edec9df81dfc134e113e522a7508afaa"
-}

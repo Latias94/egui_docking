@@ -1,6 +1,0 @@
-test mailbox::preparation_output_tests::real_old_output_cannot_revoke_successor_preparation_and_its_exact_created_receipt ...
-thread 'mailbox::preparation_output_tests::real_old_output_cannot_revoke_successor_preparation_and_its_exact_created_receipt' (16783) panicked at /Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native/src/mailbox/preparation_output_tests.rs:183:17:
-assertion `left == right` failed: rejecting the predecessor output must not revoke its successor
-  left: NativePreparationObservation { generation: 5, readiness: Created }
- right: NativePreparationObservation { generation: 4, readiness: Created }
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -324,8 +324,7 @@ the existing host-focus sampling can identify the pane. Selection, a pending
 focus request, and the frontmost floating window alone do not produce the cue.
 Unfocused windows and disabled tab strips do not show it.
 The experimental native host refreshes exact native focus after route enrollment
-and ingress recovery; the [focus verification](../../../docs/audits/2026-11-09-native-startup-focus-refresh.md)
-records the cold-start and background-launch behavior.
+and ingress recovery. A pending request does not establish observed focus.
 
 For the experimental native host, create the session with the same
 `style.presentation_config()?` before passing both objects to `NativeDockspaceApp`.
@@ -358,7 +357,7 @@ later update and consume its terminal result before submitting another command
 or waiting for quiescence. Acceptance into the queue is separate from core
 success and actual surface presentation. Layout/document replacement keeps its
 dedicated preparation methods; see the
-[migration guide](../../../docs/ENGINE_FIRST_MIGRATION.md#egui-integration).
+[native overview](../../egui_dockspace_native/README.md).
 
 Use `NativeCommand::SetPolicy { policy: Box::new(policy) }` to replace the complete
 runtime docking policy, including per-pane move/close restrictions and docking

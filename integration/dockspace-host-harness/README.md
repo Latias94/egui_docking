@@ -22,15 +22,15 @@ after whole-surface redocking or pane-selection invalidation, abandoned outputs 
 newer presentation prefixes, and semantic layout commands without registering a pointer
 producer or enabling native hosting.
 
-The engine-first follow-up adds `update_publication`, `presented_semantic_scope`,
+`update_publication`, `presented_semantic_scope`,
 `presentation_admission_scope` and `deferred_surface_actions`. They exercise
 same-update measurement/encoding, owned suspension, repeated encoding, bounded
 admission, exact immutable in-flight scenes, stale source/target rejection and
 scoped actions from discarded passes. The opt-in `frame_cost` example measures
 complete updates separately from output settlement; its methodology is recorded
-in `docs/performance/2026-11-03-engine-first-methodology.md`.
+in [BENCHMARKING.md](BENCHMARKING.md).
 
-The U3 host input tests submit complete ordered batches across two logical
+The host input tests submit complete ordered batches across two logical
 surfaces with identical bounds. Source manipulation and target hover carry
 independent exact presentation routes. Ordinary release commits once with its
 accepted input, and later dropped output does not undo it. Negative journeys exercise unknown
@@ -40,7 +40,7 @@ prefix must roll back the published version, selection, interaction and surface
 proofs; retrying the same ordered edges must deliver exactly once. The retry
 contract also detects producer watermarks advancing during rollback.
 
-The U4 consumer checks full contained content during move and every resize
+The contained-window tests check full content during move and every resize
 direction, immediate ordinary release and exact output settlement, cancellation, changed measurements,
 and a target behind the complete source in a pre-frozen input batch. A complete
 tabs-root journey presents each source-only projection while jittering across a
@@ -64,8 +64,8 @@ tests additionally preserve complete contained geometry and allow an exact
 known keyboard-focus Root to control its provider's active Child gesture.
 
 This is public-contract and renderer-neutral input evidence. It does not prove
-physical OS event delivery or actual GPU presentation. The egui complete Burst
-and ordinary-content matrices are qualified separately in `docs/VALIDATION.md`.
+physical OS event delivery or actual GPU presentation. The egui product and
+official harnesses separately exercise Burst input and ordinary pane content.
 
 `tests/direct_prepared_native.rs` supplies window and renderer readiness through
 public `Created` and `Prepared` facts. Its recording sink verifies complete
@@ -144,8 +144,8 @@ coordinate-lane upgrade, including inactive-tab continuation, frame rollback,
 Dropped and late outputs, exact source/hover mappings and a confirmed cross-window
 drop. Invalid continuity or mapping preserves local terminal handling; physical
 routing and target-output presentation remain independent requirements. The
-public contract is qualified in `docs/VALIDATION.md`; it does not prove
-OS callback emission or native stationary scheduling.
+public contract does not prove OS callback emission or native stationary
+scheduling.
 
 `tests/native_stationary.rs` and `tests/native_stationary_targets.rs` exercise
 the Native-specific continuation projection, hover dwell, Touch long press,
@@ -155,8 +155,7 @@ cached capture or position. Negative journeys cover obsolete tokens after
 handoff, wrong pointer/reused stream, capture loss through button/scroll facts,
 stale receivers, coordinate rebase and whole-frame retry. The handoff fixture
 also verifies cross-window dwell behind confirmed Applied routing. This public
-contract is qualified in `docs/VALIDATION.md`; it does not certify
-adapter scheduling or OS stationary/Touch observation.
+contract does not certify adapter scheduling or OS stationary/Touch observation.
 
 The native stationary fixture also reads the desktop mouse drag's capture
 requirement before timed work exists, checks stable identity across hover
@@ -165,7 +164,7 @@ pointer. Pending input hides the projection until commit; local and Touch
 gestures, foreign sources, cancellation and retirement cannot borrow it. These
 queries neither acquire native capture nor prove that native cleanup finished.
 
-The U6 public consumer completes item/root close plans with Allow, Veto and
+The public close consumer completes item/root close plans with Allow, Veto and
 exact deferred continuations, independently of pointer registration. Feedback
 tests consume pending and terminal statuses by stable manipulation identity,
 check publication deduplication, and preserve active-gesture cancellation on producer

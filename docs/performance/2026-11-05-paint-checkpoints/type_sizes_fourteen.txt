@@ -1,6 +1,0 @@
-SurfacePaintProgramStep<'static> 184
-DockspaceDragDecoration<'static> 184
-DockspaceReceiverDescriptor 248
-SurfacePaintProgramOperation<'static> 112
-SurfacePaintProgramRoot<'static> 40
-DockspaceVisualId 112

@@ -1,8 +1,0 @@
-   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
-   Compiling dockspace_host_conformance v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace_host_conformance)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 35s
-────────────
- Nextest run ID d1ed43ba-9c89-4ef4-9f6b-d25282ec8e9c with nextest profile: default
-    Starting 2164 tests across 5 binaries (3 tests skipped)
-────────────
-     Summary [  24.444s] 2164 tests run: 2164 passed, 3 skipped

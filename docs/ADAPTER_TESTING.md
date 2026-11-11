@@ -6,7 +6,7 @@ no UI or platform framework. The independent
 [public host harness](../integration/dockspace-host-harness/README.md) demonstrates
 owned rendering records and input submission outside egui. The implemented UI
 reference is egui; recording tests do not qualify another framework's renderer
-or operating-system integration. Open-GPUI integration remains deferred.
+or operating-system integration.
 
 ## Adapter responsibilities
 
@@ -70,7 +70,7 @@ do not replay an old event or synthesize motion to satisfy a timer.
 | Core host conformance | [Scenario catalog and private executors](../crates/dockspace_host_conformance/README.md) | Core behavior through public APIs under declared capabilities |
 | Independent public consumer | [Recording host tests](../integration/dockspace-host-harness/tests/) | External API usability, owned output, routing and settlement contracts |
 | Concrete UI entry point | [egui product harness](../integration/egui-product-harness/tests/product.rs) | Actual egui measurement, widgets, accessibility and input mapping |
-| Native physical integration | [Validation record](VALIDATION.md) | Only the explicitly recorded backend, platform and physical journeys |
+| Native physical integration | [X11 qualification drivers](../integration/egui-native-smoke/README.md) | Only the exercised backend, environment and physical journeys |
 
 `dockspace_host_conformance` is an unpublished test crate. Its shared `scenario`
 module describes semantic selectors, actions, capabilities and observations. Its

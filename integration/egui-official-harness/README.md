@@ -124,8 +124,8 @@ cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml -
 The existing native eight-pane editor and its X11 drivers remain the separate
 physical-input and native-lifecycle gates. This exercise adds continuous host
 behavior and frame-cost evidence without changing those platform claims.
-The [recorded host run](../../docs/performance/2026-11-08-egui-host-exercise.md)
-includes every raw row, environment details and failed attempts.
+Keep raw rows and environment details with each measurement outside the source
+tree, for example as CI artifacts or release attachments.
 
 ## Docking Hover And Composed UI
 

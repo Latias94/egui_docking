@@ -1,2 +1,0 @@
-[DEBUG-inventory-prefix] Some(PointerReceiverGeometry { source: ReceiverWinnerMismatch { sequence: PointerEdgeSequence(10), lane: Drag, claimed: None, winner: Some(PresentationHitRegionId { surface: SurfaceId(1), kind: PaneBody(PaneSceneId { root: RootId(1), tabs: NodeId(2v1) }) }) } })
-[DEBUG-inventory-stop] NativeRuntimeError { source: Dockspace(DockspaceRuntimeError { source: HostFrame(InputPrefixReductionFailed) }) }; cleanup=[]

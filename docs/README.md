@@ -16,17 +16,22 @@
   integration, focus, background work, style and configuration.
 - [Adapter testing](ADAPTER_TESTING.md): host responsibilities and reusable
   framework-neutral scenarios.
-- [Platform support](PLATFORM_SUPPORT.md): capabilities and qualified native profiles.
+- [Platform support](PLATFORM_SUPPORT.md): capabilities and native testing limits.
 
-## Development and evidence
+## Development
 
 - [Contributing](../CONTRIBUTING.md): repository layout and local checks.
 - [Maintaining](MAINTAINING.md): package/release order and proposed repository naming.
-- [Validation](VALIDATION.md): dated results and the limits of their claims.
+- [Native qualification](../integration/egui-native-smoke/README.md): real-window
+  and physical-input checks.
+- [Host-update sampling](../integration/dockspace-host-harness/BENCHMARKING.md)
+  and [product comparisons](../integration/product-comparison/README.md):
+  reproducible workloads and interpretation limits.
 - [Third-party sources](../THIRD_PARTY.md): prior art and fixture attribution.
 
-`plans/`, `audits/`, `performance/` and `knowledge/` contain design history,
-engineering notes and qualification evidence. They are supporting material;
-the crate guides and API documentation describe integration. The
-[engine-first migration notes](ENGINE_FIRST_MIGRATION.md) and
-[completion audit](COMPLETION_AUDIT.md) remain historical references.
+## Architecture decisions
+
+- [Renderer-neutral synchronous core](adr/0001-renderer-neutral-core.md)
+- [Atomic frames and presentation authority](adr/0002-atomic-frames-and-presentation.md)
+- [Native window composition](adr/0003-native-window-composition.md)
+- [Separate official and fork workspaces](adr/0004-isolate-native-forks.md)

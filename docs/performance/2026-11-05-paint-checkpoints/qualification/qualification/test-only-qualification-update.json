@@ -1,7 +1,0 @@
-{
-  "path": "crates/dockspace/src/engine/tests/host_authority.rs",
-  "before_sha256": "fb0a1da098dc4d735882fa9409687c2c033c7c6207bbba37480d8eee9ee46ce6",
-  "after_sha256": "7d9ddfc65a5ca60275da507ca46ed45cb8967bba3db7dc5701ec6db2c7181370",
-  "reason": "Existing exact structural-work assertion expected four fingerprint builds; bound-index optimization now performs exactly two. Correct production behavior; strengthen to exact new count, not a relaxed bound. This module is cfg(test) only.",
-  "production_source_changed": false
-}

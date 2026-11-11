@@ -1,6 +1,0 @@
-Fork revision: 0d9c48d765954dd3eff99c0d3cfa686e9d8591cf
-Command: CARGO_BUILD_JOBS=1 cargo nextest run --manifest-path repo-ref/egui-focus-refresh/Cargo.toml --target-dir target --config 'profile.dev.package."*".opt-level=0' -p eframe --lib --no-default-features --features glow,wgpu,native-host-seam,x11,wayland --locked --test-threads=1
-Nextest run ID: a4c08cfe-a0ab-405c-b978-266ef03a701f
-Result: 107 passed, 0 skipped.
-Platform: aarch64-apple-darwin, Rust 1.95.0.
-The result summary is transcribed from the successful command output; a full test log was not redirected for this run.

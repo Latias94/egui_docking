@@ -39,8 +39,7 @@ the first registry release if accepted:
    integrations still point to the intended repository. Check Pages separately
    if it is enabled later.
 4. Keep the old repository name unused so GitHub's redirects continue to work.
-   Historical audit URLs can remain historical; active product links should use
-   the new location.
+   Active product links should use the new location.
 
 GitHub redirects ordinary web and Git access after a rename, but Pages and
 references to a repository-hosted Action have separate behavior. Follow
@@ -56,10 +55,11 @@ rename crates, Rust imports or package versions.
   guides retain the complete host contracts.
 - `docs/EXAMPLES.md` owns the run-command catalog and explains example limits.
 - `CONTRIBUTING.md` owns development commands; CI owns the executable gates.
-- `docs/VALIDATION.md` indexes dated evidence. Qualification results do not
-  silently expand a platform or performance claim.
-- Keep build outputs and caches untracked. Preserve existing qualification
-  artifacts unless a separate change deliberately reorganizes them.
+- `docs/adr/` records the few architectural decisions whose trade-offs are hard
+  to recover from code. Keep current contracts in guides, not in old plans.
+- Keep build outputs, benchmark samples and dated qualification logs outside the
+  source tree. Attach relevant source/environment details to CI artifacts or
+  releases. Results do not silently expand platform or performance claims.
 
 ## First registry release
 
@@ -88,7 +88,7 @@ cargo package -p egui_dockspace --all-features --locked --list
 ```
 
 Package verification is a separate step from listing. Before registry release,
-the adapter needs the matching unpublished core through the existing extracted
-package workflow; otherwise Cargo may resolve an absent or mismatched registry
-version. The [validation index](VALIDATION.md) retains the previous package-pair
-qualification and its source scope.
+the adapter needs the matching core version to resolve successfully. Publish and
+verify the core first, then run `cargo package -p egui_dockspace --all-features
+--locked` before publishing the adapter. Listing archive contents alone does not
+verify either package's build.

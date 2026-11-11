@@ -1,2 +1,0 @@
-shared-window A -> B: root=4194307 from=[126, 108] to=[649, 354]
-Error: "pane ItemId(12) has no final-output tab geometry"

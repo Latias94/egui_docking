@@ -1,7 +1,7 @@
 //! Opt-in complete-update samples, written as CSV without timing thresholds.
 //!
 //! Timing and heap accounting run separately; no local unsafe code or lint override.
-//! See docs/performance/2026-11-03-engine-first-methodology.md for the boundaries.
+//! See the harness's BENCHMARKING.md for workload and measurement boundaries.
 
 use std::convert::Infallible;
 use std::hint::black_box;

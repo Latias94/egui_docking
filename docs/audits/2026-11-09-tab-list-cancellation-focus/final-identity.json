@@ -1,9 +1,0 @@
-{
-  "binary_sha256": "d4ca51411b71b60ce35c177b484c61e3d467e450c9414b9dcef3cd213437826d",
-  "source_head": "1a69f37c84afbb8967f3300ff8e389f2608ef1b5",
-  "active_window": "4194318",
-  "host_window": "4194307",
-  "child_window": "4194318",
-  "app_alive": true,
-  "observed_text_and_menu_verdict": "inspect original screenshots separately from process/window assertions"
-}

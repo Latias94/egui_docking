@@ -1,6 +1,0 @@
-# Preserve archived bytes for checksum verification after checkout.
-* -text
-*.csv whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
-# Preserve terminal-log output, including its final blank lines.
-*.log -whitespace
-*.stdout whitespace=-blank-at-eof

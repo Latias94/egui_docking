@@ -1,8 +1,0 @@
-   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.22s
-────────────
- Nextest run ID c63370c8-adf0-492c-adfa-eaed61610128 with nextest profile: default
-    Starting 1 test across 1 binary (2094 tests skipped)
-        PASS [   0.012s] (1/1) dockspace engine::splitter_geometry::tests::rounded_nested_minimum_overflow_allows_reverse_expansion_on_both_axes
-────────────
-     Summary [   0.014s] 1 test run: 1 passed, 2094 skipped

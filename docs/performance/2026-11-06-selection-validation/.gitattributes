@@ -1,4 +1,0 @@
-* -text
-*.diff -whitespace
-*.stdout -whitespace
-*-review.md -whitespace

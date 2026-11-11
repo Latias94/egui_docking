@@ -1,7 +1,0 @@
-   Compiling dockspace-host-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/dockspace-host-harness)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 5m 12s
-────────────
- Nextest run ID 06af8840-cfde-4a54-a76e-aa75622d783f with nextest profile: default
-    Starting 340 tests across 57 binaries
-────────────
-     Summary [  21.083s] 340 tests run: 340 passed, 0 skipped

@@ -1,7 +1,0 @@
-   Compiling dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.96s
-────────────
- Nextest run ID 670f02fb-8ceb-4040-bd83-87fa35977bd7 with nextest profile: default
-    Starting 80 tests across 1 binary (2033 tests skipped)
-────────────
-     Summary [   0.496s] 80 tests run: 80 passed, 2033 skipped

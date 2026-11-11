@@ -1,6 +1,0 @@
-    Checking dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/dockspace)
-    Checking egui_dockspace v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace)
-    Checking egui_dockspace_native v0.1.0 (/Users/frankorz/codes/rust/egui_docking/crates/egui_dockspace_native)
-    Checking egui-native-smoke v0.1.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-native-smoke)
-    Checking egui-dockspace-fork-product-harness v0.0.0 (/Users/frankorz/codes/rust/egui_docking/integration/egui-fork-product-harness)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 49s

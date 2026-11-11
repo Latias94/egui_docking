@@ -1,6 +1,0 @@
-{
-  "decision": "reject and restore the exact qualified leaf-reader source",
-  "reason": "No consistent complete-operation improvement: 14/42 medians regress; only 8/21 cells improve in both groups; 1024-pane effects are -1.08% to +3.10%. Added argument/branch structure is not justified by a reproducible material gain.",
-  "baseline_sha256": "8970418724001c0b3955c86cf95cb24d9fe040331dfbc27a5dc56c83a9e153f1",
-  "utc": "2026-11-06T19:51:35.682343+00:00"
-}

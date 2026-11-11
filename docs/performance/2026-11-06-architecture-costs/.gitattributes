@@ -1,9 +1,0 @@
-# Preserve archived evidence byte for byte.
-* -text
-*.csv whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
-# Keep original terminal output.
-*.log -whitespace
-# Patch context lines retain their required prefix, including blank context.
-*.diff -whitespace
-# Preserve the review receipt's intentional Markdown hard line breaks.
-independent-review.md whitespace=-blank-at-eol

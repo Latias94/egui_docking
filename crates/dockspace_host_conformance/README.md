@@ -1,7 +1,7 @@
 # dockspace host conformance
 
-This unpublished crate is the renderer-neutral `core-host` executor from the
-Open GPUI docking conformance catalog. It uses only `dockspace`'s public runtime
+This unpublished crate supplies renderer-neutral conformance scenarios and a
+private `core-host` executor. It uses only `dockspace`'s public runtime
 and model APIs. It does not own a `DockEngine`, replay core traces, or ask the
 core hit resolver to choose receiver facts.
 
@@ -36,12 +36,11 @@ It is not an external adapter runner. The
 [adapter testing guide](../../docs/ADAPTER_TESTING.md) explains how another
 framework can supply its own thin executor and actual input observations.
 
-The fixed U1 `JOURNEY_CATALOG` names L01-L08, N01, and P01 plus their cadence
+The fixed `JOURNEY_CATALOG` names L01-L08, N01, and P01 plus their cadence
 and admission requirements. It is deliberately not a GUI driver language.
-Semantic source/basin/preview/outcome/ownership/focus/quiescence checkpoints,
-oracle classifications, executor assignments, and known gaps live in
-`docs/VALIDATION.md`. The existing shared scenario is linked to L08; the
-managed lifecycle scenario is linked to N01.
+The shared scenario definitions name their semantic actions and observations;
+each executor checks behavior through its own public integration. The local
+shared scenario is linked to L08; the managed lifecycle scenario is linked to N01.
 
 The test crate also keeps a private two-surface transaction fixture. Each
 mutation boundary freezes the complete logical roster and records one exact

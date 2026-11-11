@@ -1,7 +1,0 @@
-condition,scenario,samples,p50_ns,p95_ns,max_ns
-candidate-two,idle,96,34005209,35338667,39754042
-candidate-two,tab_click,96,89413166,91134250,100880625
-candidate-two,surface_resize,96,46115875,47731625,55182625
-candidate-four,idle,96,30817084,31631958,38977292
-candidate-four,tab_click,96,83153292,84422250,86279916
-candidate-four,surface_resize,96,43266666,45284333,54341500
