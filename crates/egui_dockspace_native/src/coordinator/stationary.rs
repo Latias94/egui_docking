@@ -289,10 +289,11 @@ impl NativeCoordinator {
         self.stationary.recorded_samples
     }
 
-    pub(super) fn reduce_next_pointer_observation(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some((record, captured_at)) = self.bridge.front_pointer_observation() else {
-            return Ok(false);
-        };
+    pub(super) fn reduce_pointer_observation(
+        &mut self,
+        record: crate::pointer_observation::NativePointerObservationRecord,
+        captured_at: std::time::Duration,
+    ) -> Result<(), NativeRuntimeError> {
         let input = if let Some(attempt) = self.stationary.attempt.as_ref()
             && self.bridge.accepts_new_work()
             && attempt.key == record.key()
@@ -338,7 +339,7 @@ impl NativeCoordinator {
         if !self.bridge.acknowledge_pointer_observation(record.key()) {
             return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
         }
-        Ok(true)
+        Ok(())
     }
 }
 

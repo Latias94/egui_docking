@@ -22,7 +22,9 @@ fn commit_prefix(state: &mut NativeRuntimeState<Panes>) -> HostFrameReport {
         .commit_publishing_root(&mut state.root_surface)
         .unwrap();
     state.coordinator.settle_host_frame_report(&report).unwrap();
-    state.commit_root_placements(&report);
+    state
+        .root_placements
+        .commit(&state.coordinator, state.root_surface, &report);
     report
 }
 
@@ -246,11 +248,17 @@ fn request_placements(
     placements: &[NativeSurfacePlacement],
 ) {
     state
-        .reserve_root_placement_storage(size_of_val(placements))
+        .root_placements
+        .reserve(
+            &state.coordinator.dispatch_bridge(),
+            size_of_val(placements),
+        )
         .unwrap();
-    state.root_placement_request = Some(Arc::from(placements));
-    state.root_placements_explicit = true;
-    state.refresh_root_placement_storage();
+    state.root_placements.request = Some(Arc::from(placements));
+    state.root_placements.explicit = true;
+    state
+        .root_placements
+        .refresh_storage(&state.coordinator.dispatch_bridge());
 }
 
 fn assert_ordinary_root_roster(
@@ -258,7 +266,14 @@ fn assert_ordinary_root_roster(
     expected: &[SurfaceId],
 ) -> Arc<[NativeSurfacePlacement]> {
     // This is the ordinary entry's selection path, including runs without input.
-    let placements = state.next_root_placements().unwrap().unwrap();
+    let placements = state
+        .root_placements
+        .next(
+            &state.coordinator,
+            state.application_actions.has_queued_replacement(),
+        )
+        .unwrap()
+        .unwrap();
     assert_eq!(
         placements
             .iter()
@@ -266,7 +281,10 @@ fn assert_ordinary_root_roster(
             .collect::<std::collections::BTreeSet<_>>(),
         expected.iter().copied().collect()
     );
-    assert!(state.root_placements_match_committed(&placements));
+    assert!(crate::surface_driver::RootPlacements::matches_committed(
+        &state.coordinator,
+        &placements
+    ));
     let window = current_roster(state)[0].window();
     let frame = state
         .coordinator
@@ -286,7 +304,7 @@ fn ordinary_root_entry_uses_the_committed_roster_after_shared_reset_shrinks_it()
     let mut state = shared_state();
     let old = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
     request_placements(&mut state, &old);
-    let old_bytes = state.root_placement_capacity_bytes();
+    let old_bytes = state.root_placements.retained_bytes();
     drop(old);
 
     state
@@ -297,14 +315,14 @@ fn ordinary_root_entry_uses_the_committed_roster_after_shared_reset_shrinks_it()
         take(&mut state),
         NativeActionStatus::LayoutReset { .. }
     ));
-    assert!(state.root_placement_request.is_none());
-    assert!(state.root_placement_cache.is_none());
-    assert_eq!(state.root_placement_capacity_bytes(), 0);
+    assert!(state.root_placements.request.is_none());
+    assert!(state.root_placements.cache.is_none());
+    assert_eq!(state.root_placements.retained_bytes(), 0);
 
     let current = assert_ordinary_root_roster(&mut state, &[SURFACE]);
     let reused = assert_ordinary_root_roster(&mut state, &[SURFACE]);
     assert!(Arc::ptr_eq(&current, &reused));
-    assert!(state.root_placement_capacity_bytes() < old_bytes);
+    assert!(state.root_placements.retained_bytes() < old_bytes);
     assert!(state.shutdown.is_none());
 }
 
@@ -331,7 +349,7 @@ fn ordinary_root_entry_uses_the_committed_surface_after_representative_rebinding
         NativeActionStatus::LayoutReset { .. }
     ));
     assert_eq!(state.root_surface, incoming);
-    assert!(state.root_placement_request.is_none());
+    assert!(state.root_placements.request.is_none());
     assert_ordinary_root_roster(&mut state, &[incoming, OTHER_SURFACE]);
     assert!(state.shutdown.is_none());
 }
@@ -364,8 +382,8 @@ fn ordinary_root_entry_drops_a_pending_declaration_after_docking_vacates_its_sib
     assert_eq!(report.native_placement_detachments().len(), 1);
     assert!(matches!(take(&mut state), NativeActionStatus::Dock(_)));
     assert!(state.view().surface(OTHER_SURFACE).is_none());
-    assert!(state.root_placement_request.is_none());
-    assert_eq!(state.root_placement_capacity_bytes(), 0);
+    assert!(state.root_placements.request.is_none());
+    assert_eq!(state.root_placements.retained_bytes(), 0);
     assert_ordinary_root_roster(&mut state, &[SURFACE]);
     assert!(state.shutdown.is_none());
 }
@@ -427,8 +445,10 @@ fn equivalent_explicit_root_declaration_survives_native_resize_on_the_ordinary_e
         .unwrap();
     let report = frame.commit().unwrap();
     state.coordinator.settle_host_frame_report(&report).unwrap();
-    state.commit_root_placements(&report);
-    state.root_placements_explicit = true;
+    state
+        .root_placements
+        .commit(&state.coordinator, state.root_surface, &report);
+    state.root_placements.explicit = true;
 
     state
         .coordinator
@@ -455,40 +475,58 @@ fn tight_root_placement_storage_shares_cached_backing_and_releases_it_before_new
     let mut state = shared_state();
     let placements = assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]);
     let bytes = size_of_val(&*placements);
-    state.root_placement_request = Some(Arc::clone(&placements));
-    state.refresh_root_placement_storage();
+    state.root_placements.request = Some(Arc::clone(&placements));
+    state
+        .root_placements
+        .refresh_storage(&state.coordinator.dispatch_bridge());
     drop(placements);
-    assert_eq!(state.root_placement_capacity_bytes(), bytes);
+    assert_eq!(state.root_placements.retained_bytes(), bytes);
 
     let bridge = state.coordinator.dispatch_bridge();
     assert!(bridge.configure_input_storage_allowance(usize::MAX, 0));
     let reserved = bridge.selected_storage_reserved_bytes().unwrap();
     assert!(bridge.configure_input_storage_allowance(reserved, 0));
-    let reused = state.next_root_placements().unwrap().unwrap();
+    let reused = state
+        .root_placements
+        .next(
+            &state.coordinator,
+            state.application_actions.has_queued_replacement(),
+        )
+        .unwrap()
+        .unwrap();
     assert_eq!(bridge.selected_storage_reserved_bytes(), Some(reserved));
     assert!(
         state
-            .reserve_root_placement_storage(bytes)
+            .root_placements
+            .reserve(&state.coordinator.dispatch_bridge(), bytes)
             .unwrap_err()
             .is_input_capacity()
     );
     drop(reused);
 
-    state.root_placement_request = None;
-    state.root_placement_cache = None;
-    state.refresh_root_placement_storage();
-    assert_eq!(state.root_placement_capacity_bytes(), 0);
+    state.root_placements.request = None;
+    state.root_placements.cache = None;
+    state
+        .root_placements
+        .refresh_storage(&state.coordinator.dispatch_bridge());
+    assert_eq!(state.root_placements.retained_bytes(), 0);
     assert_eq!(
         bridge.selected_storage_reserved_bytes(),
         Some(reserved - bytes)
     );
     assert!(
         state
-            .next_root_placements()
+            .root_placements
+            .next(
+                &state.coordinator,
+                state.application_actions.has_queued_replacement()
+            )
             .unwrap_err()
             .is_input_capacity()
     );
-    state.refresh_root_placement_storage();
+    state
+        .root_placements
+        .refresh_storage(&state.coordinator.dispatch_bridge());
     assert_eq!(
         bridge.selected_storage_reserved_bytes(),
         Some(reserved - bytes)
@@ -496,8 +534,15 @@ fn tight_root_placement_storage_shares_cached_backing_and_releases_it_before_new
 
     // Vec-to-Arc conversion pays its temporary overlap before allocating.
     assert!(bridge.configure_input_storage_allowance(reserved + bytes, 0));
-    state.next_root_placements().unwrap().unwrap();
-    assert_eq!(state.root_placement_capacity_bytes(), bytes);
+    state
+        .root_placements
+        .next(
+            &state.coordinator,
+            state.application_actions.has_queued_replacement(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.root_placements.retained_bytes(), bytes);
     assert_eq!(bridge.selected_storage_reserved_bytes(), Some(reserved));
 }
 
@@ -515,7 +560,14 @@ fn queued_replacement_uses_committed_placements_and_keeps_the_declaration_out_of
     );
     request_placements(&mut state, &resized);
     state.request_layout_reset(shared_layout()).unwrap();
-    let selected = state.next_root_placements().unwrap().unwrap();
+    let selected = state
+        .root_placements
+        .next(
+            &state.coordinator,
+            state.application_actions.has_queued_replacement(),
+        )
+        .unwrap()
+        .unwrap();
     assert!(Arc::ptr_eq(&selected, &committed));
     assert_ne!(&*selected, &*resized);
     let window = current_roster(&state)[0].window();
@@ -550,12 +602,14 @@ fn queued_replacement_uses_committed_placements_and_keeps_the_declaration_out_of
         .settle_submission(Some(submitted), &report)
         .unwrap();
     state.coordinator.settle_host_frame_report(&report).unwrap();
-    state.commit_root_placements(&report);
+    state
+        .root_placements
+        .commit(&state.coordinator, state.root_surface, &report);
     assert!(matches!(
         take(&mut state),
         NativeActionStatus::LayoutReset { .. }
     ));
-    assert!(state.root_placement_request.is_none());
+    assert!(state.root_placements.request.is_none());
     assert_eq!(
         &*assert_ordinary_root_roster(&mut state, &[SURFACE, OTHER_SURFACE]),
         &*committed
@@ -577,7 +631,14 @@ fn replacement_queued_after_frozen_geometry_waits_and_keeps_explicit_predecessor
             PhysicalRect::new(5.0, 20.0, 300.0, 440.0).unwrap(),
         );
         request_placements(&mut state, &resized);
-        let frozen = state.next_root_placements().unwrap().unwrap();
+        let frozen = state
+            .root_placements
+            .next(
+                &state.coordinator,
+                state.application_actions.has_queued_replacement(),
+            )
+            .unwrap()
+            .unwrap();
         let predecessor = current_roster(&state)
             .into_iter()
             .find(|binding| binding.surface() == SURFACE)
@@ -625,7 +686,9 @@ fn replacement_queued_after_frozen_geometry_waits_and_keeps_explicit_predecessor
             .unwrap();
         let report = frame.commit().unwrap();
         state.coordinator.settle_host_frame_report(&report).unwrap();
-        state.commit_root_placements(&report);
+        state
+            .root_placements
+            .commit(&state.coordinator, state.root_surface, &report);
         assert_ne!(
             current_roster(&state)
                 .into_iter()
@@ -634,7 +697,10 @@ fn replacement_queued_after_frozen_geometry_waits_and_keeps_explicit_predecessor
         );
         assert_eq!(state.root_surface, SURFACE);
         assert_eq!(&*frozen, &*resized);
-        assert!(state.root_placements_match_committed(&frozen));
+        assert!(crate::surface_driver::RootPlacements::matches_committed(
+            &state.coordinator,
+            &frozen
+        ));
 
         commit_queued(&mut state, None);
         let status = take(&mut state);
@@ -800,7 +866,7 @@ mod document {
             take(&mut state),
             NativeActionStatus::DocumentRestored { .. }
         ));
-        assert!(state.root_placement_request.is_none());
+        assert!(state.root_placements.request.is_none());
         let current_root = state.root_surface;
         assert_ordinary_root_roster(&mut state, &[current_root, OTHER_SURFACE]);
         assert!(
@@ -831,7 +897,7 @@ mod document {
             take(&mut state),
             NativeActionStatus::DocumentRestored { .. }
         ));
-        assert!(state.root_placement_request.is_none());
+        assert!(state.root_placements.request.is_none());
         let current_root = state.root_surface;
         assert_ordinary_root_roster(&mut state, &[current_root]);
         assert!(state.shutdown.is_none());

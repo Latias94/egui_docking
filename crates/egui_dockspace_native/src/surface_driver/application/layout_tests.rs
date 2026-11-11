@@ -117,7 +117,9 @@ fn commit_queued(
             .unwrap()
     );
     state.coordinator.settle_host_frame_report(&report).unwrap();
-    state.commit_root_placements(&report);
+    state
+        .root_placements
+        .commit(&state.coordinator, state.root_surface, &report);
     report
 }
 
@@ -951,11 +953,7 @@ mod persistence {
             root_surface: SURFACE,
             instance_id: egui::Id::unique("service-refill-close-create"),
             owned_update: None,
-            root_placement_request: None,
-            root_placement_cache: None,
-            root_input_placements: None,
-            root_placements_explicit: false,
-            invalid_root_placement_request: false,
+            root_placements: Default::default(),
             pending_service: false,
             style: DockStyle::default(),
             panes: Panes(Vec::new()),

@@ -940,6 +940,7 @@ impl NativeViewportMap {
         .then_some(route.binding)
     }
 
+    #[cfg(test)]
     pub(crate) fn has_admitted_create_attempt(
         &self,
         viewport: ViewportId,

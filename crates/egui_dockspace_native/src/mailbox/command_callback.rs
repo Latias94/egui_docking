@@ -298,6 +298,7 @@ impl NativeCommandCallbacks {
         self.capture_binding
     }
 
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
         self.capture.contains(&key) && self.capture.has_pending_work()
     }

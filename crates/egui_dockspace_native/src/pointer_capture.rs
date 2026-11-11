@@ -75,7 +75,7 @@ impl NativePointerCaptureRecord {
         self.binding == binding
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) const fn for_test(
         key: NativePointerCaptureKey,
         binding: NativeSurfaceBinding,

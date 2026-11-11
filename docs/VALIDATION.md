@@ -15,6 +15,25 @@ samples, cadences, and normalized outcomes alongside the existing L08 semantic
 steps. It does not carry screen coordinates, guide selectors, frame counts, or
 another product authority.
 
+## 2026-11-11 prerelease maintenance refactor
+
+The [maintenance qualification](audits/2026-11-11-prerelease-maintenance.md)
+records removal of the superseded semantic receiver protocol and production
+test conveniences after `fa73fe1`. Encoding state, egui pending focus facts and
+native Root placements have explicit private owners. Native callback dispatch
+uses one typed head while preserving order, retry and publication boundaries.
+Focus, command execution, pass settlement and product tests are split by
+responsibility without another authority or new public interface.
+
+Workspace 2,351, minimal core 2,057, external host 376 default / 431 persistence,
+product 114 default / 119 persistence, official consumer 27 and native workspace
+652 tests pass, with existing skips recorded separately. Production core checks
+are warning-free in both feature configurations. Correctness/suspicious Clippy,
+strict documentation, eleven doctests, formatting and dependency checks pass.
+Independent reviews report no confirmed P1/P2 and retain their sampling limits.
+This macOS component qualification adds no new physical-platform or performance
+claim.
+
 ## 2026-11-11 prerelease contract cleanup
 
 The [cleanup qualification](audits/2026-11-11-prerelease-contract-cleanup.md)

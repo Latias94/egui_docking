@@ -76,11 +76,7 @@ fn state() -> NativeRuntimeState<TestPanes> {
         application_actions: Default::default(),
         pass_actions: Default::default(),
         owned_update: None,
-        root_placement_request: None,
-        root_placement_cache: None,
-        root_input_placements: None,
-        root_placements_explicit: false,
-        invalid_root_placement_request: false,
+        root_placements: Default::default(),
         pending_service: false,
         close_policy: NativeWindowClosePolicy::Cancel,
         root_context: None,
@@ -100,7 +96,9 @@ fn commit_prefix(state: &mut NativeRuntimeState<TestPanes>) -> HostFrameReport {
         .commit_publishing_root(&mut state.root_surface)
         .unwrap();
     state.coordinator.settle_host_frame_report(&report).unwrap();
-    state.commit_root_placements(&report);
+    state
+        .root_placements
+        .commit(&state.coordinator, state.root_surface, &report);
     report
 }
 
@@ -165,7 +163,9 @@ fn service_native_events_commits_retirement_prefix_before_retrying_the_remaining
         .commit_publishing_root(&mut state.root_surface)
         .unwrap();
     state.coordinator.settle_host_frame_report(&report).unwrap();
-    state.commit_root_placements(&report);
+    state
+        .root_placements
+        .commit(&state.coordinator, state.root_surface, &report);
     state.service_native_events(&context).unwrap();
     let predecessors = state
         .coordinator
@@ -190,7 +190,9 @@ fn service_native_events_commits_retirement_prefix_before_retrying_the_remaining
         .commit_publishing_root(&mut state.root_surface)
         .unwrap();
     state.coordinator.settle_host_frame_report(&report).unwrap();
-    state.commit_root_placements(&report);
+    state
+        .root_placements
+        .commit(&state.coordinator, state.root_surface, &report);
     let successors = report.native_bindings().to_vec();
     let bridge = state.coordinator.dispatch_bridge();
     let candidates = bridge.retirement_quiescence_candidates();

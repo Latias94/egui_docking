@@ -168,6 +168,7 @@ impl NativeWindowResources {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn references_viewport_binding(
         &self,
         viewport: ViewportId,
@@ -1115,6 +1116,7 @@ impl NativeWindowResources {
         self.entries.retain(|resource| !resource.is_empty());
     }
 
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn capture_pending(&self, key: NativePointerCaptureKey) -> bool {
         self.entries
             .iter()
@@ -1152,7 +1154,7 @@ impl NativeWindowResources {
             .accept_capture(record, || make_ingress(HostRecord::PointerCapture(key)))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn receive_capture_record(
         &mut self,
         record: NativePointerCaptureRecord,

@@ -90,6 +90,7 @@ impl HostIngressJournal {
         self.queue.len()
     }
 
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -185,6 +186,7 @@ impl HostIngressJournal {
         true
     }
 
+    #[cfg(test)]
     pub(super) fn front(&self) -> Option<&HostRecord> {
         self.queue.front().map(|entry| &entry.record)
     }

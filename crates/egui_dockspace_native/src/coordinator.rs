@@ -60,6 +60,7 @@ use crate::viewport_map::NativeViewportMap;
 use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
 use crate::work_area::{FrozenWorkAreaRoster, NativeWorkAreaState, PreparedWorkAreaRoster};
 
+mod callback_dispatch;
 mod close_driver;
 mod effect_dispatch;
 use effect_dispatch::ViewportFailureOrigin;
@@ -127,6 +128,7 @@ impl PendingNoFrameInvalidation {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn surface(self) -> SurfaceId {
         self.binding.surface()
     }
@@ -1438,42 +1440,6 @@ impl NativeCoordinator {
         self.queue_pending_effect_result(result, None);
     }
 
-    /// Reduces one exact deferred-viewport failure without losing the affine
-    /// effect result across a retryable core rejection.
-    pub(crate) fn reduce_next_viewport_create_failure(
-        &mut self,
-    ) -> Result<bool, NativeRuntimeError> {
-        let Some(failure) = self.next_viewport_create_failure()? else {
-            return Ok(false);
-        };
-        let Some(result) = self.effects.take_failure_result(failure) else {
-            let failure_is_stale = self.viewport_binding(failure.viewport())
-                != Some(failure.binding())
-                || !self.session.is_current_native_binding(failure.binding());
-            if failure_is_stale {
-                self.acknowledge_viewport_create_failure(failure, true)?;
-                return Ok(true);
-            }
-            return Err(NativeHostProtocolError::ViewportCreateFailureWithoutEffect.into());
-        };
-        let (result_recorded, callback_error) =
-            match self.session.report_native_effect_result(result) {
-                Ok(()) => (true, None),
-                Err(error) => {
-                    let (kind, result) = error.into_parts();
-                    (
-                        kind == NativeHostErrorKind::StaleBinding,
-                        self.retain_rejected_effect_result(kind, result).err(),
-                    )
-                }
-            };
-        self.acknowledge_viewport_create_failure(failure, result_recorded)?;
-        if let Some(error) = callback_error {
-            self.callback_errors.push_back(error);
-        }
-        Ok(true)
-    }
-
     /// Returns the next event which is safe to translate.
     ///
     /// A presentation result at the journal head is submitted first and forms
@@ -1509,12 +1475,6 @@ impl NativeCoordinator {
         }
     }
 
-    fn next_device_removal(
-        &mut self,
-    ) -> Result<Option<NativeDeviceRemovalRecord>, NativeRuntimeError> {
-        Ok(self.bridge.front_device_removal())
-    }
-
     fn acknowledge_device_removal(
         &self,
         removal: NativeDeviceRemovalRecord,
@@ -1534,12 +1494,14 @@ impl NativeCoordinator {
     /// # Errors
     ///
     /// Returns an error when an earlier renderer settlement cannot be applied.
+    #[cfg(test)]
     fn next_viewport_create_failure(
         &mut self,
     ) -> Result<Option<NativeViewportCreateFailureRecord>, NativeRuntimeError> {
         Ok(self.bridge.front_viewport_create_failure())
     }
 
+    #[cfg(test)]
     fn next_viewport_visibility(
         &mut self,
     ) -> Result<Option<NativeViewportVisibilityRecord>, NativeRuntimeError> {
@@ -1635,43 +1597,13 @@ impl NativeCoordinator {
         ) {
             return Ok(None);
         }
-        if self.reduce_next_viewport_close_cancelled()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_viewport_roster()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_viewport_create_failure()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_viewport_visibility()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_viewport_created()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_viewport_pointer_passthrough()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_pointer_observation()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_pointer_capture()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_global_focus()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if self.reduce_next_viewport_focus()? {
-            return Ok(Some(std::num::NonZeroUsize::MIN));
-        }
-        if let Some(removal) = self.next_device_removal()? {
-            self.session.report_native_input_device_removal()?;
-            self.pointer_translator.forget_removed_devices();
-            self.bridge
-                .release_pointer_translation_capacity(&self.pointer_translator);
-            self.acknowledge_device_removal(removal)?;
-            return Ok(Some(std::num::NonZeroUsize::MIN));
+        match self.bridge.next_callback() {
+            Some(crate::mailbox::NativeCallbackHead::WindowEvent) => {}
+            Some(crate::mailbox::NativeCallbackHead::Output) | None => return Ok(None),
+            Some(callback) => {
+                self.reduce_callback(callback)?;
+                return Ok(Some(std::num::NonZeroUsize::MIN));
+            }
         }
         if !self.session.has_active_gesture()
             && self.pointer_translator.can_coalesce_idle_cursor_moves()
@@ -1816,84 +1748,6 @@ impl NativeCoordinator {
         self.bridge.require_output_wake_after_current(token)
     }
 
-    fn reduce_next_viewport_pointer_passthrough(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some(record) = self.bridge.front_viewport_pointer_passthrough() else {
-            return Ok(false);
-        };
-        let disposition = self.input_control.classify(record);
-        let mut callback_error = None;
-        match disposition {
-            NativeInputResultDisposition::Unrelated => {
-                if record.status() == NativeViewportPointerPassthroughStatus::Applied
-                    && let Some(binding) = record.binding()
-                {
-                    let route = self.current_window_route_for_binding(binding);
-                    if route == Some((record.viewport(), record.window()))
-                        && self.input_control.observe_unowned_applied(record)?
-                    {
-                        self.bridge.invalidate_viewport_roster();
-                    }
-                }
-            }
-            NativeInputResultDisposition::Current { binding, status }
-                if self.current_window_route_for_binding(binding)
-                    == Some((record.viewport(), record.window())) =>
-            {
-                match status {
-                    NativeViewportPointerPassthroughStatus::Applied => {
-                        if !self.input_control.accept_applied(record)? {
-                            return Err(
-                                NativeHostProtocolError::NativeInputCorrelationChanged.into()
-                            );
-                        }
-                        self.bridge.invalidate_viewport_roster();
-                    }
-                    NativeViewportPointerPassthroughStatus::Unsupported => {
-                        let result = self
-                            .input_control
-                            .take_unsupported_result(record)
-                            .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
-                        callback_error = self.report_callback_terminal_result(result);
-                    }
-                    NativeViewportPointerPassthroughStatus::Failed
-                    | NativeViewportPointerPassthroughStatus::Retired => {
-                        let result = self
-                            .input_control
-                            .take_dispatch_failure_result(
-                                record,
-                                NativeDispatchFailure::AdapterRejected,
-                            )
-                            .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
-                        callback_error = self.report_callback_terminal_result(result);
-                    }
-                }
-            }
-            NativeInputResultDisposition::Current { binding, .. }
-            | NativeInputResultDisposition::Stale { binding } => {
-                let result = self
-                    .input_control
-                    .take_indeterminate_result(record)
-                    .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
-                callback_error = self.report_callback_terminal_result(result);
-                debug_assert!(
-                    matches!(disposition, NativeInputResultDisposition::Stale { .. })
-                        || self.current_window_route_for_binding(binding)
-                            != Some((record.viewport(), record.window())),
-                    "a current input callback must take the exact route branch"
-                );
-            }
-        }
-        if !self.bridge.acknowledge_viewport_pointer_passthrough(record) {
-            return Err(
-                NativeHostProtocolError::ViewportPointerPassthroughAcknowledgementMismatch.into(),
-            );
-        }
-        if let Some(error) = callback_error {
-            self.callback_errors.push_back(error);
-        }
-        Ok(true)
-    }
-
     fn report_callback_terminal_result(
         &mut self,
         result: NativeEffectResult,
@@ -1912,197 +1766,6 @@ impl NativeCoordinator {
 
     fn take_callback_errors(&mut self) -> Vec<NativeRuntimeError> {
         self.callback_errors.drain(..).collect()
-    }
-
-    fn reduce_next_global_focus(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some(record) = self.bridge.front_global_focus() else {
-            return Ok(false);
-        };
-        debug_assert_ne!(record.event(), 0, "native event ordinals are non-zero");
-        // Lifecycle commits may revoke the proof captured by this callback.
-        let focus = match record.focus() {
-            NativeGlobalFocus::Dock(binding)
-                if !self.session.native_binding_can_report_focus(binding) =>
-            {
-                NativeGlobalFocus::Unknown
-            }
-            focus => focus,
-        };
-        self.session.report_native_global_focus(focus)?;
-        if !self.bridge.acknowledge_global_focus(record) {
-            return Err(NativeHostProtocolError::GlobalFocusAcknowledgementMismatch.into());
-        }
-        Ok(true)
-    }
-
-    fn reduce_next_viewport_focus(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some(record) = self.bridge.front_viewport_focus() else {
-            return Ok(false);
-        };
-        let disposition = self.focus_control.classify(record);
-        let mut callback_error = None;
-        match disposition {
-            NativeFocusResultDisposition::Unrelated => {}
-            NativeFocusResultDisposition::Current { binding, status }
-                if self.session.is_current_native_binding(binding)
-                    && self.bridge.with_viewports(|viewports| {
-                        viewports.focus_binding_for_event(record.window(), Some(record.viewport()))
-                    }) == Some(binding.window()) =>
-            {
-                match status {
-                    NativeViewportFocusStatus::AlreadyFocused => {
-                        self.session
-                            .report_native_global_focus(NativeGlobalFocus::Dock(
-                                binding.window(),
-                            ))?;
-                        let request = self
-                            .focus_control
-                            .take_callback(record)
-                            .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
-                        if request.accepted().is_some() {
-                            return Err(
-                                NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
-                                    .into(),
-                            );
-                        }
-                    }
-                    NativeViewportFocusStatus::Requested => {
-                        let request = self
-                            .focus_control
-                            .take_callback(record)
-                            .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
-                        // The exact callback completes dispatch. Core owns the
-                        // pending semantic focus and any superseded hazards;
-                        // only a real focus observation can settle that state.
-                        if request.accepted().is_some() {
-                            return Err(
-                                NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
-                                    .into(),
-                            );
-                        }
-                    }
-                    NativeViewportFocusStatus::Retired => {
-                        let request = self
-                            .focus_control
-                            .take_callback(record)
-                            .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
-                        callback_error = self.report_callback_terminal_result(
-                            request.not_applied(NativeDispatchFailure::AdapterRejected),
-                        );
-                    }
-                }
-            }
-            NativeFocusResultDisposition::Current { binding, .. }
-            | NativeFocusResultDisposition::Stale { binding } => {
-                let request = self
-                    .focus_control
-                    .take_callback(record)
-                    .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
-                let result = request.indeterminate(NativeIndeterminateReason::AcknowledgementLost);
-                callback_error = self.report_callback_terminal_result(result);
-                debug_assert!(
-                    !self.session.is_current_native_binding(binding)
-                        || self.bridge.with_viewports(|viewports| {
-                            viewports
-                                .focus_binding_for_event(record.window(), Some(record.viewport()))
-                        }) != Some(binding.window()),
-                    "a current focus callback must take the exact route branch"
-                );
-            }
-        }
-        if !self.bridge.acknowledge_viewport_focus(record) {
-            return Err(NativeHostProtocolError::ViewportFocusAcknowledgementMismatch.into());
-        }
-        if let Some(error) = callback_error {
-            self.callback_errors.push_back(error);
-        }
-        Ok(true)
-    }
-
-    fn reduce_next_viewport_close_cancelled(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some(record) = self.bridge.front_viewport_close_cancelled() else {
-            return Ok(false);
-        };
-        let Some((binding, acknowledgement)) = self
-            .bridge
-            .with_close_control(|control| control.cancellation_observation(record))
-        else {
-            if !self.bridge.acknowledge_viewport_close_cancelled(record) {
-                return Err(NativeHostProtocolError::NativeCloseCorrelationChanged.into());
-            }
-            return Ok(true);
-        };
-        self.publish_close(binding, NativeCloseState::Clear, Some(acknowledgement))?;
-        if !self.bridge.acknowledge_viewport_close_cancelled(record)
-            || !self
-                .bridge
-                .with_close_control(|control| control.mark_clear_recorded(binding))
-        {
-            return Err(NativeHostProtocolError::NativeCloseCorrelationChanged.into());
-        }
-        Ok(true)
-    }
-
-    fn reduce_next_viewport_visibility(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some(record) = self.next_viewport_visibility()? else {
-            return Ok(false);
-        };
-        self.bridge.reduce_preparation_visibility(record);
-        self.bridge.invalidate_viewport_roster();
-        // Dispatch completion never substitutes for a later real visible snapshot.
-        self.acknowledge_viewport_visibility(record)?;
-        Ok(true)
-    }
-
-    fn reduce_next_viewport_created(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some(created) = self.bridge.front_viewport_created() else {
-            return Ok(false);
-        };
-        if !self
-            .bridge
-            .can_retain_create_ack(created.token().viewport_id(), created.binding())
-        {
-            return Err(NativeHostProtocolError::CreateAcknowledgementAlreadyPending.into());
-        }
-        let attach = self.bridge.with_viewports_mut(|viewports| {
-            viewports.attach_output(
-                created.token().viewport_id(),
-                created.binding(),
-                created.token().window_id(),
-                created.token().create_attempt(),
-            )
-        });
-        if attach.is_err() {
-            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-        }
-        let request = self
-            .effects
-            .take_for_output(created.token().viewport_id(), created.binding())
-            .ok_or(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement)?;
-        let Some(NativeEffectAcknowledgement::Create(acknowledgement)) = request.accepted() else {
-            return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
-        };
-        self.bridge
-            .retain_create_ack(
-                created.token().viewport_id(),
-                created.binding(),
-                acknowledgement,
-            )
-            .expect("the exact create callback retained its prepaid creation observation");
-        self.bridge.begin_window_preparation(
-            created.token().viewport_id(),
-            created.binding(),
-            created.token().window_id(),
-        );
-        self.bridge.invalidate_viewport_roster();
-        if !self.bridge.acknowledge_viewport_created(created) {
-            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
-        }
-        assert!(
-            self.bridge
-                .clear_create(created.token().viewport_id(), created.binding())
-        );
-        Ok(true)
     }
 
     fn reduce_non_pointer_event(
@@ -2203,21 +1866,6 @@ impl NativeCoordinator {
     /// against every current dockspace binding. Any incomplete, stale, or
     /// malformed candidate revokes inventory authority as `Unknown`; it never
     /// infers destruction from absence.
-    pub(crate) fn reduce_next_viewport_roster(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some(roster) = self.bridge.front_viewport_roster() else {
-            return Ok(false);
-        };
-        self.record_viewport_roster(
-            roster.roster(),
-            roster.clone(),
-            roster.roster().work_areas(),
-        )?;
-        if !self.bridge.acknowledge_viewport_roster(&roster) {
-            return Err(NativeHostProtocolError::ViewportRosterAcknowledgementMismatch.into());
-        }
-        Ok(true)
-    }
-
     fn record_viewport_roster(
         &mut self,
         roster: &NativeViewportRosterRecord,

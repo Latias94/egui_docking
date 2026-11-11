@@ -13,7 +13,7 @@ execution: code
 
 Make the docking implementation easier to maintain before publication by removing superseded protocols and consolidating the ownership of related state.
 The baseline is `fa73fe1` on `refactor/egui-pane-ergonomics`.
-Delivery consists of locally reviewed Conventional Commits, with serial verification and no remote publication.
+Delivery consists of locally reviewed Conventional Commits, with bounded verification and no remote publication.
 The user authorized all findings from the preceding maintenance review, including removal of the old semantic event protocol and breaking internal changes.
 
 ## Product Contract
@@ -69,7 +69,7 @@ flowchart TB
 ### Sequencing and Assumptions
 
 Use independent file ownership for core encoding, egui and native work.
-The primary lane owns obsolete core protocol cleanup, shared internal publication types, lint cleanup, documentation and authoritative serial verification.
+The primary lane owns obsolete core protocol cleanup, shared internal publication types, lint cleanup, documentation and authoritative verification.
 Structural workers do not change the public protocol or run Cargo.
 Private helper names and exact file subdivisions may adapt to implementation evidence.
 No behavior change is intended; a discovered defect must be reproduced and fixed within the same public contract.
@@ -193,13 +193,13 @@ No behavior change is intended; a discovered defect must be reproduced and fixed
 
 **Files:** Current validation documentation, relevant README references and one bounded audit qualification record.
 
-**Approach:** Run serial gates, inspect the accumulated diff for redundant wrappers and stale references, complete independent correctness/maintenance review and fix confirmed findings. Record actual checks and platform limits.
+**Approach:** Run the required gates, inspect the accumulated diff for redundant wrappers and stale references, complete independent correctness/maintenance review and fix confirmed findings. Record actual checks and platform limits.
 
 **Verification:** Every required gate passes on the final implementation; commits contain only attributed files.
 
 ## Verification Contract
 
-All Cargo commands run serially with `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0`, reusing each existing target directory.
+The user confirmed that this checkout has no competing session. Independent workspaces may run concurrently with `CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0`, reusing each existing target directory; feature configurations sharing a workspace run sequentially.
 
 | Scope | Required evidence |
 | --- | --- |

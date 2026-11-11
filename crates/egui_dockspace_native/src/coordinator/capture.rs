@@ -176,10 +176,10 @@ impl NativeCoordinator {
         Ok(true)
     }
 
-    pub(super) fn reduce_next_pointer_capture(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some((record, _captured_at)) = self.bridge.front_pointer_capture() else {
-            return Ok(false);
-        };
+    pub(super) fn reduce_pointer_capture(
+        &mut self,
+        record: crate::pointer_capture::NativePointerCaptureRecord,
+    ) -> Result<(), NativeRuntimeError> {
         let key = record.key();
         let mut acquired_request = None;
         if let Some(duty) = self.stationary.capture.as_mut()
@@ -240,6 +240,6 @@ impl NativeCoordinator {
         if !self.bridge.acknowledge_pointer_capture(key) {
             return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
         }
-        Ok(true)
+        Ok(())
     }
 }

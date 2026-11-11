@@ -131,6 +131,7 @@ impl TerminalRosterState {
         self.window_capacity_exceeded
     }
 
+    #[cfg(test)]
     pub(super) const fn work_area_capacity_exceeded(&self) -> bool {
         self.work_area_capacity_exceeded
     }

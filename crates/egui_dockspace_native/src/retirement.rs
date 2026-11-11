@@ -933,6 +933,7 @@ impl NativeRetirementState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn quiescence_candidates(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
         self.entries
             .iter()

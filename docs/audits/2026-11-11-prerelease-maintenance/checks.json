@@ -1,0 +1,291 @@
+{
+  "baseline": "fa73fe1146b803689ff18812b55ad0c5bcb9ad17",
+  "qualified_at": "2026-11-11T08:33:31.235935+00:00",
+  "host": "aarch64-apple-darwin",
+  "toolchain": "1.95.0",
+  "review_run_id": "20261111-161359-66cb2575",
+  "cargo_environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0"
+  },
+  "gates": [
+    {
+      "gate": "core-minimal-check",
+      "log": "core-minimal-check.log.gz",
+      "sha256": "7f110d88e01252f8c9c4438e2fd760a7c887d017f0e8976237e5f65bf7d23863",
+      "summary": [
+        "Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.88s"
+      ]
+    },
+    {
+      "gate": "core-all-check",
+      "log": "core-all-check.log.gz",
+      "sha256": "26ee13e0b09d1dea9b6cb0a1341cd2965f1499f0091f74ece1ac35bf40277a67",
+      "summary": [
+        "Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.67s"
+      ]
+    },
+    {
+      "gate": "workspace-final",
+      "log": "workspace-final.log.gz",
+      "sha256": "493a0aa1c662a4261aec04124606b49ebcca6788e097ff721c877cd3bad96223",
+      "summary": [
+        "Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 53s",
+        "Summary [  18.474s] 2351 tests run: 2351 passed, 3 skipped"
+      ]
+    },
+    {
+      "gate": "core-minimal-final",
+      "log": "core-minimal-final.log.gz",
+      "sha256": "bdd203dc327926bb3ebbb9cbecd23aca3fabcb5b569f5e4553f9a2df6d607455",
+      "summary": [
+        "Finished `test` profile [unoptimized + debuginfo] target(s) in 45.73s",
+        "Summary [  12.429s] 2057 tests run: 2057 passed, 3 skipped"
+      ]
+    },
+    {
+      "gate": "host-default-final",
+      "log": "host-default-final.log.gz",
+      "sha256": "54f6e60121b8f0934dac6ae9fb92862ac46987add16fd894a423338c95c515ae",
+      "summary": [
+        "Finished `test` profile [unoptimized + debuginfo] target(s) in 56.44s",
+        "Summary [  27.729s] 376 tests run: 376 passed, 0 skipped"
+      ]
+    },
+    {
+      "gate": "host-serde-final",
+      "log": "host-serde-final.log.gz",
+      "sha256": "e91023fd16d7eaa8740ee914e621632e8aeacaaf6251310f049684ee113dd8d4",
+      "summary": [
+        "Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 45s",
+        "Summary [  24.559s] 431 tests run: 431 passed, 0 skipped"
+      ]
+    },
+    {
+      "gate": "product-default-final",
+      "log": "product-default-final.log.gz",
+      "sha256": "810d370742ad446b5e3bedba65ad95f1b30edf70bf04f384c80d915c1b626bd8",
+      "summary": [
+        "Finished `test` profile [unoptimized + debuginfo] target(s) in 38.37s",
+        "Summary [  11.194s] 114 tests run: 114 passed, 0 skipped"
+      ]
+    },
+    {
+      "gate": "product-serde-final",
+      "log": "product-serde-final.log.gz",
+      "sha256": "c882068713b78f2943481f81144eb9da47bd677911dd88c91a8c40bf64903eda",
+      "summary": [
+        "Finished `test` profile [unoptimized + debuginfo] target(s) in 31.49s",
+        "Summary [  11.649s] 119 tests run: 119 passed, 0 skipped"
+      ]
+    },
+    {
+      "gate": "official-final",
+      "log": "official-final.log.gz",
+      "sha256": "1e35bb4e15de6d20c832a1f53482eb71c7ff282c1d0ceeb449d339a1d9f1b565",
+      "summary": [
+        "Finished `test` profile [unoptimized + debuginfo] target(s) in 37.99s",
+        "Summary [   3.956s] 27 tests run: 27 passed, 0 skipped"
+      ]
+    },
+    {
+      "gate": "native-final",
+      "log": "native-final.log.gz",
+      "sha256": "71c6d89bc3ea3e405f9e1aaced6f4defb26500266aa2d098b9feb33f862cde55",
+      "summary": [
+        "Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 20s",
+        "Summary [  15.510s] 652 tests run: 652 passed, 1 skipped"
+      ]
+    },
+    {
+      "gate": "workspace-clippy",
+      "log": "workspace-clippy.log.gz",
+      "sha256": "215ddc14244e452a60ec385fb8297f3e6e635d2a8da799147942de006ed7db2f",
+      "summary": [
+        "Finished `dev` profile [unoptimized + debuginfo] target(s) in 59.24s"
+      ]
+    },
+    {
+      "gate": "native-clippy",
+      "log": "native-clippy.log.gz",
+      "sha256": "74aac09c1ba91f48b0548f48ec5bded420b9093a6cdceea2f7eccdcc99ed6916",
+      "summary": [
+        "Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.18s"
+      ]
+    },
+    {
+      "gate": "workspace-doc",
+      "log": "workspace-doc.log.gz",
+      "sha256": "9ff7818ae26ea59ba6b2a1a11aa8bd45c61c699ee29a3565078a1b36d202efc1",
+      "summary": [
+        "Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.75s"
+      ]
+    },
+    {
+      "gate": "native-doc",
+      "log": "native-doc.log.gz",
+      "sha256": "752e219953bcc79da675e71c139c6193a3344d44b0ba75632d6bfc40323b5f90",
+      "summary": [
+        "Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.36s"
+      ]
+    },
+    {
+      "gate": "workspace-doctest",
+      "log": "workspace-doctest.log.gz",
+      "sha256": "561064c54a3fe3e24191309391e5901f16e2255d80917ff57ffbc0330ef8e184",
+      "summary": [
+        "Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.61s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.87s"
+      ]
+    },
+    {
+      "gate": "format-dependencies",
+      "log": "format-dependencies.log.gz",
+      "sha256": "f5f874d9ef083f9f18d78fa72d49837e6bf14692711087ded654865810c3c28b",
+      "summary": [
+        "Core dependency boundary passed (normal/build, all features and targets)."
+      ]
+    }
+  ],
+  "implementation_sha256": {
+    "crates/dockspace/src/backend_ingress.rs": "42ee683334684241cd50dd4ac58bbae3ae92cd55edf544a275f911d77a171adb",
+    "crates/dockspace/src/backend_ingress/native_capacity.rs": "fff246f5608ccad9e36902c7c7542cdb44ad6e006a1e33b537dcbdc11c220fe7",
+    "crates/dockspace/src/canonical.rs": "2949a45dbaf8beafed4122c68020ed5daa9d239c2adfb2cbb9d6937e5bb93dd8",
+    "crates/dockspace/src/close_plan.rs": "6c97126e2f5df4bb2620f0ddaa793ae7821932561d062b17eab932e54ea7b9f9",
+    "crates/dockspace/src/close_plan/coordinator.rs": "30ee9aa15519a85a3382a1ef751744b6481ee3953d43502c1fb83ca9f4dc1236",
+    "crates/dockspace/src/command.rs": "dfefda268e57afd5b028d4ad12832c1038e8eca5d16ce42dc1885cd8717bc997",
+    "crates/dockspace/src/coordinates.rs": "c9e50a6aef7f43cc412a03ad0244cb639703bcd7cc86d214bf2a4e5998e24fac",
+    "crates/dockspace/src/drop_guide.rs": "38b7cf0a8310cd846da3fe3042ed93b26152c4f4ab3e8ba3a97d06d3a78efe3c",
+    "crates/dockspace/src/drop_resolver.rs": "3fa771d12304deca0a5c97639a33b903cd7d4dbcf4d277700da81ad32110cb98",
+    "crates/dockspace/src/drop_target.rs": "9f4922a8220bc8cec7897835c2c1c284f6459ce55ca64de19ceb9eac5b7b3af6",
+    "crates/dockspace/src/effect.rs": "785c3e9ea897d0d29b3912b4379fa8dae10fd14a18eb3bc696af10cf5766d338",
+    "crates/dockspace/src/engine.rs": "216064447bfc19dfe3a25626585df388e8a2ac86b58d60da715c5e705e97e265",
+    "crates/dockspace/src/engine/contained_adjustment.rs": "57024c759be3f564777b6b1f2da85f9c3b93cb74f10552982498291ef6178c59",
+    "crates/dockspace/src/engine/host_frame.rs": "333b513c34dae3394e0e5d81dddd4e3e91be083b79ce99bafde8213c53169227",
+    "crates/dockspace/src/engine/input.rs": "47164bbbbe5cef66c00077775855d6a117e603e21fbb8972cf70fe73ef3e43e9",
+    "crates/dockspace/src/engine/native_projection.rs": "f94c8d9356ba20635ebe06715768e0aa71e911fa8e6808bcbd980f5c28f31676",
+    "crates/dockspace/src/engine/pending_mutation.rs": "27731fad4a270afbd03bd6ddceb882f935c66024189151ebff0baf90351acf21",
+    "crates/dockspace/src/engine/pointer_transaction.rs": "398ec0089003462dda800425c0804b416c54a1aaa9b4452baad694b69540e79c",
+    "crates/dockspace/src/engine/pointer_transaction/click.rs": "3bcf63a9731fdcbf3ca78f4291b05963b93f4b107342182c40411b495871900e",
+    "crates/dockspace/src/engine/presentation_authority.rs": "839c862bdacea1fbcbb0e2f54803b134e85413e0b99768a05ef284a45e7ade13",
+    "crates/dockspace/src/engine/presentation_identity.rs": "baec5cacbf3725bcffd2646ca17f04c49d01dea1cb5d83e449e0b817a1384734",
+    "crates/dockspace/src/engine/presentation_roster.rs": "adaca004f020f12e142bfab77c8c33600257f1b5add5cb6fb3e5f339aed4e3bf",
+    "crates/dockspace/src/engine/presented_tab_chrome.rs": "6ed4a635af0849bb0c5281721625ab1326e7c7ea44e274399865134833cfc114",
+    "crates/dockspace/src/engine/provider_lifecycle.rs": "3ec956a16fea5d771d0a374227cab7a96fe9b561636f1cf6b1523a823ec049e3",
+    "crates/dockspace/src/engine/reducer.rs": "c300db602004022458cab377cdbea30c9ae3d719ad9c941562e22a5c98b74eab",
+    "crates/dockspace/src/engine/scroll_interaction.rs": "d165fe09f15f09788d4c52748f86ae97dd1f96491d993c349eb524137ada9617",
+    "crates/dockspace/src/engine/semantic_candidate.rs": "dbeb803f7229a1db4f3987836e620c80cc9479b2f8ab09f8e7021079cf369e4f",
+    "crates/dockspace/src/engine/semantic_receiver.rs": null,
+    "crates/dockspace/src/engine/surface_contribution.rs": "7d6e85ecb8e0071e9f349d38a1e9cf1bef54629c2eac9cd515a64b4cfee60280",
+    "crates/dockspace/src/engine/surface_contribution/reuse_tests.rs": "633b08352cb70e81262271cbf01295022c3df450a8daaca11e140f5553c2f19f",
+    "crates/dockspace/src/engine/surface_runtime.rs": "1480afad4d7ad4ef9223c2c6f2365a2a4db11f51d3fa17d84583f3cc4986bc5a",
+    "crates/dockspace/src/engine/surface_runtime/focus.rs": "1cd726502a55a7c2d0e45153a6d8bc29103dcf95983d2894b50ad62faa70f825",
+    "crates/dockspace/src/engine/tests/host_authority.rs": "4f7012debd8b67eda7adf742faa8d4f371cb4a8c36247dde1b4040d59f53609d",
+    "crates/dockspace/src/event.rs": "727b19a6be78899a716ee64c333610836b086c1b7113e2630d7c2bfc8de20b55",
+    "crates/dockspace/src/external_item_key.rs": "b4d8738c4b12b5c03a591b9ae2a25246697dd13bd25459c40b5074776eb6dff2",
+    "crates/dockspace/src/frame.rs": "29e1123eec97b5c42a0054b864ac71327a6f47010af424fa151c5b82f5cc61dc",
+    "crates/dockspace/src/frame/binding_cleanup.rs": "6051ce5d876d06b469b714e58096402b24eb09e8c551e978a930d610be0ca2d4",
+    "crates/dockspace/src/frame/native_create.rs": "fdbaa1d36f348e851f5b4e05b2609e875efee80d373b7cbe76eb7957b50330e1",
+    "crates/dockspace/src/frame/pointer_passthrough.rs": "2e2edac5529973ce87fb4a7c5707cbfdf73690614375b7a37a3c9824f89f2282",
+    "crates/dockspace/src/frame/recovery_cleanup.rs": "edd70ddd9283cc18dbe3b6321abdd3cfeb201a3dfdfb8ac89e0ca863c255a1ec",
+    "crates/dockspace/src/frame/recovery_replacement.rs": "f89db6315f46a878927bc165510dd3f328065881afb8a65a29a60a37b507389c",
+    "crates/dockspace/src/graph.rs": "dcc7abb4c8b305d29cf2650b208f54ed1643727231a823bdc09f73df01ed6275",
+    "crates/dockspace/src/ids.rs": "6025e08100f0f3417c877ac0900cb7141f19eed68e258c756d2aa7a73d2e5efb",
+    "crates/dockspace/src/intent.rs": "575e525475d13c72d88f9fe372330ef2ac8a5181bdc4ef0b736e02ba0aac5aeb",
+    "crates/dockspace/src/interaction.rs": "ae2f46aa93a5ee935b5401ca72d8cb829b4ddabe66293b18bb500508c842c002",
+    "crates/dockspace/src/layout.rs": "adc2b83ccd909a3b2b35cc44792594ca4790eaa499a686a2dd4ef62a49e8a398",
+    "crates/dockspace/src/lib.rs": "e1b492d3c0992a80cf5c2f786b71510073bd16975c0395dd4dfe279c444152c9",
+    "crates/dockspace/src/operation.rs": "309ae2a0d8260f11af2aa0234d37eca67f127199b6d7d9f989bc42599458677a",
+    "crates/dockspace/src/operation/authorization.rs": "2f5902b004d39f14fa3861bb6287d78d11458315401839b6880abfdee316802f",
+    "crates/dockspace/src/operation/close.rs": "a61d08af9f06fbc69c155b44ab4b1ff8d1ef70014429cda4e2ab2c64e1c45d57",
+    "crates/dockspace/src/operation/references.rs": "705790bcaab7067225edab885aa7263dc2616492ac17706d5fe88e22e20da8b1",
+    "crates/dockspace/src/operation/topology.rs": "ee1659db70d5c7c5533d12aab5455d1c439844fbdb1edd88f24d73af3968d5ba",
+    "crates/dockspace/src/platform.rs": "1281556cd942d4d283556fd1814005b202f80c7ca298f307bc7a141f4e794aa9",
+    "crates/dockspace/src/platform_provider.rs": "dfe64f5819a35d3d8a4c3c34bc3b24a53508ffb26ae719ed245c0297141bbe79",
+    "crates/dockspace/src/pointer_journal.rs": "7bcfe277d7c6bcd6dab0b126b9a8e72d76f2f7233562e3fe839b7921c4096ba1",
+    "crates/dockspace/src/pointer_journal/desktop_route.rs": "c5c22cf1020530def3bcbcb4b6ae97622d29df74eb4813d628d3ffc8516c9244",
+    "crates/dockspace/src/pointer_journal/ledger.rs": "73a2691d89d1d3112e4f1912992d366b6fecd89b777694836097229482fc367b",
+    "crates/dockspace/src/pointer_journal/scroll.rs": "0f8e69c600bccada16c78815c669981d4ae27535157870ab3adbb6dfcd4c8a64",
+    "crates/dockspace/src/pointer_receiver.rs": "9f337c0945742a11df5da889705d036eeeeb4f656abfce33c74c93712569c89d",
+    "crates/dockspace/src/policy.rs": "d889887f45489089ddf343afc66b64e6718373c83c74b3c6fdcd4cfe8efdd8ac",
+    "crates/dockspace/src/presentation_hit.rs": "ce22e1e8c08d7c44256a857bed5c23c7ebe303d354f48b9635ac9166ed383d7e",
+    "crates/dockspace/src/presentation_observation.rs": "9539f95c3734995a26caaf798b6419119c65f62d3c46aec8c9ce5a000b9eebf5",
+    "crates/dockspace/src/presentation_observation/retention.rs": "a6a2814764e991b333f933892b74ac586c8e491549138dfa66bc7df606595421",
+    "crates/dockspace/src/retention.rs": "e10eb43fceb8b6dc66ccf2af4145a840ff53e700bd4f0d4bd2ea88b9c658b1fc",
+    "crates/dockspace/src/runtime/host_frame.rs": "68d081f7ad9765b464311f3d8119f954c66a56c38087d2e238a7c5ca5c425b3e",
+    "crates/dockspace/src/runtime/interaction.rs": "ea7380ce6a3b30e75a6ae1f07ce3b740e598e1bfb5580ee57a067f8e2594dc0a",
+    "crates/dockspace/src/runtime/paint.rs": "d1933ee11c31454187075ce00590d7217b3477297af68b27bb45ba4b272725b7",
+    "crates/dockspace/src/runtime/session.rs": "8c20aabd3f4b05bce6dda2e880afd08b0cb9b1506e3a483a2383cee23192ca2c",
+    "crates/dockspace/src/runtime/update.rs": "2a0bd72dc61dcb849271b77998fb51152f2bebd5a21f8614f038486ae85e1db6",
+    "crates/dockspace/src/scene.rs": "3a7d77b78a1eb893577c3f0a38dde050da6e82dc9f4b7ef10ba239e9fb9aa74e",
+    "crates/dockspace/src/scene/lifecycle.rs": "e51bf18c99f59916b728603b8eca005fc279a82d25344bbbd5e0b9c2bc4131fb",
+    "crates/dockspace/src/scene/lifecycle/tests.rs": "c0f65fa53453ed384f6932b0f3508ee57ee5599d1d06911fc10d17674a6edc8c",
+    "crates/dockspace/src/scene/records/presentation.rs": "b21b04ffee7a095b61aeafe1cfc82a1567c9466e46d22f3d2975528701d133b1",
+    "crates/dockspace/src/scene/records/splitter.rs": "503a1ebaf272059fbda5cb3f908e83308b48a040ec65902ecdfb27ff6b33a4cd",
+    "crates/dockspace/src/scene/validation.rs": "c49085b3406322c0072fc25c5f50d0cf288b819d4948e1c96e6a0bc80b340201",
+    "crates/dockspace/src/scene_compiler/tests.rs": "113983eb76c6e53de0f59b9d72271d334a5cc9c1a19910dc193d6edbc7b7b416",
+    "crates/dockspace/src/scene_manifest.rs": "014822f1d4fa6c931ccc2fe095c913bc5ce82cba369182b58e8e254015a12e41",
+    "crates/dockspace/src/semantic_input.rs": null,
+    "crates/dockspace/src/semantic_manifest.rs": null,
+    "crates/dockspace/src/surface_recovery.rs": "8cf111134a488cd071669e713babc0ad5bf23ecb90054cf97a80e5ab3f22b176",
+    "crates/dockspace/src/tab_strip.rs": "b4903daa46bbb4cd136dfbbb60ba3dd7e8e7ca6841cc6e272bef900bfcf59be0",
+    "crates/dockspace/src/target_field.rs": "108eff595e5cf8bcaff61b5142592144eef37afff0726b4a786bfe2bf5d22b6b",
+    "crates/dockspace/src/transaction.rs": "02da7a30e7e280e69f39c1e3932bcddfee0eb2c6167a09406f8514e120be632b",
+    "crates/dockspace/src/transaction/test_support.rs": "549900c8ad5daedcb7d0961a199f2d60b2c0cf15594419da4020188752bc4574",
+    "crates/dockspace/src/transition.rs": "9fd92700748de0af4a4ee252040a18fa3260a719b29f1706378773365d919be7",
+    "crates/dockspace/src/viewport.rs": "c1a739d642fe59857d8e2f5af9c106e81ce7e84c461425e929b92941a2ac2cfd",
+    "crates/dockspace/src/viewport_focus.rs": "d7f1e747be97163f443a1a5313848b1044c3f235dcaa78f13b0688ef13775293",
+    "crates/dockspace/src/viewport_focus/activation.rs": "c901963e18b54373fcbbd2f58489ef2e602195573501086f720b203d97710e96",
+    "crates/dockspace/src/viewport_focus/lifecycle.rs": "c26f82bcdd5fc1bbcd61620d9029334fbd56ee6c6ac7035cd95d0889bea376dd",
+    "crates/dockspace/src/viewport_focus/observation.rs": "a6162d3e578b5024eedb66339d7e9be66c9bc66714e8e1c36a522791b4bb8b1b",
+    "crates/dockspace/src/viewport_focus/pane.rs": "fb5b37fc4b20c3d5662aaf4fce312d842ab0377f1a32af12a8ec2675188f8bf8",
+    "crates/dockspace/src/viewport_focus/tests.rs": "5818eb2849e1ae48c90e156ed0ce71109ff0e8e7135a70cede28b990cffa156c",
+    "crates/dockspace/src/viewport_focus/tests/activation.rs": "dda506244fc71d41a5f2af68cfde0125db321cf3af0e23e40d69cf0477118998",
+    "crates/dockspace/src/viewport_focus/tests/lifecycle.rs": "b1fef1d50102dc18c6b14fe91aaa3cc893bc919de492aa1708d77a20a8e0817c",
+    "crates/dockspace/src/viewport_focus/tests/observation.rs": "5ca4b59c73cc40c2b38bdfa2c4813befbe0758d9cf6d197dbe232c2f28888a7f",
+    "crates/dockspace/src/viewport_focus/tests/pane.rs": "eb4f129ef1dd62f28cc7ddfcbd66c1267ff763071509827388dfb19655dad7f7",
+    "crates/dockspace/src/viewport_persistence.rs": "5d2567114b7b6fcd885bc0f64c6ea0e76a2bd324ab3e0a005128246f69dc031d",
+    "crates/dockspace/src/viewport_registry.rs": "ef2b71e73b5198f0bde27f59e07e5ac9f06fe5f0a19df623a3b9c79a4b8453a6",
+    "crates/dockspace/src/workspace.rs": "2bb1e14a96701cd5884a458e7f462fd9b6f9dedac218e397a52e5813dbf9838f",
+    "crates/dockspace/tests/pointer_host_frame.rs": "ca85d94af7a1805f65bed0b22ff3f11b86f1d6408f4874e21af9edcfca34548e",
+    "crates/dockspace/tests/viewport_recovery.rs": "c7ebd5929e18df9e20d708483bae9b3c79a72b934bddcf66f7e51f2994e8bcae",
+    "crates/egui_dockspace/src/pass_settlement.rs": "4a2ea7acf1c12a7eac6fa348408f24b504fcab22924406c296e9f825cda2b919",
+    "crates/egui_dockspace/src/pass_settlement/run_input.rs": "b0a6e171fea46f153b6df47a860b58f5d9d0b008e82f9d7c6bc159a065dfdf75",
+    "crates/egui_dockspace/src/pass_settlement/textures.rs": "d8d6985768727e55b4d9ad28315cc3858b4e36bb10afabb3a4f2763df72f35d1",
+    "crates/egui_dockspace/src/product_dockspace.rs": "e85e95afd30763be19d4f18eb871ca7648a976ece20bf4ecb7dc1db295144261",
+    "crates/egui_dockspace/src/product_focus.rs": "27a3a91a66ea8ae6efe2161e31877f9f001a3402a1231cd508f76ead289ad164",
+    "crates/egui_dockspace/src/product_focus/pending_observations.rs": "16654a347687b9092f5b2818a895c6debca58da0905504e8b63c20629fc0f4ed",
+    "crates/egui_dockspace/src/product_owned_run.rs": "aa25810818a236906ae4d45d5a0af6e7e7d7dd87ad0f7dd469005143865ddd25",
+    "crates/egui_dockspace_native/src/coordinator.rs": "b97ee8e69b0df93dc5e643b067acd3c3042ddfdf0a992e63d13806c8344cb755",
+    "crates/egui_dockspace_native/src/coordinator/callback_dispatch.rs": "bd45a7b8a2f09b654e4a84b1f36906ba92c93629d70de3cc5a00f0f021f1dd78",
+    "crates/egui_dockspace_native/src/coordinator/capture.rs": "4c4bc758ec0f0a765fb37e07d69cb85f6a960092590860fdc5c4479bf806d45f",
+    "crates/egui_dockspace_native/src/coordinator/stationary.rs": "21d194fa8a32d747ecd15c46b5464a26efca61334c7eedcae119ecb50c758dde",
+    "crates/egui_dockspace_native/src/mailbox.rs": "727f0ef64b6d883251963fb28561ddc23e0c29f583c35d8c89cff61596bf85ca",
+    "crates/egui_dockspace_native/src/mailbox/callback_ingress.rs": "098b129f9950be3ab8c2f08c41f2b96a5e736c6d8a323ee73bf3da1d6b9ec425",
+    "crates/egui_dockspace_native/src/mailbox/command_callback.rs": "a08023f16a1454d49f0db2feb18e9f19e96f00ca55f8a5d7b1680aa9c643319b",
+    "crates/egui_dockspace_native/src/mailbox/journal.rs": "a2c4db343bf80027ea44552933f1f6241ff1ce1aac4881c0f8165968399a4c3f",
+    "crates/egui_dockspace_native/src/mailbox/terminal_roster.rs": "3300223979e9dfba00bac4a79f910615bdb6e5ae955fe1bc38e97e5b0775f76e",
+    "crates/egui_dockspace_native/src/mailbox/window_resource.rs": "12bf294597413025b50d5b737583f713a3f20874f1186109df1bd7dca1a96488",
+    "crates/egui_dockspace_native/src/pointer_capture.rs": "d1894518b4094868ad57e08bcd8f5f239527f677bc7f8695c327377eecccc4ff",
+    "crates/egui_dockspace_native/src/retirement.rs": "8c204eff890680531ddd5eb23ab009e7a85b45dbdb2cb6c51192504ee70c906a",
+    "crates/egui_dockspace_native/src/surface_driver.rs": "b9ad830c6745a9ad0019ded070a9d6df303679d9b94d267bd5439aa9edd9a30a",
+    "crates/egui_dockspace_native/src/surface_driver/application/layout_tests.rs": "e4a3868b6bfb0f5b330925a687558af3ddff975cfd044579c9dabe3de1c74f1f",
+    "crates/egui_dockspace_native/src/surface_driver/application/layout_tests/persistence/service_deadline_tests.rs": "0669ccfcaebd1db256cae675b3a431433f5a2356bbb61d8f730cfae28223ce26",
+    "crates/egui_dockspace_native/src/surface_driver/application/layout_tests/shared_window.rs": "34de4edbd6b18bcfc6d208d62f2f5ce3418d516843544a7d624f51a62766ede5",
+    "crates/egui_dockspace_native/src/surface_driver/root_placements.rs": "681202cb837017018acb2370db82581ba2fe79395efb19244982c3c3ff007f6f",
+    "crates/egui_dockspace_native/src/surface_driver/tests/retirement_backpressure.rs": "5f072643b252bc220feee33963ed225474897c662874be89f8e99bc6c29dd00a",
+    "crates/egui_dockspace_native/src/viewport_map.rs": "07006babff816c32dad05464bdbce97f7295e37618c2c7cf147dc330df47bf88",
+    "integration/egui-product-harness/tests/product.rs": "be959d4b2ad1c071671321bad67d757fba06845efaae5bf8adda2b4677a174e8",
+    "integration/egui-product-harness/tests/product/magnetic.rs": "19b94605d44542f5be33b4beb46276522d3fc29589f2a70aa863bdce9a94b925",
+    "integration/egui-product-harness/tests/support/observations.rs": "9fce62207b2d6fc2371b84ff1dcbe7759e7ad729442f822a4c9b94a5474c6c49",
+    "integration/egui-product-harness/tests/support/run.rs": "8ccd5fdcb68984ba9dbee2b8dad8bcd2057e4be126757cfa30d68fbf31ac2ad2"
+  },
+  "limits": [
+    "No new physical-window qualification",
+    "No new Linux, Windows, Wayland or mixed-monitor DPI qualification",
+    "No new ImGui timing comparison"
+  ]
+}

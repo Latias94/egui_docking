@@ -52,7 +52,9 @@ mod admission;
 mod admission_tests;
 use admission::NativeAdmission;
 pub(crate) use admission::NativeDispatch;
+mod callback_ingress;
 mod capacity;
+pub(crate) use callback_ingress::NativeCallbackHead;
 mod command_callback;
 #[cfg(test)]
 mod command_ingress_tests;
@@ -2240,14 +2242,17 @@ impl NativeHostState {
             })
     }
 
+    #[cfg(test)]
     fn active() -> Self {
         Self::with_clock(NativeViewportMap::default(), NativeMonotonicClock::system())
     }
 
+    #[cfg(test)]
     fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
         Self::try_with_clock(viewports, clock).expect("native test host storage is available")
     }
 
+    #[cfg(test)]
     fn try_with_clock(
         viewports: NativeViewportMap,
         clock: NativeMonotonicClock,
@@ -3736,23 +3741,6 @@ impl NativeHostBridge {
         self.lock().window_resources.observation_pending(key)
     }
 
-    pub(crate) fn front_pointer_observation(
-        &self,
-    ) -> Option<(NativePointerObservationRecord, std::time::Duration)> {
-        let records = self.lock();
-        if !records.front_dispatchable() {
-            return None;
-        }
-        let ingress = records.front_ingress()?;
-        let HostRecord::PointerObservation(key) = ingress.record() else {
-            return None;
-        };
-        Some((
-            records.window_resources.observation_record(*key)?,
-            ingress.captured_at(),
-        ))
-    }
-
     pub(crate) fn acknowledge_pointer_observation(&self, key: NativePointerObservationKey) -> bool {
         let mut records = self.lock();
         if !matches!(records.front_dispatch_record(), Some(HostRecord::PointerObservation(current)) if *current == key)
@@ -3793,6 +3781,7 @@ impl NativeHostBridge {
         records.window_resources.reserve_capture(key, binding)
     }
 
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn pointer_capture_pending(&self, key: NativePointerCaptureKey) -> bool {
         self.lock().window_resources.capture_pending(key)
     }
@@ -3801,23 +3790,6 @@ impl NativeHostBridge {
         self.lock()
             .window_resources
             .release_capture_binding(binding);
-    }
-
-    pub(crate) fn front_pointer_capture(
-        &self,
-    ) -> Option<(NativePointerCaptureRecord, std::time::Duration)> {
-        let records = self.lock();
-        if !records.front_dispatchable() {
-            return None;
-        }
-        let ingress = records.front_ingress()?;
-        let HostRecord::PointerCapture(key) = ingress.record() else {
-            return None;
-        };
-        Some((
-            records.window_resources.capture_record(*key)?,
-            ingress.captured_at(),
-        ))
     }
 
     pub(crate) fn acknowledge_pointer_capture(&self, key: NativePointerCaptureKey) -> bool {
@@ -3831,7 +3803,7 @@ impl NativeHostBridge {
         true
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn record_pointer_capture_for_test(
         &self,
         record: NativePointerCaptureRecord,
@@ -3942,6 +3914,7 @@ impl NativeHostBridge {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn new(viewports: NativeViewportMap) -> Self {
         Self::with_clock(viewports, NativeMonotonicClock::system())
     }
@@ -3962,6 +3935,7 @@ impl NativeHostBridge {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn try_new_with_capacity(
         viewports: NativeViewportMap,
         windows: usize,
@@ -3993,6 +3967,7 @@ impl NativeHostBridge {
         })
     }
 
+    #[cfg(test)]
     fn with_clock(viewports: NativeViewportMap, clock: NativeMonotonicClock) -> Self {
         Self {
             records: Mutex::new(NativeHostState::with_clock(viewports, clock.clone())),
@@ -4414,181 +4389,10 @@ impl NativeHostBridge {
         Some((event.clone(), record.captured_at()))
     }
 
-    pub(crate) fn front_device_removal(&self) -> Option<NativeDeviceRemovalRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::DeviceRemoval(removal)) => Some(*removal),
-            Some(
-                HostRecord::WindowEvent(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::PointerObservation(_)
-                | HostRecord::PointerCapture(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
-        }
-    }
-
-    pub(crate) fn front_global_focus(&self) -> Option<NativeGlobalFocusRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::GlobalFocus(record)) => Some(*record),
-            Some(
-                HostRecord::WindowEvent(_)
-                | HostRecord::DeviceRemoval(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::PointerObservation(_)
-                | HostRecord::PointerCapture(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
-        }
-    }
-
-    pub(crate) fn front_viewport_focus(&self) -> Option<NativeViewportFocusRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::ViewportFocus(record)) => Some(*record),
-            Some(
-                HostRecord::WindowEvent(_)
-                | HostRecord::DeviceRemoval(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::PointerObservation(_)
-                | HostRecord::PointerCapture(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
-        }
-    }
-
-    pub(crate) fn front_viewport_pointer_passthrough(
-        &self,
-    ) -> Option<NativePointerPassthroughRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::ViewportPointerPassthrough(record)) => Some(*record),
-            Some(
-                HostRecord::WindowEvent(_)
-                | HostRecord::DeviceRemoval(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::PointerObservation(_)
-                | HostRecord::PointerCapture(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
-        }
-    }
-
-    pub(crate) fn front_viewport_close_cancelled(
-        &self,
-    ) -> Option<NativeViewportCloseCancellationRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::ViewportCloseCancelled(record)) => Some(*record),
-            Some(
-                HostRecord::WindowEvent(_)
-                | HostRecord::DeviceRemoval(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::PointerObservation(_)
-                | HostRecord::PointerCapture(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
-        }
-    }
-
-    pub(crate) fn front_viewport_roster(&self) -> Option<NativeViewportRosterEnvelope> {
-        self.lock().front_viewport_roster()
-    }
-
-    pub(crate) fn front_viewport_created(&self) -> Option<NativeViewportCreatedRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::ViewportCreated(created)) => Some(*created),
-            Some(
-                HostRecord::WindowEvent(_)
-                | HostRecord::DeviceRemoval(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::PointerObservation(_)
-                | HostRecord::PointerCapture(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
-        }
-    }
-
-    pub(crate) fn front_viewport_create_failure(
-        &self,
-    ) -> Option<NativeViewportCreateFailureRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::ViewportCreateFailed(failure)) => Some(*failure),
-            Some(
-                HostRecord::WindowEvent(_)
-                | HostRecord::DeviceRemoval(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::PointerObservation(_)
-                | HostRecord::PointerCapture(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::ViewportVisibility(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
-        }
-    }
-
     pub(crate) fn has_pending_input(&self) -> bool {
-        matches!(
-            self.lock().front_dispatch_record(),
-            Some(
-                HostRecord::WindowEvent(_)
-                    | HostRecord::DeviceRemoval(_)
-                    | HostRecord::GlobalFocus(_)
-                    | HostRecord::ViewportFocus(_)
-                    | HostRecord::ViewportPointerPassthrough(_)
-                    | HostRecord::PointerObservation(_)
-                    | HostRecord::PointerCapture(_)
-                    | HostRecord::ViewportCloseCancelled(_)
-                    | HostRecord::ViewportRoster(_)
-                    | HostRecord::ViewportCreateFailed(_)
-                    | HostRecord::ViewportVisibility(_)
-                    | HostRecord::ViewportCreated(_)
-            )
-        )
+        self.lock()
+            .front_dispatch_record()
+            .is_some_and(|record| !matches!(record, HostRecord::Output { .. }))
     }
 
     pub(crate) fn has_pending_callback_records(&self) -> bool {
@@ -4766,27 +4570,6 @@ impl NativeHostBridge {
             records.event_boundary_pending = true;
         }
         matches
-    }
-
-    pub(crate) fn front_viewport_visibility(&self) -> Option<NativeViewportVisibilityRecord> {
-        match self.lock().front_dispatch_record() {
-            Some(HostRecord::ViewportVisibility(record)) => Some(*record),
-            Some(
-                HostRecord::WindowEvent(_)
-                | HostRecord::DeviceRemoval(_)
-                | HostRecord::GlobalFocus(_)
-                | HostRecord::ViewportFocus(_)
-                | HostRecord::ViewportPointerPassthrough(_)
-                | HostRecord::PointerObservation(_)
-                | HostRecord::PointerCapture(_)
-                | HostRecord::ViewportCloseCancelled(_)
-                | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_)
-                | HostRecord::ViewportCreated(_)
-                | HostRecord::Output { .. },
-            )
-            | None => None,
-        }
     }
 
     pub(crate) fn acknowledge_viewport_visibility(
@@ -5663,7 +5446,7 @@ impl NativeHostBridge {
         records.attach_output_binding(token, binding)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn attach_output_binding(
         &self,
         token: NativeOutputToken,
