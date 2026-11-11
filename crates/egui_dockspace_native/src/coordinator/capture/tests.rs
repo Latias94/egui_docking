@@ -332,10 +332,48 @@ fn finish(mut frame: NativeHostFrame<'_>) -> HostFrameReport {
     frame.commit().unwrap()
 }
 
-fn present(native: &mut NativeCoordinator, binding: NativeSurfaceBinding) -> Scene {
+fn measure_surfaces(
+    frame: &mut NativeHostFrame<'_>,
+    binding: NativeSurfaceBinding,
+    geometry: NativeLocalGeometry,
+) {
+    let size = geometry.content_size();
+    let scale = geometry.native_scale_factor().get();
+    for surface in frame.frame.surfaces() {
+        let logical_size = frame
+            .frame
+            .native_surface_bindings_for_window(binding.window())
+            .find(|binding| binding.surface() == surface)
+            .and_then(|binding| frame.frame.native_surface_placement(binding))
+            .map(|placement| placement.size())
+            .unwrap_or_else(|| {
+                LogicalSize::new(size.width() / scale, size.height() / scale).unwrap()
+            });
+        frame
+            .frame
+            .measure_surface(
+                surface,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, logical_size.width(), logical_size.height())
+                        .unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    96.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+}
+
+fn present(
+    native: &mut NativeCoordinator,
+    binding: NativeSurfaceBinding,
+    geometry: NativeLocalGeometry,
+) -> Scene {
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .unwrap();
+    measure_surfaces(&mut frame, binding, geometry);
     let mut tabs = Vec::new();
     for surface in frame.frame.surfaces() {
         let plan = frame.frame.paint_plan(surface).unwrap().unwrap();
@@ -467,12 +505,19 @@ impl Core {
             .unwrap();
         let scale = geometry.native_scale_factor().get();
         if !matches!(placement, SourcePlacement::Implicit) {
+            // Identical declarations are a no-op. Rebase actual geometry to
+            // exercise a newer placement generation on the same source surface.
+            let source_width = if matches!(placement, SourcePlacement::Rebased) {
+                size.width() - scale
+            } else {
+                size.width()
+            };
             let mut placements = vec![NativeSurfacePlacement::new(
                 SURFACE,
-                LogicalSize::new(size.width() / scale, size.height() / scale).unwrap(),
+                LogicalSize::new(source_width / scale, size.height() / scale).unwrap(),
                 PhysicalPoint::new(0.0, 0.0).unwrap(),
                 geometry.native_scale_factor(),
-                PhysicalRect::new(0.0, 0.0, size.width(), size.height()).unwrap(),
+                PhysicalRect::new(0.0, 0.0, source_width, size.height()).unwrap(),
             )];
             if representative != SURFACE {
                 placements.push(NativeSurfacePlacement::new(
@@ -495,30 +540,7 @@ impl Core {
                 .set_native_surface_placements(binding.window(), &placements)
                 .unwrap();
         }
-        for surface in frame.frame.surfaces() {
-            let logical_size = frame
-                .frame
-                .native_surface_bindings_for_window(binding.window())
-                .find(|binding| binding.surface() == surface)
-                .and_then(|binding| frame.frame.native_surface_placement(binding))
-                .map(|placement| placement.size())
-                .unwrap_or_else(|| {
-                    LogicalSize::new(size.width() / scale, size.height() / scale).unwrap()
-                });
-            frame
-                .frame
-                .measure_surface(
-                    surface,
-                    UniformSurfaceMetrics::new(
-                        LogicalRect::new(0.0, 0.0, logical_size.width(), logical_size.height())
-                            .unwrap(),
-                        LogicalSize::new(32.0, 24.0).unwrap(),
-                        96.0,
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-        }
+        measure_surfaces(&mut frame, binding, geometry);
         let report = finish(frame);
         native.settle_host_frame_report(&report).unwrap();
         let binding = native
@@ -535,7 +557,7 @@ impl Core {
                 "the source witness must differ from the callback route's historical surface tag"
             );
         }
-        let scene = present(&mut native, binding);
+        let scene = present(&mut native, binding, geometry);
         for (_, receiver, _) in &scene.0 {
             assert!(native.session.bind_presented_receiver(receiver).is_some());
         }
@@ -985,9 +1007,13 @@ fn capture_receipt_journey(run: &mut Run, delayed_ordinary: bool, placement: Sou
         core.commit(core.clock.now());
         assert!(!core.native.bridge.pointer_capture_pending(key));
     }
-    // Settle the core's release preview using its real recording presentation receipt.
+    // Remeasure and present the layout committed by release using a recording receipt.
     // This is simulated presentation transport, with no renderer or GPU claim.
-    let _ = present(&mut core.native, core.binding);
+    let _ = present(
+        &mut core.native,
+        core.binding,
+        geometry(run.backend.source.as_ref().unwrap()),
+    );
     assert!(!core.native.session.has_active_gesture());
     assert!(!core.native.session.has_pending_native_input());
     assert!(!core.native.stationary.has_pending_work());
