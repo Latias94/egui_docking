@@ -1,640 +1,89 @@
-# egui_dockspace
+# Dockspace
 
-`dockspace` is the primary library: a renderer-neutral docking core intended
-for custom game-engine editor UIs. Engines own their drawing, pane content,
-input delivery, frame scheduling, and platform resources. `egui_dockspace`
-and its native integration are interactive reference adapters used to validate
-the core's behavior and host contracts. Open-GPUI adapter work is deferred.
+Docking layouts for Rust editor UIs, independent of the UI framework.
 
-The repository has undergone a breaking refactor. There is no compatibility
-layer for the former `egui_docking`, `egui_tiles`, or pre-refactor persistence
-interfaces.
+Dockspace manages tabs, split layouts, floating groups, docking interactions and
+close decisions. Your application owns pane content; your host owns rendering,
+input and OS windows. Use the renderer-neutral core with a custom engine, or
+start with the egui adapter.
 
-The [engine-first redesign](docs/plans/2026-11-03-dockspace-engine-first-redesign.md)
-replaces the update and presentation coordination. Accepted ordinary releases
-commit in the successful update; exact visible input is revalidated against its
-relevant semantic scope. One input/measure/encode update publishes once, and
-bounded output owners retain their immutable scenes. Native resource transfers
-keep their separate exact first-live and retirement obligations. See the
-[migration guide](docs/ENGINE_FIRST_MIGRATION.md) for the breaking host and egui
-API changes and the [measurement methodology](docs/performance/2026-11-03-engine-first-methodology.md)
-for complete-update costs.
+**Pre-release:** the crates are not published yet, and the API may change.
+Rust 1.95 or later is required. The egui adapter targets egui 0.37.
 
-The earlier engine-host and direct-manipulation plan lives in
-[`docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md`](docs/plans/2026-08-21-1357-refactor-dockspace-direct-manipulation-experience-plan.md).
-It prioritizes a documented public host API and an independent consumer with
-no egui dependency before broader native certification. The recording consumer
-now verifies owned output records, ordered presentation settlement, and commands
-on two logical surfaces, complete ordered gestures, contained content, close
-approval and exact feedback/focus. Finite native throughput, lifecycle, layout
-and stationary profiles also have qualified checkpoints. The exact native fork
-revisions are published, and clean-checkout CI-equivalent delivery passes.
-The [completion audit](docs/COMPLETION_AUDIT.md) closes that plan within
-these documented profiles.
-Additional platform claims need separate evidence.
-The earlier product-boundary plan supplies the persistence and ownership context.
+## Try it
 
-The [semantic-state follow-up](docs/plans/2026-11-02-dockspace-semantic-state-refactor.md)
-addresses the subsequent ImGui comparison: stable semantic identities, independent
-surface presentation and popup routing, nested touching-boundary resizing,
-continuous native preparation, incremental logical surfaces and measured workspace
-sharing. The [completion audit](docs/audits/2026-11-03-semantic-state-completion.md)
-records its completed implementation, independent review and final qualification.
-Dated evidence in [VALIDATION](docs/VALIDATION.md) distinguishes each source
-checkpoint and the finite platform profiles.
+Run the interactive editor using official egui, winit and WGPU:
 
-## Capability matrix
+```sh
+cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked
+```
 
-| Layer | Current product capability | Deliberate limit |
+Drag tabs to merge or split panes, resize splitters, and move the floating
+Inspector. Edit a document, close it, then use **Restore layout** to reopen it
+with its application data intact. This example uses one OS window and needs no
+engine or dependency fork.
+
+For a small terminal-only introduction to the core:
+
+```sh
+cargo run -p dockspace --example layout_commands --locked
+```
+
+[All examples and run commands](docs/EXAMPLES.md)
+
+## Choose an integration
+
+| You want to… | Start here | Host requirements |
 | --- | --- | --- |
-| `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
-| `egui_dockspace` | Caller-owned official-egui runs support tab select/close/reorder, magnetic center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | An unmodified `eframe::App::ui` callback cannot prove terminal presentation; preview-qualified drag and pane-focus settlement are typed unavailable there |
-| `egui_dockspace_native` | Unpublished crate using published exact fork revisions, with an eight-pane editor example, bounded real-input workflows, a programmatic window smoke, and finite X11/XTest physical drag and stationary profiles | Clean-checkout CI-equivalent delivery passes. The qualified reference lane is X11 on the first X screen with one exact active-CRTC work-area authority; local/headless gates do not certify other backends |
-| Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
+| Add docking to a custom engine or UI framework | [`dockspace`](crates/dockspace) | Supply measurements, drawing, input and presentation results |
+| Use egui in one OS window | [`egui_dockspace`](crates/egui_dockspace) | Own the complete egui run and final output for drag docking |
+| Experiment with multiple native windows | [`egui_dockspace_native`](crates/egui_dockspace_native) | Use the pinned eframe/winit forks; platform support varies |
 
-Caller-owned official-egui runs also retain explicit local touch identities:
-short taps activate on release, pre-arm movement yields to pane content, and a
-350ms stationary continuation arms ordinary docking/resize or a semantic context
-menu. Explicit Touch resize targets request at least 44 logical points before
-surface and protected-control clipping; mouse/pen/unknown-device geometry keeps
-its existing profile. Native Touch stationary capture remains unqualified.
+An ordinary `eframe::App::ui` callback supports rendering, selection, close,
+menus and keyboard resizing. Drag docking and pane-focus confirmation need the
+complete-output host shown above. [Host choices](crates/egui_dockspace#host-choices)
+explain the difference before you integrate.
 
-Several logical docking areas can share a HostLocal input producer. Managed
-native hosting also supports several logical surfaces in one external Root OS
-window through an explicit complete placement roster. Each runtime-owned Child
-keeps one whole-client surface. Shared Root docking and Child round trips have a
-finite Linux X11 qualification. Programmatic native tear-off accepts an item,
-an opaque captured tabs group or a complete root, with explicit or core-derived
-placement. Renderer-neutral native document restore accepts explicit mappings
-for multiple external Roots and preserves each Child's declared recovery host.
-The reference application's automatic restore continues its existing Root's
-complete surface roster. See the
-[multiview composition contract](docs/PLATFORM_SUPPORT.md#multiview-composition)
-for supported journeys and platform qualification limits.
+## What you can build
 
-Local drags use the same finite continuation for tab hover selection and
-overflow-edge scrolling. Each automatic scroll step waits for exact presentation
-of its new geometry, and explicit scrolling or menu actions take ownership
-through the existing tab-strip state.
+- Editor layouts with tabs, nested splits, splitter junctions and central panes.
+- Drag docking with center/edge guides, tab reordering and overflow menus.
+- Floating groups within a surface, with move, resize and Dock Back actions.
+- Application-controlled close decisions, including background saving.
+- Saved layouts with stable pane keys, restored independently of pane data.
+- Custom pane drawing, minimum sizes, styling, focus and docking policies.
 
-Shift temporarily disables magnetic target acquisition without cancelling the
-gesture or moving contained content back to its durable position. Ordered
-modifier-only input clears a magnetic preview; keyup permits fresh acquisition
-from the next real Move or Release. Explicit guides and tab gaps remain eligible,
-and native transfers already waiting for exact presentation retain their frozen decision.
-Custom hosts map their own modifier or tool mode through the public targeting
-intent; egui supplies the default Shift mapping.
+The experimental native adapter adds OS-window creation, recovery and shared
+Root-window layouts. Physical cross-window docking is qualified on a finite
+Linux X11 profile; macOS/Windows physical drag-out and mixed-monitor DPI need
+further validation. See [platform support](docs/PLATFORM_SUPPORT.md) before
+choosing a native integration.
 
-The current implementation has a qualified renderer-neutral local/contained
-contract, an official-egui caller-owned validation path, and an experimental
-native multiview adapter. The fast-gesture and configuration-dependent failures
-from the 2026-10-27 audit are repaired and covered by fresh regressions. See
-[`docs/VALIDATION.md`](docs/VALIDATION.md). These results qualify the documented
-host and finite reference profiles; cross-platform ImGui docking/multiview
-parity has not been established.
+## Use from source
 
-Native drag-out creation keeps source ownership through staging and prospective child
-painting. Only an accepted exact first-live content output publishes topology,
-workspace revision and admission together. A dropped frame or output and a
-cancelled pending create preserve source ownership. The host owns preparation of
-its window and renderer and reports exact, revocable `Prepared` readiness. The
-egui reference adapter drives its hidden/show/render sequence privately. Core
-retains first-live publication and cleanup ownership through the same interface
-an engine host uses. Native-local/Touch OS input, macOS/Windows physical cross-window
-input and arbitrary mixed-DPI profiles require their own evidence. See
-current evidence and capability limits in
-[`docs/VALIDATION.md`](docs/VALIDATION.md).
+Clone this repository and use path dependencies until the first release. Adjust
+the paths to your checkout:
 
-An existing complete logical surface can explicitly acquire native hosting
-through the public host frame. It shares readiness, exact first-live and cleanup
-ownership while retaining its topology and workspace version. Failed or cancelled
-initial attempts can retry with a fresh window incarnation; old acknowledgements
-and outputs remain tied to their original window. Managed native document
-restore atomically queues explicit Child declarations with their declared
-surface IDs and saved placement. Budgeted frames wait for fresh Root facts and
-exact predecessor quiescence before creating each child once. The X11 reference
-workflow verifies two live predecessors, two restored children and real content
-editing. Explicit Root continuation can also remove the old logical host and
-retain the same external OS window on another surface. Candidate and committed
-exact binding pairs let hosts prepay resources and atomically publish the native
-route and their root-surface field. The reference X11 workflow verifies layout
-and JSON Root rebinding, then Default and named-preset restore through their saved
-host identities, fresh content editing and unchanged physical window identity.
-These finite workflows and clean-checkout delivery of the published fork pair
-are qualified.
-
-Managed engine hosts can also capture native client coordinates from committed
-size and scale facts without desktop position or work areas. The joined recorder
-retains one input order, and each gesture freezes its coordinate lane through
-exact output settlement. The reference adapter now freezes event-time local
-samples at callback capture and accounts for their immutable payloads within the
-same bounded input budget. Its callback contract is qualified; native-local OS
-input remains separate acceptance work. The public engine-host contract also
-qualifies explicit local-to-desktop handoff
-within one active drag, preserving its stream, session and semantic source while
-revoking old target/output state. The reference adapter's same-event packet
-capture/emission and full raw-to-output handoff traces are also qualified;
-real native-local OS handoff evidence remains separate from those contracts.
-
-The public native host API also qualifies explicit stationary hover selection,
-Touch long press/tap/yield and tab-strip edge scrolling through the same gesture
-and exact-output state. Native requests expose scheduling and sampling inputs;
-the host still supplies fresh native facts. The reference adapter now schedules
-Desktop Mouse observations at core deadlines, retaining at most one query until
-its ordered terminal fully commits. Unknown or unavailable facts cannot trigger
-an automatic retry of the same core token. Physical Touch and unenabled platform
-profiles retain explicit capability limits.
-
-The public continuation can also report a newly acquired capture boundary
-without fabricating motion. Core restarts stationary timing from that accepted
-observation, rather than crediting dwell from before capture was acquired.
-The source input requirement is a read-only projection; actual OS acquisition,
-current capture/delivery proof and exact release remain host responsibilities.
-The native adapter now connects those operations through the existing gesture,
-window resource and ordered callback receipt. The public capture request also
-exists before timed work begins. Pending acquisition defers the old deadline;
-first fresh evidence restarts timing. The current Winit component admits
-one root-observed WM parent and bounded terminal-reply hover, including real
-ancestor loss and foreign InputOnly interception; its 16 component gates pass.
-The complete eframe/Glow X11 stationary hover-selection and real InputOnly
-negative journeys each pass twice normally and once without native assertions.
-The actually recompiled 100 ms early-dwell control fails as intended. All 36
-final integration, window and lint checks pass. The finite stationary overflow
-profile also qualifies two exact Presented steps and stopping after real motion
-out of the edge band, with the same held Child gesture through redock and cleanup.
-Deeper source ancestry, native-local/Touch OS input and macOS/Windows positive
-stationary behavior remain unqualified.
-
-Native binding retention now uses `terminal_binding_guards()` in the diagnostic
-manifest. It covers observed destruction and conclusively never-created
-bindings, including a published Pending binding cancelled before its Create
-effect could be delivered. The previous `destroyed_binding_guards()` name and
-destroyed-only missing/provider-mismatch error variants are replaced. Exact
-producer quiescence and committed-prefix retirement still own guard release;
-there is no synthetic Destroyed observation for a failed create.
-
-The experimental native adapter reserves 4,096 raw callback slots and two
-reusable complete-roster payloads. It admits at most 256 simultaneously retained
-native binding lifetimes, including pending retirement; a route/create pair
-shares one commitment. More than 64 work-area records revoke work-area authority
-to `Unknown` while preserving the complete window inventory. Snapshot storage
-pressure freezes ordinary admission through the existing overload boundary.
-Selected 4 MiB profiles have finite qualification: W16 roster/property/Destroyed
-models, real I64/W16/R258 with O256/control2/protected-staging1, and the separate
-1 kHz XTest center-load journey. Their configured owner counts and excluded data
-are recorded in `docs/PLATFORM_SUPPORT.md`. Broader combined close/create maxima
-and arbitrary active-service loads are outside these profiles; 2 ms is a cooperative yield
-threshold, with overruns retained in measurement, rather than a hard real-time
-guarantee.
-`NativeDockspaceApp::input_storage_capacity_bytes()` measures the current raw,
-shared-roster, core transport/report, window/output/close/retirement, callback and
-pointer/work-area data at a locked host boundary. It counts actual vector
-capacity and existing entry data, without allocator metadata, render/receiver
-state or future terminal reservations. The real-window smoke samples this query
-through its lifecycle; those samples do not prove the complete admission limit
-or transient construction peaks.
-
-## Architecture
-
-- `dockspace` is the only semantic authority for topology, selection, drop,
-  close, persistence identity, and native lifecycle state.
-- `egui_dockspace` supplies egui measurements, resources, painting, local
-  responses, and accessibility without reconstructing a second dock graph.
-- `egui_dockspace_native` supplies event-time platform facts, OS effects,
-  renderer settlement, and window lifecycle without owning another docking
-  engine.
-
-Default product interfaces are item- and surface-centric. Raw graph nodes,
-scene stamps, reducer inputs, provider leases, persistence candidates,
-and backend FSMs are private. Renderers and native hosts integrate through the
-narrow `DockspaceSession` runtime facade rather than an unstable raw backend
-namespace.
-
-The public host contract distinguishes complete surface-program acceptance,
-renderer submission, final host presentation, and successful core acceptance of
-the presentation report. Opaque execution receipts and output handles bind each
-step to its exact emission. Engines can record their own drawing or retained
-nodes after the frame borrow ends; a logical surface does not require an OS
-window. The independent
-[`dockspace-host-harness`](integration/dockspace-host-harness/README.md) demonstrates
-the public path without any egui or platform dependency.
-
-Run its complete engine-owned output example:
-
-```text
-cargo run --manifest-path integration/dockspace-host-harness/Cargo.toml --example engine_host --locked
+```toml
+[dependencies]
+dockspace = { path = "../egui_docking/crates/dockspace" }
+# For egui applications:
+egui_dockspace = { path = "../egui_docking/crates/egui_dockspace" }
 ```
 
-The example retains its recording after the frame borrow ends, settles two
-logical surfaces independently, executes application focus, approves a complete
-root close, and deduplicates typed feedback. `Presented`/`Dropped` are recording
-host observations; this example does not submit work to a GPU or create windows.
+Enable `serde` on the crate you use for layout persistence. Pane data and file
+storage stay in your application.
 
-Facade errors follow the same rule. Both the renderer-neutral and egui product
-interfaces expose six action-oriented categories: invalid configuration,
-persistence, unsupported operation, operation conflict, host protocol, and
-internal failure. Exact implementation diagnostics remain in the standard
-error source chain.
+## Learn more
 
-## Persistence
-
-The optional `serde` feature adds product document persistence. Applications
-allocate stable pane identities through `DockspaceDocumentBootstrap`, build a
-persistent session, and save or restore one versioned JSON document. The
-document atomically binds topology, append-only external pane keys, allocator
-frontiers, lineage and generation, and viewport placement.
-
-The document also binds explicit native root/child hosting preferences and each
-child's recovery-host surface. `surface_presentation_preferences()` on a session,
-prepared restore or candidate frame returns these declarations and optional
-physical placement hints. The content graph remains in `view()`. Submission
-preserves declared surface and recovery-host identities; reading a declaration
-does not create an OS window or grant native authority. The format has one
-version, `[1, payload]`, covering the workspace, keys and surface preferences
-together. These internal components are ordinary strict objects. Fields with
-no value are explicitly `null`; missing, duplicate and unknown fields reject.
-Managed native restore can explicitly queue the declared Child windows through
-the existing preparation, first-live and cleanup owners. Ordinary document
-restore alone does not create OS windows; native restore waits for fresh Root
-facts and exact predecessor quiescence before advancing those declarations.
-Custom native hosts can use `submit_native_document_restore_with_roots` with
-`(existing_binding, incoming_surface)` pairs. Core validates the entire mapping,
-including complete Root cycles, and publishes all exact continuations together.
-`submit_native_layout_reset_with_roots` provides the same atomic continuation
-contract without requiring document persistence. Install physical routes only
-after the committed report confirms the proposed pairs.
-
-Programmatic native commands use `NativeTearOffSource::{Item, Tabs, Root}`.
-Capture a group once with `capture_tabs_group`; the opaque selection freezes its
-original source and version. `native_window_command_default` preflights ordinary
-core placement without entering paint encoding, and `native_window_command`
-accepts explicit `NativeWindowPlacement`. A Ready command carries the existing
-`PreparedDockAction`. Neither command transfers source content before the new
-window's exact first-live output is accepted.
-
-Raw workspace snapshots, independently replaceable key maps, and mutable
-restore candidates are not product interfaces.
-
-## egui and native references
-
-The publishable crates use official egui and eframe `0.37.0`. The excluded
-native workspace pins egui/eframe fork
-`f94ee58b3914de7ad71dab36919b329ef36b4035` and Winit
-`2664589f0bd6fd03b2a5490f23bcd692853e63dd`. The egui fork's own Winit dependency,
-all integration patches, inspection dependency and lockfiles select that same
-pair. Both exact revisions are published. CI checks out those revisions and
-runs the selected-viewport inspection regressions before native qualification.
-The latest inspection change preserves pending child paint requests until fresh
-output or removal; its plugin tests pass locally. Current-head physical X11
-qualification remains tracked separately from historical clean-checkout results.
-Winit's source tests generate their ignored lockfile before locked commands;
-Linux framework tests install Wayland headers. Exact source and qualification
-limits are recorded in [`docs/VALIDATION.md`](docs/VALIDATION.md).
-Remaining fork seams and their removal conditions are documented in
-[`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
-
-The official adapter and admitted native fork use egui/eframe `0.37.0`.
-The fork branch `dockspace-native-seam-0.37` retains graph-neutral seams for
-exact native facts and output finalization. Winit remains on stable `0.30.13`,
-and egui_tiles remains reference-only.
-
-The optional native pointer observation seam feeds the adapter's finite
-stationary scheduler. Its current X11 query reports server-logical desktop
-position and bounded hover from one terminal reply. Ordinary and implicit-only
-queries always retain `Unknown` capture and delivery. For a viewable source
-directly under root or below one root-observed WM parent, an exact active explicit capture can
-publish known source capture/delivery after a fresh successful G2 grab refresh
-and original-press, finite parent, native-interval and FIFO checks. Hosts must
-not fill missing observations from the expected window or cached implicit
-capture. The renderer-neutral core requires complete native facts for stationary
-continuations.
-
-Native queries can freeze the original Primary-press identity. The adapter
-accepts continuation input only while both the frozen and current identities
-are present and equal; ordinary queries without identity still settle their
-own receipts. Identity matching grants no capture or delivery authority.
-The X11 fork also provides a finite explicit source-capture effect with exact
-cleanup coordinated with ordinary cursor grabs. Its `Acquired` result records
-operation settlement only; the separate fresh sample supplies current route
-authority. The real InputOnly negative journey retains independently known
-Child capture/delivery while hover stays `Unknown` or `Foreign`; capture cannot
-authorize blocked hover.
-
-Content drags preserve their source window's native hit regions. Only a
-runtime-owned Child whose complete sole main root is being dragged, without
-contained siblings, uses the correlated pass-through and restore lifecycle.
-Hosts declare backend support through `runtime::NativeHostCapabilities`. Core
-selects and freezes the source mode: Preserve does not require
-`PointerHitTestControl`; PassThrough does. Both still require independent
-inventory, hover, desktop position, button and hit observations, plus the
-current edge's delivery/capture authority. The source mode and capability
-composition remain internal decisions.
-
-The native application facade uses one bounded command/result slot for docking,
-selection, reopening, content-close requests, exact initial/deferred close
-decisions and arrangement locking. Consume `take_action_status()` before queuing
-another command; `NativeActionStatus::Dock` carries the original docking status.
-`pending_content_close_plans()` discovers current chrome and application requests
-directly from the core's existing inventory. The `basic` example shows the eight
-application-owned pane entries and named close confirmations with Close, Keep
-open and Decide later controls. Group closes apply together; keeping any member
-open cancels the request. Pane data remains application-owned while an item is
-closed.
-
-Ordinary facade commands keep the configured root logical surface. A close that would remove
-its only presentation returns `NativeActionRequestError::HostSurfaceRequired`,
-including an exact Allow for a chrome-created plan. Closing individual panes in
-a central root retains its empty dock area and permits reopening. Closing a
-complete root when another presentation remains uses the ordinary atomic close.
-`request_layout_reset(default)` queues an application-owned default through the
-same slot. The optional native `serde` feature adds `save_document_json()` and
-`request_document_restore_json(bytes, recognize)`. Preparation validates the
-configured host before occupying the slot; an obsolete queued replacement
-returns `NativeActionStatus::Stale` without stopping the runtime. A successful
-`LayoutReset` or `DocumentRestored` result confirms logical publication. Fresh
-native facts and exact presentation still establish the successor's input and
-focus authority. Old renderer outputs and command receipts retain their original
-binding until their own terminal settlement.
-
-Layout reset accepts only its configured host surface, including contained
-windows; resetting from a live child retires it through normal destruction.
-Document restore also accepts explicit managed Child declarations with saved
-placement and creates successors after predecessor quiescence. The
-`request_layout_reset_rebinding_root` and
-`request_document_restore_json_rebinding_root` variants explicitly continue the
-same physical Root on a different incoming logical host. The example retains
-that saved host alongside its immutable Default and at most eight named JSON
-presets, and recognized unavailable panes remain reloadable placeholders.
-These finite U10 workflows are qualified; see the dated evidence in
-[`docs/VALIDATION.md`](docs/VALIDATION.md).
-
-Hosts that own official crates.io egui's complete run use the owned update entry
-point. It publishes once after the terminal pass and all output hooks:
-
-```rust,ignore
-let (output, response) = dockspace
-    .run_single_surface(&context, raw_input, surface, panes)
-    .expect("the Dockspace update publishes");
-let (full_output, receipt) = output.into_parts();
-let result = renderer.present(full_output); // Presented or Dropped, from the output owner.
-receipt.report(result);
-```
-
-`Dockspace::run_single_surface` returns `DockspaceOutput` and its publication
-response. Split the output with
-`into_parts()` to obtain `FullOutput` and a one-use `DockspaceOutputReceipt`.
-The renderer owner reports `Presented` only after that complete output reaches
-presentation, or `Dropped` when it is discarded; dropping the receipt also
-retires it. Core accepts exact emissions at the next successful frame boundary,
-including delayed or out-of-order reports. Returning from egui never grants
-presentation authority by itself.
-
-The adapter checks the complete ordered surface shape span after every output
-hook, including ordinary pane/tab drawing, previews, clip and transform data.
-It removes only its private markers. This conservative path requires synchronous,
-append-only pane drawing on the supplied layer. Adapter-owned popup chrome can
-append to registered foreground layers with the same exact suffix proof;
-arbitrary pane cross-layer writes and unenumerated layers remain unavailable.
-After `into_parts()`, the host is responsible for preserving the
-complete output it reports. Shape checks do not inspect application paint callback
-internals or observe GPU submission. Discard, unwind, duplicate enrollment,
-foreign contexts/viewports and output mismatch cannot promote partial evidence.
-Raw input runs once; actual egui repeat passes re-encode the same private input
-candidate. A failed owned run publishes neither docking state nor producer
-watermarks and never automatically replays application pane callbacks.
-UI-generated semantic actions enter a bounded queue for the next update.
-
-Ordinary logical release commits with accepted input. A later dropped renderer
-output requests replacement work and does not undo that edit. Native ownership
-transfers retain their exact first-live and resource-retirement obligations.
-See the [breaking migration guide](docs/ENGINE_FIRST_MIGRATION.md) for the engine
-host phases, output backpressure and deferred action scopes.
-
-An unmodified `eframe::App::ui` callback may still call
-`show_single_surface` directly for rendering, selection, close, menus, and
-discrete keyboard or AccessKit actions. Because eframe owns the surrounding
-`RawInput` and `FullOutput`, that response reports
-`PresentationSettlementRequired`; tab/group/contained pointer drags are not
-started. The callback publishes each accepted call independently; it cannot
-roll back an earlier publication when an enclosing run or later hook fails.
-`egui_dockspace::run_ui` remains available for composed callback integration with
-the same limitation. The fork-backed
-native adapter owns the stronger post-plugin finalizer and exact unwind
-abandonment required for editor-grade native multiview.
-
-Dear ImGui and `dear-imgui-rs` are behavioral references for frame phases,
-viewport lifecycle, wakeups, geometry/DPI facts, and teardown coverage. Their
-global context registries, raw-pointer ownership, timeout focus heuristics, and
-renderer-owned docking authority are intentionally not copied.
-
-## Development
-
-The workspace uses Rust 1.95 and edition 2024. Reuse the normal target directory
-and run Cargo serially when the machine is busy.
-
-```text
-cargo fmt --all -- --check
-python3 scripts/check_core_dependencies.py
-cargo check --workspace --all-features --all-targets --locked -j1
-cargo nextest run --workspace --all-features --all-targets --test-threads=1
-cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --locked --test-threads=1
-cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --features serde --locked --test-threads=1
-cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --test-threads=1
-cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --features serde --test persistence --test-threads=1
-cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --all-features --test-threads=1
-cargo package --package dockspace --package egui_dockspace --all-features --locked -j1
-```
-
-The fork-backed native workspace uses one thin Cargo launcher:
-
-```text
-python3 scripts/run_egui_fork_harness.py
-```
-
-To run the supported official-crates.io tier in a real window, use the small
-caller-owned `egui-winit`/`egui-wgpu` host. It calls
-`Dockspace::run_single_surface_with_ui` around the complete frame, so application
-toolbars, tab drag, magnetic dock, and contained-window movement share the same
-atomic update and terminal-output settlement without any fork. Its Restore
-layout button reopens closed panes while keeping their application data:
-
-```text
-cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked -j1
-```
-
-The ordinary `crates/egui_dockspace/examples/basic.rs` example demonstrates the
-honest unmodified-eframe boundary: rendering, selection, close, menus, and
-keyboard adjustments remain available while the status strip explains why
-preview-qualified drag is disabled:
-
-```text
-cargo run --manifest-path crates/egui_dockspace/Cargo.toml --features example-app --example basic --locked -j1
-```
-
-To exercise draggable tabs, magnetic docking, contained movement, and the
-fork-backed exact-output path, run the separate native example. It starts with
-eight stable panes for documents, scene hierarchy, assets, console, history,
-profiling, a drawn preview and editable Inspector notes. The Inspector group
-starts as an egui-styled contained window in the root surface; it does not open
-a child OS window automatically:
-
-```text
-cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example basic --locked -j1
-```
-
-Add `--features serde` to enable application-owned named JSON presets. The
-example saves the complete layout, including contained and native child windows,
-after current presentation and native work settle. Presets live only in the
-running application. Default layout works without serde. Both operations keep
-application pane data outside the layout.
-
-The [native interaction review](docs/audits/2026-11-03-egui-interaction-review.md)
-records the visual-continuity and contained-redocking repair after manual use
-exposed gaps in the earlier lifecycle and final-layout qualification. A finite
-real-renderer regression exercises tab selection, OS-window movement and changing
-host UI bounds; add `-- --single-pass` to test a host without egui multipass:
-
-```text
-cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example presentation_continuity --locked -j1
-```
-
-The native app owns the docking area's background. The editor draws its toolbar
-first, then calls `NativeDockspaceApp::ui` directly in the remaining root Ui.
-Wrapping it in another default `CentralPanel` adds a trailing hover response
-over the whole work area and blocks exact native docking hit tests. The actual
-eight-pane editor has a separate real-input check, run under X11 after building
-`basic`:
-
-```text
-cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --example basic --target-dir target --locked -j1
-python3 integration/egui-native-smoke/editor_docking_x11.py target/debug/examples/basic
-```
-
-The example exposes all three presentation paths without conflating their
-evidence. Use the contained title bar to move or resize the same-surface window,
-or open its **⋮** menu for **Dock Back** and **Move to New Window**. The toolbar
-duplicates the native move and dock-back commands as explicitly labelled
-programmatic fallbacks. On a capability-qualified backend, drag a tab or the
-contained title bar outside an OS window to request a physical native child,
-then drag a child tab onto a root-window docking guide to return it. The default
-child close policy recovers the previous presentation. Physical dragging
-remains fail-closed on backends without complete cross-window pointer facts, so
-the programmatic lifecycle demo is not described as physical-input evidence.
-The pinned macOS Winit facts are tested for same-window routing, but macOS does
-not advertise cross-surface physical promotion until an OS-input lane proves
-the complete button/capture contract. Windows likewise keeps hover and desktop
-pointer authority unavailable until equivalent platform-fact tests land. X11
-is the current certified physical reference backend.
-
-The finite `--smoke` mode locates real editable content and checks application
-text through native first-live, Dock Back, OS-close recovery and a fresh Default
-presentation. With serde it also restores an unloaded pane's placeholder,
-reloads it and verifies another real focused edit. In an isolated
-Linux X11 display with a window manager and `xdotool`, run
-`python3 integration/egui-native-smoke/editor_x11.py /path/to/examples/basic`
-after building the example. The external driver supplies actual pointer,
-keyboard and window-close input; diagnostics locate the controls without
-granting docking or presentation authority. This editor workflow does not
-certify physical drag or other operating systems.
-
-Native application menus submit `NativeCommand` values through
-`NativeDockspaceApp::request_command` and consume `take_action_status` before
-their next command. The pane inventory's **Move** submenu exposes item docking,
-floating in the main window, raising a contained group and moving it into view.
-Close decisions and arrangement locking use the same bounded command slot;
-layout and document replacement retain their dedicated preparation methods.
-
-`with_view` returns its callback result directly and always exposes the last
-committed layout, including after a fatal stop. Read the current `root_surface()`
-before the callback when choosing a host destination; host rebinding can change
-that logical identity. Runtime methods must be called outside view/pane callbacks
-because they share the same lock.
-
-The finite `basic --command-smoke` mode exercises those four operations in the
-actual host, then moves a singleton into a native child and returns it through
-both item-floating and item-docking commands. It verifies typed terminal results,
-fresh presentation, child retirement and unchanged application data. Run it in
-an isolated display with a window manager; CI uses Xvfb/Openbox. This is a
-programmatic command check, separate from the OS-input `--smoke` workflow above.
-
-The [platform support matrix](docs/PLATFORM_SUPPORT.md) separates the public
-engine-host contract, official-egui output limits, backend capability bits and
-the exact scope of real-window/physical qualification.
-
-CI keeps those claims separate. The programmatic Glow smoke proves hidden
-creation, staging, first-live admission, redock, and retirement through product
-commands. The X11/XTest smoke locates only read-only semantic receivers, injects
-real OS pointer events through Winit, and proves drag-out, first-live, the exact
-Center-guide control, three non-guide pane-center points and four non-guide
-pane-edge points, both tab-half insertion sides, two nested-leaf targets, real
-merge/split topology, OS-window destruction, and
-retirement quiescence. The center cases use
-`EGUI_DOCKSPACE_PHYSICAL_TARGET=pane-center-a`, `pane-center-b` or
-`pane-center-c`; the edge cases use `pane-edge-north`, `pane-edge-south`,
-`pane-edge-east` or `pane-edge-west`; tab insertion uses `tab-half-before` or
-`tab-half-after`; the fixed two-axis nested layout uses `nested-pane-center` or
-`nested-pane-edge` (west). Leaving it unset runs the guide control.
-Each pane case excludes all actual guide hit bounds and the outer-root band
-after physical rounding and again before release. Edge cases require the
-matching exact half-root preview and ordered, equal-weight split in the original root.
-Tab halves exclude Close Main and actual guides, require the narrow insertion
-marker and verify the precise resulting tab order. Nested cases preserve the
-empty central source, ancestor weights and unaffected sibling; west insertion
-must split the target leaf, retaining the three alternating split axes.
-The separate `overflow-tab-before` journey qualifies one manually scrolled
-clipped target. `EGUI_DOCKSPACE_PHYSICAL_STATIONARY=overflow` qualifies one fixed
-400-point strip through offset0/40/80, each bound to its exact Root Presented
-output. `overflow-cancel` leaves the band after the first step and stays at40
-through two quiet intervals and a fresh source-input barrier. Both retain the
-original press/capture and finish the same redock/retirement journey. Arbitrary
-overflow geometry and nested targets, mixed DPI and the complete local journey
-matrix remain unqualified.
-These finite native smokes do not expose core geometry or provide a reusable
-GUI test engine.
-
-The optional high-rate extension sets `EGUI_DOCKSPACE_PHYSICAL_LOAD=1khz`
-together with one explicit pane-center target. It establishes the real Dock
-preview first, sends 1,000 distinct XTest motions with no catch-up burst, then
-releases immediately without an inspection or drain-to-idle barrier. The
-measurement requires the exact source and desktop-point sequence, reports
-actual injection/native callback rates, and bounds release-to-terminal commit
-using the earlier callback and later model observation. The qualified local
-profile is an optimized build with 2 CPU and `LP_NUM_THREADS=1` for software GL;
-unoptimized and renderer-oversubscribed attempts remain recorded failures.
-This is finite XTest/event-loop evidence, not a hardware polling-rate claim or
-the separate 2 ms reducer-service qualification. See `docs/VALIDATION.md`.
-
-The real output-pressure fixture also measures the synchronous host interval
-from output admission through the last pass finalizer's return, including
-commit, effect scheduling and fixture overhead. It reports repeated passes,
-child/root samples, deferred admission and observed overruns separately.
-Standalone native host-service events now report their own elapsed samples,
-so moving terminal settlement outside UI does not hide that work. GPU
-and terminal waits are excluded; these finite samples establish neither a hard
-2 ms limit nor return to the OS event loop.
-
-## Packaging and release order
-
-`dockspace` must still be published before `egui_dockspace`, because the
-adapter's packaged manifest resolves its declared core dependency from the
-registry. The matched-package qualification checks the extracted adapter against
-the same extracted unpublished core through an explicit patch. Ordinary adapter
-verification against an older cached core0.1.0 fails on the new API; it does not
-qualify that mismatched pair. Core's ordinary package verification succeeds.
-
-The 2026-11-01 local gate produces both archives, then checks and tests independent
-consumers against the matching extracted pair. The core consumer passes its
-default and serde suites and runs the self-drawn host example; the adapter consumer passes
-the official egui 0.37 suite. The only patched registry dependency is `dockspace`
-from the extracted core archive; the egui family remains on crates.io.
-This qualifies package contents and downstream use, not registry publication or
-the optional native crate's package publication. The native Git revisions are
-published separately and have their own clean-checkout qualification. Exact evidence
-and the retained lockfile warning are recorded in
-[`docs/VALIDATION.md`](docs/VALIDATION.md).
+- [Examples](docs/EXAMPLES.md): choose a runnable starting point.
+- [Core overview](crates/dockspace/README.md) and [engine host guide](crates/dockspace/docs/guide.md).
+- [egui overview](crates/egui_dockspace/README.md) and [integration guide](crates/egui_dockspace/docs/guide.md).
+- [Documentation index](docs/README.md): platform limits, adapter testing and validation.
+- [Contributing](CONTRIBUTING.md): repository layout and development checks.
 
 ## License
 
-`dockspace` is licensed under Apache-2.0. `egui_dockspace` is licensed under MIT
-OR Apache-2.0. See [`THIRD_PARTY.md`](THIRD_PARTY.md) for prior-art and fixture
-provenance.
+`dockspace` uses Apache-2.0. `egui_dockspace` and the experimental native adapter
+use MIT OR Apache-2.0. [Third-party sources](THIRD_PARTY.md) records prior art
+and fixture provenance.
