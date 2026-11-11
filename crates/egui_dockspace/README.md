@@ -41,6 +41,22 @@ ordinary controls created during that callback; popups and foreign overlays
 remain docking blockers. Returning `PaneResponse::default()` declares no
 content. Focus targets remain separate application observations.
 
+`PaneView` callbacks are synchronous and can run again in a later egui pass.
+Keep I/O and background computation in application-owned tasks. Transfer finished
+data to the UI thread, update pane state, and request a repaint. `Box<T>` forwards
+all pane callbacks, including custom focus observations; ordinary egui hosts can
+use borrowed or non-`Send` providers. The native adapter requires owned `Send`
+providers because deferred viewport callbacks retain them.
+
+The [background save example](examples/background_save.rs) defers a tab close,
+saves an owned text snapshot on a worker, and submits the original continuation
+token on the UI thread. Success allows the close; failure or a stopped worker
+vetoes it. Stale completion cannot close a replacement layout. The example pauses
+editing while saving; applications that keep editing must also check their own
+document revision before allowing closure. Run it with
+`cargo run -p egui_dockspace --example background_save --features example-app`.
+It writes a new copy in the system temporary directory and uses no async runtime.
+
 When the integration owns the complete official-egui run, use
 `Dockspace::run_single_surface` to retain one private candidate until the
 terminal output and every output hook succeed:

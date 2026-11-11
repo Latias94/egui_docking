@@ -79,6 +79,13 @@ pub enum PaneFocusState {
 /// The adapter borrows this object only while painting a frame. Implementors
 /// retain ownership of pane state; the docking workspace stores only
 /// [`ItemId`] values.
+///
+/// Callbacks run synchronously within the current egui pass. Start background
+/// work in application-owned tasks, apply completed results on the UI thread,
+/// and request a repaint. Do not wait for I/O or retain a [`Ui`] across tasks.
+/// Boxed providers, including borrowed and non-`Send` trait objects, delegate
+/// every callback to their inner provider. Native hosts may add their own
+/// threading and lifetime requirements.
 pub trait PaneView {
     /// Returns the current title for `item`.
     ///
@@ -176,6 +183,28 @@ pub trait PaneView {
     }
 }
 
+impl<T: PaneView + ?Sized> PaneView for Box<T> {
+    fn title(&self, item: ItemId) -> Option<WidgetText> {
+        (**self).title(item)
+    }
+
+    fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse {
+        (**self).ui(item, ui)
+    }
+
+    fn focus_target(&self, item: ItemId) -> Option<Id> {
+        (**self).focus_target(item)
+    }
+
+    fn focus_state(&self, item: ItemId, context: &Context) -> PaneFocusState {
+        (**self).focus_state(item, context)
+    }
+
+    fn minimum_size(&self, item: ItemId) -> Vec2 {
+        (**self).minimum_size(item)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +254,65 @@ mod tests {
             panes.focus_state(ItemId::new(8), &Context::default()),
             PaneFocusState::Unknown
         );
+    }
+
+    #[test]
+    fn boxed_borrowed_provider_preserves_custom_focus_and_painting() {
+        use std::{cell::Cell, rc::Rc};
+
+        struct BorrowedPanes<'a> {
+            title: &'a str,
+            paints: Rc<Cell<usize>>,
+        }
+
+        impl PaneView for BorrowedPanes<'_> {
+            fn title(&self, _item: ItemId) -> Option<WidgetText> {
+                Some(self.title.into())
+            }
+
+            fn ui(&mut self, _item: ItemId, ui: &mut Ui) -> PaneResponse {
+                self.paints.set(self.paints.get() + 1);
+                PaneResponse::from(&ui.label(self.title))
+            }
+
+            fn focus_state(&self, _item: ItemId, _context: &Context) -> PaneFocusState {
+                PaneFocusState::Focused
+            }
+
+            fn focus_target(&self, item: ItemId) -> Option<Id> {
+                Some(Id::unique(("boxed-provider", item)))
+            }
+
+            fn minimum_size(&self, _item: ItemId) -> Vec2 {
+                Vec2::new(80.0, 40.0)
+            }
+        }
+
+        let title = String::from("Borrowed provider");
+        let paints = Rc::new(Cell::new(0));
+        let mut boxed: Box<dyn PaneView + '_> = Box::new(BorrowedPanes {
+            title: &title,
+            paints: Rc::clone(&paints),
+        });
+        // Coercing the box itself exercises its implementation, not deref lookup.
+        let provider: &mut dyn PaneView = &mut boxed;
+        let item = ItemId::new(8);
+        let context = Context::default();
+        assert_eq!(provider.title(item).unwrap().text(), title);
+        assert_eq!(provider.minimum_size(item), Vec2::new(80.0, 40.0));
+        assert_eq!(
+            provider.focus_target(item),
+            Some(Id::unique(("boxed-provider", item)))
+        );
+        assert_eq!(
+            provider.focus_state(item, &context),
+            PaneFocusState::Focused
+        );
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let response = provider.ui(item, ui);
+            assert_eq!(response.content_widgets().count(), 1);
+        });
+        output.textures_delta.clear();
+        assert!(paints.get() > 0);
     }
 }

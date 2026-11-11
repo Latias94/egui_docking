@@ -37,6 +37,17 @@ mod native_boundary_x11;
 /// callbacks cannot re-enter a held state lock. Native product panes must be
 /// [`Send`] because eframe may invoke deferred viewport callbacks independently
 /// of the root callback.
+///
+/// Both concrete providers and `Box<dyn PaneView + Send>` are supported. Keep
+/// background work in the application, then apply completed pane data through
+/// [`Self::with_panes_mut`] and wake its egui viewports. Registry callbacks run
+/// under the runtime lock; submit docking commands only after they return.
+/// Deferred saves use [`crate::NativeCommand::DecideClose`] with
+/// [`dockspace::close::CloseDecision::Deferred`], followed by
+/// [`crate::NativeCommand::ContinueClose`] with the returned core-issued token.
+/// Retain completion while the command slot is Busy and consume
+/// [`Self::take_action_status`] before submitting the next command. Admission
+/// queues a command; its later committed result determines whether it applied.
 pub struct NativeDockspaceApp<P> {
     state: Arc<Mutex<NativeRuntimeState<P>>>,
     native_host: Arc<dyn NativeHostHandler>,
@@ -215,11 +226,21 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     }
 
     /// Inspects the application pane registry while holding the runtime lock.
+    ///
+    /// Keep the callback short and do not call this application's other runtime
+    /// methods: the same lock remains held until it returns. Run background I/O
+    /// outside the callback and transfer only completed data into the registry.
     pub fn with_panes<R>(&self, inspect: impl FnOnce(&P) -> R) -> R {
         inspect(lock_state(&self.state).panes())
     }
 
     /// Mutates the application pane registry while holding the runtime lock.
+    ///
+    /// Keep the callback short, perform I/O outside it, and do not re-enter this
+    /// application's runtime methods. Collect any docking command, return from
+    /// the callback, then submit it through [`Self::request_command`]. Updating
+    /// pane data alone does not request a repaint; wake the affected egui
+    /// viewport after applying background results.
     pub fn with_panes_mut<R>(&self, mutate: impl FnOnce(&mut P) -> R) -> R {
         mutate(lock_state(&self.state).panes_mut())
     }

@@ -36,6 +36,11 @@ required-features = ["example-app"]
 test = true
 
 [[example]]
+name = "background_save"
+required-features = ["example-app"]
+test = true
+
+[[example]]
 name = "workspace_persistence"
 required-features = ["example-app", "serde"]
 test = true

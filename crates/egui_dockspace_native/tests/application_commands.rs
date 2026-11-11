@@ -26,6 +26,10 @@ impl PaneView for Panes {
 }
 
 fn app() -> NativeDockspaceApp<Panes> {
+    app_with_panes(Panes("unsaved application text".to_owned()))
+}
+
+fn app_with_panes<P: PaneView + Send + 'static>(panes: P) -> NativeDockspaceApp<P> {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
@@ -36,10 +40,26 @@ fn app() -> NativeDockspaceApp<Panes> {
         egui::Id::unique("public-native-command-consumer"),
         session,
         SURFACE,
-        Panes("unsaved application text".to_owned()),
+        panes,
         DockStyle::default(),
     )
     .unwrap()
+}
+
+#[test]
+fn boxed_dynamic_provider_works_with_the_public_native_owner() {
+    let panes: Box<dyn PaneView + Send> = Box::new(Panes("dynamic provider".to_owned()));
+    let app = app_with_panes(panes);
+    assert_eq!(
+        app.with_panes(|panes| panes.title(FIRST).unwrap().text().to_owned()),
+        "Command consumer"
+    );
+    app.request_command(NativeCommand::SelectItem { item: SECOND })
+        .unwrap();
+    assert_eq!(
+        app.request_command(NativeCommand::SelectItem { item: FIRST }),
+        Err(NativeActionRequestError::Busy)
+    );
 }
 
 #[test]
