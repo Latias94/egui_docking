@@ -34,7 +34,10 @@ fn main() -> eframe::Result {
             viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 780.0]),
             ..Default::default()
         },
-        Box::new(|_| Ok(Box::new(PersistenceApp::new()))),
+        Box::new(|creation| {
+            creation.egui_ctx.set_theme(egui::Theme::Light);
+            Ok(Box::new(PersistenceApp::new()))
+        }),
     )
 }
 
@@ -192,11 +195,24 @@ impl eframe::App for PersistenceApp {
                 }
                 ui.label("Name:");
                 ui.add(egui::TextEdit::singleline(&mut self.preset_name).desired_width(130.0));
-                if ui.button("Save preset").clicked() { self.save(); }
-                if ui.add_enabled(!locked && self.presets.contains_key(self.preset_name.trim()), egui::Button::new("Apply preset")).clicked() {
+                if ui.button("Save preset").clicked() {
+                    self.save();
+                }
+                if ui
+                    .add_enabled(
+                        !locked && self.presets.contains_key(self.preset_name.trim()),
+                        egui::Button::new("Apply preset"),
+                    )
+                    .clicked()
+                {
                     self.restore();
                 }
-                if ui.add_enabled(!locked, egui::Button::new("Reset to default")).clicked() { self.restore_named(DEFAULT_PRESET); }
+                if ui
+                    .add_enabled(!locked, egui::Button::new("Reset to default"))
+                    .clicked()
+                {
+                    self.restore_named(DEFAULT_PRESET);
+                }
                 ui.menu_button("Saved layouts", |ui| {
                     let names: Vec<_> = self.presets.keys().cloned().collect();
                     for name in names {
@@ -213,12 +229,26 @@ impl eframe::App for PersistenceApp {
                     }
                 });
                 ui.menu_button("Closed panes", |ui| {
-                    let closed: Vec<_> = self.panes.items.iter().filter_map(|(item, pane)| {
-                        self.dockspace.view().item(*item).is_none().then_some((*item, pane.title))
-                    }).collect();
-                    if closed.is_empty() { ui.weak("Every pane is open"); }
+                    let closed: Vec<_> = self
+                        .panes
+                        .items
+                        .iter()
+                        .filter_map(|(item, pane)| {
+                            self.dockspace
+                                .view()
+                                .item(*item)
+                                .is_none()
+                                .then_some((*item, pane.title))
+                        })
+                        .collect();
+                    if closed.is_empty() {
+                        ui.weak("Every pane is open");
+                    }
                     for (item, title) in closed {
-                        if ui.add_enabled(!locked, egui::Button::new(format!("Reopen {title}"))).clicked() {
+                        if ui
+                            .add_enabled(!locked, egui::Button::new(format!("Reopen {title}")))
+                            .clicked()
+                        {
                             self.reopen(item);
                             ui.close();
                         }
@@ -226,7 +256,7 @@ impl eframe::App for PersistenceApp {
                 });
             });
             ui.label(&self.status);
-            ui.weak("Unmodified eframe: selection, close, menus and keyboard resize are available. Presented-output drag docking requires the caller-owned renderer or native host.");
+            ui.weak("For drag docking, run the workbench example.");
         });
         egui::CentralPanel::default().show(ui, |ui| {
             let surface = self

@@ -47,7 +47,7 @@ Run the real-window supported tier with official crates.io egui, winit, and
 wgpu:
 
 ```text
-cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked -j1
+cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin workbench --locked -j1
 ```
 
 This host owns `RawInput`, the complete `run_ui` call, terminal `FullOutput`, and
@@ -55,12 +55,20 @@ GPU submission. Drag tab bodies to magnetic center/edge targets and drag the
 dotted contained title strip to move the complete floating window. It is a
 portable receipt-path demonstration, not native multiview evidence.
 
+The binary compiles the packaged
+[workbench example](../../crates/egui_dockspace/examples/workbench.rs) directly.
+There is one implementation of its layout, application panes and renderer.
+For everyday use, run `cargo run -p egui_dockspace --example workbench --features
+example-wgpu --locked` from the repository root. The independent manifest above
+exists to check compatibility against unpatched official dependencies.
+
 ## Continuous editor exercise
 
-The demo contains eight application-owned items: Editor/Preview, Outline,
-Inspector, Console/History and Profiler/Assets. Its normal interactive mode
-uses editable text, an actual scrolling Console and illustrative profiler
-bars. The Inspector is a contained window. No game engine is required.
+The workbench contains eight application-owned items: Editor/Preview, Outline,
+Inspector, Console/History and Profiler/Assets. Select scene objects in Outline,
+edit their position or visibility in Inspector, and inspect them in Preview.
+The Editor retains an editable document; Console scrolls through sample messages
+and Profiler shows sample bars. Inspector is a contained window. No engine is required.
 The application toolbar is composed inside the same atomic owned run. Close
 controls allow these sample panes to close while retaining their application
 data; **Restore layout** reopens all items without clearing document edits.
@@ -69,7 +77,7 @@ Run a bounded exercise through the same real WGPU host, using a new output
 path:
 
 ```text
-cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --profile production --target-dir target --locked -j1 --bin official-caller-owned-demo -- --exercise /tmp/egui-host-frames.csv
+cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --profile production --target-dir target --locked -j1 --bin workbench -- --exercise /tmp/egui-host-frames.csv
 ```
 
 The optional mode supplies ordinary egui input events at coordinates observed
@@ -118,7 +126,7 @@ close approval, retained document edits, and recovery through the actual
 Restore button after both roots close. They are not GPU/OS evidence:
 
 ```text
-cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --target-dir target --locked -j1
+cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin workbench --target-dir target --locked -j1
 ```
 
 The existing native eight-pane editor and its X11 drivers remain the separate

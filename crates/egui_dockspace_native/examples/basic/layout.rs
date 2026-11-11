@@ -59,11 +59,6 @@ impl NativeExampleApp {
                 self.begin_layout_action("Default layout", request);
             }
             ui.menu_button("Pane inventory (8)", |ui| self.show_pane_inventory(ui));
-            ui.small(if committed_locked {
-                "Arrangement locked; pane selection and content editing remain available."
-            } else {
-                "Pane data stays in the application registry when closed."
-            });
         });
         #[cfg(feature = "serde")]
         self.show_preset_controls(ui);
@@ -169,11 +164,6 @@ impl NativeExampleApp {
                 self.presets.remove(self.preset_name.trim());
             }
         });
-        ui.small(
-            "Session-only JSON · up to 8 names, 64 characters each; saving replaces that name's slot. \
-             Saves the complete layout across the main window, contained windows and native child windows. \
-             After restore, wait for every child window to display its saved panes before editing.",
-        );
     }
 
     #[cfg(feature = "serde")]

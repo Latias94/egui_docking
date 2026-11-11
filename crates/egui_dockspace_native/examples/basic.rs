@@ -104,6 +104,7 @@ fn main() -> eframe::Result {
         "Dockspace native editor",
         options,
         Box::new(move |creation| {
+            creation.egui_ctx.set_theme(egui::Theme::Light);
             if let Some(smoke) = &app.docking_smoke {
                 smoke.install(&creation.egui_ctx);
             }
@@ -252,8 +253,10 @@ impl NativeExampleApp {
         if self.action.is_pending() {
             self.show_pending_controls(ui);
         }
-        self.show_capability_status(ui, inspector, root_presented);
-        self.show_presentation_state(ui, inspector, root_presented);
+        egui::CollapsingHeader::new("Window details").show(ui, |ui| {
+            self.show_capability_status(ui, inspector, root_presented);
+            self.show_presentation_state(ui, inspector, root_presented);
+        });
         self.show_walkthrough(ui);
         if let Some(status) = &self.status {
             ui.small(format!("Last action: {status}"));
@@ -344,44 +347,28 @@ impl NativeExampleApp {
     }
 
     fn show_walkthrough(&self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Editor workflow and platform support")
+        egui::CollapsingHeader::new("Help")
             .default_open(false)
             .show(ui, |ui| {
                 ui.label(
-                    "1. Edit the document or Inspector notes, scroll Console, and pan or zoom Preview. \
-                     Pane data belongs to this application and survives presentation changes. \
-                     2. The Inspector group starts as a contained window. \
-                     Drag its title bar to move it, drag an edge to resize it, or open its ⋮ menu and choose Dock Back.",
+                    "Drag tabs to merge or split panes. Move the floating Inspector by its title grip.",
                 );
                 ui.label(
-                    "3. Explicit native child: open the Inspector title bar's ⋮ menu and choose Move to New Window. \
-                     The toolbar buttons use the same typed presentation commands.",
+                    "Open Inspector Window creates an OS window; Dock Inspector Back returns it. \
+                     Closing that window also returns its panes without losing edits.",
                 );
                 ui.label(
-                    "4. Physical multiview: on a capability-qualified backend, drag a tab or the contained title bar outside an OS window and release. \
-                     Drag a tab from the child over document content into a center or edge docking basin; guides are visual hints. \
-                     Closing an OS child restores its recovery target and keeps pane data.",
+                    "Use Pane inventory to reopen closed panes. Default layout restores the arrangement and keeps your data.",
                 );
                 ui.label(
-                    "5. Pane inventory lists all eight application-owned panes. Open a pane's menu to select or move it, \
-                     request a pane or group close, then choose Close, Keep open or Decide later for each pane. \
-                     Postponed decisions use the same Close and Keep open controls. A group closes together; keeping any pane open cancels the request. Reopen restores the same pane data \
-                     beside the current Document, or in the current main root when Document is closed. \
-                     Lock arrangement disables layout changes while selection and content editing remain available.",
-                );
-                ui.label(
-                    "6. Default layout restores the application's immutable layout while retaining all eight pane identities and their data. \
-                     Inventory can temporarily unload content; its recoverable placeholder keeps the title, key and data for Reload content.",
+                    "Lock arrangement prevents layout changes while keeping pane selection and editing available.",
                 );
                 #[cfg(feature = "serde")]
                 ui.label(
-                    "7. Save and restore up to eight named JSON presets in application memory, including the main window, contained windows and native child windows. \
-                     Restore applies the saved layout first, then replaces the child windows. Wait until every window has displayed its restored panes before editing.",
+                    "Named presets last for this session and include native windows. Restoring a preset keeps pane data.",
                 );
                 ui.small(
-                    "Physical promotion is intentionally fail-closed when the host cannot provide exact cross-window pointer facts. \
-                     X11 is the physical reference; macOS has programmatic hosting evidence. \
-                     Other platforms and mixed DPI require their own qualification. Use the presentation commands when physical facts are unavailable.",
+                    "Cross-window dragging depends on the platform. Use window commands when dragging is unavailable.",
                 );
             });
     }
@@ -435,10 +422,7 @@ impl NativeExampleApp {
                 ))),
             ) => {
                 self.action = ExampleActionState::AwaitingFirstPresentation(target_surface);
-                self.status = Some(
-                    "Native child creation accepted; waiting for first live presentation."
-                        .to_owned(),
-                );
+                self.status = Some("Opening Inspector window…".to_owned());
             }
             (
                 ExampleActionState::AwaitingDockBackOutcome(expected_root),
@@ -451,8 +435,7 @@ impl NativeExampleApp {
                 ))),
             ) if root == expected_root => {
                 self.action = ExampleActionState::Idle;
-                self.status =
-                    Some("The window group was presented back in the main dockspace.".to_owned());
+                self.status = Some("Panes returned to the main window.".to_owned());
             }
             (_, Ok(status)) => {
                 self.record_action_status(&status);
@@ -490,7 +473,7 @@ impl NativeExampleApp {
                 if self.dockspace.is_surface_presented(surface) =>
             {
                 self.action = ExampleActionState::Idle;
-                self.status = Some("Native child reached its first live presentation.".to_owned());
+                self.status = Some("Inspector window ready.".to_owned());
             }
             ExampleActionState::AwaitingFirstPresentation(surface)
                 if self.dockspace.is_quiescent()
@@ -508,9 +491,7 @@ impl NativeExampleApp {
                 if self.all_surfaces_presented() && self.dockspace.is_quiescent() =>
             {
                 self.action = ExampleActionState::Idle;
-                self.status = Some(format!(
-                    "{operation}: the main window and every child window have displayed their panes and are ready for editing."
-                ));
+                self.status = Some(format!("{operation} ready."));
             }
             _ => {}
         }
@@ -635,9 +616,9 @@ impl ExamplePanes {
         Self {
             panes: [
                 (OUTLINE, "pane/outline", "Outline", "Scene\n  Camera\n  Directional light\n  Player\n    Mesh\n    Controller"),
-                (EDITOR, "pane/document", "Document", "// Application-owned document\nfn update(scene: &mut Scene) {\n    scene.player.translate([1.0, 0.0, 0.0]);\n}\n\nEdit this document, then move or dock its tab.\n"),
+                (EDITOR, "pane/document", "Document", "fn update(scene: &mut Scene) {\n    scene.player.translate([1.0, 0.0, 0.0]);\n}\n"),
                 (PREVIEW, "pane/preview", "Preview", "Application-drawn scene"),
-                (INSPECTOR, "pane/inspector", "Inspector", "Object: Player\nPosition: [0, 0, 0]\nMesh: player.mesh\n\nThese editable notes survive moving this group into a native window and docking it back.\n"),
+                (INSPECTOR, "pane/inspector", "Inspector", "Object: Player\nPosition: [0, 0, 0]\nMesh: player.mesh\n"),
                 (CONSOLE, "pane/console", "Console", "Ready. Application log; scroll to inspect older messages."),
                 (HISTORY, "pane/history", "History", "Selected Player\nMoved Player\nChanged light intensity\nSaved scene"),
                 (PROFILER, "pane/profiler", "Profiler", "Illustrative frame samples — no live engine attached"),
@@ -734,8 +715,7 @@ impl PaneView for ExamplePanes {
         pane.content = Some((ui.max_rect(), ui.ctx().pixels_per_point()));
         pane.window_id = None;
         pane.missing_painted = false;
-        let heading = ui.heading(pane.title);
-        let mut content = PaneResponse::from(&heading);
+        let mut content = PaneResponse::default();
         if !pane.loaded {
             let placeholder = ui.label("Recoverable missing content — temporarily unloaded.");
             pane.missing_painted = ui.is_rect_visible(placeholder.rect);

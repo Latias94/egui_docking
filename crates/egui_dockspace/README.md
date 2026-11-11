@@ -9,17 +9,19 @@ keyboard/AccessKit actions and application-controlled close requests.
 **Pre-release:** use a path dependency from this checkout. Requires Rust 1.95
 and egui 0.37. Native OS windows use a separate experimental adapter.
 
-## Try the interactive editor
+## Run the workbench
 
 From the repository root:
 
 ```sh
-cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked
+cargo run -p egui_dockspace --example workbench --features example-wgpu --locked
 ```
 
 This official-egui/WGPU host supports drag docking, splitter resizing and
-floating groups in one OS window. Its source shows the complete input-to-output
-integration, including an application toolbar and renderer presentation results.
+floating groups in one OS window. Start with
+[`workbench/editor.rs`](examples/workbench/editor.rs) for layout, pane rendering,
+styling and close decisions. The [window host](examples/workbench.rs) and
+[renderer](examples/workbench/renderer.rs) show complete input and presentation.
 
 ## Host choices
 
@@ -64,12 +66,18 @@ application's background tasks, transfer completed data to the UI thread, and
 request a repaint. The [background-save example](examples/background_save.rs)
 uses an exact deferred-close token so save failure keeps the document open.
 
-## Examples
+## More examples
 
-- [Basic](examples/basic.rs): a small eframe integration, pane content and theme/font changes.
-- [Background saving](examples/background_save.rs): worker completion, close approval and failure handling.
-- [Workspace persistence](examples/workspace_persistence.rs): named presets, closed-pane inventory and layout locking.
-- [All run commands](../../docs/EXAMPLES.md), including the full draggable and native editors.
+Run these from the repository root. They use an ordinary eframe callback and
+focus on application workflows; use the workbench above for drag docking.
+
+| Example | Run command |
+| --- | --- |
+| [Basic pane rendering](examples/basic.rs) | `cargo run -p egui_dockspace --example basic --features example-app --locked` |
+| [Background saving](examples/background_save.rs) | `cargo run -p egui_dockspace --example background_save --features example-app --locked` |
+| [Layout persistence](examples/workspace_persistence.rs) | `cargo run -p egui_dockspace --example workspace_persistence --features example-app,serde --locked` |
+
+[All examples](../../docs/EXAMPLES.md) · [Native OS-window example](../egui_dockspace_native/README.md)
 
 ## Styling
 
@@ -85,6 +93,7 @@ overrides. Use `DockStyle::from_egui(ui)` after changing fonts or density.
 | --- | --- |
 | `serde` | Layout document save/restore; pane data and file storage remain application-owned |
 | `example-app` | Build the packaged eframe examples |
+| `example-wgpu` | Build the complete-output workbench using official winit/WGPU |
 | `native-render-support` | Internal seam for the unpublished native adapter |
 
 ## License

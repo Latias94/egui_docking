@@ -9,13 +9,13 @@ need a desktop session and a working graphics backend.
 | --- | --- | --- |
 | Learn the renderer-neutral core | [Layout commands](../crates/dockspace/examples/layout_commands.rs) | Create a layout, select/open/move panes and inspect committed results; no window |
 | Integrate a custom renderer | [Engine host](../integration/dockspace-host-harness/examples/engine_host.rs) | Measure, record and settle output for two logical surfaces; recording renderer |
-| Try full docking with official egui | [Interactive editor](../integration/egui-official-harness/src/bin/official_caller_owned_demo.rs) | Drag docking, splitters, contained Inspector, toolbar and retained document data |
+| Try full docking with official egui | [Workbench](../crates/egui_dockspace/examples/workbench.rs) | Drag docking, splitters, contained Inspector, themes and retained document data |
 | Start from an eframe callback | [Basic](../crates/egui_dockspace/examples/basic.rs) | Pane rendering, close decisions and theme/font changes; callback capabilities |
 | Save before closing a tab | [Background save](../crates/egui_dockspace/examples/background_save.rs) | Background worker, exact deferred token, failure recovery and stale completion |
 | Save and restore editor layouts | [Workspace persistence](../crates/egui_dockspace/examples/workspace_persistence.rs) | Presets, closed-pane inventory, missing content and layout locking |
 | Explore native OS windows | [Native editor](../crates/egui_dockspace_native/examples/basic.rs) | Experimental multiview, window recovery, policy/style commands and optional presets |
 
-Start with the **interactive editor** for draggable egui docking. The three
+Start with the **workbench** for draggable egui docking. The three
 packaged eframe examples use an ordinary `App::ui` callback: selection, close,
 menus and keyboard resizing work, while drag docking and pane-focus confirmation
 are unavailable because eframe owns the surrounding output. Their purpose is to
@@ -38,13 +38,16 @@ models presentation results without creating windows or submitting GPU work.
 Full docking, with official crates.io dependencies:
 
 ```sh
-cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked
+cargo run -p egui_dockspace --example workbench --features example-wgpu --locked
 ```
 
 Try editing text, dragging a tab into another group, resizing a split, moving the
 contained Inspector, then closing and restoring a pane. The host integrates
 `run_single_surface_with_ui` with winit/WGPU and reports its actual renderer
-presentation result. This is a single OS-window example.
+presentation result. This is a single OS-window example. Its application code
+lives in [editor.rs](../crates/egui_dockspace/examples/workbench/editor.rs), separate
+from the window loop, renderer and opt-in measurement exercise. The independent
+official harness compiles the same example against its own locked dependencies.
 
 Smaller eframe examples:
 

@@ -15,13 +15,15 @@ Rust 1.95 or later is required. The egui adapter targets egui 0.37.
 Run the interactive editor using official egui, winit and WGPU:
 
 ```sh
-cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked
+cargo run -p egui_dockspace --example workbench --features example-wgpu --locked
 ```
 
 Drag tabs to merge or split panes, resize splitters, and move the floating
 Inspector. Edit a document, close it, then use **Restore layout** to reopen it
 with its application data intact. This example uses one OS window and needs no
 engine or dependency fork.
+
+![Dockspace workbench: tabs, split panes, Preview and Inspector](screenshots/docking.gif)
 
 For a small terminal-only introduction to the core:
 

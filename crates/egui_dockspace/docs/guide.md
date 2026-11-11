@@ -189,7 +189,7 @@ The repository includes a real-window official-egui host that exercises this
 supported tier directly:
 
 ```text
-cargo run --manifest-path integration/egui-official-harness/Cargo.toml --features demo --bin official-caller-owned-demo --locked -j1
+cargo run -p egui_dockspace --example workbench --features example-wgpu --locked
 ```
 
 ## Callback hosts

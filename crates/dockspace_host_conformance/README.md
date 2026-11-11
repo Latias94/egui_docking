@@ -1,5 +1,15 @@
 # dockspace host conformance
 
+Internal test support for checking that hosts agree on Dockspace behavior.
+Applications do not depend on this crate, and it is not published to crates.io.
+
+It serves two purposes: black-box tests catch public-contract regressions that
+internal engine tests can miss, and shared semantic scenarios let different
+adapters execute the same expected behavior through their own inputs. For
+example, L08 selects and closes a tab, adjusts a splitter and resizes a contained
+window; the recording host and egui each resolve their own controls and check
+their actual observations. The scenario shares no framework IDs or coordinates.
+
 This unpublished crate supplies renderer-neutral conformance scenarios and a
 private `core-host` executor. It uses only `dockspace`'s public runtime
 and model APIs. It does not own a `DockEngine`, replay core traces, or ask the

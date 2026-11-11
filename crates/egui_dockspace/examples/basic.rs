@@ -28,7 +28,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "egui_dockspace",
         options,
-        Box::new(|_| Ok(Box::new(DockspaceApp::new()))),
+        Box::new(|creation| {
+            creation.egui_ctx.set_theme(egui::Theme::Light);
+            Ok(Box::new(DockspaceApp::new()))
+        }),
     )
 }
 
@@ -85,15 +88,14 @@ impl eframe::App for DockspaceApp {
                 }
             });
             ui.horizontal_wrapped(|ui| {
-                ui.strong("Unmodified eframe compatibility demo");
+                ui.strong("Pane rendering");
                 ui.separator();
                 match self.presentation_settlement {
                     DockspaceCapability::Supported => {
                         ui.small("Drag tabs into panes; use the dotted title grip to move Inspector.");
                     }
-                    DockspaceCapability::Unavailable(reason) => {
-                        ui.small("Selection, close, menus, and keyboard resize work. Drag docking and floating-window movement are disabled because eframe owns terminal output.");
-                        ui.weak(format!("Capability: {reason:?}"));
+                    DockspaceCapability::Unavailable(_) => {
+                        ui.small("Select and close tabs, or resize with the keyboard. For drag docking, run the workbench example.");
                     }
                 }
             });
