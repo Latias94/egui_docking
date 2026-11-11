@@ -54,9 +54,10 @@ fn run_frame(
         ..RawInput::default()
     };
     let mut show = |ui: &mut Ui| {
-        dockspace
+        let response = dockspace
             .show_single_surface(SURFACE, ui, &mut Panes)
             .unwrap();
+        assert!(response.manipulation_feedback().is_empty());
     };
     if terminal_owned {
         let (output, receipt) = egui_dockspace::run_ui(context, input, show).into_parts();
@@ -114,7 +115,7 @@ fn policy_disabled_tabs_keep_visible_accessibility_and_hover_without_activation(
                 .drop_without_applying_deltas();
         }
         let output = run_frame(&context, &mut dockspace, terminal_owned, Vec::new());
-        disabled_tab(&output, "First");
+        let (_, first_bounds) = disabled_tab(&output, "First");
         let (second, bounds) = disabled_tab(&output, "Second");
         let point = Pos2::new(
             ((bounds.x0 + bounds.x1) * 0.5) as f32,
@@ -168,6 +169,48 @@ fn policy_disabled_tabs_keep_visible_accessibility_and_hover_without_activation(
             assert_eq!(disabled_tab(&output, "Second").1, bounds);
             output.drop_without_applying_deltas();
         }
+
+        let destination = Pos2::new(
+            ((first_bounds.x0 + first_bounds.x1) * 0.5) as f32,
+            ((first_bounds.y0 + first_bounds.y1) * 0.5) as f32,
+        );
+        assert!(point.distance(destination) > 32.0);
+        let version = dockspace.version();
+        for events in [
+            vec![
+                Event::PointerMoved(point),
+                Event::PointerButton {
+                    pos: point,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+            vec![Event::PointerMoved(destination)],
+            vec![Event::PointerButton {
+                pos: destination,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        ] {
+            run_frame(&context, &mut dockspace, terminal_owned, events)
+                .drop_without_applying_deltas();
+            assert!(context.dragged_id().is_none());
+            assert_eq!(dockspace.version(), version);
+            let surface = dockspace.view().surface(SURFACE).unwrap();
+            assert_eq!(surface.contained_count(), 0);
+            let tabs = surface
+                .main_root()
+                .unwrap()
+                .content()
+                .unwrap()
+                .tabs()
+                .unwrap();
+            assert_eq!(tabs.items(), [FIRST, SECOND]);
+            assert_eq!(tabs.selected(), Some(FIRST));
+        }
+
         let output = run_frame(
             &context,
             &mut dockspace,
