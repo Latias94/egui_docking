@@ -254,12 +254,7 @@ pub(super) fn resolve_native_pointer_edge(
                         .contains(route.client_position())
                     && coordinates.client_to_surface(route.client_position()).ok()
                         == Some(route.surface_position())
-            })
-            && engine
-                .interaction_projection(route.binding().surface())
-                .is_some_and(|projection| {
-                    DockEngine::native_surface_hit_contains(projection, route.surface_position())
-                });
+            });
         if !valid {
             return Err(EngineError::PointerReceiverGeometry {
                 source: PointerReceiverGeometryError::LogicalPointUnavailable {
