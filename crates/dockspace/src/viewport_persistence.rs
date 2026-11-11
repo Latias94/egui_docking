@@ -11,19 +11,13 @@
 //! inventory after restore.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
-use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
-use serde::ser::SerializeTuple;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::geometry::{GeometryError, PhysicalRect, PhysicalSize, ScaleFactor};
 use crate::ids::SurfaceId;
 use crate::viewport::WorkAreaToken;
-
-/// The viewport-placement sidecar schema emitted and accepted by this release.
-pub(crate) const VIEWPORT_PLACEMENT_SNAPSHOT_VERSION: u32 = 2;
 
 /// Application-declared native hosting preference for one logical surface.
 ///
@@ -33,12 +27,25 @@ pub(crate) const VIEWPORT_PLACEMENT_SNAPSHOT_VERSION: u32 = 2;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeSurfaceHostPreference {
     /// The application owns this native root window.
+    #[serde(deserialize_with = "deserialize_root_host_preference")]
     Root,
     /// Dockspace owns a child window and recovers its content to this host.
     Child {
         /// Logical application-root surface which receives recovered content.
         recovery_host: SurfaceId,
     },
+}
+
+fn deserialize_root_host_preference<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Serde's internally tagged unit variant decoder ignores unknown fields.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RootHostPreference {}
+
+    RootHostPreference::deserialize(deserializer).map(|_| ())
 }
 
 /// A durable window presentation preference.
@@ -277,44 +284,18 @@ impl ViewportPlacementPreferences {
     }
 }
 
-/// A versioned, renderer-neutral viewport placement sidecar.
+/// A renderer-neutral viewport placement sidecar payload.
 ///
-/// Snapshot records intentionally expose scalar geometry so callers can inspect
-/// or migrate untrusted data. Call [`Self::restore`] before using any record as
-/// a platform placement preference.
-#[derive(Clone, Debug, PartialEq)]
+/// Snapshot records use scalar geometry for untrusted data. Call [`Self::restore`]
+/// before using any record as a platform placement preference.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ViewportPlacementSnapshot {
     /// One record per stable logical surface.
     pub(crate) placements: Vec<SnapshotViewportPlacementRecord>,
 }
 
-#[derive(Serialize)]
-struct ViewportPlacementSnapshotPayloadRef<'snapshot> {
-    placements: &'snapshot [SnapshotViewportPlacementRecord],
-}
-
-impl Serialize for ViewportPlacementSnapshot {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut document = serializer.serialize_tuple(2)?;
-        document.serialize_element(&VIEWPORT_PLACEMENT_SNAPSHOT_VERSION)?;
-        document.serialize_element(&ViewportPlacementSnapshotPayloadRef {
-            placements: &self.placements,
-        })?;
-        document.end()
-    }
-}
-
 impl ViewportPlacementSnapshot {
-    /// Returns the schema version emitted for this normalized snapshot.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn version(&self) -> u32 {
-        VIEWPORT_PLACEMENT_SNAPSHOT_VERSION
-    }
-
     /// Captures a canonical sidecar from validated preferences.
     #[must_use]
     pub(crate) fn capture(preferences: &ViewportPlacementPreferences) -> Self {
@@ -332,7 +313,7 @@ impl ViewportPlacementSnapshot {
     ///
     /// # Errors
     ///
-    /// Returns a structured error for unsupported versions, duplicate surfaces,
+    /// Returns a structured error for duplicate surfaces,
     /// non-finite or invalid geometry, empty outer rectangles, and invalid scale
     /// factors.
     pub(crate) fn restore(
@@ -371,16 +352,20 @@ impl ViewportPlacementSnapshot {
 pub(crate) struct SnapshotViewportPlacementRecord {
     /// Stable logical surface identity.
     pub(crate) surface: SurfaceId,
-    /// Explicit hosting intent; a missing value keeps the surface renderer-local.
+    /// Explicit hosting intent; a null value keeps the surface renderer-local.
+    #[serde(deserialize_with = "crate::persistence::deserialize_required_option")]
     pub(crate) native_host: Option<NativeSurfaceHostPreference>,
     /// Last-confirmed native outer rectangle in desktop physical pixels.
+    #[serde(deserialize_with = "crate::persistence::deserialize_required_option")]
     pub(crate) outer_rect: Option<SnapshotPhysicalRect>,
     /// Optional native inner size captured with the outer rectangle.
-    #[serde(default)]
+    #[serde(deserialize_with = "crate::persistence::deserialize_required_option")]
     pub(crate) inner_size: Option<SnapshotPhysicalSize>,
     /// Optional scale-factor hint from the confirming observation.
+    #[serde(deserialize_with = "crate::persistence::deserialize_required_option")]
     pub(crate) scale_factor: Option<f64>,
     /// Optional durable window presentation preference.
+    #[serde(deserialize_with = "crate::persistence::deserialize_required_option")]
     pub(crate) presentation: Option<WindowPresentationPreference>,
 }
 
@@ -512,112 +497,6 @@ impl From<PhysicalRect> for SnapshotPhysicalRect {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ViewportPlacementSnapshotV2 {
-    placements: Vec<SnapshotViewportPlacementRecord>,
-}
-
-impl ViewportPlacementSnapshotV2 {
-    fn into_snapshot(self) -> ViewportPlacementSnapshot {
-        ViewportPlacementSnapshot {
-            placements: self.placements,
-        }
-    }
-}
-
-/// Version-first decoder for a self-describing viewport placement sidecar.
-///
-/// Deserialize external data into this envelope, then call
-/// [`Self::into_snapshot`] or [`Self::into_preferences`]. Unsupported versions
-/// accept any payload shape so callers receive a typed version error instead of
-/// a misleading current-schema decoding error.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ViewportPlacementSnapshotEnvelope {
-    version: u32,
-    snapshot: Option<ViewportPlacementSnapshot>,
-}
-
-impl ViewportPlacementSnapshotEnvelope {
-    /// Returns the schema version declared by the serialized document.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn version(&self) -> u32 {
-        self.version
-    }
-
-    /// Returns the strictly decoded snapshot for the supported schema version.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ViewportPlacementRestoreError::UnsupportedVersion`] for every
-    /// version other than [`VIEWPORT_PLACEMENT_SNAPSHOT_VERSION`].
-    pub(crate) fn into_snapshot(
-        self,
-    ) -> Result<ViewportPlacementSnapshot, ViewportPlacementRestoreError> {
-        self.snapshot
-            .ok_or(ViewportPlacementRestoreError::UnsupportedVersion {
-                found: self.version,
-                supported: VIEWPORT_PLACEMENT_SNAPSHOT_VERSION,
-            })
-    }
-
-    /// Decodes and validates the complete sidecar without mutating external state.
-    ///
-    /// # Errors
-    ///
-    /// Returns a structured version, identity, geometry, or scale-factor error.
-    #[cfg(test)]
-    pub(crate) fn into_preferences(
-        self,
-    ) -> Result<ViewportPlacementPreferences, ViewportPlacementRestoreError> {
-        self.into_snapshot()?.restore()
-    }
-}
-
-impl<'de> Deserialize<'de> for ViewportPlacementSnapshotEnvelope {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_tuple(2, ViewportPlacementSnapshotEnvelopeVisitor)
-    }
-}
-
-struct ViewportPlacementSnapshotEnvelopeVisitor;
-
-impl<'de> Visitor<'de> for ViewportPlacementSnapshotEnvelopeVisitor {
-    type Value = ViewportPlacementSnapshotEnvelope;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a [version, payload] viewport placement document")
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let version = sequence
-            .next_element::<u32>()?
-            .ok_or_else(|| A::Error::invalid_length(0, &self))?;
-        let snapshot = if version == VIEWPORT_PLACEMENT_SNAPSHOT_VERSION {
-            let payload = sequence
-                .next_element::<ViewportPlacementSnapshotV2>()?
-                .ok_or_else(|| A::Error::invalid_length(1, &self))?;
-            Some(payload.into_snapshot())
-        } else {
-            sequence
-                .next_element::<IgnoredAny>()?
-                .ok_or_else(|| A::Error::invalid_length(1, &self))?;
-            None
-        };
-        if sequence.next_element::<IgnoredAny>()?.is_some() {
-            return Err(A::Error::invalid_length(3, &self));
-        }
-        Ok(ViewportPlacementSnapshotEnvelope { version, snapshot })
-    }
-}
-
 /// Failure to restore a viewport placement sidecar.
 #[derive(Clone, Debug, PartialEq, Error)]
 pub enum ViewportPlacementRestoreError {
@@ -632,16 +511,6 @@ pub enum ViewportPlacementRestoreError {
     PlacementHintWithoutOuterRect {
         /// Stable logical surface owning the hints.
         surface: SurfaceId,
-    },
-    /// The snapshot version is not implemented by this crate release.
-    #[error(
-        "unsupported viewport placement snapshot version {found}; supported version is {supported}"
-    )]
-    UnsupportedVersion {
-        /// Version read from the snapshot.
-        found: u32,
-        /// Version implemented by this crate release.
-        supported: u32,
     },
     /// Two records declare the same stable logical surface.
     #[error("duplicate viewport placement for surface {surface}")]
@@ -723,11 +592,10 @@ mod tests {
                 .with_work_area(WorkAreaToken::new(31)),
         );
         let snapshot = ViewportPlacementSnapshot::capture(&preferences);
-        assert_eq!(snapshot.version(), VIEWPORT_PLACEMENT_SNAPSHOT_VERSION);
         let json = serde_json::to_string(&snapshot).expect("component must encode");
-        let restored = serde_json::from_str::<ViewportPlacementSnapshotEnvelope>(&json)
-            .expect("component envelope must decode")
-            .into_preferences()
+        let restored = serde_json::from_str::<ViewportPlacementSnapshot>(&json)
+            .expect("component payload must decode")
+            .restore()
             .expect("component must validate");
         let placement = restored.get(FIRST).expect("placement must restore");
         assert_eq!(placement.work_area(), None);
@@ -746,22 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn internal_component_rejects_future_versions_and_invalid_records() {
-        let future = serde_json::from_str::<ViewportPlacementSnapshotEnvelope>(
-            r#"[9,{"future":{"shape":[1,2,3]}}]"#,
-        )
-        .expect("future payload must be skipped");
-        assert_eq!(future.version(), 9);
-        assert_eq!(
-            future
-                .into_preferences()
-                .expect_err("future component must not restore"),
-            ViewportPlacementRestoreError::UnsupportedVersion {
-                found: 9,
-                supported: VIEWPORT_PLACEMENT_SNAPSHOT_VERSION,
-            }
-        );
-
+    fn internal_component_rejects_duplicate_surfaces_and_invalid_records() {
         let duplicate = ViewportPlacementSnapshot {
             placements: vec![record(), record()],
         };
@@ -800,30 +653,75 @@ mod tests {
     }
 
     #[test]
-    fn missing_inner_size_remains_an_explicit_legacy_absence() {
+    fn nullable_placement_fields_are_required_and_accept_explicit_null() {
         let snapshot = ViewportPlacementSnapshot {
             placements: vec![record()],
         };
-        let mut value = serde_json::to_value(snapshot).expect("component must encode");
-        value[1]["placements"][0]
-            .as_object_mut()
-            .expect("placement payload is an object")
-            .remove("inner_size");
-        let restored = serde_json::from_value::<ViewportPlacementSnapshotEnvelope>(value)
-            .expect("missing optional inner size must decode")
-            .into_preferences()
-            .expect("legacy placement remains valid");
-        assert_eq!(restored.get(FIRST).unwrap().inner_size(), None);
+        let base = serde_json::to_value(snapshot).expect("component must encode");
+        for field in [
+            "native_host",
+            "outer_rect",
+            "inner_size",
+            "scale_factor",
+            "presentation",
+        ] {
+            let mut explicit_null = base.clone();
+            explicit_null["placements"][0][field] = serde_json::Value::Null;
+            let decoded =
+                serde_json::from_value::<ViewportPlacementSnapshot>(explicit_null.clone())
+                    .expect("explicitly null placement fields must decode");
+            let encoded = serde_json::to_value(decoded).expect("decoded component must encode");
+            assert_eq!(encoded["placements"][0][field], serde_json::Value::Null);
+
+            explicit_null["placements"][0]
+                .as_object_mut()
+                .expect("placement payload must be an object")
+                .remove(field)
+                .expect("nullable field must be present before removal");
+            let error = serde_json::from_value::<ViewportPlacementSnapshot>(explicit_null)
+                .expect_err("an absent nullable field must not become an intentional null");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("missing field `{field}`")),
+                "{error}"
+            );
+        }
     }
 
     #[test]
-    fn supported_component_schema_rejects_unknown_fields() {
+    fn component_payload_rejects_unknown_and_duplicate_fields() {
         let snapshot = ViewportPlacementSnapshot {
             placements: vec![record()],
         };
-        let mut value = serde_json::to_value(snapshot).expect("component must encode");
-        value[1]["placements"][0]["window_token"] = serde_json::json!(99);
-        assert!(serde_json::from_value::<ViewportPlacementSnapshotEnvelope>(value).is_err());
+        let base = serde_json::to_value(&snapshot).expect("component must encode");
+        for path in [
+            "",
+            "/placements/0",
+            "/placements/0/outer_rect",
+            "/placements/0/inner_size",
+            "/placements/0/native_host",
+        ] {
+            let mut value = base.clone();
+            value
+                .pointer_mut(path)
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("schema boundary must be an object")
+                .insert("window_token".into(), serde_json::json!(99));
+            assert!(serde_json::from_value::<ViewportPlacementSnapshot>(value).is_err());
+        }
+
+        let encoded = serde_json::to_string(&snapshot).expect("component must encode");
+        for duplicate in [
+            r#"{"placements":[],"placements":[]}"#.to_owned(),
+            encoded.replacen(
+                r#""native_host":"#,
+                r#""native_host":null,"native_host":"#,
+                1,
+            ),
+        ] {
+            assert!(serde_json::from_str::<ViewportPlacementSnapshot>(&duplicate).is_err());
+        }
     }
 
     #[test]
@@ -838,9 +736,9 @@ mod tests {
             },
         );
         let json = serde_json::to_vec(&ViewportPlacementSnapshot::capture(&preferences)).unwrap();
-        let mut restored = serde_json::from_slice::<ViewportPlacementSnapshotEnvelope>(&json)
+        let mut restored = serde_json::from_slice::<ViewportPlacementSnapshot>(&json)
             .unwrap()
-            .into_preferences()
+            .restore()
             .unwrap();
         assert_eq!(restored, preferences);
         assert!(restored.iter().next().is_none());
@@ -882,16 +780,6 @@ mod tests {
             }
             .restore(),
             Err(ViewportPlacementRestoreError::EmptyPreference { surface: FIRST })
-        );
-        let old =
-            serde_json::from_str::<ViewportPlacementSnapshotEnvelope>(r#"[1,{"legacy":true}]"#)
-                .unwrap();
-        assert_eq!(
-            old.into_preferences(),
-            Err(ViewportPlacementRestoreError::UnsupportedVersion {
-                found: 1,
-                supported: VIEWPORT_PLACEMENT_SNAPSHOT_VERSION,
-            })
         );
     }
 }

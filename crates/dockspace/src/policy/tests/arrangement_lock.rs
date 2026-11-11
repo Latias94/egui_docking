@@ -233,23 +233,30 @@ fn recovery_ignores_arrangement_lock_but_retains_configured_rules() {
 
 #[cfg(feature = "serde")]
 #[test]
-fn arrangement_lock_roundtrips_and_missing_legacy_field_defaults_to_unlocked() {
+fn arrangement_lock_roundtrips_explicit_values_and_rejects_missing_field() {
     let mut policy = DockPolicy::new();
     policy.set_close_capability(CloseCapability::DeferredAllowed);
-    policy.set_arrangement_locked(true);
-    let snapshot = policy.snapshot(PolicyRevision::new(7));
-    let mut encoded = serde_json::to_value(&snapshot).expect("policy snapshot serializes");
-    let decoded: DockPolicySnapshot =
-        serde_json::from_value(encoded.clone()).expect("locked snapshot deserializes");
-    assert_eq!(decoded, snapshot);
+    for locked in [false, true] {
+        policy.set_arrangement_locked(locked);
+        let snapshot = policy.snapshot(PolicyRevision::new(7));
+        let mut encoded = serde_json::to_value(&snapshot).expect("policy snapshot serializes");
+        let decoded: DockPolicySnapshot =
+            serde_json::from_value(encoded.clone()).expect("explicit lock value deserializes");
+        assert_eq!(decoded, snapshot);
+        assert_eq!(decoded.arrangement_locked(), locked);
 
-    let removed = encoded["policy"]["rules"]
-        .as_object_mut()
-        .expect("policy rules are an object")
-        .remove("arrangement_locked");
-    assert_eq!(removed, Some(serde_json::Value::Bool(true)));
-    let legacy: DockPolicySnapshot =
-        serde_json::from_value(encoded).expect("legacy policy without the lock field deserializes");
-    policy.set_arrangement_locked(false);
-    assert_eq!(legacy, policy.snapshot(PolicyRevision::new(7)));
+        let removed = encoded["policy"]["rules"]
+            .as_object_mut()
+            .expect("policy rules are an object")
+            .remove("arrangement_locked");
+        assert_eq!(removed, Some(serde_json::Value::Bool(locked)));
+        let error = serde_json::from_value::<DockPolicySnapshot>(encoded)
+            .expect_err("an absent lock field must not silently unlock the arrangement");
+        assert!(
+            error
+                .to_string()
+                .contains("missing field `arrangement_locked`"),
+            "{error}"
+        );
+    }
 }

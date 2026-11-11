@@ -144,9 +144,8 @@ fn reconciliation_rejects_key_and_item_conflicts_without_mutating_either_input()
 #[cfg(feature = "serde")]
 mod persistence {
     use dockspace::external_item_key::{
-        EXTERNAL_ITEM_KEY_SNAPSHOT_VERSION, ExternalItemKeyMap, ExternalItemKeyMapError,
-        ExternalItemKeyReconcileError, ExternalItemKeyRestoreError, ExternalItemKeySnapshot,
-        ExternalItemKeySnapshotEnvelope, SnapshotExternalItemKeyEntry,
+        ExternalItemKeyMap, ExternalItemKeyMapError, ExternalItemKeyReconcileError,
+        ExternalItemKeyRestoreError, ExternalItemKeySnapshot, SnapshotExternalItemKeyEntry,
     };
     use dockspace::ids::ItemId;
 
@@ -178,9 +177,9 @@ mod persistence {
 
         let encoded = serde_json::to_string_pretty(&ExternalItemKeySnapshot::capture(&original))
             .expect("sidecar must serialize");
-        let mut restored = serde_json::from_str::<ExternalItemKeySnapshotEnvelope>(&encoded)
+        let mut restored = serde_json::from_str::<ExternalItemKeySnapshot>(&encoded)
             .expect("sidecar must decode")
-            .into_mapping()
+            .restore()
             .expect("sidecar must validate");
         assert_eq!(restored, original);
 
@@ -282,9 +281,9 @@ mod persistence {
         let encoded = serde_json::to_string(&ExternalItemKeySnapshot::capture(&mapping))
             .expect("exhausted frontier must serialize");
         assert!(encoded.contains(r#""next_item_id":null"#));
-        let mut restarted = serde_json::from_str::<ExternalItemKeySnapshotEnvelope>(&encoded)
+        let mut restarted = serde_json::from_str::<ExternalItemKeySnapshot>(&encoded)
             .expect("exhausted sidecar must decode")
-            .into_mapping()
+            .restore()
             .expect("exhausted sidecar must validate");
         assert_eq!(restarted, mapping);
         assert!(matches!(
@@ -357,37 +356,18 @@ mod persistence {
     }
 
     #[test]
-    fn supported_wire_schema_rejects_unknown_duplicate_and_malformed_fields() {
+    fn payload_rejects_unknown_duplicate_and_missing_fields() {
         for invalid in [
-            r#"[1,{"entries":[],"next_item_id":1,"future":true}]"#,
-            r#"[1,{"entries":[{"external_key":"panes/a","item_id":1,"future":true}],"next_item_id":2}]"#,
-            r#"[1,{"entries":[],"entries":[],"next_item_id":1}]"#,
-            r#"[1,{"entries":[{"external_key":"panes/a","external_key":"panes/b","item_id":1}],"next_item_id":2}]"#,
-            r#"[1,{"entries":[]}]"#,
-            r#"[1,{"entries":[],"next_item_id":1},{}]"#,
+            r#"{"entries":[],"next_item_id":1,"future":true}"#,
+            r#"{"entries":[{"external_key":"panes/a","item_id":1,"future":true}],"next_item_id":2}"#,
+            r#"{"entries":[],"entries":[],"next_item_id":1}"#,
+            r#"{"entries":[{"external_key":"panes/a","external_key":"panes/b","item_id":1}],"next_item_id":2}"#,
+            r#"{"entries":[]}"#,
         ] {
             assert!(
-                serde_json::from_str::<ExternalItemKeySnapshotEnvelope>(invalid).is_err(),
-                "malformed supported sidecar must fail: {invalid}"
+                serde_json::from_str::<ExternalItemKeySnapshot>(invalid).is_err(),
+                "malformed sidecar payload must fail: {invalid}"
             );
         }
-    }
-
-    #[test]
-    fn unsupported_version_is_reported_before_future_payload_shape() {
-        let envelope = serde_json::from_str::<ExternalItemKeySnapshotEnvelope>(
-            r#"[9,{"future":{"shape":[1,2,3]}}]"#,
-        )
-        .expect("future payload must be skipped by the version-first envelope");
-        assert_eq!(envelope.version(), 9);
-        assert_eq!(
-            envelope
-                .into_mapping()
-                .expect_err("future version must not restore"),
-            ExternalItemKeyRestoreError::UnsupportedVersion {
-                found: 9,
-                supported: EXTERNAL_ITEM_KEY_SNAPSHOT_VERSION,
-            }
-        );
     }
 }

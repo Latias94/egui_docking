@@ -13,8 +13,7 @@ use dockspace::graph::{
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, StableInputSourceId, SurfaceId};
 use dockspace::persistence::{
     SnapshotAxis, SnapshotEntityKind, SnapshotNode, SnapshotNodeRecord, SnapshotReferenceOwner,
-    SnapshotRestoreError, SnapshotRootRecord, SnapshotSurfaceRecord, WORKSPACE_SNAPSHOT_VERSION,
-    WorkspaceSnapshot, WorkspaceSnapshotEnvelope,
+    SnapshotRestoreError, SnapshotRootRecord, SnapshotSurfaceRecord, WorkspaceSnapshot,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::validation::WorkspaceValidationError;
@@ -115,11 +114,9 @@ fn assert_zero_sized_contained_rect_is_rejected_without_mutation(
     expected_width: f64,
     expected_height: f64,
 ) {
-    let json = serde_json::to_vec(snapshot).expect("zero-sized V1 geometry must serialize");
-    let decoded = serde_json::from_slice::<WorkspaceSnapshotEnvelope>(&json)
-        .expect("zero is a representable V1 scalar")
-        .into_snapshot()
-        .expect("the V1 envelope must decode before workspace validation");
+    let json = serde_json::to_vec(snapshot).expect("zero-sized geometry must serialize");
+    let decoded = serde_json::from_slice::<WorkspaceSnapshot>(&json)
+        .expect("zero is a representable scalar before workspace validation");
     let decoded_rect = decoded.contained_floatings[0].rect;
     assert_float_eq(decoded_rect.width, expected_width);
     assert_float_eq(decoded_rect.height, expected_height);
@@ -154,17 +151,13 @@ fn assert_zero_sized_contained_rect_is_rejected_without_mutation(
 #[test]
 fn json_round_trip_preserves_the_complete_workspace_contract() {
     let snapshot = sample_snapshot();
-    assert_eq!(snapshot.version(), WORKSPACE_SNAPSHOT_VERSION);
 
     let json = serde_json::to_string_pretty(&snapshot).expect("snapshot JSON must encode");
     let wire: serde_json::Value =
         serde_json::from_str(&json).expect("snapshot wire JSON must decode");
-    assert_eq!(wire[0], WORKSPACE_SNAPSHOT_VERSION);
-    assert!(wire[1].is_object());
-    let decoded = serde_json::from_str::<WorkspaceSnapshotEnvelope>(&json)
-        .expect("snapshot JSON envelope must decode")
-        .into_snapshot()
-        .expect("snapshot version must be supported");
+    assert!(wire.is_object());
+    let decoded = serde_json::from_str::<WorkspaceSnapshot>(&json)
+        .expect("snapshot JSON payload must decode");
 
     let resolved = RefCell::new(Vec::new());
     let restored = decoded
@@ -265,7 +258,7 @@ fn malformed_or_missing_persisted_mru_is_rejected() {
 
     let snapshot = sample_snapshot();
     let mut wire = serde_json::to_value(&snapshot).expect("snapshot must serialize");
-    let nodes = wire[1]["nodes"]
+    let nodes = wire["nodes"]
         .as_array_mut()
         .expect("snapshot payload must contain nodes");
     let tabs = nodes
@@ -276,8 +269,8 @@ fn malformed_or_missing_persisted_mru_is_rejected() {
         .as_object_mut()
         .expect("tabs payload must be an object")
         .remove("mru");
-    let error = serde_json::from_value::<WorkspaceSnapshotEnvelope>(wire)
-        .expect_err("V1 MRU field must be required");
+    let error =
+        serde_json::from_value::<WorkspaceSnapshot>(wire).expect_err("MRU field must be required");
     assert!(error.to_string().contains("missing field `mru`"));
 }
 
@@ -329,7 +322,7 @@ fn duplicate_record_identities_are_typed() {
 }
 
 #[test]
-fn rootless_v1_round_trip_uses_roster_as_the_only_owner_and_order() {
+fn rootless_round_trip_uses_roster_as_the_only_owner_and_order() {
     let mut builder = Workspace::builder();
     let root_a = RootId::new(41);
     let root_b = RootId::new(42);
@@ -363,11 +356,10 @@ fn rootless_v1_round_trip_uses_roster_as_the_only_owner_and_order() {
     let workspace = builder.build().expect("rootless workspace must be valid");
 
     let snapshot = WorkspaceSnapshot::capture(&workspace).expect("capture must succeed");
-    assert_eq!(snapshot.version(), WORKSPACE_SNAPSHOT_VERSION);
     assert_eq!(snapshot.surfaces[0].main_root, None);
     assert_eq!(snapshot.surfaces[0].contained, [51, 52]);
-    let wire = serde_json::to_value(&snapshot).expect("V1 must serialize");
-    for floating in wire[1]["contained_floatings"]
+    let wire = serde_json::to_value(&snapshot).expect("snapshot must serialize");
+    for floating in wire["contained_floatings"]
         .as_array()
         .expect("floating records must be an array")
     {
@@ -377,7 +369,7 @@ fn rootless_v1_round_trip_uses_roster_as_the_only_owner_and_order() {
 
     let restored = snapshot
         .build_candidate(|_| true)
-        .expect("V1 rootless snapshot must restore");
+        .expect("rootless snapshot must restore");
     assert_eq!(
         restored.surface(SURFACE),
         Some(&SurfacePresentation {
@@ -392,49 +384,74 @@ fn rootless_v1_round_trip_uses_roster_as_the_only_owner_and_order() {
 }
 
 #[test]
-fn legacy_contained_fields_are_rejected_independently() {
-    let snapshot = serde_json::to_value(sample_snapshot()).expect("V1 must encode");
+fn unknown_contained_fields_are_rejected_independently() {
+    let snapshot = serde_json::to_value(sample_snapshot()).expect("snapshot must encode");
     for (field, value) in [
         ("z_order", serde_json::json!(99)),
         ("surface", serde_json::json!(SURFACE.get())),
     ] {
-        let mut legacy = snapshot.clone();
-        legacy[1]["contained_floatings"][0]
+        let mut unknown = snapshot.clone();
+        unknown["contained_floatings"][0]
             .as_object_mut()
             .expect("contained floating must be an object")
             .insert(field.into(), value);
         assert!(
-            serde_json::from_value::<WorkspaceSnapshotEnvelope>(legacy).is_err(),
-            "legacy {field} must not be accepted or guessed into V1"
+            serde_json::from_value::<WorkspaceSnapshot>(unknown).is_err(),
+            "unknown field {field} must not be accepted"
         );
     }
 }
 
 #[test]
-fn v1_surface_requires_main_root_field_but_accepts_explicit_null() {
-    let mut explicit_null = serde_json::to_value(sample_snapshot()).expect("snapshot must encode");
-    explicit_null[1]["surfaces"][0]["main_root"] = serde_json::Value::Null;
-    let snapshot = serde_json::from_value::<WorkspaceSnapshotEnvelope>(explicit_null.clone())
-        .expect("an explicit null main root must decode")
-        .into_snapshot()
-        .expect("V1 must be supported");
-    assert_eq!(snapshot.surfaces[0].main_root, None);
+fn nullable_workspace_fields_are_required_and_accept_explicit_null() {
+    let base = serde_json::to_value(sample_snapshot()).expect("snapshot must encode");
+    let tabs = base["nodes"]
+        .as_array()
+        .expect("nodes must be an array")
+        .iter()
+        .position(|record| record["node"]["kind"] == "tabs")
+        .expect("sample must contain tabs");
+    for (path, field) in [
+        (format!("/nodes/{tabs}/node"), "selected"),
+        ("/roots/0".to_owned(), "central"),
+        ("/surfaces/0".to_owned(), "main_root"),
+    ] {
+        let mut explicit_null = base.clone();
+        explicit_null
+            .pointer_mut(&path)
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("record must be an object")
+            .insert(field.into(), serde_json::Value::Null);
+        let snapshot = serde_json::from_value::<WorkspaceSnapshot>(explicit_null.clone())
+            .expect("an explicit null must decode");
+        let encoded = serde_json::to_value(snapshot).expect("decoded snapshot must encode");
+        assert_eq!(
+            encoded.pointer(&format!("{path}/{field}")),
+            Some(&serde_json::Value::Null),
+            "{field} must remain explicitly null"
+        );
 
-    explicit_null[1]["surfaces"][0]
-        .as_object_mut()
-        .expect("surface record must be an object")
-        .remove("main_root")
-        .expect("main_root must be present before removal");
-    assert!(
-        serde_json::from_value::<WorkspaceSnapshotEnvelope>(explicit_null).is_err(),
-        "a missing main_root field must not be interpreted as an intentional rootless surface"
-    );
+        explicit_null
+            .pointer_mut(&path)
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("record must be an object")
+            .remove(field)
+            .expect("nullable field must be present before removal");
+        let error = serde_json::from_value::<WorkspaceSnapshot>(explicit_null)
+            .expect_err("an absent nullable field must not become an intentional null");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field `{field}`")),
+            "{error}"
+        );
+    }
 }
 
 #[test]
 fn json_rejects_unknown_fields_instead_of_silently_losing_state() {
     let mut value = serde_json::to_value(sample_snapshot()).expect("snapshot JSON must encode");
-    value[1]
+    value
         .as_object_mut()
         .expect("workspace snapshot payload is an object")
         .insert(
@@ -442,7 +459,7 @@ fn json_rejects_unknown_fields_instead_of_silently_losing_state() {
             serde_json::json!({ "enabled": true }),
         );
 
-    assert!(serde_json::from_value::<WorkspaceSnapshotEnvelope>(value).is_err());
+    assert!(serde_json::from_value::<WorkspaceSnapshot>(value).is_err());
 }
 
 #[test]
@@ -458,46 +475,46 @@ fn json_rejects_unknown_fields_at_every_nested_schema_boundary() {
     let mut cases = Vec::new();
 
     let mut node_record = base.clone();
-    insert_unknown(&mut node_record[1]["nodes"][0]);
+    insert_unknown(&mut node_record["nodes"][0]);
     cases.push(node_record);
 
     let mut node_variant = base.clone();
-    insert_unknown(&mut node_variant[1]["nodes"][0]["node"]);
+    insert_unknown(&mut node_variant["nodes"][0]["node"]);
     cases.push(node_variant);
 
     let mut root = base.clone();
-    insert_unknown(&mut root[1]["roots"][0]);
+    insert_unknown(&mut root["roots"][0]);
     cases.push(root);
 
     let mut surface = base.clone();
-    insert_unknown(&mut surface[1]["surfaces"][0]);
+    insert_unknown(&mut surface["surfaces"][0]);
     cases.push(surface);
 
     let mut floating = base.clone();
-    insert_unknown(&mut floating[1]["contained_floatings"][0]);
+    insert_unknown(&mut floating["contained_floatings"][0]);
     cases.push(floating);
 
     let mut rect = base.clone();
-    insert_unknown(&mut rect[1]["contained_floatings"][0]["rect"]);
+    insert_unknown(&mut rect["contained_floatings"][0]["rect"]);
     cases.push(rect);
 
     for value in cases {
-        assert!(serde_json::from_value::<WorkspaceSnapshotEnvelope>(value).is_err());
+        assert!(serde_json::from_value::<WorkspaceSnapshot>(value).is_err());
     }
 
     let mut unknown_node_kind = base.clone();
-    unknown_node_kind[1]["nodes"][0]["node"]["kind"] = serde_json::json!("future_node");
-    assert!(serde_json::from_value::<WorkspaceSnapshotEnvelope>(unknown_node_kind).is_err());
+    unknown_node_kind["nodes"][0]["node"]["kind"] = serde_json::json!("future_node");
+    assert!(serde_json::from_value::<WorkspaceSnapshot>(unknown_node_kind).is_err());
 
     let mut unknown_axis = base;
-    let split = unknown_axis[1]["nodes"]
+    let split = unknown_axis["nodes"]
         .as_array_mut()
         .expect("nodes must be an array")
         .iter_mut()
         .find(|record| record["node"]["kind"] == "split")
         .expect("sample must contain a split");
     split["node"]["axis"] = serde_json::json!("diagonal");
-    assert!(serde_json::from_value::<WorkspaceSnapshotEnvelope>(unknown_axis).is_err());
+    assert!(serde_json::from_value::<WorkspaceSnapshot>(unknown_axis).is_err());
 }
 
 #[test]
@@ -509,46 +526,7 @@ fn json_rejects_repeated_struct_fields() {
         &json[..payload_start],
         &json[payload_start..]
     );
-    assert!(serde_json::from_str::<WorkspaceSnapshotEnvelope>(&duplicate).is_err());
-}
-
-#[test]
-fn version_first_envelope_types_unsupported_documents_before_body_schema() {
-    let future = WORKSPACE_SNAPSHOT_VERSION + 1;
-    for (version, document) in [
-        (
-            future,
-            serde_json::json!([future, {"nodes": {"future": "shape"}}]),
-        ),
-        (0, serde_json::json!([0, [1, 2, 3]])),
-    ] {
-        let envelope = serde_json::from_value::<WorkspaceSnapshotEnvelope>(document)
-            .expect("unsupported document envelope must still decode");
-        assert_eq!(envelope.version(), version);
-        assert_eq!(
-            envelope
-                .into_snapshot()
-                .expect_err("unsupported version must not produce a supported snapshot"),
-            SnapshotRestoreError::UnsupportedVersion {
-                found: version,
-                supported: WORKSPACE_SNAPSHOT_VERSION,
-            }
-        );
-    }
-}
-
-#[test]
-fn envelope_requires_exactly_version_then_payload() {
-    let value = serde_json::to_value(sample_snapshot()).expect("snapshot JSON must encode");
-    let payload = serde_json::to_string(&value[1]).expect("payload JSON must encode");
-    for malformed in [
-        "[]".to_owned(),
-        format!("[{WORKSPACE_SNAPSHOT_VERSION}]"),
-        format!("[{WORKSPACE_SNAPSHOT_VERSION},{payload},null]"),
-        format!("[{payload},{WORKSPACE_SNAPSHOT_VERSION}]"),
-    ] {
-        assert!(serde_json::from_str::<WorkspaceSnapshotEnvelope>(&malformed).is_err());
-    }
+    assert!(serde_json::from_str::<WorkspaceSnapshot>(&duplicate).is_err());
 }
 
 #[test]
@@ -696,7 +674,7 @@ fn unknown_items_and_invalid_scalar_data_are_typed() {
 }
 
 #[test]
-fn v1_restore_rejects_zero_width_contained_rect_without_mutating_live_state() {
+fn restore_rejects_zero_width_contained_rect_without_mutating_live_state() {
     let mut snapshot = sample_snapshot();
     snapshot.contained_floatings[0].rect.width = 0.0;
 
@@ -704,7 +682,7 @@ fn v1_restore_rejects_zero_width_contained_rect_without_mutating_live_state() {
 }
 
 #[test]
-fn v1_restore_rejects_zero_height_contained_rect_without_mutating_live_state() {
+fn restore_rejects_zero_height_contained_rect_without_mutating_live_state() {
     let mut snapshot = sample_snapshot();
     snapshot.contained_floatings[0].rect.height = 0.0;
 

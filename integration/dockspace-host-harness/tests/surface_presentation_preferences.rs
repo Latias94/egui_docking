@@ -452,7 +452,7 @@ fn capture_preserves_registered_hosting_and_observed_physical_geometry() {
     let version = source.version();
     let generation = source.next_document_generation().unwrap();
     let bytes = source.save_document_json().unwrap();
-    assert!(std::str::from_utf8(&bytes).unwrap().starts_with("[2,"));
+    assert!(std::str::from_utf8(&bytes).unwrap().starts_with("[1,"));
     assert_eq!(source.version(), version);
     assert_eq!(source.next_document_generation(), Some(generation + 1));
     let captured = read_preferences(&source);
@@ -656,40 +656,45 @@ fn terminal_restore_preserves_preference_and_recovery_host_identities_atomically
 }
 
 #[test]
-fn v1_documents_reject_before_payload_decoding_or_identity_recognition() {
+fn unsupported_versions_reject_before_payload_decoding_or_identity_recognition() {
     let mut session = persistent_session();
     let bytes = session.save_document_json().unwrap();
     let json = std::str::from_utf8(&bytes).unwrap();
     let payload = json
-        .strip_prefix("[2,")
-        .expect("new documents must use schema V2");
-    let old_header = format!("[1,{payload}");
+        .strip_prefix("[1,")
+        .expect("new documents must use schema V1");
+    let unsupported_header = format!("[2,{payload}");
     let before = session.version();
     let generation = session.next_document_generation();
     let values = read_preferences(&session);
     let content = assert_complete_content(session.view());
-    for legacy in [
-        old_header.as_bytes(),
-        br#"[1,null]"#.as_slice(),
-        br#"[1,{"workspace":[999,null],"surface_preferences":"must not decode"}]"#.as_slice(),
+    for unsupported in [
+        unsupported_header.as_bytes(),
+        br#"[0,null]"#.as_slice(),
+        br#"[2,{"workspace":"must not decode"}]"#.as_slice(),
     ] {
         let recognitions = Cell::new(0);
-        let error =
-            DockspaceSession::from_document_json(legacy, DockPolicy::default(), |document, key| {
+        let error = DockspaceSession::from_document_json(
+            unsupported,
+            DockPolicy::default(),
+            |document, key| {
                 recognitions.set(recognitions.get() + 1);
                 recognize(document, key)
-            })
-            .expect_err("schema V1 cannot supply the complete native hosting metadata contract");
+            },
+        )
+        .expect_err("an unsupported schema must not decode the payload");
         assert_eq!(
             error.kind(),
             DockspacePersistenceErrorKind::UnsupportedVersion
         );
         let error = session
-            .prepare_document_restore_json(legacy, |document, key| {
+            .prepare_document_restore_json(unsupported, |document, key| {
                 recognitions.set(recognitions.get() + 1);
                 recognize(document, key)
             })
-            .expect_err("live restore must reject V1 before decoding its payload");
+            .expect_err(
+                "live restore must reject an unsupported schema before decoding its payload",
+            );
         assert_eq!(
             error.kind(),
             DockspacePersistenceErrorKind::UnsupportedVersion

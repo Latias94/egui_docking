@@ -182,11 +182,12 @@ window recreation or the native showcase's preset UI.
 
 `tests/surface_presentation_preferences.rs` records explicit application-root and
 owned-child hosting through public native registration, including a child's main
-root and complete contained forest. Document V2 round-trips those declarations
+root and complete contained forest. The document round-trips those declarations
 with optional physical placement. Prepared, candidate-frame and committed
 projections preserve the same semantic child and recovery-host references. Dropped attempts preserve the published document, and reads
-cannot create effects, native bindings or presentation authority. V1 rejection
-is version-first because its placements cannot establish the missing host role.
+cannot create effects, native bindings or presentation authority. The single
+schema version is 1, with ordinary nested component objects. Unsupported versions
+reject before payload decoding or application-key recognition.
 
 `examples/engine_host.rs` is a runnable integration walkthrough using this same
 recording sink: two logical surfaces, deferred owned output, Presented/Dropped

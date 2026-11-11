@@ -660,7 +660,6 @@ impl Default for CentralNodePolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct DockPolicyRules {
-    #[cfg_attr(feature = "serde", serde(default))]
     arrangement_locked: bool,
     allowed_operations: BTreeSet<DockOperation>,
     allowed_presentations: BTreeSet<DockPresentationMode>,

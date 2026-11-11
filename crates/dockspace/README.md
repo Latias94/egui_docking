@@ -908,7 +908,7 @@ For native replacement, consume the complete `native_bindings()` successor
 roster; old binding and output authority cannot revive interaction. Logical
 surfaces without a binding do not automatically become new OS windows.
 
-Document V2 preserves explicit native hosting intent independently of window
+The document preserves explicit native hosting intent independently of window
 placement. The same document-owned per-surface record can describe a native
 application root or a Dockspace child with its recovery-host surface, even when
 no exact physical outer rectangle has been observed. Purely logical surfaces do
@@ -927,11 +927,14 @@ generation atomically. This projection does not save new observations or
 advance a generation. The workspace `view()` remains the content authority,
 including each surface's complete main root and contained forest.
 
-The outer document schema and its surface-preference component are version 2.
-V1 is rejected through `DockspacePersistenceErrorKind::UnsupportedVersion` before
-payload decoding or application-key recognition; role or recovery host cannot be
-reconstructed from its optional rectangles. Workspace and external-key component
-versions remain independent. Native binding, provider, window token, recovery
+The pre-release document uses one schema version, `[1, payload]`, for the complete
+atomic document. Workspace, external keys and surface preferences are ordinary
+strict objects without independent version envelopes. Nullable fields must be
+present, using `null` for intentional absence; missing, duplicate and unknown
+fields reject.
+An unsupported outer version returns `DockspacePersistenceErrorKind::UnsupportedVersion`
+before payload decoding or application-key recognition.
+Native binding, provider, window token, recovery
 anchor and work-area token are never persisted. The declarations are inputs to
 an explicit host restoration policy, and do not create windows or bypass exact
 preparation and first-live presentation.

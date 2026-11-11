@@ -70,6 +70,60 @@ fn saved_document_with_two_items() -> (Vec<u8>, ItemId, ItemId) {
     (bytes, first, second)
 }
 
+#[test]
+fn document_uses_one_schema_and_requires_explicit_null_fields_before_recognition() {
+    let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
+    let item = bootstrap.ensure_item("pane:first").unwrap();
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::tabs([item])),
+    )])
+    .unwrap();
+    let mut session =
+        DockspaceSession::from_persistent_layout(layout, DockPolicy::default(), bootstrap).unwrap();
+    let saved = session.save_document_json().unwrap();
+    let mut wire: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(wire[0], 1);
+    for component in ["workspace", "external_item_keys", "viewport_placements"] {
+        assert!(wire[1][component].is_object());
+    }
+    assert_eq!(
+        wire[1]["workspace"]["roots"][0]["central"],
+        serde_json::Value::Null
+    );
+    let restored =
+        DockspaceSession::from_document_json(&saved, DockPolicy::default(), |document, key| {
+            document == DOCUMENT && key == "pane:first"
+        })
+        .unwrap();
+    assert!(restored.view().item(item).is_some());
+
+    wire[1]["workspace"]["roots"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("central")
+        .unwrap();
+    let incomplete = serde_json::to_vec(&wire).unwrap();
+    let before = session.version();
+    let generation = session.next_document_generation();
+    let recognitions = Cell::new(0);
+    let recognize = |_: DockspaceDocumentId, _: &str| {
+        recognitions.set(recognitions.get() + 1);
+        true
+    };
+    let error = DockspaceSession::from_document_json(&incomplete, DockPolicy::default(), recognize)
+        .expect_err("a missing null field cannot be normalized into a complete document");
+    assert_eq!(error.kind(), DockspacePersistenceErrorKind::InvalidDocument);
+    let error = session
+        .prepare_document_restore_json(&incomplete, recognize)
+        .expect_err("an incomplete document must fail before live restore preparation");
+    assert_eq!(error.kind(), DockspacePersistenceErrorKind::InvalidDocument);
+    assert_eq!(recognitions.get(), 0);
+    assert_eq!(session.version(), before);
+    assert_eq!(session.next_document_generation(), generation);
+    assert!(session.view().item(item).is_some());
+}
+
 fn persistent_session_with_first_item() -> (DockspaceSession, ItemId) {
     let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
     let first = bootstrap.ensure_item("pane:first").expect("first item");

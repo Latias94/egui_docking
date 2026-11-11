@@ -21,26 +21,25 @@ use crate::engine::{
 use crate::engine::{DockEngine, EngineInput, ValidatedWorkspaceRestore};
 use crate::external_item_key::{
     ExternalItemKeyMap, ExternalItemKeyMapError, ExternalItemKeyReconcileError,
-    ExternalItemKeyRestoreError, ExternalItemKeySnapshot, ExternalItemKeySnapshotEnvelope,
+    ExternalItemKeyRestoreError, ExternalItemKeySnapshot,
 };
 use crate::graph::Workspace;
 use crate::ids::{EngineAuthorityDomainId, ItemId, PresentationIdentityFrontier, SurfaceId};
 use crate::persistence::{
     SnapshotCaptureError, SnapshotNode, SnapshotRestoreError, WorkspaceSnapshot,
-    WorkspaceSnapshotEnvelope,
 };
 use crate::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
 use crate::viewport::ViewportRole;
 use crate::viewport_persistence::{
     NativeSurfaceHostPreference, ViewportPlacementPreference, ViewportPlacementPreferences,
-    ViewportPlacementRestoreError, ViewportPlacementSnapshot, ViewportPlacementSnapshotEnvelope,
+    ViewportPlacementRestoreError, ViewportPlacementSnapshot,
 };
 use crate::viewport_registry::ViewportAdmission;
 
 /// The document schema version emitted and accepted by this crate release.
-pub const DOCKSPACE_DOCUMENT_VERSION: u32 = 2;
+pub const DOCKSPACE_DOCUMENT_VERSION: u32 = 1;
 
-const BINDING_HASH_DOMAIN: &[u8] = b"dockspace-document/v2\0";
+const BINDING_HASH_DOMAIN: &[u8] = b"dockspace-document/v1\0";
 
 /// Stable identity of one persisted document lineage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
@@ -65,9 +64,9 @@ impl DockspaceDocumentId {
 ///
 /// The binding hash detects accidental splice, corruption, and cross-generation
 /// mixing. It is an integrity check, not a signature or authentication scheme.
-/// Untrusted bytes must be decoded through [`DockspaceDocumentEnvelope`] so
-/// nested snapshot-version failures remain typed [`DockspaceDocumentDecodeError`]
-/// values instead of being flattened into a serializer error.
+/// Untrusted bytes are decoded through [`DockspaceDocumentEnvelope`]. One
+/// document version governs all components, and unsupported versions produce
+/// a typed [`DockspaceDocumentDecodeError`] before decoding the payload.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DockspaceDocument {
     document_id: DockspaceDocumentId,
@@ -197,27 +196,27 @@ impl Serialize for DockspaceDocument {
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DockspaceDocumentV2 {
+struct DockspaceDocumentPayload {
     document_id: DockspaceDocumentId,
     generation: u64,
     presentation_identity_frontier: PresentationIdentityFrontierWire,
-    workspace: WorkspaceSnapshotEnvelope,
-    external_item_keys: ExternalItemKeySnapshotEnvelope,
-    viewport_placements: ViewportPlacementSnapshotEnvelope,
+    workspace: WorkspaceSnapshot,
+    external_item_keys: ExternalItemKeySnapshot,
+    viewport_placements: ViewportPlacementSnapshot,
     binding_hash: [u8; 32],
 }
 
-impl DockspaceDocumentV2 {
-    fn into_document(self) -> Result<DockspaceDocument, DockspaceDocumentDecodeError> {
-        Ok(DockspaceDocument {
+impl DockspaceDocumentPayload {
+    fn into_document(self) -> DockspaceDocument {
+        DockspaceDocument {
             document_id: self.document_id,
             generation: self.generation,
             presentation_identity_frontier: self.presentation_identity_frontier.into(),
-            workspace: self.workspace.into_snapshot()?,
-            external_item_keys: self.external_item_keys.into_snapshot()?,
-            viewport_placements: self.viewport_placements.into_snapshot()?,
+            workspace: self.workspace,
+            external_item_keys: self.external_item_keys,
+            viewport_placements: self.viewport_placements,
             binding_hash: self.binding_hash,
-        })
+        }
     }
 }
 
@@ -225,7 +224,7 @@ impl DockspaceDocumentV2 {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DockspaceDocumentEnvelope {
     version: u32,
-    payload: Option<DockspaceDocumentV2>,
+    payload: Option<DockspaceDocumentPayload>,
 }
 
 impl DockspaceDocumentEnvelope {
@@ -236,15 +235,12 @@ impl DockspaceDocumentEnvelope {
     /// Returns [`DockspaceDocumentDecodeError::UnsupportedVersion`] for every
     /// outer version other than [`DOCKSPACE_DOCUMENT_VERSION`].
     pub fn into_document(self) -> Result<DockspaceDocument, DockspaceDocumentDecodeError> {
-        self.payload.map_or_else(
-            || {
-                Err(DockspaceDocumentDecodeError::UnsupportedVersion {
-                    found: self.version,
-                    supported: DOCKSPACE_DOCUMENT_VERSION,
-                })
-            },
-            DockspaceDocumentV2::into_document,
-        )
+        self.payload
+            .map(DockspaceDocumentPayload::into_document)
+            .ok_or(DockspaceDocumentDecodeError::UnsupportedVersion {
+                found: self.version,
+                supported: DOCKSPACE_DOCUMENT_VERSION,
+            })
     }
 }
 
@@ -275,7 +271,7 @@ impl<'de> Visitor<'de> for DockspaceDocumentEnvelopeVisitor {
             .ok_or_else(|| A::Error::invalid_length(0, &self))?;
         let payload = if version == DOCKSPACE_DOCUMENT_VERSION {
             let payload = sequence
-                .next_element::<DockspaceDocumentV2>()?
+                .next_element::<DockspaceDocumentPayload>()?
                 .ok_or_else(|| A::Error::invalid_length(1, &self))?;
             Some(payload)
         } else {
@@ -891,15 +887,6 @@ pub enum DockspaceDocumentDecodeError {
         /// Version implemented by this crate release.
         supported: u32,
     },
-    /// The embedded workspace snapshot version is not supported.
-    #[error("embedded workspace snapshot cannot decode: {0}")]
-    Workspace(#[from] SnapshotRestoreError),
-    /// The embedded external item-key snapshot version is not supported.
-    #[error("embedded external item-key snapshot cannot decode: {0}")]
-    ExternalItemKeys(#[from] ExternalItemKeyRestoreError),
-    /// The embedded viewport-placement snapshot version is not supported.
-    #[error("embedded viewport placement snapshot cannot decode: {0}")]
-    ViewportPlacements(#[from] ViewportPlacementRestoreError),
 }
 
 /// Failure while validating and restoring a dockspace document.
@@ -1334,10 +1321,9 @@ mod tests {
     };
 
     use super::{
-        BoundDocumentState, DOCKSPACE_DOCUMENT_VERSION, DockspaceDocument,
-        DockspaceDocumentCaptureError, DockspaceDocumentDecodeError, DockspaceDocumentEnvelope,
-        DockspaceDocumentId, DockspaceDocumentRestoreError, NativeSurfaceHostPreferenceError,
-        binding_hash,
+        BoundDocumentState, DockspaceDocument, DockspaceDocumentCaptureError,
+        DockspaceDocumentEnvelope, DockspaceDocumentId, DockspaceDocumentRestoreError,
+        NativeSurfaceHostPreferenceError, binding_hash,
     };
 
     const DOCUMENT_ID: DockspaceDocumentId = DockspaceDocumentId::from_bytes(*b"malformed-map-id");
@@ -1592,17 +1578,17 @@ mod tests {
     }
 
     #[test]
-    fn v2_round_trip_preserves_hosting_without_placement_and_rejects_v1() {
+    fn document_round_trip_preserves_hosting_without_placement() {
         let preferences = profile_preferences();
         let document = profile_document(&preferences);
-        let bytes = serde_json::to_vec(&document).expect("V2 document must encode");
+        let bytes = serde_json::to_vec(&document).expect("the document must encode");
         let decoded = serde_json::from_slice::<DockspaceDocumentEnvelope>(&bytes)
-            .expect("V2 envelope must decode")
+            .expect("the envelope must decode")
             .into_document()
-            .expect("V2 document must be supported");
+            .expect("the document must be supported");
         let restored = decoded
             .restore(|_, _| true)
-            .expect("V2 profile must restore");
+            .expect("the profile must restore");
         assert_eq!(restored.viewport_placements, preferences);
         assert_eq!(restored.viewport_placements.len(), 3);
         assert_eq!(restored.viewport_placements.iter().count(), 0);
@@ -1611,15 +1597,46 @@ mod tests {
                 .expect("restored graph must capture"),
             document.workspace
         );
-        let legacy = serde_json::from_str::<DockspaceDocumentEnvelope>("[1, {}]")
-            .expect("unsupported outer payload must be skipped");
-        assert!(matches!(
-            legacy.into_document(),
-            Err(DockspaceDocumentDecodeError::UnsupportedVersion {
-                found: 1,
-                supported: DOCKSPACE_DOCUMENT_VERSION,
-            })
-        ));
+    }
+
+    #[test]
+    fn document_components_require_explicit_nullable_fields() {
+        let document = profile_document(&profile_preferences());
+        let wire = serde_json::to_value(document).unwrap();
+        assert_eq!(wire[0], 1);
+        for component in ["workspace", "external_item_keys", "viewport_placements"] {
+            assert!(wire[1][component].is_object());
+        }
+        for (path, field) in [
+            ("/1/workspace/roots/0", "central"),
+            ("/1/workspace/surfaces/0", "main_root"),
+            ("/1/workspace/nodes/0/node", "selected"),
+            ("/1/external_item_keys", "next_item_id"),
+            ("/1/viewport_placements/placements/0", "native_host"),
+            ("/1/viewport_placements/placements/0", "outer_rect"),
+            ("/1/viewport_placements/placements/0", "inner_size"),
+            ("/1/viewport_placements/placements/0", "scale_factor"),
+            ("/1/viewport_placements/placements/0", "presentation"),
+        ] {
+            let mut incomplete = wire.clone();
+            incomplete
+                .pointer_mut(path)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(field)
+                .unwrap();
+            assert!(
+                serde_json::from_value::<DockspaceDocumentEnvelope>(incomplete).is_err(),
+                "missing {path}/{field} must reject before normalization or hash validation"
+            );
+        }
+        serde_json::from_value::<DockspaceDocumentEnvelope>(wire)
+            .unwrap()
+            .into_document()
+            .unwrap()
+            .restore(|_, _| true)
+            .expect("explicit null remains a valid absence");
     }
 
     #[test]

@@ -10,15 +10,12 @@ use crate::document::{
     DockspaceDocumentEnvelope, DockspaceDocumentRestoreError, PreparedRuntimeDocumentRestore,
     RuntimeDocumentRestoreError,
 };
-use crate::external_item_key::{ExternalItemKeyMapError, ExternalItemKeyRestoreError};
+use crate::external_item_key::ExternalItemKeyMapError;
 use crate::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
 use crate::model::{DockspaceLayout, DockspaceView, ItemId, SurfaceId};
-use crate::persistence::SnapshotRestoreError;
 use crate::policy::DockPolicy;
 use crate::presentation_config::DockPresentationConfig;
-use crate::viewport_persistence::{
-    NativeSurfaceHostPreference, ViewportPlacementPreferences, ViewportPlacementRestoreError,
-};
+use crate::viewport_persistence::{NativeSurfaceHostPreference, ViewportPlacementPreferences};
 use crate::{document, engine::DockEngine};
 
 pub use crate::document::DockspaceDocumentId;
@@ -898,7 +895,7 @@ pub enum DockspacePersistenceErrorKind {
     InvalidInput,
     /// JSON or a validated document component is malformed or inconsistent.
     InvalidDocument,
-    /// The document or one of its embedded snapshots uses an unsupported version.
+    /// The outer document schema uses an unsupported version.
     UnsupportedVersion,
     /// Persisted application pane identity does not match the application registry.
     IdentityConflict,
@@ -936,22 +933,12 @@ impl DockspacePersistenceError {
                 DockspaceDocumentCaptureError::GenerationExhausted,
             ) => DockspacePersistenceErrorKind::CapacityExhausted,
             DockspacePersistenceErrorSource::Decode(
-                DockspaceDocumentDecodeError::UnsupportedVersion { .. }
-                | DockspaceDocumentDecodeError::Workspace(SnapshotRestoreError::UnsupportedVersion {
-                    ..
-                })
-                | DockspaceDocumentDecodeError::ExternalItemKeys(
-                    ExternalItemKeyRestoreError::UnsupportedVersion { .. },
-                )
-                | DockspaceDocumentDecodeError::ViewportPlacements(
-                    ViewportPlacementRestoreError::UnsupportedVersion { .. },
-                ),
+                DockspaceDocumentDecodeError::UnsupportedVersion { .. },
             ) => DockspacePersistenceErrorKind::UnsupportedVersion,
             DockspacePersistenceErrorSource::Restore(
                 DockspaceDocumentRestoreError::ExternalItemAssociationsRejected { .. },
             ) => DockspacePersistenceErrorKind::IdentityConflict,
             DockspacePersistenceErrorSource::DecodeJson(_)
-            | DockspacePersistenceErrorSource::Decode(_)
             | DockspacePersistenceErrorSource::Restore(_) => {
                 DockspacePersistenceErrorKind::InvalidDocument
             }

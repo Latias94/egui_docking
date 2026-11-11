@@ -635,9 +635,6 @@ fn clamp_recovery_axis(
     (minimum.is_finite() && maximum.is_finite() && minimum <= maximum).then_some((minimum, maximum))
 }
 
-/// Exact source-side facts frozen for one contained root on a logical surface.
-pub type ContainedRootDisposition = ContainedRootSource;
-
 /// Exact optional-main plus contained-root ownership frozen at one lifecycle edge.
 ///
 /// The contained sequence is normative. Recovery may compile only while the
@@ -745,7 +742,7 @@ impl SurfaceRosterDisposition {
 
     /// Returns contained dispositions in the source surface's normative order.
     #[must_use]
-    pub fn contained(&self) -> &[ContainedRootDisposition] {
+    pub fn contained(&self) -> &[ContainedRootSource] {
         self.roster.contained()
     }
 

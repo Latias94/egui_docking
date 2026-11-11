@@ -1,19 +1,12 @@
-//! Versioned, renderer-neutral persistence for validated workspaces.
+//! Renderer-neutral persistence payloads for validated workspaces.
 //!
 //! Snapshot node identities are local integers, not serialized [`crate::ids::NodeId`] values.
 //! Restoring a snapshot always allocates fresh generational runtime identities and publishes only
 //! a fully validated candidate.
-//!
-//! The version-first envelope targets self-describing Serde formats whose deserializers support
-//! `deserialize_ignored_any`, such as JSON and RON. Applications using a non-self-describing
-//! binary codec must frame and reject unsupported versions before invoking its payload decoder.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fmt;
 
-use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
-use serde::ser::SerializeTuple;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use crate::canonical::CanonicalizationError;
@@ -25,11 +18,9 @@ use crate::graph::{
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::validation::WorkspaceValidationErrors;
 
-/// The snapshot schema version emitted and accepted by this crate release.
-pub const WORKSPACE_SNAPSHOT_VERSION: u32 = 1;
-
 /// A complete renderer-neutral workspace snapshot.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceSnapshot {
     /// Flat node arena with snapshot-local integer identities.
     pub nodes: Vec<SnapshotNodeRecord>,
@@ -39,131 +30,6 @@ pub struct WorkspaceSnapshot {
     pub surfaces: Vec<SnapshotSurfaceRecord>,
     /// Contained-floating presentations.
     pub contained_floatings: Vec<SnapshotContainedFloatingRecord>,
-}
-
-#[derive(Serialize)]
-struct WorkspaceSnapshotPayloadRef<'snapshot> {
-    nodes: &'snapshot [SnapshotNodeRecord],
-    roots: &'snapshot [SnapshotRootRecord],
-    surfaces: &'snapshot [SnapshotSurfaceRecord],
-    contained_floatings: &'snapshot [SnapshotContainedFloatingRecord],
-}
-
-impl Serialize for WorkspaceSnapshot {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut document = serializer.serialize_tuple(2)?;
-        document.serialize_element(&WORKSPACE_SNAPSHOT_VERSION)?;
-        document.serialize_element(&WorkspaceSnapshotPayloadRef {
-            nodes: &self.nodes,
-            roots: &self.roots,
-            surfaces: &self.surfaces,
-            contained_floatings: &self.contained_floatings,
-        })?;
-        document.end()
-    }
-}
-
-/// Version-first decoding envelope for a self-describing serialized workspace snapshot.
-///
-/// Deserialize external data into this type, then call [`Self::into_snapshot`].
-/// Unsupported versions are accepted by the envelope regardless of their body
-/// shape and become a typed [`SnapshotRestoreError::UnsupportedVersion`]. The
-/// supported version still rejects missing, duplicate, and unknown fields.
-/// Non-self-describing binary codecs require an application-owned outer version
-/// and length frame instead of this envelope's unsupported-payload path.
-#[derive(Clone, Debug, PartialEq)]
-pub struct WorkspaceSnapshotEnvelope {
-    version: u32,
-    snapshot: Option<WorkspaceSnapshot>,
-}
-
-impl WorkspaceSnapshotEnvelope {
-    /// Returns the version declared by the serialized document.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn version(&self) -> u32 {
-        self.version
-    }
-
-    /// Returns the strictly decoded supported snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SnapshotRestoreError::UnsupportedVersion`] for every version
-    /// other than [`WORKSPACE_SNAPSHOT_VERSION`].
-    pub fn into_snapshot(self) -> Result<WorkspaceSnapshot, SnapshotRestoreError> {
-        self.snapshot
-            .ok_or(SnapshotRestoreError::UnsupportedVersion {
-                found: self.version,
-                supported: WORKSPACE_SNAPSHOT_VERSION,
-            })
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorkspaceSnapshotV1 {
-    nodes: Vec<SnapshotNodeRecord>,
-    roots: Vec<SnapshotRootRecord>,
-    surfaces: Vec<SnapshotSurfaceRecord>,
-    contained_floatings: Vec<SnapshotContainedFloatingRecord>,
-}
-
-impl WorkspaceSnapshotV1 {
-    fn into_snapshot(self) -> WorkspaceSnapshot {
-        WorkspaceSnapshot {
-            nodes: self.nodes,
-            roots: self.roots,
-            surfaces: self.surfaces,
-            contained_floatings: self.contained_floatings,
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for WorkspaceSnapshotEnvelope {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_tuple(2, WorkspaceSnapshotEnvelopeVisitor)
-    }
-}
-
-struct WorkspaceSnapshotEnvelopeVisitor;
-
-impl<'de> Visitor<'de> for WorkspaceSnapshotEnvelopeVisitor {
-    type Value = WorkspaceSnapshotEnvelope;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a [version, payload] workspace snapshot document")
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let version = sequence
-            .next_element::<u32>()?
-            .ok_or_else(|| A::Error::invalid_length(0, &self))?;
-        let snapshot = if version == WORKSPACE_SNAPSHOT_VERSION {
-            let payload = sequence
-                .next_element::<WorkspaceSnapshotV1>()?
-                .ok_or_else(|| A::Error::invalid_length(1, &self))?;
-            Some(payload.into_snapshot())
-        } else {
-            sequence
-                .next_element::<IgnoredAny>()?
-                .ok_or_else(|| A::Error::invalid_length(1, &self))?;
-            None
-        };
-        if sequence.next_element::<IgnoredAny>()?.is_some() {
-            return Err(A::Error::invalid_length(3, &self));
-        }
-        Ok(WorkspaceSnapshotEnvelope { version, snapshot })
-    }
 }
 
 /// One node and its snapshot-local integer identity.
@@ -185,6 +51,7 @@ pub enum SnapshotNode {
         /// Stable item identities in tab order.
         items: Vec<u64>,
         /// Selected stable item identity.
+        #[serde(deserialize_with = "deserialize_required_option")]
         selected: Option<u64>,
         /// Complete stable item permutation in most-recent-first order.
         mru: Vec<u64>,
@@ -219,6 +86,7 @@ pub struct SnapshotRootRecord {
     /// Snapshot-local topology root node.
     pub node: u64,
     /// Snapshot-local central tabs leaf.
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub central: Option<u64>,
 }
 
@@ -235,7 +103,7 @@ pub struct SnapshotSurfaceRecord {
     pub contained: Vec<u64>,
 }
 
-fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -315,14 +183,6 @@ pub enum SnapshotCaptureError {
 /// Failure to restore a workspace snapshot.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SnapshotRestoreError {
-    /// The snapshot version is not implemented by this crate release.
-    #[error("unsupported workspace snapshot version {found}; supported version is {supported}")]
-    UnsupportedVersion {
-        /// Version read from the snapshot.
-        found: u32,
-        /// Version implemented by this crate release.
-        supported: u32,
-    },
     /// Two records declare the same identity.
     #[error("duplicate {kind:?} snapshot identity {id}")]
     DuplicateIdentity {
@@ -377,13 +237,6 @@ pub enum SnapshotRestoreError {
 }
 
 impl WorkspaceSnapshot {
-    /// Returns the schema version emitted for this normalized snapshot.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) const fn version(&self) -> u32 {
-        WORKSPACE_SNAPSHOT_VERSION
-    }
-
     /// Captures a validated runtime workspace as a deterministic flat snapshot.
     ///
     /// Runtime [`NodeId`] values are remapped to contiguous snapshot-local integers. Stable item,
@@ -453,7 +306,7 @@ impl WorkspaceSnapshot {
     ///
     /// # Errors
     ///
-    /// Returns [`SnapshotRestoreError`] for unsupported versions, duplicate identities, unknown
+    /// Returns [`SnapshotRestoreError`] for duplicate identities, unknown
     /// references or items, invalid scalar data, or any strict workspace invariant violation.
     pub fn build_candidate(
         &self,

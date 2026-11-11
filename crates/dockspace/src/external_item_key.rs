@@ -356,17 +356,10 @@ pub enum ExternalItemKeyReconcileError {
 
 #[cfg(feature = "serde")]
 mod persistence {
-    use std::fmt;
-
-    use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
-    use serde::ser::SerializeTuple;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Serialize};
     use thiserror::Error;
 
     use super::{ExternalItemKeyMap, ItemId, NonZeroU64, validate_external_key};
-
-    /// The external-item-key sidecar schema emitted and accepted by this release.
-    pub const EXTERNAL_ITEM_KEY_SNAPSHOT_VERSION: u32 = 1;
 
     /// One untrusted persisted external-key assignment.
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,48 +371,23 @@ mod persistence {
         pub item_id: u64,
     }
 
-    /// A complete versioned external-item-key sidecar.
+    /// A complete external-item-key sidecar payload.
     ///
     /// `next_item_id` is `None` only when the non-zero `u64` identity space is
     /// exhausted. A present frontier must be non-zero and strictly greater than
     /// every persisted entry. Gaps are treated as previously consumed identities
     /// and are never reused.
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
     pub struct ExternalItemKeySnapshot {
         /// Live assignments in canonical external-key order.
         pub entries: Vec<SnapshotExternalItemKeyEntry>,
         /// Next allocatable item identity, or exhaustion after `u64::MAX`.
+        #[serde(deserialize_with = "crate::persistence::deserialize_required_option")]
         pub next_item_id: Option<u64>,
     }
 
-    #[derive(Serialize)]
-    struct ExternalItemKeySnapshotPayloadRef<'snapshot> {
-        entries: &'snapshot [SnapshotExternalItemKeyEntry],
-        next_item_id: Option<u64>,
-    }
-
-    impl Serialize for ExternalItemKeySnapshot {
-        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            let mut document = serializer.serialize_tuple(2)?;
-            document.serialize_element(&EXTERNAL_ITEM_KEY_SNAPSHOT_VERSION)?;
-            document.serialize_element(&ExternalItemKeySnapshotPayloadRef {
-                entries: &self.entries,
-                next_item_id: self.next_item_id,
-            })?;
-            document.end()
-        }
-    }
-
     impl ExternalItemKeySnapshot {
-        /// Returns the schema version emitted for this normalized snapshot.
-        #[must_use]
-        pub const fn version(&self) -> u32 {
-            EXTERNAL_ITEM_KEY_SNAPSHOT_VERSION
-        }
-
         /// Captures the complete live mapping and monotonic allocation frontier.
         #[must_use]
         pub fn capture(mapping: &ExternalItemKeyMap) -> Self {
@@ -439,7 +407,7 @@ mod persistence {
         ///
         /// # Errors
         ///
-        /// Returns a structured version, key, identity, conflict, or frontier
+        /// Returns a structured key, identity, conflict, or frontier
         /// error. No caller-owned mapping is mutated on failure.
         pub fn restore(self) -> Result<ExternalItemKeyMap, ExternalItemKeyRestoreError> {
             let mut by_external_key = std::collections::BTreeMap::<String, ItemId>::new();
@@ -501,125 +469,9 @@ mod persistence {
         }
     }
 
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct ExternalItemKeySnapshotV1 {
-        entries: Vec<SnapshotExternalItemKeyEntry>,
-        #[serde(deserialize_with = "deserialize_required_option")]
-        next_item_id: Option<u64>,
-    }
-
-    fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-    where
-        D: Deserializer<'de>,
-        T: Deserialize<'de>,
-    {
-        Option::<T>::deserialize(deserializer)
-    }
-
-    impl ExternalItemKeySnapshotV1 {
-        fn into_snapshot(self) -> ExternalItemKeySnapshot {
-            ExternalItemKeySnapshot {
-                entries: self.entries,
-                next_item_id: self.next_item_id,
-            }
-        }
-    }
-
-    /// Version-first decoder for an untrusted external-item-key sidecar.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct ExternalItemKeySnapshotEnvelope {
-        version: u32,
-        snapshot: Option<ExternalItemKeySnapshot>,
-    }
-
-    impl ExternalItemKeySnapshotEnvelope {
-        /// Returns the schema version declared by the serialized document.
-        #[must_use]
-        pub const fn version(&self) -> u32 {
-            self.version
-        }
-
-        /// Returns the strictly decoded snapshot for the supported schema version.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`ExternalItemKeyRestoreError::UnsupportedVersion`] for every
-        /// version other than [`EXTERNAL_ITEM_KEY_SNAPSHOT_VERSION`].
-        pub fn into_snapshot(self) -> Result<ExternalItemKeySnapshot, ExternalItemKeyRestoreError> {
-            self.snapshot
-                .ok_or(ExternalItemKeyRestoreError::UnsupportedVersion {
-                    found: self.version,
-                    supported: EXTERNAL_ITEM_KEY_SNAPSHOT_VERSION,
-                })
-        }
-
-        /// Decodes and validates the complete sidecar into a new mapping.
-        ///
-        /// # Errors
-        ///
-        /// Returns a structured version, key, identity, conflict, or frontier error.
-        pub fn into_mapping(self) -> Result<ExternalItemKeyMap, ExternalItemKeyRestoreError> {
-            self.into_snapshot()?.restore()
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ExternalItemKeySnapshotEnvelope {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            deserializer.deserialize_tuple(2, ExternalItemKeySnapshotEnvelopeVisitor)
-        }
-    }
-
-    struct ExternalItemKeySnapshotEnvelopeVisitor;
-
-    impl<'de> Visitor<'de> for ExternalItemKeySnapshotEnvelopeVisitor {
-        type Value = ExternalItemKeySnapshotEnvelope;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a [version, payload] external item key document")
-        }
-
-        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-        where
-            A: SeqAccess<'de>,
-        {
-            let version = sequence
-                .next_element::<u32>()?
-                .ok_or_else(|| A::Error::invalid_length(0, &self))?;
-            let snapshot = if version == EXTERNAL_ITEM_KEY_SNAPSHOT_VERSION {
-                let payload = sequence
-                    .next_element::<ExternalItemKeySnapshotV1>()?
-                    .ok_or_else(|| A::Error::invalid_length(1, &self))?;
-                Some(payload.into_snapshot())
-            } else {
-                sequence
-                    .next_element::<IgnoredAny>()?
-                    .ok_or_else(|| A::Error::invalid_length(1, &self))?;
-                None
-            };
-            if sequence.next_element::<IgnoredAny>()?.is_some() {
-                return Err(A::Error::invalid_length(3, &self));
-            }
-            Ok(ExternalItemKeySnapshotEnvelope { version, snapshot })
-        }
-    }
-
     /// Failure to restore an external-item-key sidecar.
     #[derive(Clone, Debug, PartialEq, Eq, Error)]
     pub enum ExternalItemKeyRestoreError {
-        /// The snapshot version is not implemented by this crate release.
-        #[error(
-            "unsupported external item key snapshot version {found}; supported version is {supported}"
-        )]
-        UnsupportedVersion {
-            /// Version read from the snapshot.
-            found: u32,
-            /// Version implemented by this crate release.
-            supported: u32,
-        },
         /// A persisted application key is empty.
         #[error("external item key snapshot contains an empty key")]
         EmptyExternalKey,
@@ -670,6 +522,5 @@ mod persistence {
 
 #[cfg(feature = "serde")]
 pub use persistence::{
-    EXTERNAL_ITEM_KEY_SNAPSHOT_VERSION, ExternalItemKeyRestoreError, ExternalItemKeySnapshot,
-    ExternalItemKeySnapshotEnvelope, SnapshotExternalItemKeyEntry,
+    ExternalItemKeyRestoreError, ExternalItemKeySnapshot, SnapshotExternalItemKeyEntry,
 };
