@@ -24,7 +24,7 @@ env:
 jobs:
   x11:
     name: Real-window and physical X11 journeys
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
@@ -35,9 +35,12 @@ jobs:
           shared-key: native-linux
           workspaces: integration/egui-fork-workspace -> target
       - name: Install X11 build and runtime dependencies
+        timeout-minutes: 5
         run: >-
-          sudo apt-get update &&
-          sudo apt-get install --no-install-recommends -y
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20
+          -o Acquire::https::Timeout=20 update &&
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20
+          -o Acquire::https::Timeout=20 install --no-install-recommends -y
           libwayland-dev libxkbcommon-x11-0 openbox x11-utils xauth xdotool xvfb
       - name: Record source and toolchain
         run: |
