@@ -49,7 +49,6 @@ pub struct Dockspace {
     session: DockspaceSession,
     style: DockStyle,
     pass_settlement: ProductPassSettlement,
-    presentation_settlement_was_available: bool,
     measurement_deferred: bool,
     pending_focus: Vec<(SurfacePresentationArtifact, PreparedPaneFocusObservation)>,
     pointer: crate::product_pointer::ProductPointer,
@@ -70,7 +69,6 @@ impl Dockspace {
             session,
             style,
             pass_settlement: ProductPassSettlement::default(),
-            presentation_settlement_was_available: false,
             measurement_deferred: false,
             pending_focus: Vec::new(),
             pointer: crate::product_pointer::ProductPointer::default(),
@@ -751,8 +749,6 @@ impl Dockspace {
         let presentation_failure = ready_settlement.presentation_failure;
         let presentation_settlement_available =
             settlement_claim.is_some() && presentation_failure.is_none();
-        let cancel_active_gesture = presentation_failure.is_some()
-            || (self.presentation_settlement_was_available && !presentation_settlement_available);
         for presentation in ready_settlement.presentations {
             let artifact = presentation.output.presentation_artifact();
             if self
@@ -833,7 +829,7 @@ impl Dockspace {
                     .map_err(DockspaceError::from_detail)?;
             }
             if presentation_settlement_available {
-                let input = pointer.prepare(&frame, surface, ui, cancel_active_gesture);
+                let input = pointer.prepare(&frame, surface, ui);
                 observed_at = input.observed_at();
                 self.pointer.record_rejected_run(&pointer);
                 deferred_focus = input
@@ -893,11 +889,7 @@ impl Dockspace {
                     if presentation_settlement_available {
                         product_render::PointerActionAuthority::HostJournal
                     } else {
-                        product_render::PointerActionAuthority::LocalResponses {
-                            local_actions: true,
-                            presentation_settlement: false,
-                            cancel_active_gesture,
-                        }
+                        product_render::PointerActionAuthority::LocalResponses
                     },
                     #[cfg(feature = "native-render-support")]
                     None,
@@ -1016,8 +1008,6 @@ impl Dockspace {
                 DockspaceUnavailableReason::PresentationSettlementRequired,
             );
         }
-        self.presentation_settlement_was_available =
-            presentation_settlement_available && settlement_staged;
         if !had_plan
             || report.repaint_surfaces().contains(&surface)
             || !self.ui_actions.is_empty()

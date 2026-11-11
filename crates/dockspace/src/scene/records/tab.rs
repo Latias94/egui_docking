@@ -294,23 +294,6 @@ impl TabGroupDragRecord {
     pub fn contains(self, point: crate::geometry::LogicalPoint) -> bool {
         self.regions().any(|region| region.hit().contains(point))
     }
-
-    /// Returns the dedicated leading grip bounds.
-    ///
-    /// This compatibility accessor is equivalent to
-    /// [`Self::leading_grip`]'s bounds.
-    #[must_use]
-    pub const fn grip_bounds(self) -> LogicalRect {
-        self.leading_grip.bounds()
-    }
-
-    /// Returns the dedicated leading grip hit region.
-    ///
-    /// This compatibility accessor does not include trailing empty space.
-    #[must_use]
-    pub const fn hit(self) -> HitRegion {
-        self.leading_grip.hit()
-    }
 }
 
 /// Core-compiled geometry and transient state for one tab bar.

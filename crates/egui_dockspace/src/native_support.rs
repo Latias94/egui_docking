@@ -219,7 +219,6 @@ pub struct NativeSurfacePaint {
     execution_receipt: Option<SurfaceProgramExecutionReceipt>,
     output_proof: Option<crate::output_proof::SurfaceOutputProof>,
     local_actions: Vec<EguiSurfaceAction>,
-    presentation_actions: Vec<EguiSurfaceAction>,
     pane_focus_observation: Option<PreparedPaneFocusObservation>,
     pane_focus_bindings: Vec<(ItemId, Id)>,
 }
@@ -452,11 +451,6 @@ impl NativeSurfacePaint {
         std::mem::take(&mut self.local_actions)
     }
 
-    /// Takes paint acknowledgements owned only by this exact pass.
-    pub fn take_presentation_actions(&mut self) -> Vec<EguiSurfaceAction> {
-        std::mem::take(&mut self.presentation_actions)
-    }
-
     /// Takes the pane-focus observation owned only by this exact pass.
     pub fn take_pane_focus_observation(&mut self) -> Option<PreparedPaneFocusObservation> {
         self.pane_focus_observation.take()
@@ -464,9 +458,9 @@ impl NativeSurfacePaint {
 }
 
 /// Paints one ready surface using the same renderer as the ordinary product
-/// facade. The returned action batches remain affine so the native driver can
-/// preserve local responses across egui discarded passes and submit only the
-/// final pass's presentation acknowledgements.
+/// facade. Semantic actions retain their event origins across egui discarded
+/// passes. Paint completion, receiver declarations, and pane-focus observations
+/// remain owned by the exact final pass.
 pub fn paint_surface(
     frame: &mut DockspaceHostFrame<'_>,
     instance_id: Id,
@@ -504,7 +498,6 @@ pub fn paint_surface(
             execution_receipt: None,
             output_proof: None,
             local_actions: Vec::new(),
-            presentation_actions: Vec::new(),
             pane_focus_observation: None,
             pane_focus_bindings: Vec::new(),
         });
@@ -559,7 +552,6 @@ pub fn paint_surface(
         execution_receipt: painted.execution_receipt,
         output_proof: capture.finish(ui.painter()),
         local_actions: painted.local_actions,
-        presentation_actions: painted.presentation_actions,
         pane_focus_observation: painted.pane_focus_observation,
         pane_focus_bindings: painted.pane_focus_bindings,
     })

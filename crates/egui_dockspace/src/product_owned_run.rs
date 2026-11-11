@@ -394,7 +394,7 @@ impl Dockspace {
                                     .submit_deferred_surface_action(action)
                                     .map_err(DockspaceError::from_detail)?;
                             }
-                            let input = pointer.prepare(&frame, surface, ui, false);
+                            let input = pointer.prepare(&frame, surface, ui);
                             observed_at = input.observed_at();
                             // This owner admits input only on its first pass and
                             // abandons the run on error. Keep its consumed-run
@@ -614,7 +614,6 @@ impl Dockspace {
             needs_repaint,
         });
         debug_assert!(staged, "the preflighted terminal enrollment remains exact");
-        self.presentation_settlement_was_available = staged;
         let mut response = product_response(
             &report,
             surface,

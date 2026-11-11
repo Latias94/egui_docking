@@ -26,7 +26,7 @@ pub(crate) fn paint_background(
     let Some(title) = egui_rect(contained.title_bounds()) else {
         return;
     };
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     if !paint_omitted {
         let content_rect = outer.shrink(visuals.frame.stroke.width);
         context.ui.painter().add(visuals.frame.paint(content_rect));
@@ -113,7 +113,7 @@ pub(crate) fn paint_controls(
         .style
         .resolved_contained_window(context.ui.style(), contained.is_frontmost())
         .title_text_color;
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     if let Some(title) = egui_rect(contained.title_drag_bounds()) {
         let core_enabled = effective_enabled(context.ui, contained.title_operable());
         let enabled = core_enabled && context.pointer_authority.supports_preview_gestures();

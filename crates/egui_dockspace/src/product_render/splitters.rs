@@ -47,7 +47,7 @@ pub(crate) fn paint_splitter(
     configure_accessibility(context.ui, &response, splitter, enabled);
     let focused = enabled && response.has_focus();
     let emphasized = focused || (drag_enabled && response.hovered());
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     if !paint_omitted {
         context
             .ui
@@ -181,7 +181,7 @@ pub(crate) fn paint_junction(
             context.push_local_action(origin, action);
         }
     }
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     if !paint_omitted && drag_operable && response.hovered() {
         context.ui.ctx().set_cursor_icon(CursorIcon::AllScroll);
         context

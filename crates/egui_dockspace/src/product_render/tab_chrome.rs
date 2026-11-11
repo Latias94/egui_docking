@@ -63,7 +63,7 @@ fn paint_control_records(
             }
             TabStripControlKind::TabListMenu => "Show all open tabs",
         });
-        let paint_omitted = context.source_gap_active(paint);
+        let paint_omitted = paint.is_source_gap();
         if !paint_omitted {
             paint_control(context, control, bounds, &response, enabled);
         }
@@ -268,7 +268,7 @@ pub(crate) fn paint_menu(
         },
         frame_receiver,
     );
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     if !paint_omitted {
         let mut frame = context.style.resolved_popup_frame(context.ui.style());
         frame.inner_margin = egui::Margin::ZERO;
@@ -392,7 +392,7 @@ fn paint_menu_row(
             response
         }
     });
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     let fill = if row.focused() {
         context
             .style
@@ -509,7 +509,7 @@ fn paint_scrollbar(
         },
         receiver,
     );
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     if !paint_omitted {
         context
             .ui

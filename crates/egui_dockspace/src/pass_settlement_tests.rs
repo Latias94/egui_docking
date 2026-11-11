@@ -110,11 +110,7 @@ fn stage_surface(
         &mut SettlementPane,
         &DockStyle::default(),
         product_render::PaintResources::default(),
-        PointerActionAuthority::LocalResponses {
-            local_actions: true,
-            presentation_settlement: true,
-            cancel_active_gesture: false,
-        },
+        PointerActionAuthority::HostJournal,
         #[cfg(feature = "native-render-support")]
         None,
     )

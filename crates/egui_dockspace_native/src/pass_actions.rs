@@ -76,7 +76,6 @@ impl NativePassActions {
         let actions = paint
             .take_local_actions()
             .into_iter()
-            .chain(paint.take_presentation_actions())
             .map(|record| PendingLocalAction {
                 event: UiActionEvent {
                     run: token,

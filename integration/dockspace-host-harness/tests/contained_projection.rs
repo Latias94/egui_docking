@@ -16,7 +16,8 @@ use dockspace::runtime::{
     SurfacePaintDisposition as Paint, SurfacePaintProgramOperation as Operation,
     SurfacePaintProgramStep as Step, SurfacePointerButton as Button, SurfacePointerCapture,
     SurfacePointerEvent as Event, SurfacePointerId, SurfacePointerReceiverFacts,
-    SurfacePresentationResult as Disposition, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    SurfacePresentationResult as Disposition, SurfaceUnavailableReason, TabGroupDragRegionKind,
+    UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -138,7 +139,10 @@ fn paint(session: &mut DockspaceSession) -> (Recorded, PaintedSurfaceOutput) {
                 operation: Operation::TabBar(bar),
                 ..
             } if bar.root() == ROOT => {
-                if let Some(grip) = plan.receiver_for_tab_group_grip(bar) {
+                if let Some(grip) = bar
+                    .group_drag_region(TabGroupDragRegionKind::LeadingGrip)
+                    .and_then(|region| plan.receiver_for_tab_group_drag_region(region))
+                {
                     group_grips.push(grip);
                 }
             }

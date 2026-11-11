@@ -18,7 +18,6 @@ fn unready_paint(surface: SurfaceId) -> NativeSurfacePaint {
         execution_receipt: None,
         output_proof: None,
         local_actions: Vec::new(),
-        presentation_actions: Vec::new(),
         pane_focus_observation: None,
         pane_focus_bindings: Vec::new(),
     }

@@ -15,8 +15,9 @@ use dockspace::runtime::{
     SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts,
     SurfacePresentationResult as ResultKind, SurfaceScrollDelta, SurfaceScrollDeviceId,
     SurfaceScrollEvent, SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase,
-    SurfaceUnavailableReason, TabListMenuMetrics, TabStripControlKind, TabStripControlMetric,
-    TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
+    SurfaceUnavailableReason, TabGroupDragRegionKind, TabListMenuMetrics, TabStripControlKind,
+    TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
+    UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -424,7 +425,9 @@ fn host_pointer_other_surface_drag_only_press_dismisses_popup_without_starting_g
                 ..
             } = step
             {
-                grip = plan.receiver_for_tab_group_grip(bar);
+                grip = bar
+                    .group_drag_region(TabGroupDragRegionKind::LeadingGrip)
+                    .and_then(|region| plan.receiver_for_tab_group_drag_region(region));
             }
             Ok::<(), ()>(())
         })
@@ -1703,7 +1706,9 @@ fn host_pointer_old_group_grip_rejects_unseen_members_but_current_item_stays_usa
             ..
         } = step
         {
-            grip_descriptor = plan.receiver_for_tab_group_grip(bar);
+            grip_descriptor = bar
+                .group_drag_region(TabGroupDragRegionKind::LeadingGrip)
+                .and_then(|region| plan.receiver_for_tab_group_drag_region(region));
         }
         Ok::<(), ()>(())
     })

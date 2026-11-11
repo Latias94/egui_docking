@@ -3,46 +3,34 @@
 This directory renders the ordered `SurfacePaintPlan` produced by the core. The
 host transports ordered pointer input through its journal before measurement and
 paint. The renderer publishes widget facts and draws core-owned interaction
-visuals. This document describes the U3b removal of response-derived docking
-gestures and the contracts required by the host adapter.
+visuals. This document describes the contracts required by the host adapter.
 
-## Removed gesture frontend
+## Rendering and input
 
-The renderer no longer reconstructs `SurfaceGesturePhase::{Begin, Move, Release,
-Cancel}` from egui responses. The following frontend paths have been removed:
-
-- `actions::gesture_phase`, including its initial-position reconstruction from
-  `interact_pointer_pos` and `total_drag_delta`.
-- Tab, tab-group, contained-title, contained-resize, splitter, and splitter-junction
-  pointer calls to `prepare_*gesture`.
-- `LocalPrimaryPress`, raw primary-press enumeration, contained activation
-  preparation, activation claims, and per-frame activation deduplication.
-- Drag-begin deduplication, local preview gesture queuing, and the
-  `response_dragged_locally` helper.
-- The renderer-local `geometry::logical_point` helper, whose last users belonged
-  to the removed frontend. Core coordinate methods with the same name are separate
-  APIs and retain their existing callers.
-
-Core `SurfaceGesturePhase`, local gesture preparation/input APIs, and the
-`LocalResponse` gesture owner are also deleted. Non-pointer candidate actions
-remain separate semantic commands. No renderer drag owner, threshold, pending
-release, or gesture-phase state replaces these paths. `ctx().dragged_id()` is
-consulted only to release egui drag ownership
-for journal-owned docking widgets. It does not establish a core gesture.
+Core input reduction owns gesture state, drag thresholds and release. The
+renderer executes the resulting paint plan and registers egui widget facts.
+Semantic button, keyboard and accessibility actions remain separate commands.
+`ctx().dragged_id()` is consulted only to release egui drag ownership for
+journal-owned docking widgets.
 
 ## Authority contract
 
-| Authority | Local pointer actions | Preview support | Automatic authority cancellation |
-| --- | --- | --- | --- |
-| `HostJournal` | false | true | false |
-| `ExternalJournal` | false | true | false |
-| `LocalResponses` | `local_actions` | `presentation_settlement` | `cancel_active_gesture` |
+| Authority | Local pointer actions | Preview support |
+| --- | --- | --- |
+| `HostJournal` | false | true |
+| `ExternalJournal` | false | true |
+| `LocalResponses` | true | false |
 
 `HostJournal` is available with every feature configuration. `ExternalJournal`
-requires `native-render-support`. The three legacy `LocalResponses` fields remain
-available to existing callers. Preview support controls presentation and focus
-handling; it does not authorize response-derived gesture emission. There is no
-separate local-preview-emission method.
+requires `native-render-support`. `LocalResponses` keeps semantic button actions
+available when the enclosing host owns terminal output and cannot supply a
+settlement receipt. Preview support controls presentation and focus handling; it
+does not authorize response-derived gesture emission.
+
+The ordinary host drains and disables its pointer producer before painting when
+presentation settlement becomes unavailable. Core retirement cancels the exact
+active interaction at that boundary. The renderer does not retain cancellation
+history or enqueue a second authority-loss action.
 
 For both journal authorities, `interact_receiver` releases egui drag ownership
 when the registered widget currently owns it. The widget registration and completed
@@ -195,13 +183,19 @@ activation. The following semantic entry points remain:
 
 `actions.rs` therefore still translates button activation into opaque core actions.
 It does not read the raw event stream or produce docking gesture phases.
+Button activation preserves keyboard, AccessKit, then local pointer priority.
+Pane focus separately retains its focused, unfocused, and unknown observations.
+
+A policy-disabled visible tab keeps its visible bounds for hover and
+accessibility. Its core drag region may be empty; that does not erase its visual
+or accessible extent. The response remains hover-only, the accessible node stays
+disabled, and neither can authorize a semantic action.
 
 ## Source gaps, cursors, and focus
 
 `SurfacePaintDisposition` remains the source-gap authority. Widget identities and
 pane callbacks survive omitted source pixels, preserving focus and accessibility
-identity. Legacy authority cancellation can suppress transient visuals; a
-`HostJournal` authority never requests that suppression itself.
+identity. Transient visuals follow the core paint program.
 
 Tab and tab-group grabbing cues use the core source-gap disposition. The core
 `DragDecoration` step also selects `CursorIcon::Grabbing`, independently of an egui
@@ -209,7 +203,7 @@ drag response. Resize handles retain hover cursor feedback. These paths do not
 reconstruct active drag state from `Response::dragged()`.
 
 `HostJournal` participates in the same pane output-preservation checks and pane
-focus confirmation path as the legacy local renderer. Core pane focus requests
+focus confirmation path as `LocalResponses`. Core pane focus requests
 resolve through `PaneView::focus_target`; final focus observations remain tied to
 the exact output's settlement.
 
@@ -244,9 +238,10 @@ focus behavior.
 
 ## Validation and regression diagnosis
 
-`pointer_authority_contract_tests` covers the host and native journal contracts,
-plus every combination of the retained legacy flags. Discard-run tests and native
-preview tests cover their separate presentation responsibilities.
+`pointer_authority_contract_tests` covers the three concrete renderer modes.
+Discard-run tests and native preview tests cover their separate presentation
+responsibilities. The public tab-accessibility regression checks policy-disabled
+tabs through both callback-only and host-owned terminal runs.
 
 Owned pointer tests require an armed host input run, an accepted presented output,
 and receiver facts from that exact output. A synthetic egui click or a painted

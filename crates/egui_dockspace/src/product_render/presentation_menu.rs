@@ -78,7 +78,7 @@ pub(super) fn paint(
         false
     };
 
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     if !paint_omitted {
         paint_anchor_icon(context, anchor, contained, bounds, &response);
     }

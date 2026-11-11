@@ -304,7 +304,7 @@ fn a_pointer_packet_joins_content_ownership_once_for_all_edges() {
                         .show(ui.ctx(), |ui| {
                             let frame = session.begin_host_frame().unwrap();
                             let prepared = pointer
-                                .prepare_packet(&frame, SURFACE, ui, false, &packet)
+                                .prepare_packet(&frame, SURFACE, ui, &packet)
                                 .unwrap();
                             assert_eq!(prepared.raw.len(), 128);
                             assert!(

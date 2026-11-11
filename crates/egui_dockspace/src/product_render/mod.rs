@@ -90,45 +90,18 @@ fn native_drag_preview_diagnostic_enabled(context: &egui::Context) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PointerActionAuthority {
     HostJournal,
-    LocalResponses {
-        local_actions: bool,
-        presentation_settlement: bool,
-        cancel_active_gesture: bool,
-    },
+    LocalResponses,
     #[cfg(feature = "native-render-support")]
     ExternalJournal,
 }
 
 impl PointerActionAuthority {
     const fn accepts_local_pointer_actions(self) -> bool {
-        match self {
-            Self::LocalResponses { local_actions, .. } => local_actions,
-            Self::HostJournal => false,
-            #[cfg(feature = "native-render-support")]
-            Self::ExternalJournal => false,
-        }
+        matches!(self, Self::LocalResponses)
     }
 
     const fn supports_preview_gestures(self) -> bool {
-        match self {
-            Self::HostJournal => true,
-            Self::LocalResponses {
-                presentation_settlement,
-                ..
-            } => presentation_settlement,
-            #[cfg(feature = "native-render-support")]
-            Self::ExternalJournal => true,
-        }
-    }
-
-    const fn cancels_active_gesture(self) -> bool {
-        matches!(
-            self,
-            Self::LocalResponses {
-                cancel_active_gesture: true,
-                ..
-            }
-        )
+        !matches!(self, Self::LocalResponses)
     }
 }
 
@@ -157,32 +130,6 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     defer_measurement: &'ui mut bool,
     paint_audit: Option<&'ui mut crate::output_proof::PaintAudit>,
     pointer_authority: PointerActionAuthority,
-}
-
-pub(crate) fn request_discard_once(ui: &Ui, marker: Id, reason: &'static str) -> bool {
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    struct RunStamp {
-        frame: u64,
-        start_pass: u64,
-    }
-
-    let pass_index = u64::try_from(ui.ctx().current_pass_index()).unwrap_or(u64::MAX);
-    let stamp = RunStamp {
-        frame: ui.ctx().cumulative_frame_nr(),
-        start_pass: ui.ctx().cumulative_pass_nr().saturating_sub(pass_index),
-    };
-    let first = ui.ctx().data_mut(|data| {
-        if data.get_temp::<RunStamp>(marker) == Some(stamp) {
-            false
-        } else {
-            data.insert_temp(marker, stamp);
-            true
-        }
-    });
-    if first {
-        ui.ctx().request_discard(reason);
-    }
-    first
 }
 
 impl RenderContext<'_, '_, '_> {
@@ -219,10 +166,6 @@ impl RenderContext<'_, '_, '_> {
             .unwrap_or_else(|| self.ui.style().interact(response).weak_bg_fill)
     }
 
-    fn source_gap_active(&self, paint: SurfacePaintDisposition) -> bool {
-        !self.pointer_authority.cancels_active_gesture() && paint.is_source_gap()
-    }
-
     fn splitter_fill(&self, response: &Response, emphasized: bool) -> Color32 {
         if emphasized {
             self.style
@@ -249,7 +192,7 @@ impl RenderContext<'_, '_, '_> {
         let response = self.ui.interact(rect, id, sense);
         if !matches!(
             self.pointer_authority,
-            PointerActionAuthority::LocalResponses { .. }
+            PointerActionAuthority::LocalResponses
         ) && sense.senses_drag()
             && receiver.is_some_and(|receiver| {
                 matches!(
@@ -349,8 +292,6 @@ pub(crate) struct RegisteredDropTargetObservation {
 pub(crate) struct ProductPaintOutput {
     pub(crate) execution_receipt: Option<SurfaceProgramExecutionReceipt>,
     pub(crate) local_actions: Vec<EguiSurfaceAction>,
-    #[cfg(feature = "native-render-support")]
-    pub(crate) presentation_actions: Vec<EguiSurfaceAction>,
     pub(crate) pane_focus_observation: Option<PreparedPaneFocusObservation>,
     pub(crate) pane_focus_pending: Option<PendingPaneFocusObservation>,
     pub(crate) pane_focus_capability: DockspaceCapability,
@@ -426,7 +367,7 @@ pub(crate) fn paint_surface(
     {
         let mut paint_audit = matches!(
             pointer_authority,
-            PointerActionAuthority::LocalResponses { .. } | PointerActionAuthority::HostJournal
+            PointerActionAuthority::LocalResponses | PointerActionAuthority::HostJournal
         )
         .then(|| crate::output_proof::PaintAudit::new(ui.ctx()));
         let mut context = RenderContext {
@@ -507,16 +448,9 @@ pub(crate) fn paint_surface(
                         tab_chrome::paint_menu(&mut context, menu, paint);
                     }
                     SurfacePaintProgramStep::DragPreview(preview) => {
-                        let suppress_gesture_visuals =
-                            context.pointer_authority.cancels_active_gesture();
-                        let drag_preview_required = !suppress_gesture_visuals;
-                        let drag_preview_painted = if suppress_gesture_visuals {
-                            false
-                        } else {
-                            paint_preview(context.ui, context.plan, preview, context.visuals)
-                        };
-                        transient_visuals_complete &=
-                            !drag_preview_required || drag_preview_painted;
+                        let drag_preview_painted =
+                            paint_preview(context.ui, context.plan, preview, context.visuals);
+                        transient_visuals_complete &= drag_preview_painted;
                         if context.pointer_authority.supports_preview_gestures()
                             && drag_preview_painted
                         {
@@ -525,65 +459,29 @@ pub(crate) fn paint_surface(
                     }
                     SurfacePaintProgramStep::DropTarget(_) => {}
                     SurfacePaintProgramStep::DropGuide { affordance, .. } => {
-                        if !context.pointer_authority.cancels_active_gesture()
-                            && let Some(cluster) = affordance
-                        {
+                        if let Some(cluster) = affordance {
                             guides::paint_cluster(&mut context, cluster);
                         }
                     }
                     SurfacePaintProgramStep::ContainedTransformPreview(preview) => {
-                        let suppress_gesture_visuals =
-                            context.pointer_authority.cancels_active_gesture();
-                        let contained_preview_required = !suppress_gesture_visuals;
-                        let contained_preview_painted = if suppress_gesture_visuals {
-                            false
-                        } else {
-                            paint_contained_transform_preview(
-                                context.ui,
-                                context.plan,
-                                preview,
-                                context.visuals,
-                            )
-                        };
-                        transient_visuals_complete &=
-                            !contained_preview_required || contained_preview_painted;
+                        let contained_preview_painted = paint_contained_transform_preview(
+                            context.ui,
+                            context.plan,
+                            preview,
+                            context.visuals,
+                        );
+                        transient_visuals_complete &= contained_preview_painted;
                         if context.pointer_authority.supports_preview_gestures()
                             && contained_preview_painted
                         {
                             *context.defer_measurement = true;
                         }
                     }
-                    SurfacePaintProgramStep::DragDecoration(decoration)
-                        if !context.pointer_authority.cancels_active_gesture() =>
-                    {
+                    SurfacePaintProgramStep::DragDecoration(decoration) => {
                         drag_feedback::paint(&mut context, decoration);
                     }
-                    SurfacePaintProgramStep::DragDecoration(_) => {}
                     SurfacePaintProgramStep::InteractionFeedback => {
-                        if context.pointer_authority.cancels_active_gesture()
-                            && let Some(action) = context.plan.prepare_escape_cancel()
-                        {
-                            context.ui.ctx().stop_dragging();
-                            let origin = context
-                                .ui
-                                .make_persistent_id((
-                                    context.instance_id,
-                                    "workspace-focus",
-                                    context.plan.surface(),
-                                ))
-                                .with("authority-cancel");
-                            context.push_local_action(origin, action);
-                            *context.defer_measurement = true;
-                            let marker = context.ui.make_persistent_id((
-                                context.instance_id,
-                                "authority-cancel-frame",
-                            ));
-                            request_discard_once(
-                                context.ui,
-                                marker,
-                                "egui_dockspace: settle presentation-authority cancellation",
-                            );
-                        } else if actions::effective_enabled(context.ui, true)
+                        if actions::effective_enabled(context.ui, true)
                             && let Some(action) = context.plan.prepare_escape_cancel()
                             && context
                                 .ui
@@ -611,12 +509,8 @@ pub(crate) fn paint_surface(
         let pane_output_valid = paint_audit
             .as_ref()
             .is_none_or(crate::output_proof::PaintAudit::is_valid);
-        // Suppressed gesture visuals cannot authorize the complete paint program.
-        let suppresses_active_gesture =
-            pointer_authority.cancels_active_gesture() && plan.prepare_escape_cancel().is_some();
         execution_receipt =
-            (transient_visuals_complete && pane_output_valid && !suppresses_active_gesture)
-                .then_some(completed_program);
+            (transient_visuals_complete && pane_output_valid).then_some(completed_program);
     }
     debug_assert_eq!(
         terminal_semantic_output,
@@ -627,7 +521,7 @@ pub(crate) fn paint_surface(
         && pane_focus_target_requested
         && matches!(
             pointer_authority,
-            PointerActionAuthority::LocalResponses { .. } | PointerActionAuthority::HostJournal
+            PointerActionAuthority::LocalResponses | PointerActionAuthority::HostJournal
         ))
     .then(|| crate::output_proof::PaintAppendCheck::begin(ui.painter()));
     let (pane_focus_observation, pane_focus_pending, pane_focus_capability) = pane_focus_request
@@ -715,8 +609,6 @@ pub(crate) fn paint_surface(
     Ok(ProductPaintOutput {
         execution_receipt,
         local_actions,
-        #[cfg(feature = "native-render-support")]
-        presentation_actions: Vec::new(),
         pane_focus_observation,
         pane_focus_pending,
         pane_focus_capability,
@@ -899,28 +791,13 @@ mod pointer_authority_contract_tests {
         let authority = PointerActionAuthority::HostJournal;
         assert!(!authority.accepts_local_pointer_actions());
         assert!(authority.supports_preview_gestures());
-        assert!(!authority.cancels_active_gesture());
     }
 
     #[test]
-    fn local_responses_legacy_flags_contract() {
-        for local_actions in [false, true] {
-            for presentation_settlement in [false, true] {
-                for cancel_active_gesture in [false, true] {
-                    let authority = PointerActionAuthority::LocalResponses {
-                        local_actions,
-                        presentation_settlement,
-                        cancel_active_gesture,
-                    };
-                    assert_eq!(authority.accepts_local_pointer_actions(), local_actions);
-                    assert_eq!(
-                        authority.supports_preview_gestures(),
-                        presentation_settlement
-                    );
-                    assert_eq!(authority.cancels_active_gesture(), cancel_active_gesture);
-                }
-            }
-        }
+    fn local_responses_contract() {
+        let authority = PointerActionAuthority::LocalResponses;
+        assert!(authority.accepts_local_pointer_actions());
+        assert!(!authority.supports_preview_gestures());
     }
 
     #[cfg(feature = "native-render-support")]
@@ -929,49 +806,6 @@ mod pointer_authority_contract_tests {
         let authority = PointerActionAuthority::ExternalJournal;
         assert!(!authority.accepts_local_pointer_actions());
         assert!(authority.supports_preview_gestures());
-        assert!(!authority.cancels_active_gesture());
-    }
-}
-
-#[cfg(test)]
-mod discard_tests {
-    use egui::{Context, Id, RawInput, Ui, UiBuilder};
-
-    use super::request_discard_once;
-
-    #[test]
-    fn manual_passes_each_receive_one_discard_request() {
-        let context = Context::default();
-        let marker = Id::unique("dockspace-manual-discard-once");
-
-        for pass in 0..2 {
-            context.begin_pass(RawInput::default());
-            let ui = Ui::new(
-                context.clone(),
-                Id::unique(("dockspace-manual-discard-ui", pass)),
-                UiBuilder::new().max_rect(context.viewport_rect()),
-            );
-            assert!(request_discard_once(&ui, marker, "manual pass discard"));
-            assert!(!request_discard_once(&ui, marker, "manual pass discard"));
-            context.end_pass().drop_without_applying_deltas();
-        }
-    }
-
-    #[test]
-    fn multipass_run_receives_only_one_discard_request() {
-        let context = Context::default();
-        context.options_mut(|options| {
-            options.max_passes = 2.try_into().expect("two is non-zero");
-        });
-        let marker = Id::unique("dockspace-run-discard-once");
-        let mut requested = Vec::new();
-
-        let output = context.run_ui(RawInput::default(), |ui| {
-            requested.push(request_discard_once(ui, marker, "multipass discard"));
-        });
-        output.drop_without_applying_deltas();
-
-        assert_eq!(requested, [true, false]);
     }
 }
 

@@ -359,7 +359,6 @@ impl ProductPointer {
         frame: &DockspaceHostFrame<'_>,
         surface: SurfaceId,
         ui: &Ui,
-        cancel: bool,
     ) -> PreparedProductPointerInput {
         self.sync_presented(frame, surface);
         let Some(packet) = pointer_packet(ui) else {
@@ -382,7 +381,7 @@ impl ProductPointer {
         {
             Err(DockspaceInteractionError::PointerInputAlreadySubmitted.into())
         } else {
-            let input = self.prepare_packet(frame, surface, ui, cancel, &packet);
+            let input = self.prepare_packet(frame, surface, ui, &packet);
             if input.is_ok() {
                 self.consumed_run = Some(packet);
                 self.rejected_run = None;
@@ -409,7 +408,6 @@ impl ProductPointer {
         frame: &DockspaceHostFrame<'_>,
         surface: SurfaceId,
         ui: &Ui,
-        cancel: bool,
         packet: &ProductPointerPacket,
     ) -> Result<PreparedPointerEdges, DockspaceRuntimeError> {
         let current = frame.presented_surface(surface);
@@ -443,7 +441,7 @@ impl ProductPointer {
                 .iter()
                 .any(|event| matches!(event, Event::Touch { .. }));
         let mut records = Vec::new();
-        if cancel || rejected_previous || !coordinates_supported {
+        if rejected_previous || !coordinates_supported {
             if generic_live {
                 records.push(PointerSample::generic(
                     SurfacePointerEvent::StreamCancelled(

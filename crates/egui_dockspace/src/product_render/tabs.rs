@@ -38,7 +38,7 @@ pub(crate) fn paint_pane(
     paint: SurfacePaintDisposition,
 ) {
     let pane_fill = visual_context.pane_fill(context.visuals.workspace_fill);
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     let Some(bounds) = egui_rect(pane.bounds()) else {
         return;
     };
@@ -164,7 +164,7 @@ pub(crate) fn paint_tab_bar(
     bar: dockspace::runtime::TabBarPaintRecord<'_>,
     paint: SurfacePaintDisposition,
 ) {
-    let paint_omitted = context.source_gap_active(paint);
+    let paint_omitted = paint.is_source_gap();
     if !paint_omitted && let Some(bounds) = egui_rect(bar.bounds()) {
         context
             .ui
@@ -276,7 +276,7 @@ fn paint_group_drag_regions(
         } else {
             response
         };
-        let source_gap = context.source_gap_active(paint);
+        let source_gap = paint.is_source_gap();
         if enabled && (response.hovered() || source_gap) {
             context.ui.ctx().set_cursor_icon(if source_gap {
                 CursorIcon::Grabbing
@@ -285,7 +285,7 @@ fn paint_group_drag_regions(
             });
         }
         if region.kind() == TabGroupDragRegionKind::LeadingGrip {
-            let paint_omitted = context.source_gap_active(paint);
+            let paint_omitted = paint.is_source_gap();
             if !paint_omitted && enabled {
                 paint_group_grip_icon(
                     context.ui,
@@ -337,12 +337,14 @@ pub(crate) fn paint_tab(
     };
     let id = tab_id(context.ui, context.instance_id, tab);
     let operable = effective_enabled(context.ui, tab.operable());
+    // Policy-disabled tabs retain their visible hover and accessibility footprint.
+    let response_bounds = if operable { drag } else { visible };
     let preview_gestures_available = context.pointer_authority.supports_preview_gestures();
     let receiver = (operable && preview_gestures_available)
         .then(|| context.plan.receiver_for_tab_body(tab))
         .flatten();
     let response = context.interact_receiver(
-        drag,
+        response_bounds,
         id,
         if operable && preview_gestures_available {
             Sense::click_and_drag()
@@ -354,7 +356,7 @@ pub(crate) fn paint_tab(
         receiver,
     );
     let response = response.on_hover_text(resource.title.as_str());
-    let source_gap = context.source_gap_active(paint);
+    let source_gap = paint.is_source_gap();
     if operable && preview_gestures_available && (response.hovered() || source_gap) {
         context.ui.ctx().set_cursor_icon(if source_gap {
             CursorIcon::Grabbing
@@ -417,7 +419,7 @@ pub(crate) fn paint_tab(
     configure_tab_accessibility(
         context.ui,
         id,
-        drag,
+        response_bounds,
         resource.title.as_str(),
         selected,
         operable,

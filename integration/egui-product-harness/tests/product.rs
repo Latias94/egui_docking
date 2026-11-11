@@ -7487,11 +7487,18 @@ fn owned_to_unowned_downgrade_cancels_without_a_stale_ghost_frame() {
     });
 
     let mut capability = None;
+    let mut cancellation = Vec::new();
     let mut downgraded = context.run_ui(input(Vec::new()), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("the capability downgrade cancels the active gesture");
         capability = Some(response.presentation_settlement_capability());
+        cancellation.extend(
+            response
+                .manipulation_feedback()
+                .iter()
+                .map(|feedback| feedback.status()),
+        );
     });
     downgraded.textures_delta.clear();
     assert_eq!(
@@ -7502,7 +7509,13 @@ fn owned_to_unowned_downgrade_cancels_without_a_stale_ghost_frame() {
     );
     assert_eq!(
         downgraded.platform_output.num_completed_passes, 1,
-        "the fixture denies the cancellation discard so the first pass is terminal",
+        "the capability downgrade settles in its first rendering pass",
+    );
+    assert_eq!(
+        cancellation,
+        [egui_dockspace::DockspaceManipulationStatus::Cancelled(
+            egui_dockspace::DockspaceManipulationCancelReason::PointerProviderRetired
+        )],
     );
     assert_eq!(rect_fill_count(&downgraded, ghost_fill), 0);
     assert_eq!(rect_fill_count(&downgraded, drop_fill), 0);
@@ -7517,12 +7530,21 @@ fn owned_to_unowned_downgrade_cancels_without_a_stale_ghost_frame() {
     );
     assert!(context.dragged_id().is_none());
 
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(target), pointer_button(target, false)],
-    );
+    let (released, response) = dockspace
+        .run_single_surface(
+            &context,
+            input(vec![
+                Event::PointerMoved(target),
+                pointer_button(target, false),
+            ]),
+            SURFACE,
+            &mut panes,
+        )
+        .expect("the owned run resumes after pointer retirement");
+    assert!(response.manipulation_feedback().is_empty());
+    let (released, receipt) = released.into_parts();
+    receipt.report(SurfacePresentationResult::Presented);
+    released.drop_without_applying_deltas();
     assert_eq!(
         root_tabs(&dockspace).expect("the downgrade restores the source tabs"),
         before,

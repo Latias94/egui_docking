@@ -2361,19 +2361,6 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self.receiver(PresentationHitRegionKind::TabClose(tab_id))
     }
 
-    /// Returns the exact receiver for one whole-tab-group drag grip.
-    #[must_use]
-    pub fn receiver_for_tab_group_grip(
-        &self,
-        bar: TabBarPaintRecord<'frame>,
-    ) -> Option<DockspaceReceiverDescriptor> {
-        let bar_id = *bar.record.id();
-        self.receiver(PresentationHitRegionKind::TabGroupDrag {
-            bar: bar_id,
-            region: TabGroupDragRegionKind::LeadingGrip,
-        })
-    }
-
     /// Returns the exact receiver for one core-compiled group-drag region.
     #[must_use]
     pub fn receiver_for_tab_group_drag_region(
@@ -2383,19 +2370,6 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self.receiver(PresentationHitRegionKind::TabGroupDrag {
             bar: region.bar,
             region: region.record.kind(),
-        })
-    }
-
-    /// Returns the trailing-empty group receiver, when this bar has unused space.
-    #[must_use]
-    pub fn receiver_for_tab_group_trailing_empty(
-        &self,
-        bar: TabBarPaintRecord<'frame>,
-    ) -> Option<DockspaceReceiverDescriptor> {
-        let bar_id = *bar.record.id();
-        self.receiver(PresentationHitRegionKind::TabGroupDrag {
-            bar: bar_id,
-            region: TabGroupDragRegionKind::TrailingEmpty,
         })
     }
 
