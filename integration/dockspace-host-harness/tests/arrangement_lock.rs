@@ -2,8 +2,8 @@
 
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::model::{
-    DockPlacement, DockspaceActionRejection, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
+    DockPlacement, DockspaceActionOutcome, DockspaceActionRejection, DockspaceLayout,
+    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
 };
 use dockspace::policy::{CloseCapability, DockItemRule, DockPolicy};
 use dockspace::runtime::{
@@ -126,6 +126,82 @@ fn locked_product_commands_reject_structural_changes_but_select_still_works() {
         matches!(report.inputs()[1], HostInputOutcome::CloseRejected(_)),
         "unlock preserves the original per-item restriction"
     );
+}
+
+#[test]
+fn current_action_tokens_correlate_mixed_batch_outcomes_in_submission_order() {
+    let mut session = DockspaceSession::from_layout(layout(), policy()).unwrap();
+    set_lock(&mut session, true);
+    commit_measured(session.begin_host_frame().unwrap());
+    let mut frame = session.begin_host_frame().unwrap();
+    let actions = [
+        frame
+            .open_item_current(CLOSED, DockPlacement::After(FIRST))
+            .unwrap(),
+        frame.select_item_current(SECOND).unwrap(),
+        frame
+            .dock_item_current(SECOND, DockPlacement::Before(FIRST))
+            .unwrap(),
+        frame.request_close_item_current(SECOND).unwrap(),
+        frame.select_item_current(FIRST).unwrap(),
+        frame.float_item_current(SECOND, SURFACE).unwrap(),
+        frame.request_close_root_current(ROOT).unwrap(),
+    ];
+    let report = commit_measured(frame);
+
+    assert_eq!(report.inputs().len(), actions.len());
+    for (index, action) in actions.iter().copied().enumerate() {
+        assert!(actions[..index].iter().all(|earlier| *earlier != action));
+        assert_eq!(
+            report.submitted_action_outcome(action),
+            Some(&report.inputs()[index]),
+            "each submitted action resolves its own ordered outcome"
+        );
+    }
+    for index in [0, 2] {
+        assert!(
+            matches!(
+                report.inputs()[index],
+                HostInputOutcome::ProductActionRejected(DockspaceActionRejection::PolicyDenied)
+            ),
+            "unexpected product outcome at {index}: {:?}",
+            report.inputs()
+        );
+    }
+    assert_eq!(
+        report.inputs()[5],
+        HostInputOutcome::ProductActionRejected(
+            DockspaceActionRejection::PresentationUnavailable { surface: SURFACE }
+        )
+    );
+    for (index, item) in [(1, SECOND), (4, FIRST)] {
+        assert_eq!(
+            report.inputs()[index],
+            HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
+                item,
+                changed: true,
+            })
+        );
+    }
+    for index in [3, 6] {
+        assert!(matches!(
+            report.inputs()[index],
+            HostInputOutcome::CloseRejected(_)
+        ));
+    }
+    assert!(report.workspace_changed());
+    assert!(session.view().item(FIRST).unwrap().is_selected());
+    assert_eq!(
+        session.view().item(FIRST).unwrap().tabs().items(),
+        &[FIRST, SECOND]
+    );
+    assert!(session.view().item(CLOSED).is_none());
+    assert_eq!(session.pending_content_close_plans().count(), 0);
+
+    let next = commit_measured(session.begin_host_frame().unwrap());
+    for action in actions {
+        assert!(next.submitted_action_outcome(action).is_none());
+    }
 }
 
 #[test]

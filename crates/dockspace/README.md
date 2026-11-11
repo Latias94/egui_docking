@@ -46,6 +46,13 @@ assert!(session.view().item(item).is_some());
 See the [adapter testing guide](../../docs/ADAPTER_TESTING.md) for integration
 responsibilities, retained UI publication and reusable semantic scenarios.
 
+Application commands submitted through a host frame return a
+`DockspaceSubmittedAction`. Keep each identity when batching commands, then use
+`HostFrameReport::submitted_action_outcome` to obtain its exact committed result.
+A successful submission means the candidate accepted the input; policy or
+availability can still reject the product operation at commit. The identity
+belongs to that frame attempt and does not resolve against a later report.
+
 1. Begin a host frame, submit ordered input and application commands, then
    begin encoding and supply surface measurements in logical coordinates.
    A surface is a logical layout and input domain; it need not be a platform

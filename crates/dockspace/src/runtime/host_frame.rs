@@ -72,6 +72,10 @@ fn workspace_root_continuations(
 ///
 /// Dropping this value discards the private candidate and leaves the published
 /// session unchanged.
+///
+/// Current-action methods return an identity for an accepted input. Submission
+/// may succeed even when the reducer rejects the product action; inspect
+/// [`HostFrameReport::submitted_action_outcome`] after committing the frame.
 #[must_use = "dropping a host frame rolls back its uncommitted candidate"]
 pub struct DockspaceHostFrame<'session> {
     pub(super) session: &'session mut DockspaceSession,
@@ -537,6 +541,8 @@ impl<'session> DockspaceHostFrame<'session> {
     /// The reducer resolves the current tabs source inside this rollback candidate.
     /// Selection requests pane focus and explicit activation of an eligible native
     /// window, even when the item is already selected. Focus still requires host observation.
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -545,17 +551,24 @@ impl<'session> DockspaceHostFrame<'session> {
     pub fn select_item_current(
         &mut self,
         item: crate::ids::ItemId,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::SelectItem {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::SelectItem {
             expected: self.frame.view().version(),
             item,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Opens one item at a stable product placement.
     ///
     /// A newly opened item becomes selected and requests pane focus. Opening an
     /// already owned item is a valid no-op, preserving location, selection and focus.
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -565,15 +578,23 @@ impl<'session> DockspaceHostFrame<'session> {
         &mut self,
         item: crate::ids::ItemId,
         placement: DockPlacement,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::OpenItem {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::OpenItem {
             expected: self.frame.view().version(),
             item,
             placement,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Docks one currently open item at a stable product placement.
+    ///
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -583,15 +604,23 @@ impl<'session> DockspaceHostFrame<'session> {
         &mut self,
         item: crate::ids::ItemId,
         placement: DockPlacement,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::DockItem {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::DockItem {
             expected: self.frame.view().version(),
             item,
             placement,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Docks one complete root at a stable product placement.
+    ///
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -601,12 +630,17 @@ impl<'session> DockspaceHostFrame<'session> {
         &mut self,
         root: crate::ids::RootId,
         placement: DockPlacement,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::DockRoot {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::DockRoot {
             expected: self.frame.view().version(),
             root,
             placement,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Requests a native child window for one complete root.
@@ -614,6 +648,8 @@ impl<'session> DockspaceHostFrame<'session> {
     /// Source content remains on its current surface until the exact first-live
     /// target output is presented. That atomic boundary transfers ownership and
     /// admits routing, focus, accessibility, and source-resource retirement.
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -623,7 +659,7 @@ impl<'session> DockspaceHostFrame<'session> {
         &mut self,
         root: crate::ids::RootId,
         placement: NativeWindowPlacement,
-    ) -> Result<(), DockspaceRuntimeError> {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
         self.move_to_new_window_current(crate::model::NativeTearOffSource::Root(root), placement)
     }
 
@@ -632,6 +668,8 @@ impl<'session> DockspaceHostFrame<'session> {
     /// The source stays unchanged until the exact target first-live output is
     /// presented. Creation failure and cancellation retain its original owner.
     /// A tabs-group selection remains bound to the version where it was captured.
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -641,12 +679,17 @@ impl<'session> DockspaceHostFrame<'session> {
         &mut self,
         source: crate::model::NativeTearOffSource,
         placement: NativeWindowPlacement,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::TearOffNative {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::TearOffNative {
             expected: self.frame.view().version(),
             source,
             placement: Some(placement),
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Requests native tear-off using core placement from current authoritative facts.
@@ -654,6 +697,8 @@ impl<'session> DockspaceHostFrame<'session> {
     /// Placement uses the same source geometry and work-area solver as paint,
     /// menu and prepared commands. Missing facts produce an ordinary product
     /// rejection without moving the source or emitting a Create effect.
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -661,18 +706,25 @@ impl<'session> DockspaceHostFrame<'session> {
     pub fn move_to_new_window_default_current(
         &mut self,
         source: crate::model::NativeTearOffSource,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::TearOffNative {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::TearOffNative {
             expected: self.frame.view().version(),
             source,
             placement: None,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Moves one open item into a contained presentation on an existing surface.
     ///
     /// A complete singleton root preserves its root identity. Moving one item out
     /// of a larger root allocates a fresh root and contained-presentation identity.
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -682,15 +734,23 @@ impl<'session> DockspaceHostFrame<'session> {
         &mut self,
         item: crate::ids::ItemId,
         surface: crate::ids::SurfaceId,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::FloatItem {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::FloatItem {
             expected: self.frame.view().version(),
             item,
             surface,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Raises the contained presentation owning one open item.
+    ///
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -699,17 +759,24 @@ impl<'session> DockspaceHostFrame<'session> {
     pub fn raise_contained_current(
         &mut self,
         item: crate::ids::ItemId,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::RaiseContained {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::RaiseContained {
             expected: self.frame.view().version(),
             item,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Clamps the contained presentation owning one item into current exact surface bounds.
     ///
     /// Passive surface or measurement changes never rewrite durable geometry. This
     /// explicit action uses the latest exact ready surface bounds and contained minimum.
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including product rejections.
     ///
     /// # Errors
     ///
@@ -718,11 +785,16 @@ impl<'session> DockspaceHostFrame<'session> {
     pub fn bring_contained_into_view_current(
         &mut self,
         item: crate::ids::ItemId,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::BringContainedIntoView {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let frame_attempt = self.frame.presentation_attempt();
+        let source_sequence = self.append_identified(EngineInput::BringContainedIntoView {
             expected: self.frame.view().version(),
             item,
-        })
+        })?;
+        Ok(DockspaceSubmittedAction::new(
+            frame_attempt,
+            source_sequence,
+        ))
     }
 
     /// Submits one action against the exact published revision which prepared it.
@@ -846,17 +918,23 @@ impl<'session> DockspaceHostFrame<'session> {
 
     /// Opens or reuses one core-owned close plan for an item.
     ///
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including close rejections.
+    ///
     /// # Errors
     ///
     /// Returns an error when the affine frame rejects the input structurally.
     pub fn request_close_item_current(
         &mut self,
         item: crate::ids::ItemId,
-    ) -> Result<(), DockspaceRuntimeError> {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
         self.request_close_current(ContentCloseTarget::Item(item))
     }
 
     /// Opens or reuses one core-owned close plan for a complete root.
+    ///
+    /// The returned identity resolves the committed outcome through
+    /// [`HostFrameReport::submitted_action_outcome`], including close rejections.
     ///
     /// # Errors
     ///
@@ -864,20 +942,20 @@ impl<'session> DockspaceHostFrame<'session> {
     pub fn request_close_root_current(
         &mut self,
         root: crate::ids::RootId,
-    ) -> Result<(), DockspaceRuntimeError> {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
         self.request_close_current(ContentCloseTarget::Root(root))
     }
 
     fn request_close_current(
         &mut self,
         target: ContentCloseTarget,
-    ) -> Result<(), DockspaceRuntimeError> {
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
         let prepared = PreparedCloseRequest::new(
             self.session.engine.authority_domain(),
             self.frame.view().version(),
             target,
         );
-        self.submit_prepared_close_request(prepared).map(|_| ())
+        self.submit_prepared_close_request(prepared)
     }
 
     /// Resolves one initial close decision token.
