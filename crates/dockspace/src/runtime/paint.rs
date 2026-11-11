@@ -1300,11 +1300,11 @@ impl DockspaceHostFrame<'_> {
     /// Seals semantic input and retains only the derived state needed for actual
     /// renderer multipass retries. No pane callback is invoked by this method.
     pub fn begin_encoding_pass(&mut self) -> Result<(), DockspaceRuntimeError> {
-        if self.encoding_checkpoint.is_none() {
+        if self.encoding.checkpoint.is_none() {
             self.complete_pointer_input()?;
-            self.encoding_checkpoint = Some(self.frame.capture_encoding_checkpoint()?);
+            self.encoding.checkpoint = Some(self.frame.capture_encoding_checkpoint()?);
         }
-        self.encoding_started.set(true);
+        self.encoding.started.set(true);
         Ok(())
     }
 
@@ -1312,18 +1312,20 @@ impl DockspaceHostFrame<'_> {
     /// Accepted input remains in the same candidate and cannot be replayed.
     pub fn restart_encoding_pass(&mut self) -> Result<(), DockspaceRuntimeError> {
         let checkpoint = self
-            .encoding_checkpoint
+            .encoding
+            .checkpoint
             .as_ref()
             .ok_or(DockspaceInteractionError::EncodingPassUnavailable)?;
         let next = self
-            .encoding_pass
+            .encoding
+            .pass
             .checked_add(1)
             .ok_or(DockspaceInteractionError::EncodingPassExhausted)?;
         self.frame.restart_encoding_from(checkpoint)?;
-        self.painted_surfaces.clear();
-        self.encoding_surfaces.clear();
-        self.encoding_pass = next;
-        self.encoding_started.set(true);
+        self.encoding.painted.clear();
+        self.encoding.surfaces.clear();
+        self.encoding.pass = next;
+        self.encoding.started.set(true);
         Ok(())
     }
 
@@ -1345,15 +1347,16 @@ impl DockspaceHostFrame<'_> {
         let ready = scene.ready().is_some();
         let (observations, admission) = self.frame.output_admission_facts(surface);
         let stream = ready.then_some(admission);
-        if self.encoding_surfaces.get(&surface) != Some(&stream) {
-            let reserved = self.encoding_surfaces.len()
-                - usize::from(self.encoding_surfaces.contains_key(&surface));
+        if self.encoding.surfaces.get(&surface) != Some(&stream) {
+            let reserved = self.encoding.surfaces.len()
+                - usize::from(self.encoding.surfaces.contains_key(&surface));
             if !self.session.presentation.reserve_output(
                 &self.submitted_presentation,
                 observations,
                 reserved,
                 stream,
-                self.encoding_surfaces
+                self.encoding
+                    .surfaces
                     .iter()
                     .filter_map(|(&other, admission)| {
                         (other != surface).then_some(*admission).flatten()
@@ -1361,7 +1364,7 @@ impl DockspaceHostFrame<'_> {
             )? {
                 return Ok(SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity));
             }
-            self.encoding_surfaces.insert(surface, stream);
+            self.encoding.surfaces.insert(surface, stream);
         }
         Ok(match self.prepared_paint_plan(surface)? {
             Some(plan) => SurfaceWork::Ready(plan),
@@ -1419,8 +1422,8 @@ impl DockspaceHostFrame<'_> {
                     .then_some(EscapeDelivery::Surface(surface))
             };
         let plan = SurfacePaintPlan {
-            encoding_started: &self.encoding_started,
-            encoding_pass: self.encoding_pass,
+            encoding_started: &self.encoding.started,
+            encoding_pass: self.encoding.pass,
             surface,
             attempt: self.frame.presentation_attempt(),
             authority_domain: self.session.engine.authority_domain(),
@@ -1464,7 +1467,7 @@ impl DockspaceHostFrame<'_> {
         receipt: SurfaceProgramExecutionReceipt,
     ) -> Result<(), DockspaceRuntimeError> {
         let surface = receipt.surface;
-        if self.painted_surfaces.contains_key(&surface)
+        if self.encoding.painted.contains_key(&surface)
             || self
                 .frame
                 .surface_contributions()
@@ -1485,7 +1488,7 @@ impl DockspaceHostFrame<'_> {
         let expected_interaction = view
             .presentation_interaction(surface)
             .ok_or_else(|| DockspaceRuntimeError::surface_program_invariant(surface))?;
-        if receipt.encoding_pass != self.encoding_pass
+        if receipt.encoding_pass != self.encoding.pass
             || receipt.attempt != self.frame.presentation_attempt()
             || receipt.output != candidate.output_ticket()
             || receipt.contribution != expected_contribution
@@ -1495,7 +1498,7 @@ impl DockspaceHostFrame<'_> {
                 DockspaceInteractionError::SurfaceProgramExecutionMismatch { surface }.into(),
             );
         }
-        self.painted_surfaces.insert(surface, receipt);
+        self.encoding.painted.insert(surface, receipt);
         Ok(())
     }
 }

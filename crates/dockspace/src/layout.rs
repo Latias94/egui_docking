@@ -17,9 +17,11 @@ use crate::workspace::WorkspaceIndex;
 
 mod projection;
 pub use projection::{
-    ChildProjection, LayoutProjection, NodeIter, NodeMap, NodeResult, SplitIter, SplitMap,
-    SplitProjection,
+    ChildProjection, LayoutProjection, NodeMap, NodeResult, SplitMap, SplitProjection,
 };
+
+#[cfg(test)]
+pub use projection::{NodeIter, SplitIter};
 
 mod topology;
 use crate::graph::root_structure::{RootNodeKind, RootStructure};
@@ -38,6 +40,7 @@ impl AxisConstraint {
     ///
     /// Returns an error when either bound is non-finite, the minimum is
     /// negative, or the maximum is smaller than the minimum.
+    #[cfg(test)]
     pub fn new(min: f64, max: f64) -> Result<Self, AxisConstraintError> {
         if !min.is_finite() {
             return Err(AxisConstraintError::NonFiniteMinimum { value: min });
@@ -68,6 +71,7 @@ impl AxisConstraint {
 
 /// Why an [`AxisConstraint`] could not be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Error)]
+#[cfg(test)]
 pub enum AxisConstraintError {
     /// The minimum is not a finite number.
     #[error("axis minimum is non-finite: {value}")]
@@ -85,6 +89,7 @@ pub enum AxisConstraintError {
 
 /// A solved ordered split axis.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub struct AxisLayout {
     /// Extent assigned to each child in input order.
     pub sizes: Vec<f64>,
@@ -310,6 +315,7 @@ pub enum LayoutError {
 /// Returns an error for non-finite or negative scalar input, mismatched child
 /// lists, an invalid central index, a zero total weight without a central
 /// child, or an aggregate which overflows `f64`.
+#[cfg(test)]
 pub fn solve_axis(
     extent: f64,
     weights: &[f64],
@@ -463,6 +469,7 @@ fn solve_validated_axis_into(
 /// unfinished, a leaf has no explicit constraints, constraint composition is
 /// impossible, or axis allocation fails. Workspace completion owns structural
 /// validation before this call can borrow the root body.
+#[cfg(test)]
 pub fn project_root(
     workspace: &Workspace,
     root: RootId,
@@ -485,6 +492,7 @@ pub fn project_root(
 /// Returns the same errors as [`project_root`], plus an error when an override
 /// belongs to another root, is stale, duplicated, names a non-split node, has
 /// the wrong cardinality, or is not normalized.
+#[cfg(test)]
 pub fn project_root_with_overrides(
     workspace: &Workspace,
     root: RootId,
@@ -775,11 +783,19 @@ fn validate_split_weight_overrides(
 #[derive(Debug, Clone, Copy)]
 struct SubtreeMeasurement {
     constraints: Constraints,
+    #[allow(
+        dead_code,
+        reason = "Frozen internal projection retains this fact for protocol validation and test inspection"
+    )]
     contains_central: bool,
 }
 
 #[derive(Clone, Copy)]
 enum LeafMeasurements<'leaves> {
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Constraints(&'leaves BTreeMap<NodeId, Constraints>),
     Minimums(&'leaves BTreeMap<NodeId, LogicalSize>),
 }

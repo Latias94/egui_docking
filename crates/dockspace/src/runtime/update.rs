@@ -1,20 +1,16 @@
 //! Owned suspension of the sole rollbackable host-frame candidate.
 
-use std::cell::Cell;
-use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
 #[cfg(feature = "serde")]
 use crate::document::PendingRuntimeDocumentRestore;
 use crate::engine::CoreHostFrame;
-use crate::ids::SurfaceId;
-use crate::presentation_observation::{PresentationHostLease, PresentationStreamAdmission};
+use crate::presentation_observation::PresentationHostLease;
 
+use super::host_frame::EncodingState;
 use super::presentation::SubmittedPresentationObservation;
-use super::{
-    DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession, SurfaceProgramExecutionReceipt,
-};
+use super::{DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession};
 
 /// The sole unpublished update, owned independently of its session.
 ///
@@ -33,11 +29,7 @@ pub struct DockspaceUpdate {
     pointer_input_submitted: bool,
     native_input_pending: bool,
     submitted_presentation: SubmittedPresentationObservation,
-    painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
-    encoding_surfaces: BTreeMap<SurfaceId, Option<PresentationStreamAdmission>>,
-    encoding_started: Cell<bool>,
-    encoding_checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
-    encoding_pass: u64,
+    encoding: EncodingState,
     replacement_submitted: bool,
     #[cfg(feature = "serde")]
     document_restore: Option<PendingRuntimeDocumentRestore>,
@@ -80,11 +72,7 @@ impl DockspaceUpdate {
             pointer_input_submitted,
             native_input_pending,
             submitted_presentation,
-            painted_surfaces,
-            encoding_surfaces,
-            encoding_started,
-            encoding_checkpoint,
-            encoding_pass,
+            encoding,
             replacement_submitted,
             #[cfg(feature = "serde")]
             document_restore,
@@ -98,11 +86,7 @@ impl DockspaceUpdate {
             pointer_input_submitted,
             native_input_pending,
             submitted_presentation,
-            painted_surfaces,
-            encoding_surfaces,
-            encoding_started,
-            encoding_checkpoint,
-            encoding_pass,
+            encoding,
             replacement_submitted,
             #[cfg(feature = "serde")]
             document_restore,
@@ -126,11 +110,7 @@ impl DockspaceHostFrame<'_> {
             pointer_input_submitted,
             native_input_pending,
             submitted_presentation,
-            painted_surfaces,
-            encoding_surfaces,
-            encoding_started,
-            encoding_checkpoint,
-            encoding_pass,
+            encoding,
             replacement_submitted,
             #[cfg(feature = "serde")]
             document_restore,
@@ -147,11 +127,7 @@ impl DockspaceHostFrame<'_> {
             pointer_input_submitted,
             native_input_pending,
             submitted_presentation,
-            painted_surfaces,
-            encoding_surfaces,
-            encoding_started,
-            encoding_checkpoint,
-            encoding_pass,
+            encoding,
             replacement_submitted,
             #[cfg(feature = "serde")]
             document_restore,

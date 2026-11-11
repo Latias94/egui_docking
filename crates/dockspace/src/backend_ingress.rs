@@ -10,8 +10,10 @@ mod native_capacity;
 
 use std::mem::size_of;
 use std::num::NonZeroUsize;
+#[cfg(test)]
+use std::sync::Weak;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
@@ -20,7 +22,9 @@ use crate::engine::EngineInput;
 use crate::ids::SurfaceId;
 use crate::ids::{EngineAuthorityDomainId, WorkspaceEpoch};
 use crate::platform::{PlatformSnapshot, WindowCloseObservation};
-use crate::platform_provider::{PlatformObservationLease, PlatformProviderReservation};
+use crate::platform_provider::PlatformObservationLease;
+#[cfg(test)]
+use crate::platform_provider::PlatformProviderReservation;
 use crate::pointer_journal::{
     PointerEdgeJournal, PointerEdgeSequence, PointerInputLease, PointerProviderScope,
 };
@@ -40,6 +44,7 @@ pub struct BackendIngressOrdinal(u64);
 impl BackendIngressOrdinal {
     pub(crate) const ORIGIN: Self = Self(0);
 
+    #[cfg(test)]
     pub(crate) const fn from_committed_source_sequence(value: u64) -> Self {
         Self(value)
     }
@@ -144,6 +149,7 @@ impl BackendIngressRecordLiveness {
         BackendIngressRecordState::load(&self.0)
     }
 
+    #[cfg(test)]
     fn is_live(&self) -> bool {
         self.state() == BackendIngressRecordState::Live
     }
@@ -239,6 +245,7 @@ pub struct BackendIngressLease {
 /// provider replacement revokes their exact lease before a successor is activated.
 #[derive(Debug, PartialEq, Eq)]
 #[must_use = "a drained backend producer must be retired or replaced"]
+#[cfg(test)]
 pub struct BackendIngressDrainReceipt {
     lease: BackendIngressLease,
     recorded_through: BackendIngressOrdinal,
@@ -246,6 +253,7 @@ pub struct BackendIngressDrainReceipt {
     consumed: bool,
 }
 
+#[cfg(test)]
 impl BackendIngressDrainReceipt {
     /// Returns the exact joined provider lifetime whose producer stopped.
     #[must_use]
@@ -393,11 +401,13 @@ impl BackendIngressPrefixRetirementReceipt {
 /// activate the platform, desktop-pointer, and backend-order lanes only through
 /// the engine-owned joined replacement path.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub struct BackendIngressProviderReplacementTicket {
     authority: Option<BackendIngressProviderReplacementAuthority>,
 }
 
 #[derive(Debug)]
+#[cfg(test)]
 struct BackendIngressProviderReplacementAuthority {
     authority_domain: EngineAuthorityDomainId,
     handoff: BackendIngressReplacementId,
@@ -405,6 +415,7 @@ struct BackendIngressProviderReplacementAuthority {
     _monitor: Arc<()>,
 }
 
+#[cfg(test)]
 impl PartialEq for BackendIngressProviderReplacementAuthority {
     fn eq(&self, other: &Self) -> bool {
         self.authority_domain == other.authority_domain
@@ -414,6 +425,7 @@ impl PartialEq for BackendIngressProviderReplacementAuthority {
     }
 }
 
+#[cfg(test)]
 impl Eq for BackendIngressProviderReplacementAuthority {}
 
 /// Core-owned identity of one pending joined-provider handoff.
@@ -422,8 +434,10 @@ impl Eq for BackendIngressProviderReplacementAuthority {}
 /// adapter ticket does not discard the quiescence proof retained by core, and a
 /// later reissued ticket still has to name this exact pending handoff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg(test)]
 pub(crate) struct BackendIngressReplacementId(u64);
 
+#[cfg(test)]
 impl BackendIngressReplacementId {
     const ORIGIN: Self = Self(0);
 
@@ -435,6 +449,7 @@ impl BackendIngressReplacementId {
     }
 }
 
+#[cfg(test)]
 impl BackendIngressProviderReplacementTicket {
     pub(crate) const fn new(
         authority_domain: EngineAuthorityDomainId,
@@ -505,12 +520,14 @@ impl BackendIngressCommitWatermark {
 
     /// Returns the exact provider pair which committed this prefix.
     #[must_use]
+    #[cfg(test)]
     pub const fn lease(self) -> BackendIngressLease {
         self.lease
     }
 
     /// Returns the inclusive committed ingress position.
     #[must_use]
+    #[cfg(test)]
     pub const fn through(self) -> BackendIngressOrdinal {
         self.through
     }
@@ -785,12 +802,14 @@ impl BackendIngressBatch {
 
     /// Returns the exact joined provider lifetime which captured this batch.
     #[must_use]
+    #[cfg(test)]
     pub const fn lease(&self) -> BackendIngressLease {
         self.lease
     }
 
     /// Returns the exclusive lower ingress watermark.
     #[must_use]
+    #[cfg(test)]
     pub const fn previous(&self) -> BackendIngressOrdinal {
         self.previous
     }
@@ -987,12 +1006,14 @@ pub struct BackendIngressSavepoint {
 impl BackendIngressSavepoint {
     /// Returns the exact joined provider lifetime owning this boundary.
     #[must_use]
+    #[cfg(test)]
     pub const fn lease(&self) -> BackendIngressLease {
         self.lease
     }
 
     /// Returns the latest record which existed before the transaction began.
     #[must_use]
+    #[cfg(test)]
     pub const fn recorded_through(&self) -> BackendIngressOrdinal {
         self.recorded_through
     }
@@ -1173,6 +1194,7 @@ impl BackendIngressRecorder {
     /// for this backend lifetime afterward. Captured suffix records which were not committed by
     /// the core are intentionally abandoned and cannot cross the subsequent lease replacement.
     #[must_use]
+    #[cfg(test)]
     pub fn drain(self) -> BackendIngressDrainReceipt {
         let _coordination = self.coordination.lock();
         for record in &self.records {
@@ -1402,6 +1424,7 @@ impl BackendIngressRecorder {
     }
 
     /// Returns the complete immutable stream captured so far.
+    #[cfg(test)]
     pub fn pending_batch(&self) -> Result<BackendIngressBatch, BackendIngressError> {
         let mut records = Vec::with_capacity(self.records.len());
         records.extend_from_slice(&self.records);
@@ -1717,11 +1740,14 @@ pub(crate) struct BackendIngressAuthority {
     active: Option<BackendIngressLease>,
     committed_through: BackendIngressOrdinal,
     committed_record_identity: BackendIngressRecordIdentity,
+    #[cfg(test)]
     next_replacement_id: BackendIngressReplacementId,
+    #[cfg(test)]
     pending_replacement: Option<BackendIngressReplacementState>,
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub(crate) struct BackendIngressReplacementState {
     handoff: BackendIngressReplacementId,
     ticket_generation: u64,
@@ -1732,6 +1758,7 @@ pub(crate) struct BackendIngressReplacementState {
     pointer_through: PointerEdgeSequence,
 }
 
+#[cfg(test)]
 impl PartialEq for BackendIngressReplacementState {
     fn eq(&self, other: &Self) -> bool {
         self.handoff == other.handoff
@@ -1744,8 +1771,10 @@ impl PartialEq for BackendIngressReplacementState {
     }
 }
 
+#[cfg(test)]
 impl Eq for BackendIngressReplacementState {}
 
+#[cfg(test)]
 impl BackendIngressReplacementState {
     pub(crate) const fn handoff(&self) -> BackendIngressReplacementId {
         self.handoff
@@ -1779,7 +1808,9 @@ impl BackendIngressAuthority {
             active: None,
             committed_through: BackendIngressOrdinal::ORIGIN,
             committed_record_identity: BackendIngressRecordIdentity::ORIGIN,
+            #[cfg(test)]
             next_replacement_id: BackendIngressReplacementId::ORIGIN,
+            #[cfg(test)]
             pending_replacement: None,
         }
     }
@@ -1792,6 +1823,7 @@ impl BackendIngressAuthority {
         self.committed_through
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve_replacement(
         &mut self,
         platform: PlatformProviderReservation,
@@ -1832,6 +1864,7 @@ impl BackendIngressAuthority {
         Ok(Self::issue_replacement_ticket(self.authority_domain, state))
     }
 
+    #[cfg(test)]
     pub(crate) fn reissue_replacement_ticket(
         &mut self,
     ) -> Result<BackendIngressProviderReplacementTicket, BackendIngressError> {
@@ -1846,6 +1879,7 @@ impl BackendIngressAuthority {
         Ok(Self::issue_replacement_ticket(self.authority_domain, state))
     }
 
+    #[cfg(test)]
     fn issue_replacement_ticket(
         authority_domain: EngineAuthorityDomainId,
         state: &mut BackendIngressReplacementState,
@@ -1860,6 +1894,7 @@ impl BackendIngressAuthority {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn replacement_state(
         &self,
         authority_domain: EngineAuthorityDomainId,
@@ -1889,12 +1924,14 @@ impl BackendIngressAuthority {
         Ok(state.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn replacement_ticket_abandoned(&self) -> bool {
         self.pending_replacement
             .as_ref()
             .is_some_and(|state| state.ticket_monitor.upgrade().is_none())
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_replacement_state(
         &self,
     ) -> Result<BackendIngressReplacementState, BackendIngressError> {
@@ -1903,6 +1940,7 @@ impl BackendIngressAuthority {
             .ok_or(BackendIngressError::ProviderReplacementNotPending)
     }
 
+    #[cfg(test)]
     pub(crate) fn complete_replacement(
         &mut self,
         authority_domain: EngineAuthorityDomainId,
@@ -1915,6 +1953,7 @@ impl BackendIngressAuthority {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn abort_replacement(
         &mut self,
         handoff: BackendIngressReplacementId,
@@ -1959,6 +1998,7 @@ impl BackendIngressAuthority {
         Ok(recorder)
     }
 
+    #[cfg(test)]
     pub(crate) fn revoke(&mut self, lease: BackendIngressLease) -> Result<(), BackendIngressError> {
         let Some(active) = self.active else {
             return Err(BackendIngressError::ProviderUnavailable);

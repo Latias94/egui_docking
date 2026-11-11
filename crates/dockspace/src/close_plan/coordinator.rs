@@ -166,6 +166,7 @@ impl<P> CloseCoordinator<P> {
     /// Terminal plans stay detailed through their successful publication boundary. The next
     /// atomic candidate compacts their payload and copied-token indexes while monotonic identity
     /// frontiers continue to classify late replay.
+    #[cfg(test)]
     pub(crate) fn retention_manifest(&self) -> CloseRetentionManifest {
         let terminal_plan_guards = self
             .requests
@@ -199,6 +200,7 @@ impl<P> CloseCoordinator<P> {
 
     /// Atomically freezes a surface close plan with the exact native edge that
     /// created its external close obligation.
+    #[cfg(test)]
     pub(crate) fn open_surface(
         &mut self,
         authority: CloseAuthority,

@@ -78,15 +78,6 @@ pub enum PointerButton {
     Other(u16),
 }
 
-/// Authoritative button state carried by a release intent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PointerButtonState {
-    /// The matching button remains pressed.
-    Pressed,
-    /// The matching button was released.
-    Released,
-}
-
 /// Horizontal edge moved by an explicit contained resize gesture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainedHorizontalResizeEdge {
@@ -163,6 +154,10 @@ impl ContainedResizeEdges {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainedTransformKind {
     /// Translate the frozen rectangle without changing its size.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Move,
     /// Move only the explicit edges while preserving the opposite anchors.
     Resize(ContainedResizeEdges),
@@ -196,6 +191,10 @@ pub enum TabGestureSource {
     /// Unlike a tab-group grip, the title region represents the complete
     /// contained subtree and therefore preserves the floating presentation
     /// identity while the core derives the payload from the current scene.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     ContainedTitle {
         /// Root presented by the contained floating.
         root: RootId,
@@ -217,6 +216,10 @@ pub enum CloseSceneTarget {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CloseActivation {
     /// A concrete pointer and button activated the control at this position.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Pointer {
         pointer: PointerId,
         button: PointerButton,
@@ -613,6 +616,7 @@ impl NativeTearOffProposal {
 
     /// Returns the root identity used for newly detached content.
     #[must_use]
+    #[cfg(test)]
     pub const fn root(&self) -> RootId {
         self.root
     }
@@ -670,6 +674,7 @@ impl NativePresentationOffer {
 
     /// Returns the explicit contained fallback, when one was offered.
     #[must_use]
+    #[cfg(test)]
     pub const fn contained_fallback(&self) -> Option<ContainedTearOffProposal> {
         self.contained_fallback
     }

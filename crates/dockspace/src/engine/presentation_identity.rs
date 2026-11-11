@@ -62,6 +62,7 @@ impl PresentationIdentityAuthority {
         authority
     }
 
+    #[cfg(any(feature = "serde", test))]
     pub(super) const fn frontier(&self) -> PresentationIdentityFrontier {
         self.frontier
     }

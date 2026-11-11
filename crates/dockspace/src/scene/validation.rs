@@ -1,8 +1,10 @@
 //! Validation and canonicalization of complete semantic presentation plans.
 
 use super::*;
+#[cfg(test)]
 use crate::command::Edge;
 use crate::drop_target::DropTargetLocation;
+#[cfg(test)]
 use crate::target_field::{pane_center_basin, root_edge_band};
 use crate::workspace::WorkspaceIndexView;
 
@@ -47,6 +49,7 @@ pub(crate) struct PresentationPlanValidator<'a> {
 }
 
 impl<'a> PresentationPlanValidator<'a> {
+    #[cfg(test)]
     pub(crate) fn new(
         workspace: &'a Workspace,
         policy: &'a DockPolicySnapshot,
@@ -122,6 +125,7 @@ impl<'a> PresentationPlanValidator<'a> {
     }
 
     /// Validates arbitrary plans, including deliberately malformed test facts.
+    #[cfg(test)]
     pub(crate) fn validate_and_canonicalize(
         &self,
         mut ready: PresentationPlan,
@@ -188,6 +192,7 @@ impl<'a> PresentationPlanValidator<'a> {
         validator.finish_validation(ready, record_order, target_order)
     }
 
+    #[cfg(test)]
     fn bind_command_bases(&self, ready: &mut PresentationPlan) {
         ready.bind_workspace_selection(self.workspace);
         ready.command_basis.clear();
@@ -350,6 +355,7 @@ fn validate_compiled_target_coverage(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_magnetic_target_field(
     ready: &PresentationPlan,
     mut target_coverage: MagneticTargetCoverage<'_, '_>,
@@ -531,6 +537,7 @@ fn validate_magnetic_target_field(
     Ok(())
 }
 
+#[cfg(test)]
 fn magnetic_targets_are_canonical(
     ready: &PresentationPlan,
     target_coverage: &mut MagneticTargetCoverage<'_, '_>,
@@ -813,6 +820,7 @@ fn validate_surface_background(
     validate_drop_visual(ready, background)
 }
 
+#[cfg(test)]
 fn validate_ready_semantics(
     ready: &PresentationPlan,
     record_order: &SemanticRecordOrder,
@@ -1094,6 +1102,7 @@ fn canonical_presentation_menu_tab_bar(
     Ok(None)
 }
 
+#[cfg(test)]
 fn expected_pane_records(
     ready: &PresentationPlan,
     workspace: &Workspace,
@@ -1149,6 +1158,7 @@ fn expected_pane_records(
     Ok(expected)
 }
 
+#[cfg(test)]
 fn validate_pane_and_tab_records(
     ready: &PresentationPlan,
     record_order: &SemanticRecordOrder,
@@ -1673,6 +1683,7 @@ pub(super) fn splitter_extent_satisfies_constraints(
         && (extent <= maximum || extent - maximum <= tolerance)
 }
 
+#[cfg(test)]
 fn validate_splitter_records(
     ready: &PresentationPlan,
     record_order: &SemanticRecordOrder,
@@ -1685,6 +1696,7 @@ fn validate_splitter_records(
     validate_splitter_junction_records(ready, record_order)
 }
 
+#[cfg(test)]
 fn validate_splitter_record_sets(
     ready: &PresentationPlan,
     record_order: &SemanticRecordOrder,
@@ -1839,6 +1851,7 @@ fn validate_splitter_geometry(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_splitter_junction_records(
     ready: &PresentationPlan,
     record_order: &SemanticRecordOrder,
@@ -2472,6 +2485,10 @@ struct IndexedRoot {
     layer: SceneLayerKey,
     root_node: NodeId,
     nodes: HashSet<NodeId>,
+    #[allow(
+        dead_code,
+        reason = "Frozen internal projection retains this fact for protocol validation and test inspection"
+    )]
     fingerprint: Option<NodeFingerprint>,
 }
 
@@ -2484,6 +2501,10 @@ struct IndexedContained {
 }
 
 enum SceneWorkspaceIndex<'a> {
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Complete(CompleteSceneWorkspaceIndex),
     SharedSurface(SharedSurfaceSceneWorkspaceIndex<'a>),
 }
@@ -2502,6 +2523,7 @@ struct SharedSurfaceSceneWorkspaceIndex<'a> {
 }
 
 impl<'a> SceneWorkspaceIndex<'a> {
+    #[cfg(test)]
     fn new(workspace: &Workspace) -> Result<Self, SceneBuildError> {
         let mut root_presentations = HashMap::with_capacity(workspace.roots().count());
         let mut contained = HashMap::with_capacity(workspace.contained_floatings().count());
@@ -2637,6 +2659,7 @@ impl<'a> SceneWorkspaceIndex<'a> {
         self.root_belongs_to_surface(surface, root) && self.contains_node(root, node)
     }
 
+    #[cfg(test)]
     fn root_fingerprint(&self, root: RootId) -> Option<&NodeFingerprint> {
         match self {
             Self::Complete(index) => index

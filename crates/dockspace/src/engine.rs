@@ -28,6 +28,8 @@ mod presentation_identity;
 mod presentation_rehome;
 mod presentation_roster;
 mod presented_input;
+#[cfg(test)]
+mod presented_tab_chrome;
 mod product_action;
 mod provider_lifecycle;
 mod reducer;
@@ -36,7 +38,6 @@ mod retention;
 mod scroll_interaction;
 mod semantic_candidate;
 mod semantic_keyboard;
-mod semantic_receiver;
 mod splitter_geometry;
 mod surface_contribution;
 mod surface_runtime;
@@ -54,6 +55,17 @@ use self::pointer_proof::{
     pointer_receiver_candidate_spec, resolve_native_pointer_edge, validated_desktop_delivery_route,
 };
 
+#[cfg(test)]
+pub use self::input::{TabListMenuNavigation, TabScrollAdjustmentError};
+#[cfg(test)]
+pub use self::presentation_roster::HostPresentationSchedule;
+#[cfg(test)]
+pub use self::surface_contribution::{
+    PreparedReadySurfacePaintCandidate, PreparedSurfacePaintCandidate,
+};
+#[cfg(test)]
+use crate::scene::PresentationPlanValidator;
+
 use self::tab_strip_input::TabListMenuActivation;
 #[cfg(test)]
 use self::tab_strip_input::aligned_tab_strip_scroll_offset;
@@ -68,11 +80,12 @@ use self::contained_geometry::{
     contained_resize_edges, contained_transform_requested_rect, translated_contained_rect,
 };
 use self::input::TabScrollAdjustmentKind;
+#[cfg(any(feature = "serde", test))]
+pub use self::input::ValidatedWorkspaceRestore;
 pub use self::input::{
     EngineInput, PreparedTabListMenuDismiss, PreparedTabListMenuNavigation,
     PreparedTabListMenuRowActivation, PreparedTabListMenuScroll, PreparedTabStripControlActivation,
-    PreparedTabStripScroll, TabListMenuNavigation, TabScrollAdjustment, TabScrollAdjustmentError,
-    ValidatedWorkspaceRestore,
+    PreparedTabStripScroll, TabScrollAdjustment,
 };
 pub(crate) use self::input::{LocalSurfaceAction, LocalTabChromeAction, LocalTabSelection};
 use self::native_admission::NativeAdmissionState;
@@ -85,7 +98,7 @@ use self::presentation_roster::{
 };
 pub use self::presentation_roster::{
     HostPresentationDisposition, HostPresentationDispositionOutcome, HostPresentationObligation,
-    HostPresentationSchedule, HostPresentationSlot, HostPresentationUnavailableReason,
+    HostPresentationSlot, HostPresentationUnavailableReason,
 };
 use self::reducer::{
     HostBackendIngressCursor, HostPointerProtocolSegment, PreparedHostPointerProtocol,
@@ -96,16 +109,17 @@ use self::splitter_geometry::{
 };
 use self::surface_contribution::PreparedSurfaceContributionState;
 pub use self::surface_contribution::{
-    PreparedReadySurfacePaintCandidate, PreparedSurfaceContribution, PreparedSurfacePaintCandidate,
-    SurfaceContributionBeginError, SurfaceContributionPrepareError, SurfaceContributionToken,
+    PreparedSurfaceContribution, SurfaceContributionBeginError, SurfaceContributionPrepareError,
+    SurfaceContributionToken,
 };
 use self::surface_vacancy::TickVacancyLedger;
 
+#[cfg(test)]
+use crate::backend_ingress::BackendIngressProviderReplacementTicket;
 use crate::backend_ingress::{
     BackendIngressAuthority, BackendIngressBatch, BackendIngressCommitGuard,
     BackendIngressCommitWatermark, BackendIngressError, BackendIngressLease, BackendIngressOrdinal,
-    BackendIngressPayload, BackendIngressPrefixRetirementReceipt,
-    BackendIngressProviderReplacementTicket, BackendIngressRecorder,
+    BackendIngressPayload, BackendIngressPrefixRetirementReceipt, BackendIngressRecorder,
 };
 use crate::close_plan::prepare_scoped_content_close as prepare_content_close;
 use crate::close_plan::{
@@ -168,16 +182,19 @@ use crate::interaction::{
     TabStripEdgeScrollState, TouchPressState, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
-use crate::model::{DockspaceLayout, DockspaceView, ProductAction};
+#[cfg(test)]
+use crate::model::DockspaceLayout;
+use crate::model::{DockspaceView, ProductAction};
 use crate::operation::{
     PreparedSurfaceContentClose, authorize_captured_drag_source, prepare_surface_content_close,
 };
 use crate::platform::{
     CloseEffectAcknowledgement, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
 };
+#[cfg(test)]
+use crate::platform_provider::PlatformProviderReservation;
 use crate::platform_provider::{
     PlatformObservationAuthorityError, PlatformObservationLease, PlatformProviderAuthorityFrontier,
-    PlatformProviderReservation,
 };
 use crate::pointer_journal::{
     DesktopRouteFact, DesktopRoutePresentationError, DesktopRouteValidation, PointerCaptureOwner,
@@ -212,21 +229,24 @@ use crate::presentation_observation::{
     HostFrameKey, HostInteractionPresentation, HostPresentationEmission,
     HostPresentationEmissionRequest, HostPresentationEndpoint, HostPresentationObservation,
     HostPresentationObservationEntry, HostPresentationObservationOutcome,
-    HostPresentationOutputPayload, HostPresentationStreamId, NativeStagingResourceDescriptor,
-    NativeStagingResourceId, PresentationHostLease, PresentationHostRetirementReason,
-    PresentationHostRetirementStatus, PresentationLedger, PresentationLedgerDiagnostics,
-    PresentationLedgerError, PresentationObservationReduction, PresentationOutputSerial,
-    PresentationStreamQuiescence, PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
+    HostPresentationOutputPayload, HostPresentationStreamId, NativeStagingResourceId,
+    PresentationHostLease, PresentationHostRetirementReason, PresentationHostRetirementStatus,
+    PresentationLedger, PresentationLedgerError, PresentationObservationReduction,
+    PresentationOutputSerial, PresentationStreamQuiescence, PresentedSurfaceAuthority,
+    SurfacePresentationOutputTicket,
 };
-use crate::retention::{
-    InputSourceRetentionManifest, PresentationRetentionManifest, RuntimeRetentionManifest,
+#[cfg(test)]
+use crate::presentation_observation::{
+    NativeStagingResourceDescriptor, PresentationLedgerDiagnostics,
 };
+use crate::retention::PresentationRetentionManifest;
+#[cfg(test)]
+use crate::retention::{InputSourceRetentionManifest, RuntimeRetentionManifest};
 use crate::scene::{
-    BootstrapSurfaceSceneReason, PopupGeometryUnavailableReason, PresentationPlan,
-    PresentationPlanValidator, SceneBuildError, SplitterResizeTarget, SplitterSceneId,
-    StaleSurfaceSceneReason, SurfaceCoordinateCapture, SurfaceInteractionProjection, SurfaceScene,
-    SurfaceSceneSet, SurfaceSceneStamp, TabBarRecord, TabListMenuBackdropRecord, TabListMenuRecord,
-    TabStripMemberRecord,
+    BootstrapSurfaceSceneReason, PopupGeometryUnavailableReason, PresentationPlan, SceneBuildError,
+    SplitterResizeTarget, SplitterSceneId, StaleSurfaceSceneReason, SurfaceCoordinateCapture,
+    SurfaceInteractionProjection, SurfaceScene, SurfaceSceneSet, SurfaceSceneStamp, TabBarRecord,
+    TabListMenuBackdropRecord, TabListMenuRecord, TabStripMemberRecord,
 };
 #[cfg(test)]
 use crate::scene_compiler::compile_surface_measurements;
@@ -239,7 +259,6 @@ use crate::scene_manifest::{
     SceneRequirementManifest, SurfaceMeasurementTicket, SurfaceMeasurements,
     SurfaceRequirementRevision,
 };
-use crate::semantic_input::SemanticReceiverEvent;
 use crate::surface_recovery::{
     ContainedRootPlacement, ConvertedMainRecovery, RootRecoveryAnchor, RootRecoveryAnchorId,
     SurfaceMainRehome, SurfaceRecoveryBlockedReason, SurfaceRecoveryBootstrap,
@@ -255,10 +274,13 @@ use crate::tab_strip::{
 #[cfg(test)]
 use crate::transaction::WorkspaceTransaction;
 
+#[cfg(test)]
 use crate::transition::{
-    BackendIngressProviderReplacementStart, ContentCloseRequestRejection, EngineTransition,
-    EngineTransitionParts, InputOutcome, InputPriority, PresentationHostRetirementOutcome,
-    ReducedInput, SurfaceCloseRequestRejection, SurfaceContributionOutcome,
+    BackendIngressProviderReplacementStart, PresentationHostRetirementOutcome,
+};
+use crate::transition::{
+    ContentCloseRequestRejection, EngineTransition, EngineTransitionParts, InputOutcome,
+    InputPriority, ReducedInput, SurfaceCloseRequestRejection, SurfaceContributionOutcome,
     SurfaceContributionRejection, SurfaceContributionUnavailableReason, SurfaceSceneDelta,
     SurfaceSceneStateKind, WorkspaceVersion,
 };
@@ -709,7 +731,8 @@ pub struct HostFrameView<'frame> {
     engine: &'frame DockEngine,
     presentation_roster: &'frame HostPresentationRoster,
     receiver_presentations: &'frame BTreeMap<SurfaceId, JournalSurfacePresentation>,
-    semantic_presentations: &'frame BTreeMap<SurfaceId, JournalSurfacePresentation>,
+    #[cfg(test)]
+    prepared_presentations: &'frame BTreeMap<SurfaceId, JournalSurfacePresentation>,
 }
 
 impl<'frame> HostFrameView<'frame> {
@@ -803,7 +826,8 @@ pub struct CoreHostFrame {
     /// Exact semantic projections for the complete roster. These remain
     /// available to keyboard and accessibility actions even when a local
     /// pointer provider scopes receiver authority to one surface.
-    frozen_semantic_presentations: BTreeMap<SurfaceId, JournalSurfacePresentation>,
+    #[cfg(test)]
+    frozen_prepared_presentations: BTreeMap<SurfaceId, JournalSurfacePresentation>,
     /// Non-replayable issuer shared with the engine. Every segment receives a
     /// distinct attempt even when the enclosing host frame later fails.
     pointer_receiver_attempt_issuer: Option<Arc<PointerReceiverAttemptIssuer>>,
@@ -854,6 +878,7 @@ pub struct CoreHostPresentationFrame {
 /// preflight. They cannot mutate the original engine until this capability is
 /// either committed or dropped.
 #[must_use = "dropping a prepared host frame rolls back the candidate"]
+#[cfg(test)]
 pub struct PreparedHostFrameCommit<'a> {
     engine: &'a mut DockEngine,
     candidate: DockEngine,
@@ -1769,7 +1794,6 @@ struct PlatformSnapshotReductionContext<'a> {
 #[derive(Clone, Copy)]
 struct TickStartAuthority<'a> {
     policy: &'a DockPolicySnapshot,
-    semantic_presentations: Option<&'a BTreeMap<SurfaceId, JournalSurfacePresentation>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1994,6 +2018,7 @@ enum PlatformInteractionReconciliation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 enum PresentationHostRetirementInteractionImpact {
     None,
     ClearFeedback { end_routing: bool },
@@ -2037,6 +2062,7 @@ impl DockEngine {
     /// # Errors
     ///
     /// Returns an invariant error if exact semantic requirements cannot be derived.
+    #[cfg(test)]
     pub fn from_layout_with_presentation_config(
         layout: DockspaceLayout,
         policy: DockPolicy,
@@ -2050,6 +2076,7 @@ impl DockEngine {
     /// # Errors
     ///
     /// Returns [`EngineError::InvalidWorkspace`] if `workspace` is corrupted.
+    #[cfg(test)]
     pub fn new(workspace: Workspace, policy: DockPolicy) -> Result<Self, EngineError> {
         Self::new_with_presentation_state(
             workspace,
@@ -2059,22 +2086,7 @@ impl DockEngine {
         )
     }
 
-    /// Creates an engine from one atomic, document-validated restore.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InvalidWorkspace`] if the restored workspace is corrupted.
-    pub fn from_validated_restore(
-        restore: ValidatedWorkspaceRestore,
-        policy: DockPolicy,
-    ) -> Result<Self, EngineError> {
-        Self::from_validated_restore_with_presentation_config(
-            restore,
-            policy,
-            DockPresentationConfig::default(),
-        )
-    }
-
+    #[cfg(feature = "serde")]
     pub(crate) fn from_validated_restore_with_presentation_config(
         restore: ValidatedWorkspaceRestore,
         policy: DockPolicy,
@@ -2246,6 +2258,7 @@ impl DockEngine {
 
     /// Returns the durable frontier required for an atomic dockspace document capture.
     #[must_use]
+    #[cfg(any(feature = "serde", test))]
     pub const fn presentation_identity_frontier(&self) -> PresentationIdentityFrontier {
         self.presentation_identity.frontier()
     }
@@ -2306,6 +2319,7 @@ impl DockEngine {
             .interaction_authority(surface)
     }
 
+    #[cfg(test)]
     fn freeze_interaction_projection(
         projection: SurfaceInteractionProjection<'_>,
     ) -> FrozenPresentationAuthority {
@@ -2618,6 +2632,7 @@ impl DockEngine {
     /// Returns count-only presentation-ledger diagnostics for conformance tests.
     #[doc(hidden)]
     #[must_use]
+    #[cfg(test)]
     pub fn presentation_ledger_diagnostics(&self) -> PresentationLedgerDiagnostics {
         self.presentation_authority.presentation.diagnostics()
     }
@@ -2653,6 +2668,7 @@ impl DockEngine {
     /// subsets expose every retained structure and the protocol barrier which still prevents its
     /// safe compaction; no entry is hidden behind frame age or a fixed cache capacity.
     #[must_use]
+    #[cfg(test)]
     pub fn runtime_retention_manifest(&self) -> RuntimeRetentionManifest {
         RuntimeRetentionManifest::new(
             self.presentation_retention_manifest(),
@@ -2680,6 +2696,7 @@ impl DockEngine {
     ///
     /// Returns an error when the stream is foreign, still active, unsettled, or lacks a live
     /// same-host successor for its surface.
+    #[cfg(test)]
     pub fn prepare_presentation_stream_quiescence(
         &self,
         host: PresentationHostLease,
@@ -2738,6 +2755,7 @@ impl DockEngine {
     ///
     /// Returns an error when core still retains the stream or its ledger state changed after the
     /// acknowledgement was prepared.
+    #[cfg(test)]
     pub fn confirm_presentation_stream_quiescence(
         &mut self,
         quiescence: PresentationStreamQuiescence,
@@ -2789,6 +2807,7 @@ impl DockEngine {
     ///
     /// Returns a typed ledger or reducer error when the lease is foreign,
     /// unknown, or the atomic candidate cannot be published.
+    #[cfg(test)]
     pub fn retire_presentation_host(
         &mut self,
         host: PresentationHostLease,
@@ -2951,6 +2970,7 @@ impl DockEngine {
     /// Returns the exact release preview retained until the host proves that it
     /// was presented.
     #[must_use]
+    #[cfg(test)]
     pub fn pending_release_preview(
         &self,
     ) -> Option<(
@@ -2999,6 +3019,7 @@ impl DockEngine {
 
     /// Classifies a close request without retaining every terminal payload indefinitely.
     #[must_use]
+    #[cfg(test)]
     pub fn lookup_close_plan(&self, request: CloseRequestId) -> ClosePlanLookup<'_> {
         self.close.lookup(request)
     }
@@ -3013,6 +3034,7 @@ impl DockEngine {
     }
 
     /// Returns every currently non-terminal close-plan snapshot.
+    #[cfg(test)]
     pub fn active_close_plans(&self) -> impl Iterator<Item = &ClosePlan> {
         self.close.active_plans()
     }
@@ -3109,6 +3131,7 @@ impl DockEngine {
 
     /// Returns the complete roster retained for one unresolved destroyed surface.
     #[must_use]
+    #[cfg(test)]
     pub fn pending_surface_recovery(
         &self,
         surface: crate::ids::SurfaceId,
@@ -3118,6 +3141,7 @@ impl DockEngine {
 
     /// Returns why one destroyed child surface is retained for a later exact retry.
     #[must_use]
+    #[cfg(test)]
     pub fn blocked_surface_recovery(
         &self,
         surface: crate::ids::SurfaceId,
@@ -3133,6 +3157,7 @@ impl DockEngine {
 
     /// Returns the last globally assigned input sequence.
     #[must_use]
+    #[cfg(test)]
     pub const fn last_input_sequence(&self) -> InputSequence {
         self.last_input
     }
@@ -3143,6 +3168,7 @@ impl DockEngine {
     /// do not partition replay authority: every non-backend semantic input submitted to this
     /// engine must advance this one session-owned sequence.
     #[must_use]
+    #[cfg(test)]
     pub const fn semantic_input_watermark(&self) -> Option<SourceSequence> {
         self.semantic_input_watermark
     }
@@ -3153,6 +3179,7 @@ impl DockEngine {
     ///
     /// Returns a typed coordinate error when the surface is not ready or its
     /// placement facts are incomplete.
+    #[cfg(test)]
     pub fn viewport_placement(
         &self,
         surface: crate::ids::SurfaceId,
@@ -3164,6 +3191,7 @@ impl DockEngine {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn native_placement_is_current(&self, proof: &crate::intent::NativePlacementProof) -> bool {
         match proof {
             NativePlacementProof::TearOff(proof) => {

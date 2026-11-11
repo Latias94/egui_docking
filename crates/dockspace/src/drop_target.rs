@@ -472,6 +472,10 @@ pub enum DropTargetUnavailable {
     /// Application policy excluded this target when the scene was built.
     PolicyDisabled,
     /// The renderer cannot offer this semantic target in the current scene.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     AdapterUnavailable,
 }
 

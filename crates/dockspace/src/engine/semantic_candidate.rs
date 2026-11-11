@@ -163,7 +163,7 @@ impl DockEngine {
                 .region_is_operable(record.drag_hit().rect(), record.layer())
             {
                 return Ok(self.candidate_action_rejection(
-                    InteractionRejection::SemanticReceiverUnavailable {
+                    InteractionRejection::ActionReceiverUnavailable {
                         target: PresentationHitRegionKind::TabBody(tab),
                     },
                 ));

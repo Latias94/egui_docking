@@ -119,6 +119,7 @@ impl ViewportPlacementPreference {
 
     /// Associates the work-area identity which confirmed this placement.
     #[must_use]
+    #[cfg(test)]
     pub const fn with_work_area(mut self, work_area: WorkAreaToken) -> Self {
         self.work_area = Some(work_area);
         self
@@ -158,6 +159,7 @@ impl ViewportPlacementPreference {
 
     /// Returns the work-area hint recorded with the rectangle.
     #[must_use]
+    #[cfg(test)]
     pub const fn work_area(self) -> Option<WorkAreaToken> {
         self.work_area
     }
@@ -209,6 +211,7 @@ impl ViewportPlacementPreferences {
     }
 
     /// Removes and returns the preference for one stable surface.
+    #[cfg(test)]
     pub fn remove(&mut self, surface: SurfaceId) -> Option<ViewportPlacementPreference> {
         self.surfaces.remove(&surface)?.placement
     }
@@ -220,6 +223,7 @@ impl ViewportPlacementPreferences {
     }
 
     /// Returns the preferences in stable surface order.
+    #[cfg(test)]
     pub fn iter(&self) -> impl Iterator<Item = &ViewportPlacementPreference> {
         self.surfaces
             .values()
@@ -274,6 +278,7 @@ impl ViewportPlacementPreferences {
 
     /// Returns whether no surface preferences are stored.
     #[must_use]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.surfaces.is_empty()
     }

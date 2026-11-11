@@ -225,7 +225,7 @@ macro_rules! transient_counter_id {
 
             /// Returns the runtime counter representation.
             #[must_use]
-            #[cfg_attr(not(test), allow(dead_code))]
+            #[allow(dead_code, reason = "Internal identity macros provide inspection for protocol tests; production uses only each domain's required operations")]
             pub const fn get(self) -> u64 {
                 self.0
             }

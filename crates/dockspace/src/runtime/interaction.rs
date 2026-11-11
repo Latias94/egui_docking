@@ -1729,7 +1729,7 @@ impl DockspaceHostFrame<'_> {
     }
 
     pub(super) fn surface_answered(&self, surface: SurfaceId) -> bool {
-        self.painted_surfaces.contains_key(&surface)
+        self.encoding.painted.contains_key(&surface)
             || self.frame.surface_is_measured(surface)
             || self
                 .frame

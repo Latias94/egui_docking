@@ -287,6 +287,7 @@ macro_rules! capability_accessors {
     ($(($getter:ident, $setter:ident, $field:ident)),+ $(,)?) => {
         $(
             #[must_use]
+            #[allow(dead_code, reason = "capability fields retain symmetric diagnostic getters and setters")]
             pub const fn $getter(&self) -> PlatformCapability {
                 self.$field
             }
@@ -481,6 +482,7 @@ impl CapabilityRosterObservation {
 
     /// Creates an explicit versioned unavailable roster tombstone.
     #[must_use]
+    #[cfg(test)]
     pub const fn unknown(
         generation: CapabilityObservationGeneration,
         reason: AuthorityUnavailableReason,
@@ -494,6 +496,7 @@ impl CapabilityRosterObservation {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn roster(&self) -> &Authority<PlatformCapabilities> {
         &self.roster
     }
@@ -524,6 +527,7 @@ pub(crate) struct CapabilityRosterObservationStream {
 
 impl CapabilityRosterObservationStream {
     /// Starts a fresh provider-local generation namespace.
+    #[cfg(test)]
     pub(crate) fn reset_for_provider_replacement(&mut self) {
         *self = Self::default();
     }
@@ -653,6 +657,7 @@ pub(crate) struct WindowInventoryObservationStream {
 
 impl WindowInventoryObservationStream {
     /// Starts a fresh provider-local generation namespace.
+    #[cfg(test)]
     pub(crate) fn reset_for_provider_replacement(&mut self) {
         *self = Self::default();
     }
@@ -834,6 +839,7 @@ impl WindowInputObservation {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn state(self) -> Authority<WindowInputState> {
         self.state
     }
@@ -880,6 +886,7 @@ pub(crate) struct WindowInputObservationStream {
 
 impl WindowInputObservationStream {
     /// Starts a fresh provider-local generation namespace.
+    #[cfg(test)]
     pub(crate) fn reset_for_provider_replacement(&mut self) {
         *self = Self::default();
     }
@@ -1343,6 +1350,7 @@ impl WindowCloseObservation {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn state(self) -> Authority<WindowCloseState> {
         self.state
     }
@@ -1390,6 +1398,7 @@ impl WindowCloseObservationStream {
     /// Completed retirements are removed from the active lifecycle before a
     /// replacement begins, so carrying that terminal fact into a successor
     /// would incorrectly attribute predecessor authority to the new provider.
+    #[cfg(test)]
     pub(crate) fn reset_for_provider_replacement(&mut self) {
         debug_assert!(
             !self.destroyed,
@@ -1521,6 +1530,7 @@ impl ObservedWindow {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn close_requested(&self) -> &Authority<bool> {
         &self.close_requested
     }
@@ -1532,6 +1542,7 @@ impl ObservedWindow {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn with_input_state(mut self, value: Authority<WindowInputState>) -> Self {
         self.input_state = value;
         self
@@ -1553,6 +1564,7 @@ impl ObservedWindow {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn with_close_requested(mut self, value: Authority<bool>) -> Self {
         self.close_requested = value;
         self
@@ -1676,6 +1688,7 @@ pub(crate) struct WorkAreaRosterObservationStream {
 
 impl WorkAreaRosterObservationStream {
     /// Starts a fresh provider-local generation namespace.
+    #[cfg(test)]
     pub(crate) fn reset_for_provider_replacement(&mut self) {
         *self = Self::default();
     }
@@ -1718,6 +1731,7 @@ impl WorkAreaRosterObservationStream {
         self.current.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) const fn generation_watermark(&self) -> Option<WorkAreaObservationGeneration> {
         self.last_generation
     }

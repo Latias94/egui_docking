@@ -1,6 +1,7 @@
 //! Atomic engine transition records returned after successful publication.
 
-use crate::backend_ingress::{BackendIngressOrdinal, BackendIngressProviderReplacementTicket};
+#[cfg(test)]
+use crate::backend_ingress::BackendIngressProviderReplacementTicket;
 use crate::close_plan::{
     ClosePlan, CloseRequestId, CloseResolutionOutcome, NativeCloseEdge, SurfaceCloseRequest,
 };
@@ -24,9 +25,12 @@ use crate::pointer_journal::{
 use crate::policy::{PolicyRejection, PolicyRevision};
 use crate::presentation_config::PresentationConfigRevision;
 use crate::presentation_observation::{
-    HostPresentationEmission, HostPresentationObservationOutcome, PresentationHostLease,
-    PresentationHostRetirementReason, PresentationHostRetirementTombstone,
-    PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
+    HostPresentationEmission, HostPresentationObservationOutcome, PresentedSurfaceAuthority,
+    SurfacePresentationOutputTicket,
+};
+#[cfg(test)]
+use crate::presentation_observation::{
+    PresentationHostLease, PresentationHostRetirementReason, PresentationHostRetirementTombstone,
 };
 use crate::scene::{PopupGeometryUnavailableReason, SurfaceSceneStamp};
 use crate::scene_manifest::MeasurementAuthorityError;
@@ -349,6 +353,10 @@ pub enum ContentCloseRequestRejection {
     /// A close capability explicitly disables this item.
     ItemCloseDisabled { item: ItemId },
     /// The exact source could not be captured from the current graph.
+    #[allow(
+        dead_code,
+        reason = "Checked close capture retains an explicit graph-source failure outcome."
+    )]
     SourceUnavailable(CommandError),
 }
 
@@ -439,6 +447,7 @@ impl SurfaceSceneDelta {
 
     /// Returns authority before the tick, or `None` when the surface was absent.
     #[must_use]
+    #[cfg(test)]
     pub const fn before(
         self,
     ) -> Option<(
@@ -451,6 +460,7 @@ impl SurfaceSceneDelta {
 
     /// Returns authority after the tick, or `None` when the surface was removed.
     #[must_use]
+    #[cfg(test)]
     pub const fn after(
         self,
     ) -> Option<(
@@ -619,6 +629,7 @@ impl ReducedInput {
 
     /// Returns the core-assigned causal reducer tick.
     #[must_use]
+    #[cfg(test)]
     pub const fn tick(&self) -> ReducerTickId {
         self.tick
     }
@@ -643,6 +654,7 @@ impl ReducedInput {
 
     /// Returns the writer-assigned sequence.
     #[must_use]
+    #[cfg(test)]
     pub const fn sequence(&self) -> InputSequence {
         self.sequence
     }
@@ -659,21 +671,9 @@ impl ReducedInput {
         self.source_sequence
     }
 
-    /// Returns the exact backend-ingress ordinal when this input came from the
-    /// joined backend recorder.
-    #[must_use]
-    pub fn backend_ingress_ordinal(&self) -> Option<BackendIngressOrdinal> {
-        if self.source == crate::engine::BACKEND_INGRESS_INPUT_SOURCE {
-            Some(BackendIngressOrdinal::from_committed_source_sequence(
-                self.source_sequence.get(),
-            ))
-        } else {
-            None
-        }
-    }
-
     /// Returns the normative source-class priority.
     #[must_use]
+    #[cfg(test)]
     pub const fn priority(&self) -> InputPriority {
         self.priority
     }
@@ -742,6 +742,7 @@ impl ReducedPointerEdge {
 
     /// Returns the core reducer boundary which consumed this edge.
     #[must_use]
+    #[cfg(test)]
     pub const fn tick(&self) -> ReducerTickId {
         self.tick
     }
@@ -754,12 +755,14 @@ impl ReducedPointerEdge {
 
     /// Returns the exact core-minted stream incarnation affected by this edge.
     #[must_use]
+    #[cfg(test)]
     pub const fn stream(&self) -> PointerStreamId {
         self.stream
     }
 
     /// Returns the core-minted identity of this accepted edge.
     #[must_use]
+    #[cfg(test)]
     pub const fn ticket(&self) -> PointerEdgeTicket {
         self.ticket
     }
@@ -772,6 +775,7 @@ impl ReducedPointerEdge {
 
     /// Returns the scope-relative button authority immediately after this edge.
     #[must_use]
+    #[cfg(test)]
     pub const fn button_authority_after(&self) -> AnyButtonDownAuthority {
         self.button_authority_after
     }
@@ -782,6 +786,7 @@ impl ReducedPointerEdge {
     /// stream and its capture slot no longer exist. The lossless event-time
     /// observation remains available through [`Self::edge`].
     #[must_use]
+    #[cfg(test)]
     pub const fn capture_authority_after(&self) -> Authority<PointerCaptureOwner> {
         self.capture_authority_after
     }
@@ -826,11 +831,13 @@ pub struct EngineTransition {
 /// The predecessor platform, pointer, and backend-order lanes have already lost
 /// authority. The affine ticket can only be consumed by the joined finish API.
 #[derive(Debug, PartialEq)]
+#[cfg(test)]
 pub struct BackendIngressProviderReplacementStart {
     ticket: BackendIngressProviderReplacementTicket,
     transition: EngineTransition,
 }
 
+#[cfg(test)]
 impl BackendIngressProviderReplacementStart {
     pub(crate) const fn new(
         ticket: BackendIngressProviderReplacementTicket,
@@ -858,6 +865,7 @@ impl BackendIngressProviderReplacementStart {
 /// still-detailed terminal record or an explicit compacted classification without manufacturing
 /// another reducer tick.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub enum PresentationHostRetirementOutcome {
     /// A live host, all of its streams, and their pending outputs were retired.
     Retired {
@@ -890,6 +898,7 @@ pub enum PresentationHostRetirementOutcome {
     },
 }
 
+#[cfg(test)]
 impl PresentationHostRetirementOutcome {
     /// Returns the transition only when this call performed the retirement.
     #[must_use]
@@ -1020,6 +1029,7 @@ impl EngineTransition {
 
     /// Returns the adapter-facing net focus change for this atomic boundary.
     #[must_use]
+    #[cfg(test)]
     pub const fn focus_delta(&self) -> &FocusDelta {
         &self.focus_delta
     }
@@ -1038,6 +1048,7 @@ impl EngineTransition {
 
     /// Returns the complete canonical physical-output disposition roster.
     #[must_use]
+    #[cfg(test)]
     pub fn presentation_dispositions(&self) -> &[HostPresentationDispositionOutcome] {
         &self.presentation_dispositions
     }

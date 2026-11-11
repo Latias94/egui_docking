@@ -5,20 +5,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::close_plan::NativeCloseEdge;
+#[cfg(test)]
+use crate::coordinates::CoordinateUnavailable;
 use crate::coordinates::NativeSurfacePlacement;
 use crate::coordinates::{
-    CoordinateSnapshot, CoordinateUnavailable, RecoveryCoordinateSnapshot, SurfaceClientGeometry,
-    ViewportPlacementProof, WindowCoordinateSnapshot,
+    CoordinateSnapshot, RecoveryCoordinateSnapshot, SurfaceClientGeometry, ViewportPlacementProof,
+    WindowCoordinateSnapshot,
 };
-use crate::geometry::{LogicalRect, LogicalSize, PhysicalPoint};
+#[cfg(test)]
+use crate::geometry::PhysicalPoint;
+use crate::geometry::{LogicalRect, LogicalSize};
 use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
 use crate::intent::Authority;
+#[cfg(test)]
+use crate::platform::ObservedWorkArea;
 use crate::platform::{
-    ObservedWindow, ObservedWorkArea, PlatformSnapshot, WindowCloseObservation,
-    WindowCloseObservationStream, WindowCloseState, WindowCoordinateObservationStream,
-    WindowCreatePreparationObservation, WindowCreatePreparationObservationStream,
-    WindowInputObservation, WindowInputObservationStream, WindowPresentationObservation,
-    WindowPresentationObservationStream, WindowPresentationState,
+    ObservedWindow, PlatformSnapshot, WindowCloseObservation, WindowCloseObservationStream,
+    WindowCloseState, WindowCoordinateObservationStream, WindowCreatePreparationObservation,
+    WindowCreatePreparationObservationStream, WindowInputObservation, WindowInputObservationStream,
+    WindowPresentationObservation, WindowPresentationObservationStream, WindowPresentationState,
 };
 #[cfg(test)]
 use crate::viewport::CloseObservationGeneration;
@@ -326,6 +331,7 @@ impl ViewportRecord<'_> {
         self.window.coordinate_observations.generation_watermark()
     }
 
+    #[cfg(test)]
     pub(crate) const fn coordinate_observation_generation(
         self,
     ) -> Option<CoordinateObservationGeneration> {
@@ -335,6 +341,7 @@ impl ViewportRecord<'_> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn input_observation(self) -> Option<WindowInputObservation> {
         self.window.input_observations.current()
     }
@@ -343,6 +350,7 @@ impl ViewportRecord<'_> {
         self.window.input_observations
     }
 
+    #[cfg(test)]
     pub(crate) const fn input_observation_generation_watermark(
         self,
     ) -> Option<InputObservationGeneration> {
@@ -373,6 +381,7 @@ impl ViewportRecord<'_> {
     ///
     /// Matching the binding alone is intentionally insufficient: a clear followed by a new
     /// request on the same native window is a different close obligation.
+    #[cfg(test)]
     pub(crate) fn matches_pending_close_edge(self, edge: NativeCloseEdge) -> bool {
         self.placement.binding.window() == edge.binding().window()
             && self
@@ -489,6 +498,7 @@ impl RestoreRegistryReconciliation {
 
 impl RegistryTransition {
     #[must_use]
+    #[cfg(test)]
     pub const fn generation(&self) -> InventoryGeneration {
         self.generation
     }
@@ -848,6 +858,7 @@ impl ViewportRegistry {
     /// advance that semantic generation. Repeating the revocation after all live facts are gone
     /// is inert. The operation is applied through a candidate clone so generation exhaustion
     /// cannot partially revoke the registry.
+    #[cfg(test)]
     pub(crate) fn revoke_live_provider_authority(
         &mut self,
     ) -> Result<RegistryTransition, ViewportRegistryError> {
@@ -857,6 +868,7 @@ impl ViewportRegistry {
         Ok(transition)
     }
 
+    #[cfg(test)]
     fn revoke_live_provider_authority_in_place(
         &mut self,
     ) -> Result<RegistryTransition, ViewportRegistryError> {
@@ -1312,6 +1324,7 @@ impl ViewportRegistry {
     }
 
     /// Admits one proven runtime-owned binding after topology commit.
+    #[cfg(test)]
     pub(crate) fn admit(&mut self, binding: ViewportBinding) -> Result<(), ViewportRegistryError> {
         let (record, window) = self.current_record_mut(binding)?;
         if record.admission != ViewportAdmission::Pending
@@ -1864,6 +1877,7 @@ impl ViewportRegistry {
         before - self.surface_authority_generations.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn surface_authority_generation_count(&self) -> usize {
         self.surface_authority_generations.len()
     }
@@ -1875,6 +1889,7 @@ impl ViewportRegistry {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn placement(
         &self,
         surface: SurfaceId,

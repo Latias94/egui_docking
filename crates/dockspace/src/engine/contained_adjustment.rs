@@ -133,7 +133,7 @@ impl DockEngine {
                             && plan.region_is_operable(resize.hit().rect(), record.layer())
                     })
             })
-            .ok_or(InteractionRejection::SemanticReceiverUnavailable {
+            .ok_or(InteractionRejection::ActionReceiverUnavailable {
                 target: PresentationHitRegionKind::ContainedResize {
                     floating,
                     direction,

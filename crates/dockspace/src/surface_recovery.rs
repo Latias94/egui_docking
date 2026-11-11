@@ -16,6 +16,7 @@ use crate::ids::EngineAuthorityDomainId;
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
 use crate::policy::{DockPresentationMode, DockSurfaceRecoveryPolicyRequest, PolicyRevision};
 use crate::scene::{ContainedMinimumMeasurement, SurfaceSceneStamp};
+#[cfg(test)]
 use crate::transaction::TransactionReport;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -373,6 +374,7 @@ impl SurfaceRecoveryTransaction {
         self.target_surface != self.roster.surface() && self.is_exact_roster_rehome_program()
     }
 
+    #[cfg(test)]
     pub(crate) fn apply(
         &self,
         workspace: &mut Workspace,
@@ -736,6 +738,7 @@ impl SurfaceRosterDisposition {
 
     /// Returns the stable main root frozen for the source surface, when present.
     #[must_use]
+    #[cfg(test)]
     pub fn main_root(&self) -> Option<RootId> {
         self.roster.main_root()
     }
@@ -748,6 +751,7 @@ impl SurfaceRosterDisposition {
 
     /// Returns whether exact source content coordinates were authoritative at capture.
     #[must_use]
+    #[cfg(test)]
     pub const fn source_geometry_available(&self) -> bool {
         self.source_coordinates.is_some()
     }
@@ -802,6 +806,7 @@ impl SurfaceRosterDisposition {
 
     /// Returns the exact source scene whose contained minima were frozen.
     #[must_use]
+    #[cfg(test)]
     pub const fn contained_minimum_scene(&self) -> Option<SurfaceSceneStamp> {
         match &self.contained_minimum_authority {
             Some(authority) => Some(authority.scene),
@@ -1346,6 +1351,7 @@ impl SurfaceRecoveryState {
         self.blocked.insert(surface, reason);
     }
 
+    #[cfg(test)]
     pub(crate) fn blocked(&self, surface: SurfaceId) -> Option<&SurfaceRecoveryBlockedReason> {
         self.blocked.get(&surface)
     }

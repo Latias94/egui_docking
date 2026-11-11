@@ -129,6 +129,7 @@ impl PreparedNativeCreate {
         &self.recovery_obligation
     }
 
+    #[cfg(test)]
     pub(crate) const fn focus_causal(&self) -> FocusCausalStamp {
         self.focus_causal
     }
@@ -143,6 +144,7 @@ pub enum NativeCreatePhase {
 }
 impl NativeCreatePhase {
     #[must_use]
+    #[cfg(test)]
     pub const fn presentation_correlation_effect(self) -> EffectId {
         match self {
             Self::AwaitingPrepared { create } => create,
@@ -241,6 +243,7 @@ impl NativeCreateRequest {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn effect(self) -> EffectId {
         self.effect
     }
@@ -688,6 +691,7 @@ impl ViewportCoordinator {
             .map(|(id, saga)| (*id, saga))
     }
 
+    #[cfg(test)]
     pub(super) fn abortable_native_create_sagas(&self) -> Vec<NativeCreateSagaId> {
         self.native_creates.sagas.keys().copied().collect()
     }

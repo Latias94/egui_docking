@@ -15,6 +15,7 @@ pub(crate) struct CoreEncodingCheckpoint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PointerJournalSubmissionAuthority {
+    #[cfg(test)]
     RawLease,
     SurfaceLocalProducer,
     BackendIngress,
@@ -160,6 +161,7 @@ impl CoreHostFramePrelude {
     }
 
     /// Returns the exact pending presentation streams for one enrolled observer.
+    #[cfg(test)]
     pub fn pending_presentation_streams_for(
         &self,
         presentation_host: PresentationHostLease,
@@ -473,20 +475,16 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.authority_domain()
     }
 
+    #[cfg(feature = "serde")]
     pub(crate) const fn presentation_identity_frontier(&self) -> PresentationIdentityFrontier {
         self.engine.presentation_identity_frontier()
     }
 
     /// Returns the exact policy used by this frame's candidate.
     #[must_use]
+    #[cfg(test)]
     pub const fn policy(&self) -> &'frame DockPolicy {
         self.engine.policy()
-    }
-
-    /// Returns the revision-bearing policy snapshot used by this frame.
-    #[must_use]
-    pub const fn policy_snapshot(&self) -> &'frame DockPolicySnapshot {
-        self.engine.policy_snapshot()
     }
 
     /// Returns the validated presentation configuration used by this frame.
@@ -554,6 +552,7 @@ impl<'frame> HostFrameView<'frame> {
     ///
     /// This roster is independent of output slots. Resources stay pinned until
     /// exact first-live ownership transfer or the completion of native cleanup.
+    #[cfg(test)]
     pub fn retained_native_staging_resources(
         &self,
     ) -> impl ExactSizeIterator<Item = &NativeStagingResourceDescriptor> + '_ {
@@ -620,15 +619,16 @@ impl<'frame> HostFrameView<'frame> {
             .map(JournalSurfacePresentation::projection)
     }
 
-    /// Returns the exact semantic projection for one surface in the complete
+    /// Returns the exact prepared-action projection for the test host roster.
     /// host-frame roster. Unlike pointer receiver authority, semantic actions
     /// are not scoped to the surface that supplied a local pointer provider.
     #[must_use]
-    pub fn semantic_projection(
+    #[cfg(test)]
+    pub fn prepared_action_projection(
         &self,
         surface: SurfaceId,
     ) -> Option<SurfaceInteractionProjection<'frame>> {
-        self.semantic_presentations
+        self.prepared_presentations
             .get(&surface)
             .map(JournalSurfacePresentation::projection)
     }
@@ -671,6 +671,7 @@ impl<'frame> HostFrameView<'frame> {
     /// receiver-authoritative output. The resulting value is opaque and must be
     /// submitted as [`EngineInput::ActivateTabStripControl`]; reduction rechecks
     /// the same presented authority, popup revision, and control record.
+    #[cfg(test)]
     pub fn prepare_tab_strip_control_activation(
         &self,
         surface: SurfaceId,
@@ -678,10 +679,10 @@ impl<'frame> HostFrameView<'frame> {
     ) -> Result<PreparedTabStripControlActivation, InteractionRejection> {
         let key = TabStripStateKey::new(surface, control.bar());
         let projection = self
-            .semantic_projection(surface)
+            .prepared_action_projection(surface)
             .ok_or(InteractionRejection::TabStripSourceUnavailable { key })?;
         self.engine
-            .prepare_semantic_tab_strip_control(projection, control)
+            .prepare_presented_tab_strip_control(projection, control)
     }
 
     /// Prepares one keyboard or accessibility activation of an exact active menu row.
@@ -689,6 +690,7 @@ impl<'frame> HostFrameView<'frame> {
     /// The row is resolved against the sole active popup session in this sealed
     /// output. The opaque result cannot be retargeted to another item, session,
     /// popup revision, or presented scene before reduction.
+    #[cfg(test)]
     pub fn prepare_tab_list_menu_row_activation(
         &self,
         surface: SurfaceId,
@@ -696,21 +698,22 @@ impl<'frame> HostFrameView<'frame> {
         tab: crate::scene::TabSceneId,
     ) -> Result<PreparedTabListMenuRowActivation, InteractionRejection> {
         let projection = self
-            .semantic_projection(surface)
+            .prepared_action_projection(surface)
             .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
         self.engine
-            .prepare_semantic_tab_list_menu_row(projection, session, tab)
+            .prepare_presented_tab_list_menu_row(projection, session, tab)
     }
 
     /// Prepares one Escape, keyboard, or programmatic dismissal of the exact
     /// active tab-list menu.
+    #[cfg(test)]
     pub fn prepare_tab_list_menu_dismiss(
         &self,
         surface: SurfaceId,
         session: crate::tab_strip::TabListMenuSessionId,
     ) -> Result<PreparedTabListMenuDismiss, InteractionRejection> {
         let projection = self
-            .semantic_projection(surface)
+            .prepared_action_projection(surface)
             .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
         let plan = projection.plan();
         let revision = plan.popup().revision();
@@ -750,6 +753,7 @@ impl<'frame> HostFrameView<'frame> {
     ///
     /// The bar must belong to `surface`, remain interaction-enabled, and exist
     /// in this sealed frame's receiver-authoritative projection.
+    #[cfg(test)]
     pub fn prepare_tab_strip_scroll(
         &self,
         surface: SurfaceId,
@@ -758,7 +762,7 @@ impl<'frame> HostFrameView<'frame> {
     ) -> Result<PreparedTabStripScroll, InteractionRejection> {
         let key = TabStripStateKey::new(surface, bar);
         let projection = self
-            .semantic_projection(surface)
+            .prepared_action_projection(surface)
             .ok_or(InteractionRejection::TabStripSourceUnavailable { key })?;
         let record = projection
             .plan()
@@ -803,6 +807,7 @@ impl<'frame> HostFrameView<'frame> {
     ///
     /// The session, popup routing revision, complete menu geometry, and target
     /// item membership are all frozen from this sealed frame.
+    #[cfg(test)]
     pub fn prepare_tab_list_menu_scroll(
         &self,
         surface: SurfaceId,
@@ -810,10 +815,10 @@ impl<'frame> HostFrameView<'frame> {
         adjustment: TabScrollAdjustment,
     ) -> Result<PreparedTabListMenuScroll, InteractionRejection> {
         let projection = self
-            .semantic_projection(surface)
+            .prepared_action_projection(surface)
             .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
         self.engine
-            .prepare_semantic_tab_list_menu_scroll(projection, session, adjustment)
+            .prepare_presented_tab_list_menu_scroll(projection, session, adjustment)
     }
 
     /// Prepares one exact keyboard or accessibility focus move in the active menu.
@@ -821,6 +826,7 @@ impl<'frame> HostFrameView<'frame> {
     /// Relative moves are resolved against the sealed ordered roster and clamp
     /// at its boundaries. The prepared proof binds the resolved target to the
     /// exact popup revision and complete menu geometry used for reveal.
+    #[cfg(test)]
     pub fn prepare_tab_list_menu_navigation(
         &self,
         surface: SurfaceId,
@@ -828,17 +834,10 @@ impl<'frame> HostFrameView<'frame> {
         navigation: TabListMenuNavigation,
     ) -> Result<PreparedTabListMenuNavigation, InteractionRejection> {
         let projection = self
-            .semantic_projection(surface)
+            .prepared_action_projection(surface)
             .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
         self.engine
-            .prepare_semantic_tab_list_menu_navigation(projection, session, navigation)
-    }
-
-    /// Returns one exact final-presentation authority visible to this frame.
-    #[must_use]
-    pub fn interaction_authority(&self, surface: SurfaceId) -> Option<PresentedSurfaceAuthority> {
-        self.interaction_projection(surface)
-            .map(SurfaceInteractionProjection::authority)
+            .prepare_presented_tab_list_menu_navigation(projection, session, navigation)
     }
 
     /// Returns this frame's read-only viewport coordinator.
@@ -853,44 +852,17 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.viewport_focus()
     }
 
-    /// Returns the exact focusable binding visible to this frame.
-    #[must_use]
-    pub fn viewport_focus_binding(&self, surface: SurfaceId) -> Option<ViewportBinding> {
-        self.engine.viewport_focus_binding(surface)
-    }
-
     pub(crate) fn close_plan(&self, request: CloseRequestId) -> Option<&'frame ClosePlan> {
         self.engine.close_plan(request)
     }
 
-    /// Returns the sole pane-focus intent current at this exact reducer boundary.
-    ///
-    /// Adapters must read this post-input view instead of retaining a second
-    /// intent state across frames. The intent can be installed or acknowledged
-    /// by an earlier record in the same backend batch.
-    #[must_use]
-    pub const fn pending_pane_focus_intent(&self) -> Option<PaneFocusIntent> {
-        self.engine.viewport_focus.pending_pane_intent()
-    }
-
     /// Returns the pane-focus request admitted at this committed boundary.
     ///
-    /// Unlike [`Self::pending_pane_focus_intent`], this never exposes an
-    /// obligation before the boundary that makes it observable to an adapter.
+    /// The request becomes observable to an adapter only after the boundary
+    /// that publishes its obligation.
     #[must_use]
     pub fn published_pane_focus_intent(&self) -> Option<PaneFocusIntent> {
         self.engine.viewport_focus.published_pane_intent()
-    }
-
-    /// Produces deterministic contained placement from this frame's scene.
-    pub fn contained_placement(
-        &self,
-        surface: SurfaceId,
-        requested_rect: LogicalRect,
-        minimum_size: LogicalSize,
-    ) -> Result<ContainedPlacementProof, ContainedPlacementUnavailable> {
-        self.engine
-            .contained_placement(surface, requested_rect, minimum_size)
     }
 
     /// Freezes one contribution token against this frame's exact authority.
@@ -1111,7 +1083,8 @@ impl CoreHostFrame {
             surface_pointer_commit: None,
             frozen_pointer_outputs: BTreeMap::new(),
             frozen_pointer_presentations: BTreeMap::new(),
-            frozen_semantic_presentations: BTreeMap::new(),
+            #[cfg(test)]
+            frozen_prepared_presentations: BTreeMap::new(),
             pointer_receiver_attempt_issuer: pointer_provider
                 .map(|_| Arc::clone(&candidate.pointer_receiver_attempt_issuer)),
             pending_pointer_segment: None,
@@ -1274,14 +1247,16 @@ impl CoreHostFrame {
             .retain(|surface, _| roster.contains_surface(*surface));
         self.frozen_pointer_presentations
             .retain(|surface, _| roster.contains_surface(*surface));
-        self.frozen_semantic_presentations
+        #[cfg(test)]
+        self.frozen_prepared_presentations
             .retain(|surface, _| roster.contains_surface(*surface));
     }
 
     fn refresh_presented_interaction_authority(&mut self) {
         self.frozen_pointer_outputs.clear();
         self.frozen_pointer_presentations.clear();
-        self.frozen_semantic_presentations.clear();
+        #[cfg(test)]
+        self.frozen_prepared_presentations.clear();
         let pointer_surface = self
             .pointer_provider
             .and_then(|lease| lease.scope().surface_local())
@@ -1295,7 +1270,8 @@ impl CoreHostFrame {
             else {
                 continue;
             };
-            self.frozen_semantic_presentations.insert(
+            #[cfg(test)]
+            self.frozen_prepared_presentations.insert(
                 surface,
                 JournalSurfacePresentation::from_interaction(projection),
             );
@@ -1320,7 +1296,8 @@ impl CoreHostFrame {
             engine: &self.candidate,
             presentation_roster: &self.frozen_presentation_roster,
             receiver_presentations: &self.frozen_pointer_presentations,
-            semantic_presentations: &self.frozen_semantic_presentations,
+            #[cfg(test)]
+            prepared_presentations: &self.frozen_prepared_presentations,
         }
     }
 
@@ -1333,6 +1310,7 @@ impl CoreHostFrame {
     /// Returns whether the private input prefix changed any presentation fact
     /// after receiver authority was sealed for this frame.
     #[must_use]
+    #[cfg(test)]
     pub const fn presentation_changed_since_seal(&self) -> bool {
         self.presentation_snapshot_changed
     }
@@ -1340,6 +1318,7 @@ impl CoreHostFrame {
     /// Returns whether input changed scene, coordinate, or surface projection
     /// authority rather than only transient interaction visuals.
     #[must_use]
+    #[cfg(test)]
     pub const fn presentation_projection_changed_since_seal(&self) -> bool {
         self.presentation_projection_changed
     }
@@ -1419,6 +1398,7 @@ impl CoreHostFrame {
     /// The value is diagnostic-only: the host frame remains poisoned and must
     /// be dropped or finished through its normal rollback path.
     #[must_use]
+    #[cfg(test)]
     pub const fn input_prefix_error(&self) -> Option<&EngineError> {
         self.input_prefix_error.as_ref()
     }
@@ -1856,6 +1836,7 @@ impl CoreHostFrame {
     /// watermark, edge scope, or candidate roster is invalid. A surface-local
     /// lease is rejected even when it was copied from a valid affine producer.
     #[doc(hidden)]
+    #[cfg(test)]
     pub fn submit_pointer_journal(
         &mut self,
         provider: PointerInputLease,
@@ -1877,7 +1858,8 @@ impl CoreHostFrame {
     ///
     /// # Errors
     ///
-    /// Returns the same structural errors as [`Self::submit_pointer_journal`].
+    /// Returns an error when the producer, journal ordering, or complete
+    /// frame checkpoint does not match this frame's frozen pointer authority.
     pub fn submit_surface_pointer_journal(
         &mut self,
         provider: &SurfaceLocalPointerProvider,
@@ -2376,7 +2358,6 @@ impl CoreHostFrame {
             self.tick,
             TickStartAuthority {
                 policy: &self.tick_policy,
-                semantic_presentations: Some(&self.frozen_semantic_presentations),
             },
             &mut self.application_base,
             &mut self.events,
@@ -2621,7 +2602,7 @@ impl CoreHostFrame {
     /// This is the only retained-contribution path. Pairing the contribution
     /// with a frame-local output request prevents a semantic ticket observed
     /// before paint from being misrepresented as an actual host output. The
-    /// request becomes a concrete core emission only after [`Self::finish`]
+    /// request becomes a concrete core emission only after the prepared candidate commits
     /// commits the complete host frame.
     ///
     /// # Errors
@@ -2864,6 +2845,7 @@ impl CoreHostFrame {
     /// The returned commit capability keeps the original engine exclusively
     /// borrowed. Dropping it rolls back the complete frame. Commit still
     /// validates the affine surface-local producer attempt before publishing.
+    #[cfg(test)]
     pub fn prepare<'a>(
         self,
         engine: &'a mut DockEngine,
@@ -2880,6 +2862,7 @@ impl CoreHostFrame {
     }
 
     /// Atomically reduces and publishes this capability through its engine.
+    #[cfg(test)]
     pub fn finish(self, engine: &mut DockEngine) -> Result<EngineTransition, EngineError> {
         self.prepare(engine)?.commit()
     }
@@ -2897,24 +2880,28 @@ impl CoreHostPresentationFrame {
 
     /// Returns the exact post-input presentation authority.
     #[must_use]
+    #[cfg(test)]
     pub const fn view(&self) -> HostFrameView<'_> {
         self.frame.view()
     }
 
     /// Returns the complete post-input logical surface roster.
     #[must_use]
+    #[cfg(test)]
     pub fn surfaces(&self) -> impl ExactSizeIterator<Item = SurfaceId> + '_ {
         self.frame.surfaces()
     }
 
     /// Returns whether the input prefix changed any presentation fact.
     #[must_use]
+    #[cfg(test)]
     pub const fn presentation_changed_since_seal(&self) -> bool {
         self.frame.presentation_changed_since_seal()
     }
 
     /// Returns whether input changed geometry or surface-roster authority.
     #[must_use]
+    #[cfg(test)]
     pub const fn presentation_projection_changed_since_seal(&self) -> bool {
         self.frame.presentation_projection_changed_since_seal()
     }
@@ -2941,6 +2928,7 @@ impl CoreHostPresentationFrame {
     /// This is an atomic convenience for hosts which know that this entire
     /// presentation pass cannot produce authoritative output. It never
     /// recovers partially checked-out tickets.
+    #[cfg(test)]
     pub fn resolve_all_presentation_obligations_unavailable(
         &mut self,
         reason: HostPresentationUnavailableReason,
@@ -2970,6 +2958,7 @@ impl CoreHostPresentationFrame {
     }
 
     /// Adds one post-input surface contribution.
+    #[cfg(test)]
     pub fn push_surface_contribution(
         &mut self,
         contribution: PreparedSurfaceContribution,
@@ -2979,6 +2968,7 @@ impl CoreHostPresentationFrame {
 
     /// Returns contributions staged in canonical surface order.
     #[must_use]
+    #[cfg(test)]
     pub fn surface_contributions(
         &self,
     ) -> impl ExactSizeIterator<Item = &PreparedSurfaceContribution> {
@@ -2986,6 +2976,7 @@ impl CoreHostPresentationFrame {
     }
 
     /// Prepares the complete candidate without publishing it.
+    #[cfg(test)]
     pub fn prepare<'a>(
         self,
         engine: &'a mut DockEngine,
@@ -3005,11 +2996,13 @@ impl CoreHostPresentationFrame {
     }
 
     /// Atomically publishes the complete candidate.
+    #[cfg(test)]
     pub fn finish(self, engine: &mut DockEngine) -> Result<EngineTransition, EngineError> {
         self.frame.finish(engine)
     }
 }
 
+#[cfg(test)]
 impl PreparedHostFrameCommit<'_> {
     /// Returns the exact transition which will be published on commit.
     #[must_use]

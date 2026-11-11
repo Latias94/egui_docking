@@ -563,8 +563,16 @@ pub enum ContainedPosition {
     /// Insert at the roster end, which is the frontmost presentation.
     Front,
     /// Insert immediately behind the named presentation.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Before(FloatingPresentationId),
     /// Insert immediately in front of the named presentation.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     After(FloatingPresentationId),
 }
 
@@ -616,6 +624,10 @@ pub enum WorkspaceCommand {
     /// Select one item in its current tabs stack.
     Select { source: ItemSource },
     /// Reorder one item to an exact pre-removal gap in the same tabs stack.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Reorder {
         source: ItemSource,
         insertion_index: usize,
@@ -713,6 +725,10 @@ pub enum WorkspaceCommand {
         expected_roster: ContainedRosterSource,
     },
     /// Remove a root whose topology contains no application item.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     RemoveEmptyRoot { source: NodeSource },
 }
 

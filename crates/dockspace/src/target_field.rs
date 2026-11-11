@@ -75,26 +75,32 @@ pub(crate) struct RootTargetField {
 }
 
 impl PaneTargetField {
+    #[cfg(test)]
     pub(crate) const fn root(&self) -> RootId {
         self.root
     }
 
+    #[cfg(test)]
     pub(crate) const fn tabs(&self) -> NodeId {
         self.tabs
     }
 
+    #[cfg(test)]
     pub(crate) const fn layer(&self) -> SceneLayerKey {
         self.layer
     }
 
+    #[cfg(test)]
     pub(crate) const fn depth(&self) -> usize {
         self.depth
     }
 
+    #[cfg(test)]
     pub(crate) const fn content(&self) -> LogicalRect {
         self.content
     }
 
+    #[cfg(test)]
     pub(crate) const fn center(&self) -> LogicalRect {
         self.center
     }
@@ -109,18 +115,22 @@ impl PaneTargetField {
 }
 
 impl RootTargetField {
+    #[cfg(test)]
     pub(crate) const fn root(&self) -> RootId {
         self.root
     }
 
+    #[cfg(test)]
     pub(crate) const fn layer(&self) -> SceneLayerKey {
         self.layer
     }
 
+    #[cfg(test)]
     pub(crate) const fn bounds(&self) -> LogicalRect {
         self.bounds
     }
 
+    #[cfg(test)]
     pub(crate) const fn edge_band(&self) -> f64 {
         self.edge_band
     }
@@ -170,6 +180,7 @@ impl MagneticTargetCandidate {
         dead_code,
         reason = "the latch slice consumes acquisition provenance next"
     )]
+    #[cfg(test)]
     pub(crate) const fn kind(self) -> MagneticTargetKind {
         self.kind
     }
@@ -205,6 +216,7 @@ impl MagneticTargetCandidate {
 }
 
 impl MagneticTargetField {
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.panes.is_empty() && self.roots.is_empty()
     }

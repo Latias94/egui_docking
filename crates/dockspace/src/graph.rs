@@ -233,6 +233,7 @@ impl Node {
     ///
     /// Returns [`NodeBuildError`] when there are fewer than two children, cardinalities differ,
     /// or the supplied weights cannot be normalized.
+    #[cfg(test)]
     pub fn split(
         axis: Axis,
         children: impl IntoIterator<Item = NodeId>,
@@ -263,6 +264,7 @@ impl Node {
     /// # Errors
     ///
     /// Returns [`NodeBuildError::SplitTooFewChildren`] when fewer than two children are supplied.
+    #[cfg(test)]
     pub fn equal_split(
         axis: Axis,
         children: impl IntoIterator<Item = NodeId>,
@@ -275,6 +277,7 @@ impl Node {
 
 /// Failure to construct a node through the checked convenience API.
 #[derive(Debug, Clone, PartialEq, Error)]
+#[cfg(test)]
 pub enum NodeBuildError {
     /// A split must have at least two children.
     #[error("a split requires at least two children, got {children}")]
@@ -344,6 +347,7 @@ impl SurfacePresentation {
     /// A rootless surface becomes valid only after at least one contained presentation is attached.
     /// Transaction execution may use the empty form as intermediate state, but strict builder and
     /// persistence validation reject it.
+    #[cfg(test)]
     pub fn rootless() -> Self {
         Self {
             main_root: None,
@@ -415,11 +419,13 @@ impl Workspace {
     }
 
     /// Starts an uncommitted workspace draft.
+    #[cfg(any(feature = "serde", test))]
     pub fn builder() -> WorkspaceBuilder {
         WorkspaceBuilder::new()
     }
 
     /// Converts this workspace into an editable draft, retaining node identities.
+    #[cfg(test)]
     pub fn into_builder(self) -> WorkspaceBuilder {
         WorkspaceBuilder {
             workspace: self.storage,
@@ -441,6 +447,7 @@ impl Workspace {
     }
 
     /// Returns the tabs stack's selected-first MRU permutation.
+    #[cfg(test)]
     pub fn tab_mru(&self, tabs: NodeId) -> Option<&[ItemId]> {
         self.storage.tab_mru(tabs)
     }
@@ -508,6 +515,7 @@ impl WorkspaceData {
     /// A valid populated tabs node has exactly one occurrence of every visual
     /// item here, with its selected item first. `None` means `tabs` is absent
     /// or is not a tabs node.
+    #[cfg(test)]
     pub fn tab_mru(&self, tabs: NodeId) -> Option<&[ItemId]> {
         match self.nodes.get(tabs)? {
             Node::Tabs { mru, .. } => Some(mru),
@@ -594,6 +602,7 @@ pub struct WorkspaceBuilder {
 
 impl WorkspaceBuilder {
     /// Creates an empty workspace draft.
+    #[cfg(any(feature = "serde", test))]
     pub fn new() -> Self {
         Self::default()
     }
@@ -620,6 +629,7 @@ impl WorkspaceBuilder {
     /// # Errors
     ///
     /// Returns [`WorkspaceBuildError::MissingNode`] for a stale or absent runtime identity.
+    #[cfg(any(feature = "serde", test))]
     pub fn replace_node(&mut self, id: NodeId, node: Node) -> Result<Node, WorkspaceBuildError> {
         let previous = self
             .workspace
@@ -639,6 +649,7 @@ impl WorkspaceBuilder {
     /// # Errors
     ///
     /// Returns [`WorkspaceBuildError`] when `tabs` is absent or is not a tabs node.
+    #[cfg(test)]
     pub fn set_tab_mru(
         &mut self,
         tabs: NodeId,
@@ -688,6 +699,7 @@ impl WorkspaceBuilder {
     /// # Errors
     ///
     /// Returns [`WorkspaceBuildError::MissingSurface`] when the surface is absent.
+    #[cfg(test)]
     pub fn attach_contained(
         &mut self,
         surface: SurfaceId,
@@ -717,6 +729,7 @@ impl WorkspaceBuilder {
     /// # Errors
     ///
     /// Returns every discovered [`crate::validation::WorkspaceValidationError`].
+    #[cfg(any(feature = "serde", test))]
     pub fn validate(&self) -> Result<(), WorkspaceValidationErrors> {
         self.workspace.validate_candidate()
     }
@@ -724,6 +737,7 @@ impl WorkspaceBuilder {
 
 /// Failure while editing a workspace draft.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[cfg(any(feature = "serde", test))]
 pub enum WorkspaceBuildError {
     /// A node replacement referenced a stale or missing runtime identity.
     #[error("workspace draft does not contain node {node:?}")]
@@ -733,12 +747,14 @@ pub enum WorkspaceBuildError {
     },
     /// A tabs-only draft edit named a split node.
     #[error("workspace draft node {node:?} is not a tabs node")]
+    #[cfg(test)]
     NodeIsNotTabs {
         /// Incorrect runtime node identity.
         node: NodeId,
     },
     /// A contained presentation was attached to a missing surface.
     #[error("workspace draft does not contain surface {surface}")]
+    #[cfg(test)]
     MissingSurface {
         /// Missing stable surface identity.
         surface: SurfaceId,

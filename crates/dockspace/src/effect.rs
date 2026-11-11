@@ -8,11 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
+#[cfg(test)]
 use crate::backend_ingress::BackendIngressDrainReceipt;
 use crate::close_plan::{CloseRequestId, NativeCloseEdge};
 use crate::geometry::PhysicalRect;
 use crate::ids::WorkspaceEpoch;
 use crate::platform_provider::PlatformObservationLease;
+#[cfg(test)]
 use crate::retention::EffectRetentionManifest;
 use crate::viewport::{
     CloseObservationGeneration, InventoryGeneration, ViewportBinding, ViewportRole,
@@ -130,9 +132,17 @@ pub enum PlatformEffect {
         binding: ViewportBinding,
         compensates: EffectId,
     },
+    #[allow(
+        dead_code,
+        reason = "the lifecycle reducer retains its complete outcome vocabulary"
+    )]
     CancelRootClose {
         binding: ViewportBinding,
     },
+    #[allow(
+        dead_code,
+        reason = "the lifecycle reducer retains its complete outcome vocabulary"
+    )]
     RetainChild {
         binding: ViewportBinding,
     },
@@ -204,6 +214,7 @@ impl PlatformEffect {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn is_non_idempotent(&self) -> bool {
         matches!(
             self,
@@ -321,12 +332,14 @@ impl CleanupObservationToken {
 impl PlatformEffectEmission {
     /// Returns the immutable effect request.
     #[must_use]
+    #[cfg(test)]
     pub const fn request(&self) -> &EffectRequest {
         &self.request
     }
 
     /// Returns the exact delivery proof for this emission.
     #[must_use]
+    #[cfg(test)]
     pub const fn delivery(&self) -> EffectDelivery {
         self.delivery
     }
@@ -613,6 +626,7 @@ impl EffectRecord {
 
     /// Returns the immutable provider-bound delivery, when emitted.
     #[must_use]
+    #[cfg(test)]
     pub const fn delivery(&self) -> Option<EffectDelivery> {
         self.delivery
     }
@@ -642,6 +656,7 @@ impl EffectRecord {
 
 /// Current availability of one monotonic effect identity.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg(test)]
 pub enum EffectRecordLookup<'a> {
     /// The complete request and current phase are retained.
     Detailed(&'a EffectRecord),
@@ -714,6 +729,7 @@ impl EffectLedger {
     /// records may be compacted after their terminal state crosses a publication boundary and no
     /// lifecycle owner or causal successor retains the identity. An indeterminate cleanup
     /// observation remains live for a later definitive result.
+    #[cfg(test)]
     pub(crate) fn retention_manifest(&self) -> EffectRetentionManifest {
         let terminal_record_guards = self
             .records
@@ -921,6 +937,7 @@ impl EffectLedger {
     /// The closure is transitive: a queued successor of another newly invalidated successor is
     /// invalidated in the same atomic pass. Independent queued requests remain dispatchable by a
     /// replacement provider. No request or delivery is rebound to a new provider.
+    #[cfg(test)]
     pub(crate) fn invalidate_unemitted_causal_successors_for_provider_replacement(
         &mut self,
         provider: PlatformObservationLease,
@@ -1161,6 +1178,7 @@ impl EffectLedger {
     /// Requests which were never emitted remain queued. Outstanding requests delivered to the
     /// revoked provider become indeterminate. A non-terminal cleanup observation is superseded:
     /// its successor must mint fresh correlation authority from the replacement provider.
+    #[cfg(test)]
     pub(crate) fn revoke_provider_authority(&mut self, provider: PlatformObservationLease) {
         self.revoked_providers.insert(provider);
         for record in self.records.values_mut() {
@@ -1258,6 +1276,7 @@ impl EffectLedger {
     ///
     /// Effect records remain intact: lifecycle owners, causal successors, and terminal observers
     /// require independent proofs before any record-level compaction is valid.
+    #[cfg(test)]
     pub(crate) fn compact_quiesced_backend_provider(
         &mut self,
         receipt: &BackendIngressDrainReceipt,
@@ -1562,6 +1581,7 @@ impl EffectLedger {
 
     /// Classifies an identity without requiring permanent retention of terminal records.
     #[must_use]
+    #[cfg(test)]
     pub fn lookup(&self, effect: EffectId) -> EffectRecordLookup<'_> {
         match self.record(effect) {
             Some(record) => EffectRecordLookup::Detailed(record),

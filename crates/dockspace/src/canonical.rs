@@ -12,16 +12,20 @@ use slotmap::SecondaryMap;
 use std::sync::Arc;
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::graph::WorkspaceBuilder;
 use crate::graph::{
     InvalidSplitWeight, InvalidSplitWeights, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight,
-    Workspace, WorkspaceBuilder, WorkspaceData, is_exact_tab_mru,
+    Workspace, WorkspaceData, is_exact_tab_mru,
 };
 use crate::ids::{ItemId, NodeId, RootId};
+#[cfg(test)]
 use crate::transaction::{clone_workspace_data_draft, clone_workspace_draft};
 use crate::validation::WorkspaceValidationErrors;
 
 /// Summary of one successfully published canonicalization transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct CanonicalizationReport {
     /// Whether any observable workspace state changed.
     pub changed: bool,
@@ -187,6 +191,7 @@ pub enum CanonicalizationError {
 /// Returns [`CanonicalizationError`] when the input graph is structurally
 /// invalid, canonical rewriting would change item ownership, or the complete
 /// rewritten workspace fails strict validation.
+#[cfg(test)]
 pub fn canonicalize_workspace(
     workspace: &mut Workspace,
 ) -> Result<CanonicalizationReport, CanonicalizationError> {
@@ -500,6 +505,7 @@ fn canonicalize_validated_draft(
     Ok(effects)
 }
 
+#[cfg(test)]
 impl WorkspaceBuilder {
     /// Canonicalizes this mutable draft without publishing a partial result.
     ///

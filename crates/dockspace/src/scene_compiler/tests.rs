@@ -18,7 +18,6 @@ use crate::scene_manifest::{
     Measurement, SurfaceSceneRevision, TabIntrinsic, TabListMenuMetrics, TabStripControlMetric,
     TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
 };
-use crate::semantic_manifest::PresentationSemanticManifest;
 
 fn version() -> WorkspaceVersion {
     WorkspaceVersion::new(WorkspaceEpoch::new(3), WorkspaceRevision::new(5))
@@ -864,22 +863,16 @@ fn hit_and_semantic_manifests_follow_surface_program_membership() {
     );
     let hit = PresentationHitManifest::compile(output, &plan)
         .expect("the test plan should resolve through its surface program");
-    let semantic = PresentationSemanticManifest::compile(output, &plan)
-        .expect("the test plan should resolve through its surface program");
     assert!(
         hit.regions()
             .iter()
             .all(|region| region.id().kind() != PresentationHitRegionKind::TabBody(tab)),
         "hit authority must not resurrect an operation omitted by the program"
     );
-    assert!(
-        !semantic.contains(PresentationHitRegionKind::TabBody(tab)),
-        "semantic authority must not resurrect an operation omitted by the program"
-    );
 }
 
 #[test]
-fn popup_hit_and_semantic_authority_cannot_resurrect_from_flat_records() {
+fn popup_hit_authority_cannot_resurrect_from_flat_records() {
     let (workspace, manifest, measurements, states, _surface, _, _) =
         overflowing_tab_strip_fixture();
     let plan = compile_surface_measurements(
@@ -922,8 +915,6 @@ fn popup_hit_and_semantic_authority_cannot_resurrect_from_flat_records() {
     );
     let hit = PresentationHitManifest::compile(output, &plan)
         .expect("the mutated program should still resolve without the popup menu operation");
-    let semantic = PresentationSemanticManifest::compile(output, &plan)
-        .expect("semantic authority should follow the same mutated program");
     assert!(
         hit.regions().iter().all(|region| !matches!(
             region.id().kind(),
@@ -936,17 +927,6 @@ fn popup_hit_and_semantic_authority_cannot_resurrect_from_flat_records() {
                 if actual == session
         )),
         "hit authority must not resurrect popup members omitted by the program"
-    );
-    assert!(
-        semantic.receivers().iter().all(|receiver| !matches!(
-            receiver,
-            PresentationHitRegionKind::TabListMenuScroll(actual) if *actual == session
-        ) && !matches!(
-            receiver,
-            PresentationHitRegionKind::TabListMenuRow { menu: actual, .. }
-                if *actual == session
-        )),
-        "semantic authority must not resurrect popup members omitted by the program"
     );
 }
 

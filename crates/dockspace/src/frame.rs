@@ -43,11 +43,12 @@ use self::recovery_replacement::{
     RecoveryPendingRequest, RecoveryReplacementLifecycle, RecoveryReplacementLifecycleError,
 };
 
+#[cfg(test)]
 use crate::backend_ingress::BackendIngressDrainReceipt;
 use crate::close_plan::{CloseRequestId, NativeCloseEdge};
-use crate::coordinates::{
-    CoordinateUnavailable, RecoveryCoordinateSnapshot, ViewportPlacementProof,
-};
+#[cfg(test)]
+use crate::coordinates::CoordinateUnavailable;
+use crate::coordinates::{RecoveryCoordinateSnapshot, ViewportPlacementProof};
 #[cfg(test)]
 use crate::effect::EffectRequest;
 use crate::effect::{
@@ -55,7 +56,9 @@ use crate::effect::{
     EffectPhase, EffectRecord, EffectResult, EffectTransition, NativeCloseResolution,
     PlatformEffect, PlatformEffectEmission,
 };
-use crate::geometry::{LogicalRect, PhysicalRect};
+#[cfg(test)]
+use crate::geometry::LogicalRect;
+use crate::geometry::PhysicalRect;
 pub use crate::ids::NativeCreateSagaId;
 use crate::ids::{EngineAuthorityDomainId, ItemId, SurfaceId, WorkspaceEpoch};
 use crate::intent::{NativePlacementProof, PointerId};
@@ -65,19 +68,24 @@ use crate::platform::{
     WindowCloseState, WindowInputObservation, WindowInputState, WindowInventoryObservationStream,
     WindowPresentationObservation, WindowPresentationState, WorkAreaRosterObservationStream,
 };
+#[cfg(test)]
+use crate::platform_provider::PlatformProviderReservation;
 use crate::platform_provider::{
     PlatformObservationAuthority, PlatformObservationAuthorityError, PlatformObservationLease,
-    PlatformProviderAuthorityFrontier, PlatformProviderReservation,
+    PlatformProviderAuthorityFrontier,
 };
 use crate::presentation_observation::NativeStagingResourceId;
+#[cfg(test)]
 use crate::retention::{BindingRetentionManifest, EffectRetentionManifest};
 use crate::surface_recovery::SurfaceRecoveryObligationId;
 #[cfg(test)]
 use crate::viewport::InventoryGeneration;
+#[cfg(test)]
+use crate::viewport::WorkAreaObservationGeneration;
 use crate::viewport::{
     CapabilityGeneration, InputObservationGeneration, InventoryObservationGeneration,
     NativeSurfaceEstablishmentOrigin, PlatformSnapshotGeneration, ViewportBinding, ViewportRole,
-    WindowToken, WorkAreaGeneration, WorkAreaObservationGeneration, WorkAreaToken,
+    WindowToken, WorkAreaGeneration, WorkAreaToken,
 };
 use crate::viewport_registry::{
     DetachedViewportFacts, NativeCloseEdgeDisposition, RegistryEvent, ViewportAdmission,
@@ -124,11 +132,13 @@ impl ViewportReconciliation {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn cleanup_effects(&self) -> &[EffectId] {
         &self.cleanup_effects
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn unbound_surfaces(&self) -> &[SurfaceId] {
         &self.unbound_surfaces
     }
@@ -191,16 +201,19 @@ pub struct ViewportFrameTransition {
 
 impl ViewportFrameTransition {
     #[must_use]
+    #[cfg(test)]
     pub const fn capability_generation(&self) -> CapabilityGeneration {
         self.capability_generation
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn work_area_generation(&self) -> WorkAreaGeneration {
         self.work_area_generation
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn capabilities_changed(&self) -> bool {
         self.capabilities_changed
     }
@@ -445,6 +458,7 @@ impl ViewportCoordinator {
             .ok_or(ViewportCoordinatorError::PlatformProviderUnavailable)
     }
 
+    #[cfg(test)]
     fn revoke_recovery_bringups_for_provider_replacement(
         &mut self,
         provider: PlatformObservationLease,
@@ -505,6 +519,7 @@ impl ViewportCoordinator {
 
     /// Returns the core-owned platform handoff which is awaiting dispatch
     /// quiescence, when one exists.
+    #[cfg(test)]
     pub(crate) const fn pending_platform_provider_replacement(
         &self,
     ) -> Option<PlatformProviderReservation> {
@@ -512,6 +527,7 @@ impl ViewportCoordinator {
     }
 
     /// Revokes one provider and freezes a typed handoff ticket for its successor.
+    #[cfg(test)]
     pub(crate) fn begin_platform_provider_replacement(
         &mut self,
         provider: PlatformObservationLease,
@@ -599,6 +615,7 @@ impl ViewportCoordinator {
     }
 
     /// Activates the exact successor reserved by a completed provider handoff.
+    #[cfg(test)]
     pub(crate) fn finish_platform_provider_replacement(
         &mut self,
         ticket: PlatformProviderReservation,
@@ -614,6 +631,7 @@ impl ViewportCoordinator {
     }
 
     /// Abandons the reserved successor while preserving fail-closed platform state.
+    #[cfg(test)]
     pub(crate) fn abort_platform_provider_replacement(
         &mut self,
         ticket: PlatformProviderReservation,
@@ -628,6 +646,7 @@ impl ViewportCoordinator {
     }
 
     /// Compacts terminal-binding guards after the exact observation producer has quiesced.
+    #[cfg(test)]
     pub(crate) fn compact_quiesced_terminal_binding_guards(
         &mut self,
         provider: PlatformObservationLease,
@@ -726,6 +745,7 @@ impl ViewportCoordinator {
     }
 
     /// Releases the exact revoked effect-provider guard proven quiescent by backend drain.
+    #[cfg(test)]
     pub(crate) fn compact_quiesced_backend_effect_provider(
         &mut self,
         receipt: &BackendIngressDrainReceipt,
@@ -819,6 +839,7 @@ impl ViewportCoordinator {
     ///
     /// The source surface may be absent from the replacement workspace. The target must
     /// belong to that workspace and cannot already belong to another native window.
+    #[cfg(test)]
     pub(crate) fn prepare_native_root_continuation(
         &self,
         predecessor: ViewportBinding,
@@ -3275,6 +3296,7 @@ impl ViewportCoordinator {
             .map_err(ViewportCoordinatorError::Registry)
     }
 
+    #[cfg(test)]
     pub(crate) fn try_take_new_effects(
         &mut self,
     ) -> Result<Vec<PlatformEffectEmission>, ViewportCoordinatorError> {
@@ -3560,6 +3582,7 @@ impl ViewportCoordinator {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn capability_generation(&self) -> CapabilityGeneration {
         self.capability_generation
     }
@@ -3571,6 +3594,7 @@ impl ViewportCoordinator {
 
     /// Returns the latest accepted provider generation, including tombstones.
     #[must_use]
+    #[cfg(test)]
     pub const fn work_area_observation_generation(&self) -> Option<WorkAreaObservationGeneration> {
         self.work_area_observations.generation_watermark()
     }
@@ -3596,6 +3620,7 @@ impl ViewportCoordinator {
         &self.effects
     }
 
+    #[cfg(test)]
     pub(crate) fn effect_retention_manifest(&self) -> EffectRetentionManifest {
         self.effects.retention_manifest()
     }
@@ -3629,6 +3654,7 @@ impl ViewportCoordinator {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn binding_retention_manifest(&self) -> BindingRetentionManifest {
         self.binding_cleanup
             .retention_manifest()
@@ -3758,6 +3784,7 @@ impl ViewportCoordinator {
     ///
     /// Returns a typed coordinate error when the surface is not ready or its
     /// placement facts are incomplete.
+    #[cfg(test)]
     pub fn placement(
         &self,
         surface: SurfaceId,

@@ -47,6 +47,7 @@ impl ExternalItemKeyMap {
 
     /// Returns whether the mapping is empty.
     #[must_use]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.by_external_key.is_empty()
     }
@@ -521,6 +522,7 @@ mod persistence {
 }
 
 #[cfg(feature = "serde")]
-pub use persistence::{
-    ExternalItemKeyRestoreError, ExternalItemKeySnapshot, SnapshotExternalItemKeyEntry,
-};
+pub use persistence::{ExternalItemKeyRestoreError, ExternalItemKeySnapshot};
+
+#[cfg(all(feature = "serde", test))]
+pub use persistence::SnapshotExternalItemKeyEntry;

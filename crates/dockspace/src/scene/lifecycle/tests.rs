@@ -290,7 +290,6 @@ fn shared_hit_geometry_keeps_new_output_and_rejects_an_old_receiver_receipt() {
         .candidate();
     assert_ne!(new_output, old_output);
     assert_eq!(candidate.hit_manifest().output(), new_output);
-    assert_eq!(candidate.semantic_manifest().output(), new_output);
     assert_eq!(
         candidate.hit_manifest().regions().as_ptr(),
         old.hit_manifest().regions().as_ptr()

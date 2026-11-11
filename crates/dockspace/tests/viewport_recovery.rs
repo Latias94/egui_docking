@@ -34,11 +34,7 @@ use dockspace::platform::{
     WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::PresentationHitRegionKind;
 use dockspace::scene::SurfaceScene;
-use dockspace::semantic_input::{
-    SemanticDelivery, SemanticKey, SemanticReceiverAction, SemanticReceiverEvent,
-};
 use dockspace::surface_recovery::{
     ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryBlockedReason, SurfaceRecoveryError,
     SurfaceRecoveryTarget,
@@ -441,13 +437,13 @@ fn platform_snapshot_with_facts_at_generation(
     .expect("test platform snapshot must be canonical")
 }
 
-fn child_next_tab_event(
+fn child_next_tab_input(
     frame: &CoreHostFrame,
     binding: ViewportBinding,
-) -> (dockspace::scene::TabSceneId, SemanticReceiverEvent) {
+) -> (dockspace::scene::TabSceneId, EngineInput) {
     let projection = frame
         .view()
-        .semantic_projection(SURFACE_CHILD)
+        .prepared_action_projection(SURFACE_CHILD)
         .expect("sealed child must have presented semantic authority");
     let tab = projection
         .plan()
@@ -456,14 +452,22 @@ fn child_next_tab_event(
         .find(|tab| projection.plan().tab_selected(tab) && tab.id().item == ItemId::new(2))
         .map(|tab| *tab.id())
         .expect("child left leaf must select item 2");
-    let event = SemanticReceiverEvent::new(
-        projection.output_ticket(),
-        projection.authority().emission(),
-        SemanticDelivery::Native(binding),
-        PresentationHitRegionKind::TabBody(tab),
-        SemanticReceiverAction::Key(SemanticKey::ArrowRight),
+    assert_eq!(
+        projection.authority().endpoint(),
+        dockspace::presentation_observation::HostPresentationEndpoint::Native(binding)
     );
-    (tab, event)
+    let input = EngineInput::SelectLocalSceneTab {
+        expected: frame.view().version(),
+        scene: projection.plan_stamp(),
+        selection: crate::engine::LocalTabSelection::Navigate {
+            source: tab,
+            target: dockspace::scene::TabSceneId {
+                item: ItemId::new(3),
+                ..tab
+            },
+        },
+    };
+    (tab, input)
 }
 
 fn next_destroyed_child_snapshot(fixture: &mut Fixture) -> PlatformSnapshot {
@@ -831,7 +835,12 @@ fn assert_recovery_presentation_scope(fixture: &mut Fixture, live_surface_expect
     );
     if !live_surface_expected {
         assert!(frame.view().interaction_projection(SURFACE_CHILD).is_none());
-        assert!(frame.view().semantic_projection(SURFACE_CHILD).is_none());
+        assert!(
+            frame
+                .view()
+                .prepared_action_projection(SURFACE_CHILD)
+                .is_none()
+        );
         assert!(matches!(
             frame.view().begin_surface_contribution(SURFACE_CHILD),
             Err(SurfaceContributionBeginError::SurfaceOutsideRoster {
@@ -2199,14 +2208,14 @@ fn joined_provider_replacement_terminates_every_pre_admission_recovery_bringup()
 }
 
 #[test]
-fn destroyed_child_rejects_its_old_semantic_output_later_in_the_same_frame() {
+fn destroyed_child_rejects_its_old_candidate_action_later_in_the_same_frame() {
     let mut fixture = fixture();
     let expected = fixture.engine.version();
     let provider = fixture.presentation_host.platform_provider();
     let snapshot = next_destroyed_child_snapshot(&mut fixture);
     let mut writer = support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE);
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
-    let (tab, event) = child_next_tab_event(&frame, fixture.child_binding);
+    let (tab, input) = child_next_tab_input(&frame, fixture.child_binding);
 
     writer
         .append(
@@ -2220,13 +2229,15 @@ fn destroyed_child_rejects_its_old_semantic_output_later_in_the_same_frame() {
         .expect("destroyed observation must reduce first");
     assert!(!frame.surfaces().any(|surface| surface == SURFACE_CHILD));
     assert!(frame.view().interaction_projection(SURFACE_CHILD).is_none());
-    assert!(frame.view().semantic_projection(SURFACE_CHILD).is_none());
+    assert!(
+        frame
+            .view()
+            .prepared_action_projection(SURFACE_CHILD)
+            .is_none()
+    );
 
     writer
-        .append(
-            &mut frame,
-            EngineInput::ActivateSemanticReceiver { expected, event },
-        )
+        .append(&mut frame, input)
         .expect("stale semantic delivery must reduce to a typed rejection");
     complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
     let transition = fixture.presentation_host.finish(frame, &mut fixture.engine);
@@ -2234,11 +2245,7 @@ fn destroyed_child_rejects_its_old_semantic_output_later_in_the_same_frame() {
     assert!(matches!(
         transition.reduced_inputs()[1].outcome(),
         InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::Rejected(
-                InteractionRejection::SemanticPresentationUnavailable {
-                    surface: SURFACE_CHILD,
-                },
-            ),
+            outcome: InteractionOutcome::Rejected(InteractionRejection::StaleScene,),
             ..
         }
     ));
@@ -2266,13 +2273,10 @@ fn semantic_input_before_child_destruction_keeps_actual_same_frame_order() {
     let snapshot = next_destroyed_child_snapshot(&mut fixture);
     let mut writer = support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE);
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
-    let (tab, event) = child_next_tab_event(&frame, fixture.child_binding);
+    let (tab, input) = child_next_tab_input(&frame, fixture.child_binding);
 
     writer
-        .append(
-            &mut frame,
-            EngineInput::ActivateSemanticReceiver { expected, event },
-        )
+        .append(&mut frame, input)
         .expect("current semantic delivery must reduce first");
     writer
         .append(

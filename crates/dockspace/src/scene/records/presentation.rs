@@ -82,6 +82,7 @@ impl PresentationMenuAnchorRecord {
 
     /// Returns whether this root currently publishes usable menu chrome.
     #[must_use]
+    #[cfg(test)]
     pub const fn is_ready(self) -> bool {
         self.bounds.is_some()
     }

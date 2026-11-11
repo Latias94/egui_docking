@@ -1,5 +1,6 @@
 //! Affine host-frame orchestration and atomic publication.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use crate::close_plan::{
@@ -15,6 +16,7 @@ use crate::engine::{
 use crate::ids::{RootId, SourceSequence, StableInputSourceId, SurfaceId};
 use crate::model::{DockPlacement, DockspaceView, WorkspaceVersion};
 use crate::policy::DockPolicy;
+use crate::presentation_observation::PresentationStreamAdmission;
 use crate::transition::InputOutcome;
 
 #[cfg(feature = "serde")]
@@ -79,17 +81,21 @@ pub struct DockspaceHostFrame<'session> {
     pub(super) pointer_input_submitted: bool,
     pub(super) native_input_pending: bool,
     pub(super) submitted_presentation: presentation::SubmittedPresentationObservation,
-    pub(super) painted_surfaces: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
-    pub(super) encoding_surfaces:
-        BTreeMap<SurfaceId, Option<crate::presentation_observation::PresentationStreamAdmission>>,
-    pub(super) encoding_started: std::cell::Cell<bool>,
-    pub(super) encoding_checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
-    pub(super) encoding_pass: u64,
+    pub(super) encoding: EncodingState,
 
     pub(super) replacement_submitted: bool,
     #[cfg(feature = "serde")]
     pub(super) document_restore: Option<PendingRuntimeDocumentRestore>,
     pub(super) update_lease: Option<std::sync::Arc<()>>,
+}
+
+#[derive(Default)]
+pub(super) struct EncodingState {
+    pub(super) painted: BTreeMap<SurfaceId, SurfaceProgramExecutionReceipt>,
+    pub(super) surfaces: BTreeMap<SurfaceId, Option<PresentationStreamAdmission>>,
+    pub(super) started: Cell<bool>,
+    pub(super) checkpoint: Option<crate::engine::CoreEncodingCheckpoint>,
+    pub(super) pass: u64,
 }
 
 /// Fully reduced facade frame awaiting host resource preparation and publication.
@@ -1068,15 +1074,14 @@ impl<'session> DockspaceHostFrame<'session> {
             pointer_input_submitted: _,
             native_input_pending,
             submitted_presentation,
-            painted_surfaces,
-            encoding_surfaces,
-            encoding_started: _,
-            encoding_checkpoint: _,
-            encoding_pass: _,
+            encoding,
             replacement_submitted: _,
             #[cfg(feature = "serde")]
             document_restore,
         } = self;
+        let EncodingState {
+            painted, surfaces, ..
+        } = encoding;
         let frame_attempt = frame.presentation_attempt();
         let accepted_native_prefix =
             frame.backend_ingress_through() > session.engine.backend_ingress_committed_through();
@@ -1087,7 +1092,7 @@ impl<'session> DockspaceHostFrame<'session> {
                 return Err(NativePlatformError::ProtocolInvariant.into());
             }
         }
-        for (surface, receipt) in painted_surfaces {
+        for (surface, receipt) in painted {
             let obligation = obligations
                 .remove(&HostPresentationSlot::Surface { surface })
                 .ok_or_else(|| DockspaceRuntimeError::paint_obligation_unavailable(surface))?;
@@ -1157,7 +1162,7 @@ impl<'session> DockspaceHostFrame<'session> {
         let presentation = session.presentation.prepare_emissions(
             transition,
             &submitted_presentation,
-            &encoding_surfaces,
+            &surfaces,
             candidate,
         )?;
         let effects = session
@@ -1211,7 +1216,7 @@ impl<'session> DockspaceHostFrame<'session> {
     }
 
     pub(super) fn ensure_semantic_input_allowed(&self) -> Result<(), DockspaceRuntimeError> {
-        if self.encoding_started.get() {
+        if self.encoding.started.get() {
             return Err(crate::engine::CoreHostFrameError::InputAfterPresentation.into());
         }
         if self.frame.input_terminated_for_overload() {

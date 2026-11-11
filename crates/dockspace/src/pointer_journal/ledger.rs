@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(test)]
 use crate::backend_ingress::BackendIngressDrainReceipt;
 
 impl PointerProviderIncarnation {
@@ -282,6 +283,7 @@ impl PointerJournalLedgerVersion {
 )]
 impl PreparedPointerJournal {
     /// Returns the exact provider lease that was validated during preparation.
+    #[cfg(test)]
     pub(crate) const fn lease(&self) -> PointerInputLease {
         self.lease
     }
@@ -323,6 +325,7 @@ impl AcceptedPointerEdge {
     reason = "reserved for the independent pointer-ledger integration"
 )]
 impl PointerJournalCommit {
+    #[cfg(test)]
     pub(crate) const fn lease(&self) -> PointerInputLease {
         self.lease
     }
@@ -412,6 +415,7 @@ impl PointerJournalLedger {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn retention_manifest(&self) -> crate::retention::PointerRetentionManifest {
         let detailed_in_compacted_range = self
             .retired
@@ -508,6 +512,7 @@ impl PointerJournalLedger {
         (self.active_lease() == Some(*lease) && monitor.is_abandoned()).then_some(*lease)
     }
 
+    #[cfg(test)]
     pub(crate) fn abandoned_retired_surface_local_provider(&self) -> Option<PointerInputLease> {
         self.retired_surface_local_producers
             .iter()
@@ -529,6 +534,7 @@ impl PointerJournalLedger {
         self.require_active(lease)
     }
 
+    #[cfg(test)]
     pub(crate) fn button_authority(&self) -> AnyButtonDownAuthority {
         self.authority.button_authority()
     }
@@ -701,6 +707,7 @@ impl PointerJournalLedger {
     /// The detailed final watermark is discarded, but the monotonic incarnation frontier
     /// continues to classify every delayed journal from this lease as retired. Callers must own
     /// the typed quiescence proof; ordinary retirement alone is not sufficient.
+    #[cfg(test)]
     pub(crate) fn compact_quiesced_backend(
         &mut self,
         receipt: &BackendIngressDrainReceipt,
@@ -779,6 +786,7 @@ impl PointerJournalLedger {
         Ok(disposition)
     }
 
+    #[cfg(test)]
     pub(crate) fn retire_abandoned_active_surface_local(
         &mut self,
         lease: PointerInputLease,
@@ -803,6 +811,7 @@ impl PointerJournalLedger {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn compact_abandoned_retired_surface_local(
         &mut self,
         lease: PointerInputLease,
@@ -824,6 +833,7 @@ impl PointerJournalLedger {
         Ok(())
     }
 
+    #[cfg(test)]
     fn compact_retired_provider(
         &mut self,
         lease: PointerInputLease,

@@ -15,6 +15,7 @@ use crate::geometry::LogicalRect;
 use crate::ids::EngineAuthorityDomainId;
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::policy::{CloseCapability, PolicyRevision};
+#[cfg(test)]
 use crate::retention::CloseRetentionManifest;
 use crate::transition::WorkspaceVersion;
 use crate::viewport::{CloseObservationGeneration, InventoryGeneration, ViewportBinding};
@@ -29,12 +30,12 @@ macro_rules! close_protocol_id {
         }
 
         impl $name {
-            #[allow(dead_code)]
+            #[allow(dead_code, reason = "Internal identity macros provide inspection for protocol tests; production uses only each domain's required operations")]
             pub(crate) const fn domain(self) -> EngineAuthorityDomainId {
                 self.domain
             }
 
-            #[allow(dead_code)]
+            #[allow(dead_code, reason = "Internal identity macros provide inspection for protocol tests; production uses only each domain's required operations")]
             pub(crate) const fn sequence(self) -> u64 {
                 self.sequence.get()
             }
@@ -142,6 +143,7 @@ pub struct SurfaceContainedRehomeTarget {
 impl SurfaceContainedRehomeTarget {
     /// Creates one exact target-local placement for an existing contained root.
     #[must_use]
+    #[cfg(test)]
     pub const fn new(floating: FloatingPresentationId, rect: LogicalRect) -> Self {
         Self { floating, rect }
     }
@@ -163,10 +165,22 @@ impl SurfaceContainedRehomeTarget {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceMainRehomeTarget {
     /// Merge the exact source main node into one exact existing dock target.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Dock(DockTarget),
     /// Install the exact source main root in a destination rootless main slot.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Main,
     /// Convert the exact source main root into one explicit contained presentation.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Contained {
         /// Stable floating identity reserved for the converted main root.
         floating: FloatingPresentationId,
@@ -194,6 +208,7 @@ pub struct SurfaceRehomeTarget {
 impl SurfaceRehomeTarget {
     /// Creates an exact complete-roster destination program.
     #[must_use]
+    #[cfg(test)]
     pub fn new(
         surface: SurfaceId,
         main: Option<SurfaceMainRehomeTarget>,
@@ -231,6 +246,10 @@ pub enum SurfaceCloseRequest {
     /// Destroy the native binding while retaining its logical surface roster.
     RetainLayout,
     /// Move the complete source roster to one exact presentation destination.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     RehomeAll {
         /// Fully typed destination used to prepare the atomic transaction.
         target: SurfaceRehomeTarget,
@@ -257,6 +276,7 @@ impl SurfaceCloseRequest {
 
     /// Returns the logical rehome destination, when this request moves content.
     #[must_use]
+    #[cfg(test)]
     pub fn target_surface(&self) -> Option<SurfaceId> {
         match self {
             Self::RehomeAll { target } => Some(target.surface()),
@@ -522,6 +542,7 @@ impl ClosePlan {
 
     /// Returns the workspace and policy origin captured by the request.
     #[must_use]
+    #[cfg(test)]
     pub const fn authority(&self) -> CloseAuthority {
         self.authority
     }
@@ -549,6 +570,7 @@ impl ClosePlan {
 
     /// Returns the independently settleable native destruction obligation.
     #[must_use]
+    #[cfg(test)]
     pub const fn destruction_state(&self) -> CloseDestructionState {
         self.destruction
     }
@@ -620,6 +642,10 @@ pub enum CloseDestructionState {
     /// The destructive effect was emitted but not yet acknowledged.
     EffectEmitted,
     /// Effect acknowledgement arrived and exact destruction remains outstanding.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     AwaitingDestroyed,
 }
 
@@ -721,30 +747,35 @@ impl CloseDestroyedProof {
 
     /// Returns the exact engine-domain close request proved destroyed.
     #[must_use]
+    #[cfg(test)]
     pub const fn request(self) -> CloseRequestId {
         self.request
     }
 
     /// Returns the exact native-window incarnation observed destroyed.
     #[must_use]
+    #[cfg(test)]
     pub const fn binding(self) -> ViewportBinding {
         self.binding
     }
 
     /// Returns the provider generation which observed destruction.
     #[must_use]
+    #[cfg(test)]
     pub const fn observation_generation(self) -> CloseObservationGeneration {
         self.observation_generation
     }
 
     /// Returns the core inventory generation in which the destroyed fact arrived.
     #[must_use]
+    #[cfg(test)]
     pub const fn inventory_generation(self) -> InventoryGeneration {
         self.inventory_generation
     }
 
     /// Returns the close-lane effect frontier acknowledged by the provider.
     #[must_use]
+    #[cfg(test)]
     pub const fn acknowledged_effect(self) -> EffectId {
         self.acknowledged_effect
     }
@@ -758,6 +789,10 @@ impl CloseDestroyedProof {
 pub enum CloseNativeSettlement {
     DestroyedProved(CloseDestroyedProof),
     CancellationProved(CloseCancellationProof),
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     DestroyedProvedWithCancellation {
         destroyed: CloseDestroyedProof,
         cancellation: CloseCancellationProof,

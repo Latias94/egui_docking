@@ -319,6 +319,7 @@ impl<T> Measurement<T> {
 
     /// Returns the explicit reason authority was unavailable.
     #[must_use]
+    #[cfg(test)]
     pub const fn unavailable_reason(&self) -> Option<MeasurementUnavailableReason> {
         match self {
             Self::Measured(_) => None,
@@ -979,6 +980,7 @@ impl SceneRequirementManifest {
 
     /// Returns the engine authority domain which minted every surface ticket.
     #[must_use]
+    #[cfg(test)]
     pub const fn authority_domain(&self) -> EngineAuthorityDomainId {
         self.authority_domain
     }
@@ -1160,6 +1162,7 @@ impl SurfaceRequirements {
 
     /// Iterates every semantic tabs leaf in deterministic identity order.
     #[must_use]
+    #[cfg(test)]
     pub fn tab_bars(&self) -> impl ExactSizeIterator<Item = &TabBarRequirement> {
         self.tab_bars.values()
     }

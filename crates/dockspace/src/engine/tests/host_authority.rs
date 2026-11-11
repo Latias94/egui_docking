@@ -1148,10 +1148,6 @@ fn retained_changed_tab_press(activate_drag: bool) {
             current.hit_manifest().regions().as_ptr(),
             original.hit_manifest().regions().as_ptr()
         );
-        assert_eq!(
-            current.semantic_manifest().receivers().as_ptr(),
-            original.semantic_manifest().receivers().as_ptr()
-        );
         assert!(std::ptr::eq(
             current.paint_program().unwrap(),
             original.paint_program().unwrap()
@@ -1161,10 +1157,6 @@ fn retained_changed_tab_press(activate_drag: bool) {
             assert_eq!(current.output_ticket(), previous_ticket);
         }
         assert_eq!(current.hit_manifest().output(), current.output_ticket());
-        assert_eq!(
-            current.semantic_manifest().output(),
-            current.output_ticket()
-        );
         assert_eq!(
             original
                 .plan()

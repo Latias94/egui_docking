@@ -45,16 +45,19 @@ impl TearOffPlacementRequest {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn cursor_offset(self) -> LogicalSize {
         self.cursor_offset
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn preferred_size(self) -> LogicalSize {
         self.preferred_size
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn minimum_size(self) -> LogicalSize {
         self.minimum_size
     }
@@ -95,6 +98,7 @@ pub struct TearOffPlacementProof {
 impl TearOffPlacementProof {
     /// Returns the exact desktop provider incarnation which authorized the placement.
     #[must_use]
+    #[cfg(test)]
     pub const fn pointer_provider(self) -> PointerInputLease {
         self.pointer_provider
     }
@@ -137,6 +141,7 @@ impl TearOffPlacementProof {
 
     /// Returns the unclamped logical request in the selected work-area space.
     #[must_use]
+    #[cfg(test)]
     pub const fn requested_rect(self) -> LogicalRect {
         self.requested_rect
     }
@@ -445,10 +450,12 @@ impl CoordinateSnapshot {
         self.coordinate_generation
     }
 
+    #[cfg(test)]
     pub(crate) const fn observation_generation(self) -> CoordinateObservationGeneration {
         self.observation_generation
     }
 
+    #[cfg(test)]
     pub(crate) fn from_observation(
         binding: ViewportBinding,
         coordinate_generation: CoordinateGeneration,
@@ -584,6 +591,7 @@ impl CoordinateSnapshot {
         require_fact(&self.content_bounds, CoordinateFact::ContentBounds).map(PhysicalRect::min)
     }
 
+    #[cfg(test)]
     pub(crate) fn placement(
         self,
         logical_rect: LogicalRect,
@@ -656,11 +664,13 @@ impl ViewportPlacementProof {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn coordinate_generation(&self) -> CoordinateGeneration {
         self.coordinate_generation
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn work_area_generation(&self) -> WorkAreaGeneration {
         self.work_area_generation
     }
@@ -671,6 +681,7 @@ impl ViewportPlacementProof {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn logical_rect(&self) -> LogicalRect {
         self.logical_rect
     }

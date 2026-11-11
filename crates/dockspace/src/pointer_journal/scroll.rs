@@ -9,6 +9,7 @@ impl ScrollDeviceId {
 
     /// Returns the provider protocol representation.
     #[must_use]
+    #[cfg(test)]
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -22,6 +23,7 @@ impl ScrollSequenceToken {
 
     /// Returns the provider protocol representation.
     #[must_use]
+    #[cfg(test)]
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -122,6 +124,7 @@ impl ScrollModifiers {
 
     /// Returns whether Alt was pressed.
     #[must_use]
+    #[cfg(test)]
     pub const fn alt(self) -> bool {
         self.alt
     }
@@ -268,6 +271,7 @@ impl ScrollEdge {
 
     /// Returns direct-versus-momentum authority.
     #[must_use]
+    #[cfg(test)]
     pub const fn momentum(self) -> Authority<ScrollMomentum> {
         self.momentum
     }

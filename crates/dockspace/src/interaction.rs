@@ -73,6 +73,7 @@ macro_rules! interaction_counter {
 
             /// Returns the runtime representation.
             #[must_use]
+            #[allow(dead_code, reason = "Internal identity macros provide inspection for protocol tests; production uses only each domain's required operations")]
             pub const fn get(self) -> u64 {
                 self.0
             }
@@ -115,12 +116,14 @@ impl ClickSessionId {
 
     /// Returns the workspace epoch in which the click was pressed.
     #[must_use]
+    #[cfg(test)]
     pub const fn epoch(self) -> WorkspaceEpoch {
         self.epoch
     }
 
     /// Returns the click generation.
     #[must_use]
+    #[cfg(test)]
     pub const fn generation(self) -> u64 {
         self.generation.get()
     }
@@ -177,12 +180,14 @@ impl ResizeSessionId {
 
     /// Returns the workspace epoch in which the resize began.
     #[must_use]
+    #[cfg(test)]
     pub const fn epoch(self) -> WorkspaceEpoch {
         self.epoch
     }
 
     /// Returns the resize generation.
     #[must_use]
+    #[cfg(test)]
     pub const fn generation(self) -> ResizeGeneration {
         self.generation
     }
@@ -289,6 +294,7 @@ impl PreviewVisual {
 
     /// Returns the reserved native target when this is a native tear-off cue.
     #[must_use]
+    #[cfg(test)]
     pub const fn target_surface(&self) -> Option<SurfaceId> {
         match *self {
             Self::Native { target_surface, .. } => Some(target_surface),
@@ -592,12 +598,14 @@ pub struct ActiveClickView {
 impl ActiveClickView {
     /// Returns the core-minted click session.
     #[must_use]
+    #[cfg(test)]
     pub const fn session(self) -> ClickSessionId {
         self.session
     }
 
     /// Returns the exact stable receiver pressed by the owning stream.
     #[must_use]
+    #[cfg(test)]
     pub const fn region(self) -> PresentationHitRegionId {
         self.region
     }
@@ -651,24 +659,28 @@ pub struct ActiveResizeView<'state> {
 impl<'state> ActiveResizeView<'state> {
     /// Returns the exact resize generation.
     #[must_use]
+    #[cfg(test)]
     pub const fn session(self) -> ResizeSessionId {
         self.session
     }
 
     /// Returns the provider-owned pointer identity for this resize.
     #[must_use]
+    #[cfg(test)]
     pub const fn pointer(self) -> PointerId {
         self.owner.pointer()
     }
 
     /// Returns the exact journal stream which owns this resize.
     #[must_use]
+    #[cfg(test)]
     pub const fn journal_stream(self) -> PointerStreamId {
         self.owner.stream()
     }
 
     /// Returns the button which owns this resize.
     #[must_use]
+    #[cfg(test)]
     pub const fn button(self) -> PointerButton {
         self.button
     }
@@ -681,12 +693,14 @@ impl<'state> ActiveResizeView<'state> {
 
     /// Returns the painted scene which authorized activation.
     #[must_use]
+    #[cfg(test)]
     pub const fn scene(self) -> SurfaceSceneStamp {
         self.scene
     }
 
     /// Returns the exact structural splitter target frozen at press time.
     #[must_use]
+    #[cfg(test)]
     pub const fn target(self) -> SplitterResizeTarget {
         self.target
     }
@@ -713,18 +727,21 @@ impl<'state> ActiveDragView<'state> {
 
     /// Returns the provider-owned pointer identity for this drag.
     #[must_use]
+    #[cfg(test)]
     pub const fn pointer(self) -> PointerId {
         self.owner.pointer()
     }
 
     /// Returns the exact journal stream which owns this drag.
     #[must_use]
+    #[cfg(test)]
     pub const fn journal_stream(self) -> PointerStreamId {
         self.owner.stream()
     }
 
     /// Returns the pointer button which armed the drag.
     #[must_use]
+    #[cfg(test)]
     pub const fn button(self) -> PointerButton {
         self.button
     }
@@ -751,18 +768,21 @@ impl<'state> ActiveDragView<'state> {
 
     /// Returns the first contained-presentation offer frozen for this session.
     #[must_use]
+    #[cfg(test)]
     pub const fn contained_offer(self) -> Option<&'state ContainedPresentationOffer> {
         self.contained_offer
     }
 
     /// Returns the first background-root identity offer frozen for this session.
     #[must_use]
+    #[cfg(test)]
     pub const fn surface_background_offer(self) -> Option<&'state SurfaceBackgroundRootOffer> {
         self.surface_background_offer
     }
 
     /// Returns the first native presentation offer frozen for this session.
     #[must_use]
+    #[cfg(test)]
     pub const fn native_offer(self) -> Option<&'state NativePresentationOffer> {
         self.native_offer
     }
@@ -791,24 +811,28 @@ pub struct ActiveContainedTransformView<'state> {
 impl<'state> ActiveContainedTransformView<'state> {
     /// Returns the exact transform generation.
     #[must_use]
+    #[cfg(test)]
     pub const fn session(self) -> ContainedTransformSessionId {
         self.session
     }
 
     /// Returns the provider-owned pointer identity for this transform.
     #[must_use]
+    #[cfg(test)]
     pub const fn pointer(self) -> PointerId {
         self.owner.pointer()
     }
 
     /// Returns the exact journal stream which owns this transform.
     #[must_use]
+    #[cfg(test)]
     pub const fn journal_stream(self) -> PointerStreamId {
         self.owner.stream()
     }
 
     /// Returns the pointer button which began the transform.
     #[must_use]
+    #[cfg(test)]
     pub const fn button(self) -> PointerButton {
         self.button
     }
@@ -821,48 +845,56 @@ impl<'state> ActiveContainedTransformView<'state> {
 
     /// Returns the frozen contained root.
     #[must_use]
+    #[cfg(test)]
     pub const fn root(self) -> RootId {
         self.root
     }
 
     /// Returns the frozen contained presentation identity.
     #[must_use]
+    #[cfg(test)]
     pub const fn floating(self) -> FloatingPresentationId {
         self.floating
     }
 
     /// Returns the exact durable rectangle captured at begin.
     #[must_use]
+    #[cfg(test)]
     pub const fn source_rect(self) -> LogicalRect {
         self.source_rect
     }
 
     /// Returns the absolute pointer location captured at begin.
     #[must_use]
+    #[cfg(test)]
     pub const fn initial_pointer(self) -> LogicalPoint {
         self.initial_pointer
     }
 
     /// Returns the latest absolute pointer location reduced by the core.
     #[must_use]
+    #[cfg(test)]
     pub const fn current_pointer(self) -> LogicalPoint {
         self.current_pointer
     }
 
     /// Returns the exact move or resize operation.
     #[must_use]
+    #[cfg(test)]
     pub const fn kind(self) -> ContainedTransformKind {
         self.kind
     }
 
     /// Returns the frozen minimum contained size.
     #[must_use]
+    #[cfg(test)]
     pub const fn minimum_size(self) -> LogicalSize {
         self.minimum_size
     }
 
     /// Returns the exact current preview eligible for painting.
     #[must_use]
+    #[cfg(test)]
     pub const fn preview(self) -> Option<&'state ContainedTransformPreview> {
         self.preview
     }
@@ -928,25 +960,9 @@ pub enum InteractionCancelReason {
 /// Why a semantic interaction input did not advance or deliver a gesture.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InteractionRejection {
-    /// The exact surface has no currently presented semantic projection.
-    SemanticPresentationUnavailable { surface: SurfaceId },
-    /// The semantic event named an output other than the currently presented output.
-    SemanticOutputUnavailable { surface: SurfaceId },
-    /// The semantic event named an emission other than the currently presented emission.
-    SemanticEmissionUnavailable { surface: SurfaceId },
-    /// The event delivery endpoint does not own the named presented output.
-    SemanticDeliveryMismatch {
-        expected: crate::semantic_input::SemanticDelivery,
-        actual: crate::presentation_observation::HostPresentationEndpoint,
-    },
-    /// The claimed receiver is absent from the exact presented hit manifest.
-    SemanticReceiverUnavailable {
+    /// The prepared action's receiver is absent from its frozen scene.
+    ActionReceiverUnavailable {
         target: crate::presentation_hit::PresentationHitRegionKind,
-    },
-    /// The requested semantic action is not defined for this receiver class.
-    SemanticActionUnsupported {
-        target: crate::presentation_hit::PresentationHitRegionKind,
-        action: crate::semantic_input::SemanticReceiverAction,
     },
     /// The close intent named a target absent from the exact painted scene.
     CloseSceneTargetUnavailable { target: CloseSceneTarget },
@@ -1036,6 +1052,10 @@ pub enum InteractionRejection {
     /// an exact current native window binding.
     EscapeDeliveryUnavailable { delivery: EscapeDelivery },
     /// This release belongs to the most recently consumed drag generation.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     DuplicateRelease { session: DragSessionId },
     /// A non-release input belongs to a drag generation that already settled.
     SessionConsumed { session: DragSessionId },
@@ -1061,6 +1081,10 @@ pub enum InteractionRejection {
         actual: PointerEventDeliveryOwner,
     },
     /// The input names a different pointer than the source press.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     PointerMismatch,
     /// The input names a different journal stream incarnation than the source
     /// press. A reused physical pointer id is deliberately not sufficient.
@@ -1076,6 +1100,10 @@ pub enum InteractionRejection {
     DragNotBegun,
     /// Transitional contained-origin facts do not identify the exact complete root.
     #[doc(hidden)]
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     ContainedDragOriginMismatch,
     /// The pressed point is outside the exact painted surface bounds.
     ContainedGesturePointerOutsideSurface { surface: SurfaceId },
@@ -1101,26 +1129,58 @@ pub enum InteractionRejection {
         occluding: FloatingPresentationId,
     },
     /// The scene's coordinate capture no longer matches current platform authority.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     TabGestureCoordinateAuthorityUnavailable { surface: SurfaceId },
     /// The painted tab no longer belongs to the claimed workspace presentation.
     TabGestureSourceUnavailable { source: TabGestureSource },
     /// A new-presentation offer was supplied for an already contained title drag.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     ContainedPresentationOfferUnexpected,
     /// A later observation attempted to replace the session's frozen contained offer.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     ContainedPresentationOfferChanged,
     /// A later observation attempted to replace the session's frozen background-root offer.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     SurfaceBackgroundRootOfferChanged,
     /// A later observation attempted to replace the session's frozen native offer.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     NativePresentationOfferChanged,
     /// A native offer's recovery plan names a different root than its native proposal.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     NativePresentationRecoveryRootMismatch,
     /// The observation's local or routed provenance is stale or internally inconsistent.
     TargetAuthorityInvalid,
     /// The matching button is authoritatively still pressed.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     ButtonStillPressed,
     /// No preview was published for the release.
     PreviewMissing,
     /// The exact published preview was not acknowledged as painted.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     PreviewNotPainted,
     /// The preview's sealed scene is no longer current.
     StaleScene,
@@ -1144,8 +1204,16 @@ pub enum InteractionRejection {
     /// Frozen splitter geometry could not produce a valid resize proposal.
     SplitterResizeGeometryUnavailable,
     /// A resize was released before any validated weight proposal was supplied.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     ResizeProposalMissing,
     /// This release belongs to the most recently consumed contained transform.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     DuplicateContainedTransformRelease {
         session: ContainedTransformSessionId,
     },
@@ -1213,11 +1281,9 @@ impl ManipulationRejection {
                 error if error.is_expected_rejection() => Self::Conflict,
                 _ => Self::Internal,
             },
-            InteractionRejection::SemanticPresentationUnavailable { .. }
-            | InteractionRejection::SemanticOutputUnavailable { .. }
-            | InteractionRejection::SemanticEmissionUnavailable { .. }
-            | InteractionRejection::PreviewNotPainted
-            | InteractionRejection::StaleScene => Self::PresentationUnavailable,
+            InteractionRejection::PreviewNotPainted | InteractionRejection::StaleScene => {
+                Self::PresentationUnavailable
+            }
             InteractionRejection::TabGestureSourceUnavailable { .. }
             | InteractionRejection::ContainedTransformPresentationUnavailable { .. }
             | InteractionRejection::TabStripSourceUnavailable { .. } => Self::SourceUnavailable,
@@ -1229,7 +1295,6 @@ impl ManipulationRejection {
             | InteractionRejection::CaptureOwnerMismatch { .. }
             | InteractionRejection::DeliveryAuthorityUnavailable
             | InteractionRejection::DeliveryOwnerMismatch { .. }
-            | InteractionRejection::SemanticDeliveryMismatch { .. }
             | InteractionRejection::CloseCoordinateAuthorityUnavailable { .. }
             | InteractionRejection::ContainedGestureCoordinateAuthorityUnavailable { .. }
             | InteractionRejection::TabGestureCoordinateAuthorityUnavailable { .. }
@@ -1340,6 +1405,7 @@ impl ScrollApplication {
 
     /// Returns the core-owned smooth-session identity, or `None` for a discrete edge.
     #[must_use]
+    #[cfg(test)]
     pub const fn session(self) -> Option<ScrollSessionId> {
         self.session
     }
@@ -1352,12 +1418,14 @@ impl ScrollApplication {
 
     /// Returns the native phase carried by the reduced edge.
     #[must_use]
+    #[cfg(test)]
     pub const fn phase(self) -> ScrollPhase {
         self.phase
     }
 
     /// Returns the requested signed canonical offset change before clamping.
     #[must_use]
+    #[cfg(test)]
     pub const fn requested_delta(self) -> f64 {
         self.requested_delta
     }
@@ -1370,12 +1438,14 @@ impl ScrollApplication {
 
     /// Returns the signed requested change which could not be applied.
     #[must_use]
+    #[cfg(test)]
     pub const fn unapplied_delta(self) -> f64 {
         self.unapplied_delta
     }
 
     /// Returns the resulting core-owned logical offset.
     #[must_use]
+    #[cfg(test)]
     pub const fn offset(self) -> f64 {
         self.offset
     }
@@ -1502,6 +1572,10 @@ pub enum InteractionOutcome {
     /// One scene-bound presentation action committed or produced a valid no-op.
     ProductActionApplied(DockspaceActionOutcome),
     /// One scene-bound presentation action was rejected without mutation.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     ProductActionRejected(DockspaceActionRejection),
     /// A core-owned tab-strip control settled on matching release.
     TabStripControlActivated {
@@ -1686,6 +1760,7 @@ impl InteractionEvent {
 
     /// Returns the engine version published with this event.
     #[must_use]
+    #[cfg(test)]
     pub const fn version(&self) -> WorkspaceVersion {
         self.version
     }
@@ -1718,8 +1793,6 @@ pub enum InteractionEventKind {
         /// Exact lifecycle terminal cause.
         reason: ScrollTerminationReason,
     },
-    /// A semantic tab action committed and requests adapter focus continuation.
-    SemanticFocusRequested { tab: TabSceneId },
     /// One preview publication replaced the previous preview.
     PreviewPublished { preview: InteractionPreview },
     /// A scene authority change invalidated preview facts while preserving the source drag.
@@ -2859,6 +2932,7 @@ impl InteractionState {
     /// while a guide cluster is visible but no exact deliverable button is hit.
     /// It never acts as paint acknowledgement or delivery proof.
     #[must_use]
+    #[cfg(test)]
     pub fn drop_affordance(&self) -> Option<&DropAffordance> {
         match &self.active {
             ActiveGesture::Dragging(drag) => drag.drop_affordance(),

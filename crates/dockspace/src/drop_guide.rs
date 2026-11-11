@@ -164,6 +164,7 @@ impl DropGuideEdgeSet {
 
     /// Returns the target occupying one physical edge slot.
     #[must_use]
+    #[cfg(test)]
     pub const fn target(&self, edge: Edge) -> &DropGuideTargetRecord {
         match edge {
             Edge::Left => &self.left,
@@ -309,6 +310,7 @@ impl DropGuideClusterRecord {
 
     /// Returns the target occupying `slot`, if that slot exists in this cluster.
     #[must_use]
+    #[cfg(test)]
     pub const fn target(&self, slot: DropGuideSlot) -> Option<&DropGuideTargetRecord> {
         match (&self.targets, slot) {
             (DropGuideClusterTargets::Inner { center, .. }, DropGuideSlot::Center) => Some(center),

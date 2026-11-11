@@ -122,7 +122,6 @@ pub struct SurfacePlanScene {
     plan: Arc<PresentationPlan>,
     hit_manifest: Arc<PresentationHitManifest>,
     paint_program: Option<Arc<SurfacePaintProgramLink>>,
-    semantic_manifest: Arc<PresentationSemanticManifest>,
     coordinate_capture: SurfaceCoordinateCapture,
 }
 
@@ -358,12 +357,6 @@ impl SurfacePlanScene {
         self.paint_program.as_deref()
     }
 
-    /// Returns the semantic receiver inventory bound to this exact output.
-    #[must_use]
-    pub fn semantic_manifest(&self) -> &PresentationSemanticManifest {
-        &self.semantic_manifest
-    }
-
     pub(crate) const fn coordinate_capture(&self) -> SurfaceCoordinateCapture {
         self.coordinate_capture
     }
@@ -408,6 +401,7 @@ pub struct BootstrapSurfaceScene {
 impl BootstrapSurfaceScene {
     /// Returns the unavailable roster surface.
     #[must_use]
+    #[cfg(test)]
     pub const fn surface(self) -> SurfaceId {
         self.stamp.surface()
     }
@@ -439,6 +433,7 @@ pub enum SurfaceScene {
 impl SurfaceScene {
     /// Returns the owning surface.
     #[must_use]
+    #[cfg(test)]
     pub const fn surface(&self) -> SurfaceId {
         self.stamp().surface()
     }
@@ -513,6 +508,7 @@ impl SurfaceScene {
 
     /// Returns exact plan stamps retained by this scene for adapter-side caching.
     #[must_use]
+    #[cfg(test)]
     pub fn retained_plan_stamps(&self) -> RetainedSurfacePlanStamps {
         match self {
             Self::Ready(scene) => RetainedSurfacePlanStamps {
@@ -583,12 +579,6 @@ impl<'a> SurfaceInteractionProjection<'a> {
         self.output.hit_manifest()
     }
 
-    /// Returns the semantic receiver inventory compiled for this exact output.
-    #[must_use]
-    pub fn semantic_manifest(self) -> &'a PresentationSemanticManifest {
-        self.output.semantic_manifest()
-    }
-
     /// Returns final-presentation authority for this exact output.
     #[must_use]
     pub const fn authority(self) -> PresentedSurfaceAuthority {
@@ -602,25 +592,30 @@ impl<'a> SurfaceInteractionProjection<'a> {
 
 /// Exact candidate and fallback identities retained for one surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct RetainedSurfacePlanStamps {
     candidate: Option<SurfaceSceneStamp>,
     paint_fallback: Option<SurfaceSceneStamp>,
 }
 
+#[cfg(test)]
 impl RetainedSurfacePlanStamps {
     /// Returns the current paint candidate identity, when one exists.
     #[must_use]
+    #[cfg(test)]
     pub const fn candidate(self) -> Option<SurfaceSceneStamp> {
         self.candidate
     }
 
     /// Returns the retained painted fallback identity, when one exists.
     #[must_use]
+    #[cfg(test)]
     pub const fn paint_fallback(self) -> Option<SurfaceSceneStamp> {
         self.paint_fallback
     }
 
     /// Iterates unique retained identities in candidate-then-fallback order.
+    #[cfg(test)]
     pub fn unique(self) -> impl Iterator<Item = SurfaceSceneStamp> {
         let fallback = if self.paint_fallback == self.candidate {
             None
@@ -635,10 +630,22 @@ impl RetainedSurfacePlanStamps {
 #[derive(Debug, Clone, Copy)]
 pub struct SurfacePaintProjection<'a> {
     plan: &'a PresentationPlan,
+    #[allow(
+        dead_code,
+        reason = "Frozen internal projection retains this fact for protocol validation and test inspection"
+    )]
     hit_manifest: &'a PresentationHitManifest,
+    #[allow(
+        dead_code,
+        reason = "Frozen internal projection retains this fact for protocol validation and test inspection"
+    )]
     plan_stamp: SurfaceSceneStamp,
     output_ticket: SurfacePresentationOutputTicket,
     coordinate_capture: SurfaceCoordinateCapture,
+    #[allow(
+        dead_code,
+        reason = "Frozen internal projection retains this fact for protocol validation and test inspection"
+    )]
     current_stamp: SurfaceSceneStamp,
 }
 
@@ -651,12 +658,14 @@ impl<'a> SurfacePaintProjection<'a> {
 
     /// Returns the hit inventory compiled from the same exact paint output.
     #[must_use]
+    #[cfg(test)]
     pub const fn hit_manifest(self) -> &'a PresentationHitManifest {
         self.hit_manifest
     }
 
     /// Returns the exact authority under which this paint candidate was compiled.
     #[must_use]
+    #[cfg(test)]
     pub const fn plan_stamp(self) -> SurfaceSceneStamp {
         self.plan_stamp
     }
@@ -673,6 +682,7 @@ impl<'a> SurfacePaintProjection<'a> {
 
     /// Returns the current surface state authority, which may be non-interactive.
     #[must_use]
+    #[cfg(test)]
     pub const fn current_stamp(self) -> SurfaceSceneStamp {
         self.current_stamp
     }
@@ -859,6 +869,7 @@ impl SurfaceSceneSet {
     /// A superseded host may still have streams for a surface now authorized by
     /// another host. Exact stream matching prevents retirement of the former
     /// from disturbing the latter.
+    #[cfg(test)]
     pub(crate) fn revoke_interaction_authority_for_streams(
         &mut self,
         streams: &BTreeSet<crate::presentation_observation::HostPresentationStreamId>,
@@ -879,6 +890,7 @@ impl SurfaceSceneSet {
 
     /// Returns exact retained candidate and fallback stamps for one rostered surface.
     #[must_use]
+    #[cfg(test)]
     pub fn retained_plan_stamps(&self, surface: SurfaceId) -> Option<RetainedSurfacePlanStamps> {
         self.surface(surface)
             .map(SurfaceScene::retained_plan_stamps)
@@ -1261,13 +1273,12 @@ impl SurfaceSceneSet {
             SurfaceScene::Stale(stale) => Some(stale.paint_fallback()),
             SurfaceScene::Bootstrap(_) => None,
         };
-        let (hit_manifest, paint_program, semantic_manifest) = if let Some(previous) =
+        let (hit_manifest, paint_program) = if let Some(previous) =
             previous.filter(|previous| plan.shares_facts(previous.plan()))
         {
             (
                 previous.hit_manifest().rebind_output(output_ticket),
                 previous.paint_program.clone(),
-                previous.semantic_manifest().rebind_output(output_ticket),
             )
         } else {
             let hit_manifest = PresentationHitManifest::compile_reusing(
@@ -1276,8 +1287,7 @@ impl SurfaceSceneSet {
                 previous.map(|output| (output.plan(), output.hit_manifest())),
             )?;
             let paint_program = link_surface_paint_program(&plan, &hit_manifest).map(Arc::new);
-            let semantic_manifest = PresentationSemanticManifest::compile(output_ticket, &plan)?;
-            (hit_manifest, paint_program, semantic_manifest)
+            (hit_manifest, paint_program)
         };
         let current = current.replace_scene(|current_scene| {
             let (retained_fallback, interaction_authority, confirmed_paint_fallback) =
@@ -1302,7 +1312,6 @@ impl SurfaceSceneSet {
                     plan,
                     hit_manifest: Arc::new(hit_manifest),
                     paint_program,
-                    semantic_manifest: Arc::new(semantic_manifest),
                     coordinate_capture,
                 }),
                 paint_fallback,

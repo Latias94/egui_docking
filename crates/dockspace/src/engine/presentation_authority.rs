@@ -1623,6 +1623,7 @@ impl DockEngine {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn reconcile_interaction_after_host_retirement(
         &mut self,
         tick: ReducerTickId,
@@ -1689,6 +1690,7 @@ impl DockEngine {
         Ok(())
     }
 
+    #[cfg(test)]
     fn presentation_host_retirement_interaction_impact(
         &self,
         surfaces: &BTreeSet<SurfaceId>,
@@ -2126,6 +2128,7 @@ impl DockEngine {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn observe_pending_mutation_host_retirement(
         &mut self,
         retired_outputs: &BTreeSet<HostFrameKey>,

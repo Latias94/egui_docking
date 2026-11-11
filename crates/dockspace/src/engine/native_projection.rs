@@ -29,6 +29,7 @@ pub(crate) struct NativeFirstLiveProjection {
     policy: DockPolicySnapshot,
     config: DockPresentationConfig,
     manifest: SceneRequirementManifest,
+    #[cfg(test)]
     tab_strip_states: TabStripStateStore,
 }
 
@@ -41,6 +42,7 @@ impl NativeFirstLiveProjection {
         self.stamp.binding.surface()
     }
 
+    #[cfg(test)]
     pub(crate) const fn version(&self) -> WorkspaceVersion {
         self.version
     }
@@ -55,6 +57,7 @@ impl NativeFirstLiveProjection {
         &self.workspace
     }
 
+    #[cfg(test)]
     pub(crate) fn compile(
         &self,
         measurements: &crate::scene_manifest::SurfaceMeasurements,
@@ -392,6 +395,7 @@ impl DockEngine {
             policy: self.policy.clone(),
             config: self.presentation_authority.presentation_config.clone(),
             manifest,
+            #[cfg(test)]
             tab_strip_states,
         }))
     }

@@ -234,12 +234,14 @@ impl PresentationHitStackKey {
 
     /// Returns the semantic plane compared before structural workspace layers.
     #[must_use]
+    #[cfg(test)]
     pub const fn plane(self) -> PresentationPlane {
         self.plane
     }
 
     /// Returns semantic popup precedence independent of workspace structure.
     #[must_use]
+    #[cfg(test)]
     pub const fn popup_role(self) -> Option<PopupHitRole> {
         self.popup_role
     }
@@ -434,6 +436,7 @@ impl PresentationHitManifest {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn compile(
         output: SurfacePresentationOutputTicket,
         plan: &PresentationPlan,

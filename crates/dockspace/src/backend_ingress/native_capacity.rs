@@ -128,6 +128,7 @@ impl BackendIngressRecorder {
 
     /// Returns charged data plus reserved replay capacity, not resident bytes.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn native_transport_reserved_bytes(&self) -> Option<usize> {
         self.native_transport_capacity
             .as_ref()

@@ -67,6 +67,7 @@ impl ValidatedWorkspaceRestore {
         &self.root_continuations
     }
 
+    #[cfg(feature = "serde")]
     pub(crate) fn into_parts(self) -> (Workspace, PresentationIdentityFrontier) {
         (self.workspace, self.presentation_identity_frontier)
     }
@@ -74,9 +75,9 @@ impl ValidatedWorkspaceRestore {
 
 /// Scene-proof-bearing non-pointer activation of one tab-strip control.
 ///
-/// Values are minted only by [`HostFrameView::prepare_tab_strip_control_activation`].
-/// The exact presented output, popup-plane revision, structural strip, and
-/// control record remain private so callers cannot assemble a stale activation.
+/// The sealed host-frame projection freezes the exact presented output,
+/// popup-plane revision, structural strip, and control record. These facts
+/// remain private so callers cannot assemble a stale activation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreparedTabStripControlActivation {
     pub(super) presentation: FrozenPresentationAuthority,
@@ -86,6 +87,7 @@ pub struct PreparedTabStripControlActivation {
 impl PreparedTabStripControlActivation {
     /// Returns the stable control identity carried by this prepared activation.
     #[must_use]
+    #[cfg(test)]
     pub const fn control(&self) -> TabStripControlId {
         self.control.record.id()
     }
@@ -93,9 +95,8 @@ impl PreparedTabStripControlActivation {
 
 /// Scene-proof-bearing non-pointer activation of one tab-list menu row.
 ///
-/// Values are minted only by [`HostFrameView::prepare_tab_list_menu_row_activation`].
-/// The selected item remains inspectable while all mutable authority stays
-/// opaque and is revalidated by the reducer.
+/// The sealed host-frame projection freezes the selected item and its exact
+/// menu authority. The reducer revalidates that private authority on dispatch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreparedTabListMenuRowActivation {
     pub(super) presentation: FrozenPresentationAuthority,
@@ -115,6 +116,7 @@ pub struct PreparedTabListMenuDismiss {
 impl PreparedTabListMenuDismiss {
     /// Returns the exact active menu session carried by this proof.
     #[must_use]
+    #[cfg(test)]
     pub const fn session(&self) -> crate::tab_strip::TabListMenuSessionId {
         self.session
     }
@@ -123,12 +125,14 @@ impl PreparedTabListMenuDismiss {
 impl PreparedTabListMenuRowActivation {
     /// Returns the exact active menu session frozen by this activation.
     #[must_use]
+    #[cfg(test)]
     pub const fn session(&self) -> crate::tab_strip::TabListMenuSessionId {
         self.row.session
     }
 
     /// Returns the stable tab identity selected by this activation.
     #[must_use]
+    #[cfg(test)]
     pub const fn tab(&self) -> crate::scene::TabSceneId {
         self.row.record.tab()
     }
@@ -212,6 +216,7 @@ pub struct PreparedTabStripScroll {
 impl PreparedTabStripScroll {
     /// Returns the stable structural tab bar carried by this proof.
     #[must_use]
+    #[cfg(test)]
     pub const fn bar(&self) -> crate::scene::TabBarSceneId {
         self.key.bar()
     }
@@ -230,6 +235,7 @@ pub struct PreparedTabListMenuScroll {
 impl PreparedTabListMenuScroll {
     /// Returns the exact active menu session carried by this proof.
     #[must_use]
+    #[cfg(test)]
     pub const fn session(&self) -> crate::tab_strip::TabListMenuSessionId {
         self.session
     }
@@ -237,6 +243,7 @@ impl PreparedTabListMenuScroll {
 
 /// Device-independent navigation intent for the sole active tab-list menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub enum TabListMenuNavigation {
     /// Move to the preceding item, clamped at the first item.
     Previous,
@@ -263,12 +270,14 @@ pub struct PreparedTabListMenuNavigation {
 impl PreparedTabListMenuNavigation {
     /// Returns the exact active menu session carried by this proof.
     #[must_use]
+    #[cfg(test)]
     pub const fn session(&self) -> crate::tab_strip::TabListMenuSessionId {
         self.session
     }
 
     /// Returns the core-resolved focus target.
     #[must_use]
+    #[cfg(test)]
     pub const fn target(&self) -> ItemId {
         self.target
     }
@@ -701,6 +710,10 @@ pub enum EngineInput {
         result: EffectResult,
     },
     /// Request explicit activation of one exact current docking viewport.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     ActivateViewport {
         /// Workspace version whose binding and pane were inspected.
         expected: WorkspaceVersion,
@@ -708,6 +721,10 @@ pub enum EngineInput {
         request: ViewportActivationRequest,
     },
     /// Publish one adapter-observed pane-focus fact.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     PublishPaneFocusObservation {
         /// Workspace epoch in which the exact binding was observed.
         expected_epoch: crate::ids::WorkspaceEpoch,
@@ -742,6 +759,10 @@ pub enum EngineInput {
     /// cleanup-specific guards. `ObservationDispatchFailed` and `ObservationUnsupported` may
     /// retry only an observation-only `ContinueCleanup` which keeps the same destructive
     /// predecessor; they never redispatch that predecessor.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     RetryViewportCleanup {
         /// Workspace version against which the failed cleanup was inspected.
         expected: WorkspaceVersion,
@@ -758,8 +779,19 @@ pub enum EngineInput {
         continuations: Vec<crate::frame::PreparedNativeRootContinuation>,
     },
     /// Restore one complete workspace and allocator lineage validated as one document.
+    #[cfg_attr(
+        not(feature = "serde"),
+        allow(
+            dead_code,
+            reason = "Only the serde-enabled document API constructs validated restores for the shared reducer"
+        )
+    )]
     RestoreWorkspace(ValidatedWorkspaceRestore),
     /// Apply one checked command derived from an exact engine version.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     WorkspaceCommand {
         /// Version from which source and target references were captured.
         expected: WorkspaceVersion,
@@ -861,6 +893,10 @@ pub enum EngineInput {
     ///
     /// Pointer close activation uses the pointer journal's exact close-control
     /// receiver. This semantic input cannot forge pointer hit authority.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     RequestSceneClose {
         /// Workspace version from which the scene action was captured.
         expected: WorkspaceVersion,
@@ -911,14 +947,11 @@ pub enum EngineInput {
         /// Core-minted product action hidden by the renderer-facing record.
         action: crate::model::ProductAction,
     },
-    /// Deliver one keyboard or accessibility action to an exact presented receiver.
-    ActivateSemanticReceiver {
-        /// Workspace version current when the host captured the semantic event.
-        expected: WorkspaceVersion,
-        /// Exact output, emission, receiver, and device-independent action.
-        event: SemanticReceiverEvent,
-    },
     /// Apply one scene-bound keyboard or accessibility splitter adjustment.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     AdjustSplitterResize {
         /// Workspace version from which the scene action was captured.
         expected: WorkspaceVersion,
@@ -967,36 +1000,64 @@ pub enum EngineInput {
         delta: f64,
     },
     /// Activate one exact current tab-strip control without fabricating pointer delivery.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     ActivateTabStripControl {
         /// Opaque proof prepared from a sealed, receiver-authoritative presentation.
         prepared: PreparedTabStripControlActivation,
     },
     /// Activate one exact current tab-list menu row without fabricating pointer delivery.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     ActivateTabListMenuRow {
         /// Opaque proof prepared from the sole active popup session and presented row.
         prepared: PreparedTabListMenuRowActivation,
     },
     /// Dismiss the exact current tab-list menu without fabricating a pointer backdrop click.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     DismissTabListMenu {
         /// Opaque proof prepared from the active popup session and presented menu.
         prepared: PreparedTabListMenuDismiss,
     },
     /// Apply one exact current tab-strip scroll adjustment.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     AdjustTabStripScroll {
         /// Opaque proof prepared from the exact presented bar geometry.
         prepared: PreparedTabStripScroll,
     },
     /// Apply one exact current tab-list menu scroll adjustment.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     AdjustTabListMenuScroll {
         /// Opaque proof prepared from the active popup session and menu geometry.
         prepared: PreparedTabListMenuScroll,
     },
     /// Navigate or focus one exact current tab-list menu row.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     NavigateTabListMenu {
         /// Opaque proof prepared from the active popup session and ordered roster.
         prepared: PreparedTabListMenuNavigation,
     },
     /// Apply one exact keyboard or programmatic contained placement.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     ApplyContainedPlacement {
         /// Workspace version from which the placement proof was requested.
         expected: WorkspaceVersion,
@@ -1010,6 +1071,10 @@ pub enum EngineInput {
         placement: ContainedPlacementProof,
     },
     /// Cancel whichever docking gesture is active at this exact reducer position.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     CancelActiveInteractionWithEscape {
         /// Workspace version current when this key edge entered the host frame.
         expected: WorkspaceVersion,
@@ -1082,6 +1147,10 @@ pub enum EngineInput {
         config: DockPresentationConfig,
     },
     /// Re-run strict validation without changing state.
+    #[allow(
+        dead_code,
+        reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
+    )]
     ValidateWorkspace,
 }
 
@@ -1139,7 +1208,6 @@ impl EngineInput {
             | Self::SelectLocalSceneTab { .. }
             | Self::ApplyLocalTabChromeAction { .. }
             | Self::ApplyLocalPresentationCommand { .. }
-            | Self::ActivateSemanticReceiver { .. }
             | Self::AdjustSplitterResize { .. }
             | Self::AdjustLocalSplitterResize { .. }
             | Self::AdjustLocalSplitterJunctionResize { .. }

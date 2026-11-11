@@ -87,6 +87,7 @@ pub struct PopupRoutingRevision(u64);
 impl PopupRoutingRevision {
     /// Returns the engine-local diagnostic representation.
     #[must_use]
+    #[cfg(test)]
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -276,6 +277,7 @@ impl TabStripState {
     ///
     /// Returns [`TabStripStateError`] for non-finite or negative values.
     #[allow(dead_code, reason = "reserved for the typed tab-strip input reducer")]
+    #[cfg(test)]
     pub(crate) fn set_scroll_offset(&mut self, offset: f64) -> Result<(), TabStripStateError> {
         validate_offset("tab-strip scroll offset", offset)?;
         self.scroll_offset = Some(offset);
@@ -411,6 +413,7 @@ impl TabStripStateStore {
     }
 
     #[allow(dead_code, reason = "reserved for the typed tab-strip input reducer")]
+    #[cfg(test)]
     pub(crate) fn state_mut(&mut self, key: TabStripStateKey) -> &mut TabStripState {
         self.states.entry(key).or_default()
     }

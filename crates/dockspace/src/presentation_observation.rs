@@ -20,6 +20,7 @@ use crate::ids::{
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::interaction::{ContainedTransformPreviewToken, PreviewToken};
+#[cfg(test)]
 use crate::retention::PresentationHostRetentionManifest;
 use crate::scene::{SurfacePlanScene, SurfaceSceneStamp};
 use crate::surface_recovery::SurfaceRecoveryObligationId;
@@ -388,12 +389,14 @@ pub struct HostPresentationCaptureGeneration(u64);
 impl HostPresentationCaptureGeneration {
     /// Creates a provider-captured generation value.
     #[must_use]
+    #[cfg(test)]
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
 
     /// Returns the provider-captured generation representation.
     #[must_use]
+    #[cfg(test)]
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -535,6 +538,7 @@ impl NativeStagingResourceDescriptor {
 
     /// Returns the exact move payload frozen at the native tear-off release.
     #[must_use]
+    #[cfg(test)]
     pub const fn payload(&self) -> &MovePayload {
         &self.payload
     }
@@ -596,6 +600,10 @@ pub enum HostPresentationOutputPayload {
     /// A bootstrap placeholder was actually painted.
     Bootstrap,
     /// An unavailable placeholder was actually painted.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Unavailable,
 }
 
@@ -723,6 +731,7 @@ impl HostPresentationEmission {
 
     /// Returns the frame-local request supplied after the actual paint.
     #[must_use]
+    #[cfg(test)]
     pub const fn request(self) -> HostPresentationEmissionRequest {
         self.request
     }
@@ -767,6 +776,7 @@ impl HostPresentationOutput {
 
     /// Returns the core-owned scheduling contract for this renderer result.
     #[must_use]
+    #[cfg(test)]
     pub const fn continuation(self) -> HostPresentationContinuation {
         self.continuation
     }
@@ -832,6 +842,10 @@ pub enum HostPresentationStreamObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPresentationProgress {
     /// The provider cannot authoritatively determine final presentation state.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Unknown(AuthorityUnavailableReason),
     /// The host proved that every emission through the watermark reached a
     /// terminal presentation outcome.
@@ -965,6 +979,10 @@ pub(crate) enum PresentationStreamAdmission {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PresentationHostLifecycle {
     Live,
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Retired(PresentationHostRetirementTombstone),
 }
 
@@ -1054,6 +1072,7 @@ impl PresentationObservationReduction {
 
 /// Internal exact-set result of retiring one live presentation host.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct PresentationHostRetirement {
     host: PresentationHostLease,
     tombstone: PresentationHostRetirementTombstone,
@@ -1062,27 +1081,34 @@ pub(crate) struct PresentationHostRetirement {
     released_active_surfaces: BTreeSet<SurfaceId>,
 }
 
+#[cfg(test)]
 impl PresentationHostRetirement {
+    #[cfg(test)]
     pub(crate) const fn host(&self) -> PresentationHostLease {
         self.host
     }
 
+    #[cfg(test)]
     pub(crate) const fn tombstone(&self) -> PresentationHostRetirementTombstone {
         self.tombstone
     }
 
+    #[cfg(test)]
     pub(crate) const fn streams(&self) -> &BTreeSet<HostPresentationStreamId> {
         &self.streams
     }
 
+    #[cfg(test)]
     pub(crate) const fn retired_outputs(&self) -> &BTreeSet<HostFrameKey> {
         &self.retired_outputs
     }
 
+    #[cfg(test)]
     pub(crate) const fn released_active_surfaces(&self) -> &BTreeSet<SurfaceId> {
         &self.released_active_surfaces
     }
 
+    #[cfg(test)]
     pub(crate) fn retired_output_count(&self) -> usize {
         self.retired_outputs.len()
     }
@@ -1221,6 +1247,7 @@ pub(crate) struct PresentationLedger {
 /// host, stream, or emission identities.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct PresentationLedgerDiagnostics {
     live_hosts: usize,
     retired_hosts: usize,
@@ -1236,67 +1263,80 @@ pub struct PresentationLedgerDiagnostics {
     retained_stream_states: usize,
 }
 
+#[cfg(test)]
 impl PresentationLedgerDiagnostics {
     #[must_use]
+    #[cfg(test)]
     pub const fn live_hosts(self) -> usize {
         self.live_hosts
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn retired_hosts(self) -> usize {
         self.retired_hosts
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn active_streams(self) -> usize {
         self.active_streams
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn retiring_streams(self) -> usize {
         self.retiring_streams
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn terminated_streams(self) -> usize {
         self.terminated_streams
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn active_surface_owners(self) -> usize {
         self.active_surface_owners
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn pending_streams(self) -> usize {
         self.pending_streams
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn pending_outputs(self) -> usize {
         self.pending_outputs
     }
 
     /// Returns logical retired host identities represented without detailed state.
     #[must_use]
+    #[cfg(test)]
     pub const fn compacted_retired_hosts(self) -> u64 {
         self.compacted_retired_hosts
     }
 
     /// Returns the actual number of disjoint interval records used by compacted hosts.
     #[must_use]
+    #[cfg(test)]
     pub const fn compacted_retirement_ranges(self) -> usize {
         self.compacted_retirement_ranges
     }
 
     /// Returns detailed live and blocked-retirement host records retained in memory.
     #[must_use]
+    #[cfg(test)]
     pub const fn retained_host_states(self) -> usize {
         self.retained_host_states
     }
 
     /// Returns detailed active, retiring, and blocked terminal stream records.
     #[must_use]
+    #[cfg(test)]
     pub const fn retained_stream_states(self) -> usize {
         self.retained_stream_states
     }
@@ -1345,6 +1385,7 @@ impl PresentationLedger {
         self.last_host_serial.0
     }
 
+    #[cfg(test)]
     pub(crate) fn diagnostics(&self) -> PresentationLedgerDiagnostics {
         let mut diagnostics = PresentationLedgerDiagnostics {
             active_surface_owners: self.active_streams.len(),
@@ -1374,6 +1415,7 @@ impl PresentationLedger {
         diagnostics
     }
 
+    #[cfg(test)]
     pub(crate) fn retention_manifest(&self) -> PresentationHostRetentionManifest {
         let diagnostics = self.diagnostics();
         PresentationHostRetentionManifest::new(
@@ -1761,6 +1803,7 @@ impl PresentationLedger {
         Ok(true)
     }
 
+    #[cfg(test)]
     pub(crate) fn retire_host(
         &mut self,
         lease: PresentationHostLease,

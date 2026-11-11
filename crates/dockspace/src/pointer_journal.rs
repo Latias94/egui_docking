@@ -709,6 +709,7 @@ impl PointerEdgeLocation {
 
     /// Returns the logical position carried by a surface-local edge.
     #[must_use]
+    #[cfg(test)]
     pub const fn surface_local_position(self) -> Option<Authority<LogicalPoint>> {
         match self {
             Self::Desktop { .. }
@@ -1515,6 +1516,7 @@ impl PointerEdgeJournal {
     /// The vector is moved when this journal is the sole owner; otherwise the
     /// edges are copied so other journal clones retain their immutable contents.
     #[must_use]
+    #[cfg(test)]
     pub fn into_edges(self) -> Vec<PointerEdge> {
         match Arc::try_unwrap(self.contents) {
             Ok(contents) => contents.edges,
@@ -2009,6 +2011,7 @@ impl SurfaceLocalPointerRetirementOutcome {
     /// Returns whether this call retired live authority or only compacted an
     /// already retired provider tombstone.
     #[must_use]
+    #[cfg(test)]
     pub const fn disposition(&self) -> SurfaceLocalPointerRetirementDisposition {
         self.disposition
     }

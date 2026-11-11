@@ -158,6 +158,7 @@ pub(super) struct ScrollInteractionState {
 }
 
 impl ScrollInteractionState {
+    #[cfg(test)]
     pub(super) fn retention_manifest(&self) -> crate::retention::ScrollRetentionManifest {
         crate::retention::ScrollRetentionManifest::new(
             self.active.len(),

@@ -20,12 +20,14 @@ macro_rules! monotonic_id {
 
             /// Returns the protocol representation.
             #[must_use]
+            #[allow(dead_code, reason = "Opaque identity domains share this protocol helper; each domain uses only the helpers it needs.")]
             pub const fn get(self) -> u64 {
                 self.0
             }
 
             /// Advances without ever permitting ABA through integer wrapping.
             #[must_use]
+            #[allow(dead_code, reason = "Opaque identity domains share this protocol helper; each domain uses only the helpers it needs.")]
             pub const fn checked_next(self) -> Option<Self> {
                 match self.0.checked_add(1) {
                     Some(value) => Some(Self(value)),

@@ -33,10 +33,12 @@ impl HostPresentationSlot {
 /// correctness meaning and use the core-minted frame roster and affine
 /// obligations instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct HostPresentationSchedule {
     surfaces: Box<[SurfaceId]>,
 }
 
+#[cfg(test)]
 impl HostPresentationSchedule {
     fn capture(engine: &DockEngine) -> Result<Self, EngineError> {
         let roster = HostPresentationRoster::capture(engine)?;
@@ -50,13 +52,6 @@ impl HostPresentationSchedule {
     pub fn surfaces(&self) -> impl ExactSizeIterator<Item = SurfaceId> + '_ {
         self.surfaces.iter().copied()
     }
-
-    /// Returns every scheduled physical slot in deterministic category order.
-    #[must_use]
-    pub fn slots(&self) -> impl Iterator<Item = HostPresentationSlot> + '_ {
-        self.surfaces()
-            .map(|surface| HostPresentationSlot::Surface { surface })
-    }
 }
 
 impl DockEngine {
@@ -66,6 +61,7 @@ impl DockEngine {
     ///
     /// Returns an error when the current native lifecycle and semantic scene do
     /// not form one collision-free physical roster.
+    #[cfg(test)]
     pub fn host_presentation_schedule(&self) -> Result<HostPresentationSchedule, EngineError> {
         HostPresentationSchedule::capture(self)
     }
@@ -75,14 +71,30 @@ impl DockEngine {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HostPresentationUnavailableReason {
     /// The host can paint but cannot observe final renderer presentation.
+    #[allow(
+        dead_code,
+        reason = "The presentation protocol distinguishes unobservable output when deciding rehome cleanup."
+    )]
     FinalPresentationUnobservable,
     /// The physical surface did not produce an output in this host frame.
     OutputNotProduced,
     /// A causally newer projection superseded the output before publication.
+    #[allow(
+        dead_code,
+        reason = "The presentation protocol distinguishes superseded output when deciding rehome cleanup."
+    )]
     SupersededBeforePublication,
     /// The base surface painted, but one frozen transient interaction visual did not.
+    #[allow(
+        dead_code,
+        reason = "The presentation protocol distinguishes omitted transient visuals when deciding rehome cleanup."
+    )]
     TransientVisualNotPainted,
     /// The renderer or platform backend definitively failed this output.
+    #[allow(
+        dead_code,
+        reason = "The presentation protocol retains backend failure as a terminal rehome disposition."
+    )]
     BackendFailure,
 }
 
@@ -560,6 +572,7 @@ impl HostPresentationObligationSet {
         );
     }
 
+    #[cfg(test)]
     pub(super) fn resolve_all_unissued(
         &mut self,
         disposition: HostPresentationDisposition,

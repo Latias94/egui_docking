@@ -1014,6 +1014,7 @@ impl DockPayloadSourceFacts {
 
     /// Returns whether the mutation leaves the current docking owner.
     #[must_use]
+    #[cfg(test)]
     pub const fn undocks(self) -> bool {
         self.undocks
     }
@@ -1102,18 +1103,21 @@ impl DockDropTargetFacts {
 
     /// Returns the destination surface.
     #[must_use]
+    #[cfg(test)]
     pub const fn surface(self) -> SurfaceId {
         self.surface
     }
 
     /// Returns the exact optional target-rule identity.
     #[must_use]
+    #[cfg(test)]
     pub const fn rule(self) -> Option<DockTargetRuleKey> {
         self.rule
     }
 
     /// Returns whether the core classified this as the central node.
     #[must_use]
+    #[cfg(test)]
     pub const fn is_central(self) -> bool {
         self.central
     }
@@ -1122,12 +1126,14 @@ impl DockDropTargetFacts {
 /// Complete drop request for one pure policy evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg(test)]
 pub struct DockDropPolicyRequest {
     operation: DockDropOperation,
     payload: DockPayloadPolicyFacts,
     target: DockDropTargetFacts,
 }
 
+#[cfg(test)]
 impl DockDropPolicyRequest {
     /// Creates a complete renderer-neutral drop policy request.
     #[must_use]
@@ -1290,6 +1296,7 @@ impl DockTabBarPolicyRequest {
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum DockPolicyRequest {
     /// Evaluate one unique geometric drop winner.
+    #[cfg(test)]
     Drop(DockDropPolicyRequest),
     /// Evaluate one contained or native presentation transition.
     Present(DockPresentationPolicyRequest),
@@ -1336,36 +1343,42 @@ impl DockPolicySnapshot {
 
     /// Returns the frozen global operation set.
     #[must_use]
+    #[cfg(test)]
     pub fn operations(&self) -> &BTreeSet<DockOperation> {
         &self.policy.rules.allowed_operations
     }
 
     /// Returns all explicitly configured item rules.
     #[must_use]
+    #[cfg(test)]
     pub fn item_rules(&self) -> &BTreeMap<ItemId, DockItemRule> {
         &self.policy.rules.item_rules
     }
 
     /// Returns all explicitly configured source-root rules.
     #[must_use]
+    #[cfg(test)]
     pub fn source_rules(&self) -> &BTreeMap<RootId, DockSourceRule> {
         &self.policy.rules.source_rules
     }
 
     /// Returns all explicitly configured target rules.
     #[must_use]
+    #[cfg(test)]
     pub fn target_rules(&self) -> &BTreeMap<DockTargetRuleKey, DockTargetRule> {
         &self.policy.rules.target_rules
     }
 
     /// Returns all explicitly configured surface rules.
     #[must_use]
+    #[cfg(test)]
     pub fn surface_rules(&self) -> &BTreeMap<SurfaceId, DockSurfaceRule> {
         &self.policy.rules.surface_rules
     }
 
     /// Returns an editable copy suitable for constructing the next policy revision.
     #[must_use]
+    #[cfg(test)]
     pub fn to_policy(&self) -> DockPolicy {
         self.policy.clone()
     }
@@ -1384,6 +1397,7 @@ impl DockPolicySnapshot {
     #[must_use]
     pub fn evaluate(&self, request: &DockPolicyRequest) -> PolicyDecision {
         let result = match request {
+            #[cfg(test)]
             DockPolicyRequest::Drop(request) => self.evaluate_drop(request),
             DockPolicyRequest::Present(request) => self.evaluate_presentation(request),
             DockPolicyRequest::TransformContained(request) => {
@@ -1462,6 +1476,7 @@ impl DockPolicySnapshot {
             .unwrap_or(self.policy.rules.close)
     }
 
+    #[cfg(test)]
     fn evaluate_drop(&self, request: &DockDropPolicyRequest) -> Result<(), PolicyRejection> {
         self.evaluate_drop_parts(request.operation, &request.payload, request.target)
     }
@@ -1830,6 +1845,7 @@ impl PolicyDecision {
 
     /// Returns the rejection reason, if this decision rejected the request.
     #[must_use]
+    #[cfg(test)]
     pub const fn rejection(self) -> Option<PolicyRejection> {
         match self {
             Self::Allow => None,

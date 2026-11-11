@@ -327,6 +327,7 @@ impl RecoveryReplacementLifecycle {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn active_bringups(&self) -> Vec<(SurfaceId, ViewportBinding, NativePreparation)> {
         self.iter()
             .filter_map(|(surface, pending)| match pending.phase {
@@ -349,6 +350,7 @@ impl RecoveryReplacementLifecycle {
             .collect()
     }
 
+    #[cfg(test)]
     pub(super) fn mark_provider_lost(
         &mut self,
         binding: ViewportBinding,
@@ -650,6 +652,7 @@ impl RecoveryReplacementLifecycle {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn transfer_cleanup_for_provider_replacement(
         &mut self,
         surface: SurfaceId,

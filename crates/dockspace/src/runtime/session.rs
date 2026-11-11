@@ -1,6 +1,5 @@
 //! Session ownership and host-frame preparation.
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Weak};
 
 use crate::command::ContentCloseTarget;
@@ -14,7 +13,7 @@ use crate::model::{
 use crate::presentation_observation::PresentationHostLease;
 
 use super::close::PreparedCloseRequest;
-use super::host_frame::DockspaceHostFrame;
+use super::host_frame::{DockspaceHostFrame, EncodingState};
 use super::{
     DockPresentationConfig, DockspacePresentationCommands, DockspaceRuntimeError, DockspaceUpdate,
     NativeInputBudget, NativePlatformError, NativeReceiverAnswer, NativeReceiverQuery,
@@ -643,11 +642,7 @@ impl DockspaceSession {
             pointer_input_submitted: false,
             native_input_pending,
             submitted_presentation,
-            painted_surfaces: BTreeMap::new(),
-            encoding_surfaces: BTreeMap::new(),
-            encoding_started: std::cell::Cell::new(false),
-            encoding_checkpoint: None,
-            encoding_pass: 0,
+            encoding: EncodingState::default(),
             replacement_submitted: false,
             #[cfg(feature = "serde")]
             document_restore: None,

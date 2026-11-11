@@ -26,6 +26,7 @@ impl DockEngine {
     /// The returned non-cloneable recorder is the only constructor of the
     /// provider's cross-lane capture order. Neither underlying provider becomes
     /// visible if any part of enrollment fails.
+    #[cfg(test)]
     pub fn create_backend_ingress_provider(
         &mut self,
         presentation_host: PresentationHostLease,
@@ -202,6 +203,7 @@ impl DockEngine {
     /// The returned opaque lease must accompany native platform ingress. A
     /// delayed callback holding an older lease cannot regain authority after
     /// replacement or retirement.
+    #[cfg(test)]
     pub fn create_platform_provider(&mut self) -> Result<PlatformObservationLease, EngineError> {
         self.viewport
             .create_platform_provider()
@@ -219,6 +221,7 @@ impl DockEngine {
     /// The affine drain receipt proves that the predecessor cannot mint another backend or
     /// pointer record. Any previously cloned batch remains replay-safe but loses authority in the
     /// same candidate which creates the replacement ticket.
+    #[cfg(test)]
     pub fn begin_backend_ingress_provider_replacement(
         &mut self,
         drained: &mut crate::backend_ingress::BackendIngressDrainReceipt,
@@ -241,6 +244,7 @@ impl DockEngine {
     /// dropping an adapter ticket therefore cannot strand the engine. The
     /// returned ticket is still guarded by the exact pending platform ticket,
     /// provider lease, and persisted drain watermark.
+    #[cfg(test)]
     pub fn reissue_backend_ingress_provider_replacement(
         &mut self,
     ) -> Result<BackendIngressProviderReplacementTicket, EngineError> {
@@ -282,6 +286,7 @@ impl DockEngine {
     /// compact predecessor retention. A later enrollment therefore receives a
     /// fresh platform and pointer incarnation instead of reviving either side
     /// of the abandoned handoff.
+    #[cfg(test)]
     pub fn abort_backend_ingress_provider_replacement(
         &mut self,
     ) -> Result<EngineTransition, EngineError> {
@@ -366,6 +371,7 @@ impl DockEngine {
     /// Ticket absence is used only to decide whether recovery work may begin;
     /// predecessor quiescence still comes from the drain proof stored by core
     /// when replacement started.
+    #[cfg(test)]
     pub fn reap_abandoned_backend_ingress_provider_replacement(
         &mut self,
     ) -> Result<Option<EngineTransition>, EngineError> {
@@ -375,6 +381,7 @@ impl DockEngine {
         self.abort_backend_ingress_provider_replacement().map(Some)
     }
 
+    #[cfg(test)]
     fn prepare_joined_backend_provider_replacement(
         &self,
         drained_backend: &crate::backend_ingress::BackendIngressDrainReceipt,
@@ -537,6 +544,7 @@ impl DockEngine {
     /// reusable after every failure and becomes consumed only after the complete successor
     /// authority publishes. The same candidate compacts its detailed retired pointer tombstone
     /// only after that producer-quiescence proof is validated.
+    #[cfg(test)]
     pub fn finish_backend_ingress_provider_replacement(
         &mut self,
         ticket: &mut BackendIngressProviderReplacementTicket,
@@ -619,6 +627,7 @@ impl DockEngine {
     /// Returns a typed error when `scope` requires an affine local producer or
     /// joined backend enrollment, or another provider is already active.
     #[doc(hidden)]
+    #[cfg(test)]
     pub fn create_pointer_provider(
         &mut self,
         scope: PointerProviderScope,
@@ -730,19 +739,6 @@ impl DockEngine {
         self.create_surface_local_pointer_provider(scope, committed_through)
     }
 
-    /// Validates whether one exact surface-local producer may be enrolled now.
-    ///
-    /// This read-only preflight uses the same authority checks as enrollment.
-    /// Callers must still handle the create operation failing if authority
-    /// changes between preflight and commit.
-    #[doc(hidden)]
-    pub fn validate_surface_local_pointer_provider_scope(
-        &self,
-        scope: SurfaceLocalPointerScope,
-    ) -> Result<(), EngineError> {
-        self.validate_pointer_provider_enrollment_scope(PointerProviderScope::SurfaceLocal(scope))
-    }
-
     pub(crate) fn current_surface_local_pointer_scope(
         &self,
         host: PresentationHostLease,
@@ -772,6 +768,7 @@ impl DockEngine {
     /// A newly created or retired provider reports `Unknown`. Only a complete
     /// checkpoint can establish that all buttons are released.
     #[must_use]
+    #[cfg(test)]
     pub fn pointer_button_authority(&self) -> crate::pointer_journal::AnyButtonDownAuthority {
         self.pointer_journal.button_authority()
     }
@@ -784,6 +781,7 @@ impl DockEngine {
     /// Local producers must drain and use
     /// [`Self::retire_quiesced_surface_local_pointer_provider`].
     #[doc(hidden)]
+    #[cfg(test)]
     pub fn retire_pointer_provider(
         &mut self,
         provider: PointerInputLease,
@@ -910,6 +908,7 @@ impl DockEngine {
     ///
     /// Returns a lifecycle error without mutation if local cancellation would
     /// create platform or focus obligations.
+    #[cfg(test)]
     pub fn reap_abandoned_surface_local_pointer_provider(
         &mut self,
     ) -> Result<Option<SurfaceLocalPointerRetirementOutcome>, EngineError> {

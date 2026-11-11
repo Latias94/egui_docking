@@ -317,15 +317,7 @@ fn changed_selection_retains_sealed_facts_but_rebinds_current_semantics_and_outp
         current.hit_manifest().regions().as_ptr(),
         original.hit_manifest().regions().as_ptr()
     );
-    assert_eq!(
-        current.semantic_manifest().receivers().as_ptr(),
-        original.semantic_manifest().receivers().as_ptr()
-    );
     assert_eq!(current.hit_manifest().output(), current.output_ticket());
-    assert_eq!(
-        current.semantic_manifest().output(),
-        current.output_ticket()
-    );
     assert_eq!(
         engine.workspace().tab_mru(tabs),
         Some([SECOND, ITEM].as_slice())
@@ -511,7 +503,6 @@ fn unchanged_answers_rebuild_when_selected_items_have_different_actual_minima() 
 
 #[test]
 fn selecting_an_offscreen_tab_rebuilds_reveal_geometry_and_hit_receivers() {
-    use crate::presentation_hit::PresentationHitRegionKind;
     use crate::scene::{TabSceneId, TabStripMemberVisibility};
 
     let selected = ItemId::new(8);
@@ -739,11 +730,7 @@ fn retained_facts_use_current_drop_policy_without_reauthorizing_old_output() {
     use crate::graph::Axis;
     use crate::interaction::{DragGeneration, DragSessionId, InteractionRejection};
     use crate::policy::{DockTargetRule, DockTargetRuleKey, PolicyRejection};
-    use crate::presentation_hit::PresentationHitRegionKind;
     use crate::scene::{TabBarSceneId, TabSceneId};
-    use crate::semantic_input::{
-        SemanticDelivery, SemanticKey, SemanticReceiverAction, SemanticReceiverEvent,
-    };
     use crate::transition::InputOutcome;
 
     const SOURCE: ItemId = ItemId::new(3);
@@ -770,18 +757,12 @@ fn retained_facts_use_current_drop_policy_without_reauthorizing_old_output() {
         .tab_bar(bar)
         .unwrap()
         .policy();
-    let projection = engine.interaction_projection(SURFACE).unwrap();
-    let old_event = SemanticReceiverEvent::new(
-        projection.output_ticket(),
-        projection.authority().emission(),
-        SemanticDelivery::Headless,
-        PresentationHitRegionKind::TabBody(TabSceneId {
-            root: ROOT,
-            tabs,
-            item: ITEM,
-        }),
-        SemanticReceiverAction::Key(SemanticKey::Enter),
-    );
+    let old_scene = original.stamp();
+    let old_tab = TabSceneId {
+        root: ROOT,
+        tabs,
+        item: ITEM,
+    };
     let center = original
         .plan()
         .drop_guide_clusters()
@@ -876,18 +857,17 @@ fn retained_facts_use_current_drop_policy_without_reauthorizing_old_output() {
         &mut engine,
         &mut host,
         StableInputSourceId::new(5),
-        EngineInput::ActivateSemanticReceiver {
+        EngineInput::SelectLocalSceneTab {
             expected,
-            event: old_event,
+            scene: old_scene,
+            selection: LocalTabSelection::Activate(old_tab),
         },
     )
     .unwrap();
     assert!(matches!(
         transition.reduced_inputs()[0].outcome(),
         InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::Rejected(
-                InteractionRejection::SemanticOutputUnavailable { surface: SURFACE }
-            ),
+            outcome: InteractionOutcome::Rejected(InteractionRejection::StaleScene),
             ..
         }
     ));

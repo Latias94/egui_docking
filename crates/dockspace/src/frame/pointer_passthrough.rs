@@ -292,6 +292,7 @@ impl PointerPassthroughLifecycle {
         self.sagas.clear();
     }
 
+    #[cfg(test)]
     pub(super) fn recover_for_provider_replacement(&mut self) {
         self.drag_sources.clear();
         self.sagas.retain(|_, saga| {
@@ -631,6 +632,7 @@ impl PointerPassthroughSaga {
         }
     }
 
+    #[cfg(test)]
     fn provider_recovery(previous: &Self) -> Self {
         Self {
             binding: previous.binding,

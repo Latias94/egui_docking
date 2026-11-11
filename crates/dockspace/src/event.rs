@@ -196,6 +196,7 @@ impl WorkspaceEvent {
 
     /// Returns the version after applying the event's change.
     #[must_use]
+    #[cfg(test)]
     pub const fn version(&self) -> WorkspaceVersion {
         self.version
     }

@@ -179,6 +179,7 @@ impl HostBackendIngressCursor {
 }
 
 impl DockEngine {
+    #[cfg(test)]
     pub(super) fn prepare_host_frame<'a>(
         &'a mut self,
         frame: CoreHostFrame,
@@ -228,7 +229,8 @@ impl DockEngine {
             surface_pointer_commit,
             frozen_pointer_outputs: _,
             frozen_pointer_presentations: _,
-            frozen_semantic_presentations: _,
+            #[cfg(test)]
+                frozen_prepared_presentations: _,
             pointer_receiver_attempt_issuer: _,
             pending_pointer_segment,
             pointer_segment_submitted,
@@ -1675,19 +1677,6 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
-            EngineInput::ActivateSemanticReceiver { expected, event } => self
-                .reduce_semantic_receiver_input(
-                    input.sequence,
-                    cause,
-                    focus_causal,
-                    *expected,
-                    *application_base,
-                    *event,
-                    tick_start.semantic_presentations,
-                    tick_start.policy,
-                    events,
-                    interaction_events,
-                ),
             EngineInput::AdjustSplitterResize {
                 expected,
                 scene,

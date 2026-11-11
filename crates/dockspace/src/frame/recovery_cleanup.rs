@@ -6,8 +6,11 @@ use super::binding_cleanup::{
 };
 use super::recovery_replacement::AbandonedReplacementCause;
 use super::{ViewportCoordinator, ViewportCoordinatorError, recovery_replacement_error};
-use crate::effect::{EffectId, EffectInvalidation, EffectPhase};
+#[cfg(test)]
+use crate::effect::EffectInvalidation;
+use crate::effect::{EffectId, EffectPhase};
 use crate::ids::SurfaceId;
+#[cfg(test)]
 use crate::platform_provider::PlatformObservationLease;
 use crate::viewport::ViewportBinding;
 use crate::viewport_registry::ViewportLifecycle;
@@ -15,6 +18,10 @@ use crate::viewport_registry::ViewportLifecycle;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AbandonedReplacementRetirementMode {
     DriveImmediately,
+    #[allow(
+        dead_code,
+        reason = "the lifecycle reducer retains its complete outcome vocabulary"
+    )]
     AwaitSuccessorObservation,
 }
 
@@ -44,6 +51,7 @@ impl ViewportCoordinator {
         Ok(cleanup)
     }
 
+    #[cfg(test)]
     pub(super) fn retire_recovery_cleanup_for_provider_replacement(
         &mut self,
         surface: SurfaceId,

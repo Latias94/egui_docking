@@ -54,10 +54,6 @@ use dockspace::scene_manifest::{
     MeasurementUnavailableReason, TabListMenuMetrics, TabStripControlMetric,
     TabStripControlMetrics, TabStripControlPlacement,
 };
-use dockspace::semantic_input::{
-    SemanticAccessibilityAction, SemanticDelivery, SemanticKey, SemanticReceiverAction,
-    SemanticReceiverEvent,
-};
 use dockspace::tab_strip::TabStripControlId;
 use dockspace::transition::{InputOutcome, PresentationHostRetirementOutcome};
 use dockspace::viewport::{
@@ -6009,7 +6005,7 @@ fn scene_semantics_coexist_with_pointer_provider() {
 }
 
 #[test]
-fn presented_semantic_receiver_navigates_tabs_through_the_checked_command_path() {
+fn candidate_tab_navigation_uses_the_checked_command_path() {
     const SOURCE: StableInputSourceId = StableInputSourceId::new(94);
 
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
@@ -6025,20 +6021,25 @@ fn presented_semantic_receiver_navigates_tabs_through_the_checked_command_path()
         .find(|tab| projection.plan().tab_selected(tab))
         .map(|tab| *tab.id())
         .expect("one tab is selected");
-    let event = SemanticReceiverEvent::new(
-        projection.output_ticket(),
-        projection.authority().emission(),
-        SemanticDelivery::Headless,
-        PresentationHitRegionKind::TabBody(current),
-        SemanticReceiverAction::Key(SemanticKey::ArrowRight),
-    );
+    let target = TabSceneId {
+        item: ItemId::new(2),
+        ..current
+    };
+    let scene = projection.plan_stamp();
     let expected = engine.version();
 
     let transition = support::submit_input(
         &mut engine,
         &mut host,
         SOURCE,
-        EngineInput::ActivateSemanticReceiver { expected, event },
+        EngineInput::SelectLocalSceneTab {
+            expected,
+            scene,
+            selection: crate::engine::LocalTabSelection::Navigate {
+                source: current,
+                target,
+            },
+        },
     )
     .expect("presentation-bound tab navigation reduces");
 
@@ -6056,7 +6057,7 @@ fn presented_semantic_receiver_navigates_tabs_through_the_checked_command_path()
 }
 
 #[test]
-fn clipped_menu_row_remains_an_exact_semantic_receiver() {
+fn clipped_menu_row_remains_reachable_through_prepared_navigation() {
     const SOURCE: StableInputSourceId = StableInputSourceId::new(0x7a03);
 
     let mut engine =
@@ -6092,7 +6093,6 @@ fn clipped_menu_row_remains_an_exact_semantic_receiver() {
         menu,
         tab: row.tab(),
     };
-    let action = SemanticReceiverAction::Accessibility(SemanticAccessibilityAction::Focus);
     assert!(
         !projection
             .hit_manifest()
@@ -6101,17 +6101,15 @@ fn clipped_menu_row_remains_an_exact_semantic_receiver() {
             .any(|region| region.id().kind() == target),
         "a clipped row must not fabricate pointer geometry"
     );
-    assert!(projection.semantic_manifest().supports(target, action));
-    let event = SemanticReceiverEvent::new(
-        projection.output_ticket(),
-        projection.authority().emission(),
-        SemanticDelivery::Headless,
-        target,
-        action,
-    );
-    let expected = engine.version();
-
     let mut frame = host.begin(&engine);
+    let prepared = frame
+        .view()
+        .prepare_tab_list_menu_navigation(
+            SURFACE,
+            menu,
+            crate::engine::TabListMenuNavigation::Focus(row.tab().item),
+        )
+        .expect("the presented full row roster permits keyboard focus despite pointer clipping");
     frame
         .submit_surface_pointer_journal(provider, empty_journal(0))
         .expect("the provider publishes its complete empty continuation");
@@ -6125,7 +6123,7 @@ fn clipped_menu_row_remains_an_exact_semantic_receiver() {
         .append_input(
             SOURCE,
             SourceSequence::new(1),
-            EngineInput::ActivateSemanticReceiver { expected, event },
+            EngineInput::NavigateTabListMenu { prepared },
         )
         .expect("the clipped semantic row is accepted after the pointer prefix");
     complete(&engine, &mut frame);
@@ -6141,167 +6139,6 @@ fn clipped_menu_row_remains_an_exact_semantic_receiver() {
             },
             ..
         } if *item == row.tab().item
-    ));
-}
-
-#[test]
-fn repeated_semantic_navigation_uses_one_frozen_output_and_advances_logical_focus() {
-    const SOURCE: StableInputSourceId = StableInputSourceId::new(96);
-
-    let mut engine =
-        DockEngine::new(overflowing_tab_workspace(), DockPolicy::default()).expect("valid engine");
-    let mut host = TestPresentationHost::new(&mut engine);
-    publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    let projection = engine
-        .interaction_projection(SURFACE)
-        .expect("test surface has presented semantic authority");
-    let current = projection
-        .plan()
-        .tab_records()
-        .iter()
-        .find(|tab| projection.plan().tab_selected(tab))
-        .map(|tab| *tab.id())
-        .expect("one tab is selected");
-    let event = SemanticReceiverEvent::new(
-        projection.output_ticket(),
-        projection.authority().emission(),
-        SemanticDelivery::Headless,
-        PresentationHitRegionKind::TabBody(current),
-        SemanticReceiverAction::Key(SemanticKey::ArrowRight),
-    );
-    let expected = engine.version();
-
-    let mut frame = host.begin(&engine);
-    frame
-        .append_input(
-            SOURCE,
-            SourceSequence::new(1),
-            EngineInput::ActivateSemanticReceiver { expected, event },
-        )
-        .expect("first repeated edge reduces against the frozen output");
-    frame
-        .append_input(
-            SOURCE,
-            SourceSequence::new(2),
-            EngineInput::ActivateSemanticReceiver { expected, event },
-        )
-        .expect("second repeated edge reduces against the same frozen output");
-    complete(&engine, &mut frame);
-    let transition = host.finish(frame, &mut engine);
-
-    assert!(matches!(
-        engine.workspace().node(current.tabs),
-        Some(Node::Tabs {
-            selected: Some(item),
-            ..
-        }) if *item == ItemId::new(3)
-    ));
-    assert_eq!(
-        transition
-            .interaction_events()
-            .iter()
-            .filter(|event| matches!(
-                event.kind(),
-                InteractionEventKind::SemanticFocusRequested { .. }
-            ))
-            .count(),
-        2
-    );
-}
-
-#[test]
-fn presented_semantic_receiver_rejects_a_target_absent_from_the_exact_output() {
-    const SOURCE: StableInputSourceId = StableInputSourceId::new(95);
-
-    let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
-    let mut host = TestPresentationHost::new(&mut engine);
-    publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    let projection = engine
-        .interaction_projection(SURFACE)
-        .expect("test surface has presented semantic authority");
-    let missing = TabSceneId {
-        root: ROOT,
-        tabs: engine.workspace().root(ROOT).expect("root exists").node,
-        item: ItemId::new(999),
-    };
-    let event = SemanticReceiverEvent::new(
-        projection.output_ticket(),
-        projection.authority().emission(),
-        SemanticDelivery::Headless,
-        PresentationHitRegionKind::TabBody(missing),
-        SemanticReceiverAction::Key(SemanticKey::Enter),
-    );
-    let expected = engine.version();
-
-    let transition = support::submit_input(
-        &mut engine,
-        &mut host,
-        SOURCE,
-        EngineInput::ActivateSemanticReceiver { expected, event },
-    )
-    .expect("an unavailable receiver is a typed inert outcome");
-
-    assert!(matches!(
-        transition.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::Rejected(
-                InteractionRejection::SemanticReceiverUnavailable { target }
-            ),
-            ..
-        } if *target == PresentationHitRegionKind::TabBody(missing)
-    ));
-}
-
-#[test]
-fn semantic_receiver_rejects_a_delivery_from_another_native_incarnation() {
-    const SOURCE: StableInputSourceId = StableInputSourceId::new(97);
-
-    let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
-    let mut host = TestPresentationHost::new(&mut engine);
-    publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    let projection = engine
-        .interaction_projection(SURFACE)
-        .expect("test surface has headless semantic authority");
-    let current = projection
-        .plan()
-        .tab_records()
-        .iter()
-        .find(|tab| projection.plan().tab_selected(tab))
-        .map(|tab| *tab.id())
-        .expect("one tab is selected");
-
-    let mut foreign_engine =
-        DockEngine::new(workspace(), DockPolicy::default()).expect("valid foreign engine");
-    let mut foreign_host = TestPresentationHost::new(&mut foreign_engine);
-    let foreign_binding = register_native_viewport(&mut foreign_engine, &mut foreign_host);
-    let event = SemanticReceiverEvent::new(
-        projection.output_ticket(),
-        projection.authority().emission(),
-        SemanticDelivery::Native(foreign_binding),
-        PresentationHitRegionKind::TabBody(current),
-        SemanticReceiverAction::Key(SemanticKey::Enter),
-    );
-    let expected = engine.version();
-
-    let transition = support::submit_input(
-        &mut engine,
-        &mut host,
-        SOURCE,
-        EngineInput::ActivateSemanticReceiver { expected, event },
-    )
-    .expect("a foreign delivery is a typed inert outcome");
-
-    assert!(matches!(
-        transition.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::Rejected(
-                InteractionRejection::SemanticDeliveryMismatch {
-                    expected: SemanticDelivery::Native(binding),
-                    actual: dockspace::presentation_observation::HostPresentationEndpoint::Headless,
-                }
-            ),
-            ..
-        } if *binding == foreign_binding
     ));
 }
 

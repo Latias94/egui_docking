@@ -69,10 +69,12 @@ impl RetiredPresentationHostRanges {
         true
     }
 
+    #[cfg(test)]
     pub(super) fn interval_count(&self) -> usize {
         self.intervals.len()
     }
 
+    #[cfg(test)]
     pub(super) fn logical_host_count(&self) -> u64 {
         self.intervals
             .iter()

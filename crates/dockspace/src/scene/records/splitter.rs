@@ -73,6 +73,7 @@ impl SplitterGapRecord {
 
     /// Returns whether this gap produced a positive-area splitter record.
     #[must_use]
+    #[cfg(test)]
     pub const fn presentation(&self) -> SplitterGapPresentation {
         self.presentation
     }

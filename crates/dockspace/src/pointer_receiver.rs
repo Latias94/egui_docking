@@ -697,6 +697,7 @@ impl PointerReceiverCandidateRoster {
         dead_code,
         reason = "reserved for CoreHostFrame pointer-receiver integration"
     )]
+    #[cfg(test)]
     pub(crate) fn freeze(
         attempt: PointerReceiverFrameAttempt,
         specs: Vec<PointerReceiverCandidateSpec>,
@@ -767,12 +768,14 @@ impl PointerReceiverCandidateRoster {
 
     /// Returns the exact non-replayable frame-attempt identity.
     #[must_use]
+    #[cfg(test)]
     pub const fn attempt(&self) -> PointerReceiverFrameAttemptId {
         self.attempt
     }
 
     /// Returns the frozen provider incarnation for every candidate.
     #[must_use]
+    #[cfg(test)]
     pub const fn lease(&self) -> PointerInputLease {
         self.lease
     }
@@ -789,6 +792,7 @@ impl PointerReceiverCandidateRoster {
         dead_code,
         reason = "reserved for CoreHostFrame pointer-receiver integration"
     )]
+    #[cfg(test)]
     pub(crate) fn validate(
         &self,
         batch: PointerReceiverReceiptBatch,
@@ -1138,6 +1142,10 @@ pub enum PointerReceiverDeliveryDisposition {
     /// One core-compiled docking region received the edge.
     Dock(PresentationHitRegionId),
     /// The presentation-owned canvas received the edge outside a control.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     DockCanvas,
     /// A higher framework receiver blocked docking delivery.
     Blocked,
@@ -1239,6 +1247,7 @@ impl PointerReceiverDelivery {
     /// Each `Dock` claim is checked against its corresponding manifest lane.
     /// If both lanes are unknown, the result intentionally carries no output
     /// authority; otherwise all known lane facts share the supplied projection.
+    #[cfg(test)]
     pub fn from_lanes(
         projection: SurfaceInteractionProjection<'_>,
         click: PointerReceiverDeliveryDisposition,
@@ -1492,10 +1501,22 @@ impl PointerReceiverProbeReceipt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PointerReceiverUnknownReason {
     /// The active framework/backend does not expose per-edge delivery facts.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     FrameworkDeliveryUnavailable,
     /// The provider could not retain an event-to-receiver correlation.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     EventCorrelationUnavailable,
     /// Front-to-back layer ownership could not be proven.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     LayerAuthorityUnavailable,
     /// No eligible final-presentation authority was observable for the edge.
     PresentationAuthorityUnavailable,
@@ -1668,6 +1689,7 @@ impl PointerReceiverReceipt {
 
     /// Returns the submitted receiver evidence.
     #[must_use]
+    #[cfg(test)]
     pub const fn observation(&self) -> &PointerReceiverObservation {
         &self.observation
     }
@@ -1701,12 +1723,14 @@ impl PointerReceiverReceiptBatch {
 
     /// Returns receipts in canonical candidate identity order.
     #[must_use]
+    #[cfg(test)]
     pub fn receipts(&self) -> &[PointerReceiverReceipt] {
         &self.receipts
     }
 
     /// Returns whether the submitted exact set is empty.
     #[must_use]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.receipts.is_empty()
     }

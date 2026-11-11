@@ -452,6 +452,7 @@ pub(crate) struct WorkspaceIndexView<'a> {
 }
 
 impl<'index> WorkspaceIndexView<'index> {
+    #[cfg(test)]
     pub(crate) fn root_fingerprint(&self, root: RootId) -> Option<&'index NodeFingerprint> {
         self.index.root_fingerprint(root)
     }

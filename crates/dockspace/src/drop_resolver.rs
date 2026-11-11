@@ -19,16 +19,18 @@ use crate::error::{CommandError, TransactionError};
 use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::graph::Workspace;
 use crate::hit_region::HitRegion;
-use crate::ids::{FloatingPresentationId, RootId, SurfaceId, WorkspaceRevision};
+#[cfg(test)]
+use crate::ids::WorkspaceRevision;
+use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
 use crate::intent::SurfaceBackgroundRootOffer;
 use crate::interaction::DragSessionId;
 use crate::policy::{DockPolicySnapshot, PolicyRejection};
 use crate::runtime::direct_manipulation::{
     DirectTargetCandidate, DirectTargetProvenance, TargetCandidate, TargetObservation,
 };
-use crate::scene::{
-    PresentationLayoutFacts, PresentationPlan, SurfaceScene, SurfaceSceneSet, SurfaceSceneStamp,
-};
+use crate::scene::{PresentationLayoutFacts, PresentationPlan, SurfaceSceneStamp};
+#[cfg(test)]
+use crate::scene::{SurfaceScene, SurfaceSceneSet};
 use crate::scene_manifest::PolicyRevision;
 use crate::transaction::TransactionReport;
 #[cfg(test)]
@@ -64,6 +66,7 @@ use thiserror::Error;
     clippy::too_many_arguments,
     reason = "the resolver binds every authoritative drag fact without an ambient context"
 )]
+#[cfg(test)]
 pub fn resolve_drop(
     scene: &SurfaceSceneSet,
     workspace: &Workspace,
@@ -137,6 +140,7 @@ pub fn resolve_drop(
     clippy::too_many_arguments,
     reason = "the resolver binds every authoritative drag fact without an ambient context"
 )]
+#[cfg(test)]
 pub(crate) fn resolve_presented_drop(
     stamp: SurfaceSceneStamp,
     ready: &PresentationPlan,
@@ -391,6 +395,7 @@ fn source_excludes_magnetic_target(source: &MovePayload, target: DropTargetId) -
     clippy::too_many_arguments,
     reason = "the resolver binds every authoritative drag fact without an ambient context"
 )]
+#[cfg(test)]
 fn resolve_presented_unguided_drop(
     stamp: SurfaceSceneStamp,
     surface_scene: &PresentationPlan,
@@ -1484,6 +1489,7 @@ fn prepare_surface_background_command(
     })
 }
 
+#[cfg(test)]
 fn source_presentation_layout_facts<'a>(
     scene: &'a SurfaceSceneSet,
     workspace: &Workspace,
@@ -1592,6 +1598,10 @@ pub enum DropResolution {
     /// The unique geometric winner was ineligible.
     Rejected(RejectedDrop),
     /// The authoritative surface was absent or had no ready scene facts.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Unavailable(UnavailableDrop),
 }
 
@@ -1621,18 +1631,21 @@ impl DropQuery {
 
     /// Returns the semantic drop outcome used for preview and delivery.
     #[must_use]
+    #[cfg(test)]
     pub const fn resolution(&self) -> &DropResolution {
         &self.resolution
     }
 
     /// Returns complete guide painting facts when a cluster is active.
     #[must_use]
+    #[cfg(test)]
     pub const fn affordance(&self) -> Option<&DropAffordance> {
         self.affordance.as_ref()
     }
 
     /// Consumes the query into its independent resolution and affordance values.
     #[must_use]
+    #[cfg(test)]
     pub fn into_parts(self) -> (DropResolution, Option<DropAffordance>) {
         (self.resolution, self.affordance)
     }
@@ -1695,6 +1708,7 @@ impl DropAffordance {
 
     /// Returns the exact authoritative point used for the query.
     #[must_use]
+    #[cfg(test)]
     pub const fn point(&self) -> LogicalPoint {
         self.point
     }
@@ -1801,6 +1815,7 @@ impl DropGuideTargetKey {
 
     /// Returns the owning cluster identity.
     #[must_use]
+    #[cfg(test)]
     pub const fn cluster(self) -> DropGuideClusterId {
         self.cluster
     }
@@ -1847,6 +1862,7 @@ impl DropAffordanceTarget {
 
     /// Returns the owning cluster identity.
     #[must_use]
+    #[cfg(test)]
     pub const fn cluster(&self) -> DropGuideClusterId {
         self.key.cluster()
     }
@@ -1888,12 +1904,14 @@ pub enum DropGuideEligibility {
 impl DropGuideEligibility {
     /// Returns whether this exact target can accept the queried payload.
     #[must_use]
+    #[cfg(test)]
     pub const fn is_eligible(&self) -> bool {
         matches!(self, Self::Eligible)
     }
 
     /// Returns the exact shared resolver rejection, if any.
     #[must_use]
+    #[cfg(test)]
     pub const fn rejection(&self) -> Option<&DropRejectionReason> {
         match self {
             Self::Eligible => None,
@@ -2032,18 +2050,21 @@ impl KnownDropAbsence {
 
     /// Returns the sealed scene queried by the resolver.
     #[must_use]
+    #[cfg(test)]
     pub const fn scene(&self) -> SurfaceSceneStamp {
         self.scene
     }
 
     /// Returns the authoritative surface.
     #[must_use]
+    #[cfg(test)]
     pub const fn surface(&self) -> SurfaceId {
         self.surface
     }
 
     /// Returns the authoritative logical point.
     #[must_use]
+    #[cfg(test)]
     pub const fn point(&self) -> LogicalPoint {
         self.point
     }
@@ -2053,12 +2074,28 @@ impl KnownDropAbsence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropSurfaceUnavailable {
     /// The surface was absent from the scene's frozen active roster.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     MissingSurface,
     /// The surface was rostered but did not publish ready facts.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Bootstrap,
     /// A compiled candidate exists but was not confirmed painted before reduction.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     PendingPaint,
     /// The surface retains a paint fallback but has no current hit authority.
+    #[allow(
+        dead_code,
+        reason = "Retained internal protocol case is matched by the shared reducer and exercised by protocol tests"
+    )]
     Stale,
 }
 
@@ -2071,6 +2108,7 @@ pub struct UnavailableDrop {
 }
 
 impl UnavailableDrop {
+    #[cfg(test)]
     const fn new(
         scene: Option<SurfaceSceneStamp>,
         surface: SurfaceId,
@@ -2085,18 +2123,21 @@ impl UnavailableDrop {
 
     /// Returns the sealed scene queried by the resolver.
     #[must_use]
+    #[cfg(test)]
     pub const fn scene(&self) -> Option<SurfaceSceneStamp> {
         self.scene
     }
 
     /// Returns the unavailable authoritative surface.
     #[must_use]
+    #[cfg(test)]
     pub const fn surface(&self) -> SurfaceId {
         self.surface
     }
 
     /// Returns the exact unavailable classification.
     #[must_use]
+    #[cfg(test)]
     pub const fn reason(&self) -> DropSurfaceUnavailable {
         self.reason
     }
@@ -2135,6 +2176,7 @@ impl DropCandidateRejection {
 
     /// Returns the exact eligibility failure.
     #[must_use]
+    #[cfg(test)]
     pub const fn reason(&self) -> &DropRejectionReason {
         &self.reason
     }
@@ -2166,18 +2208,21 @@ impl RejectedDrop {
 
     /// Returns the sealed scene queried by the resolver.
     #[must_use]
+    #[cfg(test)]
     pub const fn scene(&self) -> SurfaceSceneStamp {
         self.scene
     }
 
     /// Returns the authoritative surface.
     #[must_use]
+    #[cfg(test)]
     pub const fn surface(&self) -> SurfaceId {
         self.surface
     }
 
     /// Returns the authoritative logical point.
     #[must_use]
+    #[cfg(test)]
     pub const fn point(&self) -> LogicalPoint {
         self.point
     }

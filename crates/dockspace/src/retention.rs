@@ -14,6 +14,7 @@ use crate::presentation_observation::{HostFrameKey, HostPresentationStreamId};
 /// atomic engine candidate; monotonic identity frontiers continue to classify late replay without
 /// retaining the payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg(test)]
 pub enum RuntimeRetentionReleaseBarrier {
     /// The retired effect producer is quiescent, allowing its provider guard to be released.
     EffectIngressQuiesced,
@@ -29,6 +30,7 @@ pub enum RuntimeRetentionReleaseBarrier {
 
 /// Detailed presentation-host and stream structures retained by the core ledger.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct PresentationHostRetentionManifest {
     live_host_states: usize,
     detailed_retired_host_states: usize,
@@ -37,6 +39,7 @@ pub struct PresentationHostRetentionManifest {
     logical_compacted_hosts: u64,
 }
 
+#[cfg(test)]
 impl PresentationHostRetentionManifest {
     pub(crate) const fn new(
         live_host_states: usize,
@@ -96,12 +99,14 @@ impl PresentationHostRetentionManifest {
 
 /// Retained effect-ledger structures and their semantic state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct EffectRetentionManifest {
     unsettled_records: usize,
     terminal_record_guards: usize,
     revoked_provider_guards: usize,
 }
 
+#[cfg(test)]
 impl EffectRetentionManifest {
     pub(crate) const fn new(
         unsettled_records: usize,
@@ -155,6 +160,7 @@ impl EffectRetentionManifest {
 
 /// Retained close-plan structures and copied-token replay guards.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct CloseRetentionManifest {
     active_plans: usize,
     terminal_plan_guards: usize,
@@ -162,6 +168,7 @@ pub struct CloseRetentionManifest {
     deferred_token_guards: usize,
 }
 
+#[cfg(test)]
 impl CloseRetentionManifest {
     pub(crate) const fn new(
         active_plans: usize,
@@ -213,6 +220,7 @@ impl CloseRetentionManifest {
 
 /// Retained pointer-provider state and retired-lease replay guards.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct PointerRetentionManifest {
     active_provider_count: usize,
     active_stream_count: usize,
@@ -221,6 +229,7 @@ pub struct PointerRetentionManifest {
     logical_compacted_leases: u64,
 }
 
+#[cfg(test)]
 impl PointerRetentionManifest {
     pub(crate) const fn new(
         active_provider_count: usize,
@@ -291,6 +300,7 @@ impl PointerRetentionManifest {
 
 /// Retained native-binding cleanup state, indexes, and terminal-incarnation guards.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct BindingRetentionManifest {
     active_cleanup_obligations: usize,
     token_index_entries: usize,
@@ -301,10 +311,12 @@ pub struct BindingRetentionManifest {
 
 /// The session-owned semantic-input watermark retained as a replay guard.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct InputSourceRetentionManifest {
     watermark_guards: usize,
 }
 
+#[cfg(test)]
 impl InputSourceRetentionManifest {
     pub(crate) const fn new(watermark_guards: usize) -> Self {
         Self { watermark_guards }
@@ -325,11 +337,13 @@ impl InputSourceRetentionManifest {
 
 /// Core-owned smooth-scroll sessions and provider sequence replay guards.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub struct ScrollRetentionManifest {
     active_sessions: usize,
     sequence_watermark_guards: usize,
 }
 
+#[cfg(test)]
 impl ScrollRetentionManifest {
     pub(crate) const fn new(active_sessions: usize, sequence_watermark_guards: usize) -> Self {
         Self {
@@ -357,6 +371,7 @@ impl ScrollRetentionManifest {
     }
 }
 
+#[cfg(test)]
 impl BindingRetentionManifest {
     pub(crate) const fn new(
         active_cleanup_obligations: usize,
@@ -454,6 +469,7 @@ pub struct PresentationRetentionManifest {
 /// which prevents safe compaction. Consequently a soak test can distinguish a real leak (stored
 /// structures without a represented obligation) from a deliberately retained protocol guard.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub struct RuntimeRetentionManifest {
     presentation: PresentationRetentionManifest,
     presentation_hosts: PresentationHostRetentionManifest,
@@ -465,6 +481,7 @@ pub struct RuntimeRetentionManifest {
     scroll: ScrollRetentionManifest,
 }
 
+#[cfg(test)]
 impl RuntimeRetentionManifest {
     pub(crate) const fn new(
         presentation: PresentationRetentionManifest,
@@ -562,6 +579,7 @@ impl PresentationRetentionManifest {
 
     /// Returns whether adapter resources for this exact concrete emission remain live.
     #[must_use]
+    #[cfg(test)]
     pub fn retains(&self, emission: HostFrameKey) -> bool {
         self.emissions.contains(&emission)
     }
@@ -575,6 +593,7 @@ impl PresentationRetentionManifest {
     /// Returns the number of distinct concrete emissions retained by core authority.
     #[doc(hidden)]
     #[must_use]
+    #[cfg(test)]
     pub fn emission_count(&self) -> usize {
         self.emissions.len()
     }
@@ -582,6 +601,7 @@ impl PresentationRetentionManifest {
     /// Returns the number of exact presentation stream incarnations retained by core authority.
     #[doc(hidden)]
     #[must_use]
+    #[cfg(test)]
     pub fn stream_count(&self) -> usize {
         self.streams.len()
     }

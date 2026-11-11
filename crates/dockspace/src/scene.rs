@@ -6,10 +6,13 @@ mod program;
 mod records;
 mod validation;
 
+#[cfg(test)]
 pub use self::lifecycle::{
-    BootstrapSurfaceScene, BootstrapSurfaceSceneReason, PopupGeometryUnavailableReason,
-    ReadySurfaceScene, RetainedSurfacePlanStamps, StaleSurfaceScene, StaleSurfaceSceneReason,
-    SurfaceInteractionProjection, SurfacePaintProjection, SurfacePlanScene, SurfaceScene,
+    BootstrapSurfaceScene, RetainedSurfacePlanStamps, StaleSurfaceScene, SurfacePaintProjection,
+};
+pub use self::lifecycle::{
+    BootstrapSurfaceSceneReason, PopupGeometryUnavailableReason, ReadySurfaceScene,
+    StaleSurfaceSceneReason, SurfaceInteractionProjection, SurfacePlanScene, SurfaceScene,
     SurfaceSceneSet, SurfaceSceneStamp,
 };
 #[cfg(test)]
@@ -63,7 +66,7 @@ use crate::scene_manifest::{
     AuthoritativeSurfaceMeasurements, MeasurementAuthorityError, SceneRequirementManifest,
     SurfaceMeasurementTicket, SurfaceSceneRevision,
 };
-use crate::semantic_manifest::PresentationSemanticManifest;
+#[cfg(test)]
 use crate::splitter_junction_index::derive_splitter_junction_candidates;
 use crate::tab_strip::{
     PopupPlaneRequirement, TabListMenuSessionId, TabStripControlId, TabStripStateKey,
@@ -364,6 +367,7 @@ impl PresentationPlan {
         Arc::make_mut(&mut self.facts)
     }
 
+    #[cfg(test)]
     pub(crate) fn bind_workspace_selection(&mut self, workspace: &Workspace) {
         let mut selection =
             slotmap::SparseSecondaryMap::with_capacity(self.facts.pane_records.len());
@@ -831,6 +835,7 @@ impl PresentationPlan {
 
     /// Returns one exact availability record for every structural splitter gap.
     #[must_use]
+    #[cfg(test)]
     pub fn splitter_gap_records(&self) -> &[SplitterGapRecord] {
         &self.facts.splitter_gap_records
     }

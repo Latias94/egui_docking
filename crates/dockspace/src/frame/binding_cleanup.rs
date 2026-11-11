@@ -9,6 +9,7 @@ use crate::platform::{
 };
 use crate::platform_provider::PlatformObservationLease;
 use crate::presentation_observation::NativeStagingResourceId;
+#[cfg(test)]
 use crate::retention::BindingRetentionManifest;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
 use crate::viewport::{ViewportBinding, ViewportRole, WindowToken};
@@ -34,6 +35,10 @@ pub enum BindingRetirementOrigin {
     RecoveryReplacementCleanup {
         replacement: EffectId,
     },
+    #[allow(
+        dead_code,
+        reason = "the lifecycle reducer retains its complete outcome vocabulary"
+    )]
     RecoveryReplacementCompensationTransferred {
         replacement: EffectId,
         cleanup: EffectId,
@@ -164,16 +169,19 @@ impl BindingRetirement {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn role(&self) -> ViewportRole {
         self.role
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn ownership(&self) -> ViewportOwnership {
         self.ownership
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn origin(&self) -> BindingRetirementOrigin {
         self.origin
     }
@@ -189,6 +197,7 @@ impl BindingRetirement {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn may_reappear(&self) -> bool {
         self.may_reappear
     }
@@ -406,6 +415,7 @@ impl BindingCleanupLifecycle {
     /// Stable binding ownership and cleanup lineage remain intact, but a
     /// successor provider must establish fresh input and close facts before an
     /// old `observed` bit can authorize new cleanup work.
+    #[cfg(test)]
     pub(super) fn reset_for_provider_replacement(&mut self) {
         for retirement in self.entries.values_mut() {
             retirement.may_reappear |= retirement.observed;
@@ -470,6 +480,7 @@ impl BindingCleanupLifecycle {
     /// Destroyed bindings remain guards until the platform observation ingress proves that no
     /// delayed snapshot can name the exact incarnation. A newer wall-clock frame or a reused
     /// window token is not such a proof.
+    #[cfg(test)]
     pub(super) fn retention_manifest(&self) -> BindingRetentionManifest {
         debug_assert_eq!(
             self.terminal_binding_guards.len(),
@@ -1109,6 +1120,7 @@ impl BindingCleanupLifecycle {
     }
 
     /// Releases guards owned by one producer after its observation lane has quiesced.
+    #[cfg(test)]
     pub(super) fn compact_terminal_binding_guards_from(
         &mut self,
         provider: PlatformObservationLease,

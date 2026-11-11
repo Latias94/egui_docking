@@ -97,6 +97,7 @@ pub(crate) struct PlatformProviderReservation {
 }
 
 impl PlatformProviderReservation {
+    #[cfg(test)]
     const fn new(
         authority_domain: EngineAuthorityDomainId,
         predecessor: PlatformObservationLease,
@@ -231,6 +232,7 @@ impl PlatformObservationAuthority {
     }
 
     /// Returns the exact pending replacement reserved by the core.
+    #[cfg(test)]
     pub(crate) const fn pending_replacement(&self) -> Option<PlatformProviderReservation> {
         self.pending_replacement
     }
@@ -272,6 +274,7 @@ impl PlatformObservationAuthority {
     /// The returned ticket is not a lease and grants no observation or effect
     /// authority. The runtime must first quiesce the predecessor dispatch lane,
     /// then return it through [`Self::finish_replacement`].
+    #[cfg(test)]
     pub(crate) fn begin_replacement(
         &mut self,
         lease: PlatformObservationLease,
@@ -290,6 +293,7 @@ impl PlatformObservationAuthority {
     }
 
     /// Activates the reserved successor after typed predecessor quiescence.
+    #[cfg(test)]
     pub(crate) fn finish_replacement(
         &mut self,
         ticket: PlatformProviderReservation,
@@ -318,6 +322,7 @@ impl PlatformObservationAuthority {
     /// The predecessor remains superseded and the reserved successor never
     /// gains observation authority. A later explicit provider enrollment mints
     /// a fresh incarnation.
+    #[cfg(test)]
     pub(crate) fn abort_replacement(
         &mut self,
         ticket: PlatformProviderReservation,
@@ -341,10 +346,7 @@ impl PlatformObservationAuthority {
     }
 
     /// Permanently retires one exact active provider.
-    #[allow(
-        dead_code,
-        reason = "the native runtime will expose terminal provider retirement"
-    )]
+    #[cfg(test)]
     pub(crate) fn retire(
         &mut self,
         lease: PlatformObservationLease,

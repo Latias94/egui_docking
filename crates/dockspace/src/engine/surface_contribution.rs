@@ -34,6 +34,7 @@ impl SurfaceContributionToken {
 
 /// Paint result of a core-prepared surface contribution.
 #[derive(Debug)]
+#[cfg(test)]
 pub enum PreparedSurfacePaintCandidate<'a> {
     /// A complete, validated candidate available for adapter resource preparation.
     Ready(PreparedReadySurfacePaintCandidate<'a>),
@@ -56,10 +57,12 @@ pub enum PreparedSurfacePaintCandidate<'a> {
 
 /// Read-only capability tied to one exact prepared Ready candidate.
 #[derive(Debug)]
+#[cfg(test)]
 pub struct PreparedReadySurfacePaintCandidate<'a> {
     plan: &'a PresentationPlan,
 }
 
+#[cfg(test)]
 impl PreparedReadySurfacePaintCandidate<'_> {
     /// Returns the exact core-compiled plan covered by this capability.
     #[must_use]
@@ -94,6 +97,7 @@ pub struct PreparedSurfaceContribution {
 impl PreparedSurfaceContribution {
     /// Returns the core-minted callback token frozen by preparation.
     #[must_use]
+    #[cfg(test)]
     pub const fn token(&self) -> SurfaceContributionToken {
         self.token
     }
@@ -110,6 +114,7 @@ impl PreparedSurfaceContribution {
     /// later submit an exact presentation observation after presentation of a final
     /// host pass has been observed.
     #[must_use]
+    #[cfg(test)]
     pub fn paint_candidate(&self) -> PreparedSurfacePaintCandidate<'_> {
         match &self.state {
             PreparedSurfaceContributionState::Ready { plan } => {

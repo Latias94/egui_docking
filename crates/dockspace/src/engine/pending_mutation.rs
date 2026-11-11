@@ -22,6 +22,7 @@ impl PendingPresentationTracker {
         self.presented.is_none() && !self.failed
     }
 
+    #[cfg(test)]
     pub(super) fn retire_keys(&mut self, retired: &BTreeSet<HostFrameKey>) {
         if self.presented.is_some() || self.outputs.is_empty() {
             return;

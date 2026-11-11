@@ -171,6 +171,7 @@ impl DesktopRouteFact {
     /// unavailable result, so the edge can still consume ordering while any
     /// receiver or drop operation fails closed.
     #[must_use]
+    #[cfg(test)]
     pub const fn dock_without_coordinate_route(
         binding: ViewportBinding,
         position: Authority<PhysicalPoint>,
@@ -251,6 +252,7 @@ impl DesktopRouteFact {
     /// [`Self::hovered`] to distinguish those cases. `Some(Unknown(_))` means
     /// the provider explicitly reported that conversion was unavailable.
     #[must_use]
+    #[cfg(test)]
     pub const fn dock_route_authority(self) -> Option<Authority<DesktopDockRoute>> {
         self.dock_route
     }
@@ -258,6 +260,7 @@ impl DesktopRouteFact {
     /// Returns the exact dock route when both hover and coordinate facts were
     /// reported together.
     #[must_use]
+    #[cfg(test)]
     pub const fn dock_route(self) -> Option<DesktopDockRoute> {
         match self.dock_route {
             Some(Authority::Known(route)) => Some(route),
@@ -267,6 +270,7 @@ impl DesktopRouteFact {
 
     /// Returns the event-time work-area authority for an explicit no-window route.
     #[must_use]
+    #[cfg(test)]
     pub const fn work_area(self) -> Option<Authority<DesktopWorkAreaRoute>> {
         self.work_area
     }
