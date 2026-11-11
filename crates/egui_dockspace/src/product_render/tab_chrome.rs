@@ -416,9 +416,11 @@ fn paint_menu_row(
     if !paint_omitted && let Some(resource) = context.resources.item(row.item()) {
         let galley = resource.galley_for_width(context.ui, bounds.width());
         let text_pos = pos2(bounds.min.x, bounds.center().y - galley.size().y * 0.5);
-        painter.galley_with_override_text_color(
+        context.paint_tab_title(
+            &painter,
             text_pos,
             galley,
+            row.selected(),
             if row.selected() {
                 context
                     .style

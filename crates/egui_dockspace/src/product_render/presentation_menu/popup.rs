@@ -3,7 +3,7 @@
 use egui::containers::menu::{MenuConfig, menu_style};
 use egui::emath::TSTransform;
 use egui::{
-    Area, AreaState, FocusDirection, Frame, Id, InnerResponse, Key, LayerId, Layout, Order, Popup,
+    Area, AreaState, FocusDirection, Id, InnerResponse, Key, LayerId, Layout, Order, Popup,
     RectAlign, Response, ScrollArea, Sense, Ui, UiKind, UiStackInfo, ViewportId,
 };
 
@@ -43,6 +43,7 @@ pub(super) fn show(
     popup: Id,
     anchor: &Response,
     touch_requested: bool,
+    style: &crate::DockStyle,
     content: impl FnOnce(&mut Ui) -> Vec<Id>,
 ) -> Option<InnerResponse<()>> {
     let context = source.ctx();
@@ -123,7 +124,7 @@ pub(super) fn show(
         .show(context, |ui| {
             ui.set_style(std::sync::Arc::clone(source.style()));
             menu_style(ui.style_mut());
-            let frame = Frame::menu(ui.style());
+            let frame = style.resolved_popup_frame(ui.style());
             let margins = frame.total_margin();
             let available = (viewport.size() - margins.sum()).max(egui::Vec2::ZERO);
             ui.set_max_width(ui.max_rect().width().min(available.x));

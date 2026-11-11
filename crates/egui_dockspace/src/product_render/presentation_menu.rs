@@ -116,6 +116,7 @@ pub(super) fn paint(
         popup_id,
         &response,
         touch_requested,
+        context.style,
         |ui| {
             let mut entries = Vec::with_capacity(COMMANDS.len() + 1);
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {

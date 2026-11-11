@@ -63,9 +63,11 @@ pub(super) fn paint(
     if let Some(resource) = resource {
         let text = ghost.shrink2(egui::vec2(context.style.tab_horizontal_padding, 0.0));
         let galley = resource.galley_for_width(context.ui, text.width());
-        context.ui.painter_at(text).galley_with_override_text_color(
+        context.paint_tab_title(
+            &context.ui.painter_at(text),
             pos2(text.min.x, text.center().y - galley.size().y * 0.5),
             galley,
+            true,
             context.visuals.tab_active_text_color,
         );
     }

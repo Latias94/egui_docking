@@ -82,6 +82,12 @@ pub enum PaneFocusState {
 pub trait PaneView {
     /// Returns the current title for `item`.
     ///
+    /// Explicit rich-text and layout-job colors are preserved in tabs, overflow
+    /// rows and drag previews unless the corresponding docking text color or
+    /// the local egui `override_text_color` is set. Docking overrides take
+    /// precedence over the egui override. Uncolored text follows the current
+    /// interaction state; disabled UI still applies egui's standard tint.
+    ///
     /// Returning `None` reports that the application registry has no entry for
     /// the item. The adapter can then render a recoverable missing-pane state.
     /// The single-surface owners retain each measured title and its text layout

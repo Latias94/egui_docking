@@ -126,6 +126,10 @@ pub enum DockspaceActionStatus {
 }
 
 /// Atomic publication plus one exact product-action result.
+///
+/// Receiving this value means the host update published successfully. Inspect
+/// [`Self::status`] to distinguish an applied action from policy/topology rejection
+/// or a stale prepared revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockspaceActionResult {
     mutation: DockspaceMutation,

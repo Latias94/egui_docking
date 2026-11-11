@@ -482,6 +482,62 @@ fn long_tab_ellipsis_fits_the_final_allocation_at_each_ui_zoom() {
 }
 
 #[test]
+fn presentation_menu_uses_local_theme_and_docking_visual_overrides() {
+    let theme_fill = egui::Color32::from_rgb(31, 43, 57);
+    let theme_border = egui::Color32::from_rgb(26, 131, 151);
+    let override_fill = egui::Color32::from_rgb(67, 23, 79);
+    let override_border = egui::Color32::from_rgb(197, 101, 43);
+    for customize in [false, true] {
+        let mut style = DockStyle::default();
+        if customize {
+            style.visuals.floating_fill = Some(override_fill);
+            style.visuals.floating_border_color = Some(override_border);
+        }
+        let mut harness = Harness::new(vec!["Document".into()], ItemId::new(1), style);
+        let mut theme = (*harness.context.global_style()).clone();
+        theme.visuals.window_fill = theme_fill;
+        theme.visuals.menu_corner_radius = egui::CornerRadius::same(12);
+        theme.visuals.window_stroke = egui::Stroke::new(3.0, theme_border);
+        harness.local_style = Some(theme);
+        harness.focus(640.0, Role::Button, "Presentation commands");
+        harness.run(640.0, vec![key(Key::Enter)]);
+        let mut output = harness.run(640.0, Vec::new());
+        for _ in 0..3 {
+            output = harness.run(640.0, Vec::new());
+        }
+        assert!(nodes(&output).iter().any(|(_, node)| {
+            node.role() == Role::Menu && node.label() == Some("Presentation commands")
+        }));
+        let (fill, border) = if customize {
+            (override_fill, override_border)
+        } else {
+            (theme_fill, theme_border)
+        };
+        fn has_frame(shape: &egui::Shape, fill: egui::Color32, border: egui::Color32) -> bool {
+            match shape {
+                egui::Shape::Rect(rect) => {
+                    rect.fill == fill
+                        && rect.stroke.color == border
+                        && rect.stroke.width == 3.0
+                        && rect.corner_radius == egui::CornerRadius::same(12)
+                }
+                egui::Shape::Vec(shapes) => {
+                    shapes.iter().any(|shape| has_frame(shape, fill, border))
+                }
+                _ => false,
+            }
+        }
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| has_frame(&shape.shape, fill, border)),
+            "presentation menu must retain the local egui frame and apply docking overrides: {customize}"
+        );
+    }
+}
+
+#[test]
 fn overflow_rows_use_full_titles_and_native_popup_theme() {
     let title = "Document with a descriptive title and a unique suffix.rs".to_owned();
     let mut harness = Harness::new(
@@ -1270,4 +1326,284 @@ fn explicit_tab_text_color_wins_over_global_color_during_keyboard_focus() {
         .find(|(_, text)| text.galley.job.text == "Second")
         .unwrap();
     assert_eq!(text.override_text_color, Some(color));
+}
+
+struct RichTitlePanes {
+    title: egui::WidgetText,
+}
+
+impl PaneView for RichTitlePanes {
+    fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+        Some(if item == ItemId::new(1) {
+            self.title.clone()
+        } else {
+            "Other".into()
+        })
+    }
+
+    fn ui(&mut self, _item: ItemId, _ui: &mut Ui) -> PaneResponse {
+        PaneResponse::default()
+    }
+}
+
+fn rich_title() -> egui::WidgetText {
+    let mut job = egui::text::LayoutJob::default();
+    for (text, color) in [("Red ", egui::Color32::RED), ("Blue", egui::Color32::BLUE)] {
+        job.append(
+            text,
+            0.0,
+            egui::TextFormat {
+                color,
+                ..Default::default()
+            },
+        );
+    }
+    job.into()
+}
+
+fn run_rich_title_frame(
+    harness: &mut Harness,
+    title: egui::WidgetText,
+    enabled: bool,
+    events: Vec<Event>,
+) -> FullOutput {
+    harness.frame += 1;
+    let raw = RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(640.0, 600.0))),
+        time: Some(f64::from(harness.frame) * 0.1),
+        events,
+        ..Default::default()
+    };
+    let mut panes = RichTitlePanes { title };
+    let output = crate::run_ui(&harness.context, raw, |ui| {
+        if let Some(style) = &harness.local_style {
+            ui.set_style(style.clone());
+        }
+        if !enabled {
+            ui.disable();
+        }
+        ui.label(egui::RichText::new("Reference").color(egui::Color32::RED));
+        harness
+            .dockspace
+            .show_single_surface(SURFACE, ui, &mut panes)
+            .unwrap();
+    });
+    let (mut output, receipt) = output.into_parts();
+    receipt.report(SurfacePresentationResult::Presented);
+    output.textures_delta.clear();
+    output
+}
+
+#[test]
+fn rich_tab_titles_preserve_explicit_colors_and_global_overrides() {
+    let global = egui::Color32::from_rgb(113, 191, 53);
+    let docking = egui::Color32::from_rgb(211, 109, 37);
+    for selected in [1, 2] {
+        for override_kind in [0, 1, 2] {
+            let mut style = DockStyle::default();
+            if override_kind == 2 {
+                style.visuals.tab_text_color = Some(docking);
+                style.visuals.tab_active_text_color = Some(docking);
+            }
+            let mut harness = Harness::new(
+                vec!["Red Blue".into(), "Other".into()],
+                ItemId::new(selected),
+                style,
+            );
+            if override_kind > 0 {
+                let mut local = (*harness.context.global_style()).clone();
+                local.visuals.override_text_color = Some(global);
+                harness.local_style = Some(local);
+            }
+            for _ in 0..3 {
+                run_rich_title_frame(&mut harness, rich_title(), true, Vec::new());
+            }
+            let output = run_rich_title_frame(&mut harness, rich_title(), true, Vec::new());
+            let (_, text) = texts(&output)
+                .into_iter()
+                .find(|(_, text)| text.galley.job.text == "Red Blue")
+                .unwrap();
+            match override_kind {
+                0 => {
+                    assert_eq!(text.override_text_color, None);
+                    for color in [egui::Color32::RED, egui::Color32::BLUE] {
+                        assert!(text.galley.rows.iter().any(|row| {
+                            row.visuals
+                                .mesh
+                                .vertices
+                                .iter()
+                                .any(|vertex| vertex.color == color)
+                        }));
+                    }
+                }
+                1 => assert_eq!(text.override_text_color, Some(global)),
+                2 => assert_eq!(text.override_text_color, Some(docking)),
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+#[test]
+fn rich_tab_titles_keep_standard_disabled_tint() {
+    let mut harness = Harness::new(vec!["Red".into()], ItemId::new(1), DockStyle::default());
+    for _ in 0..3 {
+        run_rich_title_frame(
+            &mut harness,
+            egui::RichText::new("Red").color(egui::Color32::RED).into(),
+            false,
+            Vec::new(),
+        );
+    }
+    let output = run_rich_title_frame(
+        &mut harness,
+        egui::RichText::new("Red").color(egui::Color32::RED).into(),
+        false,
+        Vec::new(),
+    );
+    let painted = texts(&output);
+    let title = painted
+        .iter()
+        .find(|(_, text)| text.galley.job.text == "Red")
+        .unwrap()
+        .1;
+    let reference = painted
+        .iter()
+        .find(|(_, text)| text.galley.job.text == "Reference")
+        .unwrap()
+        .1;
+    let reference_color = reference.galley.rows[0].visuals.mesh.vertices[0].color;
+    assert_ne!(reference_color, egui::Color32::RED);
+    assert_eq!(title.override_text_color, None);
+    assert!(title.galley.rows.iter().all(|row| {
+        row.visuals
+            .mesh
+            .vertices
+            .iter()
+            .all(|vertex| vertex.color == reference_color)
+    }));
+}
+
+#[test]
+fn rich_overflow_titles_preserve_span_colors() {
+    let mut harness = Harness::new(
+        vec!["Red Blue".into(), "Other".into()],
+        ItemId::new(1),
+        DockStyle {
+            tab_min_width: 400.0,
+            tab_max_width: 400.0,
+            ..Default::default()
+        },
+    );
+    let mut output = run_rich_title_frame(&mut harness, rich_title(), true, Vec::new());
+    for _ in 0..3 {
+        output = run_rich_title_frame(&mut harness, rich_title(), true, Vec::new());
+    }
+    let trigger = nodes(&output)
+        .iter()
+        .find(|(_, node)| node.label() == Some("Show hidden tabs"))
+        .unwrap()
+        .0;
+    run_rich_title_frame(
+        &mut harness,
+        rich_title(),
+        true,
+        vec![Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                action: egui::accesskit::Action::Click,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: trigger,
+                data: None,
+            },
+        )],
+    );
+    for _ in 0..3 {
+        output = run_rich_title_frame(&mut harness, rich_title(), true, Vec::new());
+    }
+    let row = nodes(&output)
+        .iter()
+        .find(|(_, node)| node.role() == Role::MenuItem && node.label() == Some("Red Blue"))
+        .unwrap()
+        .1
+        .bounds()
+        .unwrap();
+    let (_, text) = texts(&output)
+        .into_iter()
+        .find(|(_, text)| {
+            text.galley.job.text == "Red Blue"
+                && f64::from(text.pos.y) >= row.y0
+                && f64::from(text.pos.y) < row.y1
+        })
+        .unwrap();
+    assert_eq!(text.override_text_color, None);
+    for color in [egui::Color32::RED, egui::Color32::BLUE] {
+        assert!(text.galley.rows.iter().any(|row| {
+            row.visuals
+                .mesh
+                .vertices
+                .iter()
+                .any(|vertex| vertex.color == color)
+        }));
+    }
+}
+
+#[test]
+fn rich_drag_ghost_preserves_span_colors() {
+    let mut harness = Harness::new(
+        vec!["Red Blue".into(), "Other".into()],
+        ItemId::new(1),
+        DockStyle::default(),
+    );
+    let mut output = run_rich_title_frame(&mut harness, rich_title(), true, Vec::new());
+    for _ in 0..7 {
+        output = run_rich_title_frame(&mut harness, rich_title(), true, Vec::new());
+    }
+    let source = texts(&output)
+        .into_iter()
+        .find(|(_, text)| text.galley.job.text == "Red Blue")
+        .unwrap()
+        .1
+        .visual_bounding_rect()
+        .center();
+    run_rich_title_frame(
+        &mut harness,
+        rich_title(),
+        true,
+        vec![
+            Event::PointerMoved(source),
+            Event::PointerButton {
+                pos: source,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    run_rich_title_frame(
+        &mut harness,
+        rich_title(),
+        true,
+        vec![Event::PointerMoved(source + vec2(12.0, 8.0))],
+    );
+    let output = run_rich_title_frame(
+        &mut harness,
+        rich_title(),
+        true,
+        vec![Event::PointerMoved(egui::pos2(520.0, 400.0))],
+    );
+    assert!(harness.dockspace.session.has_active_gesture());
+    let (_, ghost) = texts(&output)
+        .into_iter()
+        .find(|(_, text)| text.galley.job.text == "Red Blue" && text.pos.y > 300.0)
+        .expect("the active drag paints its title at the pointer");
+    assert_eq!(ghost.override_text_color, None);
+    for color in [egui::Color32::RED, egui::Color32::BLUE] {
+        assert!(ghost.galley.rows.iter().any(|row| {
+            row.visuals
+                .mesh
+                .vertices
+                .iter()
+                .any(|vertex| vertex.color == color)
+        }));
+    }
 }

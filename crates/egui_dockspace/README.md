@@ -198,6 +198,23 @@ Dock Back share stable item/root identities, but execute different commands.
 
 ## Feedback And Focus
 
+Programmatic actions distinguish publication failure from product rejection.
+`Ok(result)` means the atomic update committed; check its status before reporting
+that a menu command succeeded:
+
+```rust,ignore
+let result = dockspace.open_item_current(item, placement)?;
+match result.status() {
+    egui_dockspace::DockspaceActionStatus::Applied(_) => show_opened(item),
+    status => show_action_unavailable(status),
+}
+```
+
+`Rejected` carries a policy or topology reason, and `Stale` identifies a prepared
+action whose revision is no longer current. `Err` means the action could not be
+submitted or its host update could not publish. Custom menus and toolbars should
+consume the returned status and feedback at that call boundary.
+
 Read `DockspaceResponse::manipulation_feedback()` for ordered pending and terminal
 statuses from a shown surface. Direct commands and close decisions return their
 own feedback through `result.mutation().manipulation_feedback()`; policy changes
@@ -255,6 +272,13 @@ of reusing the shortened tab label. That menu inherits egui's popup frame,
 shadow, row spacing, and selected-item colors. A global `override_text_color`
 also applies to tab text unless a corresponding docking text override is set.
 
+`PaneView::title` can return `RichText` or a multicolor `LayoutJob`. Explicit
+span colors survive in tabs, overflow rows and drag previews. The corresponding
+`tab_text_color` / `tab_active_text_color` override takes precedence, followed
+by the local egui `override_text_color`, then explicit span colors. Uncolored
+spans follow the current interaction state. Disabled UI retains egui's standard
+tint; no per-pane color configuration is needed.
+
 A selected tab gains a two-point underline when its pane owns observed content
 focus. This is distinct from selection and the outline around a keyboard-focused
 tab. The cue uses egui's selection stroke color; override
@@ -299,6 +323,16 @@ or waiting for quiescence. Acceptance into the queue is separate from core
 success and actual surface presentation. Layout/document replacement keeps its
 dedicated preparation methods; see the
 [migration guide](../../docs/ENGINE_FIRST_MIGRATION.md#egui-integration).
+
+Use `NativeCommand::SetPolicy { policy: Box::new(policy) }` to replace the complete
+runtime docking policy, including per-pane move/close restrictions and docking
+compatibility rules. Retain an application-owned policy value when later edits
+should preserve previous rules. The command uses the same bounded slot and
+configuration boundary as the arrangement lock: admission does not publish the
+policy, and a dropped frame cannot partially apply it. Consume
+`NativeActionStatus::PolicyChanged` before submitting the next command.
+`SetArrangementLocked` remains the convenience command for changing only that
+flag while preserving every other committed rule.
 
 Native `with_view` returns the callback result directly. The committed layout
 remains readable before host attachment and after fatal shutdown. View/pane

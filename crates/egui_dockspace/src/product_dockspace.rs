@@ -430,10 +430,14 @@ impl Dockspace {
 
     /// Submits one core-issued product action against its source revision.
     ///
+    /// A successful publication can still return a rejected or stale action.
+    /// Inspect [`DockspaceActionResult::status`] before reporting application success.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the action belongs to another session, its source
-    /// revision is invalid, or the atomic host frame cannot be committed.
+    /// Returns an error when the action belongs to another session or the atomic
+    /// host frame cannot be committed. Product rejection and stale revisions
+    /// are returned as [`crate::DockspaceActionStatus`] inside the successful result.
     pub fn submit_prepared_action(
         &mut self,
         prepared: PreparedDockAction,
@@ -458,6 +462,8 @@ impl Dockspace {
 
     /// Selects one currently open item against the current revision.
     ///
+    /// Inspect [`DockspaceActionResult::status`] for the product outcome.
+    ///
     /// # Errors
     ///
     /// Returns an error when the selection cannot be reduced atomically.
@@ -473,10 +479,11 @@ impl Dockspace {
     /// New content becomes selected and requests pane focus. Existing content
     /// keeps its location, selection and focus without another request.
     ///
+    /// Inspect [`DockspaceActionResult::status`] for placement or policy rejection.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the placement is invalid or the action cannot be
-    /// reduced atomically.
+    /// Returns an error when the action cannot be published atomically.
     pub fn open_item_current(
         &mut self,
         item: ItemId,
@@ -487,10 +494,11 @@ impl Dockspace {
 
     /// Docks one item at a stable placement against the current revision.
     ///
+    /// Inspect [`DockspaceActionResult::status`] for placement or policy rejection.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the placement is invalid or the action cannot be
-    /// reduced atomically.
+    /// Returns an error when the action cannot be published atomically.
     pub fn dock_item_current(
         &mut self,
         item: ItemId,
@@ -501,10 +509,11 @@ impl Dockspace {
 
     /// Docks one complete root at a stable placement against the current revision.
     ///
+    /// Inspect [`DockspaceActionResult::status`] for placement or policy rejection.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the placement is invalid or the action cannot be
-    /// reduced atomically.
+    /// Returns an error when the action cannot be published atomically.
     pub fn dock_root_current(
         &mut self,
         root: RootId,
@@ -514,6 +523,8 @@ impl Dockspace {
     }
 
     /// Returns a complete floating root to its current docking destination.
+    ///
+    /// Inspect [`DockspaceActionResult::status`] for the product outcome.
     ///
     /// # Errors
     ///
@@ -530,10 +541,11 @@ impl Dockspace {
     /// A complete singleton root preserves its root identity. Moving one item out
     /// of a larger root allocates a fresh root and contained-presentation identity.
     ///
+    /// Inspect [`DockspaceActionResult::status`] for unavailable content or policy rejection.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the item or surface is unavailable, current policy
-    /// rejects contained floating, or the action cannot be reduced atomically.
+    /// Returns an error when the action cannot be published atomically.
     pub fn float_item_current(
         &mut self,
         item: ItemId,
@@ -544,10 +556,11 @@ impl Dockspace {
 
     /// Raises the contained presentation owning one item to the front.
     ///
+    /// Inspect [`DockspaceActionResult::status`] for unavailable content or policy rejection.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the item is not contained, current policy rejects
-    /// the update, or the action cannot be reduced atomically.
+    /// Returns an error when the action cannot be published atomically.
     pub fn raise_contained_current(
         &mut self,
         item: ItemId,
@@ -559,6 +572,8 @@ impl Dockspace {
     ///
     /// Passive resize and minimum-size changes preserve durable geometry. This
     /// explicit action is the product boundary which may commit a clamped rectangle.
+    ///
+    /// Inspect [`DockspaceActionResult::status`] for the product outcome.
     ///
     /// # Errors
     ///

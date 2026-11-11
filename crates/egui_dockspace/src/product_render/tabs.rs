@@ -409,9 +409,11 @@ pub(crate) fn paint_tab(
                 context.visuals.tab_text_color
             };
             let galley = resource.galley_for_width(context.ui, layout.width());
-            context.ui.painter_at(text).galley_with_override_text_color(
+            context.paint_tab_title(
+                &context.ui.painter_at(text),
                 pos2(layout.min.x, layout.center().y - galley.size().y * 0.5),
                 galley,
+                selected,
                 color,
             );
         }

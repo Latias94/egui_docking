@@ -159,6 +159,27 @@ impl RenderContext<'_, '_, '_> {
         override_color.unwrap_or_else(|| self.interaction_stroke(response, None).color)
     }
 
+    fn paint_tab_title(
+        &self,
+        painter: &egui::Painter,
+        position: egui::Pos2,
+        galley: std::sync::Arc<egui::Galley>,
+        selected: bool,
+        fallback_color: Color32,
+    ) {
+        let override_color = if selected {
+            self.style.visuals.tab_active_text_color
+        } else {
+            self.style.visuals.tab_text_color
+        }
+        .or(self.ui.visuals().override_text_color);
+        if override_color.is_some() {
+            painter.galley_with_override_text_color(position, galley, fallback_color);
+        } else {
+            painter.galley(position, galley, fallback_color);
+        }
+    }
+
     fn interaction_fill(&self, response: &Response) -> Color32 {
         self.style
             .visuals
