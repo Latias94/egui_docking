@@ -4,8 +4,8 @@ use std::num::NonZeroUsize;
 
 use dockspace::geometry::{LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::model::{
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
-    SurfaceId,
+    DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
@@ -60,15 +60,30 @@ fn idle(session: &mut DockspaceSession) -> HostFrameReport {
     finish(native_frame(session))
 }
 
-fn shared_session() -> (
+fn shared_session(
+    surfaces: &[SurfaceId],
+) -> (
     DockspaceSession,
     NativeWindowBinding,
     Vec<NativeSurfaceBinding>,
 ) {
-    let mut session =
-        DockspaceSession::from_layout(layout(&[A, B]), DockPolicy::default()).unwrap();
-    let producer =
-        NativeProducerStorageLimit::new(NonZeroUsize::new(2).unwrap(), NonZeroUsize::MIN, 1 << 20);
+    shared_session_with_capacity(layout(surfaces), 2)
+}
+
+fn shared_session_with_capacity(
+    layout: DockspaceLayout,
+    slots: usize,
+) -> (
+    DockspaceSession,
+    NativeWindowBinding,
+    Vec<NativeSurfaceBinding>,
+) {
+    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    let producer = NativeProducerStorageLimit::new(
+        NonZeroUsize::new(slots).unwrap(),
+        NonZeroUsize::MIN,
+        1 << 20,
+    );
     session
         .enable_managed_native_host_with_input_storage_limit(
             NativePointerRoster::Exact(Vec::new()),
@@ -130,6 +145,7 @@ fn retire(
         .unwrap();
     let mut report = finish(frame);
     assert!(report.workspace_changed());
+    assert!(report.native_placement_detachments().is_empty());
     assert!(
         report.take_native_effects().is_empty(),
         "an external root is never destroyed by retirement"
@@ -150,8 +166,198 @@ fn retire(
 }
 
 #[test]
+fn prepared_shared_reset_detaches_only_the_removed_published_member_and_rolls_back_on_drop() {
+    let (mut session, window, before) = shared_session_with_capacity(layout(&[A, B]), 4);
+    let reset = session.prepare_layout_reset(layout(&[A])).unwrap();
+    let version = session.version();
+    let mut expected = None;
+    for commit in [false, true] {
+        let mut frame = native_frame(&mut session);
+        frame.submit_layout_reset(&reset).unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let prepared = frame.prepare_commit().unwrap();
+        let pairs: Vec<_> = prepared.native_root_continuations().collect();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].predecessor(), before[0]);
+        assert_eq!(prepared.native_placement_detachments(), [before[1]]);
+        assert_eq!(
+            prepared
+                .committed_native_surface_bindings_for_window(window)
+                .collect::<Vec<_>>(),
+            before
+        );
+        assert_eq!(
+            prepared
+                .native_surface_bindings_for_window(pairs[0].successor().window())
+                .collect::<Vec<_>>(),
+            [pairs[0].successor()]
+        );
+        if commit {
+            assert_eq!(expected, Some(pairs.clone()));
+            let report = prepared.commit().unwrap();
+            assert_eq!(report.native_root_continuations(), pairs);
+            assert_eq!(report.native_placement_detachments(), [before[1]]);
+            for binding in &before {
+                assert!(session.recognizes_native_binding(*binding));
+                session.report_native_binding_quiescence(*binding).unwrap();
+            }
+            idle(&mut session);
+            assert!(
+                before
+                    .iter()
+                    .all(|binding| !session.recognizes_native_binding(*binding))
+            );
+            assert!(session.is_current_native_binding(pairs[0].successor()));
+        } else {
+            expected = Some(pairs);
+            drop(prepared);
+            assert_eq!(session.version(), version);
+            assert_eq!(
+                session
+                    .native_surface_bindings_for_window(window)
+                    .collect::<Vec<_>>(),
+                before
+            );
+        }
+    }
+}
+
+#[test]
+fn ordinary_docking_proposes_placement_detachment_after_final_vacancy_reduction() {
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(
+            A,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        ),
+        DockspaceSurfaceLayout::new(
+            B,
+            DockspaceRootLayout::new(RootId::new(2), DockspaceNode::tabs([ItemId::new(2)])),
+        ),
+        DockspaceSurfaceLayout::new(
+            INCOMING,
+            DockspaceRootLayout::new(
+                RootId::new(3),
+                DockspaceNode::central_tabs([ItemId::new(3)]),
+            ),
+        ),
+    ])
+    .unwrap();
+    let (mut session, window, before) = shared_session_with_capacity(layout, 2);
+    let a = session.native_surface_placement(before[0]).unwrap();
+    let b = session.native_surface_placement(before[1]).unwrap();
+    let incoming =
+        NativeSurfacePlacement::new(INCOMING, b.size(), b.origin(), b.scale_factor(), b.clip());
+    for commit in [false, true] {
+        let mut frame = native_frame(&mut session);
+        frame
+            .dock_item_current(
+                ItemId::new(2),
+                DockPlacement::Center(DockAnchor::Central(RootId::new(1))),
+            )
+            .unwrap();
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        let prepared = frame.prepare_commit().unwrap();
+        assert!(prepared.native_root_continuations().next().is_none());
+        assert_eq!(prepared.native_placement_detachments(), [before[1]]);
+        assert_eq!(
+            prepared
+                .native_surface_bindings_for_window(window)
+                .collect::<Vec<_>>(),
+            [before[0]]
+        );
+        if commit {
+            let report = prepared.commit().unwrap();
+            assert_eq!(report.native_placement_detachments(), [before[1]]);
+        } else {
+            drop(prepared);
+            assert!(session.view().surface(B).is_some());
+            assert!(session.is_current_native_binding(before[1]));
+        }
+    }
+    assert!(session.view().surface(B).is_none());
+    let mut frame = native_frame(&mut session);
+    assert!(
+        frame
+            .set_native_surface_placements(window, &[a, incoming])
+            .is_err(),
+        "an exact terminal guard keeps its slot until quiescence"
+    );
+    drop(frame);
+    session.report_native_binding_quiescence(before[1]).unwrap();
+    idle(&mut session);
+    let mut frame = native_frame(&mut session);
+    frame
+        .set_native_surface_placements(window, &[a, incoming])
+        .unwrap();
+    assert!(finish(frame).native_placement_detachments().is_empty());
+    assert!(session.is_current_native_binding(before[0]));
+    assert_eq!(
+        session.native_window_bindings().collect::<Vec<_>>(),
+        [window]
+    );
+}
+
+#[test]
+fn full_producer_reuses_a_vacated_placement_slot_without_changing_the_window() {
+    let (mut session, window, before) = shared_session(&[A, B, INCOMING]);
+    let a = session.native_surface_placement(before[0]).unwrap();
+    let b = session.native_surface_placement(before[1]).unwrap();
+    let incoming =
+        NativeSurfacePlacement::new(INCOMING, b.size(), b.origin(), b.scale_factor(), b.clip());
+    let mut frame = native_frame(&mut session);
+    assert_eq!(
+        frame
+            .set_native_surface_placements(window, &[a, b, incoming])
+            .unwrap_err()
+            .native_kind(),
+        Some(NativeHostErrorKind::InputCapacity)
+    );
+    drop(frame);
+
+    let mut frame = native_frame(&mut session);
+    frame
+        .set_native_surface_placements(window, &[a, incoming])
+        .expect("an immediately obsolete placement must free its producer slot");
+    let proposed: Vec<_> = frame.native_surface_bindings_for_window(window).collect();
+    assert_eq!(proposed[0], before[0]);
+    assert_eq!(proposed[1].surface(), INCOMING);
+    drop(frame);
+
+    assert_eq!(
+        session
+            .native_surface_bindings_for_window(window)
+            .collect::<Vec<_>>(),
+        before
+    );
+    let mut frame = native_frame(&mut session);
+    frame
+        .set_native_surface_placements(window, &[a, incoming])
+        .unwrap();
+    assert_eq!(
+        frame
+            .native_surface_bindings_for_window(window)
+            .collect::<Vec<_>>(),
+        proposed
+    );
+    assert!(finish(frame).take_native_effects().is_empty());
+    assert_eq!(
+        session.native_window_bindings().collect::<Vec<_>>(),
+        [window]
+    );
+    assert!(!session.recognizes_native_binding(before[1]));
+    assert!(session.is_current_native_binding(proposed[1]));
+}
+
+#[test]
 fn shared_retirement_drains_original_physical_callbacks_after_candidate_drop_and_exact_retry() {
-    let (mut session, window, bindings) = shared_session();
+    let (mut session, window, bindings) = shared_session(&[A, B]);
     retire(&mut session, window, &bindings);
     let version = session.version();
     let before = format!("{:?}", session.view());
@@ -188,7 +394,7 @@ fn shared_retirement_drains_original_physical_callbacks_after_candidate_drop_and
 #[test]
 fn shared_retirement_releases_bounded_lifetimes_only_after_each_exact_lane_quiesces() {
     for reverse in [false, true] {
-        let (mut session, window, bindings) = shared_session();
+        let (mut session, window, bindings) = shared_session(&[A, B]);
         retire(&mut session, window, &bindings);
         session
             .report_managed_native_snapshot(

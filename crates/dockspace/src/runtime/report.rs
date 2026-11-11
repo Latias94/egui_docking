@@ -52,18 +52,24 @@ impl HostFrameReport {
         native_commit: Option<super::native::NativeHostCommit>,
         native_effects: Vec<NativeEffectRequest>,
     ) -> Self {
-        let (native_admissions, native_bindings, native_provider, native_input_pending) =
-            native_commit.map_or_else(
-                || (Vec::new(), Vec::new(), None, false),
-                |native| {
-                    (
-                        native.admissions,
-                        native.bindings,
-                        Some(native.provider),
-                        native.input_pending,
-                    )
-                },
-            );
+        let (
+            native_admissions,
+            native_bindings,
+            native_placement_detachments,
+            native_provider,
+            native_input_pending,
+        ) = native_commit.map_or_else(
+            || (Vec::new(), Vec::new(), Vec::new(), None, false),
+            |native| {
+                (
+                    native.admissions,
+                    native.bindings,
+                    native.placement_detachments,
+                    Some(native.provider),
+                    native.input_pending,
+                )
+            },
+        );
         let mut ordered_inputs = Vec::new();
         let native_root_continuations = transition
             .reduced_inputs()
@@ -427,6 +433,7 @@ impl HostFrameReport {
             native_admissions,
             native_bindings,
             native_root_continuations,
+            native_placement_detachments,
             native_input_pending,
             native_effects,
             repaint_surfaces,

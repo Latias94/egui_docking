@@ -10,6 +10,7 @@ use crate::command::ContentCloseTarget;
 use crate::document::PendingRuntimeDocumentRestore;
 use crate::engine::{
     CoreHostFrame, EngineInput, HostPresentationSlot, HostPresentationUnavailableReason,
+    OwnedPreparedHostFrameCommit,
 };
 use crate::ids::{RootId, SourceSequence, StableInputSourceId, SurfaceId};
 use crate::model::{DockPlacement, DockspaceView, WorkspaceVersion};
@@ -20,7 +21,8 @@ use crate::transition::InputOutcome;
 use super::DockspacePersistenceError;
 use super::close::PreparedCloseRequest;
 use super::local_action::PreparedSurfaceAction;
-use super::native::NativePlatformError;
+use super::native::{NativePlatformError, PreparedNativeHostCommit};
+use super::native_effect::PreparedNativeEffectRequests;
 use super::presentation;
 use super::{
     DockPresentationConfig, DockspaceCloseItem, DockspaceRuntimeError, DockspaceSession,
@@ -90,16 +92,46 @@ pub struct DockspaceHostFrame<'session> {
     pub(super) update_lease: Option<std::sync::Arc<()>>,
 }
 
-impl DockspaceHostFrame<'_> {
+/// Fully reduced facade frame awaiting host resource preparation and publication.
+///
+/// Queries describe the exact candidate, without granting current input or
+/// presentation authority. The session remains exclusively borrowed until this
+/// capability is committed or dropped.
+#[must_use = "dropping a prepared host frame rolls back the entire update"]
+pub struct PreparedDockspaceHostFrameCommit<'session> {
+    session: &'session mut DockspaceSession,
+    update_lease: Option<std::sync::Arc<()>>,
+    frame_attempt: crate::ids::HostPresentationAttemptId,
+    next_source_sequence: u64,
+    native_input_pending: bool,
+    submitted_presentation: presentation::SubmittedPresentationObservation,
+    prepared: OwnedPreparedHostFrameCommit,
+    prepared_native: Option<PreparedNativeHostCommit>,
+    presentation: presentation::PreparedPresentationEmissions,
+    effects: PreparedNativeEffectRequests,
+    #[cfg(feature = "serde")]
+    document_update: Option<PreparedDocumentUpdate>,
+}
+
+#[cfg(feature = "serde")]
+enum PreparedDocumentUpdate {
+    Restore(crate::document::BoundDocumentState),
+    Placements(crate::viewport_persistence::ViewportPlacementPreferences),
+}
+
+impl<'session> DockspaceHostFrame<'session> {
     /// Replaces all logical placements in one real native window atomically.
     ///
     /// Measurements and painting in this candidate use the proposed placements.
     /// Dropping the frame preserves the committed roster and exact generations.
     /// The clip is independent of each surface's logical layout size.
+    /// Publish changed placements before a separate workspace replacement frame.
+    /// An equivalent declaration preserves its exact identities and may precede replacement.
     ///
     /// # Errors
     ///
-    /// Rejects stale windows, invalid geometry, missing surfaces, storage refusal,
+    /// Rejects stale windows, invalid geometry, missing surfaces, surfaces owned
+    /// by another window or a pending native establishment, storage refusal,
     /// pending native input or an already started presentation phase.
     pub fn set_native_surface_placements(
         &mut self,
@@ -187,10 +219,11 @@ impl DockspaceHostFrame<'_> {
 
     /// Returns exact Root binding pairs proposed by this terminal replacement.
     ///
-    /// Prepay route/resource changes from these opaque pairs before committing
-    /// the frame. They grant no current authority. A failed or dropped frame
-    /// leaves the predecessor live; only the matching committed report permits
-    /// installing the successor on that same physical window.
+    /// This early preview does not include final placement vacancies. Use
+    /// [`Self::prepare_commit`] to prepare the complete native resource batch
+    /// after reduction. These pairs grant no current authority. A failed or
+    /// dropped frame leaves the predecessor live; only the matching committed
+    /// report permits installing the successor on that same physical window.
     pub fn proposed_native_root_continuations(
         &self,
     ) -> impl Iterator<Item = super::NativeRootContinuation> + '_ {
@@ -1008,11 +1041,27 @@ impl DockspaceHostFrame<'_> {
     ///
     /// Returns an error when the contribution roster is incomplete or the core
     /// rejects the final candidate.
-    pub fn commit(mut self) -> Result<HostFrameReport, DockspaceRuntimeError> {
+    pub fn commit(self) -> Result<HostFrameReport, DockspaceRuntimeError> {
+        self.prepare_commit()?.commit()
+    }
+
+    /// Finishes reduction and reserves core publication storage without publishing.
+    ///
+    /// Native hosts can inspect the final route changes and prepay their own
+    /// callback and resource obligations before committing. Dropping the result
+    /// rolls back the complete frame, including its accepted input prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for incomplete surface contributions, reduction failure,
+    /// or when the core cannot reserve the required publication storage.
+    pub fn prepare_commit(
+        mut self,
+    ) -> Result<PreparedDockspaceHostFrameCommit<'session>, DockspaceRuntimeError> {
         self.complete_pointer_input()?;
         let Self {
             session,
-            update_lease: _update_lease,
+            update_lease,
             frame,
             next_source_sequence,
             next_pointer_sequence: _,
@@ -1059,158 +1108,75 @@ impl DockspaceHostFrame<'_> {
         let effect_capacity = session.abandoned_native_effects.available_slots();
         let frame = frame.with_platform_effect_delivery_limit(effect_capacity);
         #[cfg(feature = "serde")]
-        let (transition, presentation, effects, prepared_native) = if let Some(restore) =
-            document_restore
-        {
-            let prepared = restore
-                .prepare_publication(frame, &session.engine)
-                .map_err(DockspacePersistenceError::session)?;
-            if effect_capacity
-                .is_some_and(|limit| prepared.transition().platform_effects().len() == limit)
-                && prepared.has_new_undelivered_platform_effects(&session.engine)
-            {
-                return Err(NativePlatformError::InputCapacity.into());
+        let restoring_document = document_restore.is_some();
+        #[cfg(not(feature = "serde"))]
+        let restoring_document = false;
+        #[cfg(feature = "serde")]
+        let (prepared, document_update) = match document_restore {
+            Some(restore) => {
+                let (prepared, binding) = restore
+                    .prepare_publication(frame, &session.engine)
+                    .map_err(DockspacePersistenceError::session)?;
+                (prepared, Some(PreparedDocumentUpdate::Restore(binding)))
             }
-            let prepared_native = session
-                .native
-                .as_ref()
-                .map(|native| {
-                    native.prepare_native_commit(
-                        prepared.candidate_engine(),
-                        workspace_root_continuations(prepared.transition()),
-                    )
-                })
-                .transpose()?;
-            let presentation = session.presentation.prepare_emissions(
-                prepared.transition(),
-                &submitted_presentation,
-                &encoding_surfaces,
-                prepared.candidate_engine(),
-            )?;
-            let effects = session
-                .abandoned_native_effects
-                .prepare_emissions(prepared.transition().platform_effects())?;
-            let (transition, binding) = prepared.commit(&mut session.engine)?;
-            session.document = Some(binding);
-            (transition, presentation, effects, prepared_native)
-        } else {
-            let prepared = frame.prepare_owned(&session.engine)?;
-            let document_placements = session
-                .document
-                .as_ref()
-                .map(|binding| binding.prepare_placement_publication(prepared.candidate_engine()))
-                .transpose()
-                .map_err(DockspacePersistenceError::capture)?;
-            if !accepted_native_prefix
-                && has_ordinary_application_input(prepared.transition())
-                && effect_capacity
-                    .is_some_and(|limit| prepared.transition().platform_effects().len() == limit)
-                && prepared.has_new_undelivered_platform_effects(&session.engine)
-            {
-                return Err(NativePlatformError::InputCapacity.into());
-            }
-            let prepared_native = session
-                .native
-                .as_ref()
-                .map(|native| {
-                    native.prepare_native_commit(
-                        prepared.candidate_engine(),
-                        workspace_root_continuations(prepared.transition()),
-                    )
-                })
-                .transpose()?;
-            let presentation = session.presentation.prepare_emissions(
-                prepared.transition(),
-                &submitted_presentation,
-                &encoding_surfaces,
-                prepared.candidate_engine(),
-            )?;
-            let effects = session
-                .abandoned_native_effects
-                .prepare_emissions(prepared.transition().platform_effects())?;
-            let transition = prepared.commit(&mut session.engine)?;
-            if let Some(placements) = document_placements {
-                // All fallible work preceded the engine publication. Keep the
-                // append-only identity history in its original session owner.
-                session
+            None => {
+                let prepared = frame.prepare_owned(&session.engine)?;
+                let placements = session
                     .document
-                    .as_mut()
-                    .expect("prepared placement publication retains its document binding")
-                    .publish_placements(placements);
+                    .as_ref()
+                    .map(|binding| {
+                        binding.prepare_placement_publication(prepared.candidate_engine())
+                    })
+                    .transpose()
+                    .map_err(DockspacePersistenceError::capture)?;
+                (prepared, placements.map(PreparedDocumentUpdate::Placements))
             }
-            (transition, presentation, effects, prepared_native)
         };
         #[cfg(not(feature = "serde"))]
-        let (transition, presentation, effects, prepared_native) = {
-            let prepared = frame.prepare_owned(&session.engine)?;
-            if !accepted_native_prefix
-                && has_ordinary_application_input(prepared.transition())
-                && effect_capacity
-                    .is_some_and(|limit| prepared.transition().platform_effects().len() == limit)
-                && prepared.has_new_undelivered_platform_effects(&session.engine)
-            {
-                return Err(NativePlatformError::InputCapacity.into());
-            }
-            let prepared_native = session
-                .native
-                .as_ref()
-                .map(|native| {
-                    native.prepare_native_commit(
-                        prepared.candidate_engine(),
-                        workspace_root_continuations(prepared.transition()),
-                    )
-                })
-                .transpose()?;
-            let presentation = session.presentation.prepare_emissions(
-                prepared.transition(),
-                &submitted_presentation,
-                &encoding_surfaces,
-                prepared.candidate_engine(),
-            )?;
-            let effects = session
-                .abandoned_native_effects
-                .prepare_emissions(prepared.transition().platform_effects())?;
-            (
-                prepared.commit(&mut session.engine)?,
-                presentation,
-                effects,
-                prepared_native,
-            )
-        };
-        session.committed_source_sequence = next_source_sequence;
-        let mut native_commit =
-            prepared_native
-                .zip(session.native.as_mut())
-                .map(|(prepared, native)| {
-                    let mut committed = prepared.commit(native);
-                    committed.input_pending |= native_input_pending;
-                    committed
-                });
-        let surface_presentation_commits = session.presentation.commit_observation(
-            &session.engine,
-            &transition,
-            &submitted_presentation,
-        );
-        let painted_outputs = presentation.commit(&mut session.presentation);
-        let native_effects = effects.commit();
-        if let Some(committed) = native_commit.as_mut() {
-            committed.input_pending |= session.abandoned_native_effects.has_pending()
-                || session.presentation.has_unrecorded_backend_report();
+        let prepared = frame.prepare_owned(&session.engine)?;
+        let transition = prepared.transition();
+        let candidate = prepared.candidate_engine();
+        if (restoring_document
+            || (!accepted_native_prefix && has_ordinary_application_input(transition)))
+            && effect_capacity.is_some_and(|limit| transition.platform_effects().len() == limit)
+            && prepared.has_new_undelivered_platform_effects(&session.engine)
+        {
+            return Err(NativePlatformError::InputCapacity.into());
         }
-        let mut report = HostFrameReport::from_transition(
+        let prepared_native = session
+            .native
+            .as_ref()
+            .map(|native| {
+                native.prepare_native_commit(
+                    &session.engine,
+                    candidate,
+                    workspace_root_continuations(transition),
+                )
+            })
+            .transpose()?;
+        let presentation = session.presentation.prepare_emissions(
+            transition,
+            &submitted_presentation,
+            &encoding_surfaces,
+            candidate,
+        )?;
+        let effects = session
+            .abandoned_native_effects
+            .prepare_emissions(transition.platform_effects())?;
+        Ok(PreparedDockspaceHostFrameCommit {
+            session,
+            update_lease,
             frame_attempt,
-            &transition,
-            painted_outputs,
-            surface_presentation_commits,
-            native_commit,
-            native_effects,
-        );
-        report
-            .repaint_surfaces
-            .extend(session.engine.surfaces_requiring_presentation_paint());
-        report.repaint_surfaces.sort_unstable();
-        report.repaint_surfaces.dedup();
-        Ok(report)
+            next_source_sequence,
+            native_input_pending,
+            submitted_presentation,
+            prepared,
+            prepared_native,
+            presentation,
+            effects,
+            #[cfg(feature = "serde")]
+            document_update,
+        })
     }
 
     pub(super) fn append(&mut self, input: EngineInput) -> Result<(), DockspaceRuntimeError> {
@@ -1258,5 +1224,136 @@ impl DockspaceHostFrame<'_> {
             return Err(DockspaceRuntimeError::replacement_already_submitted());
         }
         Ok(())
+    }
+
+    pub(super) fn ensure_replacement_input_allowed(&self) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        if self.frame.has_native_placement_submission() {
+            return Err(DockspaceRuntimeError::replacement_after_native_placements());
+        }
+        Ok(())
+    }
+}
+
+impl PreparedDockspaceHostFrameCommit<'_> {
+    /// Returns exact continuation proposals from the final reduction.
+    pub fn native_root_continuations(
+        &self,
+    ) -> impl Iterator<Item = super::NativeRootContinuation> + '_ {
+        let provider = self.session.native.as_ref().map(|native| native.provider());
+        workspace_root_continuations(self.prepared.transition())
+            .iter()
+            .filter_map(move |&(before, after)| {
+                provider.map(|provider| {
+                    super::NativeRootContinuation::from_pair(provider, before, after)
+                })
+            })
+    }
+
+    /// Returns newly detached exact placements with no physical destruction obligation.
+    ///
+    /// Every entry was previously published and now owns a terminal guard.
+    /// Another binding retains its shared window's physical obligations, or
+    /// the window continues through a Root pair. Old outputs and callbacks
+    /// must still drain before the host reports exact quiescence.
+    /// Continuation predecessors have their own pairs and are omitted here.
+    #[must_use]
+    pub fn native_placement_detachments(&self) -> &[NativeSurfaceBinding] {
+        self.prepared_native
+            .as_ref()
+            .map_or(&[], |native| native.placement_detachments())
+    }
+
+    /// Returns the published predecessor roster for native resource preparation.
+    pub fn committed_native_surface_bindings_for_window(
+        &self,
+        window: super::NativeWindowBinding,
+    ) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        self.session.native_surface_bindings_for_window(window)
+    }
+
+    /// Returns the complete final proposed roster of one physical window.
+    pub fn native_surface_bindings_for_window(
+        &self,
+        window: super::NativeWindowBinding,
+    ) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        let provider = self.session.native.as_ref().map(|native| native.provider());
+        self.prepared
+            .candidate_engine()
+            .viewport()
+            .registry()
+            .bindings_for_window(window.core())
+            .filter_map(move |binding| {
+                (provider == Some(window.provider()))
+                    .then(|| NativeSurfaceBinding::from_binding(window.provider(), binding))
+            })
+    }
+
+    /// Publishes the prepared frame and returns its confirmed outputs and obligations.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed publication fence or an invalidated native ingress
+    /// reservation before replacing any committed session state.
+    pub fn commit(self) -> Result<HostFrameReport, DockspaceRuntimeError> {
+        let Self {
+            session,
+            update_lease: _update_lease,
+            frame_attempt,
+            next_source_sequence,
+            native_input_pending,
+            submitted_presentation,
+            prepared,
+            prepared_native,
+            presentation,
+            effects,
+            #[cfg(feature = "serde")]
+            document_update,
+        } = self;
+        let transition = prepared.commit(&mut session.engine)?;
+        #[cfg(feature = "serde")]
+        match document_update {
+            Some(PreparedDocumentUpdate::Restore(binding)) => session.document = Some(binding),
+            Some(PreparedDocumentUpdate::Placements(placements)) => session
+                .document
+                .as_mut()
+                .expect("prepared placement publication retains its document binding")
+                .publish_placements(placements),
+            None => {}
+        }
+        session.committed_source_sequence = next_source_sequence;
+        let mut native_commit =
+            prepared_native
+                .zip(session.native.as_mut())
+                .map(|(prepared, native)| {
+                    let mut committed = prepared.commit(native);
+                    committed.input_pending |= native_input_pending;
+                    committed
+                });
+        let surface_presentation_commits = session.presentation.commit_observation(
+            &session.engine,
+            &transition,
+            &submitted_presentation,
+        );
+        let painted_outputs = presentation.commit(&mut session.presentation);
+        let native_effects = effects.commit();
+        if let Some(committed) = native_commit.as_mut() {
+            committed.input_pending |= session.abandoned_native_effects.has_pending()
+                || session.presentation.has_unrecorded_backend_report();
+        }
+        let mut report = HostFrameReport::from_transition(
+            frame_attempt,
+            &transition,
+            painted_outputs,
+            surface_presentation_commits,
+            native_commit,
+            native_effects,
+        );
+        report
+            .repaint_surfaces
+            .extend(session.engine.surfaces_requiring_presentation_paint());
+        report.repaint_surfaces.sort_unstable();
+        report.repaint_surfaces.dedup();
+        Ok(report)
     }
 }

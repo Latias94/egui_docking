@@ -1042,15 +1042,17 @@ impl NativeProducerState {
 
     fn prepare(
         engine: &crate::engine::DockEngine,
-        previous: Option<&Self>,
+        previous: Option<(&Self, &crate::engine::DockEngine)>,
         limit: Option<NativeProducerStorageLimit>,
     ) -> Result<Self, NativePlatformError> {
         if let Some(limit) = limit {
             limit.validate()?;
         }
+        let (previous, published) = previous.unzip();
         let registry = engine.viewport().registry();
-        let obsolete_live_placement = |state: &NativeBindingState| {
-            registry.window(state.binding.window()).is_some()
+        let obsolete_placement = |state: &NativeBindingState| {
+            (registry.window(state.binding.window()).is_some()
+                || engine.viewport().retains_window_cleanup(state.binding))
                 && registry.placement_record(state.binding).is_none()
                 && !engine
                     .viewport()
@@ -1060,7 +1062,7 @@ impl NativeProducerState {
             producer
                 .bindings
                 .iter()
-                .filter(|state| !obsolete_live_placement(state))
+                .filter(|state| !obsolete_placement(state))
                 .count()
         });
         let new_bindings = registry
@@ -1069,8 +1071,21 @@ impl NativeProducerState {
                 previous.is_none_or(|producer| producer.binding(record.binding()).is_none())
             })
             .count();
+        let new_cleanup = |binding: ViewportBinding| {
+            registry.placement_record(binding).is_none()
+                && previous.is_none_or(|producer| producer.binding(binding).is_none())
+                && published.is_none_or(|engine| {
+                    !engine.viewport().recognizes_retired_native_binding(binding)
+                })
+        };
+        let cleanup_bindings = engine
+            .viewport()
+            .binding_retirements()
+            .filter(|&(binding, _)| new_cleanup(binding))
+            .count();
         let binding_count = retained_bindings
             .checked_add(new_bindings)
+            .and_then(|count| count.checked_add(cleanup_bindings))
             .ok_or(NativePlatformError::InputCapacity)?;
         let new_windows = registry
             .windows()
@@ -1078,9 +1093,27 @@ impl NativeProducerState {
                 previous.is_none_or(|producer| producer.window(window.binding()).is_none())
             })
             .count();
+        let cleanup_windows = engine
+            .viewport()
+            .binding_retirements()
+            .enumerate()
+            .filter(|&(index, (binding, _))| {
+                new_cleanup(binding)
+                    && registry.window(binding.window()).is_none()
+                    && previous.is_none_or(|producer| producer.window(binding.window()).is_none())
+                    && !engine
+                        .viewport()
+                        .binding_retirements()
+                        .take(index)
+                        .any(|(earlier, _)| {
+                            new_cleanup(earlier) && earlier.window() == binding.window()
+                        })
+            })
+            .count();
         let window_count = previous
             .map_or(0, |producer| producer.windows.len())
             .checked_add(new_windows)
+            .and_then(|count| count.checked_add(cleanup_windows))
             .ok_or(NativePlatformError::InputCapacity)?;
         let work_area_count = engine.viewport().work_areas().count();
         if limit.is_some_and(|limit| {
@@ -1101,7 +1134,7 @@ impl NativeProducerState {
         )?;
         if let Some(previous) = previous {
             for state in &previous.bindings {
-                if !obsolete_live_placement(state) {
+                if !obsolete_placement(state) {
                     bindings.push(NativeBindingState {
                         binding: state.binding,
                         admission: registry
@@ -1127,6 +1160,33 @@ impl NativeProducerState {
                 bindings.push(NativeBindingState {
                     binding: record.binding(),
                     admission: Some(record.admission()),
+                });
+            }
+        }
+        // A placement may change and vacate its entire physical window in this
+        // candidate. Real cleanup still needs an exact producer lane, even if
+        // that placement never entered the published registry. A previously
+        // published retirement whose producer drained must not be recreated.
+        for (binding, _) in engine.viewport().binding_retirements() {
+            if !new_cleanup(binding) {
+                continue;
+            }
+            bindings.push(NativeBindingState {
+                binding,
+                admission: None,
+            });
+            if registry.window(binding.window()).is_none()
+                && windows
+                    .iter()
+                    .all(|window| window.binding != binding.window())
+            {
+                windows.push(NativeWindowState {
+                    binding: binding.window(),
+                    observation_binding: binding,
+                    current: false,
+                    cleanup_observation: true,
+                    window_generation: 0,
+                    close_generation: 0,
                 });
             }
         }
@@ -1727,12 +1787,13 @@ impl RuntimeNativeState {
 
     pub(super) fn prepare_native_commit(
         &self,
+        previous_engine: &crate::engine::DockEngine,
         engine: &crate::engine::DockEngine,
         root_continuations: &[(ViewportBinding, ViewportBinding)],
     ) -> Result<PreparedNativeHostCommit, NativePlatformError> {
         let next_producer = NativeProducerState::prepare(
             engine,
-            Some(&self.producer),
+            Some((&self.producer, previous_engine)),
             self.producer_storage_limit,
         )?;
         let current_count = next_producer
@@ -1742,6 +1803,35 @@ impl RuntimeNativeState {
             .count();
         let mut bindings = storage::producer_buffer(current_count)?;
         let mut admissions = storage::producer_buffer(current_count)?;
+        let registry = engine.viewport().registry();
+        let detached = |binding: ViewportBinding| {
+            previous_engine
+                .viewport()
+                .registry()
+                .placement_record(binding)
+                .is_some()
+                && registry.placement_record(binding).is_none()
+                && engine.viewport().has_terminal_native_binding_guard(binding)
+                && !root_continuations
+                    .iter()
+                    .any(|&(before, _)| before == binding)
+                && (registry.window(binding.window()).is_some()
+                    || root_continuations.iter().any(|&(before, after)| {
+                        before.window() == binding.window()
+                            && registry.window(after.window()).is_some()
+                    }))
+        };
+        let mut placement_detachments = storage::producer_buffer(
+            self.producer
+                .bindings
+                .iter()
+                .filter(|state| detached(state.binding))
+                .count(),
+        )?;
+        placement_detachments.extend(self.producer.bindings.iter().filter_map(|state| {
+            detached(state.binding)
+                .then(|| NativeSurfaceBinding::from_binding(self.provider(), state.binding))
+        }));
         for state in &next_producer.bindings {
             if let Some(admission) = state.admission {
                 let binding = NativeSurfaceBinding::from_binding(self.provider(), state.binding);
@@ -1783,6 +1873,7 @@ impl RuntimeNativeState {
                 provider: self.provider(),
                 admissions,
                 bindings,
+                placement_detachments,
                 input_pending: self.recorder.recorded_through() > committed,
             },
         })
@@ -1798,6 +1889,10 @@ pub(super) struct PreparedNativeHostCommit {
 }
 
 impl PreparedNativeHostCommit {
+    pub(super) fn placement_detachments(&self) -> &[NativeSurfaceBinding] {
+        &self.report.placement_detachments
+    }
+
     pub(super) fn commit(self, native: &mut RuntimeNativeState) -> NativeHostCommit {
         native.producer = self.next_producer;
         native.binding_roster_unsettled_through = self.binding_roster_unsettled_through;
@@ -1810,6 +1905,7 @@ pub(super) struct NativeHostCommit {
     pub(super) provider: PlatformObservationLease,
     pub(super) admissions: Vec<NativeSurfaceBinding>,
     pub(super) bindings: Vec<NativeSurfaceBinding>,
+    pub(super) placement_detachments: Vec<NativeSurfaceBinding>,
     pub(super) input_pending: bool,
 }
 

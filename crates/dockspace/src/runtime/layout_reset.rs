@@ -178,7 +178,7 @@ impl DockspaceHostFrame<'_> {
         reset: &PreparedDockspaceLayoutReset,
         mappings: impl IntoIterator<Item = (NativeSurfaceBinding, SurfaceId)>,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.ensure_semantic_input_allowed()?;
+        self.ensure_replacement_input_allowed()?;
         self.session.ensure_managed_native_host_available()?;
         self.session.ensure_prepared_layout_reset_current(reset)?;
         self.complete_pointer_input()?;
@@ -255,7 +255,7 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         reset: &PreparedDockspaceLayoutReset,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.ensure_semantic_input_allowed()?;
+        self.ensure_replacement_input_allowed()?;
         self.session.ensure_prepared_layout_reset_current(reset)?;
         self.complete_pointer_input()?;
         let input = reset.replacement_input(self.frame.view())?;

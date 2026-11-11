@@ -117,6 +117,15 @@ fn public_producer_limit_keeps_accepted_registration_and_quiescence_progress_wit
     assert_eq!(report.native_bindings().len(), 1);
     assert_eq!(report.native_bindings()[0].surface(), SurfaceId::new(2));
     assert_ne!(report.native_bindings()[0], binding);
+    assert!(!session.recognizes_native_binding(binding));
+    assert_eq!(
+        session
+            .retained_native_surface_bindings_for_window(binding.window())
+            .count(),
+        0,
+        "a released producer lane cannot be recreated from retained core cleanup"
+    );
+    assert!(!session.recognizes_native_window_binding(binding.window()));
     assert_eq!(session.native_input_recorded_count(), recorded + 2);
     assert_eq!(
         session.native_input_producer_storage_capacity_bytes(),

@@ -795,7 +795,7 @@ impl super::DockspaceHostFrame<'_> {
         native_roots: Option<&[SurfaceId]>,
         mappings: &[(super::NativeSurfaceBinding, SurfaceId)],
     ) -> Result<(), super::DockspaceRuntimeError> {
-        self.ensure_semantic_input_allowed()?;
+        self.ensure_replacement_input_allowed()?;
         self.session
             .ensure_prepared_document_restore_current(restore)?;
         self.complete_pointer_input()?;

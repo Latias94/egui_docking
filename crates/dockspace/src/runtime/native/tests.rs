@@ -25,6 +25,7 @@ mod pointer_metadata;
 mod pointer_sequence;
 mod prepared_pointer;
 mod producer_capacity;
+mod shared_placement_vacancy;
 mod storage;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -93,7 +94,7 @@ fn admission_diff_reports_only_the_same_pending_binding() {
     let native = session.native.as_mut().unwrap();
     assert!(
         native
-            .prepare_native_commit(&session.engine, &[])
+            .prepare_native_commit(&session.engine, &session.engine, &[])
             .unwrap()
             .report
             .admissions
@@ -110,7 +111,7 @@ fn admission_diff_reports_only_the_same_pending_binding() {
         .admission = Some(ViewportAdmission::Pending);
     assert_eq!(
         native
-            .prepare_native_commit(&session.engine, &[])
+            .prepare_native_commit(&session.engine, &session.engine, &[])
             .unwrap()
             .report
             .admissions,
@@ -133,7 +134,7 @@ fn admission_diff_reports_only_the_same_pending_binding() {
         .binding = replacement;
     assert!(
         native
-            .prepare_native_commit(&session.engine, &[])
+            .prepare_native_commit(&session.engine, &session.engine, &[])
             .unwrap()
             .report
             .admissions

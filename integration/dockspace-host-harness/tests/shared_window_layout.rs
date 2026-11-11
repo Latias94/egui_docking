@@ -12,8 +12,8 @@ use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, HostFrameReport, HostWindowToken, NativeHostCapabilities,
     NativeHostCapability, NativePointerRoster, NativeReceiverAnswer, NativeSurfaceBinding,
     NativeSurfacePlacement, NativeWindowBinding, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaRoster, SurfacePresentationResult,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    NativeWindowPresentationState, NativeWorkAreaRoster, PaintedSurfaceOutput,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use dockspace_host_harness::RecordingRenderer;
 
@@ -128,6 +128,16 @@ fn compose(
     let bindings = frame
         .native_surface_bindings_for_window(window)
         .collect::<Vec<_>>();
+    let outputs = paint_placements(frame, geometry, &bindings);
+    present(session, outputs);
+    bindings
+}
+
+fn paint_placements(
+    mut frame: DockspaceHostFrame<'_>,
+    geometry: &[NativeSurfacePlacement],
+    bindings: &[NativeSurfaceBinding],
+) -> Vec<PaintedSurfaceOutput> {
     for placement in geometry {
         let bounds = LogicalRect::new(
             0.0,
@@ -160,11 +170,14 @@ fn compose(
                 .any(|binding| output.matches_native_binding(*binding))
         );
     }
+    outputs
+}
+
+fn present(session: &mut DockspaceSession, outputs: Vec<PaintedSurfaceOutput>) {
     session
         .report_surface_presentations(outputs, SurfacePresentationResult::Presented)
         .unwrap();
     idle(session);
-    bindings
 }
 
 #[test]
@@ -225,6 +238,65 @@ fn an_explicit_initial_whole_client_placement_keeps_its_layout_after_window_resi
         .unwrap();
     idle(&mut session);
     assert_eq!(session.native_surface_placement(binding), Some(placement));
+}
+
+#[test]
+fn an_equivalent_explicit_declaration_can_precede_workspace_reset() {
+    let (mut session, original) = session();
+    let geometry = session.native_surface_placement(original).unwrap();
+    let reset = session.prepare_layout_reset(layout(A, B)).unwrap();
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .set_native_surface_placements(original.window(), &[geometry])
+        .unwrap();
+    frame.submit_layout_reset(&reset).unwrap();
+    let report = finish(frame);
+    let [continuation] = report.native_root_continuations() else {
+        panic!("the equivalent declaration preserves the published predecessor");
+    };
+    assert_eq!(continuation.predecessor(), original);
+    let successor = continuation.successor();
+    session
+        .report_managed_native_snapshot(
+            [(
+                successor.window(),
+                facts(1.5).with_content_size(PhysicalSize::new(1400.0, 1000.0).unwrap()),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .unwrap();
+    idle(&mut session);
+    assert_eq!(session.native_surface_placement(successor), Some(geometry));
+}
+
+#[test]
+fn adding_a_sibling_preserves_the_original_whole_client_placement_and_output() {
+    let (mut session, original) = session();
+    let window = original.window();
+    let original_geometry = session.native_surface_placement(original).unwrap();
+    let frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    let outputs = paint_placements(frame, &[original_geometry], &[original]);
+    present(&mut session, outputs);
+    let presented = session.presented_surface(A).unwrap();
+
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .set_native_surface_placements(window, &[original_geometry, placements(A, B)[1]])
+        .unwrap();
+    let bindings: Vec<_> = frame.native_surface_bindings_for_window(window).collect();
+    assert_eq!(bindings.len(), 2);
+    assert_eq!(bindings[0], original);
+    assert_eq!(bindings[1].surface(), B);
+    finish(frame);
+
+    assert_eq!(session.presented_surface(A), Some(presented));
+    assert!(session.presented_surface(B).is_none());
 }
 
 #[test]
@@ -333,6 +405,57 @@ fn moving_b_revokes_b_output_while_a_keeps_its_exact_placement_and_presentation(
     assert_eq!(session.presented_surface(A), Some(a));
     assert!(session.presented_surface(B).is_none());
     assert!(session.native_surface_placement(before[1]).is_none());
+}
+
+#[test]
+fn workspace_reset_only_retires_previously_published_placements() {
+    let (mut session, original) = session();
+    let window = original.window();
+    let geometry = placements(A, B);
+    let before = compose(&mut session, window, &geometry);
+    let reset = session.prepare_layout_reset(layout(A, B)).unwrap();
+    let moved = NativeSurfacePlacement::new(
+        B,
+        geometry[1].size(),
+        PhysicalPoint::new(500.0, 50.0).unwrap(),
+        geometry[1].scale_factor(),
+        geometry[1].clip(),
+    );
+
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .set_native_surface_placements(window, &[geometry[0], moved])
+        .unwrap();
+    let edited: Vec<_> = frame.native_surface_bindings_for_window(window).collect();
+    assert_ne!(before[1], edited[1]);
+    assert_eq!(
+        frame.submit_layout_reset(&reset).unwrap_err().kind(),
+        dockspace::runtime::DockspaceRuntimeErrorKind::OperationConflict,
+        "the reset cannot retire a placement that has never been published"
+    );
+    finish(frame);
+    assert!(session.is_current_native_binding(edited[1]));
+    assert!(!session.recognizes_native_binding(before[1]));
+
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame.submit_layout_reset(&reset).unwrap();
+    let report = finish(frame);
+    for predecessor in edited {
+        assert!(
+            report
+                .native_root_continuations()
+                .iter()
+                .any(|continuation| { continuation.predecessor() == predecessor })
+        );
+        session
+            .report_native_binding_quiescence(predecessor)
+            .unwrap();
+    }
+    idle(&mut session);
 }
 
 #[test]

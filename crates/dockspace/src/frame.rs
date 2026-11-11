@@ -672,6 +672,31 @@ impl ViewportCoordinator {
             || self.binding_cleanup.is_terminal(binding)
     }
 
+    pub(crate) fn has_terminal_native_binding_guard(&self, binding: ViewportBinding) -> bool {
+        self.binding_cleanup.is_terminal(binding) && !self.binding_cleanup.contains_key(&binding)
+    }
+
+    pub(crate) fn settle_unpublished_placement_vacancies(
+        &mut self,
+        vacancies: &[ViewportBinding],
+        published: &Self,
+    ) -> Result<(), ViewportCoordinatorError> {
+        for &binding in vacancies {
+            if !published.recognizes_input_binding(binding)
+                && (self.registry.window(binding.window()).is_some()
+                    || self.retains_window_cleanup(binding))
+                && self.has_terminal_native_binding_guard(binding)
+            {
+                // A shared placement created and vacated inside this candidate
+                // never owned a published producer or physical callback lane.
+                // The surviving window or its cleanup owns physical obligations.
+                let provider = self.active_platform_provider()?;
+                self.compact_quiesced_terminal_binding_guard(binding, provider)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn recognizes_retired_native_window(
         &self,
         binding: crate::viewport::WindowBinding,
@@ -722,9 +747,12 @@ impl ViewportCoordinator {
         &mut self,
         window: crate::viewport::WindowBinding,
         placements: &[crate::coordinates::NativeSurfacePlacement],
-    ) -> Result<(), ViewportCoordinatorError> {
+    ) -> Result<Vec<SurfaceId>, ViewportCoordinatorError> {
         self.registry
-            .set_surface_placements(window, placements)
+            .set_surface_placements(window, placements, |binding| {
+                self.binding_cleanup.contains_key(&binding)
+                    || self.binding_cleanup.is_terminal(binding)
+            })
             .map_err(ViewportCoordinatorError::Registry)
     }
 

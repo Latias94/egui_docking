@@ -706,14 +706,22 @@ alongside Child recovery references and saved placement. The old
 host surface may disappear entirely. These explicit operations reject an occupied
 target rather than claiming another window.
 
-Before committing, prepay native route/resources from
-`frame.proposed_native_root_continuations()`. After the complete commit succeeds,
-install only the matching `report.native_root_continuations()` exact pairs on the
-same OS windows. An application-owned root-surface field must publish in that same
-host commit boundary. Late predecessor outputs/callbacks keep their original
-identity until quiescence; they do not supply successor coordinates or interaction
-authority. Fresh OS geometry plus measurement can establish coordinates before
-the successor output is Presented; only its exact presentation authorizes input.
+Finish the frame with `frame.prepare_commit()` before preparing native resources.
+The prepared value exposes the final `native_root_continuations()`,
+`native_placement_detachments()` and complete predecessor/successor rosters after
+vacancy reduction. Prepay the whole batch under the host's publication lock,
+then call `prepared.commit()`. Dropping preparation rolls back the frame.
+`frame.proposed_native_root_continuations()` remains an early replacement preview;
+it does not describe final placement vacancies.
+
+After the complete commit succeeds, install only the matching
+`report.native_root_continuations()` exact pairs on the same OS windows, and
+independently drain every `report.native_placement_detachments()` entry. An
+application-owned root-surface field publishes at that same host commit boundary.
+Late predecessor outputs/callbacks keep their original identity until quiescence;
+they do not supply successor coordinates or interaction authority. Fresh OS
+geometry plus measurement can establish coordinates before the successor output
+is Presented; only its exact presentation authorizes input.
 
 After committing, a managed host may call
 `frame.advance_next_native_surface_create()` once per available lifecycle work

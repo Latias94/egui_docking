@@ -795,6 +795,16 @@ impl DockEngine {
                 input: candidate.last_input,
                 source,
             })?;
+        candidate
+            .viewport
+            .settle_unpublished_placement_vacancies(
+                vacancy_settlement.logical_vacated_bindings(),
+                &before_viewport,
+            )
+            .map_err(|source| EngineError::Viewport {
+                input: candidate.last_input,
+                source,
+            })?;
         candidate.settle_semantic_surface_vacancies(candidate.last_input, &vacant_surfaces)?;
         let owner_vacated = vacancy_settlement
             .logical_vacated_bindings()

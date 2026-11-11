@@ -34,7 +34,7 @@ mod touch;
 mod update;
 
 pub use crate::interaction::PointerContinuationToken;
-pub use host_frame::DockspaceHostFrame;
+pub use host_frame::{DockspaceHostFrame, PreparedDockspaceHostFrameCommit};
 pub use layout_reset::PreparedDockspaceLayoutReset;
 pub use manipulation_feedback::{
     DockspaceManipulationCancelReason, DockspaceManipulationDelivery,
@@ -623,6 +623,7 @@ pub struct HostFrameReport {
     native_admissions: Vec<NativeSurfaceBinding>,
     native_bindings: Vec<NativeSurfaceBinding>,
     native_root_continuations: Vec<NativeRootContinuation>,
+    native_placement_detachments: Vec<NativeSurfaceBinding>,
     native_input_pending: bool,
     native_effects: Vec<NativeEffectRequest>,
     repaint_surfaces: Vec<SurfaceId>,
@@ -762,6 +763,15 @@ impl HostFrameReport {
         &self.native_root_continuations
     }
 
+    /// Returns exact placements detached without destroying their shared window.
+    ///
+    /// Hosts must drain every old output and callback before reporting each
+    /// binding's quiescence. These entries grant no current routing authority.
+    #[must_use]
+    pub fn native_placement_detachments(&self) -> &[NativeSurfaceBinding] {
+        &self.native_placement_detachments
+    }
+
     /// Takes the exact provider-bound native effects emitted by this frame.
     ///
     /// The vector preserves core order. Each request is affine and must be
@@ -851,6 +861,7 @@ impl DockspaceRuntimeError {
                 DockspaceRuntimeErrorKind::Internal
             }
             DockspaceRuntimeErrorSource::ReplacementAlreadySubmitted
+            | DockspaceRuntimeErrorSource::ReplacementAfterNativePlacements
             | DockspaceRuntimeErrorSource::PreparedLayoutResetMismatch => {
                 DockspaceRuntimeErrorKind::OperationConflict
             }
@@ -976,6 +987,12 @@ impl DockspaceRuntimeError {
     const fn replacement_already_submitted() -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::ReplacementAlreadySubmitted,
+        }
+    }
+
+    const fn replacement_after_native_placements() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::ReplacementAfterNativePlacements,
         }
     }
 
@@ -1114,6 +1131,8 @@ enum DockspaceRuntimeErrorSource {
     PaneFocusObservationGenerationExhausted,
     #[error("workspace replacement is the final semantic mutation in its host frame")]
     ReplacementAlreadySubmitted,
+    #[error("publish native surface placements in a separate frame before replacing the workspace")]
+    ReplacementAfterNativePlacements,
     #[error("prepared layout reset belongs to an older or different session state")]
     PreparedLayoutResetMismatch,
     #[cfg(feature = "serde")]

@@ -149,7 +149,7 @@ impl NativeProducerStorageLimit {
         let binding_bytes = size_of::<NativeBindingState>()
             .checked_mul(2)?
             .checked_add(size_of::<NativeWindowState>().checked_mul(2)?)?
-            .checked_add(size_of::<NativeSurfaceBinding>().checked_mul(2)?)?
+            .checked_add(size_of::<NativeSurfaceBinding>().checked_mul(3)?)?
             .checked_add(size_of::<NativeSnapshotEntry>())?
             .checked_add(size_of::<ViewportBinding>())?
             .checked_add(size_of::<ObservedWindow>())?

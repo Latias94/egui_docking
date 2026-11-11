@@ -216,6 +216,27 @@ impl DockspaceSession {
             .is_some_and(|native| native.recognizes_binding(binding))
     }
 
+    /// Returns every current or retired exact placement retained for this window.
+    ///
+    /// The physical callback's original correlation tag may no longer belong to
+    /// the placement roster. After its real destruction and all host references
+    /// drain, the host must report each retained binding's quiescence before
+    /// releasing the physical lifetime. This query grants no input authority.
+    pub fn retained_native_surface_bindings_for_window(
+        &self,
+        window: super::NativeWindowBinding,
+    ) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+        self.native
+            .iter()
+            .filter(move |native| native.provider() == window.provider())
+            .flat_map(|native| {
+                native.producer.bindings.iter().map(move |state| {
+                    NativeSurfaceBinding::from_binding(native.provider(), state.binding)
+                })
+            })
+            .filter(move |binding| binding.window() == window)
+    }
+
     /// Returns whether the host retains this exact live or retired real window.
     ///
     /// Placement changes do not revoke physical callbacks. A retired window

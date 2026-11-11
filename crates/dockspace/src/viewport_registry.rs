@@ -1608,23 +1608,13 @@ impl ViewportRegistry {
         ))
     }
 
-    /// Replaces only this window's placement roster in one publication candidate.
+    /// Replaces this window's roster and returns the surfaces whose exact bindings changed.
     pub(crate) fn set_surface_placements(
         &mut self,
         binding: WindowBinding,
         placements: &[NativeSurfacePlacement],
-    ) -> Result<(), ViewportRegistryError> {
-        let mut candidate = self.clone();
-        candidate.set_surface_placements_in_place(binding, placements)?;
-        *self = candidate;
-        Ok(())
-    }
-
-    fn set_surface_placements_in_place(
-        &mut self,
-        binding: WindowBinding,
-        placements: &[NativeSurfacePlacement],
-    ) -> Result<(), ViewportRegistryError> {
+        retains_binding: impl Fn(ViewportBinding) -> bool,
+    ) -> Result<Vec<SurfaceId>, ViewportRegistryError> {
         let window = self
             .windows
             .get(&binding)
@@ -1632,46 +1622,38 @@ impl ViewportRegistry {
         if placements.is_empty() {
             return Err(ViewportRegistryError::WindowPlacementUnavailable { binding });
         }
-        let current = self.bindings_for_window(binding).collect::<Vec<_>>();
-        if current.len() == placements.len()
-            && placements.iter().all(|placement| {
-                current.iter().any(|exact| {
-                    exact.surface() == placement.surface()
-                        && self.surface_placement(*exact) == Some(*placement)
-                })
-            })
-            && placements
-                .iter()
-                .map(|placement| placement.surface())
-                .collect::<BTreeSet<_>>()
-                .len()
-                == placements.len()
-        {
-            // An explicit whole-client layout may initially equal the implicit
-            // default. Preserve the host's declaration across later resizes
-            // without changing the current placement or presentation identity.
-            for placement in placements {
-                self.records
-                    .get_mut(&placement.surface())
-                    .expect("equivalent complete roster retains every placement")
-                    .placement = Some(*placement);
-            }
-            return Ok(());
-        }
-        if matches!(
+        let frozen = matches!(
             window.lifecycle,
             ViewportLifecycle::AwaitingDestroyed | ViewportLifecycle::Destroyed
-        ) || window.pending_close_request.is_some()
-        {
-            return Err(ViewportRegistryError::WindowPlacementUnavailable { binding });
-        }
+        ) || window.pending_close_request.is_some();
+
         let mut surfaces = BTreeSet::new();
-        for placement in placements {
-            if !surfaces.insert(placement.surface()) {
-                return Err(ViewportRegistryError::SurfaceAlreadyRegistered {
-                    surface: placement.surface(),
+        let mut replacements = Vec::new();
+        let mut declarations = Vec::new();
+        for &placement in placements {
+            let surface = placement.surface();
+            let existing = self.records.get(&surface);
+            if !surfaces.insert(surface)
+                || existing.is_some_and(|record| record.binding.window() != binding)
+            {
+                return Err(if frozen {
+                    ViewportRegistryError::WindowPlacementUnavailable { binding }
+                } else {
+                    ViewportRegistryError::SurfaceAlreadyRegistered { surface }
                 });
             }
+            if let Some(existing) = existing
+                && self.surface_placement(existing.binding) == Some(placement)
+            {
+                if existing.placement.is_none() {
+                    declarations.push(placement);
+                }
+                continue;
+            }
+            if frozen {
+                return Err(ViewportRegistryError::WindowPlacementUnavailable { binding });
+            }
+
             if placement.size().width() <= 0.0
                 || placement.size().height() <= 0.0
                 || LogicalRect::from_min_size(
@@ -1683,83 +1665,106 @@ impl ViewportRegistry {
                 })
                 .is_err()
             {
-                return Err(ViewportRegistryError::InvalidSurfacePlacement {
-                    surface: placement.surface(),
-                });
+                return Err(ViewportRegistryError::InvalidSurfacePlacement { surface });
             }
-            if self
-                .records
-                .get(&placement.surface())
-                .is_some_and(|record| record.binding.window() != binding)
-            {
-                return Err(ViewportRegistryError::SurfaceAlreadyRegistered {
-                    surface: placement.surface(),
-                });
-            }
+            replacements.push(placement);
         }
         let removed: Vec<_> = self
             .bindings_for_window(binding)
             .filter(|old| !surfaces.contains(&old.surface()))
             .collect();
+        if replacements.is_empty() && removed.is_empty() {
+            self.declare_preserved_placements(declarations);
+            return Ok(Vec::new());
+        }
+        if frozen {
+            return Err(ViewportRegistryError::WindowPlacementUnavailable { binding });
+        }
+
+        let mut candidate = self.clone();
+        if let Some(remaining) = &mut candidate.native_binding_allocation_budget {
+            // The real window stays live. Placements without exact cleanup
+            // obligations are removed from the producer at publication.
+            *remaining += removed.iter().filter(|&&old| !retains_binding(old)).count();
+        }
+        let mut changed = Vec::with_capacity(removed.len() + replacements.len());
         for old in removed {
-            self.next_surface_authority(old.surface())?;
-            self.records.remove(&old.surface());
+            candidate.next_surface_authority(old.surface())?;
+            candidate.records.remove(&old.surface());
+            changed.push(old.surface());
         }
-        for &placement in placements {
-            let surface = placement.surface();
-            if self
-                .records
-                .get(&surface)
-                .is_some_and(|record| record.placement == Some(placement))
-            {
-                continue;
-            }
-            let previous_admission = self
-                .records
-                .get(&surface)
-                .map_or(ViewportAdmission::Admitted, |record| record.admission);
-            if !self.records.contains_key(&surface) {
-                if !self.native_binding_allocation_available() {
-                    return Err(ViewportRegistryError::NativeBindingCapacity);
-                }
-                self.commit_native_binding_slot();
-            }
-            let placement_generation = self
-                .last_placement_generation
-                .checked_next()
-                .ok_or(ViewportRegistryError::PlacementGenerationExhausted)?;
-            self.last_placement_generation = placement_generation;
-            let exact =
-                ViewportBinding::with_placement_generation(binding, surface, placement_generation);
-            let generation = self.next_surface_authority(surface)?;
-            let coordinates = self
-                .windows
-                .get(&binding)
-                .and_then(|window| window.coordinates)
-                .and_then(|window| {
-                    CoordinateSnapshot::from_window_coordinates(
-                        exact,
-                        generation,
-                        window,
-                        SurfaceClientGeometry::new(
-                            placement.origin(),
-                            placement.scale_factor(),
-                            placement.clip(),
-                        ),
-                    )
-                });
-            self.records.insert(
-                surface,
-                SurfacePlacementRecord {
-                    binding: exact,
-                    admission: previous_admission,
-                    coordinates,
-                    recovery_coordinates: coordinates.map(RecoveryCoordinateSnapshot::new),
-                    coordinate_generation: generation,
-                    placement: Some(placement),
-                },
-            );
+        for placement in replacements {
+            candidate.replace_surface_placement(binding, placement, &retains_binding)?;
+            changed.push(placement.surface());
         }
+        candidate.declare_preserved_placements(declarations);
+        changed.sort_unstable();
+        *self = candidate;
+        Ok(changed)
+    }
+
+    fn declare_preserved_placements(&mut self, placements: Vec<NativeSurfacePlacement>) {
+        // An explicit declaration may match the previous implicit mapping.
+        // Keep its identity while freezing the declared geometry across resizes.
+        for placement in placements {
+            self.records
+                .get_mut(&placement.surface())
+                .expect("unchanged placements remain in the window roster")
+                .placement = Some(placement);
+        }
+    }
+
+    fn replace_surface_placement(
+        &mut self,
+        binding: WindowBinding,
+        placement: NativeSurfacePlacement,
+        retains_binding: impl Fn(ViewportBinding) -> bool,
+    ) -> Result<(), ViewportRegistryError> {
+        let surface = placement.surface();
+        let previous = self.records.get(&surface);
+        let previous_admission =
+            previous.map_or(ViewportAdmission::Admitted, |record| record.admission);
+        if previous.is_none_or(|record| retains_binding(record.binding)) {
+            if !self.native_binding_allocation_available() {
+                return Err(ViewportRegistryError::NativeBindingCapacity);
+            }
+            self.commit_native_binding_slot();
+        }
+        let placement_generation = self
+            .last_placement_generation
+            .checked_next()
+            .ok_or(ViewportRegistryError::PlacementGenerationExhausted)?;
+        self.last_placement_generation = placement_generation;
+        let exact =
+            ViewportBinding::with_placement_generation(binding, surface, placement_generation);
+        let generation = self.next_surface_authority(surface)?;
+        let coordinates = self
+            .windows
+            .get(&binding)
+            .and_then(|window| window.coordinates)
+            .and_then(|window| {
+                CoordinateSnapshot::from_window_coordinates(
+                    exact,
+                    generation,
+                    window,
+                    SurfaceClientGeometry::new(
+                        placement.origin(),
+                        placement.scale_factor(),
+                        placement.clip(),
+                    ),
+                )
+            });
+        self.records.insert(
+            surface,
+            SurfacePlacementRecord {
+                binding: exact,
+                admission: previous_admission,
+                coordinates,
+                recovery_coordinates: coordinates.map(RecoveryCoordinateSnapshot::new),
+                coordinate_generation: generation,
+                placement: Some(placement),
+            },
+        );
         Ok(())
     }
 
@@ -2120,7 +2125,7 @@ mod tests {
             ))
             .unwrap();
         registry
-            .set_surface_placements(observed.window(), &shared_placements())
+            .set_surface_placements(observed.window(), &shared_placements(), |_| false)
             .unwrap();
         (registry, observed)
     }
@@ -2184,7 +2189,7 @@ mod tests {
             placements[1].clip(),
         );
         registry
-            .set_surface_placements(observed.window(), &placements)
+            .set_surface_placements(observed.window(), &placements, |_| false)
             .unwrap();
         assert_eq!(registry.record(a.surface()).unwrap().binding(), a);
         assert_ne!(registry.record(old_b.surface()).unwrap().binding(), old_b);
@@ -2210,7 +2215,7 @@ mod tests {
         invalid[1] = invalid[0];
         assert!(
             registry
-                .set_surface_placements(observed.window(), &invalid)
+                .set_surface_placements(observed.window(), &invalid, |_| false)
                 .is_err()
         );
         assert_eq!(registry, before);
@@ -2223,7 +2228,7 @@ mod tests {
         );
         assert!(
             registry
-                .set_surface_placements(observed.window(), &invalid)
+                .set_surface_placements(observed.window(), &invalid, |_| false)
                 .is_err()
         );
         assert_eq!(registry, before);

@@ -1446,6 +1446,18 @@ impl CoreHostFrame {
         self.input_prefix_error.take()
     }
 
+    pub(crate) fn has_native_placement_submission(&self) -> bool {
+        self.reduced_inputs.iter().any(|reduced| {
+            matches!(
+                reduced.outcome(),
+                crate::transition::InputOutcome::NativeSurfacePlacementsChanged {
+                    changed: true,
+                    ..
+                }
+            )
+        })
+    }
+
     /// Starts one immutable backend interval and reduces at most its first record.
     ///
     /// Platform records reduce immediately. A pointer record pauses replay after

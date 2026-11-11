@@ -5,7 +5,7 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
+use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::model::{
     DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
     DockspaceSurfaceLayout, DockspaceView, FloatingPresentationId, ItemId, NativeWindowPlacement,
@@ -21,8 +21,8 @@ use dockspace::runtime::{
     NativeHostCapability, NativeInputBudget, NativeInputStorageLimit, NativeMonotonicClock,
     NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
     NativePointerOwner, NativePointerRoster, NativeProducerStorageLimit, NativeReceiverAnswer,
-    NativeReportStorageLimit, NativeSurfaceBinding, NativeSurfaceRole, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
+    NativeReportStorageLimit, NativeSurfaceBinding, NativeSurfacePlacement, NativeSurfaceRole,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
     NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
     SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
@@ -1267,6 +1267,45 @@ fn rebinding_root_restore_retries_exact_pair_and_rejects_predecessor_paint_and_l
             .collect::<Vec<_>>(),
         candidate_preferences
     );
+}
+
+#[test]
+fn shared_root_cannot_claim_a_child_with_waiting_native_establishment() {
+    let mut host = NativeDocumentHost::new(8, true);
+    let previous = host.root;
+    let (ids, _) = host.restore(&saved_document(SavedHosting::Children));
+    host.ready_root();
+    host.quiesce(previous);
+    let root = host.root;
+    let child = ids.children()[0];
+    let original = host.session.native_surface_placement(root).unwrap();
+    let child_placement = NativeSurfacePlacement::new(
+        child,
+        LogicalSize::new(300.0, 200.0).unwrap(),
+        PhysicalPoint::new(320.0, 0.0).unwrap(),
+        ScaleFactor::new(1.0).unwrap(),
+        PhysicalRect::new(320.0, 0.0, 300.0, 200.0).unwrap(),
+    );
+    let mut frame = native_frame(&mut host.session);
+    assert!(
+        frame
+            .set_native_surface_placements(root.window(), &[original, child_placement])
+            .is_err(),
+        "the unbound Child must remain reserved for its queued native creation"
+    );
+    drop(frame);
+
+    assert_eq!(
+        host.session
+            .native_surface_bindings_for_window(root.window())
+            .collect::<Vec<_>>(),
+        [root]
+    );
+    let mut frame = native_frame(&mut host.session);
+    assert!(frame.advance_next_native_surface_create().unwrap());
+    let mut report = finish(frame);
+    let (child_binding, _) = take_create(&mut report, child, 0);
+    assert_ne!(child_binding.window(), root.window());
 }
 
 #[test]

@@ -708,7 +708,8 @@ impl PendingRuntimeDocumentRestore {
         self,
         frame: CoreHostPresentationFrame,
         engine: &DockEngine,
-    ) -> Result<PreparedRuntimeDocumentPublication, RuntimeDocumentRestoreError> {
+    ) -> Result<(OwnedPreparedHostFrameCommit, BoundDocumentState), RuntimeDocumentRestoreError>
+    {
         if engine.authority_domain() != self.source_authority_domain {
             return Err(RuntimeDocumentRestoreError::EnginePublicationMismatch);
         }
@@ -732,34 +733,7 @@ impl PendingRuntimeDocumentRestore {
         let mut binding = self.binding;
         let placements = binding.prepare_placement_publication(core.candidate_engine())?;
         binding.publish_placements(placements);
-        Ok(PreparedRuntimeDocumentPublication { core, binding })
-    }
-}
-
-#[must_use = "a prepared runtime document publication must be committed or dropped"]
-pub(crate) struct PreparedRuntimeDocumentPublication {
-    core: OwnedPreparedHostFrameCommit,
-    binding: BoundDocumentState,
-}
-
-impl PreparedRuntimeDocumentPublication {
-    pub(crate) const fn candidate_engine(&self) -> &DockEngine {
-        self.core.candidate_engine()
-    }
-
-    pub(crate) fn has_new_undelivered_platform_effects(&self, engine: &DockEngine) -> bool {
-        self.core.has_new_undelivered_platform_effects(engine)
-    }
-    pub(crate) const fn transition(&self) -> &EngineTransition {
-        self.core.transition()
-    }
-
-    pub(crate) fn commit(
-        self,
-        engine: &mut DockEngine,
-    ) -> Result<(EngineTransition, BoundDocumentState), EngineError> {
-        let transition = self.core.commit(engine)?;
-        Ok((transition, self.binding))
+        Ok((core, binding))
     }
 }
 

@@ -36,12 +36,6 @@ impl DockEngine {
                 ),
             });
         }
-        let mut changed: BTreeSet<_> = self
-            .viewport
-            .registry()
-            .bindings_for_window(window)
-            .map(|binding| binding.surface())
-            .collect();
         for placement in placements {
             if self.workspace.surface(placement.surface()).is_none() {
                 return Err(EngineError::Viewport {
@@ -56,6 +50,7 @@ impl DockEngine {
             if self
                 .bound_surface_recoveries
                 .contains_key(&placement.surface())
+                || self.viewport.has_surface_establishment(placement.surface())
             {
                 return Err(EngineError::Viewport {
                     input,
@@ -66,20 +61,9 @@ impl DockEngine {
                     ),
                 });
             }
-            if self
-                .viewport
-                .registry()
-                .record(placement.surface())
-                .is_none_or(|record| {
-                    self.viewport.registry().surface_placement(record.binding()) != Some(*placement)
-                })
-            {
-                changed.insert(placement.surface());
-            } else {
-                changed.remove(&placement.surface());
-            }
         }
-        self.viewport
+        let changed = self
+            .viewport
             .set_surface_placements(window, placements)
             .map_err(|source| EngineError::Viewport { input, source })?;
         for placement in placements {
@@ -98,10 +82,14 @@ impl DockEngine {
                 self.last_root_recovery_anchor = id;
             }
         }
+        let bindings_changed = !changed.is_empty();
         for surface in changed {
             self.invalidate_surface_coordinate_scene(surface)
                 .map_err(|source| Self::scene_revision_error(input, source))?;
         }
-        Ok(InputOutcome::NativeSurfacePlacementsChanged { window })
+        Ok(InputOutcome::NativeSurfacePlacementsChanged {
+            window,
+            changed: bindings_changed,
+        })
     }
 }

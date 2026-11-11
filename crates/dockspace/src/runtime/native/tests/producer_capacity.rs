@@ -65,8 +65,12 @@ fn commit(session: &mut DockspaceSession) -> HostFrameReport {
 fn bound_existing(session: &mut DockspaceSession, bindings: usize, areas: usize) {
     let limit = producer_limit(bindings, areas, WORK_BYTES);
     let native = session.native.as_mut().unwrap();
-    let producer =
-        NativeProducerState::prepare(&session.engine, Some(&native.producer), Some(limit)).unwrap();
+    let producer = NativeProducerState::prepare(
+        &session.engine,
+        Some((&native.producer, &session.engine)),
+        Some(limit),
+    )
+    .unwrap();
     native.producer = producer;
     native.producer_storage_limit = Some(limit);
 }
@@ -127,10 +131,14 @@ fn producer_enrollment_prepays_the_complete_peak_and_one_byte_short_is_inert() {
     );
     commit(&mut session);
     let native = session.native.as_ref().unwrap();
-    let prepared = native.prepare_native_commit(&session.engine, &[]).unwrap();
+    let prepared = native
+        .prepare_native_commit(&session.engine, &session.engine, &[])
+        .unwrap();
     let overlapping_backing = session.native_input_producer_storage_capacity_bytes()
         + prepared.next_producer.owned_capacity_bytes()
-        + (prepared.report.bindings.capacity() + prepared.report.admissions.capacity())
+        + (prepared.report.bindings.capacity()
+            + prepared.report.admissions.capacity()
+            + prepared.report.placement_detachments.capacity())
             * size_of::<NativeSurfaceBinding>();
     assert!(overlapping_backing <= required);
     assert_eq!(
@@ -540,7 +548,7 @@ fn dropping_both_prepared_candidates_keeps_one_exact_registration_retry() {
             .native
             .as_ref()
             .unwrap()
-            .prepare_native_commit(prepared_core.candidate_engine(), &[])
+            .prepare_native_commit(&session.engine, prepared_core.candidate_engine(), &[])
             .unwrap();
         assert_eq!(prepared_native.report.bindings.len(), 1);
         assert_eq!(session.native.as_ref().unwrap().producer.bindings, before);
