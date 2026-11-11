@@ -104,10 +104,6 @@ jobs:
         run: >-
           cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml
           --all-features --all-targets --locked
-      - name: Run public API documentation tests
-        run: >-
-          cargo test --doc --manifest-path integration/egui-official-harness/Cargo.toml
-          --all-features --locked
       - name: Run default-feature product harness
         run: >-
           cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml

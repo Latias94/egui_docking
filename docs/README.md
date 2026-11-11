@@ -21,7 +21,7 @@
 ## Development
 
 - [Contributing](../CONTRIBUTING.md): repository layout and local checks.
-- [Maintaining](MAINTAINING.md): package/release order and proposed repository naming.
+- [Maintaining](MAINTAINING.md): repository structure and package/release order.
 - [Native qualification](../integration/egui-native-smoke/README.md): real-window
   and physical-input checks.
 - [Host-update sampling](../integration/dockspace-host-harness/BENCHMARKING.md)

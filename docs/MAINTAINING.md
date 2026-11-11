@@ -2,16 +2,15 @@
 
 ## Names and repository structure
 
-The product name is **Dockspace**. The recommended GitHub repository name is
-`dockspace`: the primary library is UI-framework-neutral, while egui is an
-adapter. `egui_docking` suggests that the whole project is an egui widget.
-`dockspace-rs` is a fallback if the shorter name is unavailable.
+The product and GitHub repository are **Dockspace**
+([`Latias94/dockspace`](https://github.com/Latias94/dockspace)). The primary
+library is UI-framework-neutral; egui is an adapter.
 
 Keep these names distinct:
 
 | Name | Role |
 | --- | --- |
-| `dockspace` | Core crate and proposed repository slug |
+| `dockspace` | Core crate and repository slug |
 | `egui_dockspace` | Official egui adapter crate |
 | `egui_dockspace_native` | Experimental unpublished native adapter |
 | `dockspace_host_conformance` | Shared test-scenario crate |
@@ -25,27 +24,6 @@ Use a concrete GitHub About description, such as "Renderer-neutral docking for
 Rust editor UIs, with egui adapters." Suggested topics are `rust`, `docking`,
 `egui`, `gui` and `editor`. Point the homepage at a maintained user guide or demo
 once one is hosted; avoid linking an internal plan as the product homepage.
-
-## Proposed GitHub rename
-
-The current remote remains `Latias94/egui_docking`. The rename is a pending owner
-decision, not an operation performed by the documentation change. Do it before
-the first registry release if accepted:
-
-1. Rename the GitHub repository to `dockspace` and confirm the new URL resolves.
-2. Update each maintained checkout's `origin`, package `repository` fields,
-   current source-install instructions and active CI/documentation references.
-3. Confirm the default branch, Actions, branch/ruleset configuration and external
-   integrations still point to the intended repository. Check Pages separately
-   if it is enabled later.
-4. Keep the old repository name unused so GitHub's redirects continue to work.
-   Active product links should use the new location.
-
-GitHub redirects ordinary web and Git access after a rename, but Pages and
-references to a repository-hosted Action have separate behavior. Follow
-[GitHub's rename documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository).
-Changing the local directory name is optional. A repository rename does not
-rename crates, Rust imports or package versions.
 
 ## Documentation ownership
 

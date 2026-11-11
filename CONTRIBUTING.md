@@ -82,5 +82,5 @@ qualification logs in CI artifacts or release attachments with their source and
 environment. Record durable architectural trade-offs in short ADRs; temporary
 plans and session logs do not belong in the maintained documentation.
 
-Release and repository naming decisions are documented in
+Release and repository maintenance are documented in
 [Maintaining](docs/MAINTAINING.md).

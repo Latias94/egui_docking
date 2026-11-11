@@ -66,9 +66,9 @@ the paths to your checkout:
 
 ```toml
 [dependencies]
-dockspace = { path = "../egui_docking/crates/dockspace" }
+dockspace = { path = "../dockspace/crates/dockspace" }
 # For egui applications:
-egui_dockspace = { path = "../egui_docking/crates/egui_dockspace" }
+egui_dockspace = { path = "../dockspace/crates/egui_dockspace" }
 ```
 
 Enable `serde` on the crate you use for layout persistence. Pane data and file
@@ -79,7 +79,7 @@ storage stay in your application.
 - [Examples](docs/EXAMPLES.md): choose a runnable starting point.
 - [Core overview](crates/dockspace/README.md) and [engine host guide](crates/dockspace/docs/guide.md).
 - [egui overview](crates/egui_dockspace/README.md) and [integration guide](crates/egui_dockspace/docs/guide.md).
-- [Documentation index](docs/README.md): platform limits, adapter testing and validation.
+- [Documentation index](docs/README.md): platform limits, adapter testing and architecture decisions.
 - [Contributing](CONTRIBUTING.md): repository layout and development checks.
 
 ## License
