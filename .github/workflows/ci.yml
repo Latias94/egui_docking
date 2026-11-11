@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
   pull_request:
+    paths-ignore: ["docs/**", "**/*.md"]
   workflow_dispatch:
 
 permissions:
@@ -14,13 +17,14 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
   RUST_BACKTRACE: 1
 
 jobs:
   workspace:
     name: Workspace
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -28,11 +32,12 @@ jobs:
           components: clippy, rustfmt
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: workspace
-
       - name: Format
         run: cargo fmt --all --check
+      - name: Check core dependency boundary
+        run: python3 scripts/check_core_dependencies.py
+      - name: Check Python syntax
+        run: python3 -m compileall -q scripts integration/egui-native-smoke
       - name: Check correctness lints
         run: >-
           cargo clippy --workspace --all-features --all-targets --locked --
@@ -45,50 +50,38 @@ jobs:
           --all-features --no-deps --locked
       - name: Run workspace tests
         run: >-
-          cargo nextest run --workspace --all-features --all-targets
-          --no-fail-fast --locked
+          cargo nextest run --workspace --all-features --all-targets --locked
       - name: Run core layout example
         run: cargo run --package dockspace --example layout_commands --locked
       - name: Run documentation tests
         run: cargo test --doc --workspace --all-features --locked
-      - name: Package core crate
-        run: >-
-          cargo package --package dockspace --all-features --locked -j1
-      - name: Check adapter package contents
-        run: >-
-          cargo package --package egui_dockspace --all-features --locked
-          --list
 
   engine-host:
     name: Independent engine host consumer
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      CARGO_BUILD_JOBS: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: engine-host
+          workspaces: integration/dockspace-host-harness -> target
       - name: Format public host consumer
         run: >-
           cargo fmt --manifest-path integration/dockspace-host-harness/Cargo.toml
           --all --check
-      - name: Inspect renderer-neutral dependency tree
-        run: python3 scripts/check_core_dependencies.py
       - name: Run public host contract without optional features
         run: >-
           cargo nextest run
-          --manifest-path integration/dockspace-host-harness/Cargo.toml
-          --locked --test-threads=1
+          --manifest-path integration/dockspace-host-harness/Cargo.toml --locked
       - name: Run public host contract with persistence support
         run: >-
           cargo nextest run
           --manifest-path integration/dockspace-host-harness/Cargo.toml
-          --features serde --locked --test-threads=1
-
+          --features serde --locked
       - name: Run engine-owned output example
         run: >-
           cargo run --manifest-path integration/dockspace-host-harness/Cargo.toml
@@ -104,29 +97,25 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: official-egui
-
-      - name: Run downstream public API harness
-        run: >-
-          cargo test --manifest-path integration/egui-official-harness/Cargo.toml
-          --locked
-
-      - name: Run caller-owned official egui editor workflows
+          workspaces: |
+            integration/egui-official-harness -> target
+            integration/egui-product-harness -> target
+      - name: Run public API and caller-owned editor workflows
         run: >-
           cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml
-          --features demo --bin official-caller-owned-demo --locked -j1
-
+          --all-features --all-targets --locked
+      - name: Run public API documentation tests
+        run: >-
+          cargo test --doc --manifest-path integration/egui-official-harness/Cargo.toml
+          --all-features --locked
       - name: Run default-feature product harness
         run: >-
-          cargo nextest run
-          --manifest-path integration/egui-product-harness/Cargo.toml
-          --all-targets --locked -j1
-
+          cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml
+          --all-targets --locked
       - name: Run product harness with persistence support
         run: >-
-          cargo nextest run
-          --manifest-path integration/egui-product-harness/Cargo.toml
-          --features serde --all-targets --locked -j1
+          cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml
+          --features serde --all-targets --locked
 
   native-platform-check:
     name: Native compile (${{ matrix.os }})
@@ -138,519 +127,50 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Check out pinned winit fork
-        if: runner.os == 'macOS'
-        uses: actions/checkout@v4
-        with:
-          repository: Latias94/winit
-          ref: 2664589f0bd6fd03b2a5490f23bcd692853e63dd
-          path: .ci/winit-fork
-          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: native-${{ matrix.os }}
-
+          workspaces: integration/egui-fork-workspace -> target
       - name: Check native adapter library
         run: >-
-          cargo check
-          --manifest-path integration/egui-fork-workspace/Cargo.toml
-          --package egui_dockspace_native --lib --locked -j1
-
-      - name: Run pinned macOS pointer-fact tests
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          # The library fork does not track its test workspace lockfile.
-          cargo generate-lockfile --manifest-path .ci/winit-fork/Cargo.toml
-          pointer_fact_tests=(
-            platform_impl::macos::view::pointer_route_tests::frontmost_winit_window_is_reported_exactly
-            platform_impl::macos::view::pointer_route_tests::desktop_and_foreign_windows_remain_distinct
-            platform_impl::macos::view::pointer_route_tests::capture_follows_post_event_pressed_button_state
-            platform_impl::macos::view::pointer_route_tests::button_transitions_preserve_other_capture_buttons
-            platform_impl::macos::view::pointer_route_tests::pointer_capture_reset_is_idempotent
-            platform_impl::macos::view::pointer_route_tests::quartz_desktop_points_map_through_the_exact_display
-            platform_impl::macos::view::pointer_route_tests::overlapping_or_missing_display_mapping_is_unknown
-          )
-          listed="$(
-            cargo test --manifest-path .ci/winit-fork/Cargo.toml \
-              -p winit --lib --no-default-features --locked -j1 -- --list
-          )"
-          for test_name in "${pointer_fact_tests[@]}"; do
-            if ! grep -Fqx "$test_name: test" <<<"$listed"; then
-              echo "missing pinned macOS pointer-fact test: $test_name" >&2
-              exit 1
-            fi
-          done
-          cargo test --manifest-path .ci/winit-fork/Cargo.toml \
-            -p winit --lib --no-default-features \
-            platform_impl::macos::view::pointer_route_tests --locked -j1
+          cargo check --manifest-path integration/egui-fork-workspace/Cargo.toml
+          --package egui_dockspace_native --lib --all-features --locked
 
   fork-native:
     name: Fork-backed native coordinator
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Check out pinned egui fork
-        uses: actions/checkout@v4
-        with:
-          repository: Latias94/egui
-          ref: 0d9c48d765954dd3eff99c0d3cfa686e9d8591cf
-          path: .ci/egui-fork
-          persist-credentials: false
-      - name: Check out pinned winit fork
-        uses: actions/checkout@v4
-        with:
-          repository: Latias94/winit
-          ref: 2664589f0bd6fd03b2a5490f23bcd692853e63dd
-          path: .ci/winit-fork
-          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
-          components: clippy, rustfmt
+          components: rustfmt
       - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: fork-native
-
-      - name: Install native framework build dependencies
-        run: >-
-          sudo apt-get update &&
-          sudo apt-get install --no-install-recommends -y libwayland-dev
-
-      - name: Check native workspace formatting
-        run: >-
-          cargo fmt
-          --manifest-path integration/egui-fork-workspace/Cargo.toml
-          --all -- --check
-
-      - name: Run pinned egui output-settlement tests
-        run: |
-          settlement_tests=(
-            context::test::output_pass_settlement_reports_terminal_root_run
-            context::test::manual_end_pass_settles_once_for_the_ended_viewport
-            context::test::non_root_run_reports_the_ended_child_viewport
-            context::test::late_discard_is_frozen_before_output_pass_settlement
-            context::test::late_output_hook_panic_skips_output_pass_settlement
-            context::test::denied_late_discard_settles_the_max_pass_as_terminal
-            context::test::host_finalizer_runs_after_all_output_hooks
-            context::test::output_hook_panic_skips_host_finalizer
-          )
-          if [ "${#settlement_tests[@]}" -ne 8 ]; then
-            echo "expected exactly 8 output-settlement tests" >&2
-            exit 1
-          fi
-          listed="$(
-            cargo test --manifest-path .ci/egui-fork/Cargo.toml \
-            -p egui --lib --locked -j1 -- --list
-          )"
-          for test_name in "${settlement_tests[@]}"; do
-            if ! grep -Fqx "$test_name: test" <<<"$listed"; then
-              echo "missing pinned output-settlement test: $test_name" >&2
-              exit 1
-            fi
-          done
-          for test_name in "${settlement_tests[@]}"; do
-            cargo test --manifest-path .ci/egui-fork/Cargo.toml \
-            -p egui --lib "$test_name" --locked -j1 -- --exact
-          done
-
-      - name: Run pinned completed-pass and elastic scroll tests
-        env:
-          CARGO_BUILD_JOBS: 1
-        run: >-
-          cargo nextest run --manifest-path .ci/egui-fork/Cargo.toml
-          --package egui --lib --locked --test-threads=1
-          -E 'test(completed_pass_hit_authority) | test(elastic_scroll_authority) | test(nested_scroll_authority)'
-
-      - name: Run pinned viewport inspection tests
-        env:
-          CARGO_BUILD_JOBS: 1
-        run: >-
-          cargo nextest run --manifest-path .ci/egui-fork/Cargo.toml
-          --package egui_inspection --lib --features plugin --locked -j1
-
-      - name: Run pinned eframe native framework tests
-        run: >-
-          cargo test --manifest-path .ci/egui-fork/Cargo.toml
-          -p eframe --lib --no-default-features
-          --features glow,wgpu,native-host-seam,x11,wayland
-          --locked -j1
-
-      - name: Check pinned eframe WGPU host seam
-        run: >-
-          cargo check --manifest-path .ci/egui-fork/Cargo.toml
-          -p eframe --lib --no-default-features
-          --features wgpu,native-host-seam,x11,wayland
-          --locked -j1
-
-      - name: Run pinned WGPU retained-overlay test
-        run: |
-          test_name=winit::tests::retained_overlay_loads_the_existing_color_attachment
-          listed="$(
-            cargo test --manifest-path .ci/egui-fork/Cargo.toml \
-            -p egui-wgpu --lib --no-default-features \
-            --features winit,native-host-seam,x11,wayland \
-            --locked -j1 -- --list
-          )"
-          if ! grep -Fqx "$test_name: test" <<<"$listed"; then
-            echo "missing pinned WGPU retained-overlay test: $test_name" >&2
-            exit 1
-          fi
-          cargo test --manifest-path .ci/egui-fork/Cargo.toml \
-            -p egui-wgpu --lib --no-default-features \
-            --features winit,native-host-seam,x11,wayland \
-            "$test_name" --locked -j1 -- --exact
-
-      - name: Run pinned X11 pointer and work-area fact tests
-        run: |
-          # Resolve once, then keep the source-fork test run locked.
-          cargo generate-lockfile --manifest-path .ci/winit-fork/Cargo.toml
-          x11_fact_tests=(
-            platform_impl::linux::x11::pointer_facts::tests::button_transition_uses_post_event_state
-            platform_impl::linux::x11::pointer_facts::tests::implicit_capture_stays_with_first_delivery_until_last_release
-            platform_impl::linux::x11::pointer_facts::tests::capture_without_observed_press_fails_closed_until_buttons_are_up
-            platform_impl::linux::x11::pointer_facts::tests::resetting_window_capture_is_scoped_and_idempotent
-            platform_impl::linux::x11::pointer_facts::tests::hierarchy_distinguishes_desktop_foreign_and_winit_windows
-            platform_impl::linux::x11::pointer_facts::tests::hover_route_does_not_change_capture_owner
-            platform_impl::linux::x11::pointer_facts::tests::pointer_query_coordinates_must_match_the_native_event
-            platform_impl::linux::x11::work_area::tests::accepts_exact_current_desktop_and_clips_each_monitor
-            platform_impl::linux::x11::work_area::tests::rejects_unadvertised_or_unverified_wm_authority
-            platform_impl::linux::x11::work_area::tests::rejects_inexact_desktop_arrays_and_nonzero_current_viewport
-            platform_impl::linux::x11::work_area::tests::rejects_geometry_and_work_area_outside_root
-            platform_impl::linux::x11::work_area::tests::rejects_empty_cloned_overlapping_or_invalid_scale_rosters
-            platform_impl::linux::x11::work_area::tests::rejects_duplicate_crtc_or_output_identity
-            platform_impl::linux::x11::work_area::tests::event_mask_merge_preserves_every_existing_bit
-            platform_impl::linux::x11::work_area::tests::property_reply_length_must_match_format_and_value_count
-            platform_impl::linux::x11::work_area::tests::non_identity_crtc_transform_cannot_publish_scalar_scale_authority
-            platform_impl::linux::x11::work_area::tests::global_ewmh_work_area_is_not_published_as_per_monitor_authority
-            platform_impl::linux::x11::work_area::tests::exact_randr_scale_rejects_winit_compatibility_clamps
-            platform_impl::linux::x11::work_area::tests::subscribed_foreign_authorities_survive_owner_switches_until_destroyed
-            platform_impl::linux::x11::work_area::tests::authority_subscription_roster_is_bounded_and_recovers_after_destroy
-            platform_impl::linux::x11::monitor::notify_mask_tests::monitor_authority_subscribes_to_every_randr_1_3_fact
-            platform_impl::linux::x11::monitor::notify_mask_tests::monitor_authority_versions_newer_randr_selection_bits
-            platform_impl::linux::x11::xsettings::tests::empty
-            platform_impl::linux::x11::xsettings::tests::parse_xsettings
-            platform_impl::linux::x11::xsettings::tests::exact_parser_reads_the_complete_property
-            platform_impl::linux::x11::xsettings::tests::exact_parser_rejects_ambiguous_or_malformed_authority
-          )
-          listed="$(
-            cargo test --manifest-path .ci/winit-fork/Cargo.toml \
-              -p winit --lib --no-default-features --features x11,wayland \
-              --locked -j1 -- --list
-          )"
-          for test_name in "${x11_fact_tests[@]}"; do
-            if ! grep -Fqx "$test_name: test" <<<"$listed"; then
-              echo "missing pinned X11 fact test: $test_name" >&2
-              exit 1
-            fi
-          done
-          x11_fact_modules=(
-            platform_impl::linux::x11::pointer_facts::tests
-            platform_impl::linux::x11::work_area::tests
-            platform_impl::linux::x11::monitor::notify_mask_tests
-            platform_impl::linux::x11::xsettings::tests
-          )
-          for module in "${x11_fact_modules[@]}"; do
-            cargo test --manifest-path .ci/winit-fork/Cargo.toml \
-              -p winit --lib --no-default-features --features x11,wayland \
-              "$module" --locked -j1
-          done
-
-      - name: Run pinned native workspace tests
-        run: python3 scripts/run_egui_fork_harness.py
-
-      - name: Run native lifecycle without debug assertions
-        env:
-          CARGO_BUILD_JOBS: 1
-        run: >-
-          cargo nextest run
-          --manifest-path integration/egui-fork-workspace/Cargo.toml
-          --package egui_dockspace_native --lib --locked
-          --test-threads=1 --no-fail-fast
-          --config 'profile.test.package.egui_dockspace_native.debug-assertions=false'
-
-      - name: Install native smoke runtime dependencies
+          shared-key: native-linux
+          workspaces: integration/egui-fork-workspace -> target
+      - name: Install native build and renderer smoke dependencies
         run: >-
           sudo apt-get update &&
           sudo apt-get install --no-install-recommends -y
-          libxkbcommon-x11-0 openbox x11-utils xauth xdotool xvfb
-
-      - name: Build real-window Glow smokes
+          libwayland-dev libxkbcommon-x11-0 openbox x11-utils xauth xvfb
+      - name: Check native workspace formatting
         run: >-
-          cargo build --manifest-path integration/egui-native-smoke/Cargo.toml
-          --bins --locked -j1
-
-      - name: Build actual eight-pane native editor
-        env:
-          CARGO_BUILD_JOBS: 1
+          cargo fmt --manifest-path integration/egui-fork-workspace/Cargo.toml
+          --all --check
+      - name: Run native workspace and smoke unit tests
         run: >-
-          cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml
-          --package egui_dockspace_native --example basic --all-features
-          --locked --target-dir target
-
-      - name: Recover editor controls after native child creation is refused
-        env:
-          CARGO_BUILD_JOBS: 1
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          LP_NUM_THREADS: "1"
-        run: >-
-          xvfb-run -a
-          --server-args="-screen 0 1280x1024x24"
-          cargo nextest run
-          --manifest-path integration/egui-fork-workspace/Cargo.toml
-          --package egui_dockspace_native --example basic --all-features --locked
-          --test-threads=1 --target-dir target
-          -E 'test(failed_native_creation_releases_the_example_presentation_wait)'
-
-      - name: Exercise public native pane commands in a real window
+          cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml
+          --workspace --all-targets --all-features --locked
+      - name: Exercise real output publication and backpressure
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           LP_NUM_THREADS: "1"
-        run: |
-          xvfb-run -a --server-args="-screen 0 1280x1024x24" python3 - <<'PY'
-          import subprocess
-          import sys
-
-          sys.path.insert(0, "integration/egui-native-smoke")
-          from qualify_editor import wait_for_window_manager
-
-          manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-          try:
-              wait_for_window_manager(manager)
-              result = subprocess.run(
-                  ["target/debug/examples/basic", "--command-smoke"],
-                  capture_output=True, text=True, timeout=75,
-              )
-              print(result.stdout, end="")
-              print(result.stderr, end="", file=sys.stderr)
-              if result.returncode or "command-smoke: complete;" not in result.stderr:
-                  raise SystemExit(1)
-          finally:
-              manager.terminate()
-              manager.wait(timeout=5)
-          PY
-
-      - name: Qualify actual native output ownership and backpressure
-        env:
-          CARGO_BUILD_JOBS: 1
-          LIBGL_ALWAYS_SOFTWARE: "1"
         run: >-
-          xvfb-run -a
-          --server-args="-screen 0 1280x1024x24"
-          cargo nextest run
-          --manifest-path integration/egui-fork-workspace/Cargo.toml
+          xvfb-run -a --server-args="-screen 0 1280x1024x24"
+          python3 integration/egui-native-smoke/with_openbox.py --
+          cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml
           --package egui_dockspace_native --lib --all-features --locked
-          --test-threads=1 --target-dir target --run-ignored all
-          -E 'test(real_eframe_actual_passes_publish_the_owned_update_once_after_output_hooks) | test(real_eframe_style_publishes_with_core_geometry_after_the_terminal_pass) | test(real_eframe_output_capacity_retains_framebuffer_and_resumes_pane_callbacks) | test(real_native_ui_ingress_retries_acknowledges_bounds_retires_and_deduplicates_actual_passes) | test(real_old_output_cannot_revoke_successor_preparation_and_its_exact_created_receipt)'
-
-      - name: Qualify actual editor docking and lifecycle
-        timeout-minutes: 8
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-        run: >-
-          xvfb-run -a
-          --server-args="-screen 0 1280x1024x24 +extension RANDR +extension XTEST"
-          python3 integration/egui-native-smoke/qualify_editor.py
-          --start-openbox target/debug/examples/basic
-
-      - name: Preserve editor input while native output is backpressured
-        env:
-          CARGO_BUILD_JOBS: 1
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          LP_NUM_THREADS: "1"
-        run: |
-          xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension XTEST" python3 - <<'PY'
-          import subprocess
-          import sys
-
-          sys.path.insert(0, "integration/egui-native-smoke")
-          from qualify_editor import wait_for_window_manager
-
-          manager = subprocess.Popen(["openbox"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-          try:
-              wait_for_window_manager(manager)
-              subprocess.run(
-                  [
-                      "cargo", "nextest", "run",
-                      "--manifest-path", "integration/egui-fork-workspace/Cargo.toml",
-                      "--package", "egui_dockspace_native", "--lib", "--all-features", "--locked",
-                      "--test-threads=1", "--target-dir", "target", "--run-ignored", "ignored-only",
-                      "-E", "test(real_eframe_output_capacity_preserves_text_)",
-                  ],
-                  check=True, timeout=120,
-              )
-          finally:
-              manager.terminate()
-              manager.wait(timeout=5)
-          PY
-
-      - name: Run physical X11 smoke unit tests
-        run: >-
-          cargo test --manifest-path integration/egui-native-smoke/Cargo.toml
-          --bin egui-native-physical-smoke --locked -j1
-
-      - name: Run programmatic real-window Glow smoke
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-        run: |
-          timeout --kill-after=5s 45s xvfb-run -a \
-            --server-args="-screen 0 1280x1024x24" \
-            python3 - <<'PY'
-          import subprocess
-          import sys
-
-          sys.path.insert(0, "integration/egui-native-smoke")
-          from qualify_editor import wait_for_window_manager
-
-          manager = subprocess.Popen(["openbox", "--sm-disable"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-          try:
-              wait_for_window_manager(manager)
-              subprocess.run(
-                  ["integration/egui-fork-workspace/target/debug/egui-native-smoke"],
-                  check=True, timeout=35,
-              )
-          finally:
-              manager.terminate()
-              manager.wait(timeout=5)
-          PY
-
-          run_close_smoke() {
-            scenario="$1"
-            log="/tmp/egui-native-${scenario}.log"
-            openbox --sm-disable >"/tmp/openbox-${scenario}.log" 2>&1 &
-            wm_pid=$!
-            trap 'kill "$wm_pid" 2>/dev/null || true' EXIT
-
-            wm_attempts=0
-            until {
-              root_properties="$(
-                xprop -root \
-                  _NET_SUPPORTING_WM_CHECK \
-                  _NET_CURRENT_DESKTOP \
-                  _NET_NUMBER_OF_DESKTOPS \
-                  _NET_DESKTOP_GEOMETRY \
-                  _NET_DESKTOP_VIEWPORT \
-                  _NET_WORKAREA 2>/dev/null
-              )" &&
-              wm_window="$(
-                sed -n 's/.*window id # //p' <<<"$root_properties" | head -n 1
-              )" &&
-              [[ "$wm_window" =~ ^0x[1-9a-fA-F][0-9a-fA-F]*$ ]] &&
-              grep -Eq '_NET_WORKAREA\(CARDINAL\) = [0-9]' <<<"$root_properties" &&
-              wm_properties="$(
-                xprop -id "$wm_window" \
-                  _NET_SUPPORTING_WM_CHECK _NET_WM_NAME 2>/dev/null
-              )" &&
-              grep -Fq "window id # $wm_window" <<<"$wm_properties" &&
-              grep -Fq '_NET_WM_NAME(UTF8_STRING) = "Openbox"' <<<"$wm_properties"
-            }; do
-              wm_attempts=$((wm_attempts + 1))
-              if [ "$wm_attempts" -ge 200 ]; then
-                cat "/tmp/openbox-${scenario}.log"
-                return 1
-              fi
-              sleep 0.05
-            done
-
-            EGUI_DOCKSPACE_NATIVE_SMOKE_SCENARIO="$scenario" \
-              integration/egui-fork-workspace/target/debug/egui-native-smoke \
-              >"$log" 2>&1 &
-            app_pid=$!
-            close_window=""
-            close_attempts=0
-            while [ -z "$close_window" ]; do
-              if ! kill -0 "$app_pid" 2>/dev/null; then
-                wait "$app_pid" || true
-                cat "$log"
-                return 1
-              fi
-              mapfile -t close_windows < <(
-                xdotool search --onlyvisible --name '^Dockspace native close ready$' \
-                  2>/dev/null || true
-              )
-              if [ "${#close_windows[@]}" -gt 1 ]; then
-                echo "expected one close-ready child, found ${#close_windows[@]}" >&2
-                cat "$log"
-                return 1
-              fi
-              if [ "${#close_windows[@]}" -eq 1 ]; then
-                close_window="${close_windows[0]}"
-                break
-              fi
-              close_attempts=$((close_attempts + 1))
-              if [ "$close_attempts" -ge 400 ]; then
-                echo "timed out waiting for the close-ready child" >&2
-                cat "$log"
-                return 1
-              fi
-              sleep 0.05
-            done
-
-            # Exercise the ordinary WM_DELETE_WINDOW path. `windowclose`
-            # destroys the X11 window directly and cannot prove the product's
-            # close-policy correlation or recovery semantics.
-            xdotool windowactivate --sync "$close_window"
-            xdotool key --clearmodifiers alt+F4
-            if ! wait "$app_pid"; then
-              cat "$log"
-              return 1
-            fi
-            cat "$log"
-          }
-
-          for scenario in recover-close retain-close cancel-close; do
-            timeout --kill-after=5s 45s xvfb-run -a \
-              --server-args="-screen 0 1280x1024x24" \
-              bash -euo pipefail -c \
-              "$(declare -f run_close_smoke); run_close_smoke '$scenario'"
-          done
-
-      - name: Run physical X11/XTest docking smoke
-        env:
-          EGUI_INSPECTION: "127.0.0.1:5719"
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          WINIT_UNIX_BACKEND: x11
-          WINIT_X11_SCALE_FACTOR: "1"
-        run: |
-          run_physical_smoke() {
-            openbox --sm-disable >/tmp/openbox.log 2>&1 &
-            wm_pid=$!
-            trap 'kill "$wm_pid" 2>/dev/null || true' EXIT
-            wm_attempts=0
-            until {
-              root_properties="$(
-                xprop -root \
-                  _NET_SUPPORTING_WM_CHECK \
-                  _NET_CURRENT_DESKTOP \
-                  _NET_NUMBER_OF_DESKTOPS \
-                  _NET_DESKTOP_GEOMETRY \
-                  _NET_DESKTOP_VIEWPORT \
-                  _NET_WORKAREA 2>/dev/null
-              )" &&
-              wm_window="$(
-                sed -n 's/.*window id # //p' <<<"$root_properties" | head -n 1
-              )" &&
-              [[ "$wm_window" =~ ^0x[1-9a-fA-F][0-9a-fA-F]*$ ]] &&
-              grep -Eq '_NET_WORKAREA\(CARDINAL\) = [0-9]' <<<"$root_properties" &&
-              wm_properties="$(
-                xprop -id "$wm_window" \
-                  _NET_SUPPORTING_WM_CHECK _NET_WM_NAME 2>/dev/null
-              )" &&
-              grep -Fq "window id # $wm_window" <<<"$wm_properties" &&
-              grep -Fq '_NET_WM_NAME(UTF8_STRING) = "Openbox"' <<<"$wm_properties"
-            }; do
-              wm_attempts=$((wm_attempts + 1))
-              if [ "$wm_attempts" -ge 200 ]; then
-                cat /tmp/openbox.log
-                return 1
-              fi
-              sleep 0.05
-            done
-            integration/egui-fork-workspace/target/debug/egui-native-physical-smoke
-          }
-          timeout --kill-after=5s 55s xvfb-run -a \
-            --server-args="-screen 0 1280x800x24 +extension RANDR +extension XTEST" \
-            bash -euo pipefail -c \
-            "$(declare -f run_physical_smoke); run_physical_smoke"
+          --test-threads=1
+          -E 'test(real_eframe_actual_passes_publish_) | test(real_eframe_output_capacity_retains_)'

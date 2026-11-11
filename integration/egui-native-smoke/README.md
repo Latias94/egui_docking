@@ -37,7 +37,7 @@ before completing the second native round trip.
 Build serially from the repository root, using the repository target directory:
 
 ```text
-cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example basic --all-features --locked --target-dir target -j1
+cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example basic --all-features --locked -j1
 ```
 
 Run on a dedicated X11 display with `xdotool`, `xprop` and an EWMH window manager
@@ -56,7 +56,7 @@ On Linux without an existing display, start an isolated Xvfb and let the runner
 own Openbox. Software GL is configured by the caller in CI or the container.
 
 ```text
-xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension RANDR +extension XTEST" python3 integration/egui-native-smoke/qualify_editor.py --start-openbox target/debug/examples/basic
+xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension RANDR +extension XTEST" python3 integration/egui-native-smoke/qualify_editor.py --start-openbox integration/egui-fork-workspace/target/debug/examples/basic
 ```
 
 For a release, use the all-features build so the persistence journeys execute.
@@ -70,33 +70,36 @@ physical-input qualification.
 
 ## CI integration
 
-The `fork-native` job installs the required X11 tools and keeps independent
-programmatic and physical smoke applications. It also builds the actual `basic`
-example and executes both editor drivers. Its owned-update/output-pressure
-tests run under Xvfb so their real-renderer bodies execute instead of taking
-the headless platform skip. The actual editor steps are:
+The default [CI workflow](../../.github/workflows/ci.yml) runs native workspace
+tests, including smoke unit tests, two real-renderer publication/backpressure
+checks, and macOS/Windows compile checks. The separate
+[Native qualification workflow](../../.github/workflows/native-qualification.yml)
+is manually dispatched from GitHub Actions. Run it before a release and when
+changing native input, output ownership, lifecycle or dependency pins. It builds
+the applications once in the native workspace's target directory and runs:
 
-```yaml
-      - name: Build actual eight-pane native editor
-        env:
-          CARGO_BUILD_JOBS: 1
-        run: >-
-          cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml
-          --package egui_dockspace_native --example basic --all-features
-          --locked --target-dir target
+- Actual renderer/output, text backpressure, shared Root, capture and lifecycle
+  boundary tests under Xvfb/Openbox, including their ignored real-window cases.
+- Public pane commands and style changes in the eight-pane editor.
+- Both editor input drivers with persistence and Root continuity enabled.
+- Programmatic native redock and all three native close policies.
+- Physical X11/XTest drag-out and redock.
 
-      - name: Qualify actual editor docking and lifecycle
-        timeout-minutes: 8
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-        run: >-
-          xvfb-run -a
-          --server-args="-screen 0 1280x1024x24 +extension RANDR +extension XTEST"
-          python3 integration/egui-native-smoke/qualify_editor.py
-          --start-openbox target/debug/examples/basic
+The workflow uploads run logs with the source revision and toolchain as an
+artifact. Dependency pins and enabled features are available from that source
+and workflow. It does not re-run the dependency forks' internal test suites;
+those belong to the fork repositories.
+
+[`with_openbox.py`](with_openbox.py) owns window-manager startup, readiness and
+cleanup for a single command on a caller-supplied isolated display. It does not
+build applications or infer their behavior. [`close_x11.py`](close_x11.py)
+waits for each close-ready child and sends Alt-F4 through the window manager;
+the smoke application checks the close policy and terminal state. Both remain
+directly runnable for diagnosis:
+
+```text
+xvfb-run -a python3 integration/egui-native-smoke/with_openbox.py -- python3 integration/egui-native-smoke/close_x11.py integration/egui-fork-workspace/target/debug/egui-native-smoke
 ```
 
-This recipe reuses the pinned native workspace and the existing Python drivers.
-The runner only manages optional window-manager startup; CI or the caller owns
-Xvfb, build scheduling and the selected executable. Individual drivers remain
-directly runnable for diagnosis with the same executable and environment.
+CI or the caller owns Xvfb, software GL configuration, build scheduling and the
+selected executable. Do not share the display with another input test.

@@ -1,0 +1,106 @@
+name: Native qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
+  RUST_BACKTRACE: 1
+  LIBGL_ALWAYS_SOFTWARE: "1"
+  LP_NUM_THREADS: "1"
+  WINIT_UNIX_BACKEND: x11
+  WINIT_X11_SCALE_FACTOR: "1"
+  DOCKSPACE_X11_CAPTURE_TEST: "1"
+  QUALIFICATION_LOG_DIR: integration/egui-fork-workspace/target/qualification
+
+jobs:
+  x11:
+    name: Real-window and physical X11 journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-linux
+          workspaces: integration/egui-fork-workspace -> target
+      - name: Install X11 build and runtime dependencies
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install --no-install-recommends -y
+          libwayland-dev libxkbcommon-x11-0 openbox x11-utils xauth xdotool xvfb
+      - name: Record source and toolchain
+        run: |
+          mkdir -p "$QUALIFICATION_LOG_DIR"
+          git rev-parse HEAD > "$QUALIFICATION_LOG_DIR/source.txt"
+          rustc -Vv > "$QUALIFICATION_LOG_DIR/rustc.txt"
+          uname -a > "$QUALIFICATION_LOG_DIR/platform.txt"
+      - name: Build native smoke applications
+        run: >-
+          cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml
+          --package egui-native-smoke --bins --locked
+      - name: Build eight-pane editor with persistence
+        run: >-
+          cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml
+          --package egui_dockspace_native --example basic --all-features --locked
+      - name: Exercise actual output, input, capture and lifecycle boundaries
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension RANDR +extension XTEST" \
+            python3 integration/egui-native-smoke/with_openbox.py --timeout 600 -- \
+            cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml \
+            --package egui_dockspace_native --all-features --all-targets --locked \
+            --test-threads=1 --run-ignored all \
+            -E 'test(real_) | test(failed_native_creation_releases_the_example_presentation_wait)' \
+            2>&1 | tee "$QUALIFICATION_LOG_DIR/native-tests.log"
+      - name: Exercise public native pane commands
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python3 integration/egui-native-smoke/with_openbox.py -- \
+            integration/egui-fork-workspace/target/debug/examples/basic --command-smoke \
+            2>&1 | tee "$QUALIFICATION_LOG_DIR/commands.log"
+          grep -Fq 'command-smoke: complete;' "$QUALIFICATION_LOG_DIR/commands.log"
+      - name: Qualify editor docking, text, restore and Root continuity
+        timeout-minutes: 8
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension RANDR +extension XTEST" \
+            python3 integration/egui-native-smoke/qualify_editor.py --start-openbox \
+            integration/egui-fork-workspace/target/debug/examples/basic \
+            2>&1 | tee "$QUALIFICATION_LOG_DIR/editor.log"
+      - name: Exercise programmatic native redock
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python3 integration/egui-native-smoke/with_openbox.py -- \
+            integration/egui-fork-workspace/target/debug/egui-native-smoke \
+            2>&1 | tee "$QUALIFICATION_LOG_DIR/redock.log"
+      - name: Exercise native close policies through the window manager
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension XTEST" \
+            python3 integration/egui-native-smoke/with_openbox.py -- \
+            python3 integration/egui-native-smoke/close_x11.py \
+            integration/egui-fork-workspace/target/debug/egui-native-smoke \
+            2>&1 | tee "$QUALIFICATION_LOG_DIR/close.log"
+      - name: Exercise physical drag-out and redock
+        env:
+          EGUI_INSPECTION: "127.0.0.1:5719"
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x800x24 +extension RANDR +extension XTEST" \
+            python3 integration/egui-native-smoke/with_openbox.py -- \
+            integration/egui-fork-workspace/target/debug/egui-native-physical-smoke \
+            2>&1 | tee "$QUALIFICATION_LOG_DIR/physical.log"
+      - name: Upload qualification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-x11-${{ github.sha }}
+          path: integration/egui-fork-workspace/target/qualification
+          if-no-files-found: ignore

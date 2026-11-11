@@ -17,8 +17,8 @@ to reproduce behavior in the appropriate host.
 | `integration/egui-product-harness` | Official egui behavior tests |
 | `integration/egui-fork-workspace` | Separate native adapter/test workspace |
 | `integration/egui-native-smoke` | Native applications and physical-input drivers |
-| `docs` | User guides, development notes and dated evidence |
-| `scripts` | Dependency, packaging and qualification tools |
+| `docs` | Integration guides, platform limits and architecture decisions |
+| `scripts` | Core dependency boundary and opt-in performance comparisons |
 
 Keep the renderer-neutral core independent of egui, an async executor and an OS
 event loop. Pane data belongs to the application. Add behavior behind existing
@@ -27,7 +27,8 @@ owners before introducing another state owner or protocol.
 ## Local checks
 
 Reuse the existing target directories. Run build/test commands sequentially and
-choose a small job count when the machine is busy.
+choose a small job count when the machine is busy. Set `CARGO_BUILD_JOBS=2`
+in the environment to bound compilation; nextest's `-j2` limits test concurrency.
 
 ```sh
 cargo fmt --all --check
@@ -61,7 +62,10 @@ Headless tests do not qualify actual OS input or GPU presentation. Native
 physical checks require the isolated environments documented in
 [platform support](docs/PLATFORM_SUPPORT.md) and the
 [native qualification guide](integration/egui-native-smoke/README.md).
-`.github/workflows/ci.yml` is the source of truth for automated gates.
+`.github/workflows/ci.yml` owns the default gates. The separate
+`.github/workflows/native-qualification.yml` runs the complete Linux X11
+real-window and physical-input checks on demand. Run it before a release and
+when changing native input, presentation, lifecycle or dependency pins.
 
 ## Reports and changes
 
@@ -73,8 +77,10 @@ is affected, and name the input method.
 
 Keep changes scoped and describe the user-visible behavior and relevant checks.
 Use English code, API documentation and Conventional Commit messages. Update
-the example or guide when an interface changes. Record dated validation only
-when it adds evidence; keep histories and benchmark details out of the README.
+the example or guide when an interface changes. Keep raw benchmark results and
+qualification logs in CI artifacts or release attachments with their source and
+environment. Record durable architectural trade-offs in short ADRs; temporary
+plans and session logs do not belong in the maintained documentation.
 
 Release and repository naming decisions are documented in
 [Maintaining](docs/MAINTAINING.md).

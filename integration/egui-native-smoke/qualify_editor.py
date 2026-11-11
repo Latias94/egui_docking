@@ -11,30 +11,11 @@ import argparse
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
-import time
 
-
-def wait_for_window_manager(process: subprocess.Popen[bytes] | None) -> None:
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if process is not None and process.poll() is not None:
-            raise RuntimeError("Openbox exited before publishing its X11 work area")
-        properties = subprocess.check_output(
-            ["xprop", "-root", "_NET_SUPPORTING_WM_CHECK", "_NET_WORKAREA"],
-            text=True,
-            timeout=3,
-        )
-        if (
-            re.search(r"window id # 0x0*[1-9a-fA-F][0-9a-fA-F]*", properties)
-            and re.search(r"_NET_WORKAREA\(CARDINAL\) = [0-9]", properties)
-        ):
-            return
-        time.sleep(0.05)
-    raise RuntimeError("the isolated X11 display has no ready EWMH window manager")
+from with_openbox import window_manager
 
 
 def main() -> int:
@@ -65,16 +46,12 @@ def main() -> int:
     }
     environment.pop("WAYLAND_DISPLAY", None)
     scripts = Path(__file__).resolve().parent
-    window_manager: subprocess.Popen[bytes] | None = None
     print(
         f"editor-qualification: started={datetime.now(timezone.utc).isoformat()} "
         f"binary={binary}",
         flush=True,
     )
-    try:
-        if args.start_openbox:
-            window_manager = subprocess.Popen(["openbox", "--sm-disable"])
-        wait_for_window_manager(window_manager)
+    with window_manager(start=args.start_openbox):
         for driver in ("editor_docking_x11.py", "editor_x11.py"):
             print(f"editor-qualification: running {driver}", flush=True)
             subprocess.run(
@@ -82,14 +59,6 @@ def main() -> int:
                 env=environment,
                 check=True,
             )
-    finally:
-        if window_manager is not None and window_manager.poll() is None:
-            window_manager.terminate()
-            try:
-                window_manager.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                window_manager.kill()
-                window_manager.wait(timeout=3)
     print(
         f"editor-qualification: completed={datetime.now(timezone.utc).isoformat()} "
         "docking=passed lifecycle=passed root-rebind=passed",
