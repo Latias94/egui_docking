@@ -26,6 +26,7 @@ fn app_with_session(
         preset_name: "Working".to_owned(),
         action: ExampleActionState::Idle,
         font_size: 13.0,
+        density: DockDensity::Comfortable,
         status: None,
         smoke: None,
         docking_smoke: None,

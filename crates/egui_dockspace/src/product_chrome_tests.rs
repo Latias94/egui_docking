@@ -456,6 +456,87 @@ fn egui_derived_geometry_keeps_large_tab_and_floating_title_glyphs_inside_their_
 }
 
 #[test]
+fn compact_density_keeps_short_tabs_operable_without_shrinking_fonts() {
+    use crate::DockDensity;
+
+    for font_size in [13.0, 36.0, 64.0] {
+        let mut harness = Harness::new(
+            vec!["I".into(), "W".into()],
+            ItemId::new(1),
+            DockStyle::default(),
+        );
+        harness.context.global_style_mut(|style| {
+            style.override_font_id = Some(egui::FontId::proportional(font_size));
+            style.spacing.button_padding = vec2(10.0, 8.0);
+        });
+        let mut styles = None;
+        harness
+            .context
+            .run_ui(RawInput::default(), |ui| {
+                styles = Some((
+                    DockStyle::from_egui(ui),
+                    DockStyle::from_egui_with_density(ui, DockDensity::Compact),
+                ));
+            })
+            .drop_without_applying_deltas();
+        let (comfortable, compact) = styles.unwrap();
+        assert!(compact.tab_bar_height < comfortable.tab_bar_height);
+        assert!(compact.tab_min_width <= comfortable.tab_min_width);
+        assert!(compact.tab_horizontal_padding < comfortable.tab_horizontal_padding);
+        assert!(compact.tab_group_grip_extent < compact.tab_bar_height);
+        assert_eq!(compact.tab_close_size, comfortable.tab_close_size);
+        assert_eq!(
+            compact.touch_resize_hit_extent,
+            comfortable.touch_resize_hit_extent
+        );
+        harness.dockspace.set_style(compact.clone()).unwrap();
+        for _ in 0..3 {
+            harness.run(1100.0, Vec::new());
+        }
+        let output = harness.run(1100.0, Vec::new());
+        assert_eq!(
+            nodes(&output)
+                .iter()
+                .filter(|(_, node)| node.role() == Role::Tab)
+                .count(),
+            2
+        );
+        for title in ["I", "W"] {
+            let tab = nodes(&output)
+                .iter()
+                .find(|(_, node)| node.role() == Role::Tab && node.label() == Some(title))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            assert!(tab.x1 - tab.x0 >= f64::from(compact.tab_close_size));
+            let close_title = format!("Close {title}");
+            assert!(
+                nodes(&output)
+                    .iter()
+                    .any(|(_, node)| node.label() == Some(close_title.as_str()))
+            );
+            let (_, text) = texts(&output)
+                .into_iter()
+                .find(|(_, text)| text.galley.job.text == title)
+                .unwrap();
+            assert_eq!(text.galley.job.sections[0].format.font_id.size, font_size);
+        }
+        harness.focus_tab(1100.0, "W");
+        harness.run(1100.0, vec![key(Key::Enter)]);
+        harness.run(1100.0, Vec::new());
+        assert!(
+            harness
+                .dockspace
+                .view()
+                .item(ItemId::new(2))
+                .unwrap()
+                .is_selected()
+        );
+    }
+}
+
+#[test]
 fn long_tab_ellipsis_fits_the_final_allocation_at_each_ui_zoom() {
     let title = "M".repeat(48);
     for zoom in [1.0, 1.5] {

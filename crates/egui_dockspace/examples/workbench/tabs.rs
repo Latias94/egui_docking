@@ -1,6 +1,6 @@
 //! Optional application chrome. Dockspace still owns docking and close input.
 
-use egui::{Color32, CornerRadius, Rect, Ui, pos2, vec2};
+use egui::{Color32, CornerRadius, Rect, Stroke, Ui, pos2, vec2};
 use egui_dockspace::{Tab, TabBar, TabBarSlot};
 
 use super::DemoPanes;
@@ -25,7 +25,7 @@ pub(super) fn tab_ui(panes: &DemoPanes, ui: &Ui, tab: &Tab<'_>) {
         se: 0,
     };
     if tab.selected {
-        custom.visuals.fill = accent;
+        custom.visuals.stroke = Stroke::new(1.0, accent);
     }
     custom.paint_background(ui.painter());
     let icon = Rect::from_center_size(
@@ -34,11 +34,7 @@ pub(super) fn tab_ui(panes: &DemoPanes, ui: &Ui, tab: &Tab<'_>) {
     );
     ui.painter()
         .with_clip_rect(tab.content_clip_rect)
-        .rect_filled(
-            icon,
-            2.0,
-            if tab.selected { Color32::WHITE } else { accent },
-        );
+        .rect_filled(icon, 2.0, accent);
     custom.paint_title(
         ui,
         Rect::from_min_max(tab.content_rect.min + vec2(18.0, 0.0), tab.content_rect.max),

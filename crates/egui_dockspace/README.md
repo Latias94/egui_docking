@@ -86,6 +86,11 @@ Override `PaneView::minimum_size`, `focus_target` or `focus_state` where needed.
 overrides, including tab corners and outlines. Use `DockStyle::from_egui(ui)`
 after changing fonts or density.
 
+For denser editor chrome, use
+`DockStyle::from_egui_with_density(ui, DockDensity::Compact)`. This reduces tab
+padding, minimum width and group grips while retaining the current font size.
+The `basic` example lets you compare compact and comfortable density.
+
 Override `PaneView::tab_ui` for per-item backgrounds, icons, badges or buttons;
 `Tab::paint`, `paint_background` and `paint_title` retain the default rendering
 where useful. Reserve additional content width with `tab_content_width`.

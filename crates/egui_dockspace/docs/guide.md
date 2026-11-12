@@ -304,6 +304,28 @@ to the derived style before submitting it. The `basic` example demonstrates
 theme and font changes. `DockStyle::default()` retains its fixed geometry for
 applications which configure these metrics directly.
 
+For compact editor tabs, derive all related metrics together:
+
+```rust
+let mut style = egui_dockspace::DockStyle::from_egui_with_density(
+    ui,
+    egui_dockspace::DockDensity::Compact,
+);
+style.visuals.tab_active_fill = Some(egui::Color32::from_rgb(40, 100, 120));
+dockspace.set_style(style)?;
+```
+
+`Compact` reduces tab padding, the minimum width of short titles and the group
+grip width. Text stays at the current egui font size; pane content, UI zoom and
+touch resize targets are unchanged. `Comfortable` follows egui's normal button
+spacing and interaction height, as does `DockStyle::from_egui`. After a font
+change, derive the style again with the selected density and reapply application
+overrides. All returned fields remain editable for application-specific sizing.
+The `basic` example has density and font controls. The workbench uses explicit
+24-point tabs, six-point padding and a smaller group grip. Its selected tab and
+pane share egui's panel fill, and inactive tabs blend into the tab bar. Enable
+**Custom tabs** to add icons, rounded corners, an accent outline and fixed controls.
+
 Tab titles elide within their allocated text area. The full title remains
 available on hover, and the open-tab menu uses its own available width instead
 of reusing the shortened tab label. That menu inherits egui's popup frame,
@@ -393,7 +415,7 @@ candidate style and its matching new core geometry; the public style remains
 unchanged until publication. Core-only configuration is preserved. Geometry changes
 cancel active gestures through core; visual-only and unchanged styles leave
 those gestures intact. Every live window is repainted. The native example's
-Appearance menu demonstrates font changes; egui still owns the font resources.
+Appearance menu demonstrates font and density changes; egui still owns the font resources.
 
 Managed child OS windows derive descriptive titles from each tab group's
 selected pane, including split and contained groups. Pane selection and renamed

@@ -73,5 +73,5 @@ pub use response::{
     DockspaceMutation, DockspaceResponse, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus,
     DockspaceUnavailableReason,
 };
-pub use style::{DockStyle, DockStyleError, DockVisualOverrides};
+pub use style::{DockDensity, DockStyle, DockStyleError, DockVisualOverrides};
 pub use tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabVisuals};

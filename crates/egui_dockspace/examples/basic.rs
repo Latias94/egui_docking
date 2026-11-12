@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use eframe::egui;
 use egui_dockspace::{
-    CloseDecision, CloseItemDecisionState, DockStyle, Dockspace, DockspaceAxis,
+    CloseDecision, CloseItemDecisionState, DockDensity, DockStyle, Dockspace, DockspaceAxis,
     DockspaceCapability, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
     DockspaceRootLayout, DockspaceSurfaceLayout, DockspaceUnavailableReason,
     FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId, SurfaceId,
@@ -41,6 +41,7 @@ struct DockspaceApp {
     error: Option<String>,
     presentation_settlement: DockspaceCapability,
     font_size: f32,
+    density: DockDensity,
     refresh_chrome: bool,
 }
 
@@ -54,6 +55,7 @@ impl DockspaceApp {
             panes: ExamplePanes::new(),
             error: None,
             font_size: 13.0,
+            density: DockDensity::Compact,
             refresh_chrome: true,
             presentation_settlement: DockspaceCapability::Unavailable(
                 DockspaceUnavailableReason::PresentationSettlementRequired,
@@ -65,7 +67,10 @@ impl DockspaceApp {
 impl eframe::App for DockspaceApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if self.refresh_chrome {
-            match self.dockspace.set_style(DockStyle::from_egui(ui)) {
+            match self
+                .dockspace
+                .set_style(DockStyle::from_egui_with_density(ui, self.density))
+            {
                 Ok(_) => self.refresh_chrome = false,
                 Err(error) => self.error = Some(error.to_string()),
             }
@@ -78,6 +83,13 @@ impl eframe::App for DockspaceApp {
         egui::Panel::top("dockspace-help").show(ui, |ui| {
             ui.horizontal(|ui| {
                 egui::widgets::global_theme_preference_buttons(ui);
+                ui.separator();
+                for (density, label) in [(DockDensity::Compact, "Compact"), (DockDensity::Comfortable, "Comfortable")] {
+                    if ui.selectable_value(&mut self.density, density, label).changed() {
+                        self.refresh_chrome = true;
+                        ui.ctx().request_repaint();
+                    }
+                }
                 ui.separator();
                 if ui.add(egui::DragValue::new(&mut self.font_size).range(10.0..=36.0).prefix("Font ")).changed() {
                     ui.ctx().all_styles_mut(|style| {

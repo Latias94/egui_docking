@@ -163,6 +163,19 @@ fn with_alpha(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(red, green, blue, alpha)
 }
 
+/// Initial docking chrome density relative to the current egui fonts.
+///
+/// This only changes docking geometry. Pane fonts, application widgets, zoom
+/// and the separate touch resize target remain under their existing settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DockDensity {
+    /// Reduced vertical padding, shorter group grips and narrower short tabs.
+    Compact,
+    /// Follow egui button spacing and interaction height.
+    #[default]
+    Comfortable,
+}
+
 /// Configurable docking geometry, interaction timing and visual overrides.
 ///
 /// All geometry is expressed in egui points. Values are fixed for a frame and
@@ -241,23 +254,46 @@ impl DockStyle {
     /// [`Self::presentation_config`]. Whole-UI zoom needs no geometry update.
     #[must_use]
     pub fn from_egui(ui: &egui::Ui) -> Self {
+        Self::from_egui_with_density(ui, DockDensity::Comfortable)
+    }
+
+    /// Derives docking geometry with an explicit compact or comfortable density.
+    ///
+    /// Compact chrome reduces padding and minimum tab width without shrinking
+    /// text. Both densities retain enough body width beside the close control
+    /// for keyboard and pointer interaction at the current font size.
+    ///
+    /// Like [`Self::from_egui`], call this during a UI pass and reapply it after
+    /// font/density changes. The returned style remains ordinary editable data.
+    #[must_use]
+    pub fn from_egui_with_density(ui: &egui::Ui, density: DockDensity) -> Self {
         let font = egui::FontSelection::Default
             .resolve_with_fallback(ui.style(), egui::TextStyle::Button.into());
         let font_height = ui.fonts_mut(|fonts| fonts.row_height(&font));
         let spacing = ui.spacing();
         let height = (font_height + spacing.button_padding.y * 2.0).max(spacing.interact_size.y);
+        let compact = density == DockDensity::Compact;
+        let height = if compact {
+            (font_height + 4.0).min(height)
+        } else {
+            height
+        };
+        let padding = if compact {
+            spacing.button_padding.x.min(6.0)
+        } else {
+            spacing.button_padding.x
+        };
         let mut result = Self {
             tab_bar_height: height,
             floating_title_height: height,
-            tab_group_grip_extent: height,
+            tab_group_grip_extent: if compact { font_height } else { height },
             tab_close_size: font_height,
-            tab_horizontal_padding: spacing.button_padding.x,
+            tab_horizontal_padding: padding,
             floating_border_width: ui.visuals().window_stroke.width,
             ..Self::default()
         };
-        result.tab_min_width = result
-            .tab_min_width
-            .max(font_height + spacing.button_padding.x * 3.0);
+        let minimum = if compact { 48.0 } else { result.tab_min_width };
+        result.tab_min_width = minimum.max(font_height * 2.0 + padding * 2.0);
         result.tab_max_width = result.tab_max_width.max(result.tab_min_width);
         result.floating_resize_extent = result
             .floating_resize_extent

@@ -14,7 +14,7 @@ use dockspace::runtime::DockspaceSession;
 #[cfg(feature = "serde")]
 use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use eframe::egui;
-use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneResponse, PaneView};
+use egui_dockspace::{DockDensity, DockStyle, DockspaceActionStatus, PaneResponse, PaneView};
 use egui_dockspace_native::{NativeActionStatus, NativeDockspaceApp};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -86,6 +86,7 @@ fn main() -> eframe::Result {
         preset_name: "Working".to_owned(),
         action: ExampleActionState::Idle,
         font_size: 13.0,
+        density: DockDensity::Comfortable,
         status: None,
         smoke: std::env::args()
             .any(|argument| argument == "--smoke")
@@ -122,6 +123,7 @@ struct NativeExampleApp {
     preset_name: String,
     action: ExampleActionState,
     font_size: f32,
+    density: DockDensity,
     status: Option<String>,
     smoke: Option<smoke::EditorSmoke>,
     docking_smoke: Option<docking_smoke::DockingSmoke>,
@@ -196,7 +198,16 @@ impl NativeExampleApp {
                     )
                     .ui(ui, |ui| {
                         let previous_theme = ui.ctx().options(|options| options.theme_preference);
+                        let previous_density = self.density;
                         egui::widgets::global_theme_preference_buttons(ui);
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut self.density, DockDensity::Compact, "Compact");
+                            ui.selectable_value(
+                                &mut self.density,
+                                DockDensity::Comfortable,
+                                "Comfortable",
+                            );
+                        });
                         let font_changed = ui
                             .add(
                                 egui::DragValue::new(&mut self.font_size)
@@ -211,11 +222,14 @@ impl NativeExampleApp {
                             });
                         }
                         if font_changed
+                            || self.density != previous_density
                             || ui.ctx().options(|options| options.theme_preference)
                                 != previous_theme
                         {
                             ui.set_style(ui.ctx().global_style());
-                            let result = self.dockspace.request_style(DockStyle::from_egui(ui));
+                            let result = self
+                                .dockspace
+                                .request_style(DockStyle::from_egui_with_density(ui, self.density));
                             self.begin_layout_action("Appearance", result);
                         }
                     });

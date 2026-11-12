@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 
 use egui::{Color32, Context, FontId, Frame, Margin, TextStyle, Theme, Vec2};
 use egui_dockspace::{
-    CloseDecision, CloseItemDecisionState, DockStyle, DockVisualOverrides, Dockspace,
-    DockspaceAxis, DockspaceContainedLayout, DockspaceError, DockspaceLayout, DockspaceNode,
-    DockspaceOutput, DockspaceResponse, DockspaceRootLayout, DockspaceSurfaceLayout,
-    FloatingPresentationId, ItemId, LogicalRect, PaneResponse, PaneView, RootId, SurfaceId, Tab,
-    TabBar, TabBarId, TabBarLayout, TabBarSlot,
+    CloseDecision, CloseItemDecisionState, DockStyle, Dockspace, DockspaceAxis,
+    DockspaceContainedLayout, DockspaceError, DockspaceLayout, DockspaceNode, DockspaceOutput,
+    DockspaceResponse, DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId,
+    LogicalRect, PaneResponse, PaneView, RootId, SurfaceId, Tab, TabBar, TabBarId, TabBarLayout,
+    TabBarSlot,
 };
 
 mod tabs;
@@ -36,35 +36,19 @@ pub(super) fn new_context() -> Context {
         for text in [TextStyle::Body, TextStyle::Button, TextStyle::Monospace] {
             style.text_styles.get_mut(&text).unwrap().size = 14.0;
         }
-        let visuals = &mut style.visuals;
-        if visuals.dark_mode {
-            visuals.panel_fill = Color32::from_rgb(49, 63, 80);
-            visuals.window_fill = Color32::from_rgb(32, 40, 52);
-            visuals.extreme_bg_color = Color32::from_rgb(22, 29, 39);
-        } else {
-            visuals.panel_fill = Color32::from_rgb(220, 232, 244);
-            visuals.window_fill = Color32::from_rgb(250, 251, 253);
-            visuals.extreme_bg_color = Color32::from_rgb(236, 240, 245);
-        }
     });
     context
 }
 
 pub(super) fn dock_style() -> DockStyle {
     DockStyle {
-        tab_bar_height: 34.0,
-        tab_min_width: 100.0,
-        tab_horizontal_padding: 12.0,
-        tab_close_size: 16.0,
-        floating_title_height: 30.0,
-        splitter_thickness: 3.0,
-        visuals: DockVisualOverrides {
-            tab_active_fill: Some(Color32::from_rgb(48, 112, 172)),
-            tab_active_text_color: Some(Color32::WHITE),
-            splitter_color: Some(Color32::from_rgb(116, 136, 158)),
-            splitter_hover_color: Some(Color32::from_rgb(52, 132, 210)),
-            ..Default::default()
-        },
+        tab_bar_height: 24.0,
+        tab_group_grip_extent: 18.0,
+        tab_min_width: 64.0,
+        tab_horizontal_padding: 6.0,
+        tab_close_size: 14.0,
+        floating_title_height: 24.0,
+        splitter_thickness: 2.0,
         ..Default::default()
     }
 }
@@ -283,7 +267,7 @@ impl PaneView for DemoPanes {
         pane.content = Some(ui.available_rect_before_wrap());
         pane.editor = None;
         let frame = Frame::new()
-            .fill(ui.visuals().window_fill())
+            .fill(ui.visuals().panel_fill)
             .inner_margin(Margin::same(12))
             .show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
