@@ -319,6 +319,7 @@ pub(crate) struct ProductPaintOutput {
     pub(crate) local_actions: Vec<EguiSurfaceAction>,
     pub(crate) pane_focus_observation: Option<PreparedPaneFocusObservation>,
     pub(crate) pane_focus_pending: Option<PendingPaneFocusObservation>,
+    pub(crate) pane_focus_needs_repaint: bool,
     pub(crate) pane_focus_capability: DockspaceCapability,
     pub(crate) pane_focus_bindings: Vec<(ItemId, Id)>,
     pub(crate) missing_items: BTreeSet<ItemId>,
@@ -380,15 +381,11 @@ pub(crate) fn paint_surface(
                 node.clear_actions();
             }
         });
-        if pane_focus_request.is_some_and(|request| request.item().is_none())
+        if let Some(request) = pane_focus_request.filter(|request| request.item().is_none())
             && pointer_authority.supports_preview_gestures()
             && enabled
         {
-            ui.memory_mut(|memory| {
-                if !memory.has_focus(target) {
-                    memory.request_focus(target);
-                }
-            });
+            crate::product_focus::apply_pane_focus_request(ui.ctx(), instance_id, request, target);
             pane_focus_target_requested = true;
             pane_focus_target = Some(target);
         }
@@ -562,8 +559,14 @@ pub(crate) fn paint_surface(
             PointerActionAuthority::LocalResponses | PointerActionAuthority::HostJournal
         ))
     .then(|| crate::output_proof::PaintAppendCheck::begin(ui.painter()));
-    let (pane_focus_observation, pane_focus_pending, pane_focus_capability) = pane_focus_request
-        .map_or((None, None, DockspaceCapability::Supported), |request| {
+    let (
+        pane_focus_observation,
+        pane_focus_pending,
+        pane_focus_needs_repaint,
+        pane_focus_capability,
+    ) = pane_focus_request.map_or(
+        (None, None, false, DockspaceCapability::Supported),
+        |request| {
             let (observation, capability) = if pane_focus_target_requested {
                 let state = request.item().map_or_else(
                     || {
@@ -604,6 +607,12 @@ pub(crate) fn paint_surface(
                 )
             };
             let prepared = plan.prepare_pane_focus_observation(request, observation);
+            let needs_repaint = crate::product_focus::focus_observation_needs_repaint(
+                ui.ctx(),
+                instance_id,
+                request,
+                observation,
+            );
             let observed_during_callback = match observation {
                 DockspacePaneFocusObservation::Focused => PaneFocusState::Focused,
                 DockspacePaneFocusObservation::NotFocused => PaneFocusState::Unfocused,
@@ -639,8 +648,9 @@ pub(crate) fn paint_surface(
                 } else {
                     None
                 };
-            (prepared, pending, capability)
-        });
+            (prepared, pending, needs_repaint, capability)
+        },
+    );
     let focus_output_valid =
         focus_output_check.is_none_or(|check| check.is_preserved(ui.painter()));
     let execution_receipt = execution_receipt.filter(|_| focus_output_valid);
@@ -649,6 +659,7 @@ pub(crate) fn paint_surface(
         local_actions,
         pane_focus_observation,
         pane_focus_pending,
+        pane_focus_needs_repaint,
         pane_focus_capability,
         pane_focus_bindings,
         missing_items: resources.missing_items().collect(),

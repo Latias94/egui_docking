@@ -18,6 +18,7 @@ use egui::{Context, Event, Id, LayerId, Modifiers, PointerButton, Pos2, Rect, Ui
 
 use crate::input::DockInputConfig;
 use crate::pass_settlement::{ProductPointerPacket, pointer_packet};
+use crate::product_focus::DeferredTabFocus;
 use crate::product_render::ProductReceiverBinding;
 
 mod touch;
@@ -216,7 +217,7 @@ pub(crate) struct PreparedProductPointerInput {
 struct PreparedPointerEdges {
     raw: Vec<Edge>,
     continuation: Option<QualifiedPointerContinuation>,
-    deferred_focus: Vec<Id>,
+    deferred_focus: DeferredTabFocus,
 }
 
 struct QualifiedPointerContinuation {
@@ -239,15 +240,16 @@ impl PreparedProductPointerInput {
 
     /// Appends raw input and then an exact surviving stationary request.
     ///
-    /// The returned widget IDs request focus only after this update publishes.
-    /// No framework hit test is performed against post-input geometry. A new
-    /// or changed request remains core-owned for the next update; the host must
+    /// The returned intent applies framework tab focus once and preserves whether
+    /// this input handled a tab press, even if a later application press replaced
+    /// its focus destination. It does not acknowledge core presentation. No new
+    /// hit test selects a destination against post-input geometry. The host must
     /// call `schedule_pointer_continuation` after publication, even when this
     /// input is empty. Raw events must never be replayed to service that wake.
     pub(crate) fn submit_into(
         self,
         frame: &mut DockspaceHostFrame<'_>,
-    ) -> Result<Vec<Id>, DockspaceRuntimeError> {
+    ) -> Result<DeferredTabFocus, DockspaceRuntimeError> {
         let input = self.input?;
         if !input.raw.is_empty() {
             frame.submit_host_pointer_batch(
@@ -672,7 +674,7 @@ impl ProductPointer {
                 && edge.surface == current)
                 .then_some(QualifiedPointerContinuation { request, edge })
         });
-        let mut deferred_focus = Vec::new();
+        let mut deferred_focus = DeferredTabFocus::default();
         if let Some(scene) = scene {
             for edge in &edges {
                 if !matches!(
@@ -681,9 +683,7 @@ impl ProductPointer {
                 ) {
                     continue;
                 }
-                // A later application press also supersedes the tab focus intent.
-                deferred_focus.clear();
-                if edge.device == PointerDeviceKind::Unknown
+                let target = if edge.device == PointerDeviceKind::Unknown
                     && let Some(receiver) = edge.delivery
                     && receiver.descriptor().role()
                         == dockspace::runtime::DockspaceReceiverRole::TabBody
@@ -692,8 +692,11 @@ impl ProductPointer {
                         .iter()
                         .find(|binding| binding.receiver == receiver.descriptor())
                 {
-                    deferred_focus.push(binding.widget_id);
-                }
+                    Some(binding.widget_id)
+                } else {
+                    None
+                };
+                deferred_focus.observe_primary_press(target);
             }
         }
         self.position = position;
@@ -817,9 +820,10 @@ fn pointer_input(edge: &Edge, observed_at: Option<Duration>) -> HostPointerInput
 pub(crate) fn schedule_pointer_continuation(
     session: &DockspaceSession,
     context: &egui::Context,
+    viewport: egui::ViewportId,
     observed_at: Option<Duration>,
 ) {
     if let (Some(request), Some(now)) = (session.pointer_continuation(), observed_at) {
-        context.request_repaint_after(request.deadline().saturating_sub(now));
+        context.request_repaint_after_for(request.deadline().saturating_sub(now), viewport);
     }
 }

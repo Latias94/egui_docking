@@ -1,8 +1,10 @@
 //! Framework focus sampling and exact pending-observation ownership.
 
 mod pending_observations;
+mod tab_intent;
 
 pub(crate) use pending_observations::PendingFocusObservations;
+pub(crate) use tab_intent::DeferredTabFocus;
 
 #[cfg(test)]
 #[path = "product_focus_tests.rs"]
@@ -13,10 +15,98 @@ mod tests;
 mod input_tests;
 
 use dockspace::model::{DockspaceSurfaceView, ItemId};
-use dockspace::runtime::DockspaceHostFocus;
+use dockspace::runtime::{
+    DockspaceHostFocus, DockspacePaneFocusObservation, DockspacePaneFocusRequest,
+};
 use egui::{Context, Id, Rect};
 
 use crate::pane::{PaneFocusState, PaneView};
+
+#[derive(Clone, Copy)]
+struct FrameworkFocusRequest {
+    request: DockspacePaneFocusRequest,
+    applied: bool,
+    observation: Option<DockspacePaneFocusObservation>,
+    wake_frame: Option<u64>,
+}
+
+fn with_framework_focus<T>(
+    context: &Context,
+    instance: Id,
+    viewport: egui::ViewportId,
+    request: DockspacePaneFocusRequest,
+    update: impl FnOnce(&mut FrameworkFocusRequest) -> T,
+) -> T {
+    let key = Id::unique((instance, "applied-pane-focus", request.surface(), viewport));
+    context.data_mut(|data| {
+        let state = data.get_temp_mut_or_insert_with(key, || FrameworkFocusRequest {
+            request,
+            applied: false,
+            observation: None,
+            wake_frame: None,
+        });
+        if state.request != request {
+            *state = FrameworkFocusRequest {
+                request,
+                applied: false,
+                observation: None,
+                wake_frame: None,
+            };
+        }
+        update(state)
+    })
+}
+
+/// A framework focus side effect is applied once, independently of renderer acknowledgement.
+/// The real focus observation still accompanies each exact output until core settles it.
+pub(crate) fn apply_pane_focus_request(
+    context: &Context,
+    instance: Id,
+    request: DockspacePaneFocusRequest,
+    target: Id,
+) {
+    let applied =
+        with_framework_focus(context, instance, context.viewport_id(), request, |state| {
+            std::mem::replace(&mut state.applied, true)
+        });
+    if !applied {
+        context.memory_mut(|memory| {
+            if !memory.has_focus(target) {
+                memory.request_focus(target);
+            }
+        });
+    }
+}
+
+/// Associates an already handled tab press with its newly published core intent.
+/// This records no renderer presentation or focus-observation acknowledgement.
+pub(crate) fn mark_pane_focus_applied(
+    context: &Context,
+    instance: Id,
+    viewport: egui::ViewportId,
+    request: DockspacePaneFocusRequest,
+) {
+    with_framework_focus(context, instance, viewport, request, |state| {
+        state.applied = true
+    });
+}
+
+/// Repeated observations remain true facts without creating an idle repaint loop.
+pub(crate) fn focus_observation_needs_repaint(
+    context: &Context,
+    instance: Id,
+    request: DockspacePaneFocusRequest,
+    observation: DockspacePaneFocusObservation,
+) -> bool {
+    let frame = context.cumulative_frame_nr();
+    with_framework_focus(context, instance, context.viewport_id(), request, |state| {
+        if state.observation != Some(observation) {
+            state.observation = Some(observation);
+            state.wake_frame = Some(frame);
+        }
+        state.wake_frame == Some(frame)
+    })
+}
 
 #[derive(Default)]
 struct PaneFocusEvidence {

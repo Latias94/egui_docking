@@ -220,6 +220,7 @@ pub struct NativeSurfacePaint {
     output_proof: Option<crate::output_proof::SurfaceOutputProof>,
     local_actions: Vec<EguiSurfaceAction>,
     pane_focus_observation: Option<PreparedPaneFocusObservation>,
+    pane_focus_needs_repaint: bool,
     pane_focus_bindings: Vec<(ItemId, Id)>,
 }
 
@@ -455,6 +456,15 @@ impl NativeSurfacePaint {
     pub fn take_pane_focus_observation(&mut self) -> Option<PreparedPaneFocusObservation> {
         self.pane_focus_observation.take()
     }
+
+    /// Returns whether a new focus request or changed observation needs a follow-up frame.
+    ///
+    /// Repeated unchanged observations retain their exact presentation ownership
+    /// without independently scheduling another paint.
+    #[must_use]
+    pub const fn pane_focus_needs_repaint(&self) -> bool {
+        self.pane_focus_needs_repaint
+    }
 }
 
 /// Paints one ready surface using the same renderer as the ordinary product
@@ -500,6 +510,7 @@ pub fn paint_surface(
             output_proof: None,
             local_actions: Vec::new(),
             pane_focus_observation: None,
+            pane_focus_needs_repaint: false,
             pane_focus_bindings: Vec::new(),
         });
     };
@@ -555,6 +566,7 @@ pub fn paint_surface(
         output_proof: capture.finish(ui.painter()),
         local_actions: painted.local_actions,
         pane_focus_observation: painted.pane_focus_observation,
+        pane_focus_needs_repaint: painted.pane_focus_needs_repaint,
         pane_focus_bindings: painted.pane_focus_bindings,
     })
 }

@@ -176,4 +176,4 @@ jobs:
           cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml
           --package egui_dockspace_native --lib --all-features --locked
           --test-threads=1
-          -E 'test(real_eframe_actual_passes_publish_) | test(real_eframe_output_capacity_retains_)'
+          -E 'test(real_eframe_actual_passes_publish_) | test(real_eframe_output_capacity_retains_) | test(stable_unfocused_observations_idle_)'

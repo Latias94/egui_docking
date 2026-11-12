@@ -875,12 +875,14 @@ impl Dockspace {
         let mut pointer = self.pointer.clone();
         let mut pending_actions = None;
         let mut observed_at = None;
-        let mut deferred_focus = Vec::new();
+        let mut deferred_focus = crate::product_focus::DeferredTabFocus::default();
+        let mut focus_before_pointer = None;
         let mut accepted_focus = Vec::new();
         let mut missing = BTreeSet::new();
         let mut defer_measurement = false;
         let mut pane_focus_observation = None;
         let mut pane_focus_pending = None;
+        let mut pane_focus_needs_repaint = false;
         let mut pane_focus_capability =
             DockspaceCapability::Unavailable(DockspaceUnavailableReason::SurfaceBoundsUnavailable);
         let mut pointer_receivers = Vec::new();
@@ -921,6 +923,7 @@ impl Dockspace {
             if presentation_settlement_available {
                 let input = pointer.prepare(&frame, surface, ui);
                 observed_at = input.observed_at();
+                focus_before_pointer = frame.pane_focus_request(surface);
                 self.pointer.record_rejected_run(&pointer);
                 deferred_focus = input
                     .submit_into(&mut frame)
@@ -990,6 +993,7 @@ impl Dockspace {
                 defer_measurement = paint.defer_measurement;
                 pane_focus_observation = paint.pane_focus_observation;
                 pane_focus_pending = paint.pane_focus_pending;
+                pane_focus_needs_repaint = paint.pane_focus_needs_repaint;
                 pane_focus_capability = paint.pane_focus_capability;
                 pointer_receivers = paint.receivers;
                 focus_bindings = paint.pane_focus_bindings;
@@ -1044,23 +1048,26 @@ impl Dockspace {
         }
         self.pointer = pointer;
         self.pending_focus.settle(&accepted_focus, &report);
-        for id in deferred_focus {
-            let target = ui
-                .ctx()
-                .viewport(|viewport| viewport.this_pass.widgets.get(id).copied());
-            if let Some(target) = target
-                && target.enabled
-                && target.visible
-                && target.sense.is_focusable()
-                && ui.memory(|memory| memory.allows_interaction(target.layer_id))
-            {
-                ui.memory_mut(|memory| memory.request_focus(id));
-            }
+        deferred_focus.apply(ui.ctx());
+        if deferred_focus.handled()
+            && let Some(request) = self.session.pane_focus_request(surface)
+            && Some(request) != focus_before_pointer
+        {
+            crate::product_focus::mark_pane_focus_applied(
+                ui.ctx(),
+                self.id,
+                ui.ctx().viewport_id(),
+                request,
+            );
         }
-        crate::product_pointer::schedule_pointer_continuation(&self.session, ui.ctx(), observed_at);
+        crate::product_pointer::schedule_pointer_continuation(
+            &self.session,
+            ui.ctx(),
+            ui.ctx().viewport_id(),
+            observed_at,
+        );
         self.measurement_deferred = defer_measurement;
-        let needs_presentation_settlement =
-            defer_measurement || pane_focus_observation.is_some() || pane_focus_pending.is_some();
+        let needs_presentation_settlement = defer_measurement || pane_focus_needs_repaint;
         let continuation_awaits_presentation = self
             .session
             .pointer_continuation_awaits_presentation(surface);

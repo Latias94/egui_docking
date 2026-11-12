@@ -19,6 +19,7 @@ fn unready_paint(surface: SurfaceId) -> NativeSurfacePaint {
         output_proof: None,
         local_actions: Vec::new(),
         pane_focus_observation: None,
+        pane_focus_needs_repaint: false,
         pane_focus_bindings: Vec::new(),
     }
 }
@@ -180,4 +181,131 @@ fn only_ready_surfaces_require_a_complete_proof() {
         [&first, &unready, &second],
         &mut output
     ));
+}
+
+#[test]
+fn repeated_pending_focus_observations_remain_available_without_requesting_another_paint() {
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
+    };
+    use dockspace::policy::DockPolicy;
+    use dockspace::runtime::DockspaceSession;
+    use egui::{RawInput, Rect, Ui};
+
+    use crate::{DockInputConfig, DockStyle, PaneResponse, PaneView};
+
+    struct Editors {
+        pane: Id,
+        search: Id,
+        request_focus: Option<Id>,
+        pane_text: String,
+        search_text: String,
+    }
+
+    impl PaneView for Editors {
+        fn title(&self, _: ItemId) -> Option<egui::WidgetText> {
+            Some("Document".into())
+        }
+
+        fn ui(&mut self, _: ItemId, ui: &mut Ui) -> PaneResponse {
+            let pane = ui.add(egui::TextEdit::singleline(&mut self.pane_text).id(self.pane));
+            let search = ui.add(egui::TextEdit::singleline(&mut self.search_text).id(self.search));
+            if let Some(target) = self.request_focus.take() {
+                ui.memory_mut(|memory| memory.request_focus(target));
+            }
+            PaneResponse::from(&pane).with_content(&search)
+        }
+
+        fn focus_target(&self, _: ItemId) -> Option<Id> {
+            Some(self.pane)
+        }
+    }
+
+    let surface = SurfaceId::new(1);
+    let item = ItemId::new(1);
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        surface,
+        DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([item])),
+    )])
+    .unwrap();
+    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.select_item_current(item).unwrap();
+    frame.commit().unwrap();
+    let request = session
+        .pane_focus_request(surface)
+        .expect("the committed selection creates an exact focus request");
+    let context = Context::default();
+    context.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+    let pane = Id::unique("native-focus-repaint-pane");
+    let search = Id::unique("native-focus-repaint-search");
+    let mut editors = Editors {
+        pane,
+        search,
+        request_focus: Some(search),
+        pane_text: String::new(),
+        search_text: String::new(),
+    };
+    for (pass, expected_repaint, expected_focus) in [
+        (0, true, search),
+        (1, false, search),
+        (2, true, pane),
+        (3, false, pane),
+    ] {
+        if pass == 2 {
+            editors.request_focus = Some(pane);
+        }
+        let mut observed = false;
+        let mut output = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(640.0, 480.0),
+                )),
+                focused: true,
+                time: Some(f64::from(pass) * 0.1),
+                ..RawInput::default()
+            },
+            |ui| {
+                let mut frame = session.begin_host_frame().unwrap();
+                let bounds = ui.available_rect_before_wrap();
+                super::measure_surface(
+                    &mut frame,
+                    surface,
+                    ui,
+                    bounds,
+                    bounds,
+                    &editors,
+                    &DockStyle::default(),
+                )
+                .unwrap();
+                let mut register_scroll = |ui: &Ui, _: Rect, id: Id| (id, ui.layer_id());
+                let mut paint = super::paint_surface(
+                    &mut frame,
+                    Id::unique("native-focus-repaint"),
+                    surface,
+                    ui,
+                    &mut editors,
+                    &DockStyle::default(),
+                    &DockInputConfig::default(),
+                    &mut register_scroll,
+                )
+                .unwrap();
+                assert!(paint.had_ready_plan());
+                assert_eq!(paint.pane_focus_needs_repaint(), expected_repaint);
+                observed = paint.take_pane_focus_observation().is_some();
+                assert!(
+                    paint.confirm_into(&mut frame).unwrap(),
+                    "every observation still belongs to a complete surface output"
+                );
+                // Dropped outputs cannot acknowledge the request, so the same
+                // pending request remains observable across ordinary UI frames.
+                drop(frame.commit().unwrap());
+            },
+        );
+        output.textures_delta.clear();
+        assert!(observed, "unchanged observations must not be discarded");
+        assert_eq!(context.memory(egui::Memory::focused), Some(expected_focus));
+        assert_eq!(session.pane_focus_request(surface), Some(request));
+    }
 }

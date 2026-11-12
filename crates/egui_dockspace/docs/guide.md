@@ -336,7 +336,11 @@ For an editable pane, assign a stable `.id(...)` to its primary editor and retur
 the same ID from `PaneView::focus_target`; the small
 [winit editor](../examples/winit.rs) demonstrates this pairing. An already focused
 target keeps its ongoing IME composition while its presentation acknowledgement
-is pending. Applications continue to own document text and composition behavior.
+is pending. Each request applies framework focus once; a later application click
+or focus transfer takes precedence while its exact renderer acknowledgement is
+still pending. Stable unfocused observations remain available without requesting
+continuous repaints. A new explicit selection can request pane focus again.
+Applications continue to own document text and composition behavior.
 
 ## Styling
 

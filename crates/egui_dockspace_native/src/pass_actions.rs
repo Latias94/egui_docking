@@ -59,6 +59,10 @@ impl NativePassActions {
         !self.local_actions.is_empty() || !self.pane_focus.is_empty()
     }
 
+    pub(crate) fn has_retained_local_actions(&self) -> bool {
+        !self.local_actions.is_empty()
+    }
+
     pub(crate) fn prepare_pass(
         &mut self,
         token: NativeOutputToken,

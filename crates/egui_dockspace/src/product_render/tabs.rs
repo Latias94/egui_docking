@@ -88,19 +88,20 @@ pub(crate) fn paint_pane(
                 ui.label(format!("Missing pane {}", item.get()));
             });
         } else {
-            if context
+            if let Some(request) = context
                 .pane_focus_request
-                .is_some_and(|request| request.item() == Some(item))
+                .filter(|request| request.item() == Some(item))
                 && context.pointer_authority.supports_preview_gestures()
                 && effective_enabled(child_ui, true)
                 && !*context.pane_focus_target_requested
                 && let Some(target) = context.panes.focus_target(item)
             {
-                context.ui.memory_mut(|memory| {
-                    if !memory.has_focus(target) {
-                        memory.request_focus(target);
-                    }
-                });
+                crate::product_focus::apply_pane_focus_request(
+                    context.ui.ctx(),
+                    context.instance_id,
+                    request,
+                    target,
+                );
                 *context.pane_focus_target_requested = true;
                 *context.pane_focus_target = Some(target);
             }

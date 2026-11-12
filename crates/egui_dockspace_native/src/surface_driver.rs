@@ -184,6 +184,15 @@ const fn retained_pass_requires_semantic_retry(
     retain_previous_output && (!surface_is_presented || presentation_work_pending)
 }
 
+fn retained_actions_need_repaint(
+    actions: &NativePassActions,
+    changed_focus_observation: bool,
+) -> bool {
+    // Exact focus observations may wait for their output without demanding a
+    // fresh UI pass. New or changed observations carry their own wake flag.
+    actions.has_retained_local_actions() || changed_focus_observation
+}
+
 #[cfg(test)]
 fn select_no_frame_invalidations_for_frame<T>(
     context: &egui::Context,
@@ -927,8 +936,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             return Ok(NativeSurfaceUpdate::RetainPrevious);
         }
 
-        let (mut host_frame, run, mut publication) = if let Some(update) = self.owned_update.take()
-        {
+        let (mut host_frame, run, publication) = if let Some(update) = self.owned_update.take() {
             let NativeOwnedUpdate {
                 host,
                 mut run,
@@ -1233,7 +1241,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     .map_err(map_pass_action_error)?;
             }
         }
-        publication.follow_up |= self.pass_actions.has_retained_action_work();
         self.owned_update = Some(NativeOwnedUpdate {
             host: host_frame.suspend(),
             run,
@@ -1526,7 +1533,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                         artifact,
                         observation,
                     );
-                    focus_pending = true;
+                    focus_pending |= paint.pane_focus_needs_repaint();
                 }
             }
         } else {
@@ -1554,8 +1561,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         );
         let follow_up = publication.follow_up
             || self.pending_service
-            || focus_pending
-            || self.pass_actions.has_retained_action_work()
+            || retained_actions_need_repaint(&self.pass_actions, focus_pending)
             || semantic_retry
             || self.coordinator.has_pending_callback_records();
         require_durable_root_cycle(&self.coordinator, token, follow_up)?;
@@ -2003,6 +2009,7 @@ fn committed_boundary_is_quiescent(
 
 #[cfg(test)]
 mod tests {
+    mod focus_idle;
     mod output_backpressure;
     mod owned_update;
     mod retirement_backpressure;

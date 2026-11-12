@@ -212,6 +212,7 @@ struct EncodedPass {
     coordinates_supported: bool,
     pane_focus: Option<PreparedPaneFocusObservation>,
     pending_focus: Option<PendingPaneFocusObservation>,
+    focus_needs_repaint: bool,
     focus_capability: DockspaceCapability,
     defer_measurement: bool,
     had_plan: bool,
@@ -286,13 +287,15 @@ impl Dockspace {
         if surfaces[0] != surface {
             return Err(DockspaceErrorSource::SurfaceOutsideRoster { surface }.into());
         }
+        let viewport = input.viewport_id;
         let run = ProductPassSettlementRun::begin(context, &input);
         let mut run_sequence = None;
         let mut pending_actions = None;
         let mut terminal = None;
         let mut error = None;
         let mut observed_at = None;
-        let mut deferred_focus = Vec::new();
+        let mut deferred_focus = crate::product_focus::DeferredTabFocus::default();
+        let mut focus_before_pointer = None;
         let mut accepted_focus = Vec::new();
         let mut preceding_feedback = Vec::new();
         let mut retirement_repaint = false;
@@ -411,6 +414,7 @@ impl Dockspace {
                             }
                             let input = pointer.prepare(&frame, surface, ui);
                             observed_at = input.observed_at();
+                            focus_before_pointer = frame.pane_focus_request(surface);
                             // This owner admits input only on its first pass and
                             // abandons the run on error. Keep its consumed-run
                             // marker private with the candidate: leaking a rejected
@@ -511,6 +515,7 @@ impl Dockspace {
                                 }),
                             pane_focus: None,
                             pending_focus: None,
+                            focus_needs_repaint: false,
                             focus_capability: DockspaceCapability::Unavailable(
                                 DockspaceUnavailableReason::SurfaceBoundsUnavailable,
                             ),
@@ -524,6 +529,7 @@ impl Dockspace {
                             pass.focus_bindings = paint.pane_focus_bindings;
                             pass.pane_focus = paint.pane_focus_observation;
                             pass.pending_focus = paint.pane_focus_pending;
+                            pass.focus_needs_repaint = paint.pane_focus_needs_repaint;
                             pass.focus_capability = paint.pane_focus_capability;
                             pass.defer_measurement = paint.defer_measurement;
                             self.ui_actions.capture(
@@ -536,6 +542,7 @@ impl Dockspace {
                                 self.drop_target_observations = paint.drop_target_observations;
                             }
                         }
+                        deferred_focus.apply(ui.ctx());
                         update = Some(frame.suspend());
                         Ok(pass)
                     },
@@ -573,6 +580,15 @@ impl Dockspace {
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .map_err(DockspaceError::from_detail)?;
         let mut report = frame.commit().map_err(DockspaceError::from_detail)?;
+        if deferred_focus.handled()
+            && let Some(request) = self.session.pane_focus_request(surface)
+            && Some(request) != focus_before_pointer
+        {
+            // The original tab input has already participated in egui focus
+            // ordering. Its newly admitted core intent must not override later
+            // application focus on the next run while presentation is pending.
+            crate::product_focus::mark_pane_focus_applied(context, self.id, viewport, request);
+        }
         self.ui_actions
             .publish(pending_actions, run_sequence.unwrap(), &report);
         let painted = report.take_painted_outputs().pop();
@@ -590,22 +606,14 @@ impl Dockspace {
         self.pointer = pointer;
         self.measurement_deferred = pass.defer_measurement;
         self.pending_focus.settle(&accepted_focus, &report);
-        for id in deferred_focus {
-            // run_ui has ended, so prev_pass contains its terminal registrations.
-            let target = context.viewport(|viewport| viewport.prev_pass.widgets.get(id).copied());
-            if let Some(target) = target
-                && target.enabled
-                && target.visible
-                && target.sense.is_focusable()
-                && context.memory(|memory| memory.allows_interaction(target.layer_id))
-            {
-                context.memory_mut(|memory| memory.request_focus(id));
-            }
-        }
-        crate::product_pointer::schedule_pointer_continuation(&self.session, context, observed_at);
+        crate::product_pointer::schedule_pointer_continuation(
+            &self.session,
+            context,
+            viewport,
+            observed_at,
+        );
         let needs_repaint = pass.defer_measurement
-            || pass.pane_focus.is_some()
-            || pass.pending_focus.is_some()
+            || pass.focus_needs_repaint
             || self
                 .session
                 .pointer_continuation_awaits_presentation(surface);
@@ -613,7 +621,7 @@ impl Dockspace {
             || !self.ui_actions.is_empty()
             || retirement_repaint
         {
-            context.request_repaint();
+            context.request_repaint_of(viewport);
         }
         let staged = pass.claim.stage(ProductPassSettlementBatch {
             emission_incomplete: pass.had_plan && painted.is_none(),
