@@ -34,6 +34,8 @@ struct Fixture {
 #[derive(Default)]
 struct Geometry {
     tabs: BTreeMap<ItemId, LogicalRect>,
+    tab_text: BTreeMap<ItemId, (LogicalRect, LogicalRect)>,
+    tab_viewports: BTreeMap<ItemId, (LogicalRect, f64)>,
     panes: BTreeMap<ItemId, LogicalRect>,
     splitters: Vec<LogicalRect>,
     titles: BTreeMap<FloatingPresentationId, LogicalRect>,
@@ -178,11 +180,24 @@ impl Fixture {
             .expect("surface work")
             .expect("measured plan");
         let mut geometry = Geometry::default();
+        let mut tab_bars = BTreeMap::new();
         plan.visit_surface_program(|step| {
             if let Step::Operation { operation, .. } = step {
                 match operation {
                     Operation::Tab(tab) => {
                         geometry.tabs.insert(tab.item(), tab.visible_bounds());
+                        geometry
+                            .tab_text
+                            .insert(tab.item(), (tab.text_layout_bounds(), tab.text_bounds()));
+                        if let Some(viewport) = tab_bars.get(&tab.tab_bar_visual_id()) {
+                            geometry.tab_viewports.insert(tab.item(), *viewport);
+                        }
+                    }
+                    Operation::TabBar(bar) => {
+                        tab_bars.insert(
+                            bar.visual_id(),
+                            (bar.viewport(), bar.maximum_scroll_offset()),
+                        );
                     }
                     Operation::Pane(pane) => {
                         if let Some(item) = pane.selected() {
@@ -344,6 +359,266 @@ fn center(bounds: LogicalRect) -> Point<Pixels> {
         px((bounds.x() + bounds.width() / 2.0) as f32),
         px((bounds.y() + bounds.height() / 2.0) as f32),
     )
+}
+
+mod chrome_regressions {
+    use super::*;
+    use crate::{DockPane, GpuiDockspace, GpuiDockspaceConfig};
+    use dockspace::{
+        model::{
+            DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+            DockspaceSurfaceLayout, RootId,
+        },
+        policy::{CloseCapability, DockPolicy},
+        runtime::DockspaceSession,
+    };
+
+    struct Document;
+
+    impl Render for Document {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child("Application document")
+        }
+    }
+
+    struct DocumentRoot {
+        dock: GpuiDockspace,
+        occluded: Rc<Cell<bool>>,
+    }
+
+    impl Render for DocumentRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .relative()
+                .child(self.dock.element())
+                .when(self.occluded.get(), |root| {
+                    root.child(
+                        div()
+                            .id("application-overlay")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .h(px(32.0))
+                            .occlude()
+                            .bg(rgb(0xfafafa)),
+                    )
+                })
+        }
+    }
+
+    fn documents(cx: &mut TestAppContext, crowded: bool, occluded: bool) -> Fixture {
+        cx.defer_next_window_frame_requests();
+        let items = if crowded { 1..=13 } else { 1..=2 };
+        let window = cx.open_window(size(px(850.0), px(500.0)), |_, cx| {
+            let content = if crowded {
+                DockspaceNode::split(
+                    DockspaceAxis::Horizontal,
+                    [
+                        (DockspaceNode::central_tabs((1..=12).map(ItemId::new)), 0.75),
+                        (DockspaceNode::tabs([ItemId::new(13)]), 0.25),
+                    ],
+                )
+                .unwrap()
+            } else {
+                DockspaceNode::tabs([ItemId::new(1), ItemId::new(2)])
+            };
+            let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                SURFACE,
+                DockspaceRootLayout::new(RootId::new(1), content),
+            )])
+            .unwrap();
+            let mut policy = DockPolicy::default();
+            policy.set_close_capability(CloseCapability::Disabled);
+            policy.set_allow_native_surfaces(false);
+            let session = DockspaceSession::from_layout(layout, policy).unwrap();
+            let panes = items
+                .map(|id| {
+                    DockPane::new(
+                        ItemId::new(id),
+                        format!("Document {id} with a descriptive title"),
+                        cx.new(|_| Document),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let dock =
+                GpuiDockspace::new(session, SURFACE, panes, GpuiDockspaceConfig::default(), cx)
+                    .unwrap();
+            DocumentRoot {
+                dock,
+                occluded: Rc::new(Cell::new(occluded)),
+            }
+        });
+        let host = window
+            .root(cx)
+            .unwrap()
+            .read_with(cx, |root, _| root.dock.host.clone());
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let handle = visual.update(|window, _| {
+            let _ = window.activate_window();
+            window.window_handle()
+        });
+        visual.set_platform_hovered_window(Some(handle));
+        let mut fixture = Fixture { host, visual };
+        fixture.present();
+        fixture
+    }
+
+    fn frame_without_forcing(fixture: &mut Fixture) -> u64 {
+        assert!(fixture.visual.simulate_frame(RequestFrameOptions {
+            require_presentation: true,
+            force_render: false,
+            ..Default::default()
+        }));
+        fixture
+            .visual
+            .update(|window, _| window.rendered_frame_revision())
+    }
+
+    #[open_gpui::test]
+    fn tab_hover_requests_a_frame_only_when_the_hovered_tab_changes(cx: &mut TestAppContext) {
+        let mut fixture = Fixture::new(cx);
+        let geometry = fixture.geometry();
+        let tab = center(geometry.tabs[&ItemId::new(2)]);
+        let empty = center(geometry.panes[&ItemId::new(1)]);
+        fixture
+            .visual
+            .simulate_mouse_move(empty, None, Modifiers::default());
+        let initial = frame_without_forcing(&mut fixture);
+        let serial = fixture.host.borrow().serial;
+        let packet = fixture.host.borrow().packet.clone().unwrap();
+
+        fixture
+            .visual
+            .simulate_mouse_move(tab, None, Modifiers::default());
+        let entered = frame_without_forcing(&mut fixture);
+        assert!(
+            entered > initial,
+            "entering a tab must request a real frame"
+        );
+        assert_eq!(fixture.host.borrow().serial, serial);
+        assert!(Rc::ptr_eq(
+            &packet,
+            fixture.host.borrow().packet.as_ref().unwrap()
+        ));
+        assert!(fixture.host.borrow().inputs.is_empty());
+
+        fixture.visual.simulate_mouse_move(
+            tab + point(px(1.0), px(0.0)),
+            None,
+            Modifiers::default(),
+        );
+        assert_eq!(
+            frame_without_forcing(&mut fixture),
+            entered,
+            "motion inside the same tab must not keep repainting"
+        );
+
+        fixture
+            .visual
+            .simulate_mouse_move(empty, None, Modifiers::default());
+        assert!(
+            frame_without_forcing(&mut fixture) > entered,
+            "leaving the tab must remove its hover without a forced frame"
+        );
+        assert_eq!(fixture.host.borrow().serial, serial);
+        assert!(!fixture.host.borrow().session.has_active_gesture());
+    }
+
+    #[open_gpui::test]
+    fn an_application_overlay_does_not_lend_its_hover_to_a_tab(cx: &mut TestAppContext) {
+        let mut fixture = documents(cx, false, true);
+        let tab = center(fixture.geometry().tabs[&ItemId::new(2)]);
+        let empty = center(fixture.geometry().panes[&ItemId::new(1)]);
+        fixture
+            .visual
+            .simulate_mouse_move(empty, None, Modifiers::default());
+        let before = frame_without_forcing(&mut fixture);
+        fixture
+            .visual
+            .simulate_mouse_move(tab, None, Modifiers::default());
+        assert_eq!(
+            frame_without_forcing(&mut fixture),
+            before,
+            "the occluding application's hitbox must suppress tab hover"
+        );
+        assert!(fixture.host.borrow().inputs.is_empty());
+    }
+
+    #[open_gpui::test]
+    fn real_edge_scrolling_keeps_the_partly_clipped_title_at_its_layout_origin(
+        cx: &mut TestAppContext,
+    ) {
+        let mut fixture = documents(cx, true, false);
+        let geometry = fixture.geometry();
+        let source = center(geometry.tabs[&ItemId::new(13)]);
+        let (viewport, maximum_scroll) = geometry.tab_viewports[&ItemId::new(1)];
+        assert!(
+            maximum_scroll > 0.0,
+            "the target strip must actually overflow"
+        );
+        let target = point(
+            px((viewport.x() + viewport.width() - 3.0) as f32),
+            px((viewport.y() + viewport.height() / 2.0) as f32),
+        );
+        fixture
+            .visual
+            .simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        fixture.present();
+        fixture
+            .visual
+            .simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        fixture.present();
+        // Starting a drag may project away the source's only leaf and change
+        // available space. Observe the submitted target before its next edge.
+        let (viewport, maximum_scroll) = fixture.geometry().tab_viewports[&ItemId::new(1)];
+        assert!(
+            maximum_scroll > 0.0,
+            "the projected target must still overflow"
+        );
+        let target = point(
+            px((viewport.x() + viewport.width() - 2.0) as f32),
+            px((viewport.y() + viewport.height() / 2.0) as f32),
+        );
+        fixture
+            .visual
+            .simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        fixture.present();
+
+        let mut clipped = None;
+        for _ in 0..8 {
+            clipped = fixture
+                .geometry()
+                .tab_text
+                .into_iter()
+                .find(|(_, (layout, clip))| clip.width() > 0.0 && layout.x() < clip.x() - 1.0);
+            if clipped.is_some() {
+                break;
+            }
+            let host = fixture.host.borrow();
+            let request = host
+                .session
+                .pointer_continuation()
+                .expect("stationary edge scroll");
+            let wait = request.deadline().saturating_sub(host.observed_at());
+            drop(host);
+            fixture.advance(wait + Duration::from_millis(1));
+            fixture.present();
+        }
+        let (item, (layout, clip)) = clipped.expect("a real edge wake must partly scroll a title");
+        let painted = fixture
+            .visual
+            .debug_bounds(&format!("dockspace:tab:{}", item.get()))
+            .expect("the partly visible title must still be painted");
+        assert!(
+            (f64::from(f32::from(painted.origin.x)) - layout.x()).abs() < 0.01,
+            "scroll clipping must not restart the title at the visible edge"
+        );
+        assert!(painted.origin.x < px(clip.x() as f32));
+        fixture.cancel_drag();
+        fixture.present();
+    }
 }
 
 #[open_gpui::test]

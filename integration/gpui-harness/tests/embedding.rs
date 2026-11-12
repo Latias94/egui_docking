@@ -8,7 +8,7 @@ use dockspace::{
         DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
         ItemId, RootId, SurfaceId,
     },
-    policy::{CloseCapability, DockPolicy},
+    policy::{CloseCapability, DockItemRule, DockPolicy},
     runtime::DockspaceSession,
 };
 use dockspace_gpui_harness::{DockPane, GpuiDockspace, GpuiDockspaceConfig};
@@ -116,7 +116,83 @@ fn frames(visual: &mut VisualTestContext, dock: &GpuiDockspace) {
 }
 
 #[open_gpui::test]
-fn an_application_can_embed_its_own_ids_views_and_dynamic_titles(cx: &mut TestAppContext) {
+fn constructor_checks_declared_close_capabilities_including_overrides_and_lock(
+    cx: &mut TestAppContext,
+) {
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(RootId::new(37), DockspaceNode::tabs([FIRST, SECOND])),
+    )])
+    .unwrap();
+    for (case, default_close, item_close, locked, admitted) in [
+        (
+            "items inherit disabled closing",
+            CloseCapability::Disabled,
+            [None, None],
+            false,
+            true,
+        ),
+        (
+            "all items override enabled closing",
+            CloseCapability::Immediate,
+            [Some(CloseCapability::Disabled); 2],
+            false,
+            true,
+        ),
+        (
+            "an inactive item explicitly enables closing",
+            CloseCapability::Disabled,
+            [None, Some(CloseCapability::Immediate)],
+            false,
+            false,
+        ),
+        (
+            "arrangement lock preserves unsupported closing declarations",
+            CloseCapability::Immediate,
+            [None, None],
+            true,
+            false,
+        ),
+    ] {
+        let mut policy = DockPolicy::default();
+        policy.set_allow_native_surfaces(false);
+        policy.set_close_capability(default_close);
+        policy.set_arrangement_locked(locked);
+        for (item, capability) in [FIRST, SECOND].into_iter().zip(item_close) {
+            if let Some(capability) = capability {
+                let mut rule = DockItemRule::default();
+                rule.set_close_capability(Some(capability));
+                let _ = policy.set_item_rule(item, rule);
+            }
+        }
+        let session = DockspaceSession::from_layout(layout.clone(), policy).unwrap();
+        let result = cx.update(|app| {
+            let panes = [FIRST, SECOND].map(|item| {
+                DockPane::new(
+                    item,
+                    format!("Document {}", item.get()),
+                    app.new(|_| Content { item, clicks: 0 }),
+                )
+            });
+            GpuiDockspace::new(session, SURFACE, panes, GpuiDockspaceConfig::default(), app)
+        });
+        assert_eq!(
+            result.is_ok(),
+            admitted,
+            "{case}: {:?}",
+            result.as_ref().err()
+        );
+        if let Err(error) = result {
+            assert!(
+                error.to_string().contains("unsupported content closing"),
+                "{case}: {error}"
+            );
+        }
+    }
+}
+
+#[open_gpui::test]
+fn an_application_can_embed_its_own_ids_views_and_owned_titles(cx: &mut TestAppContext) {
     cx.defer_next_window_frame_requests();
     let (dock, views) = cx.update(|app| host(app, GpuiDockspaceConfig::default()));
     let visible = Rc::new(Cell::new(true));
@@ -259,13 +335,67 @@ fn pane_minimum_size_limits_a_real_splitter_drag(cx: &mut TestAppContext) {
 
 #[open_gpui::test]
 fn application_can_replace_the_cancel_key(cx: &mut TestAppContext) {
-    cx.defer_next_window_frame_requests();
     let mut config = GpuiDockspaceConfig::default();
     config.input.cancel = Some(open_gpui::Keystroke {
         key: "q".into(),
         modifiers: Modifiers::default(),
         key_char: None,
     });
+    assert_cancel_shortcut_cancels_captured_drag(
+        cx,
+        config,
+        &["escape"],
+        "q",
+        Modifiers::default(),
+    );
+}
+
+#[open_gpui::test]
+fn default_cancel_shortcut_remains_available_while_shift_suspends_docking(cx: &mut TestAppContext) {
+    assert_cancel_shortcut_cancels_captured_drag(
+        cx,
+        GpuiDockspaceConfig::default(),
+        &["q"],
+        "shift-escape",
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
+}
+
+#[open_gpui::test]
+fn custom_cancel_shortcut_allows_additional_modifiers(cx: &mut TestAppContext) {
+    let mut config = GpuiDockspaceConfig::default();
+    config.input.cancel = Some(open_gpui::Keystroke {
+        key: "q".into(),
+        modifiers: Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        },
+        key_char: None,
+    });
+    assert_cancel_shortcut_cancels_captured_drag(
+        cx,
+        config,
+        &["escape", "shift-q", "alt-shift-w"],
+        "alt-shift-q",
+        Modifiers {
+            alt: true,
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
+}
+
+fn assert_cancel_shortcut_cancels_captured_drag(
+    cx: &mut TestAppContext,
+    config: GpuiDockspaceConfig,
+    rejected_shortcuts: &[&str],
+    cancel_shortcut: &str,
+    held_modifiers: Modifiers,
+) {
+    cx.defer_next_window_frame_requests();
     let (dock, _) = cx.update(|app| host(app, config));
     let window = cx.open_window(size(px(1100.0), px(760.0)), |_, _| Embedded {
         dock: dock.clone(),
@@ -286,15 +416,28 @@ fn application_can_replace_the_cancel_key(cx: &mut TestAppContext) {
     );
     frames(&mut visual, &dock);
     assert!(dock.has_active_gesture());
-    visual.simulate_keystrokes("escape");
+    visual.update(|window, _| assert!(window.captured_pointer().is_some()));
+    for shortcut in rejected_shortcuts {
+        visual.simulate_keystrokes(shortcut);
+        frames(&mut visual, &dock);
+        assert!(dock.has_active_gesture(), "{shortcut} must not cancel");
+        visual.update(|window, _| assert!(window.captured_pointer().is_some()));
+    }
+    visual.simulate_mouse_move(
+        tab.center() + point(px(41.0), px(100.0)),
+        MouseButton::Left,
+        held_modifiers,
+    );
+    frames(&mut visual, &dock);
+    assert!(dock.has_active_gesture());
+    visual.update(|window, _| assert!(window.captured_pointer().is_some()));
+    visual.simulate_keystrokes(cancel_shortcut);
     frames(&mut visual, &dock);
     assert!(
-        dock.has_active_gesture(),
-        "the replaced default must not cancel"
+        !dock.has_active_gesture(),
+        "{cancel_shortcut} must cancel the captured drag"
     );
-    visual.simulate_keystrokes("q");
-    frames(&mut visual, &dock);
-    assert!(!dock.has_active_gesture());
+    visual.update(|window, _| assert!(window.captured_pointer().is_none()));
 }
 
 #[open_gpui::test]

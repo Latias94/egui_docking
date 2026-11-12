@@ -1,6 +1,6 @@
 //! A single retained Element consuming the core's complete ordered paint program.
 
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use anyhow::{Context as _, Result, anyhow};
 use dockspace::{
@@ -16,14 +16,17 @@ use dockspace::{
 use open_gpui::{
     AnyElement, App, AvailableSpace, Bounds, Element, ElementId, GlobalElementId, HitboxBehavior,
     HitboxId, Hsla, InspectorElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PointerCaptureHandle, Style, TextRun,
-    Window, div, fill, point, prelude::*, px, relative, size,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PointerCaptureHandle,
+    PreparedSubtreeClip, Style, SubtreeClip, TextRun, Window, div, fill, point, prelude::*, px,
+    relative, size,
 };
 
 use crate::{HostState, SharedHost, continuation::InputFrame, input, presentation};
 
+mod chrome;
 mod recording;
 
+use chrome::GuideState;
 use recording::record;
 
 pub(super) struct Packet {
@@ -44,7 +47,7 @@ impl Packet {
 
     pub(super) fn tab_bounds(&self, item: ItemId) -> Option<LogicalRect> {
         self.draws.iter().find_map(|draw| match draw {
-            Draw::Tab(bounds, candidate, _) if *candidate == item => Some(*bounds),
+            Draw::Tab(bounds, candidate, _, _) if *candidate == item => Some(*bounds),
             _ => None,
         })
     }
@@ -59,10 +62,13 @@ impl Packet {
 
 enum Draw {
     Fill(LogicalRect, Hsla),
-    Tab(LogicalRect, ItemId, Hsla),
+    Tab(LogicalRect, ItemId, Hsla, bool),
+    ContainedFrame(LogicalRect),
+    ContainedTitle(LogicalRect, Hsla),
+    Guide(LogicalRect, GuideState),
     Outline(LogicalRect, Hsla),
     Text(LogicalRect, String, Hsla),
-    TabText(LogicalRect, ItemId, String, Hsla),
+    TabText(LogicalRect, LogicalRect, ItemId, String, Hsla),
     Pane(LogicalRect, ItemId),
     Receiver(DockspaceReceiverDescriptor),
     Preview(LogicalRect),
@@ -70,18 +76,25 @@ enum Draw {
 
 enum PreparedDraw {
     Fill(Bounds<Pixels>, Hsla),
+    Tab(Bounds<Pixels>, ItemId, Hsla, bool),
+    ContainedFrame(Bounds<Pixels>),
+    ContainedTitle(Bounds<Pixels>, Hsla),
+    Guide(Bounds<Pixels>, GuideState),
     Outline(Bounds<Pixels>, Hsla),
     Element(AnyElement),
+    ClippedElement(AnyElement, PreparedSubtreeClip),
     Preview(Bounds<Pixels>, Hsla, Hsla),
 }
 
 pub(crate) struct DockspaceElement {
     host: SharedHost,
+    hovered_tab: Rc<Cell<Option<ItemId>>>,
 }
 
 pub(crate) struct PreparedFrame {
     draws: Vec<PreparedDraw>,
     hitboxes: Vec<HitboxId>,
+    tabs: Vec<(ItemId, HitboxId)>,
     capture: PointerCaptureHandle,
     serial: u64,
     bounds: Bounds<Pixels>,
@@ -94,7 +107,10 @@ pub(crate) enum PreparedState {
 
 impl DockspaceElement {
     pub(super) fn new(host: SharedHost) -> Self {
-        Self { host }
+        Self {
+            host,
+            hovered_tab: Rc::default(),
+        }
     }
 }
 
@@ -178,6 +194,13 @@ impl Element for DockspaceElement {
             Ok(background) => background,
             Err(error) => return self.failure(error, bounds, window, cx),
         };
+        if let Some(id) = id {
+            self.hovered_tab =
+                window.with_element_state::<Rc<Cell<Option<ItemId>>>, _>(id, |state, _| {
+                    let state = state.unwrap_or_default();
+                    (state.clone(), state)
+                });
+        }
         window.set_focus_handle(&self.host.borrow().focus, cx);
         match self.prepare(bounds, background, capture, window, cx) {
             Ok(prepared) => PreparedState::Frame(prepared),
@@ -213,16 +236,39 @@ impl Element for DockspaceElement {
         // Child paint changes GPUI's active dispatch node. Register this
         // element's listeners while its own node is still active.
         self.listen(prepared, window);
+        let colors = self.host.borrow().config.colors.clone();
         // Keep the core order, including pane widgets between chrome and overlays.
         for draw in &mut prepared.draws {
             match draw {
                 PreparedDraw::Fill(bounds, color) => window.paint_quad(fill(*bounds, *color)),
+                PreparedDraw::Tab(bounds, item, color, selected) => {
+                    let hovered = self.hovered_tab.get() == Some(*item);
+                    let background = if hovered && !*selected {
+                        colors.hovered_tab
+                    } else {
+                        *color
+                    };
+                    chrome::paint_tab(*bounds, background, *selected, &colors, window);
+                }
+                PreparedDraw::ContainedFrame(bounds) => {
+                    chrome::paint_contained_frame(*bounds, &colors, window)
+                }
+                PreparedDraw::ContainedTitle(bounds, color) => {
+                    chrome::paint_title(*bounds, *color, window)
+                }
+                PreparedDraw::Guide(bounds, state) => {
+                    chrome::paint_guide(*bounds, *state, &colors, window)
+                }
                 PreparedDraw::Outline(bounds, color) => outline(*bounds, *color, window),
                 PreparedDraw::Preview(bounds, color, border) => {
                     window.paint_quad(fill(*bounds, *color));
                     outline(*bounds, *border, window);
                 }
                 PreparedDraw::Element(element) => element.paint(window, cx),
+                PreparedDraw::ClippedElement(element, clip) => {
+                    let _ =
+                        window.with_prepared_subtree_clip(clip, |window| element.paint(window, cx));
+                }
             }
         }
     }
@@ -321,11 +367,32 @@ impl DockspaceElement {
 
         let mut hitboxes = vec![background];
         let mut draws = Vec::new();
+        let mut tabs = Vec::new();
         let config = self.host.borrow().config.clone();
         for draw in &packet.draws {
             match draw {
-                Draw::Fill(rect, color) | Draw::Tab(rect, _, color) => {
+                Draw::Fill(rect, color) => {
                     draws.push(PreparedDraw::Fill(to_gpui(*rect, bounds), *color))
+                }
+                Draw::Tab(rect, item, color, selected) => {
+                    if let Some(hitbox) = hitboxes.last() {
+                        tabs.push((*item, *hitbox));
+                    }
+                    draws.push(PreparedDraw::Tab(
+                        to_gpui(*rect, bounds),
+                        *item,
+                        *color,
+                        *selected,
+                    ));
+                }
+                Draw::ContainedFrame(rect) => {
+                    draws.push(PreparedDraw::ContainedFrame(to_gpui(*rect, bounds)))
+                }
+                Draw::ContainedTitle(rect, color) => {
+                    draws.push(PreparedDraw::ContainedTitle(to_gpui(*rect, bounds), *color))
+                }
+                Draw::Guide(rect, state) => {
+                    draws.push(PreparedDraw::Guide(to_gpui(*rect, bounds), *state))
                 }
                 Draw::Outline(rect, color) => {
                     draws.push(PreparedDraw::Outline(to_gpui(*rect, bounds), *color))
@@ -340,12 +407,17 @@ impl DockspaceElement {
                         .insert_hitbox(to_gpui(receiver.bounds(), bounds), HitboxBehavior::Normal);
                     hitboxes.push(hitbox.id);
                 }
-                Draw::Text(rect, title, color) | Draw::TabText(rect, _, title, color) => {
+                Draw::Text(rect, title, color) | Draw::TabText(rect, _, _, title, color) => {
+                    let clip = match draw {
+                        Draw::TabText(_, clip, _, _, _) => to_gpui(*clip, bounds),
+                        _ => to_gpui(*rect, bounds),
+                    };
                     let rect = to_gpui(*rect, bounds);
                     let mut element = div()
                         .w(rect.size.width)
                         .h(rect.size.height)
                         .overflow_hidden()
+                        .whitespace_nowrap()
                         .flex()
                         .items_center()
                         .font(config.font.clone())
@@ -353,7 +425,7 @@ impl DockspaceElement {
                         .text_color(*color)
                         .when_some(
                             match draw {
-                                Draw::TabText(_, item, _, _) => Some(*item),
+                                Draw::TabText(_, _, item, _, _) => Some(*item),
                                 _ => None,
                             },
                             |text, item| {
@@ -362,8 +434,15 @@ impl DockspaceElement {
                         )
                         .child(title.clone())
                         .into_any_element();
-                    element.prepaint_as_root(rect.origin, definite(rect), window, cx);
-                    draws.push(PreparedDraw::Element(element));
+                    let clip = window.prepare_subtree_clip(&SubtreeClip::own_border_box(), clip);
+                    if window
+                        .with_prepared_subtree_clip(&clip, |window| {
+                            element.prepaint_as_root(rect.origin, definite(rect), window, cx);
+                        })
+                        .is_some()
+                    {
+                        draws.push(PreparedDraw::ClippedElement(element, clip));
+                    }
                 }
                 Draw::Pane(rect, item) => {
                     let rect = to_gpui(*rect, bounds);
@@ -390,6 +469,8 @@ impl DockspaceElement {
 
         let shared = self.host.clone();
         let discard = self.host.clone();
+        let hovered_tab = self.hovered_tab.clone();
+        let accepted_tabs = tabs.clone();
         let input_frame = InputFrame {
             serial,
             bounds,
@@ -399,7 +480,11 @@ impl DockspaceElement {
         window.record_prepaint_window_transaction(
             publication,
             move |fence, window, cx| {
-                presentation::accept(&shared, serial, input_frame.clone(), fence, window, cx)
+                presentation::accept(&shared, serial, input_frame.clone(), fence, window, cx);
+                let current = hovered_tab_at(&accepted_tabs, window.mouse_position(), window);
+                if hovered_tab.replace(current) != current {
+                    window.refresh();
+                }
             },
             move |_, window, _| presentation::discard(&discard, window),
         );
@@ -410,6 +495,7 @@ impl DockspaceElement {
         Ok(PreparedFrame {
             draws,
             hitboxes,
+            tabs,
             capture,
             serial,
             bounds,
@@ -417,6 +503,19 @@ impl DockspaceElement {
     }
 
     fn listen(&self, prepared: &PreparedFrame, window: &mut Window) {
+        let tabs = prepared.tabs.clone();
+        let hovered = self.hovered_tab.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
+            if !phase.capture() {
+                return;
+            }
+            let current = hovered_tab_at(&tabs, event.position, window);
+            if hovered.replace(current) != current {
+                // Hover is visual state only: the retained packet and exact core
+                // output remain current, without adding a pointer edge.
+                window.refresh();
+            }
+        });
         let shared = self.host.clone();
         let hitboxes = prepared.hitboxes.clone();
         let capture = prepared.capture;
@@ -583,6 +682,19 @@ impl DockspaceElement {
             window.refresh();
         });
     }
+}
+
+fn hovered_tab_at(
+    tabs: &[(ItemId, HitboxId)],
+    position: open_gpui::Point<Pixels>,
+    window: &Window,
+) -> Option<ItemId> {
+    if window.last_input_was_keyboard() || window.last_input_was_touch() {
+        return None;
+    }
+    tabs.iter().find_map(|(item, hitbox)| {
+        (hitbox.window_point_target_rank(position, window) == Some(0)).then_some(*item)
+    })
 }
 
 fn build_candidate(

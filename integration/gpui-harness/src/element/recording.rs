@@ -7,14 +7,15 @@ use dockspace::{
     geometry::LogicalRect,
     model::ItemId,
     runtime::{
-        DockspacePreviewVisual, DockspaceReceiverDescriptor, SurfacePaintPlan,
-        SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
+        DockspaceDropEligibility, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+        SurfacePaintPlan, SurfacePaintProgramOperation as Operation,
+        SurfacePaintProgramStep as Step,
     },
 };
 
 use crate::{DockPane, DockspaceColors};
 
-use super::{Draw, Packet};
+use super::{Draw, Packet, chrome::GuideState};
 
 pub(super) fn record(
     plan: SurfacePaintPlan<'_>,
@@ -39,8 +40,7 @@ pub(super) fn record(
                     if let Some(contained) = root.contained() {
                         receiver(&mut draws, plan.receiver_for_contained_frame(contained));
                         if !paint.is_source_gap() {
-                            draws.push(Draw::Fill(contained.outer_bounds(), colors.tab_bar));
-                            draws.push(Draw::Outline(contained.outer_bounds(), colors.border));
+                            draws.push(Draw::ContainedFrame(contained.outer_bounds()));
                         }
                     }
                 }
@@ -77,12 +77,18 @@ pub(super) fn record(
                                 } else {
                                     colors.tab
                                 },
+                                tab.selected(),
                             ));
                             draws.push(Draw::TabText(
+                                tab.text_layout_bounds(),
                                 tab.text_bounds(),
                                 tab.item(),
                                 label(Some(tab.item())),
-                                colors.text,
+                                if tab.selected() {
+                                    colors.text
+                                } else {
+                                    colors.muted_text
+                                },
                             ));
                         }
                     }
@@ -104,8 +110,10 @@ pub(super) fn record(
                             );
                         }
                         if !paint.is_source_gap() {
-                            draws
-                                .push(Draw::Fill(contained.title_bounds(), colors.contained_title));
+                            draws.push(Draw::ContainedTitle(
+                                contained.title_bounds(),
+                                colors.contained_title,
+                            ));
                             draws.push(Draw::Text(
                                 contained.title_drag_bounds(),
                                 label(root.title_item()),
@@ -127,26 +135,14 @@ pub(super) fn record(
                 } => {
                     for target in cluster.targets() {
                         receiver(&mut draws, plan.receiver_for_drop_target(target));
-                        draws.push(Draw::Fill(
+                        draws.push(Draw::Guide(
                             target.draw_bounds(),
-                            if target.is_active() {
-                                colors.accent
-                            } else {
-                                colors.guide
+                            GuideState {
+                                direction: target.direction(),
+                                active: target.is_active(),
+                                eligible: target.eligibility()
+                                    == DockspaceDropEligibility::Eligible,
                             },
-                        ));
-                        draws.push(Draw::Outline(target.draw_bounds(), colors.accent));
-                        let caption = match target.direction() {
-                            dockspace::runtime::DockspaceDropDirection::Center => "+",
-                            dockspace::runtime::DockspaceDropDirection::Left => "←",
-                            dockspace::runtime::DockspaceDropDirection::Right => "→",
-                            dockspace::runtime::DockspaceDropDirection::Top => "↑",
-                            dockspace::runtime::DockspaceDropDirection::Bottom => "↓",
-                        };
-                        draws.push(Draw::Text(
-                            target.draw_bounds(),
-                            caption.into(),
-                            colors.text,
                         ));
                     }
                 }

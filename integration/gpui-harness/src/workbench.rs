@@ -11,14 +11,16 @@ use dockspace::{
         SurfaceId,
     },
     policy::{CloseCapability, DockPolicy},
-    runtime::DockspaceSession,
+    runtime::{DockPresentationConfig, DockspaceSession},
 };
 use open_gpui::{
-    App, Bounds, Context, IntoElement, Render, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, rgb, size,
+    AnyElement, App, Bounds, Context, Hsla, IntoElement, Render, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, size,
 };
 
-use crate::{DockPane, GpuiDockspace, GpuiDockspaceConfig, SharedHost, presentation, smoke};
+use crate::{
+    DockPane, DockspaceColors, GpuiDockspace, GpuiDockspaceConfig, SharedHost, presentation, smoke,
+};
 
 pub(crate) const SURFACE: SurfaceId = SurfaceId::new(1);
 
@@ -45,76 +47,230 @@ fn example_host(cx: &mut App) -> Result<GpuiDockspace> {
     let mut policy = DockPolicy::default();
     policy.set_close_capability(CloseCapability::Disabled);
     policy.set_allow_native_surfaces(false);
-    let session = DockspaceSession::from_layout(layout, policy)?;
+    let geometry = DockPresentationConfig::builder()
+        .tab_bar_height(27.0)
+        .tab_group_grip_extent(20.0)
+        .tab_horizontal_padding(9.0)
+        .tab_min_width(68.0)
+        .guide_extent(28.0)
+        .guide_gap(10.0)
+        .guide_hit_padding(4.0)
+        .guide_outer_inset(48.0)
+        .build()?;
+    let session = DockspaceSession::from_layout_with_presentation_config(layout, policy, geometry)?;
+    let config = GpuiDockspaceConfig::default();
     let panes = [
-        (1, "Editor", 0x2563eb),
-        (2, "Preview", 0x0f766e),
-        (3, "Inspector", 0x7c3aed),
-        (4, "Tools", 0xb45309),
+        (1, "Editor"),
+        (2, "Preview"),
+        (3, "Inspector"),
+        (4, "Tools"),
     ]
     .into_iter()
-    .map(|(id, title, accent)| {
+    .map(|(id, title)| {
         let view = cx.new(|_| CounterPanel {
             title,
-            accent,
+            accent: config.colors.accent,
+            colors: config.colors.clone(),
             clicks: 0,
             button_probe: None,
         });
         DockPane::new(ItemId::new(id), title, view)
     })
     .collect::<Vec<_>>();
-    GpuiDockspace::new(session, SURFACE, panes, GpuiDockspaceConfig::default(), cx)
+    GpuiDockspace::new(session, SURFACE, panes, config, cx)
 }
 
 pub(crate) struct CounterPanel {
     pub(crate) title: &'static str,
-    pub(crate) accent: u32,
+    pub(crate) accent: Hsla,
+    colors: DockspaceColors,
     pub(crate) clicks: usize,
     pub(crate) button_probe: Option<smoke::ButtonProbe>,
 }
 
 impl Render for CounterPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let heading = match self.title {
+            "Editor" => "workspace.rs",
+            "Preview" => "Workspace preview",
+            "Inspector" => "Document",
+            _ => "Quick tools",
+        };
         div()
             .size_full()
             .overflow_hidden()
             .flex()
             .flex_col()
-            .p_4()
+            .p_3()
             .gap_3()
-            .bg(rgb(0xf5f6f8))
-            .text_color(rgb(0x253247))
-            .child(div().text_lg().child(self.title))
-            .child("Drag a tab to dock or float. Drag a divider to resize.")
+            .bg(self.colors.pane)
+            .text_size(px(12.0))
+            .text_color(self.colors.text)
             .child(
                 div()
-                    .id("increment")
-                    .debug_selector(|| format!("counter:{}", self.title))
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(rgb(self.accent))
-                    .text_color(rgb(0xffffff))
-                    .cursor_pointer()
-                    .on_click(cx.listener(|panel, _, _, cx| {
-                        panel.clicks += 1;
-                        cx.notify();
-                    }))
-                    .when_some(self.button_probe.clone(), |button, probe| {
-                        button.relative().child(
-                            open_gpui::canvas(
-                                |_, _, _| {},
-                                move |bounds, (), _, _| probe.set(Some(bounds)),
-                            )
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left_0()
-                            .right_0(),
-                        )
-                    })
-                    .child(format!("GPUI button · {} clicks", self.clicks)),
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(div().min_w_0().truncate().child(heading))
+                    .child(
+                        div()
+                            .id("increment")
+                            .debug_selector(|| format!("counter:{}", self.title))
+                            .flex_shrink_0()
+                            .px_2()
+                            .py_1()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(self.colors.border)
+                            .bg(self.colors.guide)
+                            .text_color(self.colors.text)
+                            .hover(|button| button.bg(self.colors.hovered_tab))
+                            .active(|button| {
+                                button.bg(self.colors.active_guide).text_color(self.accent)
+                            })
+                            .cursor_pointer()
+                            .on_click(cx.listener(|panel, _, _, cx| {
+                                panel.clicks += 1;
+                                cx.notify();
+                            }))
+                            .when_some(self.button_probe.clone(), |button, probe| {
+                                button.relative().child(
+                                    open_gpui::canvas(
+                                        |_, _, _| {},
+                                        move |bounds, (), _, _| probe.set(Some(bounds)),
+                                    )
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left_0()
+                                    .right_0(),
+                                )
+                            })
+                            .child(format!("Increment · {}", self.clicks)),
+                    ),
             )
+            .child(self.content())
+    }
+}
+
+impl CounterPanel {
+    fn content(&self) -> AnyElement {
+        match self.title {
+            "Editor" => {
+                let lines = [
+                    "use dockspace::model::{DockspaceNode, ItemId};",
+                    "",
+                    "fn documents() -> DockspaceNode {",
+                    "    let editor = ItemId::new(1);",
+                    "    let preview = ItemId::new(2);",
+                    "",
+                    "    DockspaceNode::central_tabs([editor, preview])",
+                    "}",
+                ];
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .py_2()
+                    .children(lines.into_iter().enumerate().map(|(index, line)| {
+                        div()
+                            .flex()
+                            .gap_3()
+                            .whitespace_nowrap()
+                            .font_family("monospace")
+                            .child(
+                                div()
+                                    .w_4()
+                                    .text_color(self.colors.muted_text)
+                                    .child((index + 1).to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_color(if line.starts_with("use ") {
+                                        self.accent
+                                    } else {
+                                        self.colors.text
+                                    })
+                                    .child(line),
+                            )
+                    }))
+                    .into_any_element()
+            }
+            "Inspector" => {
+                let fields = [
+                    ("Language", "Rust"),
+                    ("Encoding", "UTF-8"),
+                    ("Line endings", "LF"),
+                    ("Status", "Saved"),
+                ];
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .children(fields.into_iter().map(|(label, value)| {
+                        div()
+                            .flex()
+                            .justify_between()
+                            .gap_2()
+                            .child(div().text_color(self.colors.muted_text).child(label))
+                            .child(value)
+                    }))
+                    .into_any_element()
+            }
+            "Preview" => div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .p_3()
+                .rounded_md()
+                .border_1()
+                .border_color(self.colors.border)
+                .bg(self.colors.guide)
+                .child(div().text_size(px(16.0)).child("A workspace that adapts"))
+                .child(
+                    div()
+                        .text_color(self.colors.muted_text)
+                        .child("Group documents, split your view, and keep tools nearby."),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .children(["Editor", "Inspector", "Tools"].map(|label| {
+                            div()
+                                .px_2()
+                                .py_1()
+                                .rounded_sm()
+                                .bg(self.colors.background)
+                                .child(label)
+                        })),
+                )
+                .into_any_element(),
+            _ => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .child(div().text_color(self.colors.muted_text).child("Workspace"))
+                        .child("4 panels"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_color(self.colors.muted_text)
+                                .child("Background tasks"),
+                        )
+                        .child("Idle"),
+                )
+                .into_any_element(),
+        }
     }
 }
 

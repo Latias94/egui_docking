@@ -22,7 +22,7 @@ impl Default for GpuiDockspaceConfig {
     fn default() -> Self {
         Self {
             font: font("Arial"),
-            text_size: px(14.0),
+            text_size: px(13.0),
             colors: DockspaceColors::default(),
             input: DockspaceInputBindings::default(),
         }
@@ -37,32 +37,43 @@ pub struct DockspaceColors {
     pub tab_bar: Hsla,
     pub tab: Hsla,
     pub selected_tab: Hsla,
+    /// Inactive tab under the actual GPUI pointer target.
+    pub hovered_tab: Hsla,
     pub text: Hsla,
+    pub muted_text: Hsla,
     pub border: Hsla,
     pub splitter: Hsla,
     pub contained_title: Hsla,
     pub accent: Hsla,
     pub guide: Hsla,
+    pub active_guide: Hsla,
+    pub disabled_guide: Hsla,
     pub preview: Hsla,
     pub drag_ghost: Hsla,
+    pub shadow: Hsla,
 }
 
 impl Default for DockspaceColors {
     fn default() -> Self {
         Self {
-            background: rgb(0xe6eaf0).into(),
-            pane: rgb(0xf5f6f8).into(),
-            tab_bar: rgb(0xd8dee8).into(),
-            tab: rgb(0xcbd4e1).into(),
-            selected_tab: rgb(0xf5f6f8).into(),
-            text: rgb(0x253247).into(),
-            border: rgb(0x8391a6).into(),
-            splitter: rgb(0xa3afbf).into(),
-            contained_title: rgb(0xb9c6d8).into(),
-            accent: rgb(0x2b7b99).into(),
-            guide: rgb(0xc4dde7).into(),
-            preview: rgba(0x2b7b993c).into(),
-            drag_ghost: rgb(0xd3e0ed).into(),
+            background: rgb(0xf0f1f3).into(),
+            pane: rgb(0xfafafa).into(),
+            tab_bar: rgb(0xe9ebee).into(),
+            tab: rgb(0xe9ebee).into(),
+            selected_tab: rgb(0xfafafa).into(),
+            hovered_tab: rgb(0xf3f5f8).into(),
+            text: rgb(0x29313d).into(),
+            muted_text: rgb(0x66717f).into(),
+            border: rgb(0xd4d9e0).into(),
+            splitter: rgb(0xd4d9e0).into(),
+            contained_title: rgb(0xf1f2f4).into(),
+            accent: rgb(0x3b72c4).into(),
+            guide: rgb(0xffffff).into(),
+            active_guide: rgb(0xe2edfc).into(),
+            disabled_guide: rgb(0xf0f1f3).into(),
+            preview: rgba(0x3b72c423).into(),
+            drag_ghost: rgb(0xffffff).into(),
+            shadow: rgba(0x1b273023).into(),
         }
     }
 }
@@ -73,8 +84,9 @@ pub struct DockspaceInputBindings {
     /// Holding these modifiers suspends docking. Extra modifiers are allowed.
     /// `None` disables this binding.
     pub suspend_docking: Option<Modifiers>,
-    /// Cancels a captured gesture when key and modifiers match exactly.
-    /// `None` disables this binding.
+    /// Cancels a captured gesture when the logical key matches and all required
+    /// modifiers are held. Extra modifiers are allowed, so cancellation remains
+    /// available while docking is suspended. `None` disables this binding.
     pub cancel: Option<Keystroke>,
 }
 
@@ -87,7 +99,7 @@ impl DockspaceInputBindings {
 
     pub(crate) fn cancel_matches(&self, keystroke: &Keystroke) -> bool {
         self.cancel.as_ref().is_some_and(|binding| {
-            binding.key == keystroke.key && binding.modifiers == keystroke.modifiers
+            binding.key == keystroke.key && binding.modifiers.is_subset_of(&keystroke.modifiers)
         })
     }
 }

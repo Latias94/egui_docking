@@ -183,23 +183,19 @@ impl HostState {
         while let Some(node) = nodes.pop() {
             collect_items(node, &mut nodes, &mut items);
         }
-        // Policy queries are performed only during construction. The copy is
-        // never installed into the caller's session.
+        // Check declared close capabilities even while arrangement editing is locked.
         let policy = session.policy();
-        let mut disabled = policy.clone();
-        disabled.set_close_capability(CloseCapability::Disabled);
-        let default_close_disabled = *policy == disabled;
         for item in items {
             ensure!(
                 panels.contains_key(&item),
                 "open item {item:?} has no GPUI pane"
             );
-            let rule = disabled.set_item_rule(item, DockItemRule::default());
             ensure!(
-                rule.and_then(|rule| rule.close_capability())
-                    .map_or(default_close_disabled, |capability| {
-                        capability == CloseCapability::Disabled
-                    }),
+                policy
+                    .item_rule(item)
+                    .and_then(DockItemRule::close_capability)
+                    .unwrap_or(policy.close_capability())
+                    == CloseCapability::Disabled,
                 "GPUI pane {item:?} enables unsupported content closing"
             );
         }
