@@ -19,7 +19,7 @@ def main() -> int:
     )
     print(result.stdout, end="")
     packages = {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
-    frameworks = ("egui", "eframe", "emath", "epaint", "accesskit", "winit", "wgpu", "gpui")
+    frameworks = ("egui", "eframe", "emath", "epaint", "accesskit", "winit", "wgpu", "gpui", "open-gpui")
     leaked = sorted(
         package for package in packages
         if any(

@@ -7,6 +7,7 @@
 - [Core overview](../crates/dockspace/README.md): stable identities, layout and host responsibilities.
 - [egui overview](../crates/egui_dockspace/README.md): host choices and pane rendering.
 - [Native overview](../crates/egui_dockspace_native/README.md): experimental window integration.
+- [GPUI workbench](../integration/gpui-harness/README.md): retained views and single-window docking with a local Open GPUI checkout.
 
 ## Integration guides
 

@@ -17,6 +17,7 @@ to reproduce behavior in the appropriate host.
 | `integration/egui-product-harness` | Official egui behavior tests |
 | `integration/egui-fork-workspace` | Separate native adapter/test workspace |
 | `integration/egui-native-smoke` | Native applications and physical-input drivers |
+| `integration/gpui-harness` | Local Open GPUI retained adapter and interaction tests |
 | `docs` | Integration guides, platform limits and architecture decisions |
 | `scripts` | Core dependency boundary and opt-in performance comparisons |
 

@@ -13,6 +13,7 @@ exclude = [
     "integration/egui-official-harness",
     "integration/egui-product-harness",
     "integration/egui-fork-product-harness",
+    "integration/gpui-harness",
     "repo-ref/egui",
     "repo-ref/egui-release",
 ]

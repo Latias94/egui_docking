@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "dockspace-gpui-harness"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[[bin]]
+name = "gpui-workbench"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+dockspace = { path = "../../crates/dockspace", default-features = false }
+open_gpui = { package = "open-gpui", path = "../../../open-gpui/crates/gpui", default-features = false }
+open_gpui_platform = { package = "open-gpui-platform", path = "../../../open-gpui/crates/gpui_platform", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+open_gpui_platform = { package = "open-gpui-platform", path = "../../../open-gpui/crates/gpui_platform", default-features = false, features = ["font-kit"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+open_gpui_platform = { package = "open-gpui-platform", path = "../../../open-gpui/crates/gpui_platform", default-features = false, features = ["x11", "wayland"] }
+
+[dev-dependencies]
+open_gpui = { package = "open-gpui", path = "../../../open-gpui/crates/gpui", default-features = false, features = ["test-support"] }
+
+# Keep the standalone consumer's pins identical to open-gpui's dependency consumer.
+[patch.crates-io]
+async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
+calloop = { git = "https://github.com/zed-industries/calloop", rev = "3759371fee14c40066d64777e2a36b6ffcc22590" }
+
+[lints.rust]
+unsafe_code = "forbid"

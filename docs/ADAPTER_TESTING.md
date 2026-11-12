@@ -4,9 +4,12 @@
 same public `model`, `policy`, and `runtime` interfaces. Core dependencies contain
 no UI or platform framework. The independent
 [public host harness](../integration/dockspace-host-harness/README.md) demonstrates
-owned rendering records and input submission outside egui. The implemented UI
-reference is egui; recording tests do not qualify another framework's renderer
-or operating-system integration.
+owned rendering records and input submission outside egui. Egui is the main
+reference adapter. The independent [GPUI harness](../integration/gpui-harness/README.md)
+adds a retained consumer with actual pane views, input and exact-frame submission
+using a neighboring Open GPUI checkout. Its single-window scope does not qualify
+GPUI native multiview. Recording tests do not qualify a framework's renderer or
+operating-system integration.
 
 ## Adapter responsibilities
 
@@ -30,6 +33,13 @@ visible pixels. Do not retain frame borrows or expose private engine reducers.
 Application commands and prepared surface actions work without a pointer producer
 or native registration. Add those capabilities when the adapter implements their
 facts; a single-window adapter need not implement native hosting first.
+
+For a center merge or tab insertion, `DockspaceDragPreview::tab_bar` and `tabs`
+expose the future strip computed during the existing candidate preflight. Paint
+its members in order, using their visible and title clips. `visit_tab_resources`
+includes future members even when they are clipped out of the current strip.
+These records grant no input authority; the currently presented layout remains
+the target-selection basis. Split targets do not add future tab shapes.
 
 ## Retained UI publication
 
@@ -70,6 +80,7 @@ do not replay an old event or synthesize motion to satisfy a timer.
 | Core host conformance | [Scenario catalog and private executors](../crates/dockspace_host_conformance/README.md) | Core behavior through public APIs under declared capabilities |
 | Independent public consumer | [Recording host tests](../integration/dockspace-host-harness/tests/) | External API usability, owned output, routing and settlement contracts |
 | Concrete UI entry point | [egui product harness](../integration/egui-product-harness/tests/product.rs) | Actual egui measurement, widgets, accessibility and input mapping |
+| Retained UI entry point | [GPUI harness](../integration/gpui-harness/README.md) | GPUI views, event delivery, candidate rollback and exact test-renderer outcomes |
 | Native physical integration | [X11 qualification drivers](../integration/egui-native-smoke/README.md) | Only the exercised backend, environment and physical journeys |
 
 `dockspace_host_conformance` is an unpublished test crate. Its shared `scenario`
