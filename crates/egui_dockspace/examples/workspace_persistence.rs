@@ -55,7 +55,9 @@ struct PersistenceApp {
     preset_name: String,
     status: String,
     layout_file: Option<PathBuf>,
-    save_on_exit: bool,
+    save_on_close: bool,
+    close_pending: bool,
+    close_save_failed: bool,
 }
 
 impl PersistenceApp {
@@ -86,7 +88,9 @@ impl PersistenceApp {
             status: "Layouts stay in application memory; pane data survives every layout change"
                 .to_owned(),
             layout_file: None,
-            save_on_exit: false,
+            save_on_close: false,
+            close_pending: false,
+            close_save_failed: false,
         }
     }
 
@@ -99,7 +103,7 @@ impl PersistenceApp {
                     app.default_layout = example_layout(&items);
                     app.panes = PersistencePanes::new(&items);
                     app.status = format!("Restored {}", path.display());
-                    app.save_on_exit = true;
+                    app.save_on_close = true;
                 }
                 Err(error) => {
                     app.status = format!(
@@ -109,8 +113,8 @@ impl PersistenceApp {
                 }
             },
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                app.status = format!("Layout saves to {} on exit", path.display());
-                app.save_on_exit = true;
+                app.status = format!("Layout saves to {} on close", path.display());
+                app.save_on_close = true;
             }
             Err(error) => app.status = format!("Could not read {}: {error}", path.display()),
         }
@@ -163,7 +167,8 @@ impl PersistenceApp {
         match self.write_layout(&path) {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
-                self.save_on_exit = true;
+                self.save_on_close = true;
+                self.close_save_failed = false;
             }
             Err(error) => self.status = format!("Could not save {}: {error}", path.display()),
         }
@@ -273,12 +278,26 @@ impl PersistenceApp {
 }
 
 impl eframe::App for PersistenceApp {
+    fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        if context.input(|input| input.viewport().close_requested()) && self.save_on_close {
+            // The next hidden paint can replace viewport events, so retain the close intent.
+            self.close_pending = true;
+            context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            context.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::top("layout-controls").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Editor layouts");
                 if ui.button("Save layout file").clicked() {
                     self.save_layout_file();
+                }
+                if self.close_save_failed && ui.button("Exit without saving").clicked() {
+                    self.save_on_close = false;
+                    self.close_pending = false;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 let mut locked = self.dockspace.policy().arrangement_locked();
                 if ui.checkbox(&mut locked, "Lock layout").changed() {
@@ -393,12 +412,27 @@ impl eframe::App for PersistenceApp {
                 Err(error) => self.status = error.to_string(),
             }
         });
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if self.save_on_exit {
-            self.save_layout_file();
-            eprintln!("{}", self.status);
+        if self.close_pending && self.save_on_close && !ui.ctx().will_discard() {
+            self.close_pending = false;
+            let path = self
+                .layout_file
+                .clone()
+                .expect("automatic saving has a layout path");
+            match self.write_layout(&path) {
+                Ok(()) => {
+                    self.save_on_close = false;
+                    self.close_save_failed = false;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Err(error) => {
+                    self.status = format!("Could not save {}: {error}", path.display());
+                    self.close_save_failed = true;
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                }
+            }
         }
     }
 }
@@ -550,7 +584,7 @@ mod tests {
             .unwrap();
         app.save_layout_file();
         assert!(app.status.starts_with("Saved "));
-        assert!(PersistenceApp::open(path).save_on_exit);
+        assert!(PersistenceApp::open(path).save_on_close);
     }
 
     #[test]
@@ -560,13 +594,115 @@ mod tests {
         let original = b"an invalid or newer document";
         std::fs::write(&path, original).unwrap();
         let mut app = PersistenceApp::open(path.clone());
-        assert!(!app.save_on_exit);
+        assert!(!app.save_on_close);
         assert!(app.status.starts_with("Could not restore "));
-        eframe::App::on_exit(&mut app, None);
+        let output = run_close_frame(&egui::Context::default(), &mut app);
+        assert!(
+            !output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::CancelClose)
+        );
+        output.drop_without_applying_deltas();
         assert_eq!(std::fs::read(&path).unwrap(), original);
         app.save_layout_file();
-        assert!(app.save_on_exit);
+        assert!(app.save_on_close);
         assert!(PersistenceApp::decode(&std::fs::read(path).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn close_save_failure_cancels_exit_and_a_retry_saves_the_layout() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.json");
+        let mut app = PersistenceApp::open(path.clone());
+        // A directory cannot be replaced by the atomic file writer on any platform.
+        std::fs::create_dir(&path).unwrap();
+        let context = egui::Context::default();
+        let failed = run_close_frame(&context, &mut app);
+        let commands = &failed.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+        assert!(commands.contains(&egui::ViewportCommand::Visible(true)));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        failed.drop_without_applying_deltas();
+        assert!(app.close_save_failed);
+        assert!(app.status.starts_with("Could not save "));
+        assert!(app.save_on_close);
+        std::fs::remove_dir(&path).unwrap();
+
+        let saved = run_close_frame(&context, &mut app);
+        assert!(
+            saved.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close)
+        );
+        saved.drop_without_applying_deltas();
+        assert!(path.is_file());
+        assert!(!app.close_save_failed);
+        assert!(!app.save_on_close);
+        assert!(PersistenceApp::decode(&std::fs::read(path).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn minimized_close_waits_for_a_ui_pass_before_saving() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.json");
+        let mut app = PersistenceApp::open(path.clone());
+        let context = egui::Context::default();
+        let mut raw = close_input();
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .minimized = Some(true);
+        let mut frame = eframe::Frame::_new_kittest();
+        let output = context.run_logic(&raw, |context| {
+            eframe::App::logic(&mut app, context, &mut frame);
+        });
+        let commands = &output.viewport_commands[&egui::ViewportId::ROOT];
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(commands.contains(&egui::ViewportCommand::RequestPaintWhileHidden));
+        assert!(!path.exists());
+        assert!(app.close_pending);
+
+        // Eframe clears native viewport events before appending the next input snapshot.
+        let mut next = raw.clone();
+        next.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .clear();
+        raw.append(next);
+        assert!(!raw.viewport().close_requested());
+        let output = context.run_ui(raw, |ui| {
+            eframe::App::logic(&mut app, ui.ctx(), &mut frame);
+            eframe::App::ui(&mut app, ui, &mut frame);
+        });
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close)
+        );
+        output.drop_without_applying_deltas();
+        assert!(PersistenceApp::decode(&std::fs::read(path).unwrap()).is_ok());
+        assert!(!app.save_on_close);
+        assert!(!app.close_pending);
+    }
+
+    fn close_input() -> egui::RawInput {
+        let mut raw = egui::RawInput::default();
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .push(egui::ViewportEvent::Close);
+        raw
+    }
+
+    fn run_close_frame(context: &egui::Context, app: &mut PersistenceApp) -> egui::FullOutput {
+        let mut frame = eframe::Frame::_new_kittest();
+        context.run_ui(close_input(), |ui| {
+            eframe::App::logic(app, ui.ctx(), &mut frame);
+            eframe::App::ui(app, ui, &mut frame);
+        })
     }
 
     fn run_frame(
