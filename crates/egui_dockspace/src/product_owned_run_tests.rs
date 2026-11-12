@@ -327,6 +327,200 @@ impl PaneView for EditablePanes {
 }
 
 #[test]
+fn owned_run_output_backpressure_preserves_text_paste_and_ime_commit() {
+    #[derive(Default)]
+    struct Document {
+        text: String,
+        calls: usize,
+    }
+
+    impl PaneView for Document {
+        fn title(&self, _: ItemId) -> Option<egui::WidgetText> {
+            Some("Document".into())
+        }
+
+        fn ui(&mut self, item: ItemId, ui: &mut Ui) -> crate::PaneResponse {
+            self.calls += 1;
+            let target = self.focus_target(item).unwrap();
+            crate::PaneResponse::from(&ui.add(egui::TextEdit::multiline(&mut self.text).id(target)))
+        }
+
+        fn focus_target(&self, _: ItemId) -> Option<egui::Id> {
+            Some(egui::Id::unique("backpressured-document"))
+        }
+    }
+
+    let context = Context::default();
+    context.options_mut(|options| options.max_passes = NonZeroUsize::new(1).unwrap());
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST])),
+    )])
+    .unwrap();
+    let mut dockspace = Dockspace::builder("owned-backpressure-document", layout)
+        .build()
+        .unwrap();
+    let mut document = Document::default();
+    for step in 0..4 {
+        let (output, _) = dockspace
+            .run_single_surface(
+                &context,
+                input(f64::from(step) * 0.1, Vec::new()),
+                SURFACE,
+                &mut document,
+            )
+            .unwrap();
+        let (output, receipt) = output.into_parts();
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    let target = document.focus_target(FIRST).unwrap();
+    context.memory_mut(|memory| memory.request_focus(target));
+    let (output, _) = dockspace
+        .run_single_surface(
+            &context,
+            input(0.5, vec![Event::Text("before|".into())]),
+            SURFACE,
+            &mut document,
+        )
+        .unwrap();
+    let (output, receipt) = output.into_parts();
+    assert_eq!(
+        document.text, "before|",
+        "the real editor accepts text before backpressure"
+    );
+    assert!(
+        output.platform_output.ime.is_some(),
+        "the real focused editor owns IME output"
+    );
+    output.drop_without_applying_deltas();
+    receipt.report(SurfacePresentationResult::Presented);
+
+    // Exercise the public facade's default 64 slots without changing its private session.
+    // Retaining receipts is explicitly supported by DockspaceOutputReceipt's contract.
+    let mut outstanding = Vec::new();
+    for step in 0..64 {
+        let (output, _) = dockspace
+            .run_single_surface(
+                &context,
+                input(1.0 + f64::from(step) * 0.01, Vec::new()),
+                SURFACE,
+                &mut document,
+            )
+            .unwrap();
+        let (output, receipt) = output.into_parts();
+        output.drop_without_applying_deltas();
+        outstanding.push(receipt);
+    }
+    assert_eq!(context.memory(egui::Memory::focused), Some(target));
+    let calls_before_input = document.calls;
+    let pass_before_input = context.cumulative_pass_nr();
+    let frame_before_input = context.cumulative_frame_nr();
+    let version_before_input = dockspace.version();
+    let mut composition_calls = 0;
+    let mut original = input(
+        2.0,
+        vec![
+            Event::Text("text|".into()),
+            Event::Paste("paste|".into()),
+            Event::Ime(egui::ImeEvent::Commit("ime".into())),
+        ],
+    );
+    original.predicted_dt = 1.0 / 120.0;
+    original.max_texture_side = Some(4096);
+    original.system_theme = Some(egui::Theme::Light);
+    original
+        .viewports
+        .get_mut(&original.viewport_id)
+        .unwrap()
+        .title = Some("Deferred document input".into());
+    let mut deferred = original.clone();
+    for attempt in 0..2 {
+        let error = dockspace
+            .run_single_surface_with_ui(&context, deferred, SURFACE, &mut document, |_| {
+                composition_calls += 1
+            })
+            .err()
+            .expect("capacity must defer input before entering egui");
+        assert_eq!(
+            error.kind(),
+            DockspaceErrorKind::OutputBackpressure,
+            "retry {attempt} must preserve its recoverable error category"
+        );
+        deferred = error
+            .into_deferred_input()
+            .expect("backpressure returns the unconsumed input batch");
+        assert_eq!(
+            deferred.events, original.events,
+            "retry {attempt} preserves text, paste and IME event order"
+        );
+        assert_eq!(deferred.viewports, original.viewports);
+        assert_eq!(
+            (
+                deferred.viewport_id,
+                deferred.time,
+                deferred.screen_rect,
+                deferred.predicted_dt,
+                deferred.max_texture_side,
+                deferred.focused,
+                deferred.system_theme,
+                deferred.safe_area_insets
+            ),
+            (
+                original.viewport_id,
+                original.time,
+                original.screen_rect,
+                original.predicted_dt,
+                original.max_texture_side,
+                original.focused,
+                original.system_theme,
+                original.safe_area_insets
+            ),
+            "retry {attempt} preserves the original input metadata",
+        );
+        assert_eq!(deferred.hovered_files, original.hovered_files);
+        assert_eq!(deferred.dropped_files.len(), original.dropped_files.len());
+        assert_eq!(context.cumulative_pass_nr(), pass_before_input);
+        assert_eq!(context.cumulative_frame_nr(), frame_before_input);
+        assert_eq!(composition_calls, 0);
+        assert_eq!(document.calls, calls_before_input);
+        assert_eq!(document.text, "before|");
+        assert_eq!(dockspace.version(), version_before_input);
+        assert_eq!(context.memory(egui::Memory::focused), Some(target));
+    }
+    for receipt in outstanding {
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    let (output, _) = dockspace
+        .run_single_surface_with_ui(&context, deferred, SURFACE, &mut document, |_| {
+            composition_calls += 1
+        })
+        .expect("settling earlier outputs admits the exact deferred batch");
+    assert_eq!(composition_calls, 1);
+    assert_eq!(document.calls, calls_before_input + 1);
+    assert_eq!(document.text, "before|text|paste|ime");
+    let (output, receipt) = output.into_parts();
+    assert!(
+        output.platform_output.ime.is_some(),
+        "the recovered content run keeps its focused editor's IME"
+    );
+    output.drop_without_applying_deltas();
+    receipt.report(SurfacePresentationResult::Presented);
+    for time in [3.0, 4.0] {
+        let (output, _) = dockspace
+            .run_single_surface(&context, input(time, Vec::new()), SURFACE, &mut document)
+            .unwrap();
+        let (output, receipt) = output.into_parts();
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert_eq!(
+        document.text, "before|text|paste|ime",
+        "text, paste and IME input must survive backpressure exactly once in original order"
+    );
+}
+
+#[test]
 fn keyboard_navigation_keeps_tab_focus_after_editable_pane_selection_commits() {
     let (context, mut dockspace, _, _) = presented_tabs("editable-tab-navigation");
     let mut panes = EditablePanes::default();

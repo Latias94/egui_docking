@@ -67,12 +67,14 @@ impl PaneView for Documents {
 
     fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> PaneResponse {
         let index = usize::from(item.get() == 2);
-        PaneResponse::from(&ui.add_sized(
-            ui.available_size(),
-            egui::TextEdit::multiline(&mut self.0[index])
-                .id(document_focus(item))
-                .frame(egui::Frame::NONE),
-        ))
+        PaneResponse::from(
+            &ui.add_sized(
+                ui.available_size(),
+                egui::TextEdit::multiline(&mut self.0[index])
+                    .id(document_focus(item))
+                    .frame(egui::Frame::NONE),
+            ),
+        )
     }
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {

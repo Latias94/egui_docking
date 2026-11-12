@@ -1360,8 +1360,36 @@ impl DockspaceHostFrame<'_> {
         surface: SurfaceId,
     ) -> Result<SurfaceWork<'_>, DockspaceRuntimeError> {
         self.complete_pointer_input()?;
-        let Some(scene) = self.frame.view().scene().surface(surface) else {
+        if self.frame.view().scene().surface(surface).is_none() {
             return Ok(SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured));
+        }
+        if !self.reserve_surface_output(surface)? {
+            return Ok(SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity));
+        }
+        Ok(match self.prepared_paint_plan(surface)? {
+            Some(plan) => SurfaceWork::Ready(plan),
+            None => SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured),
+        })
+    }
+
+    /// Reserves room for one surface output without sealing semantic or pointer input.
+    ///
+    /// Call before consuming ordinary pane input in an immediate UI. `false`
+    /// means the host must retain that input until earlier outputs settle. A
+    /// reservation belongs to this unpublished frame, survives [`Self::suspend`],
+    /// and grants no painting or presentation authority. Later measurements and
+    /// [`Self::surface_work`] recheck the actual output endpoint after input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a surface outside this frame's roster or when
+    /// bounded output storage cannot be allocated.
+    pub fn reserve_surface_output(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<bool, DockspaceRuntimeError> {
+        let Some(scene) = self.frame.view().scene().surface(surface) else {
+            return Err(DockspaceInteractionError::SurfaceOutsideRoster { surface }.into());
         };
         // Reserve every member before checking readiness. A resize may leave
         // several surfaces unmeasured; each still needs its own output slot
@@ -1386,14 +1414,11 @@ impl DockspaceHostFrame<'_> {
                         (other != surface).then_some(*admission).flatten()
                     }),
             )? {
-                return Ok(SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity));
+                return Ok(false);
             }
             self.encoding.surfaces.insert(surface, stream);
         }
-        Ok(match self.prepared_paint_plan(surface)? {
-            Some(plan) => SurfaceWork::Ready(plan),
-            None => SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured),
-        })
+        Ok(true)
     }
 
     /// Returns the admitted paint plan, if its scene and output capacity are available.

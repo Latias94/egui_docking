@@ -196,6 +196,10 @@ impl UiActionQueue {
 #[path = "product_owned_run_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "product_backpressure_rebind_tests.rs"]
+mod backpressure_rebind_tests;
+
 struct EncodedPass {
     claim: ProductPassClaim,
     receipt: Option<SurfaceProgramExecutionReceipt>,
@@ -227,6 +231,12 @@ impl Dockspace {
     /// Chrome actions produced during UI encoding enter a bounded queue for the
     /// next run. The returned response describes this run's single publication.
     /// Renderer submission and actual presentation remain the caller's job.
+    ///
+    /// When earlier output fills the rendering budget, returns
+    /// [`crate::DockspaceErrorKind::OutputBackpressure`] before invoking egui or
+    /// application callbacks. Recover the original input with
+    /// [`DockspaceError::into_deferred_input`], settle earlier receipts, then retry
+    /// that batch before later input. Other failures are not replayable.
     /// Use [`Self::run_single_surface_with_ui`] to compose application panels
     /// around the docking surface within the same owned run.
     pub fn run_single_surface(
@@ -279,8 +289,6 @@ impl Dockspace {
         let run = ProductPassSettlementRun::begin(context, &input);
         let mut run_sequence = None;
         let mut pending_actions = None;
-        let mut update: Option<DockspaceUpdate> = None;
-        let mut pointer = self.pointer.clone();
         let mut terminal = None;
         let mut error = None;
         let mut observed_at = None;
@@ -288,6 +296,51 @@ impl Dockspace {
         let mut accepted_focus = Vec::new();
         let mut preceding_feedback = Vec::new();
         let mut retirement_repaint = false;
+        let ready = self
+            .pass_settlement
+            .take_ready_before_run(context, input.viewport_id)
+            .ok_or(DockspaceErrorSource::PassSettlementConflict)?;
+        if ready.lane_changed {
+            if let Some(retired) = self
+                .session
+                .disable_host_pointer()
+                .map_err(DockspaceError::from_detail)?
+            {
+                preceding_feedback.extend_from_slice(retired.manipulation_feedback());
+                retirement_repaint |= retired.repaint_required();
+            }
+            // The lane rebind and provider retirement survive a deferred run.
+            // Old contacts must not survive with only the private copy cleared.
+            self.pointer.clear();
+            self.pending_focus.clear();
+        }
+        for presentation in ready.presentations {
+            let artifact = presentation.output.presentation_artifact();
+            self.session
+                .report_surface_presentation(presentation.output, presentation.result)
+                .map_err(DockspaceError::from_detail)?;
+            if let Some(focus) = presentation.pane_focus_observation {
+                self.pending_focus.push(artifact, focus);
+            }
+        }
+        self.session
+            .enable_host_pointer()
+            .map_err(DockspaceError::from_detail)?;
+        let mut frame = self
+            .session
+            .begin_host_frame()
+            .map_err(DockspaceError::from_detail)?;
+        if !frame
+            .reserve_surface_output(surface)
+            .map_err(DockspaceError::from_detail)?
+        {
+            return Err(DockspaceErrorSource::OutputBackpressure {
+                input: Box::new(input),
+            }
+            .into());
+        }
+        let mut update: Option<DockspaceUpdate> = Some(frame.suspend());
+        let mut pointer = self.pointer.clone();
         let mut pass_count = 0_usize;
         let mut output = OwnedRunOutput::new(context.run_ui(input, |ui| {
             let Some(scope) = run.begin_pass(ui) else {
@@ -315,51 +368,19 @@ impl Dockspace {
                         pass_count += 1;
                         let sequence = self.ui_actions.enter_run(ui)?;
                         run_sequence = Some(sequence);
-                        if first {
-                            let ready = self.pass_settlement.take_ready(ui);
-                            if ready.lane_changed {
-                                if let Some(retired) = self
-                                    .session
-                                    .disable_host_pointer()
-                                    .map_err(DockspaceError::from_detail)?
-                                {
-                                    preceding_feedback
-                                        .extend_from_slice(retired.manipulation_feedback());
-                                    retirement_repaint |= retired.repaint_required();
-                                }
-                                pointer.clear();
-                                self.pending_focus.clear();
-                            }
-                            for presentation in ready.presentations {
-                                let artifact = presentation.output.presentation_artifact();
-                                self.session
-                                    .report_surface_presentation(
-                                        presentation.output,
-                                        presentation.result,
-                                    )
-                                    .map_err(DockspaceError::from_detail)?;
-                                if let Some(focus) = presentation.pane_focus_observation {
-                                    self.pending_focus.push(artifact, focus);
-                                }
-                            }
-                            self.session
-                                .enable_host_pointer()
-                                .map_err(DockspaceError::from_detail)?;
-                        }
-                        let mut frame = if let Some(update) = update.take() {
-                            let mut frame = self
-                                .session
-                                .resume_update(update)
-                                .map_err(DockspaceError::from_detail)?;
+                        let mut frame = self
+                            .session
+                            .resume_update(
+                                update
+                                    .take()
+                                    .ok_or(DockspaceErrorSource::PassSettlementConflict)?,
+                            )
+                            .map_err(DockspaceError::from_detail)?;
+                        if !first {
                             frame
                                 .restart_encoding_pass()
                                 .map_err(DockspaceError::from_detail)?;
-                            frame
-                        } else {
-                            self.session
-                                .begin_host_frame()
-                                .map_err(DockspaceError::from_detail)?
-                        };
+                        }
                         if first {
                             let dock_rect = ui.available_rect_before_wrap();
                             let actual_focus = frame.view().surface(surface).map(|view| {

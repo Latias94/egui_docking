@@ -1437,6 +1437,54 @@ mod tests {
     }
 
     #[test]
+    fn output_reservation_survives_suspension_without_sealing_application_input() {
+        let mut session = single_surface_session();
+        session.presentation = RuntimePresentationState::with_capacity_limit(1).unwrap();
+        let surface = SurfaceId::new(1);
+        let mut frame = session.begin_host_frame().unwrap();
+        assert!(frame.reserve_surface_output(surface).unwrap());
+        assert!(frame.reserve_surface_output(surface).unwrap());
+        let update = frame.suspend();
+        let mut frame = session.resume_update(update).unwrap();
+        frame.select_item_current(ItemId::new(1)).unwrap();
+        frame
+            .measure_surface(
+                surface,
+                UniformSurfaceMetrics::new(
+                    LogicalRect::new(0.0, 0.0, 640.0, 480.0).unwrap(),
+                    LogicalSize::new(32.0, 24.0).unwrap(),
+                    80.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let receipt = frame
+            .paint_plan(surface)
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .unwrap();
+        frame.confirm_surface_painted(receipt).unwrap();
+        let output = frame
+            .commit()
+            .unwrap()
+            .take_painted_outputs()
+            .pop()
+            .unwrap();
+
+        let mut frame = session.begin_host_frame().unwrap();
+        assert!(!frame.reserve_surface_output(surface).unwrap());
+        drop(frame);
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .unwrap();
+        let mut frame = session.begin_host_frame().unwrap();
+        assert!(frame.reserve_surface_output(surface).unwrap());
+        frame.select_item_current(ItemId::new(1)).unwrap();
+        frame.commit().unwrap();
+    }
+
+    #[test]
     fn bounded_output_rejection_preserves_publication_and_one_slot_can_retire_and_reemit() {
         let mut session = single_surface_session();
         session.presentation = RuntimePresentationState::with_capacity_limit(1).unwrap();

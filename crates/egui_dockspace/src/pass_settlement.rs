@@ -116,6 +116,12 @@ impl Drop for DockspaceOutputReceipt {
 /// egui's predicted frame time is not an input observation. This boundary does
 /// not supply individual OS event timestamps or classify generic pointer events.
 ///
+/// A callback cannot defer raw input already consumed by the surrounding egui
+/// run. Buffered hosts must keep their outstanding output within the rendering
+/// budget before calling this function. Prefer [`crate::Dockspace::run_single_surface`]
+/// for a single surface; it returns recoverable input on output backpressure
+/// before any egui or application callback runs.
+///
 /// # Panics
 ///
 /// Panics on recursive use with the same Context. Catching that panic does not
@@ -273,18 +279,7 @@ impl ProductPassSettlement {
             portal.poisoned = true;
             return ProductPassEnrollment::Conflict;
         }
-        if !state.lane_matches(&context, viewport) {
-            state.lane_changed = state.lane.is_some();
-            if state.lane.is_some() && !state.ready.is_empty() {
-                state.failure = Some(PresentationSettlementFailure::Abandoned);
-            }
-            state.ready.clear();
-            state.lane = Some(SettlementLane {
-                context: Arc::downgrade(&context),
-                viewport,
-                identity: Arc::new(LaneIdentity),
-            });
-        }
+        state.bind_lane(&context, viewport);
         state.active = Some(OpenProductPass {
             run: Arc::clone(&portal.run),
             pass,
@@ -307,11 +302,22 @@ impl ProductPassSettlement {
                 ..ReadyProductPassSettlementBatch::default()
             };
         }
-        ReadyProductPassSettlementBatch {
-            presentations: std::mem::take(&mut state.ready),
-            presentation_failure: state.failure.take(),
-            lane_changed: std::mem::take(&mut state.lane_changed),
+        state.take_ready()
+    }
+
+    /// The owned driver admits output before consuming RawInput in Context::run_ui.
+    pub(super) fn take_ready_before_run(
+        &self,
+        context: &Context,
+        viewport: ViewportId,
+    ) -> Option<ReadyProductPassSettlementBatch> {
+        let context = context_identity(context);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.active.is_some() {
+            return None;
         }
+        state.bind_lane(&context, viewport);
+        Some(state.take_ready())
     }
 }
 
@@ -661,6 +667,29 @@ struct PassSettlementState {
 }
 
 impl PassSettlementState {
+    fn bind_lane(&mut self, context: &Arc<ContextIdentity>, viewport: ViewportId) {
+        if !self.lane_matches(context, viewport) {
+            self.lane_changed |= self.lane.is_some();
+            if self.lane.is_some() && !self.ready.is_empty() {
+                self.failure = Some(PresentationSettlementFailure::Abandoned);
+            }
+            self.ready.clear();
+            self.lane = Some(SettlementLane {
+                context: Arc::downgrade(context),
+                viewport,
+                identity: Arc::new(LaneIdentity),
+            });
+        }
+    }
+
+    fn take_ready(&mut self) -> ReadyProductPassSettlementBatch {
+        ReadyProductPassSettlementBatch {
+            presentations: std::mem::take(&mut self.ready),
+            presentation_failure: self.failure.take(),
+            lane_changed: std::mem::take(&mut self.lane_changed),
+        }
+    }
+
     fn lane_matches(&self, context: &Arc<ContextIdentity>, viewport: ViewportId) -> bool {
         self.lane.as_ref().is_some_and(|lane| {
             lane.viewport == viewport

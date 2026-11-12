@@ -45,6 +45,11 @@ pub(crate) enum DockspaceErrorSource {
     /// The same Dockspace pass was entered through an ambiguous or foreign UI scope.
     #[error("dockspace show conflicts with another renderer pass contribution")]
     PassSettlementConflict,
+    /// The owned run did not consume input because earlier output fills its budget.
+    #[error(
+        "dockspace output is backpressured; settle earlier renderer receipts before retrying input"
+    )]
+    OutputBackpressure { input: Box<egui::RawInput> },
 }
 
 impl DockspaceErrorSource {
@@ -56,6 +61,7 @@ impl DockspaceErrorSource {
             Self::SingleSurfaceRequiresOne { .. } | Self::PassSettlementConflict => {
                 DockspaceErrorKind::OperationConflict
             }
+            Self::OutputBackpressure { .. } => DockspaceErrorKind::OutputBackpressure,
             Self::SurfaceOutsideRoster { .. } | Self::PresentationReport(_) => {
                 DockspaceErrorKind::HostProtocol
             }

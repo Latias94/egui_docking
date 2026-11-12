@@ -84,6 +84,11 @@ corresponding `dock_tabs_current` and `float_tabs_current` conveniences.
    encoding use the same private candidate. `Deferred(Unmeasured)` requests
    measurements; `Deferred(OutputCapacity)` is normal bounded backpressure
    before content callbacks, not a failed input update.
+   An immediate UI can call `reserve_surface_output` before consuming ordinary
+   pane input. This reserves the same frame's output room without sealing its
+   pointer or semantic input. If it returns `false`, retain the input and wait
+   for renderer settlement. A suspended update keeps the reservation; later
+   measurement and `surface_work` still validate the actual output endpoint.
 3. Pass the returned `SurfaceProgramExecutionReceipt` to
    `confirm_surface_painted`, then commit the frame. Frames containing only
    input or presentation reports can commit directly without painting.

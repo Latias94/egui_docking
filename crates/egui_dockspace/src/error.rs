@@ -14,6 +14,8 @@ pub enum DockspaceErrorKind {
     Unsupported,
     /// A valid operation conflicts with another in-flight affine operation.
     OperationConflict,
+    /// Earlier renderer outputs must settle before this input can enter egui.
+    OutputBackpressure,
     /// A custom host supplied stale, incomplete, or contradictory protocol facts.
     HostProtocol,
     /// An engine, renderer, or adapter invariant failed internally.
@@ -35,6 +37,23 @@ impl DockspaceError {
     #[must_use]
     pub const fn kind(&self) -> DockspaceErrorKind {
         self.source.kind()
+    }
+
+    /// Recovers input which an owned run deferred before invoking egui or pane UI.
+    ///
+    /// Only [`DockspaceErrorKind::OutputBackpressure`] carries unconsumed input.
+    /// Settle earlier renderer receipts, then retry this exact batch before later
+    /// input. Its event order, observation time and viewport metadata are intact.
+    /// Other failures return the original error and cannot be safely replayed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` when this is not an output-backpressure deferral.
+    pub fn into_deferred_input(self) -> Result<egui::RawInput, Self> {
+        match *self.source {
+            DockspaceErrorSource::OutputBackpressure { input } => Ok(*input),
+            source => Err(Self::from_source(source)),
+        }
     }
 
     pub(crate) fn from_source(source: DockspaceErrorSource) -> Self {

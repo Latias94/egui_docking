@@ -122,6 +122,31 @@ presented, or `Dropped` if it is discarded. Receipt drop also retires its output
 Core accepts only the exact emission after a successful later frame commit;
 output production alone grants no presentation or focus authority.
 
+An owned run reserves output capacity before invoking egui or application UI.
+If earlier renderer outputs fill that budget, it returns
+`DockspaceErrorKind::OutputBackpressure` with the original, unconsumed `RawInput`:
+
+```rust,ignore
+match dockspace.run_single_surface(&context, raw_input, surface, panes) {
+    Ok((output, response)) => {
+        // Render this exact output and report its receipt as usual.
+    }
+    Err(error) => {
+        pending_input = Some(error.into_deferred_input()?);
+        // Wait for earlier renderer receipts to settle. Retry this batch before
+        // taking later input from the host queue; do not spin or replay callbacks.
+    }
+}
+```
+
+Deferral preserves event order, timestamps, viewport metadata and focused IME
+state without running a partial egui frame. Other errors do not return replayable
+input. The ordinary `run_native` runner settles each output immediately, so it
+does not normally encounter this condition. Lower-level hosts using `run_ui`
+with `show_single_surface` must bound their own outstanding outputs before
+consuming ordinary pane input; a callback cannot undo input already taken by
+the surrounding egui run.
+
 ## Pointer input
 
 The owned run captures the original ordered input batch once, including an
@@ -306,6 +331,12 @@ no surviving observed destination focuses the remaining workspace. These request
 still require the adapter's exact output and focus-observation boundary. The
 ordinary callback-only eframe examples continue to report that boundary as
 unavailable rather than claiming focus settlement.
+
+For an editable pane, assign a stable `.id(...)` to its primary editor and return
+the same ID from `PaneView::focus_target`; the small
+[winit editor](../examples/winit.rs) demonstrates this pairing. An already focused
+target keeps its ongoing IME composition while its presentation acknowledgement
+is pending. Applications continue to own document text and composition behavior.
 
 ## Styling
 
