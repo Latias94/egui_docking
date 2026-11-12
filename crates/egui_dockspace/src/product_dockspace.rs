@@ -169,6 +169,15 @@ impl Dockspace {
         self.session.version()
     }
 
+    /// Returns whether the committed workspace owns a pointer press, drag or resize.
+    ///
+    /// Applications can use this read-only summary when coordinating other
+    /// gestures. It grants no receiver, input-delivery or presentation authority.
+    #[must_use]
+    pub fn has_active_gesture(&self) -> bool {
+        self.session.has_active_gesture()
+    }
+
     /// Returns the current declarative docking policy.
     #[must_use]
     pub const fn policy(&self) -> &DockPolicy {

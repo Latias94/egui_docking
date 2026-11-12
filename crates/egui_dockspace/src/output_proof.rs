@@ -4,9 +4,11 @@
 //! pane contents, source-gap handling, and transient visuals. Painting must be
 //! synchronous and append-only. Pane implementations must
 //! honor the supplied paint disposition and opacity, and must not defer drawing,
-//! mutate an earlier shape, or write to another layer. Other-layer snapshots
-//! preserve layer identity, global transforms, and content. Nonempty graphics
-//! on an unenumerated layer make the capture unavailable. Adapter-owned chrome may
+//! mutate an earlier shape, or write to an arbitrary other layer. The one
+//! Tooltip layer derived from egui's actual dragged widget may append a data
+//! drag preview while preserving its previous prefix and global transform.
+//! Other-layer snapshots preserve layer identity, global transforms, and content.
+//! Nonempty graphics on an unenumerated layer make the capture unavailable. Adapter-owned chrome may
 //! append to registered popup layers through the explicit multilayer capture;
 //! every existing layer prefix and transform must remain unchanged.
 //!
@@ -28,11 +30,12 @@ pub(super) struct SurfaceOutputCapture {
     multilayer: bool,
 }
 
-/// Checks that a callback only appended shapes to its supplied paint layer.
+/// Checks append-only paint on the supplied layer and the exact data-drag ghost.
 pub(super) struct PaintAppendCheck {
     context: Context,
     viewport: ViewportId,
     layer: LayerId,
+    drag_layer: Option<LayerId>,
     before: Option<PaintSnapshot>,
 }
 
@@ -70,15 +73,25 @@ pub(super) struct PaintAudit {
     snapshots: PaintSnapshotCache,
     comparison: PaintComparison,
     backend: Option<PaintAppendAuditor>,
+    drag_layer: Option<LayerId>,
     valid: bool,
 }
 
 impl PaintAudit {
     pub(super) fn new(context: &Context) -> Self {
+        let drag_layer = drag_ghost_layer(context);
         Self {
             snapshots: PaintSnapshotCache::default(),
             comparison: PaintComparison::default(),
-            backend: context.paint_append_auditor(),
+            // The optional backend checkpoint only permits same-layer paint.
+            // Keep its fast path for ordinary runs; the exact drag layer needs
+            // the complete fallback prefix audit, not a skipped checkpoint.
+            backend: if drag_layer.is_some() {
+                None
+            } else {
+                context.paint_append_auditor()
+            },
+            drag_layer,
             valid: true,
         }
     }
@@ -97,7 +110,11 @@ impl PaintAudit {
             backend(painter, &mut paint_once, &mut self.valid);
             self.valid &= paint.is_none();
         } else {
-            let check = PaintAppendCheck::begin_reusing(painter, &mut self.snapshots);
+            let check = PaintAppendCheck::begin_reusing_with_drag_layer(
+                painter,
+                &mut self.snapshots,
+                self.drag_layer,
+            );
             paint_once();
             check.finish_reusing(
                 painter,
@@ -183,23 +200,35 @@ impl PaintComparison {
 impl PaintAppendCheck {
     /// Starts a conservative check; unknown layers leave it unavailable.
     pub(super) fn begin(painter: &Painter) -> Self {
+        let drag_layer = drag_ghost_layer(painter.ctx());
         Self {
             context: painter.ctx().clone(),
             viewport: painter.ctx().viewport_id(),
             layer: painter.layer_id(),
-            before: snapshot(painter),
+            drag_layer,
+            before: snapshot_with_drag_layer(painter, drag_layer),
         }
     }
 
     /// Observes every live descriptor while reusing identical pure owned slots.
+    #[cfg(test)]
     pub(super) fn begin_reusing(painter: &Painter, cache: &mut PaintSnapshotCache) -> Self {
+        Self::begin_reusing_with_drag_layer(painter, cache, drag_ghost_layer(painter.ctx()))
+    }
+
+    fn begin_reusing_with_drag_layer(
+        painter: &Painter,
+        cache: &mut PaintSnapshotCache,
+        drag_layer: Option<LayerId>,
+    ) -> Self {
         Self {
             context: painter.ctx().clone(),
             viewport: painter.ctx().viewport_id(),
             layer: painter.layer_id(),
+            drag_layer,
             before: cache.reusable.take().map_or_else(
-                || snapshot(painter),
-                |before| snapshot_reusing(painter, before),
+                || snapshot_with_drag_layer(painter, drag_layer),
+                |before| snapshot_reusing(painter, before, drag_layer),
             ),
         }
     }
@@ -273,7 +302,7 @@ impl PaintAppendCheck {
         }
         self.before
             .as_ref()
-            .is_some_and(|before| preserves_snapshot(painter, before))
+            .is_some_and(|before| preserves_snapshot(painter, before, self.drag_layer))
     }
 
     /// Uses a caller-owned comparison scoped to this synchronous surface paint.
@@ -289,7 +318,7 @@ impl PaintAppendCheck {
             return false;
         }
         self.before.as_ref().is_some_and(|before| {
-            preserves_snapshot_with(painter, before, |left, right| {
+            preserves_snapshot_with(painter, before, self.drag_layer, |left, right| {
                 comparison.clipped_shapes_equal(left, right)
             })
         })
@@ -303,7 +332,7 @@ impl PaintAppendCheck {
             return None;
         }
         let before = self.before.as_ref()?;
-        let after = snapshot(painter)?;
+        let after = snapshot_with_drag_layer(painter, self.drag_layer)?;
         if !after.current.preserves_prefix(&before.current) || after.others != before.others {
             return None;
         }
@@ -369,7 +398,7 @@ impl SurfaceOutputCapture {
         paint_marker(painter, &end);
         let before = self.append_check.before.as_ref()?;
         let after = if self.multilayer {
-            let after = snapshot(painter)?;
+            let after = snapshot_with_drag_layer(painter, self.append_check.drag_layer)?;
             if !after.current.preserves_prefix(&before.current)
                 || before.others.iter().any(|previous| {
                     !after
@@ -658,10 +687,37 @@ fn paint_marker(painter: &Painter, marker: &Arc<SurfaceMarker>) {
     }));
 }
 
-fn snapshot(painter: &Painter) -> Option<PaintSnapshot> {
-    let layers = painter
+fn drag_ghost_layer(context: &Context) -> Option<LayerId> {
+    // egui 0.37 Ui::dnd_drag_source uses exactly this layer when
+    // is_being_dragged(id) is true. Derive identity before user paint, never
+    // discover it from unenumerated graphics after the callback.
+    context
+        .dragged_id()
+        .map(|id| LayerId::new(egui::Order::Tooltip, id))
+}
+
+fn paint_layers(painter: &Painter, drag_layer: Option<LayerId>) -> Vec<LayerId> {
+    let mut layers = painter
         .ctx()
         .memory(|memory| memory.layer_ids().collect::<Vec<_>>());
+    if let Some(layer) = drag_layer
+        && !layers.contains(&layer)
+    {
+        layers.push(layer);
+    }
+    layers
+}
+
+#[cfg(test)]
+fn snapshot(painter: &Painter) -> Option<PaintSnapshot> {
+    snapshot_with_drag_layer(painter, None)
+}
+
+fn snapshot_with_drag_layer(
+    painter: &Painter,
+    drag_layer: Option<LayerId>,
+) -> Option<PaintSnapshot> {
+    let layers = paint_layers(painter, drag_layer);
     snapshot_with_layers(painter, layers)
 }
 
@@ -720,10 +776,12 @@ fn snapshot_with_layers(painter: &Painter, layers: Vec<LayerId>) -> Option<Paint
     })
 }
 
-fn snapshot_reusing(painter: &Painter, before: PaintSnapshot) -> Option<PaintSnapshot> {
-    let layers = painter
-        .ctx()
-        .memory(|memory| memory.layer_ids().collect::<Vec<_>>());
+fn snapshot_reusing(
+    painter: &Painter,
+    before: PaintSnapshot,
+    drag_layer: Option<LayerId>,
+) -> Option<PaintSnapshot> {
+    let layers = paint_layers(painter, drag_layer);
     snapshot_reusing_with_layers(painter, before, layers)
 }
 
@@ -742,7 +800,7 @@ fn snapshot_reusing_with_layers(
             .eq(before.others.iter().map(|layer| layer.layer))
     {
         drop(before);
-        return snapshot(painter);
+        return snapshot_with_layers(painter, layers);
     }
     let layers = layers
         .into_iter()
@@ -841,25 +899,29 @@ fn raw_transform_bits(transform: egui::emath::TSTransform) -> [u32; 3] {
 }
 
 /// Borrows the live known lists and clones only the unenumerated remainder.
-fn preserves_snapshot(painter: &Painter, before: &PaintSnapshot) -> bool {
-    preserves_snapshot_with(painter, before, |left, right| left == right)
+fn preserves_snapshot(
+    painter: &Painter,
+    before: &PaintSnapshot,
+    drag_layer: Option<LayerId>,
+) -> bool {
+    preserves_snapshot_with(painter, before, drag_layer, |left, right| left == right)
 }
 
 fn preserves_snapshot_with(
     painter: &Painter,
     before: &PaintSnapshot,
+    drag_layer: Option<LayerId>,
     shapes_equal: impl FnMut(&ClippedShape, &ClippedShape) -> bool,
 ) -> bool {
-    let layers = painter
-        .ctx()
-        .memory(|memory| memory.layer_ids().collect::<Vec<_>>());
-    preserves_snapshot_with_layers(painter, before, layers, shapes_equal)
+    let layers = paint_layers(painter, drag_layer);
+    preserves_snapshot_with_layers(painter, before, layers, drag_layer, shapes_equal)
 }
 
 fn preserves_snapshot_with_layers(
     painter: &Painter,
     before: &PaintSnapshot,
     layers: Vec<LayerId>,
+    drag_layer: Option<LayerId>,
     mut shapes_equal: impl FnMut(&ClippedShape, &ClippedShape) -> bool,
 ) -> bool {
     let Some(layers) = checked_layer_ids(painter, layers) else {
@@ -906,11 +968,24 @@ fn preserves_snapshot_with_layers(
                 layer == expected.layer
                     && transform == expected.transform
                     && match graphics.get(layer) {
-                        Some(list) => clipped_shapes_match(
-                            list.all_entries(),
-                            expected.shapes.iter(),
-                            &mut shapes_equal,
-                        ),
+                        Some(list) => {
+                            let entries = list.all_entries();
+                            let length = entries.len();
+                            if Some(layer) == drag_layer {
+                                length >= expected.shapes.len()
+                                    && clipped_shapes_match(
+                                        entries.take(expected.shapes.len()),
+                                        expected.shapes.iter(),
+                                        &mut shapes_equal,
+                                    )
+                            } else {
+                                clipped_shapes_match(
+                                    entries,
+                                    expected.shapes.iter(),
+                                    &mut shapes_equal,
+                                )
+                            }
+                        }
                         None => expected.shapes.is_empty(),
                     }
             })
@@ -1008,6 +1083,10 @@ fn retain_user_shape(shape: &mut Shape) -> bool {
         _ => true,
     }
 }
+
+#[cfg(test)]
+#[path = "output_proof/drag_tests.rs"]
+mod drag_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1421,6 +1500,7 @@ mod tests {
             context: painter.ctx().clone(),
             viewport: painter.ctx().viewport_id(),
             layer: painter.layer_id(),
+            drag_layer: None,
             before: frozen_snapshot(painter),
         }
     }
@@ -1555,6 +1635,7 @@ mod tests {
                     painter,
                     &before,
                     layers,
+                    None,
                     |_, _| panic!("invalid rosters must not compare any shapes"),
                 ));
             }
@@ -1578,6 +1659,7 @@ mod tests {
                 context: painter.ctx().clone(),
                 viewport: painter.ctx().viewport_id(),
                 layer: painter.layer_id(),
+                drag_layer: None,
                 before: snapshot_with_layers(painter, layers),
             };
             painter.set(prefix, Shape::Noop);
@@ -1600,6 +1682,7 @@ mod tests {
                 context: painter.ctx().clone(),
                 viewport: painter.ctx().viewport_id(),
                 layer: painter.layer_id(),
+                drag_layer: None,
                 before: snapshot_with_layers(painter, vec![painter.layer_id(), painter.layer_id()]),
             };
             let begin = Arc::new(SurfaceMarker);

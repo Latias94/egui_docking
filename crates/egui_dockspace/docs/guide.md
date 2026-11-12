@@ -223,12 +223,27 @@ unknown-device hit geometry retain their existing profile. Ordinary interactive
 widgets and disabled UI still block docking. Native touch/stationary capture
 remains separate work.
 
+Application data and file drops remain ordinary egui interactions. A live
+`egui::DragAndDrop` payload, hovered files or dropped files reserve the input run
+for the application: docking receives foreign capture and an active docking
+gesture is cancelled even without motion. Consuming the payload before the
+docking callback does not revoke that original run's ownership. The adapter
+does not read, replace or deliver application payloads. Use `Ui::dnd_drop_zone`
+inside `PaneView::ui` to associate a drop with its `ItemId`, and apply resulting
+workspace commands after the docking call. `Dockspace::has_active_gesture`
+exposes committed press, drag and resize activity for application coordination.
+Both `Response::dnd_set_drag_payload` and `Ui::dnd_drag_source` are supported.
+The latter's standard preview belongs to the exact dragged widget and is included
+in the surface's output proof; it does not grant arbitrary extra-layer painting.
+
 ## Output contract
 
 The adapter validates the complete ordered surface span after all output hooks,
 including ordinary geometry, previews, clipping and transforms. Pane drawing must
-be synchronous and append-only on the supplied Ui layer; another-layer pane write or
-an earlier-shape mutation conservatively disables settlement. Adapter-owned popup
+be synchronous and append-only on the supplied Ui layer. The standard
+`Ui::dnd_drag_source` preview may append to its one exact Tooltip layer; its old
+prefix and global transform must remain intact. Other-layer pane writes or
+earlier-shape mutations conservatively disable settlement. Adapter-owned popup
 chrome may append to registered foreground layers, with each owned suffix checked
 by the same terminal proof. Honor the supplied
 opacity and source-gap suppression. Private markers are removed while user

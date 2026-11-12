@@ -503,3 +503,155 @@ fn touch_suppression_cancels_held_generic_once_and_allows_fresh_generic_press() 
         frame(&context, &mut dockspace, 1.6, vec![button(first, false)]);
     }
 }
+
+fn presented_tabs(name: &str) -> (Context, Dockspace, Pos2, Pos2) {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(RootId::new(1), DockspaceNode::tabs([FIRST, SECOND])),
+    )])
+    .unwrap();
+    let mut dockspace = Dockspace::builder(name, layout).build().unwrap();
+    let mut points = None;
+    for index in 0..6 {
+        let (output, _) = frame(
+            &context,
+            &mut dockspace,
+            f64::from(index) * 0.05,
+            Vec::new(),
+        );
+        points = tab(&output, "First").zip(tab(&output, "Second")).or(points);
+    }
+    let (first, second) = points.expect("both real tab controls are presented");
+    (context, dockspace, first, second)
+}
+
+#[test]
+fn a_foreign_payload_takes_capture_without_motion_and_cannot_finish_a_docking_drag() {
+    let (context, mut dockspace, first, second) = presented_tabs("foreign-drag-capture");
+    frame(
+        &context,
+        &mut dockspace,
+        1.0,
+        vec![Event::PointerMoved(first), button(first, true)],
+    );
+    frame(
+        &context,
+        &mut dockspace,
+        1.1,
+        vec![Event::PointerMoved(first + egui::vec2(12.0, 30.0))],
+    );
+    assert!(dockspace.has_active_gesture());
+    egui::DragAndDrop::set_payload(&context, "application data");
+    let (_, statuses) = frame(&context, &mut dockspace, 1.2, Vec::new());
+    assert_eq!(
+        statuses,
+        [DockspaceManipulationStatus::Cancelled(
+            DockspaceManipulationCancelReason::CaptureLost,
+        )],
+        "foreign capture cancels the gesture even without a mouse event"
+    );
+    assert!(!dockspace.has_active_gesture());
+    assert!(egui::DragAndDrop::has_payload_of_type::<&str>(&context));
+    frame(
+        &context,
+        &mut dockspace,
+        1.3,
+        vec![Event::PointerMoved(second), button(second, false)],
+    );
+    assert_eq!(
+        dockspace.view().item(FIRST).unwrap().tabs().items(),
+        &[FIRST, SECOND]
+    );
+    assert_eq!(
+        dockspace
+            .view()
+            .surfaces()
+            .next()
+            .unwrap()
+            .contained()
+            .count(),
+        0
+    );
+    frame(
+        &context,
+        &mut dockspace,
+        1.4,
+        vec![
+            Event::PointerMoved(second),
+            button(second, true),
+            button(second, false),
+        ],
+    );
+    assert!(dockspace.view().item(SECOND).unwrap().is_selected());
+}
+
+#[test]
+fn original_run_foreign_drag_ownership_survives_application_consumption() {
+    #[derive(Debug)]
+    struct FileDrop;
+
+    impl egui::DroppedFile for FileDrop {
+        fn path(&self) -> &std::path::Path {
+            std::path::Path::new("/document.txt")
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        fn bytes_async(
+            &self,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + '_>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    for files in [false, true] {
+        let (context, mut dockspace, _, second) = presented_tabs("foreign-drag-snapshot");
+        if !files {
+            egui::DragAndDrop::set_payload(&context, 7_u32);
+        }
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            time: Some(1.0),
+            events: vec![
+                Event::PointerMoved(second),
+                button(second, true),
+                button(second, false),
+            ],
+            dropped_files: if files {
+                vec![std::sync::Arc::new(FileDrop)]
+            } else {
+                Vec::new()
+            },
+            ..Default::default()
+        };
+        let (mut output, receipt) = crate::run_ui(&context, input, |ui| {
+            if files {
+                ui.input_mut(|input| input.raw.dropped_files.clear());
+            } else {
+                assert_eq!(
+                    egui::DragAndDrop::take_payload::<u32>(ui.ctx()).as_deref(),
+                    Some(&7)
+                );
+            }
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut Panes)
+                .unwrap();
+        })
+        .into_parts();
+        output.textures_delta.clear();
+        output.drop_without_applying_deltas();
+        receipt.report(crate::SurfacePresentationResult::Presented);
+        assert!(
+            dockspace.view().item(FIRST).unwrap().is_selected(),
+            "files={files}"
+        );
+        assert!(!dockspace.has_active_gesture());
+    }
+}

@@ -140,6 +140,19 @@ impl TouchContacts {
             .copied()
             .map(|contact| sample(contact, event, docking_enabled))
     }
+
+    pub(super) fn capture_changed(
+        &self,
+        docking_enabled: Option<bool>,
+    ) -> impl Iterator<Item = PointerSample> {
+        self.active.values().copied().map(move |contact| {
+            sample(
+                contact,
+                SurfacePointerEvent::CaptureChanged,
+                docking_enabled,
+            )
+        })
+    }
 }
 
 fn sample(

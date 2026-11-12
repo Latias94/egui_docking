@@ -185,10 +185,12 @@ pub trait PaneView {
     /// projection is current, the child UI remains enabled even when docking
     /// presentation authority is unavailable.
     ///
-    /// Caller-owned presentation settlement currently admits synchronous,
-    /// append-only painting on this Ui's layer. Drawing into another layer or
-    /// changing earlier shapes makes the complete surface output unavailable
-    /// for settlement. Respect the supplied opacity and clip, including when a
+    /// Caller-owned presentation settlement admits synchronous, append-only
+    /// painting on this Ui's layer and egui's standard [`Ui::dnd_drag_source`]
+    /// preview layer for the actual dragged widget. Its exact suffix is included
+    /// in the complete output proof. Other layers, changes to earlier shapes or
+    /// changes to an existing layer transform make settlement unavailable.
+    /// Respect the supplied opacity and clip, including when a
     /// source gap omits the pane's pixels during manipulation. Do not defer
     /// drawing beyond this callback. Application paint callbacks remain subject
     /// to the host renderer contract; shape comparison cannot inspect them.

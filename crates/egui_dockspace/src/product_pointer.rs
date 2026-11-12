@@ -38,6 +38,7 @@ pub(crate) struct ProductPointerInputSnapshot {
     interactive: Vec<Rect>,
     transformed_layers: HashSet<LayerId>,
     layer_at: Box<dyn Fn(Pos2) -> Option<LayerId> + Send + Sync>,
+    foreign_drag: bool,
 }
 
 impl ProductPointerInputSnapshot {
@@ -74,6 +75,7 @@ impl ProductPointerInputSnapshot {
             interactive: context.interactive_rects_last_pass(),
             transformed_layers,
             layer_at,
+            foreign_drag: has_foreign_drag(context),
         }
     }
 
@@ -160,6 +162,7 @@ pub(crate) struct ProductPointer {
     generic_live: bool,
     observed_modifiers: Option<Modifiers>,
     docking_enabled: Option<bool>,
+    foreign_capture: bool,
     touches: TouchContacts,
 }
 
@@ -200,6 +203,7 @@ struct Edge {
     drag_delivery: Option<PresentedDockReceiver>,
     blocked: bool,
     docking_enabled: Option<bool>,
+    capture: SurfacePointerCapture,
 }
 
 /// One normalized run, prepared against this update's presented output.
@@ -429,6 +433,14 @@ impl ProductPointer {
             current.is_some_and(|surface| surface.matches_presentation_artifact(scene.artifact))
         });
         let snapshot = packet.receivers();
+        // Keep original-run ownership even when an earlier application callback
+        // consumes the payload. Also honor a source started before this call.
+        let foreign_drag = snapshot.foreign_drag || has_foreign_drag(ui.ctx());
+        let capture = if foreign_drag {
+            SurfacePointerCapture::Foreign
+        } else {
+            SurfacePointerCapture::None
+        };
         let current_identity_layer = |layer| {
             ui.ctx()
                 .layer_transform_to_global(layer)
@@ -471,6 +483,16 @@ impl ProductPointer {
                 SurfacePointerCancelReason::ExplicitPlatformCancellation,
                 docking_enabled,
             ));
+        }
+        if foreign_drag && !self.foreign_capture {
+            if generic_live {
+                records.push(PointerSample::generic(
+                    SurfacePointerEvent::CaptureChanged,
+                    position,
+                    docking_enabled,
+                ));
+            }
+            records.extend(touches.capture_changed(docking_enabled));
         }
         // Re-evaluate the last actual modifier observation after a configuration
         // change, without fabricating pointer motion or enrolling a new stream.
@@ -611,6 +633,7 @@ impl ProductPointer {
                     drag_delivery: None,
                     blocked: false,
                     docking_enabled: sample.docking_enabled,
+                    capture,
                 };
             }
             let position = sample.position;
@@ -622,7 +645,8 @@ impl ProductPointer {
             let hit = point
                 .and_then(|point| frame.host_pointer_hit_for_device(surface, point, sample.device));
             let qualified = scene.zip(position).is_some_and(|(scene, position)| {
-                ui.is_enabled()
+                !foreign_drag
+                    && ui.is_enabled()
                     && snapshot.completed_pass == scene.completed_pass
                     && (snapshot.layer_at)(position) == Some(scene.layer)
                     && coordinates_supported
@@ -649,6 +673,7 @@ impl ProductPointer {
                     .flatten(),
                 blocked: !qualified,
                 docking_enabled: sample.docking_enabled,
+                capture,
             }
         };
         let edges = records.into_iter().map(&edge_at).collect::<Vec<_>>();
@@ -703,6 +728,7 @@ impl ProductPointer {
         self.generic_live = generic_live;
         self.observed_modifiers = observed_modifiers;
         self.docking_enabled = docking_enabled;
+        self.foreign_capture = foreign_drag;
         self.touches = touches;
         Ok(PreparedPointerEdges {
             raw: edges,
@@ -710,6 +736,13 @@ impl ProductPointer {
             deferred_focus,
         })
     }
+}
+
+fn has_foreign_drag(context: &Context) -> bool {
+    egui::DragAndDrop::has_any_payload(context)
+        || context.input(|input| {
+            !input.raw.hovered_files.is_empty() || !input.raw.dropped_files.is_empty()
+        })
 }
 
 fn continuation_sample(
@@ -806,7 +839,7 @@ fn pointer_input(edge: &Edge, observed_at: Option<Duration>) -> HostPointerInput
         edge.event,
         manipulation,
         route,
-        SurfacePointerCapture::None,
+        edge.capture,
         facts,
     )
     .with_metadata(metadata)
