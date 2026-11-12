@@ -2,3 +2,4 @@ target/
 /repo-ref/
 __pycache__/
 *.py[cod]
+/dockspace-layout.json

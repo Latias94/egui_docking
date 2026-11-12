@@ -34,6 +34,7 @@ winit = { version = "=0.30.13", optional = true }
 dockspace = { workspace = true, default-features = false }
 dockspace_host_conformance = { path = "../dockspace_host_conformance" }
 egui = { workspace = true, features = ["default_fonts"] }
+tempfile = "3.23.0"
 
 [[example]]
 name = "workbench"

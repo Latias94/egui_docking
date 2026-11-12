@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::BTreeMap;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use egui_dockspace::{
@@ -28,15 +30,18 @@ const PANES: [(&str, &str); 8] = [
 ];
 
 fn main() -> eframe::Result {
+    let layout_file = std::env::args_os()
+        .nth(1)
+        .map_or_else(|| PathBuf::from("dockspace-layout.json"), PathBuf::from);
     eframe::run_native(
         "egui_dockspace editor layouts",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 780.0]),
             ..Default::default()
         },
-        Box::new(|creation| {
+        Box::new(move |creation| {
             creation.egui_ctx.set_theme(egui::Theme::Light);
-            Ok(Box::new(PersistenceApp::new()))
+            Ok(Box::new(PersistenceApp::open(layout_file)))
         }),
     )
 }
@@ -49,6 +54,8 @@ struct PersistenceApp {
     presets: BTreeMap<String, Vec<u8>>,
     preset_name: String,
     status: String,
+    layout_file: Option<PathBuf>,
+    save_on_exit: bool,
 }
 
 impl PersistenceApp {
@@ -78,6 +85,87 @@ impl PersistenceApp {
             preset_name: "Working".to_owned(),
             status: "Layouts stay in application memory; pane data survives every layout change"
                 .to_owned(),
+            layout_file: None,
+            save_on_exit: false,
+        }
+    }
+
+    fn open(path: PathBuf) -> Self {
+        let mut app = Self::new();
+        match std::fs::read(&path) {
+            Ok(bytes) => match Self::decode(&bytes) {
+                Ok((dockspace, items)) => {
+                    app.dockspace = dockspace;
+                    app.default_layout = example_layout(&items);
+                    app.panes = PersistencePanes::new(&items);
+                    app.status = format!("Restored {}", path.display());
+                    app.save_on_exit = true;
+                }
+                Err(error) => {
+                    app.status = format!(
+                        "Could not restore {}: {error}. Save layout file to replace it.",
+                        path.display()
+                    );
+                }
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                app.status = format!("Layout saves to {} on exit", path.display());
+                app.save_on_exit = true;
+            }
+            Err(error) => app.status = format!("Could not read {}: {error}", path.display()),
+        }
+        app.layout_file = Some(path);
+        app
+    }
+
+    fn decode(bytes: &[u8]) -> Result<(Dockspace, Vec<ItemId>), Box<dyn std::error::Error>> {
+        let dockspace = Dockspace::from_document_json(
+            "persistence",
+            bytes,
+            Default::default(),
+            Default::default(),
+            |document, key| {
+                document == PERSISTENCE_DOCUMENT_ID && PANES.iter().any(|(known, _)| *known == key)
+            },
+        )?;
+        // Reconnect the application registry through stable keys, not saved numeric IDs.
+        let items = PANES
+            .iter()
+            .map(|(key, _)| {
+                dockspace.item_id_for_external_key(key).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("missing pane key: {key}"),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((dockspace, items))
+    }
+
+    fn write_layout(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let bytes = self.dockspace.save_document_json()?;
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(&bytes)?;
+        file.as_file().sync_all()?;
+        file.persist(path)?;
+        Ok(())
+    }
+
+    fn save_layout_file(&mut self) {
+        let Some(path) = self.layout_file.clone() else {
+            return;
+        };
+        match self.write_layout(&path) {
+            Ok(()) => {
+                self.status = format!("Saved {}", path.display());
+                self.save_on_exit = true;
+            }
+            Err(error) => self.status = format!("Could not save {}: {error}", path.display()),
         }
     }
 
@@ -189,6 +277,9 @@ impl eframe::App for PersistenceApp {
         egui::Panel::top("layout-controls").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Editor layouts");
+                if ui.button("Save layout file").clicked() {
+                    self.save_layout_file();
+                }
                 let mut locked = self.dockspace.policy().arrangement_locked();
                 if ui.checkbox(&mut locked, "Lock layout").changed() {
                     self.set_locked(locked);
@@ -303,6 +394,13 @@ impl eframe::App for PersistenceApp {
             }
         });
     }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.save_on_exit {
+            self.save_layout_file();
+            eprintln!("{}", self.status);
+        }
+    }
 }
 
 fn example_layout(items: &[ItemId]) -> DockspaceLayout {
@@ -413,6 +511,63 @@ impl PaneView for PersistencePanes {
 mod tests {
     use super::*;
     use egui::accesskit::{Action, ActionRequest, Role, TreeId};
+
+    #[test]
+    fn layout_file_round_trip_preserves_tab_order_and_reconnects_application_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.json");
+        let mut app = PersistenceApp::open(path.clone());
+        let document = app
+            .dockspace
+            .item_id_for_external_key("pane/document")
+            .unwrap();
+        let inspector = app
+            .dockspace
+            .item_id_for_external_key("pane/inspector")
+            .unwrap();
+        app.dockspace
+            .dock_item_current(document, DockPlacement::Center(DockAnchor::Item(inspector)))
+            .unwrap();
+        app.save_layout_file();
+        assert!(path.is_file());
+        let restored = PersistenceApp::open(path.clone());
+        assert_eq!(
+            restored
+                .dockspace
+                .view()
+                .item(document)
+                .unwrap()
+                .tabs()
+                .items(),
+            &[inspector, document]
+        );
+        assert_eq!(restored.panes.items[&document].title, "Document");
+        assert_eq!(restored.status, format!("Restored {}", path.display()));
+
+        // A second save replaces the existing file atomically on supported platforms.
+        app.dockspace
+            .dock_item_current(inspector, DockPlacement::Center(DockAnchor::Item(document)))
+            .unwrap();
+        app.save_layout_file();
+        assert!(app.status.starts_with("Saved "));
+        assert!(PersistenceApp::open(path).save_on_exit);
+    }
+
+    #[test]
+    fn invalid_layout_file_is_kept_until_an_explicit_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.json");
+        let original = b"an invalid or newer document";
+        std::fs::write(&path, original).unwrap();
+        let mut app = PersistenceApp::open(path.clone());
+        assert!(!app.save_on_exit);
+        assert!(app.status.starts_with("Could not restore "));
+        eframe::App::on_exit(&mut app, None);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        app.save_layout_file();
+        assert!(app.save_on_exit);
+        assert!(PersistenceApp::decode(&std::fs::read(path).unwrap()).is_ok());
+    }
 
     fn run_frame(
         context: &egui::Context,

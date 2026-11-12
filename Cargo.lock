@@ -630,6 +630,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "pollster",
+ "tempfile",
  "thiserror 2.0.18",
  "winit",
 ]
