@@ -96,7 +96,11 @@ pub(crate) fn paint_pane(
                 && !*context.pane_focus_target_requested
                 && let Some(target) = context.panes.focus_target(item)
             {
-                context.ui.memory_mut(|memory| memory.request_focus(target));
+                context.ui.memory_mut(|memory| {
+                    if !memory.has_focus(target) {
+                        memory.request_focus(target);
+                    }
+                });
                 *context.pane_focus_target_requested = true;
                 *context.pane_focus_target = Some(target);
             }

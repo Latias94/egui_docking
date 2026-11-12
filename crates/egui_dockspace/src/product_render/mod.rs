@@ -384,7 +384,11 @@ pub(crate) fn paint_surface(
             && pointer_authority.supports_preview_gestures()
             && enabled
         {
-            ui.memory_mut(|memory| memory.request_focus(target));
+            ui.memory_mut(|memory| {
+                if !memory.has_focus(target) {
+                    memory.request_focus(target);
+                }
+            });
             pane_focus_target_requested = true;
             pane_focus_target = Some(target);
         }

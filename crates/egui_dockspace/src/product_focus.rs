@@ -8,6 +8,10 @@ pub(crate) use pending_observations::PendingFocusObservations;
 #[path = "product_focus_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "product_focus_input_tests.rs"]
+mod input_tests;
+
 use dockspace::model::{DockspaceSurfaceView, ItemId};
 use dockspace::runtime::DockspaceHostFocus;
 use egui::{Context, Id, Rect};

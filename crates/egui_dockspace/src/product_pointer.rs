@@ -675,10 +675,15 @@ impl ProductPointer {
         let mut deferred_focus = Vec::new();
         if let Some(scene) = scene {
             for edge in &edges {
-                if matches!(
+                if !matches!(
                     edge.event,
                     SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary)
-                ) && edge.device == PointerDeviceKind::Unknown
+                ) {
+                    continue;
+                }
+                // A later application press also supersedes the tab focus intent.
+                deferred_focus.clear();
+                if edge.device == PointerDeviceKind::Unknown
                     && let Some(receiver) = edge.delivery
                     && receiver.descriptor().role()
                         == dockspace::runtime::DockspaceReceiverRole::TabBody
