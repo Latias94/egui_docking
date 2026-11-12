@@ -1,9 +1,45 @@
 //! Application-owned orbital motion in desktop physical coordinates.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use winit::raw_window_handle::RawDisplayHandle;
+
+const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
+
+/// One application clock; child windows never schedule independent animation ticks.
+#[derive(Default)]
+pub(super) struct AnimationClock {
+    next: Option<Instant>,
+}
+
+impl AnimationClock {
+    pub fn due(&mut self, now: Instant, active: bool) -> bool {
+        if !active {
+            self.next = None;
+            return false;
+        }
+        let Some(deadline) = self.next else {
+            self.next = Some(now + FRAME_INTERVAL);
+            return true;
+        };
+        if now < deadline {
+            return false;
+        }
+        // Keep the original cadence after a slow frame without replaying missed ticks.
+        let remainder = now.duration_since(deadline).as_nanos() % FRAME_INTERVAL.as_nanos();
+        let remainder = Duration::from_nanos(
+            u64::try_from(remainder).expect("a sub-frame nanosecond remainder fits u64"),
+        );
+        self.next = Some(now + (FRAME_INTERVAL - remainder));
+        true
+    }
+
+    pub fn delay(&self, now: Instant) -> Option<Duration> {
+        self.next
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GeometryAvailability {
@@ -146,5 +182,38 @@ mod tests {
                 GeometryAvailability::Unsupported
             );
         }
+    }
+
+    #[test]
+    fn animation_deadlines_keep_their_cadence_and_skip_missed_ticks() {
+        let start = Instant::now();
+        let mut clock = AnimationClock::default();
+        assert!(clock.due(start, true));
+        let early = start + Duration::from_millis(8);
+        assert!(!clock.due(early, true));
+        assert_eq!(
+            clock.delay(early),
+            Some(FRAME_INTERVAL - Duration::from_millis(8))
+        );
+
+        let late = start + FRAME_INTERVAL * 3 + Duration::from_millis(4);
+        assert!(clock.due(late, true));
+        assert!(
+            !clock.due(late, true),
+            "a late frame cannot dispatch a catch-up burst"
+        );
+        assert_eq!(
+            clock.delay(late),
+            Some(FRAME_INTERVAL - Duration::from_millis(4))
+        );
+        assert!(clock.due(start + FRAME_INTERVAL * 4, true));
+
+        assert!(!clock.due(start + Duration::from_secs(5), false));
+        assert_eq!(clock.delay(start + Duration::from_secs(5)), None);
+        assert!(clock.due(start + Duration::from_secs(30), true));
+        assert_eq!(
+            clock.delay(start + Duration::from_secs(30)),
+            Some(FRAME_INTERVAL)
+        );
     }
 }

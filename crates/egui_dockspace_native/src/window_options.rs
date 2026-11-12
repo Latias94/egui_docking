@@ -21,7 +21,8 @@ pub struct NativeChildWindowOptions {
     pub decorations: Option<bool>,
     /// Whether the child should appear in the Windows taskbar.
     pub taskbar: Option<bool>,
-    /// Requested stacking level, such as [`WindowLevel::AlwaysOnTop`].
+    /// Requested stacking level for all managed children, such as [`WindowLevel::AlwaysOnTop`].
+    /// This does not order peers within the same level or establish a native parent relationship.
     pub window_level: Option<WindowLevel>,
     /// Application icon shared by managed child windows.
     pub icon: Option<Arc<IconData>>,

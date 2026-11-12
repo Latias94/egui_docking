@@ -25,13 +25,12 @@ mod panes;
 #[path = "solar_system/smoke.rs"]
 mod smoke;
 
-use orbit::{GeometryAvailability, WindowGeometry};
+use orbit::{AnimationClock, GeometryAvailability, WindowGeometry};
 use panes::{Observation, Panes};
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
 const SUN: ItemId = ItemId::new(1);
 const CHILD_SIZE: egui::Vec2 = egui::vec2(210.0, 150.0);
-const ORBIT_INTERVAL: Duration = Duration::from_millis(33);
 
 struct Planet {
     item: ItemId,
@@ -86,6 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         queue: (0..PLANETS.len()).collect(),
         launch: None,
         last_frame: Instant::now(),
+        animation: AnimationClock::default(),
         status: "Launching three planet windows…".to_owned(),
         smoke: smoke_mode.then(|| smoke::Smoke::new(Arc::clone(&outcome))),
     };
@@ -137,6 +137,7 @@ struct SolarApp {
     queue: VecDeque<usize>,
     launch: Option<Launch>,
     last_frame: Instant,
+    animation: AnimationClock,
     status: String,
     smoke: Option<smoke::Smoke>,
 }
@@ -385,13 +386,19 @@ impl eframe::App for SolarApp {
         let animating = self.dockspace.with_panes(|panes| {
             !panes.orbit.paused && panes.orbiting.into_iter().any(|orbiting| orbiting)
         });
-        context.request_repaint_after(if geometry == GeometryAvailability::Waiting {
-            Duration::from_millis(500)
-        } else if animating {
-            ORBIT_INTERVAL
+        if self.animation.due(Instant::now(), animating) {
+            self.dockspace
+                .with_panes(|panes| panes.move_planets(&context));
+        }
+        if let Some(delay) = self.animation.delay(Instant::now()) {
+            context.request_repaint_after(delay);
         } else {
-            Duration::from_millis(100)
-        });
+            context.request_repaint_after(if geometry == GeometryAvailability::Waiting {
+                Duration::from_millis(500)
+            } else {
+                Duration::from_millis(100)
+            });
+        }
     }
 }
 
@@ -415,6 +422,7 @@ mod tests {
             queue: (0..PLANETS.len()).collect(),
             launch: None,
             last_frame: Instant::now(),
+            animation: AnimationClock::default(),
             status: String::new(),
             smoke: None,
         }

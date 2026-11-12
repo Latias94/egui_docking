@@ -1,14 +1,9 @@
 //! Pane content and observations from the real viewport currently painting it.
 
-use std::time::{Duration, Instant};
-
 use eframe::egui;
 use egui_dockspace::{PaneResponse, PaneView};
 
-use super::{
-    ItemId, ORBIT_INTERVAL, PLANETS, ROOT_SURFACE, SUN, SurfaceId, orbit::Orbit,
-    orbit::WindowGeometry,
-};
+use super::{ItemId, PLANETS, ROOT_SURFACE, SUN, SurfaceId, orbit::Orbit, orbit::WindowGeometry};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Observation {
@@ -24,7 +19,6 @@ pub(super) struct Panes {
     pub observations: [Option<Observation>; 3],
     pub orbiting: [bool; 3],
     surfaces: [Option<SurfaceId>; 3],
-    last_move: [Option<Instant>; 3],
 }
 
 impl Panes {
@@ -43,7 +37,6 @@ impl Panes {
                 || retired
             {
                 self.observations[planet] = None;
-                self.last_move[planet] = None;
                 self.orbiting[planet] = false;
             }
         }
@@ -69,12 +62,11 @@ impl Panes {
                 })
     }
 
-    fn observe_and_move(&mut self, planet: usize, ui: &egui::Ui) {
+    fn observe(&mut self, planet: usize, ui: &egui::Ui) {
         let context = ui.ctx();
         let viewport = context.viewport_id();
         if viewport == egui::ViewportId::ROOT {
             self.observations[planet] = None;
-            self.last_move[planet] = None;
             return;
         }
         let Some(geometry) = WindowGeometry::observed(
@@ -89,9 +81,6 @@ impl Panes {
         let window = u64::from(token.window_id());
         let previous = self.observations[planet]
             .filter(|previous| previous.viewport == viewport && previous.window == window);
-        if previous.is_none() {
-            self.last_move[planet] = None;
-        }
         let movements = previous.map_or(0, |previous| {
             previous.movements
                 + usize::from(
@@ -109,27 +98,36 @@ impl Panes {
             geometry,
             movements,
         });
+    }
 
-        let moving = self.orbiting[planet] && !self.orbit.paused && !self.any_pointer_down(context);
-        if moving
-            && self.last_move[planet].is_none_or(|last| last.elapsed() >= ORBIT_INTERVAL)
-            && let Some(physical_position) = self
+    pub fn move_planets(&self, context: &egui::Context) {
+        if self.orbit.paused || self.any_pointer_down(context) {
+            return;
+        }
+        for (planet, observation) in self.observations.iter().enumerate() {
+            let Some(observation) = observation.filter(|_| self.orbiting[planet]) else {
+                continue;
+            };
+            let live =
+                context.input(|input| input.raw.viewports.contains_key(&observation.viewport));
+            if !live {
+                continue;
+            }
+            let geometry = observation.geometry;
+            let Some(physical_position) = self
                 .orbit
                 .physical_position(planet, geometry.physical.size())
-            && geometry.physical.min.distance(physical_position) >= 1.0
-        {
+                .filter(|position| geometry.physical.min.distance(*position) >= 1.0)
+            else {
+                continue;
+            };
             // This is an ordinary application window command. Native admission and
             // presentation still depend on fresh observations from the OS provider.
-            context.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
-                physical_position / geometry.pixels_per_point,
-            ));
-            self.last_move[planet] = Some(Instant::now());
+            context.send_viewport_cmd_to(
+                observation.viewport,
+                egui::ViewportCommand::OuterPosition(physical_position / geometry.pixels_per_point),
+            );
         }
-        context.request_repaint_after(if moving {
-            ORBIT_INTERVAL
-        } else {
-            Duration::from_millis(100)
-        });
     }
 }
 
@@ -157,7 +155,7 @@ impl PaneView for Panes {
     fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> PaneResponse {
         let planet = PLANETS.iter().position(|planet| planet.item == item);
         if let Some(planet) = planet {
-            self.observe_and_move(planet, ui);
+            self.observe(planet, ui);
         }
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
         let (name, color) = planet
@@ -257,6 +255,70 @@ mod tests {
     }
 
     #[test]
+    fn root_animation_moves_only_observed_live_children_in_their_own_scale() {
+        let context = egui::Context::default();
+        context.set_embed_viewports(false);
+        let live = egui::ViewportId::from_hash_of("live-mercury");
+        let retired = egui::ViewportId::from_hash_of("retired-venus");
+        let mut child = observation(live, 2);
+        child.geometry = WindowGeometry::observed(
+            Some(egui::Rect::from_min_size(
+                egui::pos2(10.0, 20.0),
+                egui::vec2(210.0, 150.0),
+            )),
+            2.0,
+        )
+        .unwrap();
+        let mut panes = Panes {
+            surfaces: [Some(SurfaceId::new(2)), Some(SurfaceId::new(3)), None],
+            observations: [Some(child), Some(observation(retired, 3)), None],
+            orbiting: [true; 3],
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input(egui::ViewportId::ROOT, &[live]), |_| {
+            context.show_viewport_deferred(live, Default::default(), |_, _| {});
+            panes.move_planets(&context);
+        });
+        output.textures_delta.clear();
+        assert!(
+            output.viewport_output.values().all(|output| !output
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::OuterPosition(_)))),
+            "unknown root geometry must not produce guessed placement"
+        );
+        output.drop_without_applying_deltas();
+
+        panes.orbit.root = WindowGeometry::observed(
+            Some(egui::Rect::from_min_size(
+                egui::pos2(300.0, 200.0),
+                egui::vec2(500.0, 300.0),
+            )),
+            1.0,
+        );
+        let expected = panes
+            .orbit
+            .physical_position(0, child.geometry.physical.size())
+            .unwrap()
+            / child.geometry.pixels_per_point;
+        let mut output = context.run_ui(input(egui::ViewportId::ROOT, &[live]), |_| {
+            context.show_viewport_deferred(live, Default::default(), |_, _| {});
+            panes.move_planets(&context);
+        });
+        output.textures_delta.clear();
+        let commands = &output.viewport_output.get(&live).unwrap().commands;
+        assert!(matches!(
+            commands.as_slice(),
+            [egui::ViewportCommand::OuterPosition(position)] if *position == expected
+        ));
+        assert!(
+            !output.viewport_output.contains_key(&retired),
+            "a stale observation must never resurrect a retired viewport"
+        );
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
     fn a_hidden_pane_moved_by_the_core_drops_its_old_window_before_that_window_retires() {
         use dockspace::model::{
             DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
@@ -310,7 +372,6 @@ mod tests {
                     u64::try_from(planet).unwrap() + 2,
                 ))
             }),
-            last_move: [Some(Instant::now()); 3],
             orbiting: [true; 3],
             ..Default::default()
         };
@@ -319,7 +380,6 @@ mod tests {
             // The native roster can still contain the source during asynchronous retirement.
             panes.reconcile_surfaces(surfaces, &context);
             assert!(panes.observations[0].is_none());
-            assert!(panes.last_move[0].is_none());
             assert!(panes.observations[1].is_some());
             assert!(panes.observations[2].is_some());
             assert_eq!(panes.orbiting, [false, false, true]);

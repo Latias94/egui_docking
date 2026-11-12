@@ -41,6 +41,10 @@ panes do not issue conflicting position requests. The example needs a backend
 with native creation and desktop placement support. Add `-- --smoke` for a
 finite real-window create/move/Dock-Back/recreate check. The smoke uses the
 public programmatic recovery command; it does not simulate an OS close-button event.
+One application clock requests movement at 60 Hz; child windows report their
+actual geometry without starting independent animation timers. Use `--release`
+when assessing motion and CPU cost. OS window movement is still scheduled by
+the desktop compositor, independently of pane rendering.
 
 ## Integrate
 
@@ -76,6 +80,21 @@ Applications may request ordinary movement of a live window through the host;
 fresh OS observations determine its actual geometry. Configure the external
 Root window through eframe's `NativeOptions::viewport`. Child titles follow selected panes
 without adding a library-brand suffix.
+
+Window ordering has two scopes:
+
+- `NativeCommand::RaiseContained` raises a floating root inside its logical
+  surface. It does not change OS window order.
+- `NativeCommand::SelectItem` selects a pane and requests activation of its
+  native window. Actual focus remains a platform observation.
+- `NativeChildWindowOptions::window_level` requests `Normal`, `AlwaysOnTop` or
+  `AlwaysOnBottom` for all managed children. The Root uses its own viewport
+  builder. A level does not specify order between windows at that level.
+
+The adapter currently has no per-window persistent appearance override or
+relative OS-window ordering API. `Child` describes lifecycle ownership; it does
+not establish a native owner/transient-parent relationship or guarantee that a
+child stays above the Root. Those policies require explicit platform support.
 
 [Examples](../../docs/EXAMPLES.md) · [Development](../../CONTRIBUTING.md)
 · [Native qualification](../../integration/egui-native-smoke/README.md)
