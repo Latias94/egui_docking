@@ -162,6 +162,7 @@ proptest! {
         minimum in 0_u16..512,
         intrinsic in 0_u16..1024,
         reservation in 0_u16..1024,
+        trailing_reservation in 0_u16..1024,
         hidden in any::<bool>(),
         locked in any::<bool>(),
     ) {
@@ -177,7 +178,7 @@ proptest! {
         let bounds = LogicalRect::new(f64::from(x)*scale, f64::from(y)*scale,
             f64::from(width)*scale, f64::from(height)*scale).unwrap();
         let (manifest, measurements) = inputs(&workspace, &policy, bounds,
-            TabStripMetrics::new(f64::from(reservation), 0.0).unwrap(),
+            TabStripMetrics::new(f64::from(reservation), f64::from(trailing_reservation)).unwrap(),
             f64::from(minimum), f64::from(intrinsic));
         compare(&workspace, &policy, &config, &manifest, &measurements, None);
     }
@@ -187,24 +188,35 @@ proptest! {
 fn compiler_drafts_keep_external_geometry_rejections() {
     let policy = DockPolicy::default().snapshot(PolicyRevision::new(1));
     let bounds = LogicalRect::new(0.0, 0.0, 100.0, 100.0).unwrap();
-    for empty in [true, false] {
-        let workspace = workspace(empty, false);
-        let config = if empty {
-            DockPresentationConfig::default()
-        } else {
-            DockPresentationConfig::builder()
-                .tab_min_width(8.0)
-                .tab_max_width(8.0)
-                .build()
-                .unwrap()
-        };
-        let strip = TabStripMetrics::new(if empty { 1000.0 } else { 0.0 }, 0.0).unwrap();
-        let (manifest, measurements) = inputs(&workspace, &policy, bounds, strip, 0.0, 56.0);
-        assert!(matches!(
-            compare(&workspace, &policy, &config, &manifest, &measurements, None),
-            Some(Err(SceneBuildError::InvalidTabBarRecord { .. }))
-        ));
-    }
+    let workspace = workspace(false, false);
+    let config = DockPresentationConfig::builder()
+        .tab_min_width(8.0)
+        .tab_max_width(8.0)
+        .build()
+        .unwrap();
+    let strip = TabStripMetrics::new(0.0, 0.0).unwrap();
+    let (manifest, measurements) = inputs(&workspace, &policy, bounds, strip, 0.0, 56.0);
+    assert!(matches!(
+        compare(&workspace, &policy, &config, &manifest, &measurements, None),
+        Some(Err(SceneBuildError::InvalidTabBarRecord { .. }))
+    ));
+}
+
+#[test]
+fn oversized_reservations_are_clipped_to_the_empty_bar() {
+    let policy = DockPolicy::default().snapshot(PolicyRevision::new(1));
+    let bounds = LogicalRect::new(0.0, 0.0, 100.0, 100.0).unwrap();
+    let workspace = workspace(true, false);
+    let config = DockPresentationConfig::default();
+    let strip = TabStripMetrics::new(1000.0, 1000.0).unwrap();
+    let (manifest, measurements) = inputs(&workspace, &policy, bounds, strip, 0.0, 56.0);
+    let plan = compare(&workspace, &policy, &config, &manifest, &measurements, None)
+        .unwrap()
+        .unwrap();
+    let bar = &plan.tab_bar_records()[0];
+    assert_eq!(bar.leading_reserved_bounds(), Some(bar.bounds()));
+    assert_eq!(bar.trailing_reserved_bounds(), None);
+    assert_eq!(bar.viewport().width(), 0.0);
 }
 
 #[test]

@@ -166,6 +166,8 @@ fn tab_presentation_menu_anchor(
 #[derive(Debug, Clone, Copy)]
 pub(in crate::scene_compiler) struct TabStripOptionalChromeLayout {
     pub(in crate::scene_compiler) group_extent: f64,
+    leading_reserved_bounds: Option<LogicalRect>,
+    trailing_reserved_bounds: Option<LogicalRect>,
     pub(in crate::scene_compiler) presentation_menu_bounds: Option<LogicalRect>,
     pub(in crate::scene_compiler) viewport: LogicalRect,
     pub(in crate::scene_compiler) controls: Option<TabStripControlLayout>,
@@ -180,13 +182,23 @@ fn tab_strip_optional_chrome_candidate(
     include_presentation_menu: bool,
     include_overflow_controls: bool,
 ) -> Result<Option<TabStripOptionalChromeLayout>, SceneCompilationError> {
+    let minimum_tab_extent = if item_count > 0 {
+        config.tab_min_width()
+    } else {
+        0.0
+    };
+    let reservable = (bar.width() - group_extent - minimum_tab_extent).max(0.0);
+    let leading_reserved = strip.leading_reserved().min(reservable);
+    let trailing_reserved = strip
+        .trailing_reserved()
+        .min((reservable - leading_reserved).max(0.0));
     let presentation_menu_bounds = if include_presentation_menu {
         tab_presentation_menu_anchor(
             bar,
             item_count > 0,
             group_extent,
-            strip.leading_reserved(),
-            strip.trailing_reserved(),
+            leading_reserved,
+            trailing_reserved,
             config.tab_min_width(),
             config.tab_close_extent(),
         )?
@@ -198,11 +210,11 @@ fn tab_strip_optional_chrome_candidate(
     }
 
     let presentation_menu_extent = presentation_menu_bounds.map_or(0.0, LogicalRect::width);
-    let content_x = bar.x() + group_extent + strip.leading_reserved();
+    let content_x = bar.x() + group_extent + leading_reserved;
     let base_viewport_width = (bar.width()
         - group_extent
-        - strip.leading_reserved()
-        - strip.trailing_reserved()
+        - leading_reserved
+        - trailing_reserved
         - presentation_menu_extent)
         .max(0.0);
     let item_count_u32 =
@@ -243,6 +255,26 @@ fn tab_strip_optional_chrome_candidate(
     }
     Ok(Some(TabStripOptionalChromeLayout {
         group_extent,
+        leading_reserved_bounds: (leading_reserved > 0.0)
+            .then(|| {
+                LogicalRect::new(
+                    bar.x() + group_extent,
+                    bar.y(),
+                    leading_reserved,
+                    bar.height(),
+                )
+            })
+            .transpose()?,
+        trailing_reserved_bounds: (trailing_reserved > 0.0)
+            .then(|| {
+                LogicalRect::new(
+                    bar.max().x() - trailing_reserved,
+                    bar.y(),
+                    trailing_reserved,
+                    bar.height(),
+                )
+            })
+            .transpose()?,
         presentation_menu_bounds,
         viewport,
         controls,
@@ -305,6 +337,8 @@ pub(in crate::scene_compiler) fn tab_strip_optional_chrome_layout(
     }
     Ok(TabStripOptionalChromeLayout {
         group_extent: 0.0,
+        leading_reserved_bounds: None,
+        trailing_reserved_bounds: None,
         presentation_menu_bounds: None,
         viewport: LogicalRect::new(bar.x(), bar.y(), 0.0, bar.height())?,
         controls: None,
@@ -620,24 +654,30 @@ fn compile_tab_strip(
     } else {
         None
     };
-    ready.push_tab_bar_record(TabBarRecord::new(
-        bar_id,
-        bar,
-        viewport,
-        scroll,
-        max_scroll,
-        items
-            .iter()
-            .copied()
-            .filter(|item| !visible_items.contains(item))
-            .collect(),
-        members,
-        group_grip_bounds,
-        group_drag,
-        interaction,
-        menu_geometry,
-        layer,
-    ));
+    ready.push_tab_bar_record(
+        TabBarRecord::new(
+            bar_id,
+            bar,
+            viewport,
+            scroll,
+            max_scroll,
+            items
+                .iter()
+                .copied()
+                .filter(|item| !visible_items.contains(item))
+                .collect(),
+            members,
+            group_grip_bounds,
+            group_drag,
+            interaction,
+            menu_geometry,
+            layer,
+        )
+        .with_reserved_bounds(
+            chrome.leading_reserved_bounds,
+            chrome.trailing_reserved_bounds,
+        ),
+    );
     if presentation_menu_anchor {
         let host = PresentationMenuAnchorHost::TabBar(bar_id);
         ready.push_presentation_menu_anchor_record(match presentation_menu_bounds {

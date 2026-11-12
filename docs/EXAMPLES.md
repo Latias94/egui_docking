@@ -48,6 +48,9 @@ presentation result. This is a single OS-window example. Its application code
 lives in [editor.rs](../crates/egui_dockspace/examples/workbench/editor.rs), separate
 from the window loop, renderer and opt-in measurement exercise. The independent
 official harness compiles the same example against its own locked dependencies.
+Enable **Custom tabs** to try per-tab icons and rounded backgrounds, fixed group
+counts and **Tint** buttons. The [tab callbacks](../crates/egui_dockspace/examples/workbench/tabs.rs)
+show how to customize chrome while retaining docking input and accessibility.
 
 Smaller eframe examples:
 

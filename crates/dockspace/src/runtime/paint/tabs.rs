@@ -305,6 +305,18 @@ impl<'plan> TabBarPaintRecord<'plan> {
         self.record.group_grip_bounds()
     }
 
+    /// Returns the core-clipped leading application chrome allocation.
+    #[must_use]
+    pub const fn leading_reserved_bounds(self) -> Option<LogicalRect> {
+        self.record.leading_reserved_bounds()
+    }
+
+    /// Returns the core-clipped trailing application chrome allocation.
+    #[must_use]
+    pub const fn trailing_reserved_bounds(self) -> Option<LogicalRect> {
+        self.record.trailing_reserved_bounds()
+    }
+
     /// Iterates every exact whole-group drag region in stable visual order.
     pub fn group_drag_regions(self) -> impl Iterator<Item = TabGroupDragRegionPaintRecord> + 'plan {
         let bar = *self.record.id();

@@ -10,6 +10,7 @@
 
 pub mod pane;
 pub mod style;
+pub mod tab;
 
 mod builder;
 mod error;
@@ -73,3 +74,4 @@ pub use response::{
     DockspaceUnavailableReason,
 };
 pub use style::{DockStyle, DockStyleError, DockVisualOverrides};
+pub use tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabVisuals};

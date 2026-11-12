@@ -307,6 +307,8 @@ pub struct TabBarRecord {
     hidden_items: Vec<ItemId>,
     members: Vec<TabStripMemberRecord>,
     group_grip_bounds: Option<LogicalRect>,
+    leading_reserved_bounds: Option<LogicalRect>,
+    trailing_reserved_bounds: Option<LogicalRect>,
     group_drag: Option<TabGroupDragRecord>,
     interaction: TabBarInteraction,
     menu_geometry: TabListMenuGeometryAvailability,
@@ -358,6 +360,8 @@ impl TabBarRecord {
             hidden_items,
             members,
             group_grip_bounds,
+            leading_reserved_bounds: None,
+            trailing_reserved_bounds: None,
             group_drag,
             interaction,
             menu_geometry,
@@ -411,6 +415,28 @@ impl TabBarRecord {
     #[must_use]
     pub const fn group_grip_bounds(&self) -> Option<LogicalRect> {
         self.group_grip_bounds
+    }
+
+    pub(crate) fn with_reserved_bounds(
+        mut self,
+        leading: Option<LogicalRect>,
+        trailing: Option<LogicalRect>,
+    ) -> Self {
+        self.leading_reserved_bounds = leading;
+        self.trailing_reserved_bounds = trailing;
+        self
+    }
+
+    /// Returns the actual renderer-owned slot after the group grip.
+    #[must_use]
+    pub const fn leading_reserved_bounds(&self) -> Option<LogicalRect> {
+        self.leading_reserved_bounds
+    }
+
+    /// Returns the actual renderer-owned slot at the trailing edge.
+    #[must_use]
+    pub const fn trailing_reserved_bounds(&self) -> Option<LogicalRect> {
+        self.trailing_reserved_bounds
     }
 
     /// Returns the exact whole-stack group gesture geometry, when available.

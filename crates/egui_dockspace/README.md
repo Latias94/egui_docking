@@ -83,7 +83,17 @@ focus on application workflows; use the workbench above for drag docking.
 
 Override `PaneView::minimum_size`, `focus_target` or `focus_state` where needed.
 `DockStyle` follows the current egui theme and exposes geometry, timing and color
-overrides. Use `DockStyle::from_egui(ui)` after changing fonts or density.
+overrides, including tab corners and outlines. Use `DockStyle::from_egui(ui)`
+after changing fonts or density.
+
+Override `PaneView::tab_ui` for per-item backgrounds, icons, badges or buttons;
+`Tab::paint`, `paint_background` and `paint_title` retain the default rendering
+where useful. Reserve additional content width with `tab_content_width`.
+`tab_bar_layout` and `tab_bar_ui` add fixed leading/trailing controls without
+overlapping scrollable tabs. Selection, dragging, close controls and
+accessibility stay in the adapter. Enable **Custom tabs** in the workbench for a
+[small working example](examples/workbench/tabs.rs).
+
 `DockPolicy` controls docking rules and close permissions. The
 [integration guide](docs/guide.md) covers these options and the output contract.
 

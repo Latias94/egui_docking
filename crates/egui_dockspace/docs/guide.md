@@ -285,7 +285,9 @@ language:
 use egui_dockspace::{DockStyle, Dockspace};
 
 let mut style = DockStyle::default();
+style.tab_corner_radius = egui::CornerRadius::same(6);
 style.visuals.tab_active_fill = Some(egui::Color32::from_rgb(40, 100, 120));
+style.visuals.tab_active_stroke = Some(egui::Stroke::new(1.0, egui::Color32::WHITE));
 let dockspace = Dockspace::builder("my-dockspace", layout)
     .style(style)
     .build()?;
@@ -314,6 +316,56 @@ span colors survive in tabs, overflow rows and drag previews. The corresponding
 by the local egui `override_text_color`, then explicit span colors. Uncolored
 spans follow the current interaction state. Disabled UI retains egui's standard
 tint; no per-pane color configuration is needed.
+
+### Custom tabs and tab-bar controls
+
+All tab callbacks are optional methods on `PaneView`. Keep the existing `title`
+method: it supplies measurement, hover text, accessibility names, overflow rows
+and drag-preview text even when the visible tab is custom.
+
+- `tab_content_width(item, ui, title)` returns intrinsic content width before
+  docking padding and the close button. The default is the shaped title width.
+  Add space here for custom icons, badges or buttons; measurements must be
+  finite, non-negative and independent of an earlier paint pass.
+- `tab_ui(ui, tab)` receives the original response, selected/enabled state,
+  unclipped allocation, visible clip, content rect and resolved `TabVisuals`.
+  Call `tab.paint(ui)` for defaults, or paint the background and title separately.
+  `tab.paint_title(ui, rect)` elides and clips the title to a content subrect.
+- `tab_bar_layout(bar_id, ui)` reserves fixed leading/trailing widths outside
+  the scrollable strip. `tab_bar_ui(ui, bar, slot)` draws into each actual
+  positive allocation. `bar.items()` includes every group member in tab order.
+
+For example, customize one item's background without copying the renderer:
+
+```rust
+fn tab_ui(&mut self, ui: &mut egui::Ui, tab: &egui_dockspace::Tab<'_>) {
+    let mut appearance = tab.clone();
+    if self.needs_attention(tab.item) {
+        appearance.visuals.fill = egui::Color32::from_rgb(120, 75, 25);
+    }
+    appearance.paint(ui);
+}
+```
+
+Application widgets belong inside `tab.content_rect`; keep the built-in close
+area free. They retain ordinary egui input and block docking over themselves,
+without any `PaneResponse` declaration. The adapter continues to own selection,
+close requests, dragging, keyboard navigation, focus cues and accessibility.
+Missing panes use the built-in fallback, and dragged source gaps skip custom
+tab/slot callbacks. Disabled groups pass disabled Uis to application callbacks.
+
+Slots stay fixed while tabs scroll. Core prioritizes the leading slot and may
+shrink or omit either slot in a narrow group to preserve an operable tab. Use
+the supplied Ui's actual width and clip rather than the requested width. The
+callbacks render synchronously into the supplied Ui; queue workspace edits in
+application state and apply them after the docking call returns.
+`Box<dyn PaneView>` forwards every callback. Native windows share
+the same implementation and `PaneView` interface.
+
+The workbench's **Custom tabs** toggle demonstrates title icons, rounded
+backgrounds, group counts and a fixed **Tint** button. Its
+[tab customization module](../examples/workbench/tabs.rs) is separate
+from the host and pane-content code.
 
 A selected tab gains a two-point underline when its pane owns observed content
 focus. This is distinct from selection and the outline around a keyboard-focused

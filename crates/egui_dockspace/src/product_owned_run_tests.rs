@@ -110,8 +110,9 @@ fn measured_titles_are_painted_from_the_same_pass_and_refresh_next_pass() {
                         .unwrap();
                 })
             };
-            let (output, receipt) = output.into_parts();
-            let labels = output
+            let (mut output, receipt) = output.into_parts();
+            output.textures_delta.clear();
+            let mut labels = output
                 .platform_output
                 .accesskit_update
                 .as_ref()
@@ -121,6 +122,8 @@ fn measured_titles_are_painted_from_the_same_pass_and_refresh_next_pass() {
                 .filter(|(_, node)| node.role() == Role::Tab)
                 .map(|(_, node)| node.label().unwrap().to_owned())
                 .collect::<Vec<_>>();
+            // AccessKit update nodes are a set; their vector order is unspecified.
+            labels.sort();
             assert_eq!(
                 labels,
                 [

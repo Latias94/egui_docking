@@ -5,14 +5,14 @@ use std::{error::Error, fmt};
 use dockspace::runtime::{
     DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
 };
-use egui::{Color32, Frame, Margin, Rgba, Style as EguiStyle, Vec2, Visuals};
+use egui::{Color32, CornerRadius, Frame, Margin, Rgba, Stroke, Style as EguiStyle, Vec2, Visuals};
 
 /// Optional visual overrides applied on top of the current egui theme.
 ///
 /// Every field defaults to `None`, so dockspace follows the [`egui::Visuals`]
 /// active on the [`egui::Ui`] that paints it. Set only the colors that belong to
 /// an application-specific visual language; theme changes continue to affect
-/// every color left unspecified.
+/// every color left unspecified. Optional tab outlines default to no stroke.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DockVisualOverrides {
     /// Fill behind tiled docking content.
@@ -25,6 +25,10 @@ pub struct DockVisualOverrides {
     pub tab_hover_fill: Option<Color32>,
     /// Fill of the selected tab.
     pub tab_active_fill: Option<Color32>,
+    /// Outline of an inactive tab; defaults to no outline.
+    pub tab_stroke: Option<Stroke>,
+    /// Outline of the selected tab; defaults to no outline.
+    pub tab_active_stroke: Option<Stroke>,
     /// Text color of inactive tabs.
     pub tab_text_color: Option<Color32>,
     /// Text color of the selected tab.
@@ -179,6 +183,8 @@ pub struct DockStyle {
     pub touch_resize_hit_extent: f32,
     /// Height of every tab bar.
     pub tab_bar_height: f32,
+    /// Radius of tab backgrounds and outlines; independent of core hit geometry.
+    pub tab_corner_radius: CornerRadius,
     /// Width of each tab-strip edge scroll band in egui points; zero disables it.
     pub tab_strip_edge_scroll_band: f32,
     /// Positive interval between edge scroll steps; `None` disables edge scrolling.
@@ -221,7 +227,7 @@ pub struct DockStyle {
     pub minimum_floating_size: Vec2,
     /// Pointer-relative offset used to paint a drag ghost.
     pub ghost_offset: Vec2,
-    /// Per-color overrides layered over the current egui theme.
+    /// Visual overrides layered over the current egui theme.
     pub visuals: DockVisualOverrides,
 }
 
@@ -391,6 +397,14 @@ impl DockStyle {
     /// sign constraint, the touch resize hit extent is below 44 points,
     /// a scroll interval is zero, or metrics conflict.
     pub fn validate(&self) -> Result<(), DockStyleError> {
+        for (field, stroke) in [
+            ("tab_stroke.width", self.visuals.tab_stroke),
+            ("tab_active_stroke.width", self.visuals.tab_active_stroke),
+        ] {
+            if let Some(stroke) = stroke {
+                require_non_negative(field, stroke.width)?;
+            }
+        }
         for (field, value) in [
             ("tab_bar_height", self.tab_bar_height),
             ("tab_group_grip_extent", self.tab_group_grip_extent),
@@ -495,6 +509,7 @@ impl Default for DockStyle {
             touch_press_slop_distance: geometry.touch_press_slop_distance() as f32,
             touch_resize_hit_extent: geometry.touch_resize_hit_extent() as f32,
             tab_bar_height: geometry.tab_bar_height() as f32,
+            tab_corner_radius: CornerRadius::ZERO,
             tab_strip_edge_scroll_band: geometry.tab_strip_edge_scroll_band() as f32,
             tab_strip_edge_scroll_interval: geometry.tab_strip_edge_scroll_interval(),
             tab_group_grip_extent: geometry.tab_group_grip_extent() as f32,
@@ -646,6 +661,33 @@ mod tests {
             style.tab_strip_edge_scroll_interval,
             Some(std::time::Duration::from_millis(50))
         );
+    }
+
+    #[test]
+    fn tab_outlines_are_visual_only_and_reject_invalid_widths() {
+        let mut style = DockStyle {
+            tab_corner_radius: CornerRadius::same(7),
+            ..Default::default()
+        };
+        style.visuals.tab_stroke = Some(Stroke::new(1.0, Color32::RED));
+        style.visuals.tab_active_stroke = Some(Stroke::new(2.0, Color32::BLUE));
+        assert_eq!(style.validate(), Ok(()));
+        assert_eq!(
+            style.presentation_config().unwrap(),
+            DockPresentationConfig::default()
+        );
+        for width in [-1.0, f32::NAN, f32::INFINITY] {
+            for active in [false, true] {
+                let mut candidate = style.clone();
+                let stroke = if active {
+                    &mut candidate.visuals.tab_active_stroke
+                } else {
+                    &mut candidate.visuals.tab_stroke
+                };
+                stroke.as_mut().unwrap().width = width;
+                assert!(candidate.validate().is_err());
+            }
+        }
     }
 
     #[test]

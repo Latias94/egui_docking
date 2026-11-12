@@ -64,5 +64,8 @@ name = "tear_off_mode"
 [[test]]
 name = "tab_accessibility"
 
+[[test]]
+name = "tab_customization"
+
 [lints]
 workspace = true

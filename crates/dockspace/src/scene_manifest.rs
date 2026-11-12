@@ -352,7 +352,11 @@ impl TabIntrinsic {
     }
 }
 
-/// Adapter-owned extents reserved before and after a tab strip.
+/// Requested adapter-owned extents before and after a tab strip.
+///
+/// Reservations may shrink in a narrow bar to preserve an operable tab. The
+/// leading request has priority over the trailing request. Renderers consume
+/// the resulting exact rectangles from the compiled tab-bar record.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabStripMetrics {
     leading_reserved: f64,

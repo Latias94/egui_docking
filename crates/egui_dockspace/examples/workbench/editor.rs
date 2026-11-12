@@ -7,8 +7,11 @@ use egui_dockspace::{
     CloseDecision, CloseItemDecisionState, DockStyle, DockVisualOverrides, Dockspace,
     DockspaceAxis, DockspaceContainedLayout, DockspaceError, DockspaceLayout, DockspaceNode,
     DockspaceOutput, DockspaceResponse, DockspaceRootLayout, DockspaceSurfaceLayout,
-    FloatingPresentationId, ItemId, LogicalRect, PaneResponse, PaneView, RootId, SurfaceId,
+    FloatingPresentationId, ItemId, LogicalRect, PaneResponse, PaneView, RootId, SurfaceId, Tab,
+    TabBar, TabBarId, TabBarLayout, TabBarSlot,
 };
+
+mod tabs;
 
 pub(super) const SURFACE: SurfaceId = SurfaceId::new(1);
 pub(super) const MAIN_ROOT: RootId = RootId::new(1);
@@ -66,7 +69,7 @@ pub(super) fn dock_style() -> DockStyle {
     }
 }
 
-fn toolbar(ui: &mut egui::Ui, restore_layout: &mut bool) {
+fn toolbar(ui: &mut egui::Ui, restore_layout: &mut bool, custom_tabs: &mut bool) {
     egui::Panel::top("workbench-toolbar").show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.strong("Dockspace");
@@ -81,6 +84,7 @@ fn toolbar(ui: &mut egui::Ui, restore_layout: &mut bool) {
                 ui.label("Move Inspector using its dotted title grip.");
                 ui.label("Close panes freely; Restore layout keeps your edits.");
             });
+            ui.checkbox(custom_tabs, "Custom tabs");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let dark = ui.visuals().dark_mode;
                 if ui.selectable_label(dark, "Dark").clicked() {
@@ -101,22 +105,26 @@ pub(super) fn run_editor(
     panes: &mut DemoPanes,
     restore_layout: &mut bool,
 ) -> Result<(DockspaceOutput, Option<DockspaceResponse>), DockspaceError> {
+    let mut custom_tabs = panes.custom_tabs;
     if dockspace.view().surfaces().next().is_none() {
         let output = egui_dockspace::run_ui(context, input, |ui| {
-            toolbar(ui, restore_layout);
+            toolbar(ui, restore_layout, &mut custom_tabs);
             ui.centered_and_justified(|ui| {
                 ui.label(
                     "All panes are closed. Restore layout to reopen them and keep your edits.",
                 );
             });
         });
+        panes.custom_tabs = custom_tabs;
         return Ok((output, None));
     }
-    dockspace
+    let result = dockspace
         .run_single_surface_with_ui(context, input, SURFACE, panes, |ui| {
-            toolbar(ui, restore_layout);
+            toolbar(ui, restore_layout, &mut custom_tabs);
         })
-        .map(|(output, response)| (output, Some(response)))
+        .map(|(output, response)| (output, Some(response)));
+    panes.custom_tabs = custom_tabs;
+    result
 }
 
 pub(super) fn apply_editor_commands(
@@ -190,6 +198,8 @@ pub(super) struct DemoPane {
 }
 
 pub(super) struct DemoPanes {
+    pub(super) custom_tabs: bool,
+    tab_accent: usize,
     pub(super) panes: BTreeMap<ItemId, DemoPane>,
     selection: usize,
     objects: [SceneObject; 3],
@@ -206,6 +216,8 @@ const OBJECTS: [&str; 3] = ["Camera", "Light", "Player"];
 impl DemoPanes {
     pub(super) fn new() -> Self {
         Self {
+            custom_tabs: false,
+            tab_accent: 0,
             panes: [
                 (EDITOR, "Editor", "// src/main.rs\n\nfn main() {\n    let mut scene = Scene::new();\n    scene.add(\"Player\");\n    scene.run();\n}\n"),
                 (PREVIEW, "Preview", ""),
@@ -239,6 +251,29 @@ impl DemoPanes {
 impl PaneView for DemoPanes {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
         self.panes.get(&item).map(|pane| pane.title.into())
+    }
+
+    fn tab_content_width(&self, _item: ItemId, _ui: &egui::Ui, title: &egui::Galley) -> f32 {
+        title.size().x + if self.custom_tabs { 18.0 } else { 0.0 }
+    }
+
+    fn tab_ui(&mut self, ui: &mut egui::Ui, tab: &Tab<'_>) {
+        tabs::tab_ui(self, ui, tab);
+    }
+
+    fn tab_bar_layout(&self, _bar: TabBarId, _ui: &egui::Ui) -> TabBarLayout {
+        if self.custom_tabs {
+            TabBarLayout {
+                leading_width: 24.0,
+                trailing_width: 44.0,
+            }
+        } else {
+            TabBarLayout::default()
+        }
+    }
+
+    fn tab_bar_ui(&mut self, ui: &mut egui::Ui, bar: TabBar<'_>, slot: TabBarSlot) {
+        tabs::tab_bar_ui(self, ui, bar, slot);
     }
 
     fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) -> PaneResponse {

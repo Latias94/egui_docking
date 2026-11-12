@@ -183,6 +183,7 @@ pub(crate) fn paint_tab_bar(
         .flatten();
     context.register_scroll_receiver(id, receiver);
     paint_group_drag_regions(context, bar, paint);
+    super::tab_customization::paint_bar_slots(context, bar, paint);
     #[cfg(feature = "native-render-support")]
     publish_native_tab_strip_diagnostics(context, bar);
 }
@@ -367,14 +368,7 @@ pub(crate) fn paint_tab(
     let selected = tab.selected();
     let focused = response.has_focus();
     if !source_gap {
-        let fill = if selected {
-            context.visuals.tab_active_fill
-        } else if RenderContext::response_emphasized(&response) {
-            context.interaction_fill(&response)
-        } else {
-            context.visuals.tab_fill
-        };
-        context.ui.painter().rect_filled(visible, 0.0, fill);
+        super::tab_customization::paint_tab(context, tab, resource, &response);
         if selected
             && operable
             && context.plan.focused_pane() == Some(tab.item())
@@ -396,25 +390,6 @@ pub(crate) fn paint_tab(
                 0.0,
                 Stroke::new(1.0, context.visuals.drop_border_color),
                 StrokeKind::Inside,
-            );
-        }
-        if let Some(text) = egui_rect(tab.text_bounds())
-            && let Some(layout) = egui_rect(tab.text_layout_bounds())
-        {
-            let color = if selected {
-                context.visuals.tab_active_text_color
-            } else if RenderContext::response_emphasized(&response) {
-                context.interaction_text_color(&response, context.style.visuals.tab_text_color)
-            } else {
-                context.visuals.tab_text_color
-            };
-            let galley = resource.galley_for_width(context.ui, layout.width());
-            context.paint_tab_title(
-                &context.ui.painter_at(text),
-                pos2(layout.min.x, layout.center().y - galley.size().y * 0.5),
-                galley,
-                selected,
-                color,
             );
         }
     }

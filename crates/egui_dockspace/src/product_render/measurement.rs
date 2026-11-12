@@ -19,6 +19,7 @@ use crate::error::DockspaceError;
 use crate::error_detail::DockspaceErrorSource;
 use crate::pane::PaneView;
 use crate::style::DockStyle;
+use crate::tab::{TabBarId, galley_for_width};
 
 use super::geometry::logical_rect;
 
@@ -27,18 +28,12 @@ pub(crate) struct TabPaintResource {
     pub(crate) title: String,
     pub(crate) galley: Arc<Galley>,
     pub(crate) missing: bool,
+    pub(crate) content_width: f32,
 }
 
 impl TabPaintResource {
     pub(crate) fn galley_for_width(&self, ui: &Ui, width: f32) -> Arc<Galley> {
-        if !self.galley.elided && self.galley.size().x <= width {
-            return self.galley.clone();
-        }
-        let mut job = (*self.galley.job).clone();
-        job.wrap.max_width = width.max(0.0);
-        job.wrap.max_rows = 1;
-        job.wrap.break_anywhere = true;
-        ui.fonts_mut(|fonts| fonts.layout_job(job))
+        galley_for_width(ui, &self.galley, width)
     }
 }
 
@@ -237,12 +232,20 @@ fn resolve_measurement(
                 .and_modify(|current| *current = current.max(row_height))
                 .or_insert(row_height);
             Ok(SurfaceMeasurementAnswer::TabIntrinsic(f64::from(
-                resource.galley.size().x,
+                resource.content_width,
             )))
         }
         SurfaceMeasurementRequest::TabStrip { visual, visibility } => {
-            let mut metrics = TabStripMetrics::new(0.0, 0.0)
-                .map_err(|_| DockspaceErrorSource::InvalidMeasurement { what: "tab strip" })?;
+            let layout = if visibility == TabBarVisibility::Visible {
+                panes.tab_bar_layout(TabBarId(visual), ui)
+            } else {
+                crate::TabBarLayout::default()
+            };
+            let mut metrics = TabStripMetrics::new(
+                f64::from(layout.leading_width),
+                f64::from(layout.trailing_width),
+            )
+            .map_err(|_| DockspaceErrorSource::InvalidMeasurement { what: "tab strip" })?;
             if visibility == TabBarVisibility::Visible {
                 let extent = f64::from(style.tab_bar_height);
                 let controls = TabStripControlMetrics::new(0.0)
@@ -294,6 +297,11 @@ fn shape_tab(ui: &Ui, panes: &dyn PaneView, item: ItemId) -> TabPaintResource {
         FontSelection::Style(TextStyle::Button),
     );
     TabPaintResource {
+        content_width: if missing {
+            galley.size().x
+        } else {
+            panes.tab_content_width(item, ui, &galley)
+        },
         title,
         galley,
         missing,

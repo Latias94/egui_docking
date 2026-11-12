@@ -3,6 +3,8 @@
 use dockspace::model::ItemId;
 use egui::{Context, Id, Response, Ui, Vec2, WidgetText};
 
+use crate::tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot};
+
 /// Ordinary application-content registrations produced by one pane callback.
 ///
 /// Return this value directly from [`PaneView::ui`]; no per-item ID cache or
@@ -101,6 +103,51 @@ pub trait PaneView {
     /// for painting in that same pass. A later pass reads the title again.
     fn title(&self, item: ItemId) -> Option<WidgetText>;
 
+    /// Measures tab content before docking padding and the built-in close button.
+    ///
+    /// The default is the title width. Reserve extra width here when `tab_ui`
+    /// adds icons, badges or buttons. Return a finite, non-negative width in
+    /// egui points; the adapter measures once per item in a UI pass. This query
+    /// must not depend on painting the tab or pane first. Title metadata still
+    /// supplies hover text, accessibility, overflow rows and drag previews.
+    fn tab_content_width(&self, _item: ItemId, _ui: &Ui, title: &egui::Galley) -> f32 {
+        title.size().x
+    }
+
+    /// Paints one tab, optionally adding application widgets to its content area.
+    ///
+    /// Call [`Tab::paint`] for defaults, or use its background and title helpers
+    /// separately. The Ui starts at `tab.content_rect`, with a clip covering
+    /// only the visible tab. The adapter retains the tab response,
+    /// close control, keyboard handling, focus cues and accessibility.
+    ///
+    /// Render synchronously and respect the supplied clip. This method is
+    /// skipped for missing panes and a dragged source gap.
+    /// Application widgets remain ordinary egui widgets; no [`PaneResponse`]
+    /// registration is needed or accepted for tab chrome.
+    fn tab_ui(&mut self, ui: &mut Ui, tab: &Tab<'_>) {
+        tab.paint(ui);
+    }
+
+    /// Measures fixed application slots outside one group's scrollable tabs.
+    ///
+    /// Return finite, non-negative widths. Defaults reserve no space and do
+    /// not invoke `tab_bar_ui`. Use egui font/spacing measurements here rather
+    /// than a previous paint pass; core may shrink the actual slot allocation.
+    fn tab_bar_layout(&self, _bar: TabBarId, _ui: &Ui) -> TabBarLayout {
+        TabBarLayout::default()
+    }
+
+    /// Renders one positive, core-allocated fixed tab-bar slot.
+    ///
+    /// Both slots use a left-to-right, vertically centered Ui. It is clipped to
+    /// the actual allocation and disabled when tab-bar interaction is disabled.
+    /// Widgets own their input and cannot initiate a docking gesture. This uses
+    /// the same synchronous rendering contract as [`Self::tab_ui`]. Queue
+    /// requested workspace edits in application state and apply them after the
+    /// docking call returns.
+    fn tab_bar_ui(&mut self, _ui: &mut Ui, _bar: TabBar<'_>, _slot: TabBarSlot) {}
+
     /// Renders the application content associated with `item`.
     ///
     /// The adapter calls this method only for the pane selected by the current
@@ -190,6 +237,22 @@ impl<T: PaneView + ?Sized> PaneView for Box<T> {
 
     fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse {
         (**self).ui(item, ui)
+    }
+
+    fn tab_content_width(&self, item: ItemId, ui: &Ui, title: &egui::Galley) -> f32 {
+        (**self).tab_content_width(item, ui, title)
+    }
+
+    fn tab_ui(&mut self, ui: &mut Ui, tab: &Tab<'_>) {
+        (**self).tab_ui(ui, tab);
+    }
+
+    fn tab_bar_layout(&self, bar: TabBarId, ui: &Ui) -> TabBarLayout {
+        (**self).tab_bar_layout(bar, ui)
+    }
+
+    fn tab_bar_ui(&mut self, ui: &mut Ui, bar: TabBar<'_>, slot: TabBarSlot) {
+        (**self).tab_bar_ui(ui, bar, slot);
     }
 
     fn focus_target(&self, item: ItemId) -> Option<Id> {

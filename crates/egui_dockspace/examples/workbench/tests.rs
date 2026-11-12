@@ -12,6 +12,7 @@ fn complete_egui_input_journey_preserves_content_and_commits_layout() {
         .build()
         .unwrap();
     let mut panes = DemoPanes::new();
+    panes.custom_tabs = true;
     let path = std::env::temp_dir().join(format!("dockspace-exercise-{}.csv", std::process::id()));
     let mut exercise = Exercise::new(path.clone());
     for frame in 0..640 {
