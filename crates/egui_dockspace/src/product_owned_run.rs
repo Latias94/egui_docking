@@ -461,6 +461,7 @@ impl Dockspace {
                                         plan,
                                         panes,
                                         &self.style,
+                                        &self.pointer.input(),
                                         resources,
                                         product_render::PointerActionAuthority::HostJournal,
                                         #[cfg(feature = "native-render-support")]

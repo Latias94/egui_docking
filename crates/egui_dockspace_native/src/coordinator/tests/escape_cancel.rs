@@ -136,7 +136,7 @@ fn assert_native_escape_cancels_drag(keyboard_surface: SurfaceId) {
     assert!(matches!(
         cancelled.manipulation_feedback(),
         [feedback]
-            if feedback.status() == Status::Cancelled(DockspaceManipulationCancelReason::Escape)
+            if feedback.status() == Status::Cancelled(DockspaceManipulationCancelReason::ExplicitCancellation)
     ));
     assert!(native.session.native_pointer_capture_request().is_none());
     assert_eq!(

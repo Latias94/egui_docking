@@ -30,6 +30,8 @@ mod output_authority;
 mod overflow_ownership;
 #[path = "product/presentation_menu.rs"]
 mod presentation_menu;
+#[path = "product/self_docking.rs"]
+mod self_docking;
 
 use dockspace::policy::DockPolicy;
 use dockspace_host_conformance::scenario::{

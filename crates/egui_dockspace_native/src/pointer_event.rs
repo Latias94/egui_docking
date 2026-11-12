@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::time::Duration;
 
+use egui_dockspace::DockInputConfig;
+
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
     NativeDesktopPointerLocation, NativeDesktopPosition, NativeLocalToDesktopHandoff,
@@ -16,6 +18,7 @@ use winit::event::{
     DeviceId, ElementState, MouseButton, MouseScrollDelta, PointerPressToken, TouchPhase,
     WindowEvent,
 };
+use winit::keyboard::ModifiersState;
 
 use crate::event::{
     CapturedNativePointerLocation, NativePointerRouteSnapshot, NativePointerRoutes,
@@ -25,6 +28,7 @@ use crate::event::{
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NativePointerTranslator {
     devices: BTreeMap<NativeInputDeviceKey, NativePointerDeviceEntry>,
+    observed_modifiers: Option<(NativeWindowBinding, ModifiersState)>,
     next_device_identity: u64,
     next_scroll_sequence: u64,
     #[cfg(test)]
@@ -101,6 +105,18 @@ pub(crate) enum NativePointerTranslation {
 }
 
 impl NativePointerTranslator {
+    /// Retains one window's latest real modifiers without enrolling a pointer.
+    ///
+    /// Only a new press delivered through this exact binding may use the
+    /// observation as its initial docking intent. Other windows remain unknown.
+    pub(crate) fn observe_modifiers(
+        &mut self,
+        binding: NativeWindowBinding,
+        modifiers: ModifiersState,
+    ) {
+        self.observed_modifiers = Some((binding, modifiers));
+    }
+
     /// Charges completed callback work to the fixture's existing nanosecond clock.
     /// Clock reads remain pure, and cloned retry candidates share the same source.
     #[cfg(test)]
@@ -193,6 +209,7 @@ impl NativePointerTranslator {
     /// Core already terminated the semantic streams. Only phaseful scroll
     /// lanes retain their existing slot until the next explicit start.
     pub(crate) fn finish_overload_cancellation(&mut self) {
+        self.observed_modifiers = None;
         self.devices.retain(|_, entry| match entry {
             NativePointerDeviceEntry::Live(device) => {
                 if matches!(device.scroll, NativeScrollState::Idle) {
@@ -211,6 +228,12 @@ impl NativePointerTranslator {
     /// Touch tombstones and cancelled mouse buttons reuse their original slots;
     /// destruction never needs new adapter storage after the fact is accepted.
     pub(crate) fn retire_binding(&mut self, binding: NativeWindowBinding) {
+        if self
+            .observed_modifiers
+            .is_some_and(|(observed, _)| observed == binding)
+        {
+            self.observed_modifiers = None;
+        }
         for (key, entry) in &mut self.devices {
             if let NativePointerDeviceEntry::Live(device) = entry
                 && device.retire_binding(binding)
@@ -251,13 +274,30 @@ impl NativePointerTranslator {
         self.translate_for_device(record, device, resolve_work_area)
     }
 
-    /// Retains the journal's original observation time across delayed replay.
+    #[cfg(test)]
     pub(crate) fn translate_captured(
         &mut self,
         record: &NativeWindowEventRecord,
         captured_at: Duration,
         resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
+        self.translate_captured_with_input(
+            record,
+            captured_at,
+            &DockInputConfig::default(),
+            resolve_work_area,
+        )
+    }
+
+    /// Retains the journal's original observation time across delayed replay.
+    pub(crate) fn translate_captured_with_input(
+        &mut self,
+        record: &NativeWindowEventRecord,
+        captured_at: Duration,
+        config: &DockInputConfig,
+        resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+    ) -> NativePointerTranslation {
+        let starts_primary_press = self.starts_primary_press(record.event());
         let translation = self.translate(record, resolve_work_area);
         #[cfg(test)]
         if let Some((ticks, cost)) = &self.translation_clock_cost {
@@ -285,11 +325,56 @@ impl NativePointerTranslator {
             WindowEvent::Touch(touch) => touch.facts.modifiers,
             _ => None,
         };
-        // Missing event-time modifiers preserve the gesture's targeting intent.
         if let Some(modifiers) = modifiers {
-            metadata = metadata.with_magnetic_targeting(!modifiers.shift_key());
+            if let Some(binding) = record.binding() {
+                self.observe_modifiers(binding.window(), modifiers);
+            }
+            metadata =
+                metadata.with_docking_enabled(config.docking_enabled(egui_modifiers(modifiers)));
+        } else if starts_primary_press {
+            // This is an initial gesture policy, not reconstructed event facts.
+            // Unknown moves, releases and repeated presses retain core intent.
+            let observed = record
+                .binding()
+                .and_then(|binding| {
+                    self.observed_modifiers
+                        .filter(|(window, _)| *window == binding.window())
+                        .map(|(_, modifiers)| modifiers)
+                })
+                .unwrap_or_default();
+            // Core already enables docking for a new gesture without a directive.
+            if !config.docking_enabled(egui_modifiers(observed)) {
+                metadata = metadata.with_docking_enabled(false);
+            }
         }
         NativePointerTranslation::Input(input.with_metadata(metadata))
+    }
+
+    fn starts_primary_press(&self, event: &WindowEvent) -> bool {
+        if !matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } | WindowEvent::Touch(winit::event::Touch {
+                phase: TouchPhase::Started,
+                ..
+            })
+        ) {
+            return false;
+        }
+        let Some(device) = pointer_device(event) else {
+            return false;
+        };
+        !matches!(
+            self.devices.get(&device),
+            Some(NativePointerDeviceEntry::Live(device))
+                if matches!(
+                    device.mouse.buttons.get(&NativePointerButton::Primary),
+                    Some(NativeMouseButtonState::Active { .. })
+                )
+        )
     }
 
     #[cfg(test)]
@@ -1023,12 +1108,28 @@ fn native_modifiers(facts: &winit::event::PointerEventFacts) -> NativeScrollModi
         })
 }
 
+pub(crate) fn egui_modifiers(
+    modifiers: winit::keyboard::ModifiersState,
+) -> eframe::egui::Modifiers {
+    eframe::egui::Modifiers {
+        alt: modifiers.alt_key(),
+        ctrl: modifiers.control_key(),
+        shift: modifiers.shift_key(),
+        mac_cmd: cfg!(target_os = "macos") && modifiers.super_key(),
+        command: if cfg!(target_os = "macos") {
+            modifiers.super_key()
+        } else {
+            modifiers.control_key()
+        },
+    }
+}
+
 #[cfg(test)]
 mod overload;
 
 #[cfg(test)]
 mod tests {
-    mod magnetic_targeting;
+    mod docking_enabled;
 
     use super::*;
 

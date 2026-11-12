@@ -293,7 +293,7 @@ fn drag_onto(
             SurfacePointerCapture::ProviderEndpoint,
             SurfacePointerReceiverFacts::delivery(source).with_hover(target),
         )
-        .with_metadata(PointerEventMetadata::unknown().with_magnetic_targeting(false))
+        .with_metadata(PointerEventMetadata::unknown().with_docking_enabled(true))
     };
     let mut frame = session.begin_host_frame().unwrap();
     frame

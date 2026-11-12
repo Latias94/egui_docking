@@ -134,6 +134,7 @@ fn tab_list_menu_rows_route_native_click_and_drag_after_ui_zoom() {
                         ui,
                         &mut panes,
                         &style,
+                        &egui_dockspace::DockInputConfig::default(),
                         &mut register_scroll,
                     )
                     .unwrap();
@@ -430,6 +431,7 @@ fn an_application_modal_blocks_native_menu_scroll_without_rejecting_input() {
                     ui,
                     &mut panes,
                     &style,
+                    &egui_dockspace::DockInputConfig::default(),
                     &mut register_scroll,
                 )
                 .unwrap();

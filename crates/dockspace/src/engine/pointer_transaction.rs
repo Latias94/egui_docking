@@ -7,7 +7,7 @@ use crate::intent::PointerId;
 mod click;
 
 impl DockEngine {
-    fn update_gesture_magnetic_targeting(
+    fn update_gesture_docking_enabled(
         &mut self,
         cause: ReductionCause,
         owner: GestureOwner,
@@ -17,23 +17,17 @@ impl DockEngine {
         if self.interaction.active_owner() != Some(owner) {
             return Ok(false);
         }
-        let changed = self.interaction.set_magnetic_targeting(enabled);
-        if let InteractionStatus::Dragging { session } = self.interaction.status() {
-            let magnetic = self
+        let changed = self.interaction.set_docking_enabled(enabled);
+        if !enabled && let InteractionStatus::Dragging { session } = self.interaction.status() {
+            let dock_preview = self
                 .interaction
                 .active_drag(session)
                 .ok()
-                .and_then(|drag| drag.target_acquisition())
-                .is_some_and(|target| target.is_magnetic());
-            if !enabled && magnetic {
+                .and_then(|drag| drag.preview())
+                .is_some_and(|preview| matches!(preview.proof(), PreviewProof::Dock { .. }));
+            if dock_preview {
                 self.interaction
                     .clear_preview(session, PreviewResolutionStatus::KnownNone)
-                    .map_err(|source| EngineError::PointerInteractionInvariant {
-                        cause,
-                        detail: format!("{source:?}"),
-                    })?;
-                self.interaction
-                    .set_drop_affordance(session, None)
                     .map_err(|source| EngineError::PointerInteractionInvariant {
                         cause,
                         detail: format!("{source:?}"),
@@ -44,11 +38,17 @@ impl DockEngine {
                     InteractionEventKind::PreviewCleared { session },
                 ));
             }
+            self.interaction
+                .set_drop_affordance(session, None)
+                .map_err(|source| EngineError::PointerInteractionInvariant {
+                    cause,
+                    detail: format!("{source:?}"),
+                })?;
         }
         Ok(changed)
     }
 
-    pub(super) fn reduce_pointer_magnetic_targeting(
+    pub(super) fn reduce_pointer_docking_enabled(
         &mut self,
         cause: ReductionCause,
         provider: PointerInputLease,
@@ -66,14 +66,14 @@ impl DockEngine {
                 )
         });
         let changed = if let Some(owner) = owner {
-            self.update_gesture_magnetic_targeting(cause, owner, enabled, interaction_events)?
+            self.update_gesture_docking_enabled(cause, owner, enabled, interaction_events)?
         } else {
             false
         };
-        Ok(InputOutcome::MagneticTargetingUpdated { enabled, changed })
+        Ok(InputOutcome::DockingEnabledUpdated { enabled, changed })
     }
 
-    pub(super) fn reduce_native_magnetic_targeting(
+    pub(super) fn reduce_native_docking_enabled(
         &mut self,
         cause: ReductionCause,
         provider: BackendIngressLease,
@@ -111,11 +111,11 @@ impl DockEngine {
                 && (keyboard_focus || source_matches)
         });
         let changed = if let Some(owner) = owner {
-            self.update_gesture_magnetic_targeting(cause, owner, enabled, interaction_events)?
+            self.update_gesture_docking_enabled(cause, owner, enabled, interaction_events)?
         } else {
             false
         };
-        Ok(InputOutcome::MagneticTargetingUpdated { enabled, changed })
+        Ok(InputOutcome::DockingEnabledUpdated { enabled, changed })
     }
 
     fn reduce_journal_pointer_edge(
@@ -151,8 +151,10 @@ impl DockEngine {
                 PointerEdgeKind::StreamCancelled(reason) => self.terminate_journal_stream(
                     cause,
                     stream,
-                    if reason == crate::pointer_journal::PointerStreamCancelReason::Escape {
-                        InteractionCancelReason::Escape
+                    if reason
+                        == crate::pointer_journal::PointerStreamCancelReason::ExplicitCancellation
+                    {
+                        InteractionCancelReason::ExplicitCancellation
                     } else {
                         InteractionCancelReason::PointerStreamCancelled
                     },
@@ -238,9 +240,9 @@ impl DockEngine {
                 edge.kind(),
                 PointerEdgeKind::ButtonPressed(PointerButton::Primary)
             )
-            && let Some(enabled) = edge.metadata().magnetic_targeting()
+            && let Some(enabled) = edge.metadata().docking_enabled()
         {
-            self.update_gesture_magnetic_targeting(cause, owner, enabled, interaction_events)?;
+            self.update_gesture_docking_enabled(cause, owner, enabled, interaction_events)?;
         }
         let event_start = interaction_events.len();
         let mut outcomes = match edge.kind() {
@@ -319,8 +321,9 @@ impl DockEngine {
             PointerEdgeKind::StreamCancelled(reason) => self.terminate_journal_stream(
                 cause,
                 stream,
-                if reason == crate::pointer_journal::PointerStreamCancelReason::Escape {
-                    InteractionCancelReason::Escape
+                if reason == crate::pointer_journal::PointerStreamCancelReason::ExplicitCancellation
+                {
+                    InteractionCancelReason::ExplicitCancellation
                 } else {
                     InteractionCancelReason::PointerStreamCancelled
                 },
@@ -374,10 +377,10 @@ impl DockEngine {
             )
             && self.interaction.active_owner() == Some(owner)
         {
-            self.update_gesture_magnetic_targeting(
+            self.update_gesture_docking_enabled(
                 cause,
                 owner,
-                edge.metadata().magnetic_targeting().unwrap_or(true),
+                edge.metadata().docking_enabled().unwrap_or(true),
                 interaction_events,
             )?;
         }
@@ -1557,6 +1560,19 @@ impl DockEngine {
         if matches!(preview.proof(), PreviewProof::Native { .. }) {
             return true;
         }
+        if let PreviewProof::Contained { proposal, .. } = preview.proof()
+            && self.current_contained_projection_is_owned(proposal.surface())
+            && self
+                .scene()
+                .ready_candidate(proposal.surface())
+                .is_some_and(|candidate| {
+                    candidate.plan().bounds() == proposal.placement().surface_bounds()
+                })
+        {
+            // Source movement remains valid when beginning the drag changes
+            // destination guides. It carries no acquired docking target.
+            return true;
+        }
         let scene = preview.public().token().scene();
         if self
             .interaction_projection(scene.surface())
@@ -2188,7 +2204,7 @@ impl DockEngine {
                 drag.payload.clone(),
                 drag.surface_background_offer,
                 point,
-                self.interaction.magnetic_targeting_enabled() && drag.magnetic_targeting_allowed(),
+                drag.magnetic_targeting_allowed(),
             )
             .map_err(|source| EngineError::PointerInteractionInvariant {
                 cause,
@@ -2280,7 +2296,14 @@ impl DockEngine {
         point: crate::geometry::LogicalPoint,
         allow_magnetic: bool,
     ) -> Result<crate::drop_resolver::DropQuery, DropResolutionError> {
-        resolve_presented_drop_with_magnetic(
+        let targeting = if !self.interaction.docking_enabled() {
+            DropTargeting::Disabled
+        } else if allow_magnetic {
+            DropTargeting::Magnetic
+        } else {
+            DropTargeting::Explicit
+        };
+        resolve_presented_drop_with_targeting(
             presentation.scene(),
             presentation.plan(),
             source_layout_facts,
@@ -2294,7 +2317,7 @@ impl DockEngine {
             source,
             surface_background_offer,
             point,
-            allow_magnetic,
+            targeting,
         )
     }
 
@@ -2763,6 +2786,10 @@ impl DockEngine {
             && let Ok(drag) = self.interaction.active_drag(session)
             && self.current_contained_projection_is_owned(drag.source_surface)
             && self.drag_preview_authority_is_current(drag)
+            && drag
+                .drop_affordance()
+                .map(DropAffordance::guide_suppression)
+                == affordance.as_ref().map(DropAffordance::guide_suppression)
             && let Some(previous) = drag.preview()
             && previous.public().visual() == visual
             && previous.target_layout_basis() == target_layout_basis
@@ -2886,6 +2913,10 @@ impl DockEngine {
             } if self.interaction.active_drag(session).is_ok_and(|drag| {
                 self.current_contained_projection_is_owned(drag.source_surface)
                     && self.drag_preview_authority_is_current(drag)
+                    && drag
+                        .drop_affordance()
+                        .map(DropAffordance::guide_suppression)
+                        == affordance.as_ref().map(DropAffordance::guide_suppression)
                     && drag
                         .preview()
                         .is_some_and(|preview| preview.target_layout_basis() == target_layout_basis)

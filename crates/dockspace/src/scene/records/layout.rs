@@ -32,6 +32,20 @@ pub(crate) struct ContainedLayoutProjection {
     pub(crate) target_basis: Option<super::super::SurfaceSceneStamp>,
 }
 
+impl ContainedLayoutProjection {
+    pub(crate) fn drop_source_suppression(self) -> crate::drop_target::DropSourceSuppression {
+        match self.owner {
+            ContainedLayoutOwner::Drag(_) => {
+                crate::drop_target::DropSourceSuppression::complete_root(
+                    self.root,
+                    Some(self.floating),
+                )
+            }
+            ContainedLayoutOwner::Transform(_) => Default::default(),
+        }
+    }
+}
+
 /// Exact layout inputs retained with one compiled presentation plan.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PresentationLayoutFacts {

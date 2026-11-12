@@ -2,10 +2,101 @@
 
 use std::cmp::Ordering;
 
-use crate::command::{DockFraction, Edge};
+use crate::command::{DockFraction, Edge, MovePayload};
+use crate::drop_guide::{DropGuideClusterId, DropGuideScope};
 use crate::geometry::LogicalRect;
+use crate::graph::{Node, Workspace};
 use crate::hit_region::HitRegion;
 use crate::ids::{FloatingPresentationId, NodeId, RootId, SurfaceId};
+
+/// Shared exclusion of source topology removed by a drag from destinations and hits.
+/// A disappearing leaf retains its root's outer targets; central leaves remain targets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DropSourceSuppression {
+    root: Option<RootId>,
+    floating: Option<FloatingPresentationId>,
+    leaf: Option<(RootId, NodeId)>,
+}
+
+impl DropSourceSuppression {
+    pub(crate) const fn complete_root(
+        root: RootId,
+        floating: Option<FloatingPresentationId>,
+    ) -> Self {
+        Self {
+            root: Some(root),
+            floating,
+            leaf: None,
+        }
+    }
+
+    /// Derives geometry exclusions from an already captured payload and complete-root fact.
+    /// This does not recapture source authority or walk a split payload's descendants.
+    pub(crate) fn from_source(
+        workspace: &Workspace,
+        payload: &MovePayload,
+        complete_root: Option<RootId>,
+    ) -> Self {
+        if let Some(root) = complete_root {
+            return Self::from_complete_root(workspace, root).unwrap_or_default();
+        }
+        let (root, node) = match payload {
+            MovePayload::Item(source) => (source.root(), source.tabs()),
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
+                (source.root(), source.node())
+            }
+        };
+        let Some(record) = workspace.root(root) else {
+            return Self::default();
+        };
+        if record.central == Some(node) {
+            return Self::default();
+        }
+        let Some(Node::Tabs { items, .. }) = workspace.node(node) else {
+            return Self::default();
+        };
+        let removes_leaf = match payload {
+            MovePayload::Item(source) => items.as_slice() == [source.item()],
+            MovePayload::Tabs(_) | MovePayload::Subtree(_) => !items.is_empty(),
+        };
+        Self {
+            leaf: removes_leaf.then_some((root, node)),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn from_complete_root(workspace: &Workspace, root: RootId) -> Option<Self> {
+        let floating = match workspace.presentation_for_root(root)? {
+            crate::RootPresentationOwner::Main { .. } => None,
+            crate::RootPresentationOwner::Contained { floating, .. } => Some(floating),
+        };
+        Some(Self::complete_root(root, floating))
+    }
+
+    pub(crate) fn excludes_root(self, root: RootId) -> bool {
+        self.root == Some(root)
+    }
+
+    pub(crate) fn excludes_cluster(self, cluster: DropGuideClusterId) -> bool {
+        self.excludes_root(cluster.root)
+            || matches!(cluster.scope, DropGuideScope::Inner(node)
+                if self.leaf == Some((cluster.root, node)))
+    }
+
+    pub(crate) fn excludes_target(self, target: DropTargetId) -> bool {
+        target.root().is_some_and(|root| self.excludes_root(root))
+            || match target {
+                DropTargetId::Center { root, tabs, .. }
+                | DropTargetId::TabGap { root, tabs, .. } => self.leaf == Some((root, tabs)),
+                DropTargetId::InnerEdge { root, node, .. } => self.leaf == Some((root, node)),
+                DropTargetId::OuterEdge { .. } | DropTargetId::SurfaceBackground { .. } => false,
+            }
+    }
+
+    pub(crate) fn excludes_occlusion(self, floating: FloatingPresentationId) -> bool {
+        self.floating == Some(floating)
+    }
+}
 
 #[cfg(test)]
 #[path = "drop_target/ordering_tests.rs"]
@@ -333,6 +424,16 @@ pub enum DropTargetId {
 }
 
 impl DropTargetId {
+    pub(crate) const fn root(self) -> Option<RootId> {
+        match self {
+            Self::TabGap { root, .. }
+            | Self::Center { root, .. }
+            | Self::InnerEdge { root, .. }
+            | Self::OuterEdge { root, .. } => Some(root),
+            Self::SurfaceBackground { .. } => None,
+        }
+    }
+
     /// Returns the target class.
     #[must_use]
     pub const fn kind(self) -> DropTargetKind {

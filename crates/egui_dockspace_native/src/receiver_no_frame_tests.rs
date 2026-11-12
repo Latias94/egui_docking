@@ -176,6 +176,7 @@ fn application_only_no_frame_retires_both_presented_placements_after_the_window_
                     &mut child,
                     &mut panes,
                     &style,
+                    &egui_dockspace::DockInputConfig::default(),
                     &mut register_scroll,
                 )
                 .unwrap();

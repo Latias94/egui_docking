@@ -130,9 +130,13 @@ fn projected_center_rect(
     let facts = target_plan
         .layout_facts()
         .ok_or(DropPreviewProjectionError::TargetLayoutFactsMissing)?;
+    let central = candidate
+        .root(target.root())
+        .is_some_and(|root| root.central == Some(target.tabs()));
+    let rule = candidate.pane_local_target_rule(target.root(), target.tabs(), central)?;
     let tab_bar = policy.tab_bar_policy(crate::policy::DockTabBarPolicyRequest::new(
         target.surface(),
-        Some(target.rule()),
+        Some(rule),
     ));
     let tab_height = if tab_bar.visibility() == crate::policy::TabBarVisibility::Visible {
         facts.config().tab_bar_height().min(bounds.height())

@@ -1,4 +1,4 @@
-//! Magnetic targeting intent through ordered public host input and exact outputs.
+//! Docking intent through ordered public host input and exact outputs.
 
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use dockspace::model::{
@@ -282,7 +282,7 @@ fn target_edge(
 fn targeting(pointer: SurfacePointerId, enabled: bool) -> HostPointerInput<'static> {
     HostPointerInput::new(
         pointer,
-        Event::MagneticTargetingChanged { enabled },
+        Event::DockingEnabledChanged { enabled },
         HostPointerRoute::Unknown,
         HostPointerRoute::Unknown,
         SurfacePointerCapture::Unknown,
@@ -349,7 +349,7 @@ fn marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition() 
     assert!(
         acquired
             .inputs()
-            .contains(&HostInputOutcome::MagneticTargetingUpdated {
+            .contains(&HostInputOutcome::DockingEnabledUpdated {
                 enabled: false,
                 changed: false,
             })
@@ -392,7 +392,7 @@ fn marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition() 
     assert!(!retried.workspace_changed());
     assert_eq!(
         retried.inputs(),
-        &[HostInputOutcome::MagneticTargetingUpdated {
+        &[HostInputOutcome::DockingEnabledUpdated {
             enabled: false,
             changed: true,
         }],
@@ -416,7 +416,7 @@ fn marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition() 
     assert!(!enabled.workspace_changed());
     assert_eq!(
         enabled.inputs(),
-        &[HostInputOutcome::MagneticTargetingUpdated {
+        &[HostInputOutcome::DockingEnabledUpdated {
             enabled: true,
             changed: true,
         }]
@@ -470,12 +470,14 @@ fn marker_rollback_foreign_pointer_and_late_preview_require_fresh_acquisition() 
 }
 
 #[test]
-fn suppressed_press_or_move_survives_release_none_and_preserves_direct_targets() {
+fn suppressed_press_or_move_survives_release_none_for_every_target_kind() {
     for (target_kind, suppress_at_press) in [
         ("magnetic", false),
         ("magnetic", true),
         ("guide", false),
+        ("guide", true),
         ("tab_gap", false),
+        ("tab_gap", true),
     ] {
         let (mut session, geometry) = fixture();
         let a = session.presented_surface(A).unwrap();
@@ -492,14 +494,14 @@ fn suppressed_press_or_move_survives_release_none_and_preserves_direct_targets()
             _ => unreachable!(),
         };
         let press_metadata = if suppress_at_press {
-            metadata().with_magnetic_targeting(false)
+            metadata().with_docking_enabled(false)
         } else {
             metadata()
         };
         let move_metadata = if suppress_at_press {
             metadata()
         } else {
-            metadata().with_magnetic_targeting(false)
+            metadata().with_docking_enabled(false)
         };
         let before = session.version();
         let mut frame = session.begin_host_frame().unwrap();
@@ -519,40 +521,22 @@ fn suppressed_press_or_move_survives_release_none_and_preserves_direct_targets()
         let recordings = record(&mut frame);
         let mut released = commit(frame);
         assert!(!session.has_active_gesture());
-        if target_kind == "magnetic" {
-            assert!(previews(&recordings).is_empty());
-            assert!(!released.workspace_changed());
-            assert!(
-                released
-                    .manipulation_feedback()
-                    .iter()
-                    .all(|feedback| matches!(
-                        feedback.status(),
-                        Status::Rejected(_) | Status::Cancelled(_)
-                    ))
-            );
-            let settled = present(&mut session, released.take_painted_outputs());
-            assert!(!settled.workspace_changed());
-            assert!(settled.manipulation_feedback().is_empty());
-            assert_eq!(session.version(), before);
-            assert_undocked(&session);
-        } else {
-            assert!(
-                previews(&recordings).is_empty(),
-                "accepted release paints the committed layout"
-            );
-            let terminal = assert_delivered(&released);
-            let version = session.version();
-            let settled = present(&mut session, released.take_painted_outputs());
-            assert_no_replay(&settled, terminal);
-            assert_eq!(session.version(), version);
-            let items = if target_kind == "tab_gap" {
-                [THIRD, FIRST, FOURTH]
-            } else {
-                [THIRD, FOURTH, FIRST]
-            };
-            assert_docked(&session, &items);
-        }
+        assert!(previews(&recordings).is_empty());
+        assert!(!released.workspace_changed());
+        assert!(
+            released
+                .manipulation_feedback()
+                .iter()
+                .all(|feedback| matches!(
+                    feedback.status(),
+                    Status::Rejected(_) | Status::Cancelled(_)
+                ))
+        );
+        let settled = present(&mut session, released.take_painted_outputs());
+        assert!(!settled.workspace_changed());
+        assert!(settled.manipulation_feedback().is_empty());
+        assert_eq!(session.version(), before);
+        assert_undocked(&session);
     }
 }
 
@@ -599,15 +583,15 @@ fn late_targeting_markers_do_not_change_a_delivered_release_or_replay_its_termin
     assert_eq!(
         report.inputs(),
         &[
-            HostInputOutcome::MagneticTargetingUpdated {
+            HostInputOutcome::DockingEnabledUpdated {
                 enabled: false,
                 changed: false,
             },
-            HostInputOutcome::MagneticTargetingUpdated {
+            HostInputOutcome::DockingEnabledUpdated {
                 enabled: true,
                 changed: false,
             },
-            HostInputOutcome::MagneticTargetingUpdated {
+            HostInputOutcome::DockingEnabledUpdated {
                 enabled: false,
                 changed: false,
             },

@@ -6,6 +6,7 @@ mod contained_geometry;
 mod contained_projection;
 mod deferred_action;
 mod error;
+mod gesture_cancel;
 mod host_frame;
 mod input;
 mod logical_surface;
@@ -38,7 +39,6 @@ mod replacement_focus;
 mod retention;
 mod scroll_interaction;
 mod semantic_candidate;
-mod semantic_keyboard;
 mod splitter_geometry;
 mod surface_contribution;
 mod surface_runtime;
@@ -144,8 +144,8 @@ use crate::coordinates::{
     solve_tear_off_placement,
 };
 use crate::drop_resolver::{
-    DropAffordance, DropResolution, DropResolutionError, PreparedDropMutation,
-    resolve_presented_drop_with_magnetic,
+    DropAffordance, DropResolution, DropResolutionError, DropTargeting, PreparedDropMutation,
+    resolve_presented_drop_with_targeting,
 };
 use crate::effect::{
     EffectDispatchResult, EffectId, EffectResult, EffectTransition, NativeCloseResolution,
@@ -172,10 +172,10 @@ use crate::intent::{
 use crate::interaction::{
     ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart, ContainedDragIntent,
     ContainedTransformPlacement, ContainedTransformPreview, ContainedTransformSessionId,
-    ContainedTransformStart, DragArmStart, DragTimedContinuation, EscapeDelivery,
-    FrozenClickAction, FrozenCloseClick, FrozenContainedDragOrigin, FrozenDragOrigin,
-    FrozenPresentationAuthority, FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick,
-    FrozenTabListMenuRowClick, FrozenTabStripControlClick, GestureLane, GestureOwner,
+    ContainedTransformStart, DragArmStart, DragTimedContinuation, FrozenClickAction,
+    FrozenCloseClick, FrozenContainedDragOrigin, FrozenDragOrigin, FrozenPresentationAuthority,
+    FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick,
+    FrozenTabStripControlClick, GestureCancelDelivery, GestureLane, GestureOwner,
     HoverSelectionState, InteractionCancelReason, InteractionCounterError, InteractionDelivery,
     InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
     InteractionState, InteractionStatus, JournalDragSourceGeometry, JournalDragThresholdOrigin,
@@ -748,13 +748,13 @@ impl<'frame> HostFrameView<'frame> {
         &self,
         surface: SurfaceId,
     ) -> Option<&'frame DropAffordance> {
-        let scene = self
-            .engine
-            .scene()
-            .surface(surface)?
-            .ready()?
-            .candidate()
-            .stamp();
+        let candidate = self.engine.scene().surface(surface)?.ready()?.candidate();
+        let scene = candidate.stamp();
+        let guide_suppression = candidate
+            .plan()
+            .contained_projection()
+            .map(|projection| projection.drop_source_suppression())
+            .unwrap_or_default();
         let drag = match self.engine.interaction.status() {
             InteractionStatus::Dragging { session } => {
                 self.engine.interaction.active_drag(session).ok()
@@ -770,6 +770,9 @@ impl<'frame> HostFrameView<'frame> {
         })?;
         drag.drop_affordance().filter(|affordance| {
             affordance.surface() == surface
+                // Source exclusion moves guide buttons, but does not invalidate
+                // a docking command preview resolved from identical measurements.
+                && affordance.guide_suppression() == guide_suppression
                 && (affordance.scene() == scene
                     || (self
                         .engine

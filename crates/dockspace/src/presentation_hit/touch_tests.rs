@@ -771,7 +771,7 @@ fn touch_resize_extents_preserve_larger_mouse_configuration() {
                     .resolve_exclusive_for_device(
                         PresentationPointerLane::Drag,
                         position,
-                        PresentationHitSuppression::default(),
+                        DropSourceSuppression::default(),
                         PointerDeviceKind::Touch,
                     )
                     .expect("touch allocations must resolve uniquely")
@@ -819,7 +819,7 @@ fn touch_resize_extents_preserve_larger_mouse_configuration() {
                             .resolve_exclusive_for_device(
                                 PresentationPointerLane::Drag,
                                 position,
-                                PresentationHitSuppression::default(),
+                                DropSourceSuppression::default(),
                                 PointerDeviceKind::Touch,
                             )
                             .expect("the original and expanded bands have one touch owner")
@@ -835,7 +835,7 @@ fn touch_resize_extents_preserve_larger_mouse_configuration() {
                 .resolve_exclusive_for_device(
                     PresentationPointerLane::Drag,
                     point(expanded_band.x() - 1.0, 300.0),
-                    PresentationHitSuppression::default(),
+                    DropSourceSuppression::default(),
                     PointerDeviceKind::Touch,
                 )
                 .expect("outside the allocated band remains unambiguous"),
@@ -901,7 +901,7 @@ fn parallel_touch_bands_partition_geometrically_even_with_extreme_extents() {
                             .resolve_exclusive_for_device(
                                 PresentationPointerLane::Drag,
                                 position,
-                                PresentationHitSuppression::default(),
+                                DropSourceSuppression::default(),
                                 PointerDeviceKind::Touch,
                             )
                             .expect("geometric cells must never require an arbitrary tie break")
@@ -979,7 +979,7 @@ fn adjacent_junction_halos_preserve_visible_arms_and_each_junction() {
                 .resolve_exclusive_for_device(
                     PresentationPointerLane::Drag,
                     position,
-                    PresentationHitSuppression::default(),
+                    DropSourceSuppression::default(),
                     device,
                 )
                 .expect("visible arms and junctions must stay unambiguous")
@@ -1000,7 +1000,7 @@ fn adjacent_junction_halos_preserve_visible_arms_and_each_junction() {
                 .resolve_exclusive_for_device(
                     PresentationPointerLane::Drag,
                     position,
-                    PresentationHitSuppression::default(),
+                    DropSourceSuppression::default(),
                     PointerDeviceKind::Touch,
                 )
                 .expect("adjacent junction expansions must have separate cells")
@@ -1082,7 +1082,7 @@ fn extreme_touch_corners_do_not_erase_original_contained_edges() {
                 .resolve_exclusive_for_device(
                     PresentationPointerLane::Drag,
                     center,
-                    PresentationHitSuppression::default(),
+                    DropSourceSuppression::default(),
                     PointerDeviceKind::Touch,
                 )
                 .expect("a large corner must not erase another original handle")
@@ -1150,7 +1150,7 @@ fn touch_replacements_are_device_specific_and_empty_never_falls_back() {
                 .resolve_exclusive_for_device(
                     PresentationPointerLane::Drag,
                     point(30.0, 50.0),
-                    PresentationHitSuppression::default(),
+                    DropSourceSuppression::default(),
                     PointerDeviceKind::Touch,
                 )
                 .expect("one touch receiver is unambiguous")
@@ -1222,7 +1222,7 @@ fn only_final_maximum_stack_can_be_ambiguous() {
                 &regions,
                 PresentationPointerLane::Drag,
                 point(50.0, 50.0),
-                PresentationHitSuppression::default(),
+                DropSourceSuppression::default(),
             )
             .expect("a higher junction supersedes both lower handles")
             .map(|region| region.id()),
@@ -1242,7 +1242,7 @@ fn only_final_maximum_stack_can_be_ambiguous() {
             .resolve_exclusive_for_device(
                 PresentationPointerLane::Drag,
                 point(50.0, 50.0),
-                PresentationHitSuppression::default(),
+                DropSourceSuppression::default(),
                 PointerDeviceKind::Touch,
             )
             .expect("touch keeps junction precedence")
@@ -1266,7 +1266,7 @@ fn only_final_maximum_stack_can_be_ambiguous() {
                 &regions,
                 PresentationPointerLane::Drag,
                 point(50.0, 50.0),
-                PresentationHitSuppression::default(),
+                DropSourceSuppression::default(),
             ),
             Err(PresentationHitResolutionError::Ambiguous { .. })
         ));
@@ -1277,7 +1277,7 @@ fn only_final_maximum_stack_can_be_ambiguous() {
                 &regions,
                 PresentationPointerLane::Drag,
                 point(50.0, 50.0),
-                PresentationHitSuppression::default(),
+                DropSourceSuppression::default(),
             )
             .unwrap()
             .map(|region| region.id()),

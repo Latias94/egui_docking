@@ -252,8 +252,8 @@ pub enum HostInputOutcome {
     },
 
     /// An ordered targeting directive affected only its matching live gesture.
-    MagneticTargetingUpdated {
-        /// Requested magnetic targeting intent.
+    DockingEnabledUpdated {
+        /// Requested docking intent.
         enabled: bool,
         /// Whether a matching active gesture changed its effective intent.
         changed: bool,

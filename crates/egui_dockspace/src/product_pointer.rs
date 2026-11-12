@@ -14,8 +14,9 @@ use dockspace::runtime::{
     SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
     SurfacePointerReceiverFacts, SurfacePresentationArtifact, SurfacePresentationCommit,
 };
-use egui::{Context, Event, Id, Key, LayerId, PointerButton, Pos2, Rect, Ui, WidgetRects};
+use egui::{Context, Event, Id, LayerId, Modifiers, PointerButton, Pos2, Rect, Ui, WidgetRects};
 
+use crate::input::DockInputConfig;
 use crate::pass_settlement::{ProductPointerPacket, pointer_packet};
 use crate::product_render::ProductReceiverBinding;
 
@@ -148,6 +149,7 @@ struct PointerScene {
 
 #[derive(Clone, Default)]
 pub(crate) struct ProductPointer {
+    config: DockInputConfig,
     pending: Vec<PointerScene>,
     presented: Option<PointerScene>,
     consumed_run: Option<ProductPointerPacket>,
@@ -155,7 +157,8 @@ pub(crate) struct ProductPointer {
     position: Option<Pos2>,
     // Adapter input enrollment only; core remains the sole gesture owner.
     generic_live: bool,
-    magnetic_targeting: Option<bool>,
+    observed_modifiers: Option<Modifiers>,
+    docking_enabled: Option<bool>,
     touches: TouchContacts,
 }
 
@@ -165,21 +168,21 @@ struct PointerSample {
     device: PointerDeviceKind,
     event: SurfacePointerEvent,
     position: Option<Pos2>,
-    magnetic_targeting: Option<bool>,
+    docking_enabled: Option<bool>,
 }
 
 impl PointerSample {
     const fn generic(
         event: SurfacePointerEvent,
         position: Option<Pos2>,
-        magnetic_targeting: Option<bool>,
+        docking_enabled: Option<bool>,
     ) -> Self {
         Self {
             pointer: SurfacePointerId::new(1),
             device: PointerDeviceKind::Unknown,
             event,
             position,
-            magnetic_targeting,
+            docking_enabled,
         }
     }
 }
@@ -195,7 +198,7 @@ struct Edge {
     delivery: Option<PresentedDockReceiver>,
     drag_delivery: Option<PresentedDockReceiver>,
     blocked: bool,
-    magnetic_targeting: Option<bool>,
+    docking_enabled: Option<bool>,
 }
 
 /// One normalized run, prepared against this update's presented output.
@@ -278,10 +281,19 @@ impl PreparedProductPointerInput {
 }
 
 impl ProductPointer {
+    pub(crate) const fn input(&self) -> DockInputConfig {
+        self.config
+    }
+
+    pub(crate) fn set_input(&mut self, config: DockInputConfig) {
+        self.config = config;
+    }
+
     pub(crate) fn clear(&mut self) {
         let mut touches = std::mem::take(&mut self.touches);
         touches.clear();
         *self = Self {
+            config: self.config,
             touches,
             ..Self::default()
         };
@@ -433,7 +445,8 @@ impl ProductPointer {
         self.rejected_run = Some(packet.clone());
         let mut position = self.position;
         let mut generic_live = self.generic_live;
-        let mut magnetic_targeting = self.magnetic_targeting;
+        let mut observed_modifiers = self.observed_modifiers;
+        let mut docking_enabled = self.docking_enabled;
         let mut touches = self.touches.clone();
         let touch_packet = !touches.is_empty()
             || packet
@@ -448,23 +461,32 @@ impl ProductPointer {
                         SurfacePointerCancelReason::ExplicitPlatformCancellation,
                     ),
                     position,
-                    magnetic_targeting,
+                    docking_enabled,
                 ));
                 generic_live = false;
             }
-            records.extend(
-                touches.cancel_all(SurfacePointerCancelReason::ExplicitPlatformCancellation),
-            );
+            records.extend(touches.cancel_all(
+                SurfacePointerCancelReason::ExplicitPlatformCancellation,
+                docking_enabled,
+            ));
+        }
+        // Re-evaluate the last actual modifier observation after a configuration
+        // change, without fabricating pointer motion or enrolling a new stream.
+        if let Some(enabled) = update_docking_enabled(
+            &mut docking_enabled,
+            self.config,
+            observed_modifiers.unwrap_or(Modifiers::NONE),
+        ) {
+            records.extend(docking_change_samples(&touches, generic_live, enabled));
         }
         for event in packet.events().iter().cloned() {
-            if let Some(enabled) = update_magnetic_targeting(&mut magnetic_targeting, &event)
-                && generic_live
-            {
-                records.push(PointerSample::generic(
-                    SurfacePointerEvent::MagneticTargetingChanged { enabled },
-                    None,
-                    magnetic_targeting,
-                ));
+            if let Some(modifiers) = event_modifiers(&event) {
+                observed_modifiers = Some(modifiers);
+                if let Some(enabled) =
+                    update_docking_enabled(&mut docking_enabled, self.config, modifiers)
+                {
+                    records.extend(docking_change_samples(&touches, generic_live, enabled));
+                }
             }
             if touch_packet
                 && generic_live
@@ -484,7 +506,7 @@ impl ProductPointer {
                         SurfacePointerCancelReason::ExplicitPlatformCancellation,
                     ),
                     position,
-                    magnetic_targeting,
+                    docking_enabled,
                 ));
                 generic_live = false;
             }
@@ -497,7 +519,8 @@ impl ProductPointer {
                     ..
                 } => {
                     if coordinates_supported
-                        && let Some(sample) = touches.observe(device_id, id, phase, pos)?
+                        && let Some(sample) =
+                            touches.observe(device_id, id, phase, pos, docking_enabled)?
                     {
                         records.push(sample);
                     }
@@ -530,22 +553,26 @@ impl ProductPointer {
                     Some(SurfacePointerEvent::Moved)
                 }
                 Event::WindowFocused(false) => {
-                    records.extend(
-                        touches
-                            .cancel_all(SurfacePointerCancelReason::ExplicitPlatformCancellation),
-                    );
+                    records.extend(touches.cancel_all(
+                        SurfacePointerCancelReason::ExplicitPlatformCancellation,
+                        docking_enabled,
+                    ));
                     Some(SurfacePointerEvent::StreamCancelled(
                         SurfacePointerCancelReason::ExplicitPlatformCancellation,
                     ))
                 }
                 Event::Key {
-                    key: Key::Escape,
+                    key,
                     pressed: true,
+                    modifiers,
                     ..
-                } => {
-                    records.extend(touches.cancel_all(SurfacePointerCancelReason::Escape));
+                } if self.config.cancel_matches(key, modifiers) => {
+                    records.extend(touches.cancel_all(
+                        SurfacePointerCancelReason::ExplicitCancellation,
+                        docking_enabled,
+                    ));
                     Some(SurfacePointerEvent::StreamCancelled(
-                        SurfacePointerCancelReason::Escape,
+                        SurfacePointerCancelReason::ExplicitCancellation,
                     ))
                 }
                 _ => None,
@@ -559,7 +586,7 @@ impl ProductPointer {
                 } else {
                     generic_live = true;
                 }
-                records.push(PointerSample::generic(event, position, magnetic_targeting));
+                records.push(PointerSample::generic(event, position, docking_enabled));
             }
         }
         // Empty packets and blocked layers need no join. All qualified edges
@@ -568,7 +595,7 @@ impl ProductPointer {
         let edge_at = |sample: PointerSample| {
             if matches!(
                 sample.event,
-                SurfacePointerEvent::MagneticTargetingChanged { .. }
+                SurfacePointerEvent::DockingEnabledChanged { .. }
             ) {
                 // A semantic marker has no coordinate or receiver observation.
                 return Edge {
@@ -581,7 +608,7 @@ impl ProductPointer {
                     delivery: None,
                     drag_delivery: None,
                     blocked: false,
-                    magnetic_targeting: sample.magnetic_targeting,
+                    docking_enabled: sample.docking_enabled,
                 };
             }
             let position = sample.position;
@@ -619,7 +646,7 @@ impl ProductPointer {
                     .then(|| hit.and_then(|hit| hit.drag_delivery()))
                     .flatten(),
                 blocked: !qualified,
-                magnetic_targeting: sample.magnetic_targeting,
+                docking_enabled: sample.docking_enabled,
             }
         };
         let edges = records.into_iter().map(&edge_at).collect::<Vec<_>>();
@@ -634,7 +661,7 @@ impl ProductPointer {
             let sample = continuation_sample(
                 &touches,
                 position,
-                magnetic_targeting,
+                docking_enabled,
                 request.pointer(),
                 request.event(),
             )?;
@@ -666,7 +693,8 @@ impl ProductPointer {
         }
         self.position = position;
         self.generic_live = generic_live;
-        self.magnetic_targeting = magnetic_targeting;
+        self.observed_modifiers = observed_modifiers;
+        self.docking_enabled = docking_enabled;
         self.touches = touches;
         Ok(PreparedPointerEdges {
             raw: edges,
@@ -679,28 +707,52 @@ impl ProductPointer {
 fn continuation_sample(
     touches: &TouchContacts,
     position: Option<Pos2>,
-    magnetic_targeting: Option<bool>,
+    docking_enabled: Option<bool>,
     pointer: SurfacePointerId,
     event: SurfacePointerEvent,
 ) -> Option<PointerSample> {
     if pointer == SurfacePointerId::new(1) {
-        Some(PointerSample::generic(event, position, magnetic_targeting))
+        Some(PointerSample::generic(event, position, docking_enabled))
     } else {
-        touches.continuation(pointer, event)
+        touches.continuation(pointer, event, docking_enabled)
     }
 }
 
-fn update_magnetic_targeting(current: &mut Option<bool>, event: &Event) -> Option<bool> {
-    let modifiers = match event {
+fn event_modifiers(event: &Event) -> Option<Modifiers> {
+    match event {
         Event::ModifiersChanged(modifiers)
         | Event::Key { modifiers, .. }
-        | Event::PointerButton { modifiers, .. } => modifiers,
-        _ => return None,
-    };
-    let enabled = !modifiers.shift;
+        | Event::PointerButton { modifiers, .. } => Some(*modifiers),
+        _ => None,
+    }
+}
+
+fn update_docking_enabled(
+    current: &mut Option<bool>,
+    config: DockInputConfig,
+    modifiers: Modifiers,
+) -> Option<bool> {
+    let enabled = config.docking_enabled(modifiers);
     let changed = *current != Some(enabled);
     *current = Some(enabled);
     changed.then_some(enabled)
+}
+
+fn docking_change_samples(
+    touches: &TouchContacts,
+    generic_live: bool,
+    enabled: bool,
+) -> impl Iterator<Item = PointerSample> {
+    generic_live
+        .then(|| {
+            PointerSample::generic(
+                SurfacePointerEvent::DockingEnabledChanged { enabled },
+                None,
+                Some(enabled),
+            )
+        })
+        .into_iter()
+        .chain(touches.docking_enabled_changed(enabled))
 }
 
 fn pointer_input(edge: &Edge, observed_at: Option<Duration>) -> HostPointerInput<'_> {
@@ -738,8 +790,8 @@ fn pointer_input(edge: &Edge, observed_at: Option<Duration>) -> HostPointerInput
         || PointerEventMetadata::untimed(edge.device),
         |time| PointerEventMetadata::new(edge.device, time),
     );
-    if let Some(enabled) = edge.magnetic_targeting {
-        metadata = metadata.with_magnetic_targeting(enabled);
+    if let Some(enabled) = edge.docking_enabled {
+        metadata = metadata.with_docking_enabled(enabled);
     }
     HostPointerInput::new(
         edge.pointer,

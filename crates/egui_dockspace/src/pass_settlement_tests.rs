@@ -109,6 +109,7 @@ fn stage_surface(
         plan,
         &mut SettlementPane,
         &DockStyle::default(),
+        &crate::DockInputConfig::default(),
         product_render::PaintResources::default(),
         PointerActionAuthority::HostJournal,
         #[cfg(feature = "native-render-support")]

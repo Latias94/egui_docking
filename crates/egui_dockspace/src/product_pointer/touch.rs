@@ -46,6 +46,7 @@ impl TouchContacts {
         id: TouchId,
         phase: TouchPhase,
         position: Pos2,
+        docking_enabled: Option<bool>,
     ) -> Result<Option<PointerSample>, DockspaceInteractionError> {
         let key = (device, id);
         let (contact, event) = match phase {
@@ -90,35 +91,67 @@ impl TouchContacts {
                 (contact, event)
             }
         };
-        Ok(Some(sample(contact, event)))
+        Ok(Some(sample(contact, event, docking_enabled)))
     }
 
-    pub(super) fn cancel_all(&mut self, reason: SurfacePointerCancelReason) -> Vec<PointerSample> {
+    pub(super) fn cancel_all(
+        &mut self,
+        reason: SurfacePointerCancelReason,
+        docking_enabled: Option<bool>,
+    ) -> Vec<PointerSample> {
         std::mem::take(&mut self.active)
             .into_values()
-            .map(|contact| sample(contact, SurfacePointerEvent::StreamCancelled(reason)))
+            .map(|contact| {
+                sample(
+                    contact,
+                    SurfacePointerEvent::StreamCancelled(reason),
+                    docking_enabled,
+                )
+            })
             .collect()
+    }
+
+    pub(super) fn docking_enabled_changed(
+        &self,
+        enabled: bool,
+    ) -> impl Iterator<Item = PointerSample> {
+        self.active
+            .values()
+            .copied()
+            .map(move |contact| PointerSample {
+                position: None,
+                ..sample(
+                    contact,
+                    SurfacePointerEvent::DockingEnabledChanged { enabled },
+                    Some(enabled),
+                )
+            })
     }
 
     pub(super) fn continuation(
         &self,
         pointer: SurfacePointerId,
         event: SurfacePointerEvent,
+        docking_enabled: Option<bool>,
     ) -> Option<PointerSample> {
         self.active
             .values()
             .find(|contact| contact.pointer == pointer)
             .copied()
-            .map(|contact| sample(contact, event))
+            .map(|contact| sample(contact, event, docking_enabled))
     }
 }
 
-fn sample(contact: Contact, event: SurfacePointerEvent) -> PointerSample {
+fn sample(
+    contact: Contact,
+    event: SurfacePointerEvent,
+    docking_enabled: Option<bool>,
+) -> PointerSample {
     PointerSample {
         pointer: contact.pointer,
         device: PointerDeviceKind::Touch,
         event,
         position: Some(contact.position),
-        magnetic_targeting: None,
+        docking_enabled,
     }
 }

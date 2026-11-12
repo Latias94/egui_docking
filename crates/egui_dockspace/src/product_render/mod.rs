@@ -31,8 +31,9 @@ use dockspace::runtime::{
 };
 #[cfg(test)]
 use dockspace::runtime::{DockspaceDropDirection, DockspaceVisualId};
-use egui::{Color32, Id, Key, Modifiers, Response, Sense, Shape, Stroke, StrokeKind, Ui};
+use egui::{Color32, Id, Response, Sense, Shape, Stroke, StrokeKind, Ui};
 
+use crate::DockInputConfig;
 use crate::pane::{PaneFocusState, PaneView};
 use crate::pass_settlement::PendingPaneFocusObservation;
 use crate::response::{DockspaceCapability, DockspaceUnavailableReason};
@@ -336,6 +337,7 @@ pub(crate) fn paint_surface(
     plan: SurfacePaintPlan<'_>,
     panes: &mut dyn PaneView,
     style: &DockStyle,
+    input: &DockInputConfig,
     mut resources: PaintResources,
     pointer_authority: PointerActionAuthority,
     #[cfg(feature = "native-render-support")] scroll_registrar: Option<
@@ -505,10 +507,19 @@ pub(crate) fn paint_surface(
                     }
                     SurfacePaintProgramStep::InteractionFeedback => {
                         if actions::effective_enabled(context.ui, true)
-                            && let Some(action) = context.plan.prepare_escape_cancel()
-                            && context
-                                .ui
-                                .input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+                            && let Some(action) = context.plan.prepare_gesture_cancel()
+                            && let Some(key) = context.ui.input_mut(|state| {
+                                let index = state.events.iter().position(|event| {
+                                    matches!(event,
+                                        egui::Event::Key { key, modifiers, pressed: true, .. }
+                                            if input.cancel_matches(*key, *modifiers)
+                                    )
+                                })?;
+                                match state.events.remove(index) {
+                                    egui::Event::Key { key, .. } => Some(key),
+                                    _ => unreachable!("the matching event is a key press"),
+                                }
+                            })
                         {
                             context.ui.ctx().stop_dragging();
                             let origin = context
@@ -518,7 +529,7 @@ pub(crate) fn paint_surface(
                                     "workspace-focus",
                                     context.plan.surface(),
                                 ))
-                                .with(("keyboard-cancel", Key::Escape));
+                                .with(("keyboard-cancel", key));
                             context.push_local_action(origin, action);
                         }
                     }

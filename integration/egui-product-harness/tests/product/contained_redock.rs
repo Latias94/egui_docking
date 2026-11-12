@@ -1,6 +1,125 @@
 use super::*;
 
 #[test]
+fn first_contained_drag_projection_paints_the_same_guide_it_hits() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder(
+        "product-contained-first-guide",
+        contained_layout_at(LogicalRect::new(300.0, 200.0, 240.0, 220.0).unwrap()),
+    )
+    .style(instrumented_style())
+    .build()
+    .unwrap();
+    let mut panes = Panes;
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = contained_title_point(&dockspace);
+    // Before source exclusion, the partial cover displaces the center guide left.
+    let old_center = Pos2::new(270.0, 314.0);
+    let first_drag = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(source),
+            pointer_button(source, true),
+            Event::PointerMoved(old_center),
+        ],
+    );
+    let style = dockspace.style();
+    let passive = style.visuals.drop_guide_fill.unwrap();
+    let active = style.visuals.drop_guide_active_fill.unwrap();
+    if let Some(receiver) = try_node_rect(
+        &first_drag.output,
+        Role::Label,
+        "Dockspace center drop guide",
+    ) {
+        assert_eq!(
+            nearest_guide_center(&first_drag.output, passive, active, receiver.center()),
+            receiver.center(),
+            "the first source-excluded plan must not paint a guide from the idle layout",
+        );
+    } else {
+        assert_eq!(guide_button_count(&first_drag.output, passive, active), 0);
+    }
+    let fresh = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(old_center + vec2(1.0, 0.0))],
+    );
+    let receiver = node_rect(&fresh.output, Role::Label, "Dockspace center drop guide");
+    assert_eq!(
+        nearest_guide_center(&fresh.output, passive, active, receiver.center()),
+        receiver.center(),
+    );
+    assert_eq!(
+        rect_fill_count(&fresh.output, active),
+        0,
+        "motion over the old guide cannot retain its stale target"
+    );
+}
+
+#[test]
+fn contained_title_drag_keeps_the_main_center_guide_reachable() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-contained-stable-guide", contained_layout())
+        .style(instrumented_style())
+        .build()
+        .unwrap();
+    let mut panes = Panes;
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = contained_title_point(&dockspace);
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let pointer = Pos2::new(400.0, 314.0);
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(-20.0, -10.0))],
+    );
+    let mut preview = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(pointer)],
+    );
+    let target = node_rect(&preview.output, Role::Label, "Dockspace center drop guide");
+    for _ in 0..3 {
+        preview = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target.center())],
+        );
+        assert_eq!(
+            node_rect(&preview.output, Role::Label, "Dockspace center drop guide",),
+            target,
+            "the dragged window must not push its own docking target away from the pointer",
+        );
+    }
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(target.center()),
+            pointer_button(target.center(), false),
+        ],
+    );
+    assert_eq!(root_tabs(&dockspace), Some(vec![FIRST, SECOND]));
+    assert!(dockspace.view().contained(FLOATING).is_none());
+}
+
+#[test]
 fn full_surface_contained_tab_redocks_after_held_preview_is_presented() {
     redock_full_surface_contained_tab(true);
 }

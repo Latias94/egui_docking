@@ -10,10 +10,12 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use crate::drop_guide::{DropGuideClusterRecord, DropGuideScope};
-use crate::drop_target::{DropTargetKind, SceneLayerKey};
+use crate::drop_target::{DropSourceSuppression, DropTargetKind, SceneLayerKey};
 use crate::geometry::LogicalRect;
 use crate::hit_region::HitRegion;
-use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
+#[cfg(test)]
+use crate::ids::RootId;
+use crate::ids::{FloatingPresentationId, SurfaceId};
 use crate::pointer_journal::PointerDeviceKind;
 use crate::presentation_observation::SurfacePresentationOutputTicket;
 use crate::scene::{
@@ -286,47 +288,16 @@ enum PresentationHitBehavior {
     PassiveAffordance,
 }
 
-/// Drag-source records which must not occlude or target their own complete root.
-///
-/// This is an interaction-time filter over the immutable presentation manifest.
-/// It deliberately mirrors complete-root source suppression in the drop resolver:
-/// partial item or tab payloads receive no suppression.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "consumed by the pointer receiver reducer in the next protocol slice"
-)]
-pub(crate) struct PresentationHitSuppression {
-    root: Option<RootId>,
-    contained: Option<FloatingPresentationId>,
-}
-
-impl PresentationHitSuppression {
-    #[allow(
-        dead_code,
-        reason = "consumed by the pointer receiver reducer in the next protocol slice"
-    )]
-    pub(crate) const fn complete_root(
-        root: RootId,
-        contained: Option<FloatingPresentationId>,
-    ) -> Self {
-        Self {
-            root: Some(root),
-            contained,
-        }
-    }
-
+impl DropSourceSuppression {
     fn excludes(self, id: PresentationHitRegionId) -> bool {
         match id.kind() {
             PresentationHitRegionKind::ContainedFrameBlocker(floating) => {
-                matches!(self.contained, Some(source) if source == floating)
+                self.excludes_occlusion(floating)
             }
             PresentationHitRegionKind::DropGuideActivation(cluster) => {
-                matches!(self.root, Some(source) if source == cluster.root)
+                self.excludes_cluster(cluster)
             }
-            PresentationHitRegionKind::DropTarget(target) => {
-                matches!((self.root, drop_target_root(target)), (Some(source), Some(target)) if source == target)
-            }
+            PresentationHitRegionKind::DropTarget(target) => self.excludes_target(target),
             PresentationHitRegionKind::PaneBody(_)
             | PresentationHitRegionKind::TabBody(_)
             | PresentationHitRegionKind::TabClose(_)
@@ -527,14 +498,14 @@ impl PresentationHitManifest {
         lane: PresentationPointerLane,
         point: crate::geometry::LogicalPoint,
     ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
-        self.resolve_exclusive_with_suppression(lane, point, PresentationHitSuppression::default())
+        self.resolve_exclusive_with_suppression(lane, point, DropSourceSuppression::default())
     }
 
     pub(crate) fn resolve_exclusive_with_suppression(
         &self,
         lane: PresentationPointerLane,
         point: crate::geometry::LogicalPoint,
-        suppression: PresentationHitSuppression,
+        suppression: DropSourceSuppression,
     ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
         self.resolve_exclusive_for_device(lane, point, suppression, PointerDeviceKind::Unknown)
     }
@@ -577,7 +548,7 @@ impl PresentationHitManifest {
         &self,
         lane: PresentationPointerLane,
         point: crate::geometry::LogicalPoint,
-        suppression: PresentationHitSuppression,
+        suppression: DropSourceSuppression,
         device: PointerDeviceKind,
     ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
         resolve_exclusive_matching(
@@ -1062,7 +1033,7 @@ fn resolve_exclusive_regions(
     regions: &[PresentationHitRegion],
     lane: PresentationPointerLane,
     point: crate::geometry::LogicalPoint,
-    suppression: PresentationHitSuppression,
+    suppression: DropSourceSuppression,
 ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
     resolve_exclusive_matching(regions, lane, point, suppression, |_, region| {
         region.hit().contains(point)
@@ -1073,7 +1044,7 @@ fn resolve_exclusive_matching(
     regions: &[PresentationHitRegion],
     lane: PresentationPointerLane,
     point: crate::geometry::LogicalPoint,
-    suppression: PresentationHitSuppression,
+    suppression: DropSourceSuppression,
     contains: impl Fn(usize, &PresentationHitRegion) -> bool,
 ) -> Result<Option<&PresentationHitRegion>, PresentationHitResolutionError> {
     let mut winner: Option<&PresentationHitRegion> = None;
@@ -1184,16 +1155,6 @@ fn midpoint(minimum: f64, maximum: f64) -> f64 {
     minimum * 0.5 + maximum * 0.5
 }
 
-const fn drop_target_root(target: DropTargetId) -> Option<RootId> {
-    match target {
-        DropTargetId::TabGap { root, .. }
-        | DropTargetId::Center { root, .. }
-        | DropTargetId::InnerEdge { root, .. }
-        | DropTargetId::OuterEdge { root, .. } => Some(root),
-        DropTargetId::SurfaceBackground { .. } => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1257,7 +1218,7 @@ mod tests {
                 &regions,
                 PresentationPointerLane::HoverDrop,
                 point,
-                PresentationHitSuppression::default(),
+                DropSourceSuppression::default(),
             )
             .expect("the stack is unambiguous")
             .map(|region| region.id()),
@@ -1268,7 +1229,7 @@ mod tests {
                 &regions,
                 PresentationPointerLane::HoverDrop,
                 point,
-                PresentationHitSuppression::complete_root(source_root, Some(floating)),
+                DropSourceSuppression::complete_root(source_root, Some(floating)),
             )
             .expect("source suppression keeps one lower target")
             .map(|region| region.id()),
@@ -1282,7 +1243,7 @@ mod tests {
         let source_root = RootId::new(10);
         let floating = FloatingPresentationId::new(30);
         let source_tabs = tabs_node();
-        let suppression = PresentationHitSuppression::complete_root(source_root, Some(floating));
+        let suppression = DropSourceSuppression::complete_root(source_root, Some(floating));
 
         assert!(suppression.excludes(PresentationHitRegionId::new(
             surface,
@@ -1297,6 +1258,95 @@ mod tests {
             PresentationHitRegionKind::DropGuideActivation(DropGuideClusterId::outer(
                 surface,
                 source_root,
+            )),
+        )));
+    }
+
+    #[test]
+    fn disappearing_source_leaf_keeps_its_roots_outer_hover_receivers() {
+        use crate::command::{Edge, MovePayload};
+        use crate::graph::{Axis, RootRecord, SurfacePresentation};
+
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(10);
+        let item = ItemId::new(1);
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs([item]));
+        let remaining_tabs = builder.insert_node(Node::tabs([ItemId::new(2)]));
+        let split = builder.insert_node(
+            Node::equal_split(Axis::Horizontal, [source_tabs, remaining_tabs])
+                .expect("source and remaining leaf form a valid split"),
+        );
+        builder.set_root(root, RootRecord::new(split));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder.build().expect("self-docking workspace is valid");
+        let payload = MovePayload::Item(
+            workspace
+                .capture_item_source(root, source_tabs, item)
+                .expect("source tab is current"),
+        );
+        let suppression = DropSourceSuppression::from_source(&workspace, &payload, None);
+        let outer = region(
+            PresentationHitRegionId::new(
+                surface,
+                PresentationHitRegionKind::DropTarget(DropTargetId::OuterEdge {
+                    surface,
+                    root,
+                    node: split,
+                    edge: Edge::Right,
+                }),
+            ),
+            SceneLayerKey::surface_base(),
+            PresentationHitPrecedence::StandaloneOuterEdge,
+        );
+        let point = LogicalPoint::new(50.0, 50.0).expect("test point is valid");
+        for kind in [
+            PresentationHitRegionKind::DropTarget(DropTargetId::Center {
+                surface,
+                root,
+                tabs: source_tabs,
+            }),
+            PresentationHitRegionKind::DropTarget(DropTargetId::InnerEdge {
+                surface,
+                root,
+                node: source_tabs,
+                edge: Edge::Right,
+            }),
+            PresentationHitRegionKind::DropTarget(DropTargetId::TabGap {
+                surface,
+                root,
+                tabs: source_tabs,
+                index: 0,
+            }),
+            PresentationHitRegionKind::DropGuideActivation(DropGuideClusterId::inner(
+                surface,
+                root,
+                source_tabs,
+            )),
+        ] {
+            let source = region(
+                PresentationHitRegionId::new(surface, kind),
+                SceneLayerKey::surface_base(),
+                PresentationHitPrecedence::StandaloneCenter,
+            );
+            let regions = [outer, source];
+            assert_eq!(
+                resolve_exclusive_regions(
+                    &regions,
+                    PresentationPointerLane::HoverDrop,
+                    point,
+                    suppression,
+                )
+                .expect("removing source hits exposes the outer receiver")
+                .map(|winner| winner.id()),
+                Some(outer.id()),
+                "removed source geometry must not mask a valid root receiver: {kind:?}",
+            );
+        }
+        assert!(!suppression.excludes(PresentationHitRegionId::new(
+            surface,
+            PresentationHitRegionKind::DropGuideActivation(DropGuideClusterId::outer(
+                surface, root
             )),
         )));
     }
@@ -1366,7 +1416,7 @@ mod tests {
                 &[workspace, blocker],
                 PresentationPointerLane::Click,
                 point,
-                PresentationHitSuppression::default(),
+                DropSourceSuppression::default(),
             )
             .expect("different planes are never ambiguous")
             .map(|region| region.id()),
@@ -1377,7 +1427,7 @@ mod tests {
                 &[workspace, blocker, row],
                 PresentationPointerLane::Click,
                 point,
-                PresentationHitSuppression::default(),
+                DropSourceSuppression::default(),
             )
             .expect("the popup row has unique precedence within its plane")
             .map(|region| region.id()),

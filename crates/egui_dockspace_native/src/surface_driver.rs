@@ -1447,7 +1447,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
         // This is the only publication of the run. The bridge keeps staging,
         // route replacement and core publication under the existing lock.
         let mut report = host.commit_publishing_root(&mut self.root_surface)?;
-        self.publish_application_style(context, &mut publication.application_action, &report)?;
+        self.publish_application_configuration(
+            context,
+            &mut publication.application_action,
+            &report,
+        )?;
         for acknowledged in publication.ui_actions {
             self.pass_actions.acknowledge(acknowledged);
         }
@@ -1591,7 +1595,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         Ok(())
     }
 
-    fn publish_application_style(
+    fn publish_application_configuration(
         &mut self,
         context: &egui::Context,
         submitted: &mut Option<NativeSubmittedApplicationAction>,
@@ -1607,6 +1611,17 @@ impl<P: PaneView> NativeRuntimeState<P> {
             self.style = *style;
             // Font resources and theme tokens can change without changing any
             // DockStyle value. A successful request also refreshes idle children.
+            for surface in self.view().surfaces() {
+                if let Some(viewport) = self.coordinator.surface_viewport(surface.id()) {
+                    context.request_repaint_once_of(viewport);
+                }
+            }
+        }
+        if let Some(input) = submitted
+            .as_mut()
+            .and_then(NativeSubmittedApplicationAction::commit_input)
+        {
+            self.coordinator.set_input(input);
             for surface in self.view().surfaces() {
                 if let Some(viewport) = self.coordinator.surface_viewport(surface.id()) {
                     context.request_repaint_once_of(viewport);
@@ -2558,6 +2573,7 @@ mod tests {
                 ui,
                 &mut panes,
                 &DockStyle::default(),
+                &egui_dockspace::DockInputConfig::default(),
                 &mut register_scroll,
             )
             .expect("the first-live surface paints through the production renderer");

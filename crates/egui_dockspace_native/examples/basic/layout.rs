@@ -699,6 +699,9 @@ pub(super) fn describe_status(status: &NativeActionStatus, panes: &ExamplePanes)
         } => {
             format!("Dock style committed; changed={changed}, geometry changed={geometry_changed}.")
         }
+        NativeActionStatus::InputChanged { changed } => {
+            format!("Docking input bindings applied; changed={changed}.")
+        }
         NativeActionStatus::LayoutReset { previous, current } => format!(
             "Default layout applied ({previous:?} → {current:?}); waiting for the windows to display their panes and be ready for editing."
         ),

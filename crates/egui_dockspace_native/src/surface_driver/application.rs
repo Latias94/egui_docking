@@ -9,7 +9,7 @@ use dockspace::model::{
 };
 use dockspace::runtime::{DockspaceClosePlan, NativeSurfaceBinding};
 use eframe::egui;
-use egui_dockspace::{DockStyle, PaneView};
+use egui_dockspace::{DockInputConfig, DockStyle, PaneView};
 
 use crate::application_action::{
     NativeActionRequestError, NativeActionTerminal, NativeApplicationAction,
@@ -23,6 +23,40 @@ use crate::NativeLayoutRequestError;
 mod tests;
 
 impl<P: PaneView> NativeRuntimeState<P> {
+    pub(crate) fn request_input(
+        &mut self,
+        input: DockInputConfig,
+    ) -> Result<(), NativeActionRequestError> {
+        self.ensure_application_slot_available()?;
+        self.enqueue_application_action(NativeApplicationAction::new(
+            self.coordinator.session().version(),
+            NativeApplicationCommand::Input {
+                input,
+                changed: self.coordinator.input() != input,
+            },
+        ))
+    }
+
+    pub(crate) fn input(&self) -> DockInputConfig {
+        self.coordinator.input()
+    }
+
+    pub(crate) fn set_initial_input(
+        &mut self,
+        input: DockInputConfig,
+    ) -> Result<(), NativeActionRequestError> {
+        self.ensure_application_slot_available()?;
+        if self.root_context.is_some()
+            || self.owned_update.is_some()
+            || self.coordinator.has_pending_callback_records()
+            || self.coordinator.session().has_active_gesture()
+        {
+            return Err(NativeActionRequestError::Busy);
+        }
+        self.coordinator.set_input(input);
+        Ok(())
+    }
+
     pub(crate) fn request_style(
         &mut self,
         style: DockStyle,

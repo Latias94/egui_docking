@@ -263,7 +263,9 @@ fn cancel_logical_press(
         .submit_host_pointer_batch(
             [
                 SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
-                SurfacePointerEvent::StreamCancelled(SurfacePointerCancelReason::Escape),
+                SurfacePointerEvent::StreamCancelled(
+                    SurfacePointerCancelReason::ExplicitCancellation,
+                ),
             ]
             .into_iter()
             .map(|event| {

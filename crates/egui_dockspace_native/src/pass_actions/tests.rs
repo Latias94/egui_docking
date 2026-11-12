@@ -177,6 +177,7 @@ impl Fixture {
                     ui,
                     &mut Panes,
                     &self.style,
+                    &egui_dockspace::DockInputConfig::default(),
                     &mut register,
                 )
                 .unwrap(),
@@ -520,6 +521,7 @@ fn actual_repeat_preserves_scrollbar_response_identity(token: NativeOutputToken)
                 ui,
                 &mut Panes,
                 &fixture.style,
+                &egui_dockspace::DockInputConfig::default(),
                 &mut register,
             )
             .unwrap();

@@ -157,8 +157,8 @@ impl HostFrameReport {
                         binding: NativeSurfaceBinding::from_binding(provider, *binding),
                         changed: *changed,
                     }),
-                InputOutcome::MagneticTargetingUpdated { enabled, changed } => {
-                    Some(HostInputOutcome::MagneticTargetingUpdated {
+                InputOutcome::DockingEnabledUpdated { enabled, changed } => {
+                    Some(HostInputOutcome::DockingEnabledUpdated {
                         enabled: *enabled,
                         changed: *changed,
                     })

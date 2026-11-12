@@ -128,7 +128,7 @@ impl DockEngine {
             return false;
         }
         match current.owner {
-            ContainedLayoutOwner::Drag(_) => current.target_basis.is_some(),
+            ContainedLayoutOwner::Drag(_) => true,
             ContainedLayoutOwner::Transform(session) => self
                 .interaction
                 .active_contained_transform(session)

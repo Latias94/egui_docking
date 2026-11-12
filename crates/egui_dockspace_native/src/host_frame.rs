@@ -8,7 +8,7 @@ use dockspace::runtime::{
     HostInputOutcome, PreparedPaneFocusObservation, SurfaceUnavailableReason,
 };
 use eframe::egui;
-use egui_dockspace::{DockStyle, PaneView};
+use egui_dockspace::{DockInputConfig, DockStyle, PaneView};
 
 use crate::error::NativeHostProtocolError;
 use crate::error::NativeRuntimeError;
@@ -72,6 +72,7 @@ impl NativeSurfacePaint {
 /// releases later callback records.
 pub(crate) struct NativeHostFrame<'session> {
     pub(crate) frame: DockspaceHostFrame<'session>,
+    input: DockInputConfig,
     bridge: Arc<NativeHostBridge>,
     receivers: &'session mut NativeReceiverStore,
     repaint_context: Option<egui::Context>,
@@ -87,6 +88,7 @@ struct OverloadCancellation<'session> {
 /// Owned continuation of the same candidate, without native store borrows.
 pub(crate) struct NativeHostUpdate {
     update: DockspaceUpdate,
+    input: DockInputConfig,
     bridge: Arc<NativeHostBridge>,
     repaint_context: Option<egui::Context>,
     overload: Option<(u64, DockspaceSubmittedAction)>,
@@ -101,6 +103,7 @@ impl NativeHostUpdate {
     ) -> Result<NativeHostFrame<'session>, NativeRuntimeError> {
         Ok(NativeHostFrame {
             frame: session.resume_update(self.update)?,
+            input: self.input,
             bridge: self.bridge,
             receivers,
             repaint_context: self.repaint_context,
@@ -166,6 +169,7 @@ impl<'session> NativeHostFrame<'session> {
     pub(crate) fn suspend(self) -> NativeHostUpdate {
         NativeHostUpdate {
             update: self.frame.suspend(),
+            input: self.input,
             bridge: self.bridge,
             repaint_context: self.repaint_context,
             overload: self
@@ -181,14 +185,32 @@ impl<'session> NativeHostFrame<'session> {
             || self.bridge.has_unsubmitted_output_prefix()
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         frame: DockspaceHostFrame<'session>,
         bridge: Arc<NativeHostBridge>,
         receivers: &'session mut NativeReceiverStore,
         repaint_context: Option<egui::Context>,
     ) -> Self {
+        Self::new_with_input(
+            frame,
+            DockInputConfig::default(),
+            bridge,
+            receivers,
+            repaint_context,
+        )
+    }
+
+    pub(crate) fn new_with_input(
+        frame: DockspaceHostFrame<'session>,
+        input: DockInputConfig,
+        bridge: Arc<NativeHostBridge>,
+        receivers: &'session mut NativeReceiverStore,
+        repaint_context: Option<egui::Context>,
+    ) -> Self {
         NativeHostFrame {
             frame,
+            input,
             bridge,
             receivers,
             repaint_context,
@@ -257,6 +279,7 @@ impl<'session> NativeHostFrame<'session> {
             ui,
             panes,
             style,
+            &self.input,
             &mut register_scroll_candidate,
         )
         .map_err(NativeRuntimeError::from)?;
@@ -339,6 +362,7 @@ impl<'session> NativeHostFrame<'session> {
             receivers,
             repaint_context,
             overload,
+            input: _,
         } = self;
         let (report, staging_viewports) =
             bridge.commit_host_frame_with_staging(frame, overload.is_none(), root_surface)?;

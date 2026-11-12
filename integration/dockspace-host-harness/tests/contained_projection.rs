@@ -304,7 +304,7 @@ fn edge_with_routes(
                 SurfacePointerCapture::ProviderEndpoint,
                 facts.with_clear_hover_lane(&target),
             )
-            .with_metadata(PointerEventMetadata::unknown().with_magnetic_targeting(false)),
+            .with_metadata(PointerEventMetadata::unknown().with_docking_enabled(false)),
         )
         .unwrap();
     frame
@@ -1330,9 +1330,9 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_at_release_commit() {
                 facts,
             )
         });
-        // Inspect this exact frozen prefix without publishing it. The complete
-        // source follows the pointer over the guide, while source suppression
-        // keeps the explicit background target selected through the projection.
+        // Inspect this exact frozen prefix without publishing it. Starting the
+        // drag changes guide placement by removing the source as an obstacle.
+        // Do not mix its old presented affordance with new receiver geometry.
         {
             let mut motion = session.begin_host_frame().unwrap();
             motion
@@ -1375,8 +1375,8 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_at_release_commit() {
             );
             assert_eq!(
                 active_targets,
-                [target_visual],
-                "source suppression must preserve the explicit inner-left winner"
+                [],
+                "source exclusion must not carry an old guide into changed destination geometry"
             );
             let (recording, _) = RecordingRenderer::execute(plan).unwrap();
             for item in [LEFT, RIGHT] {
@@ -1392,7 +1392,7 @@ fn frozen_clear_hover_batch_docks_behind_complete_source_at_release_commit() {
                         ..
                     })
                 )),
-                "the explicit guide must resolve a dock preview before release"
+                "the still-presented explicit guide must resolve a dock preview before release"
             );
         }
         assert_eq!(session.version(), version);
@@ -1815,6 +1815,12 @@ fn complete_contained_group_magnetic_hysteresis_survives_presented_source_only_p
                 .unwrap()
                 .workspace_changed()
         );
+
+        // Present the source-excluded destination geometry before checking its
+        // magnetic acquisition and release envelope across later source moves.
+        clear_edge(&mut session, Event::Moved, offset(press, 12.0, 8.0));
+        let (_, first_drag) = paint(&mut session);
+        present_group(&mut session, first_drag);
 
         let content = before
             .renderer

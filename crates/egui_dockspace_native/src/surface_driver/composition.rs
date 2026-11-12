@@ -388,6 +388,7 @@ mod tests {
                             &mut child,
                             &mut Panes,
                             &DockStyle::default(),
+                            &egui_dockspace::DockInputConfig::default(),
                             &mut scroll,
                         )
                         .unwrap(),
@@ -624,6 +625,7 @@ mod tests {
                             &mut child,
                             &mut Panes,
                             &style,
+                            &egui_dockspace::DockInputConfig::default(),
                             &mut scroll,
                         )
                         .unwrap(),

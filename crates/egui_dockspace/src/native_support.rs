@@ -468,6 +468,7 @@ pub fn paint_surface(
     ui: &mut Ui,
     panes: &mut dyn PaneView,
     style: &DockStyle,
+    input: &crate::DockInputConfig,
     scroll_registrar: &mut dyn FnMut(&Ui, egui::Rect, Id) -> (Id, egui::LayerId),
 ) -> Result<NativeSurfacePaint, DockspaceError> {
     let viewport_id = ui.ctx().viewport_id();
@@ -512,6 +513,7 @@ pub fn paint_surface(
         plan,
         panes,
         style,
+        input,
         product_render::PaintResources::default(),
         product_render::PointerActionAuthority::ExternalJournal,
         Some(scroll_registrar),

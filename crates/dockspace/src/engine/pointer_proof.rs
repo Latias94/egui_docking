@@ -1,13 +1,13 @@
 //! Pointer receiver and presentation authority validation.
 
 use super::*;
+use crate::drop_target::DropSourceSuppression;
 use crate::pointer_journal::{
     DesktopDockRoute, HostLocalPointerRoute, NativePointerRoutes, NativeSurfacePointerRoute,
     PointerDeviceKind,
 };
 use crate::pointer_receiver::PointerReceiverDeliveryRequest;
 use crate::pointer_receiver::{NativeWindowHitReceipt, NativeWindowPointerProbe};
-use crate::presentation_hit::PresentationHitSuppression;
 use crate::viewport::WindowBinding;
 
 fn owned_host_local_route(
@@ -912,37 +912,46 @@ impl DockEngine {
             }
         }
     }
-    pub(crate) fn hover_drop_suppression(&self) -> PresentationHitSuppression {
-        let source = match self.interaction.status() {
-            InteractionStatus::Armed { session } => self
-                .interaction
-                .armed_drag(session)
-                .ok()
-                .and_then(|drag| drag.complete_root.as_ref())
-                .map(NodeSource::root),
-            InteractionStatus::Dragging { session } => self
-                .interaction
-                .active_drag(session)
-                .ok()
-                .and_then(|drag| drag.complete_root.as_ref())
-                .map(NodeSource::root),
+    pub(crate) fn hover_drop_suppression(&self) -> DropSourceSuppression {
+        match self.interaction.status() {
+            InteractionStatus::Armed { session } => {
+                self.interaction.armed_drag(session).ok().map(|drag| {
+                    DropSourceSuppression::from_source(
+                        &self.workspace,
+                        &drag.payload,
+                        drag.complete_root.as_ref().map(NodeSource::root),
+                    )
+                })
+            }
+            InteractionStatus::Dragging { session } => {
+                self.interaction.active_drag(session).ok().map(|drag| {
+                    DropSourceSuppression::from_source(
+                        &self.workspace,
+                        &drag.payload,
+                        drag.complete_root.as_ref().map(NodeSource::root),
+                    )
+                })
+            }
             InteractionStatus::Pressed { session } => self
                 .interaction
                 .active_click(session)
                 .ok()
                 .filter(|click| click.touch.as_ref().is_some_and(|touch| touch.armed))
-                .and_then(|click| self.touch_complete_drag_root(click.region.kind())),
+                .and_then(|click| self.touch_drag_payload(click.region.kind()))
+                .and_then(|payload| {
+                    self.complete_root_source(&payload)
+                        .ok()
+                        .map(|complete_root| {
+                            DropSourceSuppression::from_source(
+                                &self.workspace,
+                                &payload,
+                                complete_root.as_ref().map(NodeSource::root),
+                            )
+                        })
+                }),
             _ => None,
-        };
-        let Some(source) = source else {
-            return PresentationHitSuppression::default();
-        };
-        let contained = match self.workspace.presentation_for_root(source) {
-            Some(crate::RootPresentationOwner::Contained { floating, .. }) => Some(floating),
-            Some(crate::RootPresentationOwner::Main { .. }) => None,
-            None => return PresentationHitSuppression::default(),
-        };
-        PresentationHitSuppression::complete_root(source, contained)
+        }
+        .unwrap_or_default()
     }
 
     pub(super) fn validate_pointer_receiver_geometry(
@@ -1220,7 +1229,7 @@ impl DockEngine {
         let suppression = if lane == PresentationPointerLane::HoverDrop {
             self.hover_drop_suppression()
         } else {
-            PresentationHitSuppression::default()
+            DropSourceSuppression::default()
         };
         let winner = presentation
             .hit_manifest()
@@ -1400,7 +1409,7 @@ impl DockEngine {
         let suppression = if lane == PresentationPointerLane::HoverDrop {
             self.hover_drop_suppression()
         } else {
-            PresentationHitSuppression::default()
+            DropSourceSuppression::default()
         };
         let winner = match manifest.resolve_exclusive_for_device(
             lane,
@@ -1756,6 +1765,112 @@ mod tests {
     use crate::intent::PointerId;
     use crate::pointer_journal::HostLocalPointerRoute;
     use crate::pointer_receiver::PresentedPointerReceiverObservation;
+
+    #[test]
+    fn armed_touch_suppresses_only_the_disappearing_source_leaf() {
+        use crate::drop_guide::DropGuideClusterId;
+        use crate::drop_target::DropTargetId;
+        use crate::graph::Axis;
+
+        for (items, central, group, removes_leaf) in [
+            (vec![ItemId::new(1)], false, false, true),
+            (vec![ItemId::new(1), ItemId::new(2)], false, false, false),
+            (vec![ItemId::new(1)], true, false, false),
+            (vec![ItemId::new(1), ItemId::new(2)], false, true, true),
+            (vec![ItemId::new(1), ItemId::new(2)], true, true, false),
+        ] {
+            let surface = SurfaceId::new(1);
+            let root = RootId::new(1);
+            let mut builder = Workspace::builder();
+            let tabs = builder.insert_node(Node::tabs(items));
+            let remaining = builder.insert_node(Node::tabs([ItemId::new(3)]));
+            let split = builder.insert_node(
+                Node::equal_split(Axis::Horizontal, [tabs, remaining])
+                    .expect("source and remaining leaf form a valid split"),
+            );
+            let mut record = RootRecord::new(split);
+            if central {
+                record = record.with_central(tabs);
+            }
+            builder.set_root(root, record);
+            builder.set_surface(surface, SurfacePresentation::with_main(root));
+            let mut engine =
+                DockEngine::new(builder.build().unwrap(), DockPolicy::default()).unwrap();
+            let mut host = TestPresentationHost::new(&mut engine);
+            let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap();
+            publish_surface(&mut engine, &mut host, surface, bounds);
+            let presentation = JournalSurfacePresentation::from_interaction(
+                engine.interaction_projection(surface).unwrap(),
+            );
+            let region = presentation
+                .hit_manifest()
+                .regions()
+                .iter()
+                .find(|region| match region.id().kind() {
+                    PresentationHitRegionKind::TabBody(tab) => {
+                        !group && tab.tabs == tabs && tab.item == ItemId::new(1)
+                    }
+                    PresentationHitRegionKind::TabGroupDrag { bar, .. } => {
+                        group && bar.tabs == tabs
+                    }
+                    _ => false,
+                })
+                .expect("the displayed source has a touch receiver");
+            let region = region.id();
+            let producer = engine
+                .create_host_local_pointer_provider(host.lease(), PointerEdgeSequence::new(0))
+                .unwrap();
+            let owner = GestureOwner::new(
+                PointerStreamId::new(producer.lease(), PointerId::new(1), 1),
+                GestureLane::HostLocal,
+            );
+            let (session, replaced) = engine
+                .interaction
+                .begin_click(ClickStart {
+                    epoch: engine.version.epoch(),
+                    owner,
+                    capture_authority: Authority::Known(PointerCaptureOwner::ProviderEndpoint),
+                    button: PointerButton::Primary,
+                    region,
+                    measurement: presentation.scene().requirement(),
+                    coordinates: presentation.coordinate_capture(),
+                    presentation: DockEngine::freeze_journal_presentation(&presentation),
+                    action: Arc::new(FrozenClickAction::Touch),
+                })
+                .unwrap();
+            assert!(replaced.is_none());
+            let point = LogicalPoint::new(100.0, 20.0).unwrap();
+            for armed in [false, true] {
+                engine.interaction.active_click_mut(session).unwrap().touch =
+                    Some(TouchPressState {
+                        initial_pointer: point,
+                        current_pointer: point,
+                        threshold_origin: JournalDragThresholdOrigin::HostLocal {
+                            surface,
+                            position: point,
+                        },
+                        request: None,
+                        armed,
+                    });
+                let suppression = engine.hover_drop_suppression();
+                let expected = armed && removes_leaf;
+                assert_eq!(
+                    suppression.excludes_target(DropTargetId::Center {
+                        surface,
+                        root,
+                        tabs,
+                    }),
+                    expected,
+                    "central={central}, group={group}, armed={armed}",
+                );
+                assert_eq!(
+                    suppression.excludes_cluster(DropGuideClusterId::inner(surface, root, tabs)),
+                    expected,
+                );
+                assert!(!suppression.excludes_cluster(DropGuideClusterId::outer(surface, root)));
+            }
+        }
+    }
 
     #[test]
     fn host_local_known_empty_and_blocked_hover_require_the_exact_route_emission() {

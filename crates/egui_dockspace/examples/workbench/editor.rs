@@ -65,10 +65,15 @@ fn toolbar(ui: &mut egui::Ui, restore_layout: &mut bool, custom_tabs: &mut bool)
             ui.menu_button("Help", |ui| {
                 ui.label("Drag a tab into the center of a pane to merge it.");
                 ui.label("Drop near an edge to split. Drag a divider to resize.");
-                ui.label("Move Inspector using its dotted title grip.");
+                ui.label("Hold Shift while dragging to float a tab without docking.");
+                ui.label("Drag a floating window's dotted title grip to move or dock its group.");
                 ui.label("Close panes freely; Restore layout keeps your edits.");
             });
             ui.checkbox(custom_tabs, "Custom tabs");
+            ui.separator();
+            ui.weak("Shift + drag to float").on_hover_text(
+                "Hold Shift to disable docking while dragging, then release inside this window to float the tab.",
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let dark = ui.visuals().dark_mode;
                 if ui.selectable_label(dark, "Dark").clicked() {

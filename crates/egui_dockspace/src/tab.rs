@@ -23,6 +23,8 @@ pub struct TabBarId(pub(crate) DockspaceVisualId);
 /// the actual Ui supplied to [`crate::PaneView::tab_bar_ui`].
 /// The after-tabs slot scrolls with tabs and keeps its requested width; only
 /// its visible intersection is painted and interactive.
+/// Include widget frame padding in reserved widths and fit controls to the
+/// supplied Ui's height; egui widgets retain their ordinary sizing rules.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TabBarLayout {
     /// Slot after the group grip and before the first tab or scroll arrow.

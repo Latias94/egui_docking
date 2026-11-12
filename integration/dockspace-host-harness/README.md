@@ -55,7 +55,7 @@ none of the proposed split updates; a successful junction release applies the
 whole set once. Returning to the original boundary preserves weight bits and
 does not change the workspace version.
 
-`tests/magnetic_targeting.rs` submits ordered targeting directives both on real
+`tests/docking_enabled.rs` submits ordered targeting directives both on real
 edges and as modifier-only semantic controls. Its recording outputs cover
 suppression, exact rollback, foreign-pointer isolation, stale-preview rejection,
 fresh reacquisition, explicit targets and an already frozen release. Modifier

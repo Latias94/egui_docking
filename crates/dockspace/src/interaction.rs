@@ -410,17 +410,17 @@ pub enum InteractionStatus {
     },
 }
 
-/// Authoritative endpoint which delivered one Escape key press.
+/// Authoritative endpoint which requested explicit gesture cancellation.
 ///
 /// Surface-local immediate-mode adapters may only cancel a gesture from its
 /// frozen source surface. Native event loops instead name the exact current
-/// window binding which received the key edge, allowing a target window to
+/// window binding which requested cancellation, allowing a target window to
 /// cancel a cross-window docking gesture without guessing its source callback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EscapeDelivery {
-    /// Escape was delivered by one logical surface callback.
+pub enum GestureCancelDelivery {
+    /// Cancellation was requested by one logical surface callback.
     Surface(SurfaceId),
-    /// Escape was delivered by one exact native window incarnation.
+    /// Cancellation was requested by one exact native window incarnation.
     NativeBinding(ViewportBinding),
 }
 
@@ -905,8 +905,8 @@ impl<'state> ActiveContainedTransformView<'state> {
 pub enum InteractionCancelReason {
     /// The host cancelled live input after exhausting its ordinary input capacity.
     InputOverload,
-    /// The user explicitly pressed Escape.
-    Escape,
+    /// The host or application explicitly cancelled the gesture.
+    ExplicitCancellation,
     /// The source button was released before the renderer began dragging.
     ReleasedBeforeDrag,
     /// Pointer capture was authoritatively lost.
@@ -1048,9 +1048,9 @@ pub enum InteractionRejection {
     TabListMenuBackdropRecordChanged { session: TabListMenuSessionId },
     /// No gesture is active.
     NoActiveGesture,
-    /// Escape was not delivered by the active gesture's source surface or by
+    /// Cancellation was not requested by the active gesture's source surface or by
     /// an exact current native window binding.
-    EscapeDeliveryUnavailable { delivery: EscapeDelivery },
+    GestureCancelDeliveryUnavailable { delivery: GestureCancelDelivery },
     /// This release belongs to the most recently consumed drag generation.
     #[allow(
         dead_code,
@@ -2136,6 +2136,10 @@ impl DragTargetState {
 
     fn clear_feedback(&mut self, status: PreviewResolutionStatus) -> bool {
         self.last_advanced = None;
+        self.clear_target_feedback(status)
+    }
+
+    fn clear_target_feedback(&mut self, status: PreviewResolutionStatus) -> bool {
         let affordance_cleared = self.affordance.take().is_some();
         let preview_cleared = self.clear_preview(status);
         affordance_cleared || preview_cleared
@@ -2556,7 +2560,7 @@ enum ActiveGesture {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InteractionState {
     active: ActiveGesture,
-    magnetic_targeting_enabled: bool,
+    docking_enabled: bool,
     last_click_generation: ClickGeneration,
     last_drag_generation: DragGeneration,
     last_resize_generation: ResizeGeneration,
@@ -2568,12 +2572,12 @@ pub struct InteractionState {
 }
 
 impl InteractionState {
-    pub(crate) const fn magnetic_targeting_enabled(&self) -> bool {
-        self.magnetic_targeting_enabled
+    pub(crate) const fn docking_enabled(&self) -> bool {
+        self.docking_enabled
     }
 
-    pub(crate) fn set_magnetic_targeting(&mut self, enabled: bool) -> bool {
-        std::mem::replace(&mut self.magnetic_targeting_enabled, enabled) != enabled
+    pub(crate) fn set_docking_enabled(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.docking_enabled, enabled) != enabled
     }
 
     pub(crate) fn prepare_presentation_rehome_preview(
@@ -3300,6 +3304,16 @@ impl InteractionState {
             .clear_feedback(PreviewResolutionStatus::Unavailable))
     }
 
+    pub(crate) fn clear_drag_target_feedback(
+        &mut self,
+        session: DragSessionId,
+    ) -> Result<bool, InteractionRejection> {
+        Ok(self
+            .active_drag_mut(session)?
+            .target
+            .clear_target_feedback(PreviewResolutionStatus::Unavailable))
+    }
+
     pub(crate) fn set_drop_affordance(
         &mut self,
         session: DragSessionId,
@@ -3690,7 +3704,7 @@ impl Default for InteractionState {
     fn default() -> Self {
         Self {
             active: ActiveGesture::Idle,
-            magnetic_targeting_enabled: true,
+            docking_enabled: true,
             last_click_generation: ClickGeneration::default(),
             last_drag_generation: DragGeneration::default(),
             last_resize_generation: ResizeGeneration::default(),

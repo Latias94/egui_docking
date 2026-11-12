@@ -162,7 +162,7 @@ fn escape_and_context_retirement_publish_one_terminal_without_focus_theft() {
         assert_eq!(
             terminal.status(),
             Status::Cancelled(if escape {
-                CancelReason::Escape
+                CancelReason::ExplicitCancellation
             } else {
                 CancelReason::PointerProviderRetired
             })

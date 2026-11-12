@@ -74,8 +74,8 @@ pub enum InputOutcome {
     },
 
     /// A targeting directive updated only the current exact gesture owner.
-    MagneticTargetingUpdated {
-        /// Requested magnetic targeting intent.
+    DockingEnabledUpdated {
+        /// Requested docking intent.
         enabled: bool,
         /// Whether a matching live owner changed its effective intent.
         changed: bool,

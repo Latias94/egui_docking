@@ -140,8 +140,8 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
-            LocalSurfaceAction::CancelWithEscape { delivery, .. } => {
-                self.reduce_escape_input(input, self.version, *delivery, interaction_events)
+            LocalSurfaceAction::CancelGesture { delivery, .. } => {
+                self.reduce_gesture_cancel_input(input, self.version, *delivery, interaction_events)
             }
         }?;
         Ok(match outcome {
@@ -306,7 +306,7 @@ impl DockEngine {
                     .all(|splitter| root_is_current(splitter.root))
                     && self.deferred_resize_geometry_is_current(witness, action)
             }
-            LocalSurfaceAction::CancelWithEscape { status, .. } => {
+            LocalSurfaceAction::CancelGesture { status, .. } => {
                 *status == self.interaction.status() && *status != InteractionStatus::Idle
             }
         };

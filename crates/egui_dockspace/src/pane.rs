@@ -136,7 +136,10 @@ pub trait PaneView {
         close.paint(ui);
     }
 
-    /// Paints a docking drag preview without adding interactive widgets.
+    /// Paints the source's drag ghost without adding interactive widgets.
+    ///
+    /// The destination highlight uses [`crate::DockVisualOverrides::drop_fill`]
+    /// and [`crate::DockVisualOverrides::drop_border_color`] separately.
     fn drag_preview_ui(&mut self, ui: &Ui, preview: &DragPreview) {
         preview.paint(ui);
     }

@@ -449,9 +449,9 @@ impl SurfacePaintPlan<'_> {
     /// Local surfaces may cancel their own gesture. A native surface carries its
     /// exact current window binding and may cancel a gesture from another window.
     #[must_use]
-    pub fn prepare_escape_cancel(self) -> Option<PreparedSurfaceAction> {
-        let delivery = self.escape_delivery?;
-        Some(PreparedSurfaceAction::cancel_with_escape(
+    pub fn prepare_gesture_cancel(self) -> Option<PreparedSurfaceAction> {
+        let delivery = self.gesture_cancel_delivery?;
+        Some(PreparedSurfaceAction::cancel_gesture(
             self.authority_domain,
             self.version,
             self.surface,

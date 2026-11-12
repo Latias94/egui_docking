@@ -446,9 +446,9 @@ pub(crate) enum LocalSurfaceAction {
         direction: ContainedResizeDirection,
         delta: f64,
     },
-    CancelWithEscape {
+    CancelGesture {
         status: InteractionStatus,
-        delivery: EscapeDelivery,
+        delivery: GestureCancelDelivery,
     },
 }
 
@@ -506,11 +506,11 @@ impl LocalSurfaceAction {
                 },
             ) => a == b && aa == ba && ad == bd,
             (
-                Self::CancelWithEscape {
+                Self::CancelGesture {
                     status: a,
                     delivery: ad,
                 },
-                Self::CancelWithEscape {
+                Self::CancelGesture {
                     status: b,
                     delivery: bd,
                 },
@@ -529,7 +529,7 @@ impl LocalSurfaceAction {
             | Self::AdjustSplitter { scene, .. }
             | Self::AdjustSplitterJunction { scene, .. }
             | Self::AdjustContainedResize { scene, .. } => Some(*scene),
-            Self::CancelWithEscape { .. } => None,
+            Self::CancelGesture { .. } => None,
         }
     }
 
@@ -543,7 +543,7 @@ impl LocalSurfaceAction {
             Self::AdjustSplitter { .. } => "adjust-splitter",
             Self::AdjustSplitterJunction { .. } => "adjust-splitter-junction",
             Self::AdjustContainedResize { .. } => "adjust-contained-resize",
-            Self::CancelWithEscape { .. } => "cancel-with-escape",
+            Self::CancelGesture { .. } => "cancel-gesture",
         }
     }
 }
@@ -574,21 +574,21 @@ pub enum EngineInput {
     },
 
     /// Changes targeting intent for one current host-local pointer owner.
-    UpdatePointerMagneticTargeting {
+    UpdatePointerDockingEnabled {
         /// Exact provider whose ordered input contains this directive.
         provider: PointerInputLease,
         /// Provider-owned pointer identity, without inventing a new stream.
         pointer: PointerId,
-        /// Whether magnetic targets may be acquired; explicit targets remain valid.
+        /// Whether docking targets, including explicit guides, may be acquired.
         enabled: bool,
     },
     /// Changes targeting intent from one exact managed window callback.
-    UpdateNativeMagneticTargeting {
+    UpdateNativeDockingEnabled {
         /// Joined provider which captured the source callback in its total order.
         provider: BackendIngressLease,
         /// Exact source or known keyboard-focus incarnation, revalidated at reduction.
         binding: ViewportBinding,
-        /// Whether magnetic targets may be acquired.
+        /// Whether docking targets may be acquired.
         enabled: bool,
     },
     /// Ends managed input at the current fully reduced host-frame boundary.
@@ -1075,21 +1075,21 @@ pub enum EngineInput {
         dead_code,
         reason = "Internal reducer conformance tests exercise this command directly; production adapters use the checked runtime facade."
     )]
-    CancelActiveInteractionWithEscape {
-        /// Workspace version current when this key edge entered the host frame.
+    CancelActiveInteraction {
+        /// Workspace version current when this cancellation entered the host frame.
         expected: WorkspaceVersion,
-        /// Authoritative endpoint which delivered the Escape press.
-        delivery: EscapeDelivery,
+        /// Authoritative endpoint which requested cancellation.
+        delivery: GestureCancelDelivery,
     },
     /// Cancel only the gesture captured by an exact current-candidate action.
     ///
-    /// Unlike the raw Escape edge, this action retains its gesture identity and
+    /// Unlike an immediate cancellation request, this action retains its gesture identity and
     /// frozen surface authority. Its workspace version must still match exactly.
-    CancelPreparedInteractionWithEscape {
+    CancelPreparedInteraction {
         expected: WorkspaceVersion,
         witness: Arc<crate::scene::SurfacePlanScene>,
         status: InteractionStatus,
-        delivery: EscapeDelivery,
+        delivery: GestureCancelDelivery,
     },
     /// Resolve one exact provider-observed native close edge with a complete
     /// core-frozen surface operation. The request cannot name an arbitrary
@@ -1184,8 +1184,8 @@ impl EngineInput {
             | Self::PublishPaneFocusRequestObservation { .. }
             | Self::PublishHostFocusObservation { .. } => InputPriority::PlatformObservation,
             Self::ActivateViewport { .. }
-            | Self::UpdatePointerMagneticTargeting { .. }
-            | Self::UpdateNativeMagneticTargeting { .. }
+            | Self::UpdatePointerDockingEnabled { .. }
+            | Self::UpdateNativeDockingEnabled { .. }
             | Self::CancelNativeInputForOverload { .. }
             | Self::AttachEmptySurface { .. }
             | Self::RetireEmptySurface { .. }
@@ -1219,8 +1219,8 @@ impl EngineInput {
             | Self::AdjustTabListMenuScroll { .. }
             | Self::NavigateTabListMenu { .. }
             | Self::ApplyContainedPlacement { .. }
-            | Self::CancelActiveInteractionWithEscape { .. }
-            | Self::CancelPreparedInteractionWithEscape { .. }
+            | Self::CancelActiveInteraction { .. }
+            | Self::CancelPreparedInteraction { .. }
             | Self::RequestSurfaceClose { .. }
             | Self::CancelSurfaceClose { .. }
             | Self::ResolveClose { .. }

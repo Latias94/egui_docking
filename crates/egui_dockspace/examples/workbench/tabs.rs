@@ -75,6 +75,8 @@ fn paint_icon(ui: &Ui, content: Rect, clip: Rect, color: Color32) {
 }
 
 pub(super) fn tab_bar_ui(panes: &mut DemoPanes, ui: &mut Ui, bar: TabBar<'_>, slot: TabBarSlot) {
+    ui.spacing_mut().button_padding = vec2(4.0, 2.0);
+    ui.add_space(2.0);
     match slot {
         TabBarSlot::Leading => {
             ui.small(bar.items().len().to_string());
@@ -87,6 +89,7 @@ pub(super) fn tab_bar_ui(panes: &mut DemoPanes, ui: &mut Ui, bar: TabBar<'_>, sl
         TabBarSlot::AfterTabs => {
             ui.menu_button("?", |ui| {
                 ui.label("Drag tabs to split or merge panes.");
+                ui.label("Hold Shift while dragging to float a tab without docking.");
                 ui.label("Use Tint to change the tab accent.");
             });
         }

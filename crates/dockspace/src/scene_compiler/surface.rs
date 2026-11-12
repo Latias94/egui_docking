@@ -19,13 +19,10 @@ use measurement::{RootLayoutMeasurement, measure_root_layout};
 pub(crate) use measurement::{
     contained_minimum_size, pane_outer_minimum, selection_geometry_unchanged,
 };
-#[cfg(test)]
-pub(super) use tabs::tab_strip_control_layout;
-pub(super) use tabs::{
-    TabStripOptionalChromeLayout, allocate_tab_widths, reveal_tab_range,
-    tab_strip_optional_chrome_layout,
-};
+pub(super) use tabs::tab_strip_optional_chrome_layout;
 use tabs::{compile_tabs_leaf, select_presentation_menu_tab_bar};
+#[cfg(test)]
+pub(super) use tabs::{reveal_tab_range, tab_strip_control_layout};
 
 #[cfg(test)]
 #[path = "surface/junction_compile_tests.rs"]
@@ -143,8 +140,8 @@ fn compile_surface_scene(
             Ok((floating, record, outer, layer))
         })
         .collect::<Result<Vec<_>, SceneCompilationError>>()?;
-    // Rear-root guides need the complete occlusion inventory before they are
-    // laid out, including projected positions of contained gestures.
+    // Publish every projected occluder before laying out rear roots. Guide
+    // placement ignores the whole-window drag source; ordinary hits retain it.
     for &(floating, _, outer, layer) in &contained_placements {
         ready.push_drop_occlusion(DropOcclusionRecord::new(
             floating,
@@ -580,7 +577,7 @@ fn compile_root(
             bounds,
             DropGuideClusterId::outer(surface, root),
             layer,
-            ready.drop_occlusions(),
+            ready,
         )?
     } else {
         None

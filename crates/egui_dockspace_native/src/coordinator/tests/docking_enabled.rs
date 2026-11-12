@@ -74,14 +74,301 @@ fn record_pointer(
     event: WindowEvent,
 ) {
     let record = captured_record(native, binding, ordinal, event);
-    let NativePointerTranslation::Input(input) =
-        native
-            .pointer_translator
-            .translate_captured(&record, Duration::from_millis(40), |_| None)
+    let NativePointerTranslation::Input(input) = native
+        .pointer_translator
+        .translate_captured_with_input(&record, Duration::from_millis(40), &native.input, |_| None)
     else {
         panic!("the fixture retains a real pointer edge");
     };
     native.record_pointer(input).unwrap();
+}
+
+fn apply_input_callback(
+    native: &mut NativeCoordinator,
+    binding: NativeSurfaceBinding,
+    ordinal: u64,
+    event: WindowEvent,
+    receivers: &RecordedSource,
+) -> (Option<DockspacePreviewVisual>, HostFrameReport) {
+    let record = captured_record(native, binding, ordinal, event);
+    native.bridge.push_record(HostRecord::WindowEvent(record));
+    assert_eq!(
+        native
+            .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+            .unwrap()
+            .unwrap()
+            .get(),
+        1
+    );
+    let mut frame = native
+        .begin_host_frame(|query| resolve(query, receivers))
+        .unwrap();
+    (preview(&mut frame), finish(frame))
+}
+
+#[test]
+fn unknown_initial_modifiers_do_not_bypass_hold_to_enable() {
+    let (mut native, _, binding) = presented_routes();
+    native.set_input(egui_dockspace::DockInputConfig {
+        docking: egui_dockspace::DockingActivation::HoldToEnable(egui::Modifiers::ALT),
+        ..Default::default()
+    });
+    let (receivers, source, target) = source_and_target(&mut native);
+    for (ordinal, point, state, hover) in [
+        (1, source, Some(ElementState::Pressed), 22),
+        (2, target, None, 11),
+        (3, target, Some(ElementState::Released), 11),
+    ] {
+        let (preview, report) = apply_input_callback(
+            &mut native,
+            binding,
+            ordinal,
+            mouse_event(point, state, hover, None),
+            &receivers,
+        );
+        assert!(
+            preview.is_none(),
+            "unknown press/move/release cannot satisfy hold-to-enable: {state:?}"
+        );
+        assert!(!report.workspace_changed());
+        assert_eq!(
+            native
+                .session
+                .view()
+                .item(ItemId::new(2))
+                .unwrap()
+                .surface(),
+            SECOND_SURFACE
+        );
+    }
+    assert!(!native.session.has_active_gesture());
+}
+
+#[test]
+fn unknown_press_preserves_prior_modifier_only_activation_observations() {
+    use egui_dockspace::DockingActivation;
+
+    for (activation, observed, enabled) in [
+        (
+            DockingActivation::HoldToDisable(egui::Modifiers::SHIFT),
+            ModifiersState::SHIFT,
+            false,
+        ),
+        (
+            DockingActivation::HoldToEnable(egui::Modifiers::ALT),
+            ModifiersState::ALT,
+            true,
+        ),
+        (
+            DockingActivation::HoldToEnable(egui::Modifiers::ALT),
+            ModifiersState::empty(),
+            false,
+        ),
+    ] {
+        let (mut native, _, binding) = presented_routes();
+        native.set_input(egui_dockspace::DockInputConfig {
+            docking: activation,
+            ..Default::default()
+        });
+        let (receivers, source, target) = source_and_target(&mut native);
+        apply_input_callback(
+            &mut native,
+            binding,
+            1,
+            WindowEvent::ModifiersChanged(observed.into()),
+            &receivers,
+        );
+        assert!(!native.session.has_active_gesture());
+        for (ordinal, point, state, hover) in [
+            (2, source, Some(ElementState::Pressed), 22),
+            (3, target, None, 11),
+            (4, target, Some(ElementState::Released), 11),
+        ] {
+            let (preview, report) = apply_input_callback(
+                &mut native,
+                binding,
+                ordinal,
+                mouse_event(point, state, hover, None),
+                &receivers,
+            );
+            if state.is_none() {
+                assert_eq!(
+                    matches!(preview, Some(DockspacePreviewVisual::Dock { .. })),
+                    enabled,
+                    "{activation:?} must preserve {observed:?} across an unknown press and move"
+                );
+            } else if state == Some(ElementState::Released) {
+                assert_eq!(report.workspace_changed(), enabled);
+                assert_eq!(
+                    native
+                        .session
+                        .view()
+                        .item(ItemId::new(2))
+                        .unwrap()
+                        .surface(),
+                    if enabled {
+                        FIRST_SURFACE
+                    } else {
+                        SECOND_SURFACE
+                    },
+                    "an unknown release must retain the established docking intent"
+                );
+            }
+        }
+        assert!(!native.session.has_active_gesture());
+    }
+}
+
+#[test]
+fn unknown_press_uses_only_source_window_observations_and_forgets_retired_ones() {
+    for (observe_source, retire_source, enabled) in [
+        (false, None, false),
+        (true, None, true),
+        (true, Some(false), true),
+        (true, Some(true), false),
+    ] {
+        let (mut native, peer, source_binding) = presented_routes();
+        native.set_input(egui_dockspace::DockInputConfig {
+            docking: egui_dockspace::DockingActivation::HoldToEnable(egui::Modifiers::ALT),
+            ..Default::default()
+        });
+        let (receivers, source, target) = source_and_target(&mut native);
+        apply_input_callback(
+            &mut native,
+            if observe_source { source_binding } else { peer },
+            1,
+            WindowEvent::ModifiersChanged(ModifiersState::ALT.into()),
+            &receivers,
+        );
+        if let Some(retire_source) = retire_source {
+            native
+                .pointer_translator
+                .retire_binding(if retire_source { source_binding } else { peer }.window());
+        }
+        for (ordinal, point, state, hover) in [
+            (2, source, Some(ElementState::Pressed), 22),
+            (3, target, None, 11),
+            (4, target, Some(ElementState::Released), 11),
+        ] {
+            let (preview, report) = apply_input_callback(
+                &mut native,
+                source_binding,
+                ordinal,
+                mouse_event(point, state, hover, None),
+                &receivers,
+            );
+            if state.is_none() {
+                assert_eq!(
+                    matches!(preview, Some(DockspacePreviewVisual::Dock { .. })),
+                    enabled,
+                    "source observation: {observe_source}, retired source: {retire_source:?}"
+                );
+            } else if state == Some(ElementState::Released) {
+                assert_eq!(report.workspace_changed(), enabled);
+            }
+        }
+    }
+}
+
+#[test]
+fn configured_alt_activation_is_shared_by_pointer_and_modifier_only_input() {
+    let (mut native, _, binding) = presented_routes();
+    native.set_input(egui_dockspace::DockInputConfig {
+        docking: egui_dockspace::DockingActivation::HoldToDisable(egui::Modifiers::ALT),
+        ..Default::default()
+    });
+    let (receivers, source, target) = source_and_target(&mut native);
+    for (ordinal, point, state) in [(1, source, Some(ElementState::Pressed)), (2, target, None)] {
+        record_pointer(
+            &mut native,
+            binding,
+            ordinal,
+            mouse_event(point, state, 11, Some(ModifiersState::SHIFT)),
+        );
+    }
+    let mut dragging = native
+        .begin_host_frame(|query| resolve(query, &receivers))
+        .unwrap();
+    assert!(matches!(
+        preview(&mut dragging),
+        Some(DockspacePreviewVisual::Dock { .. })
+    ));
+    finish(dragging);
+    let modifier = captured_record(
+        &native,
+        binding,
+        3,
+        WindowEvent::ModifiersChanged((ModifiersState::ALT | ModifiersState::SHIFT).into()),
+    );
+    native.bridge.push_record(HostRecord::WindowEvent(modifier));
+    native
+        .reduce_callback_prefix(&egui::Context::default(), &mut test_budget())
+        .unwrap()
+        .unwrap();
+    let mut paused = native
+        .begin_host_frame(|query| resolve(query, &receivers))
+        .unwrap();
+    assert!(preview(&mut paused).is_none());
+    finish(paused);
+    assert!(native.session.has_active_gesture());
+}
+
+#[test]
+fn changing_input_bindings_cancels_the_old_gesture_only_after_its_frame_commits() {
+    use crate::application_action::{NativeApplicationAction, NativeApplicationCommand};
+
+    let (mut native, _, binding) = presented_routes();
+    let original = native.input();
+    let (receivers, source, target) = source_and_target(&mut native);
+    for (ordinal, point, state) in [(1, source, Some(ElementState::Pressed)), (2, target, None)] {
+        record_pointer(
+            &mut native,
+            binding,
+            ordinal,
+            mouse_event(point, state, 11, Some(ModifiersState::empty())),
+        );
+    }
+    let mut dragging = native
+        .begin_host_frame(|query| resolve(query, &receivers))
+        .unwrap();
+    assert!(matches!(
+        preview(&mut dragging),
+        Some(DockspacePreviewVisual::Dock { .. })
+    ));
+    finish(dragging);
+    assert!(native.session.has_active_gesture());
+    let configured = egui_dockspace::DockInputConfig {
+        docking: egui_dockspace::DockingActivation::Always,
+        ..original
+    };
+    for commit in [false, true] {
+        let version = native.session.version();
+        let action = NativeApplicationAction::new(
+            version,
+            NativeApplicationCommand::Input {
+                input: configured,
+                changed: true,
+            },
+        );
+        let mut frame = native
+            .begin_host_frame(|query| resolve(query, &receivers))
+            .unwrap();
+        let mut submitted = action
+            .submit(&mut frame.frame, version)
+            .unwrap()
+            .finish(&mut frame.frame)
+            .unwrap();
+        if commit {
+            finish(frame);
+            native.set_input(submitted.commit_input().unwrap());
+            assert!(!native.session.has_active_gesture());
+            assert_eq!(native.input(), configured);
+        } else {
+            drop(frame);
+            assert!(native.session.has_active_gesture());
+            assert_eq!(native.input(), original);
+        }
+    }
 }
 
 fn presented_routes() -> (
@@ -375,7 +662,7 @@ fn shared_sibling_shift_callback_uses_the_physical_window_after_placement_rebind
     let report = finish(shifted);
     assert!(report.inputs().iter().any(|input| matches!(
         input,
-        HostInputOutcome::MagneticTargetingUpdated {
+        HostInputOutcome::DockingEnabledUpdated {
             enabled: false,
             changed: true
         }
@@ -508,7 +795,8 @@ fn one_modifier_callback_records_once_for_several_mouse_devices_and_charges_only
         WindowEvent::ModifiersChanged(ModifiersState::SHIFT.into()),
     );
     let recorded = native.session.native_input_recorded_count();
-    let translator = format!("{:?}", native.pointer_translator);
+    let mut expected_translator = native.pointer_translator.clone();
+    expected_translator.observe_modifiers(binding.window(), ModifiersState::SHIFT);
     let mut budget = test_budget();
     let allowance = budget.remaining_records();
     native.bridge.push_record(HostRecord::WindowEvent(record));
@@ -521,7 +809,10 @@ fn one_modifier_callback_records_once_for_several_mouse_devices_and_charges_only
         1
     );
     assert_eq!(native.session.native_input_recorded_count(), recorded + 1);
-    assert_eq!(format!("{:?}", native.pointer_translator), translator);
+    assert_eq!(
+        format!("{:?}", native.pointer_translator),
+        format!("{expected_translator:?}")
+    );
     assert_eq!(budget.remaining_records(), allowance);
     assert!(native.next_window_event().unwrap().is_none());
     let frame = native
@@ -929,7 +1220,7 @@ fn stale_modifier_binding_cannot_suspend_the_successor_gesture() {
 }
 
 #[test]
-fn shift_keeps_direct_guide_targeting_available() {
+fn shift_disables_direct_guide_targeting() {
     let (mut native, _, binding) = presented_routes();
     let (receiver, source, _) = source_and_target(&mut native);
     let mut inspection = native
@@ -976,11 +1267,14 @@ fn shift_keeps_direct_guide_targeting_available() {
     assert!(preview(&mut frame).is_none());
     let released = finish(frame);
     let [terminal] = released.manipulation_feedback() else {
-        panic!("the explicit guide must deliver despite Shift: {released:?}");
+        panic!("the disabled docking gesture must settle once: {released:?}");
     };
-    assert_eq!(terminal.status(), Status::Delivered(Delivery::Dock));
-    assert!(released.workspace_changed());
-    assert_eq!(
+    assert!(matches!(
+        terminal.status(),
+        Status::Cancelled(_) | Status::Rejected(_)
+    ));
+    assert!(!released.workspace_changed());
+    assert_ne!(
         native
             .session
             .view()

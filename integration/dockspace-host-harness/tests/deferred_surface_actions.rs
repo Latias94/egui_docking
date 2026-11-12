@@ -822,7 +822,7 @@ fn only_the_owner_surface_mints_a_witness_to_dismiss_its_exact_global_popup() {
 }
 
 #[test]
-fn deferred_escape_cancels_only_the_captured_gesture() {
+fn deferred_cancel_cancels_only_the_captured_gesture() {
     let mut session = session();
     session.enable_host_pointer().unwrap();
     let mut frame = session.begin_host_frame().unwrap();
@@ -853,8 +853,8 @@ fn deferred_escape_cancels_only_the_captured_gesture() {
         .unwrap();
     commit(frame);
     assert!(session.has_active_gesture());
-    let cancel = capture(&mut session, |plan| plan.prepare_escape_cancel().unwrap());
-    let repeated = capture(&mut session, |plan| plan.prepare_escape_cancel().unwrap());
+    let cancel = capture(&mut session, |plan| plan.prepare_gesture_cancel().unwrap());
+    let repeated = capture(&mut session, |plan| plan.prepare_gesture_cancel().unwrap());
     assert!(cancel.same_intent(&repeated));
     let report = submit(&mut session, cancel);
     assert!(

@@ -2287,16 +2287,19 @@ impl DockEngine {
                     .last_advanced_position()
                     .and_then(ManipulationPositionKey::surface)
                     .is_some_and(|surface| changed_surfaces.contains(&surface));
-                let source_projection_only = self
-                    .current_contained_projection_is_owned(drag.source_surface)
+                let source_projection_owned =
+                    self.current_contained_projection_is_owned(drag.source_surface);
+                let source_projection_only = source_projection_owned
                     && (drag.preview().is_none() || self.drag_preview_authority_is_current(&drag));
                 if (affected || position_affected) && !source_projection_only {
-                    let changed =
-                        self.interaction
-                            .clear_drag_feedback(session)
-                            .map_err(|source| {
-                                Self::contribution_invariant(cause, format!("{source:?}"))
-                            })?;
+                    let changed = if source_projection_owned {
+                        // A new destination layout can retire the old target
+                        // without revoking the source's validated movement.
+                        self.interaction.clear_drag_target_feedback(session)
+                    } else {
+                        self.interaction.clear_drag_feedback(session)
+                    }
+                    .map_err(|source| Self::contribution_invariant(cause, format!("{source:?}")))?;
                     if changed {
                         interaction_events.push(InteractionEvent::new_caused(
                             cause,

@@ -13,7 +13,7 @@ use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputPassFinalization, NativeOutputPassFinalizer,
     NativeOutputToken,
 };
-use egui_dockspace::{DockStyle, PaneView};
+use egui_dockspace::{DockInputConfig, DockStyle, PaneView};
 
 use crate::close_control::NativeWindowClosePolicy;
 use crate::deferred_viewport::{
@@ -24,7 +24,8 @@ use crate::lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};
 use crate::mailbox::DeferredViewportPaint;
 use crate::surface_driver::{NativeErrorPresentation, NativeRuntimeState, NativeSurfaceUpdate};
 use crate::{
-    NativeActionFailure, NativeActionRequestError, NativeActionStatus, NativeLayoutRequestError,
+    NativeActionFailure, NativeActionRequestError, NativeActionStatus, NativeChildWindowOptions,
+    NativeLayoutRequestError,
 };
 
 #[cfg(all(test, target_os = "linux"))]
@@ -51,6 +52,7 @@ mod native_boundary_x11;
 pub struct NativeDockspaceApp<P> {
     state: Arc<Mutex<NativeRuntimeState<P>>>,
     native_host: Arc<dyn NativeHostHandler>,
+    child_window_options: NativeChildWindowOptions,
 }
 
 impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
@@ -181,7 +183,70 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
             native_host.install_output_pass_finalizer(finalizer),
             "the Dockspace native host accepts exactly one output-pass finalizer"
         );
-        Ok(Self { state, native_host })
+        Ok(Self {
+            state,
+            native_host,
+            child_window_options: NativeChildWindowOptions::default(),
+        })
+    }
+
+    /// Configures the appearance of managed child OS windows.
+    ///
+    /// New windows and replacements use these options. Configure the external
+    /// Root separately through `eframe::NativeOptions::viewport`.
+    #[must_use]
+    pub fn with_child_window_options(mut self, options: NativeChildWindowOptions) -> Self {
+        self.set_child_window_options(options);
+        self
+    }
+
+    /// Updates child-window appearance on the next Root UI update.
+    ///
+    /// Request a Root repaint when calling this outside an egui update. Fields
+    /// set to `None` leave existing platform properties unchanged.
+    pub fn set_child_window_options(&mut self, options: NativeChildWindowOptions) {
+        self.child_window_options = options;
+    }
+
+    /// Returns the application's current child-window appearance options.
+    #[must_use]
+    pub fn child_window_options(&self) -> &NativeChildWindowOptions {
+        &self.child_window_options
+    }
+
+    /// Configures input bindings before installing the native host handler.
+    ///
+    /// Use [`Self::request_input`] after the host begins receiving input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeActionRequestError::Busy`] after input or an application
+    /// command has been captured, so queued input cannot be reinterpreted.
+    #[must_use]
+    pub fn with_input(self, input: DockInputConfig) -> Result<Self, NativeActionRequestError> {
+        lock_state(&self.state).set_initial_input(input)?;
+        Ok(self)
+    }
+
+    /// Returns the currently committed docking input bindings.
+    #[must_use]
+    pub fn input(&self) -> DockInputConfig {
+        lock_state(&self.state).input()
+    }
+
+    /// Queues input bindings in the existing application command slot.
+    ///
+    /// Earlier captured input keeps its original bindings. A changed configuration
+    /// cancels the previous docking gesture through the existing semantic action;
+    /// new bindings apply to subsequent runs after the frame commits. Consume
+    /// [`NativeActionStatus::InputChanged`] before submitting another command.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeActionRequestError::Busy`] while the command slot is occupied,
+    /// or [`NativeActionRequestError::Stopped`] after terminal shutdown.
+    pub fn request_input(&self, input: DockInputConfig) -> Result<(), NativeActionRequestError> {
+        lock_state(&self.state).request_input(input)
     }
 
     /// Returns the one-shot host callback to install in [`eframe::NativeOptions::native_host`].
@@ -638,6 +703,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         declare_deferred_viewports(
             &context,
             specs,
+            &self.child_window_options,
             |spec| {
                 let state = lock_state(&self.state);
                 crate::window_title::window_title(
@@ -850,6 +916,52 @@ mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
 
     use eframe::egui;
+
+    #[test]
+    fn input_can_be_configured_before_the_bootstrap_registration_commits() {
+        use dockspace::model::{
+            DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+            RootId, SurfaceId,
+        };
+        use egui_dockspace::{DockInputConfig, DockStyle, DockingActivation, PaneView};
+
+        struct Pane;
+        impl PaneView for Pane {
+            fn title(&self, _: ItemId) -> Option<egui::WidgetText> {
+                Some("Document".into())
+            }
+            fn ui(&mut self, _: ItemId, _: &mut egui::Ui) -> egui_dockspace::PaneResponse {
+                Default::default()
+            }
+        }
+        let surface = SurfaceId::new(1);
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            surface,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .unwrap();
+        let session =
+            dockspace::runtime::DockspaceSession::from_layout(layout, Default::default()).unwrap();
+        let config = DockInputConfig {
+            docking: DockingActivation::HoldToEnable(egui::Modifiers::ALT),
+            cancel_drag: None,
+        };
+        let app = super::NativeDockspaceApp::new(
+            egui::Id::unique("initial-input-options"),
+            session,
+            surface,
+            Pane,
+            DockStyle::default(),
+        )
+        .unwrap()
+        .with_input(config)
+        .unwrap();
+        assert_eq!(app.input(), config);
+        assert!(app.take_action_status().is_none());
+    }
 
     #[derive(Default)]
     struct LateDiscardProbe {

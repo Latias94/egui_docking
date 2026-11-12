@@ -1304,7 +1304,7 @@ fn old_shared_window_input_terminals_and_modifiers_cannot_affect_the_new_epoch()
         .report_native_input_binding_retired(old_window)
         .unwrap();
     session
-        .report_native_magnetic_targeting(old_window, false)
+        .report_native_docking_enabled(old_window, false)
         .unwrap();
     let frame = session
         .begin_native_host_frame(|query| resolve(&scenes, query))
@@ -1312,7 +1312,7 @@ fn old_shared_window_input_terminals_and_modifiers_cannot_affect_the_new_epoch()
     let report = finish(frame);
     assert!(report.inputs().iter().any(|input| matches!(
         input,
-        dockspace::runtime::HostInputOutcome::MagneticTargetingUpdated {
+        dockspace::runtime::HostInputOutcome::DockingEnabledUpdated {
             enabled: false,
             changed: false,
         }

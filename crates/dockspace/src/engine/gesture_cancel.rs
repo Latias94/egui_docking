@@ -1,8 +1,8 @@
-//! Device-independent keyboard interaction reduction.
+//! Device-independent explicit gesture cancellation.
 
 use crate::ids::{InputSequence, SurfaceId};
 use crate::interaction::{
-    EscapeDelivery, InteractionCancelReason, InteractionEvent, InteractionOutcome,
+    GestureCancelDelivery, InteractionCancelReason, InteractionEvent, InteractionOutcome,
     InteractionRejection, InteractionStatus,
 };
 use crate::transition::{InputOutcome, WorkspaceVersion};
@@ -10,22 +10,22 @@ use crate::transition::{InputOutcome, WorkspaceVersion};
 use super::{DockEngine, EngineError};
 
 impl DockEngine {
-    pub(super) fn reduce_escape_input(
+    pub(super) fn reduce_gesture_cancel_input(
         &mut self,
         input: InputSequence,
         expected: WorkspaceVersion,
-        delivery: EscapeDelivery,
+        delivery: GestureCancelDelivery,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         self.reduce_versioned_interaction(expected, |engine| {
-            engine.cancel_active_interaction_with_escape(input, delivery, interaction_events)
+            engine.cancel_active_interaction(input, delivery, interaction_events)
         })
     }
 
-    fn cancel_active_interaction_with_escape(
+    fn cancel_active_interaction(
         &mut self,
         input: InputSequence,
-        delivery: EscapeDelivery,
+        delivery: GestureCancelDelivery,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
         let status = self.interaction.status();
@@ -34,9 +34,9 @@ impl DockEngine {
                 InteractionRejection::NoActiveGesture,
             ));
         }
-        if !self.escape_delivery_is_current(delivery) {
+        if !self.gesture_cancel_delivery_is_current(delivery) {
             return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::EscapeDeliveryUnavailable { delivery },
+                InteractionRejection::GestureCancelDeliveryUnavailable { delivery },
             ));
         }
 
@@ -45,38 +45,38 @@ impl DockEngine {
             InteractionStatus::Pressed { session } => Ok(self.cancel_click(
                 input,
                 session,
-                InteractionCancelReason::Escape,
+                InteractionCancelReason::ExplicitCancellation,
                 interaction_events,
             )),
             InteractionStatus::Armed { session } | InteractionStatus::Dragging { session } => self
                 .cancel_drag(
                     input,
                     session,
-                    InteractionCancelReason::Escape,
+                    InteractionCancelReason::ExplicitCancellation,
                     interaction_events,
                 ),
             InteractionStatus::Resizing { session } => Ok(self.cancel_resize(
                 input,
                 session,
-                InteractionCancelReason::Escape,
+                InteractionCancelReason::ExplicitCancellation,
                 interaction_events,
             )),
             InteractionStatus::ContainedTransforming { session } => Ok(self
                 .cancel_contained_transform(
                     input,
                     session,
-                    InteractionCancelReason::Escape,
+                    InteractionCancelReason::ExplicitCancellation,
                     interaction_events,
                 )),
         }
     }
 
-    fn escape_delivery_is_current(&self, delivery: EscapeDelivery) -> bool {
+    fn gesture_cancel_delivery_is_current(&self, delivery: GestureCancelDelivery) -> bool {
         match delivery {
-            EscapeDelivery::Surface(surface) => {
+            GestureCancelDelivery::Surface(surface) => {
                 self.active_interaction_source_surface() == Some(surface)
             }
-            EscapeDelivery::NativeBinding(binding) => self
+            GestureCancelDelivery::NativeBinding(binding) => self
                 .viewport
                 .viewport(binding.surface())
                 .is_some_and(|record| record.binding() == binding),

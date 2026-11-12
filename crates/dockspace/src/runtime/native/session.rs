@@ -1007,7 +1007,7 @@ impl DockspaceSession {
     ///
     /// Returns an error without a managed host, for a foreign provider, or when
     /// the existing recorded-input allowance cannot retain this semantic record.
-    pub fn report_native_magnetic_targeting(
+    pub fn report_native_docking_enabled(
         &mut self,
         binding: impl Into<NativeWindowBinding>,
         enabled: bool,
@@ -1028,7 +1028,7 @@ impl DockspaceSession {
         let provider = native.recorder.lease();
         native
             .recorder_mut()
-            .record_semantic_input(EngineInput::UpdateNativeMagneticTargeting {
+            .record_semantic_input(EngineInput::UpdateNativeDockingEnabled {
                 provider,
                 binding: observation_binding,
                 enabled,

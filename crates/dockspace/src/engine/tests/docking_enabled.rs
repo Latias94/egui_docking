@@ -1,4 +1,4 @@
-//! Modifier-only magnetic controls through real host input and paint programs.
+//! Modifier-only docking controls through real host input and paint programs.
 
 use crate::geometry::{
     LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalSize, ScaleFactor,
@@ -220,7 +220,7 @@ fn contained_modifier_only_pause_and_reenable_preserve_complete_moved_geometry()
         control
             .submit_host_pointer(HostPointerInput::new(
                 SurfacePointerId::new(1),
-                SurfacePointerEvent::MagneticTargetingChanged { enabled },
+                SurfacePointerEvent::DockingEnabledChanged { enabled },
                 HostPointerRoute::Unknown,
                 HostPointerRoute::Unknown,
                 SurfacePointerCapture::Unknown,
@@ -231,7 +231,7 @@ fn contained_modifier_only_pause_and_reenable_preserve_complete_moved_geometry()
         let report = commit(control);
         assert_eq!(
             report.inputs(),
-            [HostInputOutcome::MagneticTargetingUpdated {
+            [HostInputOutcome::DockingEnabledUpdated {
                 enabled,
                 changed: true
             }],
@@ -456,7 +456,7 @@ fn focused_root_controls_child_magnetism_but_unfocused_binding_is_inert() {
         (root, true, true, None),
     ] {
         session
-            .report_native_magnetic_targeting(binding, enabled)
+            .report_native_docking_enabled(binding, enabled)
             .unwrap();
         let mut control = session
             .begin_native_host_frame(|_| {
@@ -467,7 +467,7 @@ fn focused_root_controls_child_magnetism_but_unfocused_binding_is_inert() {
         let report = commit(control);
         assert_eq!(
             report.inputs(),
-            [HostInputOutcome::MagneticTargetingUpdated { enabled, changed }]
+            [HostInputOutcome::DockingEnabledUpdated { enabled, changed }]
         );
         assert!(!report.workspace_changed());
         assert!(session.has_active_gesture());

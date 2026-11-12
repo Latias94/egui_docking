@@ -12,16 +12,19 @@ use crate::drop_guide::{
     DropGuideClusterId, DropGuideClusterRecord, DropGuideScope, DropGuideSlot,
 };
 use crate::drop_target::{
-    DropTargetAvailability, DropTargetId, DropTargetKind, DropTargetLocation, DropTargetRecord,
-    DropTargetUnavailable, DropVisual, SceneLayerKey, SurfaceBackground,
+    DropSourceSuppression, DropTargetAvailability, DropTargetId, DropTargetKind,
+    DropTargetLocation, DropTargetRecord, DropTargetUnavailable, DropVisual, SceneLayerKey,
+    SurfaceBackground,
 };
 use crate::error::{CommandError, TransactionError};
 use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::graph::Workspace;
 use crate::hit_region::HitRegion;
+use crate::ids::SurfaceId;
 #[cfg(test)]
 use crate::ids::WorkspaceRevision;
-use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
+#[cfg(test)]
+use crate::ids::{FloatingPresentationId, RootId};
 use crate::intent::SurfaceBackgroundRootOffer;
 use crate::interaction::DragSessionId;
 use crate::policy::{DockPolicySnapshot, PolicyRejection};
@@ -38,6 +41,13 @@ use crate::transaction::WorkspaceTransaction;
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
 use thiserror::Error;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DropTargeting {
+    Disabled,
+    Explicit,
+    Magnetic,
+}
 
 /// Queries both the exact drop outcome and the complete visible guide affordance.
 ///
@@ -154,7 +164,7 @@ pub(crate) fn resolve_presented_drop(
     surface_background_offer: Option<SurfaceBackgroundRootOffer>,
     point: LogicalPoint,
 ) -> Result<DropQuery, DropResolutionError> {
-    resolve_presented_drop_with_magnetic(
+    resolve_presented_drop_with_targeting(
         stamp,
         ready,
         source_layout_facts,
@@ -166,7 +176,7 @@ pub(crate) fn resolve_presented_drop(
         source,
         surface_background_offer,
         point,
-        true,
+        DropTargeting::Magnetic,
     )
 }
 
@@ -174,7 +184,7 @@ pub(crate) fn resolve_presented_drop(
     clippy::too_many_arguments,
     reason = "the resolver binds every authoritative drag fact without an ambient context"
 )]
-pub(crate) fn resolve_presented_drop_with_magnetic(
+pub(crate) fn resolve_presented_drop_with_targeting(
     stamp: SurfaceSceneStamp,
     ready: &PresentationPlan,
     source_layout_facts: Option<&PresentationLayoutFacts>,
@@ -186,7 +196,7 @@ pub(crate) fn resolve_presented_drop_with_magnetic(
     source: MovePayload,
     surface_background_offer: Option<SurfaceBackgroundRootOffer>,
     point: LogicalPoint,
-    allow_magnetic: bool,
+    targeting: DropTargeting,
 ) -> Result<DropQuery, DropResolutionError> {
     let surface = stamp.surface();
 
@@ -195,6 +205,13 @@ pub(crate) fn resolve_presented_drop_with_magnetic(
             DropResolution::KnownNone(KnownDropAbsence::new(stamp, surface, point)),
             None,
             TargetObservation::OutsideSurface,
+        ));
+    }
+    if targeting == DropTargeting::Disabled {
+        return Ok(DropQuery::new(
+            DropResolution::KnownNone(KnownDropAbsence::new(stamp, surface, point)),
+            None,
+            TargetObservation::surface(stamp, SceneLayerKey::surface_base(), None),
         ));
     }
 
@@ -260,7 +277,9 @@ pub(crate) fn resolve_presented_drop_with_magnetic(
             };
             let (direct, direct_candidate) =
                 resolve_exact_unguided_target(&location, source.clone())?;
-            if allow_magnetic && matches!(direct, DropResolution::KnownNone(_)) {
+            if targeting == DropTargeting::Magnetic
+                && matches!(direct, DropResolution::KnownNone(_))
+            {
                 resolve_magnetic_target(&location, &assessment, source.clone())?.map_or(
                     (direct, None),
                     |(resolution, candidate)| {
@@ -313,9 +332,7 @@ fn resolve_magnetic_target(
     let Some(candidate) = location
         .ready
         .magnetic_target_at(location.point, layer, |target| {
-            location
-                .suppression
-                .is_none_or(|entry| !entry.excludes_target(target))
+            !location.suppression.excludes_target(target)
                 && !source_excludes_magnetic_target(&source, target)
         })
     else {
@@ -435,7 +452,7 @@ fn resolve_presented_unguided_drop(
         .map(AsRef::as_ref)
         .chain(surface_scene.surface_background())
         .filter(|target| {
-            suppression.is_none_or(|entry| !entry.excludes_target(target.id()))
+            !suppression.excludes_target(target.id())
                 && target.region().contains(point)
                 && occluding_layer.is_none_or(|layer| target.layer() >= layer)
         })
@@ -545,13 +562,13 @@ fn resolve_unguided_drop(
 fn occluding_layer(
     ready: &PresentationPlan,
     point: LogicalPoint,
-    suppression: Option<SourceSuppression>,
+    suppression: DropSourceSuppression,
 ) -> Option<SceneLayerKey> {
     ready
         .drop_occlusions()
         .iter()
         .filter(|occlusion| {
-            suppression.is_none_or(|entry| !entry.excludes_occlusion(occlusion.floating()))
+            !suppression.excludes_occlusion(occlusion.floating())
                 && occlusion.region().contains(point)
         })
         .map(|occlusion| occlusion.layer())
@@ -562,10 +579,10 @@ fn select_guide_clusters(
     ready: &PresentationPlan,
     point: LogicalPoint,
     occluding_layer: Option<SceneLayerKey>,
-    suppression: Option<SourceSuppression>,
+    suppression: DropSourceSuppression,
 ) -> Vec<&DropGuideClusterRecord> {
     let visible = |cluster: &&DropGuideClusterRecord| {
-        suppression.is_none_or(|entry| entry.root != cluster.id().root)
+        !suppression.excludes_cluster(cluster.id())
             && cluster.activation().contains(point)
             && occluding_layer.is_none_or(|layer| cluster.layer() >= layer)
     };
@@ -697,6 +714,11 @@ fn build_affordance(
             point,
             owned_clusters,
             active,
+            assessment
+                .target_plan
+                .contained_projection()
+                .map(|projection| projection.drop_source_suppression())
+                .unwrap_or_default(),
         )),
         exact,
     ))
@@ -713,11 +735,7 @@ fn resolve_exact_unguided_target(
         .map(AsRef::as_ref)
         .filter(|target| target.id().kind() == DropTargetKind::TabGap)
         .chain(location.ready.surface_background())
-        .filter(|target| {
-            location
-                .suppression
-                .is_none_or(|entry| !entry.excludes_target(target.id()))
-        })
+        .filter(|target| !location.suppression.excludes_target(target.id()))
         .filter(|target| target.region().contains(location.point))
         .filter(|target| {
             location
@@ -840,9 +858,18 @@ impl<'a> DropEligibilityContext<'a> {
         }
     }
 
-    fn source_suppression(&self) -> Option<SourceSuppression> {
-        let source = self.complete_root_source.as_ref().ok()?.as_ref()?;
-        SourceSuppression::from_source(self.workspace, source)
+    fn source_suppression(&self) -> DropSourceSuppression {
+        self.complete_root_source
+            .as_ref()
+            .ok()
+            .map(|complete_root| {
+                DropSourceSuppression::from_source(
+                    self.workspace,
+                    self.source,
+                    complete_root.as_ref().map(NodeSource::root),
+                )
+            })
+            .unwrap_or_default()
     }
 
     fn check_target(
@@ -1520,43 +1547,8 @@ struct DropLocation<'a> {
     surface: SurfaceId,
     point: LogicalPoint,
     occluding_layer: Option<SceneLayerKey>,
-    suppression: Option<SourceSuppression>,
+    suppression: DropSourceSuppression,
     surface_background_offer: Option<SurfaceBackgroundRootOffer>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SourceSuppression {
-    root: RootId,
-    floating: Option<FloatingPresentationId>,
-}
-
-impl SourceSuppression {
-    fn from_source(workspace: &Workspace, source: &NodeSource) -> Option<Self> {
-        let root = source.root();
-        let floating = match workspace.presentation_for_root(root)? {
-            RootPresentationOwner::Main { .. } => None,
-            RootPresentationOwner::Contained { floating, .. } => Some(floating),
-        };
-        Some(Self { root, floating })
-    }
-
-    fn excludes_target(self, target: DropTargetId) -> bool {
-        drop_target_root(target).is_some_and(|root| self.root == root)
-    }
-
-    fn excludes_occlusion(self, floating: FloatingPresentationId) -> bool {
-        matches!(self.floating, Some(source) if source == floating)
-    }
-}
-
-const fn drop_target_root(target: DropTargetId) -> Option<RootId> {
-    match target {
-        DropTargetId::TabGap { root, .. }
-        | DropTargetId::Center { root, .. }
-        | DropTargetId::InnerEdge { root, .. }
-        | DropTargetId::OuterEdge { root, .. } => Some(root),
-        DropTargetId::SurfaceBackground { .. } => None,
-    }
 }
 
 enum PreparedDropTarget {
@@ -1662,6 +1654,7 @@ impl DropQuery {
 pub struct DropAffordance {
     scene: SurfaceSceneStamp,
     target_layout_basis: SurfaceSceneStamp,
+    guide_suppression: DropSourceSuppression,
     surface: SurfaceId,
     point: LogicalPoint,
     clusters: Vec<DropAffordanceCluster>,
@@ -1675,10 +1668,12 @@ impl DropAffordance {
         point: LogicalPoint,
         clusters: Vec<DropAffordanceCluster>,
         active: Option<DropGuideTargetKey>,
+        guide_suppression: DropSourceSuppression,
     ) -> Self {
         Self {
             scene,
             target_layout_basis: scene,
+            guide_suppression,
             surface,
             point,
             clusters,
@@ -1698,6 +1693,10 @@ impl DropAffordance {
 
     pub(crate) fn bind_target_layout_basis(&mut self, basis: SurfaceSceneStamp) {
         self.target_layout_basis = basis;
+    }
+
+    pub(crate) const fn guide_suppression(&self) -> DropSourceSuppression {
+        self.guide_suppression
     }
 
     /// Returns the authoritative logical surface.
@@ -3725,8 +3724,8 @@ mod tests {
             .capture_complete_root_source(&workspace, workspace_version, &payload)
             .expect("complete source analysis must succeed")
             .expect("complete root source must exist");
-        let suppression =
-            SourceSuppression::from_source(&workspace, &source).expect("complete root suppresses");
+        let suppression = DropSourceSuppression::from_complete_root(&workspace, source.root())
+            .expect("complete root suppresses");
         assert!(suppression.excludes_target(DropTargetId::Center {
             surface,
             root: main_root,
@@ -3738,6 +3737,92 @@ mod tests {
             tabs: sibling_tabs,
         }));
         assert!(!suppression.excludes_occlusion(sibling));
+    }
+
+    #[test]
+    fn disappearing_source_leaf_is_absent_from_guides_direct_and_magnetic_resolution() {
+        let surface = SurfaceId::new(81);
+        let root = RootId::new(82);
+        let item = ItemId::new(83);
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs([item]));
+        let remaining_tabs = builder.insert_node(Node::tabs([ItemId::new(84)]));
+        let split = builder.insert_node(
+            Node::equal_split(Axis::Horizontal, [source_tabs, remaining_tabs])
+                .expect("source and remaining leaf form a valid split"),
+        );
+        builder.set_root(root, RootRecord::new(split));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder.build().expect("self-docking workspace is valid");
+        let engine = DockEngine::new(workspace.clone(), DockPolicy::default())
+            .expect("self-docking engine is valid");
+        let plan = compile_fixture_surface_plan(&engine, surface, rect());
+        let source_guide = plan
+            .drop_guide_clusters()
+            .iter()
+            .find(|cluster| cluster.id() == DropGuideClusterId::inner(surface, root, source_tabs))
+            .expect("the unchanged durable source has an inner guide cluster");
+        let points: Vec<_> = source_guide
+            .targets()
+            .map(|(_, target)| {
+                let bounds = target.hit().rect();
+                LogicalPoint::new(
+                    bounds.x() + bounds.width() * 0.5,
+                    bounds.y() + bounds.height() * 0.5,
+                )
+                .expect("source guide midpoint is finite")
+            })
+            .collect();
+        let scene = seal_workspace(&workspace, plan);
+        let source = workspace
+            .capture_node_source(root, source_tabs)
+            .expect("source leaf is current");
+        for payload in [
+            MovePayload::Item(
+                workspace
+                    .capture_item_source(root, source_tabs, item)
+                    .expect("last source tab is current"),
+            ),
+            MovePayload::Tabs(source.clone()),
+            MovePayload::Subtree(source),
+        ] {
+            for point in &points {
+                let query = resolve_drop(
+                    &scene,
+                    &workspace,
+                    &DockPolicySnapshot::default(),
+                    session(),
+                    payload.clone(),
+                    None,
+                    surface,
+                    *point,
+                )
+                .expect("source exclusion leaves a valid drop query");
+                assert!(
+                    matches!(query.resolution(), DropResolution::KnownNone(_)),
+                    "a removed source leaf cannot be an exact or magnetic destination: {payload:?}",
+                );
+                let clusters = query
+                    .affordance()
+                    .expect("root outer guides remain")
+                    .clusters();
+                assert_eq!(clusters.len(), 1);
+                assert_eq!(clusters[0].id(), DropGuideClusterId::outer(surface, root));
+                assert_eq!(clusters[0].targets().len(), 4);
+                let unguided = resolve_unguided_drop(
+                    &scene,
+                    &workspace,
+                    &DockPolicySnapshot::default(),
+                    session(),
+                    payload.clone(),
+                    None,
+                    surface,
+                    *point,
+                )
+                .expect("unguided source exclusion remains valid");
+                assert!(matches!(unguided, DropResolution::KnownNone(_)));
+            }
+        }
     }
 
     #[test]

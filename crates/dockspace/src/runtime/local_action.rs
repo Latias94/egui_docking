@@ -10,7 +10,7 @@ use crate::engine::{
 };
 use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, ItemId, SurfaceId};
 use crate::intent::CloseSceneTarget;
-use crate::interaction::EscapeDelivery;
+use crate::interaction::GestureCancelDelivery;
 use crate::model::WorkspaceVersion;
 use crate::scene::{
     ContainedResizeDirection, SplitterJunctionId, SplitterSceneId, SurfaceSceneStamp,
@@ -236,20 +236,20 @@ impl PreparedSurfaceAction {
         }
     }
 
-    pub(super) fn cancel_with_escape(
+    pub(super) fn cancel_gesture(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         surface: SurfaceId,
         witness: Arc<crate::scene::SurfacePlanScene>,
         status: crate::interaction::InteractionStatus,
-        delivery: EscapeDelivery,
+        delivery: GestureCancelDelivery,
     ) -> Self {
         Self {
             authority_domain,
             expected,
             surface,
             witness,
-            action: SurfaceAction::CancelWithEscape { status, delivery },
+            action: SurfaceAction::CancelGesture { status, delivery },
         }
     }
 
@@ -311,7 +311,7 @@ impl PreparedSurfaceAction {
             | SurfaceAction::AdjustSplitter { .. }
             | SurfaceAction::AdjustSplitterJunction { .. }
             | SurfaceAction::AdjustContainedResize { .. }
-            | SurfaceAction::CancelWithEscape { .. } => None,
+            | SurfaceAction::CancelGesture { .. } => None,
         }
     }
 
@@ -398,8 +398,8 @@ impl PreparedSurfaceAction {
                 direction,
                 delta,
             },
-            SurfaceAction::CancelWithEscape { status, delivery } => {
-                EngineInput::CancelPreparedInteractionWithEscape {
+            SurfaceAction::CancelGesture { status, delivery } => {
+                EngineInput::CancelPreparedInteraction {
                     expected: self.expected,
                     witness: self.witness,
                     status,

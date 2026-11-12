@@ -19,6 +19,7 @@ use dockspace::runtime::{
 use egui::emath::GuiRounding;
 use egui::{Id, Sense, Ui};
 
+use crate::DockInputConfig;
 use crate::builder::DockspaceBuilder;
 use crate::error::DockspaceError;
 use crate::error_detail::DockspaceErrorSource;
@@ -227,6 +228,21 @@ impl Dockspace {
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
         self.pending_focus.clear();
         Ok(DockspaceMutation::from_runtime_report(&report))
+    }
+
+    /// Returns the adapter's docking activation and cancellation bindings.
+    #[must_use]
+    pub const fn input(&self) -> DockInputConfig {
+        self.pointer.input()
+    }
+
+    /// Replaces gesture bindings at the next input boundary.
+    ///
+    /// An active pointer retains its last observed modifiers. The next run
+    /// recomputes docking intent without inventing pointer motion or restoring
+    /// a previously cleared target.
+    pub fn set_input(&mut self, input: DockInputConfig) {
+        self.pointer.set_input(input);
     }
 
     /// Replaces renderer geometry and visual styling atomically.
@@ -892,6 +908,7 @@ impl Dockspace {
                     plan,
                     panes,
                     &self.style,
+                    &self.pointer.input(),
                     resources,
                     if presentation_settlement_available {
                         product_render::PointerActionAuthority::HostJournal

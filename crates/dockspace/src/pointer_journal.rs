@@ -59,7 +59,7 @@ pub enum PointerDeviceKind {
 pub struct PointerEventMetadata {
     device: PointerDeviceKind,
     observed_at: Option<Duration>,
-    magnetic_targeting: Option<bool>,
+    docking_enabled: Option<bool>,
 }
 
 impl PointerEventMetadata {
@@ -75,7 +75,7 @@ impl PointerEventMetadata {
         Self {
             device,
             observed_at: None,
-            magnetic_targeting: None,
+            docking_enabled: None,
         }
     }
 
@@ -85,25 +85,26 @@ impl PointerEventMetadata {
         Self {
             device,
             observed_at: Some(observed_at),
-            magnetic_targeting: None,
+            docking_enabled: None,
         }
     }
 
-    /// Directs magnetic target acquisition for the admitted gesture.
+    /// Enables or suspends docking target acquisition for the admitted gesture.
     ///
     /// Hosts map their own modifier or tool mode to this semantic intent. A
     /// missing directive preserves the gesture's previous intent; a new gesture
-    /// starts enabled. Explicit guide and tab-gap targets remain available.
+    /// starts enabled. Disabling also clears explicit guide and tab-gap targets,
+    /// while capture and floating-window movement remain active.
     #[must_use]
-    pub const fn with_magnetic_targeting(mut self, enabled: bool) -> Self {
-        self.magnetic_targeting = Some(enabled);
+    pub const fn with_docking_enabled(mut self, enabled: bool) -> Self {
+        self.docking_enabled = Some(enabled);
         self
     }
 
     /// Returns the optional targeting directive carried by this edge.
     #[must_use]
-    pub const fn magnetic_targeting(self) -> Option<bool> {
-        self.magnetic_targeting
+    pub const fn docking_enabled(self) -> Option<bool> {
+        self.docking_enabled
     }
 
     /// Returns the class observed for this edge alone.
@@ -952,8 +953,8 @@ pub enum PointerAuthorityCheckpointError {
 /// Typed reason why a provider ended one pointer stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PointerStreamCancelReason {
-    /// The user cancelled the current manipulation with Escape.
-    Escape,
+    /// The adapter explicitly cancelled the current manipulation.
+    ExplicitCancellation,
     /// The provider observed a device-removal boundary and invalidated this stream.
     DeviceRemoved,
     /// The platform explicitly cancelled this stream.

@@ -23,6 +23,7 @@ use eframe::{
     NativeViewportPointerPassthroughCommandToken, NativeViewportPointerPassthroughStatus,
     egui::ViewportId,
 };
+use egui_dockspace::DockInputConfig;
 use winit::window::WindowId;
 
 use crate::NativeRuntimeError;
@@ -85,6 +86,7 @@ pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
 /// output to the eframe output token that produced it.
 pub(crate) struct NativeCoordinator {
     session: DockspaceSession,
+    input: DockInputConfig,
     bridge: Arc<NativeHostBridge>,
     queued_snapshot: Option<QueuedNativeSnapshot>,
     snapshot_storage: Option<NativeSnapshotStorageLimit>,
@@ -606,6 +608,7 @@ impl NativeCoordinator {
         }
         let mut native = Self {
             session,
+            input: DockInputConfig::default(),
             bridge,
             queued_snapshot: None,
             snapshot_storage: None,
@@ -672,6 +675,14 @@ impl NativeCoordinator {
     #[must_use]
     pub const fn session(&self) -> &DockspaceSession {
         &self.session
+    }
+
+    pub(crate) const fn input(&self) -> DockInputConfig {
+        self.input
+    }
+
+    pub(crate) fn set_input(&mut self, input: DockInputConfig) {
+        self.input = input;
     }
 
     #[cfg(test)]
@@ -1637,9 +1648,12 @@ impl NativeCoordinator {
                         }
                         let (record, captured_at) = events.next()?;
                         consumed += 1;
-                        match candidate.translate_captured(record, captured_at, |point| {
-                            self.work_areas.binding_at(point)
-                        }) {
+                        match candidate.translate_captured_with_input(
+                            record,
+                            captured_at,
+                            &self.input,
+                            |point| self.work_areas.binding_at(point),
+                        ) {
                             NativePointerTranslation::Input(input) => return Some(input),
                             NativePointerTranslation::Ignored => ignored += 1,
                             NativePointerTranslation::NotPointer => unreachable!(
@@ -1689,9 +1703,9 @@ impl NativeCoordinator {
         // The accepted raw callback already owns the overlapping storage promise.
         let mut candidate = self.pointer_translator.clone();
         let work_areas = &self.work_areas;
-        match candidate
-            .translate_captured(&record, captured_at, |point| work_areas.binding_at(point))
-        {
+        match candidate.translate_captured_with_input(&record, captured_at, &self.input, |point| {
+            work_areas.binding_at(point)
+        }) {
             NativePointerTranslation::NotPointer => {
                 unreachable!("pointer translation follows the same immutable event classification")
             }
@@ -1777,10 +1791,13 @@ impl NativeCoordinator {
         };
         match record.event() {
             winit::event::WindowEvent::ModifiersChanged(modifiers) => {
-                self.session.report_native_magnetic_targeting(
+                self.session.report_native_docking_enabled(
                     binding.window(),
-                    !modifiers.state().shift_key(),
+                    self.input
+                        .docking_enabled(crate::pointer_event::egui_modifiers(modifiers.state())),
                 )?;
+                self.pointer_translator
+                    .observe_modifiers(binding.window(), modifiers.state());
             }
             winit::event::WindowEvent::CloseRequested => {
                 if self
@@ -2132,8 +2149,9 @@ impl NativeCoordinator {
             return Err(NativeHostProtocolError::CallbackRecordPending.into());
         }
         let dispatch = self.bridge.admission_dispatch();
-        let mut frame = NativeHostFrame::new(
+        let mut frame = NativeHostFrame::new_with_input(
             self.session.begin_native_host_frame(resolve)?,
+            self.input,
             self.bridge.clone(),
             &mut self.receivers,
             None,
@@ -2180,8 +2198,13 @@ impl NativeCoordinator {
             bridge.hold_native_boundary();
             return Ok(None);
         };
-        let mut frame =
-            NativeHostFrame::new(frame, bridge, &mut self.receivers, Some(context.clone()));
+        let mut frame = NativeHostFrame::new_with_input(
+            frame,
+            self.input,
+            bridge,
+            &mut self.receivers,
+            Some(context.clone()),
+        );
         if let NativeDispatch::Cancel { boundary } = dispatch {
             frame.cancel_for_overload(boundary, &mut self.pointer_translator)?;
         }
@@ -2206,7 +2229,13 @@ impl NativeCoordinator {
             self.bridge.hold_native_boundary();
             return Ok(None);
         };
-        let mut frame = NativeHostFrame::new(frame, self.bridge.clone(), &mut self.receivers, None);
+        let mut frame = NativeHostFrame::new_with_input(
+            frame,
+            self.input,
+            self.bridge.clone(),
+            &mut self.receivers,
+            None,
+        );
         if let NativeDispatch::Cancel { boundary } = dispatch {
             frame.cancel_for_overload(boundary, &mut self.pointer_translator)?;
         }

@@ -1178,7 +1178,7 @@ impl DockEngine {
                     | InputOutcome::InteractionProcessed { .. }
                     | InputOutcome::WorkspaceValidated { .. }
                     | InputOutcome::PlatformProviderRejected { .. }
-                    | InputOutcome::MagneticTargetingUpdated { .. }
+                    | InputOutcome::DockingEnabledUpdated { .. }
                     | InputOutcome::StaleRejected { .. } => &[],
                 }
                 .iter()
@@ -1783,10 +1783,14 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
-            EngineInput::CancelActiveInteractionWithEscape { expected, delivery } => {
-                self.reduce_escape_input(input.sequence, *expected, *delivery, interaction_events)
-            }
-            EngineInput::CancelPreparedInteractionWithEscape {
+            EngineInput::CancelActiveInteraction { expected, delivery } => self
+                .reduce_gesture_cancel_input(
+                    input.sequence,
+                    *expected,
+                    *delivery,
+                    interaction_events,
+                ),
+            EngineInput::CancelPreparedInteraction {
                 expected,
                 witness,
                 status,
@@ -1804,7 +1808,7 @@ impl DockEngine {
                     focus_causal,
                     *expected,
                     witness,
-                    &LocalSurfaceAction::CancelWithEscape {
+                    &LocalSurfaceAction::CancelGesture {
                         status: *status,
                         delivery: *delivery,
                     },
@@ -1820,22 +1824,22 @@ impl DockEngine {
                     *provider,
                     interaction_events,
                 ),
-            EngineInput::UpdatePointerMagneticTargeting {
+            EngineInput::UpdatePointerDockingEnabled {
                 provider,
                 pointer,
                 enabled,
-            } => self.reduce_pointer_magnetic_targeting(
+            } => self.reduce_pointer_docking_enabled(
                 cause,
                 *provider,
                 *pointer,
                 *enabled,
                 interaction_events,
             ),
-            EngineInput::UpdateNativeMagneticTargeting {
+            EngineInput::UpdateNativeDockingEnabled {
                 provider,
                 binding,
                 enabled,
-            } => self.reduce_native_magnetic_targeting(
+            } => self.reduce_native_docking_enabled(
                 cause,
                 *provider,
                 *binding,

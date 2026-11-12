@@ -8,6 +8,7 @@ use dockspace::geometry::PhysicalRect;
 use dockspace::runtime::{NativeSurfaceBinding, NativeSurfaceRole};
 use eframe::egui::{self, ViewportBuilder, ViewportClass, ViewportId};
 
+use crate::NativeChildWindowOptions;
 use crate::error::NativeHostProtocolError;
 use crate::mailbox::DeferredViewportPaint;
 
@@ -41,8 +42,8 @@ impl DeferredViewportSpec {
         self.visible = visible;
     }
 
-    pub(crate) fn builder(self) -> ViewportBuilder {
-        ViewportBuilder::default().with_visible(self.visible)
+    pub(crate) fn builder(self, options: &NativeChildWindowOptions) -> ViewportBuilder {
+        options.viewport_builder().with_visible(self.visible)
     }
 }
 
@@ -195,6 +196,7 @@ pub(crate) fn viewport_id_for(binding: NativeSurfaceBinding) -> ViewportId {
 pub(crate) fn declare_deferred_viewports(
     context: &egui::Context,
     specs: impl IntoIterator<Item = DeferredViewportSpec>,
+    options: &NativeChildWindowOptions,
     title: impl Fn(DeferredViewportSpec) -> String,
     callback: impl Fn(DeferredViewportSpec, &mut egui::Ui, ViewportClass)
     + Clone
@@ -206,7 +208,7 @@ pub(crate) fn declare_deferred_viewports(
         let callback = callback.clone();
         context.show_viewport_deferred(
             spec.viewport(),
-            spec.builder().with_title(title(spec)),
+            spec.builder(options).with_title(title(spec)),
             move |ui, class| {
                 callback(spec, ui, class);
             },

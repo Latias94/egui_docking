@@ -46,9 +46,9 @@ pub struct DockVisualOverrides {
     pub splitter_color: Option<Color32>,
     /// Fill of a hovered, dragged, or keyboard-focused splitter.
     pub splitter_hover_color: Option<Color32>,
-    /// Translucent fill of the resolved drop target.
+    /// Translucent fill of the resulting docking area in the candidate layout.
     pub drop_fill: Option<Color32>,
-    /// Border color of the resolved drop target.
+    /// Border color of the resulting docking area in the candidate layout.
     pub drop_border_color: Option<Color32>,
     /// Fill of an available passive docking guide.
     pub drop_guide_fill: Option<Color32>,

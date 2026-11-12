@@ -45,6 +45,7 @@ use crate::workspace::WorkspaceIndex;
 mod future_layout;
 mod requirements;
 mod surface;
+mod tab_strip_layout;
 
 pub(crate) use future_layout::{
     FutureLayoutProjectionError, project_future_root, project_future_tab_gap_visual,

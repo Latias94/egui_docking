@@ -510,6 +510,98 @@ fn explicit_touch_long_press_then_motion_uses_the_normal_preview_and_dock_releas
 }
 
 #[test]
+fn touch_drag_pauses_docking_without_motion_and_end_does_not_restore_the_old_target() {
+    for change_config in [false, true] {
+        let context = Context::default();
+        context.enable_accesskit();
+        context.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+        let mut dockspace =
+            Dockspace::builder(("touch-docking-intent", change_config), magnetic_layout())
+                .build()
+                .unwrap();
+        let mut panes = MagneticPanes::new();
+        let mut source = None;
+        for index in 0..8 {
+            let (output, _) = frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                f64::from(index) * 0.05,
+                Vec::new(),
+            );
+            source = try_tab_rect(&output, "Third")
+                .map(|rect| rect.center())
+                .or(source);
+        }
+        let source = source.unwrap();
+        let target = panes.target_rect.get().unwrap().center();
+        let before = dockspace.version();
+        frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            1.0,
+            vec![contact(egui::TouchPhase::Start, source)],
+        );
+        let (_, armed) = frame(&context, &mut dockspace, &mut panes, 1.35, Vec::new());
+        assert!(matches!(
+            armed.as_slice(),
+            [DockspaceTouchEvent::Armed { .. }]
+        ));
+        for time in [1.36, 1.4, 1.5] {
+            frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                time,
+                vec![contact(egui::TouchPhase::Move, target)],
+            );
+        }
+        assert!(dockspace.session.has_active_gesture());
+        assert!(!dockspace.registered_drop_target_observations().is_empty());
+        let events = if change_config {
+            dockspace.set_input(crate::input::DockInputConfig {
+                docking: crate::input::DockingActivation::HoldToEnable(egui::Modifiers::ALT),
+                ..Default::default()
+            });
+            Vec::new()
+        } else {
+            vec![Event::ModifiersChanged(egui::Modifiers::SHIFT)]
+        };
+        frame(&context, &mut dockspace, &mut panes, 1.55, events);
+        assert!(dockspace.session.has_active_gesture());
+        assert_eq!(dockspace.version(), before);
+        assert!(
+            dockspace.registered_drop_target_observations().is_empty(),
+            "modifier-only input and configuration changes both hide docking guides without motion",
+        );
+        frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            1.6,
+            vec![contact(egui::TouchPhase::End, target)],
+        );
+        for index in 0..8 {
+            frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                1.7 + f64::from(index) * 0.1,
+                Vec::new(),
+            );
+            assert_eq!(
+                dockspace.view().item(FIRST).unwrap().tabs().items(),
+                &[FIRST]
+            );
+        }
+        assert!(dockspace.view().item(THIRD).unwrap().contained().is_some());
+        assert!(!dockspace.session.has_active_gesture());
+        assert!(dockspace.session.pointer_continuation().is_none());
+    }
+}
+
+#[test]
 fn touch_content_scrolling_keeps_the_pane_scroll_owner_without_arming_docking() {
     struct ScrollPane {
         viewport: Option<Rect>,

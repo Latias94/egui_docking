@@ -47,6 +47,19 @@ This crate uses the separate [fork workspace](../../integration/egui-fork-worksp
 Do not patch the official adapter workspace to run it. Current dependency pins
 are maintained in that manifest and lockfile.
 
+Use `NativeDockspaceApp::with_input` with the same `egui_dockspace::DockInputConfig`
+as the official adapter. It controls hold-to-enable/disable docking and the
+gesture-cancel shortcut; default bindings are Shift and Escape. Queue runtime
+changes through `request_input` and consume their result through
+`take_action_status`, like other application commands.
+
+`with_child_window_options` and `set_child_window_options` configure managed
+Child window decorations, Windows taskbar presence, stacking level and icon.
+New windows and replacements share these settings. Placement and visibility
+remain coordinated by the native lifecycle; configure the external Root window
+through eframe's `NativeOptions::viewport`. Child titles follow selected panes
+without adding a library-brand suffix.
+
 [Examples](../../docs/EXAMPLES.md) · [Development](../../CONTRIBUTING.md)
 · [Native qualification](../../integration/egui-native-smoke/README.md)
 

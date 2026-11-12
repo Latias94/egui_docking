@@ -13,9 +13,10 @@ use egui::{
     Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, TouchPhase, Ui,
 };
 
+use crate::input::{DockInputConfig, DockingActivation};
 use crate::{Dockspace, PaneView};
 
-use super::{ProductPointer, continuation_sample, update_magnetic_targeting};
+use super::{ProductPointer, continuation_sample, event_modifiers, update_docking_enabled};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const FIRST: ItemId = ItemId::new(1);
@@ -142,7 +143,8 @@ fn modifier_only_input_remembers_shift_without_enrolling_a_pointer() {
     output.textures_delta.clear();
     receipt.report(crate::SurfacePresentationResult::Presented);
     assert_eq!(submissions, 0, "idle modifiers need no host pointer batch");
-    assert_eq!(pointer.magnetic_targeting, Some(false));
+    assert_eq!(pointer.docking_enabled, Some(false));
+    assert_eq!(pointer.observed_modifiers, Some(Modifiers::SHIFT));
     assert!(!pointer.generic_live);
     assert!(pointer.touches.is_empty());
     assert_eq!(pointer.position, None);
@@ -151,12 +153,9 @@ fn modifier_only_input_remembers_shift_without_enrolling_a_pointer() {
 #[test]
 fn ordered_modifier_sources_preserve_intent_across_events_without_a_directive() {
     let point = Pos2::new(180.0, 160.0);
+    let config = DockInputConfig::default();
+    let mut observed = None;
     let mut current = None;
-    assert_eq!(
-        update_magnetic_targeting(&mut current, &Event::PointerMoved(point)),
-        None,
-    );
-    assert_eq!(current, None);
     for (event, changed, retained) in [
         (
             Event::PointerButton {
@@ -198,15 +197,20 @@ fn ordered_modifier_sources_preserve_intent_across_events_without_a_directive() 
             true,
         ),
     ] {
-        assert_eq!(update_magnetic_targeting(&mut current, &event), changed);
+        let actual = event_modifiers(&event).and_then(|modifiers| {
+            observed = Some(modifiers);
+            update_docking_enabled(&mut current, config, modifiers)
+        });
+        assert_eq!(actual, changed);
         assert_eq!(current, Some(retained), "event-time intent for {event:?}");
     }
+    assert_eq!(observed, Some(Modifiers::NONE));
 }
 
 #[test]
-fn touch_samples_and_continuations_keep_keyboard_targeting_unknown() {
+fn touch_samples_and_continuations_retain_the_observed_docking_intent() {
     let mut pointer = ProductPointer {
-        magnetic_targeting: Some(false),
+        docking_enabled: Some(false),
         ..ProductPointer::default()
     };
     let point = Pos2::new(180.0, 160.0);
@@ -217,30 +221,212 @@ fn touch_samples_and_continuations_keep_keyboard_targeting_unknown() {
             egui::TouchId(7),
             TouchPhase::Start,
             point,
+            pointer.docking_enabled,
         )
         .unwrap()
         .unwrap();
-    assert_eq!(sample.magnetic_targeting, None);
+    assert_eq!(sample.docking_enabled, Some(false));
     let touch = continuation_sample(
         &pointer.touches,
         Some(point),
-        pointer.magnetic_targeting,
+        pointer.docking_enabled,
         sample.pointer,
         SurfacePointerEvent::Moved,
     )
     .unwrap();
-    assert_eq!(touch.magnetic_targeting, None);
+    assert_eq!(touch.docking_enabled, Some(false));
     let generic = continuation_sample(
         &pointer.touches,
         Some(point),
-        pointer.magnetic_targeting,
+        pointer.docking_enabled,
         dockspace::runtime::SurfacePointerId::new(1),
         SurfacePointerEvent::Moved,
     )
     .unwrap();
-    pointer.magnetic_targeting = Some(true);
-    assert_eq!(generic.magnetic_targeting, Some(false));
+    pointer.docking_enabled = Some(true);
+    assert_eq!(generic.docking_enabled, Some(false));
     assert_eq!(generic.position, Some(point));
+    let changed = continuation_sample(
+        &pointer.touches,
+        Some(point),
+        pointer.docking_enabled,
+        sample.pointer,
+        SurfacePointerEvent::Moved,
+    )
+    .unwrap();
+    assert_eq!(changed.docking_enabled, Some(true));
+    assert_eq!(changed.pointer, sample.pointer);
+}
+
+#[test]
+fn configured_activation_rechecks_observations_without_modifier_events() {
+    let mut current = None;
+    let mut pointer = ProductPointer::default();
+    pointer.set_input(DockInputConfig {
+        docking: DockingActivation::HoldToEnable(Modifiers::ALT),
+        ..Default::default()
+    });
+    assert_eq!(
+        update_docking_enabled(&mut current, pointer.input(), Modifiers::NONE),
+        Some(false),
+        "hold-to-enable starts disabled when no modifiers were observed",
+    );
+    pointer.observed_modifiers = Some(Modifiers::ALT | Modifiers::SHIFT);
+    assert_eq!(
+        update_docking_enabled(
+            &mut current,
+            pointer.input(),
+            pointer.observed_modifiers.unwrap(),
+        ),
+        Some(true),
+    );
+    pointer.set_input(DockInputConfig {
+        docking: DockingActivation::HoldToDisable(Modifiers::ALT),
+        ..pointer.input()
+    });
+    assert_eq!(
+        update_docking_enabled(
+            &mut current,
+            pointer.input(),
+            pointer.observed_modifiers.unwrap(),
+        ),
+        Some(false),
+        "changing the policy recomputes the same actual observation",
+    );
+    let config = pointer.input();
+    pointer.clear();
+    assert_eq!(pointer.input(), config);
+    assert_eq!(pointer.observed_modifiers, None);
+    assert_eq!(pointer.docking_enabled, None);
+}
+
+#[test]
+fn modifier_markers_only_name_existing_generic_and_touch_streams() {
+    let mut pointer = ProductPointer::default();
+    assert_eq!(
+        super::docking_change_samples(&pointer.touches, false, false).count(),
+        0,
+    );
+    let first = pointer
+        .touches
+        .observe(
+            egui::TouchDeviceId(1),
+            egui::TouchId(7),
+            TouchPhase::Start,
+            Pos2::new(180.0, 160.0),
+            Some(true),
+        )
+        .unwrap()
+        .unwrap();
+    let second = pointer
+        .touches
+        .observe(
+            egui::TouchDeviceId(1),
+            egui::TouchId(8),
+            TouchPhase::Start,
+            Pos2::new(240.0, 160.0),
+            Some(true),
+        )
+        .unwrap()
+        .unwrap();
+    let markers = super::docking_change_samples(&pointer.touches, true, false).collect::<Vec<_>>();
+    assert_eq!(
+        markers
+            .iter()
+            .map(|marker| marker.pointer)
+            .collect::<Vec<_>>(),
+        [
+            dockspace::runtime::SurfacePointerId::new(1),
+            first.pointer,
+            second.pointer
+        ],
+    );
+    assert!(markers.iter().all(|marker| {
+        marker.position.is_none()
+            && marker.docking_enabled == Some(false)
+            && matches!(
+                marker.event,
+                SurfacePointerEvent::DockingEnabledChanged { enabled: false }
+            )
+    }));
+}
+
+#[test]
+fn configured_drag_cancellation_replaces_escape_and_allows_extra_modifiers() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(RootId::new(1), DockspaceNode::tabs([FIRST, SECOND])),
+    )])
+    .unwrap();
+    let mut dockspace = Dockspace::builder("configured-drag-cancel", layout)
+        .input(DockInputConfig {
+            cancel_drag: Some(egui::KeyboardShortcut::new(Modifiers::CTRL, Key::Q)),
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+    let mut source = None;
+    for index in 0..8 {
+        let (output, _) = frame(
+            &context,
+            &mut dockspace,
+            f64::from(index) * 0.05,
+            Vec::new(),
+        );
+        source = tab(&output, "First").or(source);
+    }
+    let source = source.unwrap();
+    frame(
+        &context,
+        &mut dockspace,
+        1.0,
+        vec![Event::PointerMoved(source), button(source, true)],
+    );
+    frame(
+        &context,
+        &mut dockspace,
+        1.05,
+        vec![Event::PointerMoved(source + egui::vec2(12.0, 20.0))],
+    );
+    let key = |key, modifiers| Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    let (_, ignored) = frame(
+        &context,
+        &mut dockspace,
+        1.1,
+        vec![key(Key::Escape, Modifiers::NONE)],
+    );
+    assert!(
+        ignored.is_empty(),
+        "the replaced default binding must not cancel the drag"
+    );
+    let (_, cancelled) = frame(
+        &context,
+        &mut dockspace,
+        1.2,
+        vec![key(
+            Key::Q,
+            Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT,
+        )],
+    );
+    assert_eq!(
+        cancelled,
+        [DockspaceManipulationStatus::Cancelled(
+            DockspaceManipulationCancelReason::ExplicitCancellation
+        )],
+    );
+    assert_eq!(
+        dockspace.view().item(FIRST).unwrap().tabs().items(),
+        &[FIRST, SECOND]
+    );
 }
 
 #[test]

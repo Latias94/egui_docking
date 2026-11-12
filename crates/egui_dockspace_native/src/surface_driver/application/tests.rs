@@ -695,7 +695,7 @@ fn commit_queued_report(state: &mut NativeRuntimeState<Panes>) -> HostFrameRepor
     let report = frame.commit().unwrap();
     let mut submitted = Some(submitted);
     state
-        .publish_application_style(&egui::Context::default(), &mut submitted, &report)
+        .publish_application_configuration(&egui::Context::default(), &mut submitted, &report)
         .unwrap();
     state
         .application_actions
@@ -1084,6 +1084,68 @@ fn dock_submission_preserves_phase_errors_outside_foreign_action_authority() {
 }
 
 #[test]
+fn input_requests_share_the_command_slot_and_publish_only_after_commit() {
+    let mut state = state();
+    let original = state.input();
+    let configured = egui_dockspace::DockInputConfig {
+        docking: egui_dockspace::DockingActivation::HoldToEnable(egui::Modifiers::ALT),
+        cancel_drag: None,
+    };
+    state.request_input(configured).unwrap();
+    assert_eq!(state.input(), original);
+    assert_eq!(
+        state.request_input(original),
+        Err(NativeActionRequestError::Busy)
+    );
+    assert_eq!(
+        state.request_command(NativeCommand::SelectItem { item: FIRST }),
+        Err(NativeActionRequestError::Busy)
+    );
+    commit_queued(&mut state);
+    assert_eq!(state.input(), configured);
+    assert_eq!(
+        state.request_input(original),
+        Err(NativeActionRequestError::Busy)
+    );
+    assert_eq!(
+        take(&mut state),
+        NativeActionStatus::InputChanged { changed: true }
+    );
+    state.request_input(configured).unwrap();
+    commit_queued(&mut state);
+    assert_eq!(
+        take(&mut state),
+        NativeActionStatus::InputChanged { changed: false }
+    );
+}
+
+#[test]
+fn initial_input_configuration_does_not_consume_the_application_slot_and_stops_at_first_run() {
+    let mut state = state();
+    let configured = egui_dockspace::DockInputConfig {
+        docking: egui_dockspace::DockingActivation::Always,
+        cancel_drag: None,
+    };
+    state.set_initial_input(configured).unwrap();
+    assert_eq!(state.input(), configured);
+    assert!(!state.application_actions.is_occupied());
+    state.root_context = Some(egui::Context::default());
+    assert_eq!(
+        state.set_initial_input(Default::default()),
+        Err(NativeActionRequestError::Busy)
+    );
+    assert_eq!(state.input(), configured);
+    state.request_input(Default::default()).unwrap();
+    assert_eq!(state.input(), configured);
+    commit_queued(&mut state);
+    assert_eq!(state.input(), egui_dockspace::DockInputConfig::default());
+    assert_eq!(
+        take(&mut state),
+        NativeActionStatus::InputChanged { changed: true }
+    );
+}
+
+#[test]
 fn style_requests_share_the_command_slot_and_publish_only_after_commit() {
     let mut state = state();
     let original = state.style.clone();
@@ -1210,7 +1272,7 @@ fn candidate_style_and_core_geometry_encode_together_across_repeat_passes() {
     let report = frame.commit().unwrap();
     let mut submitted = Some(submitted);
     state
-        .publish_application_style(&context, &mut submitted, &report)
+        .publish_application_configuration(&context, &mut submitted, &report)
         .unwrap();
     state
         .application_actions
@@ -1251,7 +1313,7 @@ fn visual_and_unchanged_styles_do_not_submit_geometry_replacements() {
                 .any(|input| matches!(input, HostInputOutcome::PresentationConfigReplaced { .. }))
         );
         state
-            .publish_application_style(&egui::Context::default(), &mut submitted, &report)
+            .publish_application_configuration(&egui::Context::default(), &mut submitted, &report)
             .unwrap();
         state
             .application_actions

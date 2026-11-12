@@ -2,8 +2,8 @@ use super::*;
 
 mod backend_ingress_prefix;
 mod configuration_phase;
+mod docking_enabled;
 mod local_selection;
-mod magnetic_targeting;
 
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use crate::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation};

@@ -239,8 +239,8 @@ pub enum SurfacePointerPosition {
 /// Explicit lifecycle reason for terminating one pointer stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SurfacePointerCancelReason {
-    /// The user explicitly cancelled this manipulation with Escape.
-    Escape,
+    /// The adapter explicitly cancelled this manipulation.
+    ExplicitCancellation,
     /// The physical or virtual device was removed.
     DeviceRemoved,
     /// The platform explicitly cancelled this stream.
@@ -435,12 +435,12 @@ impl SurfaceScrollEvent {
 /// One renderer-neutral pointer edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SurfacePointerEvent {
-    /// Changes magnetic targeting intent without reporting motion or capture.
+    /// Enables or suspends docking without reporting motion or capture.
     ///
     /// The directive applies only to this provider's matching active pointer.
     /// Enabling permits fresh acquisition on a later real pointer edge.
-    MagneticTargetingChanged {
-        /// Whether magnetic acquisition is enabled; explicit targets stay available.
+    DockingEnabledChanged {
+        /// Whether explicit and magnetic docking targets may be acquired.
         enabled: bool,
     },
     /// Pointer motion while the provider owns the stream.
@@ -1427,7 +1427,7 @@ impl DockspaceHostFrame<'_> {
         for input in inputs {
             if matches!(
                 input.event,
-                SurfacePointerEvent::MagneticTargetingChanged { .. }
+                SurfacePointerEvent::DockingEnabledChanged { .. }
             ) {
                 prepared.push((None, input));
                 continue;
@@ -1461,7 +1461,7 @@ impl DockspaceHostFrame<'_> {
         }
         for (prepared_edge, input) in prepared {
             let Some((edge_sequence, journal)) = prepared_edge else {
-                let SurfacePointerEvent::MagneticTargetingChanged { enabled } = input.event else {
+                let SurfacePointerEvent::DockingEnabledChanged { enabled } = input.event else {
                     unreachable!("only targeting directives omit a pointer journal");
                 };
                 let provider = self
@@ -1470,7 +1470,7 @@ impl DockspaceHostFrame<'_> {
                     .as_ref()
                     .map(|pointer| pointer.provider().lease())
                     .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
-                self.append(crate::engine::EngineInput::UpdatePointerMagneticTargeting {
+                self.append(crate::engine::EngineInput::UpdatePointerDockingEnabled {
                     provider,
                     pointer: PointerId::new(input.pointer.get()),
                     enabled,
@@ -1509,7 +1509,7 @@ impl DockspaceHostFrame<'_> {
         event: SurfacePointerEvent,
     ) -> Result<PointerEdgeKind, DockspaceRuntimeError> {
         Ok(match event {
-            SurfacePointerEvent::MagneticTargetingChanged { .. } => {
+            SurfacePointerEvent::DockingEnabledChanged { .. } => {
                 unreachable!("targeting directives are semantic inputs, not pointer edges")
             }
             SurfacePointerEvent::Moved => PointerEdgeKind::Moved,
@@ -1762,7 +1762,9 @@ const fn surface_capture(capture: SurfacePointerCapture) -> Authority<PointerCap
 
 const fn surface_cancel_reason(reason: SurfacePointerCancelReason) -> PointerStreamCancelReason {
     match reason {
-        SurfacePointerCancelReason::Escape => PointerStreamCancelReason::Escape,
+        SurfacePointerCancelReason::ExplicitCancellation => {
+            PointerStreamCancelReason::ExplicitCancellation
+        }
         SurfacePointerCancelReason::DeviceRemoved => PointerStreamCancelReason::DeviceRemoved,
         SurfacePointerCancelReason::ExplicitPlatformCancellation => {
             PointerStreamCancelReason::ExplicitPlatformCancellation

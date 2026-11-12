@@ -8,6 +8,7 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::DockspaceDocumentBootstrap;
 use egui::Id;
 
+use crate::DockInputConfig;
 use crate::error::DockspaceError;
 use crate::facade::Dockspace;
 use crate::style::DockStyle;
@@ -18,6 +19,7 @@ pub struct DockspaceBuilder {
     layout: DockspaceLayout,
     policy: DockPolicy,
     style: DockStyle,
+    input: DockInputConfig,
     #[cfg(feature = "serde")]
     document: Option<DockspaceDocumentBootstrap>,
 }
@@ -30,6 +32,7 @@ impl DockspaceBuilder {
             layout,
             policy: DockPolicy::default(),
             style: DockStyle::default(),
+            input: DockInputConfig::default(),
             #[cfg(feature = "serde")]
             document: None,
         }
@@ -46,6 +49,13 @@ impl DockspaceBuilder {
     #[must_use]
     pub fn style(mut self, style: DockStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Replaces docking activation and gesture-cancellation bindings.
+    #[must_use]
+    pub fn input(mut self, input: DockInputConfig) -> Self {
+        self.input = input;
         self
     }
 
@@ -68,14 +78,19 @@ impl DockspaceBuilder {
         self.style.validate().map_err(DockspaceError::from_detail)?;
         #[cfg(feature = "serde")]
         if let Some(document) = self.document {
-            return Dockspace::from_persistent_layout_parts(
+            let mut dockspace = Dockspace::from_persistent_layout_parts(
                 self.id,
                 self.layout,
                 self.policy,
                 self.style,
                 document,
-            );
+            )?;
+            dockspace.set_input(self.input);
+            return Ok(dockspace);
         }
-        Dockspace::from_layout_parts(self.id, self.layout, self.policy, self.style)
+        let mut dockspace =
+            Dockspace::from_layout_parts(self.id, self.layout, self.policy, self.style)?;
+        dockspace.set_input(self.input);
+        Ok(dockspace)
     }
 }

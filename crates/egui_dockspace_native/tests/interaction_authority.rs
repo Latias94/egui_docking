@@ -259,6 +259,7 @@ fn run_surface_frame_with_overlay<P: PaneView>(
             ui,
             panes,
             &DockStyle::default(),
+            &egui_dockspace::DockInputConfig::default(),
             &mut register_scroll_candidate,
         )
         .expect("native surface paints");

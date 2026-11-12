@@ -45,6 +45,71 @@ fn bounds() -> PhysicalRect {
 }
 
 #[test]
+fn child_window_appearance_preserves_hidden_preparation_and_visible_redeclaration() {
+    use std::sync::Arc;
+
+    let (_session, binding) = session();
+    let viewport = viewport_id_for(binding);
+    let mut driver = DeferredViewportDriver::default();
+    assert!(driver.insert(viewport, binding, bounds(), NativeSurfaceRole::Child));
+    let context = egui::Context::default();
+    context.set_embed_viewports(false);
+    let icon = Arc::new(egui::IconData {
+        rgba: vec![255; 4 * 4 * 4],
+        width: 4,
+        height: 4,
+    });
+    let options = NativeChildWindowOptions {
+        decorations: Some(false),
+        taskbar: Some(false),
+        window_level: Some(egui::WindowLevel::AlwaysOnTop),
+        icon: Some(Arc::clone(&icon)),
+    };
+    for configured in [false, true] {
+        let options = if configured {
+            options.clone()
+        } else {
+            NativeChildWindowOptions::default()
+        };
+        for visible in [false, true] {
+            if visible {
+                assert_eq!(driver.set_visible(binding), Some(viewport));
+            } else {
+                driver.entries[0].set_visible(false);
+            }
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                declare_deferred_viewports(
+                    ui.ctx(),
+                    driver.specs(),
+                    &options,
+                    |_| "Inspector".into(),
+                    |_, _, _| panic!("a deferred declaration must not render in the Root pass"),
+                );
+            });
+            let child = &output.viewport_output[&viewport];
+            assert!(child.class == ViewportClass::Deferred);
+            assert!(child.viewport_ui_cb.is_some());
+            let expected = if configured {
+                ViewportBuilder::default()
+                    .with_decorations(false)
+                    .with_taskbar(false)
+                    .with_window_level(egui::WindowLevel::AlwaysOnTop)
+                    .with_icon(Arc::clone(&icon))
+            } else {
+                ViewportBuilder::default()
+            }
+            .with_visible(visible)
+            .with_title("Inspector");
+            assert_eq!(
+                child.builder, expected,
+                "appearance must not override native placement, focus, visibility or pointer passthrough",
+            );
+            output.drop_without_applying_deltas();
+        }
+    }
+}
+
+#[test]
 fn full_driver_preserves_exact_declarations_and_rejects_foreign_keys_before_mutation() {
     let (_session, binding) = session();
     let (_foreign_session, foreign) = session();

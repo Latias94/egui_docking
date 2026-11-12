@@ -1344,6 +1344,7 @@ mod tests {
                     ui,
                     &mut panes,
                     &DockStyle::default(),
+                    &egui_dockspace::DockInputConfig::default(),
                     &mut register_scroll_candidate,
                 )
                 .expect("native presentation-menu surface paints");
@@ -1492,6 +1493,7 @@ mod tests {
                     ui,
                     &mut panes,
                     &style,
+                    &egui_dockspace::DockInputConfig::default(),
                     &mut register_scroll_candidate,
                 )
                 .expect("overlapping native surface paints");
@@ -1743,6 +1745,7 @@ mod tests {
                         ui,
                         &mut panes,
                         &style,
+                        &egui_dockspace::DockInputConfig::default(),
                         &mut register_scroll_candidate,
                     )
                     .expect("actual native overflow surface paints");
@@ -2530,6 +2533,7 @@ mod tests {
                     ui,
                     panes,
                     &DockStyle::default(),
+                    &egui_dockspace::DockInputConfig::default(),
                     &mut register_scroll_candidate,
                 )
                 .expect("native surface paints");
@@ -2994,6 +2998,7 @@ mod tests {
                     ui,
                     &mut panes,
                     &DockStyle::default(),
+                    &egui_dockspace::DockInputConfig::default(),
                     &mut register_scroll_candidate,
                 )
                 .expect("native surface paints");

@@ -105,7 +105,7 @@ pub(super) fn outer_guide_geometry(
     bounds: LogicalRect,
     cluster: DropGuideClusterId,
     layer: SceneLayerKey,
-    occlusions: &[DropOcclusionRecord],
+    ready: &PresentationPlan,
 ) -> Result<Option<GuideEdgeGeometry>, SceneCompilationError> {
     let metrics = GuideMetrics::compact(config, bounds, config.outer_guide_reference_span())
         .ok_or(SceneCompilationError::UnrepresentableGuideGeometry { cluster, bounds })?;
@@ -129,8 +129,7 @@ pub(super) fn outer_guide_geometry(
     };
     separate_outer_cross_hits(bounds, &mut geometry)?;
     ensure_complete_guide_geometry(cluster, bounds, &geometry.buttons())?;
-    let foreground = occlusions
-        .iter()
+    let foreground = guide_placement_occlusions(ready)
         .filter(|occlusion| occlusion.layer() > layer)
         .map(|occlusion| occlusion.region().rect())
         // Keep latent geometry behind a complete covering window. The exact
@@ -186,6 +185,21 @@ pub(super) fn outer_guide_geometry(
     }
     ensure_complete_guide_geometry(cluster, bounds, &geometry.buttons())?;
     Ok(Some(geometry))
+}
+
+fn guide_placement_occlusions(
+    ready: &PresentationPlan,
+) -> impl Iterator<Item = &DropOcclusionRecord> {
+    let suppression = ready
+        .contained_projection()
+        .map(|projection| projection.drop_source_suppression())
+        .unwrap_or_default();
+    // A whole-window drag is transparent to drop resolution. Its live movement
+    // must also leave destination guides in place so the pointer can reach them.
+    ready
+        .drop_occlusions()
+        .iter()
+        .filter(move |occlusion| !suppression.excludes_occlusion(occlusion.floating()))
 }
 
 struct GuidePlacement {
@@ -321,9 +335,7 @@ pub(super) fn compile_inner_targets_and_guide(
         .into_iter()
         .map(|button| button.hit)
         .chain(
-            ready
-                .drop_occlusions()
-                .iter()
+            guide_placement_occlusions(ready)
                 .filter(|occlusion| occlusion.layer() > layer)
                 .map(|occlusion| occlusion.region().rect())
                 .filter(|occlusion| !rect_contains(*occlusion, placement_bounds)),

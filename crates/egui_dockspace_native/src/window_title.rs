@@ -22,9 +22,8 @@ pub(crate) fn window_title(
         }
     }
     if title.is_empty() {
-        format!("Dockspace panel {}", surface.get())
+        format!("Panel {}", surface.get())
     } else {
-        title.push_str(" — Dockspace");
         title
     }
 }
@@ -98,10 +97,7 @@ mod tests {
     #[test]
     fn selecting_another_pane_changes_the_caption_without_replacing_its_surface() {
         let mut session = session(DockspaceNode::tabs([FIRST, SECOND]));
-        assert_eq!(
-            window_title(session.view(), &Panes, SURFACE),
-            "Inspector — Dockspace"
-        );
+        assert_eq!(window_title(session.view(), &Panes, SURFACE), "Inspector");
         let action = session.prepare_select_item(SECOND);
         let mut frame = session.begin_host_frame().unwrap();
         frame.submit_prepared_action(action).unwrap();
@@ -109,10 +105,7 @@ mod tests {
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .unwrap();
         frame.commit().unwrap();
-        assert_eq!(
-            window_title(session.view(), &Panes, SURFACE),
-            "预览 — Dockspace"
-        );
+        assert_eq!(window_title(session.view(), &Panes, SURFACE), "预览");
         assert_eq!(session.view().surface(SURFACE).unwrap().id(), SURFACE);
     }
 
@@ -130,11 +123,11 @@ mod tests {
         );
         assert_eq!(
             window_title(session.view(), &Panes, SURFACE),
-            "Inspector · Pane 9 — Dockspace"
+            "Inspector · Pane 9"
         );
         assert_eq!(
             window_title(session.view(), &Panes, SurfaceId::new(8)),
-            "Dockspace panel 8"
+            "Panel 8"
         );
     }
 
@@ -174,7 +167,6 @@ mod tests {
             use std::fmt::Write as _;
             write!(expected, " · Pane {item}").unwrap();
         }
-        expected.push_str(" — Dockspace");
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             SURFACE,
             DockspaceRootLayout::new(RootId::new(2), node),

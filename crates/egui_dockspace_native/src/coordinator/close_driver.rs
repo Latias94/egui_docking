@@ -134,8 +134,9 @@ impl NativeCoordinator {
             self.rearm_close_continuation(context)?;
             return Ok(recorded);
         };
-        let mut frame = crate::host_frame::NativeHostFrame::new(
+        let mut frame = crate::host_frame::NativeHostFrame::new_with_input(
             frame,
+            self.input,
             self.bridge.clone(),
             &mut self.receivers,
             None,

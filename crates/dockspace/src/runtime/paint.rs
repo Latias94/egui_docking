@@ -11,7 +11,7 @@ use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, HostPresentationAttemptId, ItemId, RootId, SurfaceId};
 use crate::interaction::{
-    ContainedTransformPreview, EscapeDelivery, InteractionPreview, PreviewVisual,
+    ContainedTransformPreview, GestureCancelDelivery, InteractionPreview, PreviewVisual,
 };
 use crate::model::{DockspaceActionRejection, DockspaceAxis, ProductAction};
 use crate::presentation_hit::{
@@ -394,7 +394,12 @@ impl DropTargetPaintRecord<'_> {
 /// Stable renderer-facing preview geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DockspacePreviewVisual {
-    /// Highlight one exact docking rectangle.
+    /// Highlights the resulting docking area or tab insertion position.
+    ///
+    /// The destination is selected from presented geometry. This rectangle
+    /// projects the candidate layout, including source removal and target
+    /// resizing, so it may differ from the destination's current bounds.
+    /// Tab-gap moves use an insertion line at the future tab position.
     Dock {
         surface: SurfaceId,
         rect: LogicalRect,
@@ -1031,7 +1036,7 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) plan: &'frame PresentationPlan,
     pub(super) hit_manifest: &'frame crate::presentation_hit::PresentationHitManifest,
     pub(super) splitter_keyboard_step: f64,
-    pub(super) escape_delivery: Option<EscapeDelivery>,
+    pub(super) gesture_cancel_delivery: Option<GestureCancelDelivery>,
     pub(super) drop_affordance: Option<&'frame DropAffordance>,
     pub(super) drag_preview: Option<&'frame InteractionPreview>,
     pub(super) drag_decoration: Option<DockspaceDragDecoration<'frame>>,
@@ -1412,14 +1417,14 @@ impl DockspaceHostFrame<'_> {
                     intent,
                 )
             });
-        let escape_delivery =
+        let gesture_cancel_delivery =
             if view.interaction().status() == crate::interaction::InteractionStatus::Idle {
                 None
             } else if let Some(record) = view.viewport().viewport(surface) {
-                Some(EscapeDelivery::NativeBinding(record.binding()))
+                Some(GestureCancelDelivery::NativeBinding(record.binding()))
             } else {
                 (view.interaction().active_surface() == Some(surface))
-                    .then_some(EscapeDelivery::Surface(surface))
+                    .then_some(GestureCancelDelivery::Surface(surface))
             };
         let plan = SurfacePaintPlan {
             encoding_started: &self.encoding.started,
@@ -1437,7 +1442,7 @@ impl DockspaceHostFrame<'_> {
             plan: candidate.plan(),
             hit_manifest: candidate.hit_manifest(),
             splitter_keyboard_step: view.presentation_config().splitter_keyboard_step(),
-            escape_delivery,
+            gesture_cancel_delivery,
             drop_affordance,
             drag_preview: view.presentation_drag_preview(surface),
             drag_decoration,

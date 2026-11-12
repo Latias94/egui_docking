@@ -23,6 +23,10 @@ floating groups in one OS window. Start with
 styling and close decisions. The [window host](examples/workbench.rs) and
 [renderer](examples/workbench/renderer.rs) show complete input and presentation.
 
+Drag tabs onto a pane to merge or split it. To float a tab, hold **Shift** while
+dragging and release inside the window. Shift temporarily disables docking. Drag a
+floating group's dotted title grip onto a docking guide to dock the group again.
+
 ## Host choices
 
 | Integration | Capabilities | Start here |
@@ -104,6 +108,27 @@ stay in the adapter. Enable **Custom tabs** in the workbench for a
 Close icon size and visibility are separate from its hit target. The group
 grip can be permanent, shown on bar hover, or hidden with its space reclaimed.
 Floating windows and popups accept independent frame appearance overrides.
+
+Configure gesture bindings separately with `DockspaceBuilder::input` or
+`Dockspace::set_input`:
+
+```rust
+use egui_dockspace::{DockInputConfig, DockingActivation};
+
+let input = DockInputConfig {
+    docking: DockingActivation::HoldToEnable(egui::Modifiers::ALT),
+    cancel_drag: Some(egui::KeyboardShortcut::new(
+        egui::Modifiers::NONE,
+        egui::Key::Escape,
+    )),
+};
+```
+
+`Always` removes the modifier requirement; `HoldToDisable` is the default Shift
+behavior. Additional held modifiers are allowed. Use `Modifiers::COMMAND` for
+the platform's primary shortcut modifier, or set `cancel_drag: None` to let the
+application own cancellation. Standard egui focus navigation and document
+shortcuts remain with their existing input owners.
 
 `DockPolicy` controls docking rules and close permissions. The
 [integration guide](docs/guide.md) covers these options and the output contract.

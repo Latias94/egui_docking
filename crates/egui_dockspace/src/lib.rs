@@ -20,6 +20,7 @@ mod error_detail;
 #[path = "product_dockspace.rs"]
 mod facade;
 mod guide_paint;
+mod input;
 #[cfg(feature = "native-render-support")]
 #[doc(hidden)]
 pub mod native_support;
@@ -66,6 +67,7 @@ pub use dockspace::runtime::{
 pub use drag_preview::{DockspaceDragSourceKind, DragPreview};
 pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;
+pub use input::{DockInputConfig, DockingActivation};
 pub use pane::{PaneFocusState, PaneResponse, PaneView};
 pub use pass_settlement::{DockspaceOutput, DockspaceOutputReceipt, run_ui};
 pub use response::{

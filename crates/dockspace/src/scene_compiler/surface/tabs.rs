@@ -26,6 +26,10 @@ use crate::scene::{
     TabListMenuGeometryAvailability, TabListMenuRecord, TabListMenuRowRecord, TabRecord,
     TabSceneId, TabStripControlRecord, TabStripMemberRecord, TabStripMemberVisibility,
 };
+use crate::scene_compiler::tab_strip_layout::{TabStripFlow, desired_tab_width, select_menu_host};
+pub(in crate::scene_compiler) use crate::scene_compiler::tab_strip_layout::{
+    reveal_tab_range, tab_local_range,
+};
 use crate::scene_manifest::{
     AuthoritativeSurfaceMeasurements, SurfaceRequirements, TabBarRequirement, TabIntrinsicKey,
     TabStripControlMetrics, TabStripControlPlacement, TabStripKey,
@@ -48,87 +52,55 @@ pub(super) fn select_presentation_menu_tab_bar(
     root_bounds: LogicalRect,
     node_results: &NodeMap<NodeResult>,
 ) -> Result<Option<NodeId>, SceneCompilationError> {
-    let visible_layout =
-        |tabs| -> Result<Option<TabStripOptionalChromeLayout>, SceneCompilationError> {
-            let id = TabBarSceneId { root, tabs };
-            let requirement = requirements
-                .tab_bar(id)
-                .ok_or(SceneCompilationError::MissingTabBarRequirement { id })?;
-            if requirement.policy().visibility() == TabBarVisibility::Hidden {
-                return Ok(None);
+    let visible_menu_available = |tabs| -> Result<Option<bool>, SceneCompilationError> {
+        let id = TabBarSceneId { root, tabs };
+        let requirement = requirements
+            .tab_bar(id)
+            .ok_or(SceneCompilationError::MissingTabBarRequirement { id })?;
+        if requirement.policy().visibility() == TabBarVisibility::Hidden {
+            return Ok(None);
+        }
+        let projected = node_results
+            .get(&tabs)
+            .map(|result| result.rect)
+            .ok_or(SceneCompilationError::MissingNodeProjection { root, node: tabs })?;
+        let bounds = clip_rect(projected, root_bounds)?;
+        let bar = LogicalRect::new(
+            bounds.x(),
+            bounds.y(),
+            bounds.width(),
+            config.tab_bar_height().min(bounds.height()),
+        )?;
+        if !rect_has_area(bar) {
+            return Ok(None);
+        }
+        let items = match workspace.node(tabs) {
+            Some(Node::Tabs { items, .. }) => items,
+            Some(Node::Split { .. }) => return Ok(None),
+            None => {
+                return Err(SceneCompilationError::MissingNode {
+                    surface,
+                    root,
+                    node: tabs,
+                });
             }
-            let projected = node_results
-                .get(&tabs)
-                .map(|result| result.rect)
-                .ok_or(SceneCompilationError::MissingNodeProjection { root, node: tabs })?;
-            let bounds = clip_rect(projected, root_bounds)?;
-            let bar = LogicalRect::new(
-                bounds.x(),
-                bounds.y(),
-                bounds.width(),
-                config.tab_bar_height().min(bounds.height()),
-            )?;
-            if !rect_has_area(bar) {
-                return Ok(None);
-            }
-            let items = match workspace.node(tabs) {
-                Some(Node::Tabs { items, .. }) => items,
-                Some(Node::Split { .. }) => return Ok(None),
-                None => {
-                    return Err(SceneCompilationError::MissingNode {
-                        surface,
-                        root,
-                        node: tabs,
-                    });
-                }
-            };
-            let strip_key = TabStripKey::new(surface, id);
-            let strip = measurements
-                .tab_strip(strip_key)
-                .ok_or(SceneCompilationError::MissingTabStripMeasurement { key: strip_key })?;
-            tab_strip_optional_chrome_layout(bar, items.len(), strip, config, true).map(Some)
         };
+        let strip_key = TabStripKey::new(surface, id);
+        let strip = measurements
+            .tab_strip(strip_key)
+            .ok_or(SceneCompilationError::MissingTabStripMeasurement { key: strip_key })?;
+        let chrome = tab_strip_optional_chrome_layout(bar, items.len(), strip, config, true)?;
+        Ok(Some(chrome.presentation_menu_bounds.is_some()))
+    };
 
-    let mut compacted_fallback = None;
-    if let Some(central) = central
-        && let Some(layout) = visible_layout(central)?
-    {
-        compacted_fallback = Some(central);
-        if layout.presentation_menu_bounds.is_some() {
-            return Ok(Some(central));
-        }
-    }
-
-    let mut pending = vec![root_node];
-    let mut visited = BTreeSet::new();
-    while let Some(node) = pending.pop() {
-        if !visited.insert(node) {
-            return Err(SceneCompilationError::RepeatedNode {
-                surface,
-                root,
-                node,
-            });
-        }
-        match workspace
-            .node(node)
-            .ok_or(SceneCompilationError::MissingNode {
-                surface,
-                root,
-                node,
-            })? {
-            Node::Tabs { .. } => {
-                let Some(layout) = visible_layout(node)? else {
-                    continue;
-                };
-                compacted_fallback.get_or_insert(node);
-                if layout.presentation_menu_bounds.is_some() {
-                    return Ok(Some(node));
-                }
-            }
-            Node::Split { children, .. } => pending.extend(children.iter().rev().copied()),
-        }
-    }
-    Ok(compacted_fallback)
+    select_menu_host(
+        workspace,
+        surface,
+        root,
+        root_node,
+        central,
+        visible_menu_available,
+    )
 }
 
 fn tab_presentation_menu_anchor(
@@ -542,15 +514,12 @@ fn compile_tab_strip(
                 id: TabSceneId { root, tabs, item },
             })?
             .allows_close();
-        let close = if item_close_allowed {
-            config.tab_close_extent() + config.tab_horizontal_padding()
-        } else {
-            0.0
-        };
-        let width = (intrinsic.content_width() + 2.0 * config.tab_horizontal_padding() + close)
-            .clamp(config.tab_min_width(), config.tab_max_width());
         content_widths.push(intrinsic.content_width());
-        desired_widths.push(width);
+        desired_widths.push(desired_tab_width(
+            intrinsic.content_width(),
+            item_close_allowed,
+            config,
+        ));
         close_allowed.push(item_close_allowed);
     }
 
@@ -568,38 +537,26 @@ fn compile_tab_strip(
     } else {
         TabListMenuGeometryAvailability::Unavailable
     };
-    let widths = allocate_tab_widths(
+    let flow = TabStripFlow::allocate(
         &desired_widths,
-        (viewport_width - strip.after_tabs_width()).max(0.0),
+        viewport_width,
+        strip.after_tabs_width(),
         config.tab_min_width(),
     )?;
-    let total_width = checked_sum(
-        widths
-            .iter()
-            .copied()
-            .chain(std::iter::once(strip.after_tabs_width())),
-        "tab strip width",
-    )?;
-    let max_scroll = (total_width - viewport.width()).max(0.0);
-    let selected_range = selected.and_then(|selected| {
-        let index = items.iter().position(|item| *item == selected)?;
-        tab_local_range(widths.iter().copied(), index)
-    });
-    let requested_scroll = state
-        .and_then(|state| state.scroll_offset())
-        .unwrap_or(0.0)
-        .clamp(0.0, max_scroll);
+    let max_scroll = flow.maximum_scroll_offset(viewport_width);
+    let selected_index =
+        selected.and_then(|selected| items.iter().position(|item| *item == selected));
+    let requested_scroll = state.and_then(|state| state.scroll_offset()).unwrap_or(0.0);
     let selection_changed = state.is_none_or(|state| state.resolved_selection() != selected);
     let viewport_shrank = state
         .and_then(|state| state.resolved_viewport_width())
         .is_some_and(|previous| viewport_width < previous);
-    let scroll = if selection_changed || viewport_shrank {
-        selected_range.map_or(requested_scroll, |(start, end)| {
-            reveal_tab_range(requested_scroll, max_scroll, viewport.width(), start, end)
-        })
-    } else {
-        requested_scroll
-    };
+    let scroll = flow.scroll_offset(
+        requested_scroll,
+        viewport_width,
+        selected_index,
+        selection_changed || viewport_shrank,
+    );
 
     let mut full_tabs = Vec::with_capacity(items.len());
     let mut program_tabs = Vec::with_capacity(items.len());
@@ -609,7 +566,7 @@ fn compile_tab_strip(
     for (ordinal, ((item, width), close_allowed)) in items
         .iter()
         .copied()
-        .zip(widths.iter().copied())
+        .zip(flow.widths.iter().copied())
         .zip(close_allowed.iter().copied())
         .enumerate()
     {
@@ -656,10 +613,10 @@ fn compile_tab_strip(
         full_tabs.push(full);
         cursor += width;
     }
-    let after_tabs_bounds = (strip.after_tabs_width() > 0.0)
-        .then(|| LogicalRect::new(cursor, bar.y(), strip.after_tabs_width(), bar.height()))
+    let after_tabs_bounds = (flow.after_tabs_width > 0.0)
+        .then(|| LogicalRect::new(cursor, bar.y(), flow.after_tabs_width, bar.height()))
         .transpose()?;
-    cursor += strip.after_tabs_width();
+    cursor += flow.after_tabs_width;
     let trailing_empty_bounds = if max_scroll == 0.0 {
         let trailing_start = cursor.min(viewport.max().x());
         let trailing_width = (viewport.max().x() - trailing_start).max(0.0);
@@ -1070,64 +1027,6 @@ fn compile_tab_list_menu(
     Ok(())
 }
 
-pub(in crate::scene_compiler) fn allocate_tab_widths(
-    desired: &[f64],
-    available: f64,
-    minimum: f64,
-) -> Result<Vec<f64>, SceneCompilationError> {
-    if desired.is_empty() {
-        return Ok(Vec::new());
-    }
-    let count =
-        u32::try_from(desired.len()).map_err(|_| SceneCompilationError::GeometryCountOverflow)?;
-    let minimum_total = minimum * f64::from(count);
-    if minimum_total >= available {
-        return Ok(vec![minimum; desired.len()]);
-    }
-    let desired_total = checked_sum(desired.iter().copied(), "desired tab widths")?;
-    if desired_total <= available {
-        return Ok(desired.to_vec());
-    }
-    let shrinkable = checked_sum(
-        desired.iter().map(|width| *width - minimum),
-        "shrinkable tab widths",
-    )?;
-    let excess = desired_total - available;
-    if shrinkable <= 0.0 || excess <= 0.0 {
-        return Err(SceneCompilationError::InvalidTabWidthAllocation { available, minimum });
-    }
-    desired
-        .iter()
-        .map(|width| {
-            let allocated = *width - excess * ((*width - minimum) / shrinkable);
-            if allocated.is_finite() && allocated >= minimum {
-                Ok(allocated)
-            } else {
-                Err(SceneCompilationError::InvalidTabWidthAllocation { available, minimum })
-            }
-        })
-        .collect()
-}
-
-pub(in crate::scene_compiler) fn reveal_tab_range(
-    requested: f64,
-    maximum: f64,
-    viewport_extent: f64,
-    start: f64,
-    end: f64,
-) -> f64 {
-    let (minimum, maximum_for_item) = if end - start <= viewport_extent {
-        (
-            (end - viewport_extent).clamp(0.0, maximum),
-            start.clamp(0.0, maximum),
-        )
-    } else {
-        let aligned = start.clamp(0.0, maximum);
-        (aligned, aligned)
-    };
-    requested.clamp(minimum, maximum_for_item)
-}
-
 struct TabChromeGeometry {
     visible: LogicalRect,
     text_layout: LogicalRect,
@@ -1264,13 +1163,4 @@ fn tab_gap_geometries(
         gaps.push(TabGapGeometry { index, hit, visual });
     }
     Ok(gaps)
-}
-
-pub(super) fn tab_local_range(
-    widths: impl Iterator<Item = f64>,
-    ordinal: usize,
-) -> Option<(f64, f64)> {
-    let mut widths = widths;
-    let start = widths.by_ref().take(ordinal).sum::<f64>();
-    Some((start, start + widths.next()?))
 }

@@ -19,9 +19,9 @@ use dockspace::intent::{
     Authority, AuthorityUnavailableReason, CloseSceneTarget, PointerButton, PointerId,
 };
 use dockspace::interaction::{
-    ClickSessionId, DragPhase, EscapeDelivery, InteractionCancelReason, InteractionEventKind,
-    InteractionOutcome, InteractionRejection, InteractionStatus, PreviewResolutionStatus,
-    PreviewVisual, ScrollReductionOutcome, ScrollTerminationReason,
+    ClickSessionId, DragPhase, GestureCancelDelivery, InteractionCancelReason,
+    InteractionEventKind, InteractionOutcome, InteractionRejection, InteractionStatus,
+    PreviewResolutionStatus, PreviewVisual, ScrollReductionOutcome, ScrollTerminationReason,
 };
 use dockspace::platform::{
     ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
@@ -3313,7 +3313,7 @@ fn journal_close_does_not_reuse_a_vetoed_terminal_plan() {
 }
 
 #[test]
-fn journal_close_escape_is_a_formal_engine_input() {
+fn journal_close_cancellation_is_a_formal_engine_input() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
@@ -3329,9 +3329,9 @@ fn journal_close_escape_is_a_formal_engine_input() {
         &mut host,
         provider,
         StableInputSourceId::new(91),
-        EngineInput::CancelActiveInteractionWithEscape {
+        EngineInput::CancelActiveInteraction {
             expected,
-            delivery: EscapeDelivery::Surface(SURFACE),
+            delivery: GestureCancelDelivery::Surface(SURFACE),
         },
     );
     assert!(matches!(
@@ -3339,7 +3339,7 @@ fn journal_close_escape_is_a_formal_engine_input() {
         dockspace::transition::InputOutcome::InteractionProcessed {
             outcome: InteractionOutcome::Cancelled {
                 status: InteractionStatus::Pressed { .. },
-                reason: InteractionCancelReason::Escape,
+                reason: InteractionCancelReason::ExplicitCancellation,
             },
             ..
         }
@@ -3349,7 +3349,7 @@ fn journal_close_escape_is_a_formal_engine_input() {
 }
 
 #[test]
-fn surface_escape_cannot_cancel_a_gesture_owned_by_another_surface() {
+fn surface_cancellation_cannot_cancel_a_gesture_owned_by_another_surface() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
@@ -3366,9 +3366,9 @@ fn surface_escape_cannot_cancel_a_gesture_owned_by_another_surface() {
         &mut host,
         provider,
         StableInputSourceId::new(92),
-        EngineInput::CancelActiveInteractionWithEscape {
+        EngineInput::CancelActiveInteraction {
             expected,
-            delivery: EscapeDelivery::Surface(wrong_surface),
+            delivery: GestureCancelDelivery::Surface(wrong_surface),
         },
     );
 
@@ -3376,8 +3376,8 @@ fn surface_escape_cannot_cancel_a_gesture_owned_by_another_surface() {
         transition.reduced_inputs()[0].outcome(),
         dockspace::transition::InputOutcome::InteractionProcessed {
             outcome: InteractionOutcome::Rejected(
-                InteractionRejection::EscapeDeliveryUnavailable {
-                    delivery: EscapeDelivery::Surface(surface),
+                InteractionRejection::GestureCancelDeliveryUnavailable {
+                    delivery: GestureCancelDelivery::Surface(surface),
                 },
             ),
             ..
@@ -3390,7 +3390,7 @@ fn surface_escape_cannot_cancel_a_gesture_owned_by_another_surface() {
 }
 
 #[test]
-fn native_escape_requires_the_exact_current_viewport_incarnation() {
+fn native_cancellation_requires_the_exact_current_viewport_incarnation() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     let stale = register_native_viewport(&mut engine, &mut host);
@@ -3421,17 +3421,17 @@ fn native_escape_requires_the_exact_current_viewport_incarnation() {
         &mut host,
         provider,
         StableInputSourceId::new(93),
-        EngineInput::CancelActiveInteractionWithEscape {
+        EngineInput::CancelActiveInteraction {
             expected,
-            delivery: EscapeDelivery::NativeBinding(stale),
+            delivery: GestureCancelDelivery::NativeBinding(stale),
         },
     );
     assert!(matches!(
         rejected.reduced_inputs()[0].outcome(),
         InputOutcome::InteractionProcessed {
             outcome: InteractionOutcome::Rejected(
-                InteractionRejection::EscapeDeliveryUnavailable {
-                    delivery: EscapeDelivery::NativeBinding(binding),
+                InteractionRejection::GestureCancelDeliveryUnavailable {
+                    delivery: GestureCancelDelivery::NativeBinding(binding),
                 },
             ),
             ..
@@ -3447,9 +3447,9 @@ fn native_escape_requires_the_exact_current_viewport_incarnation() {
         &mut host,
         provider,
         StableInputSourceId::new(94),
-        EngineInput::CancelActiveInteractionWithEscape {
+        EngineInput::CancelActiveInteraction {
             expected,
-            delivery: EscapeDelivery::NativeBinding(current),
+            delivery: GestureCancelDelivery::NativeBinding(current),
         },
     );
     assert!(matches!(
@@ -3457,7 +3457,7 @@ fn native_escape_requires_the_exact_current_viewport_incarnation() {
         InputOutcome::InteractionProcessed {
             outcome: InteractionOutcome::Cancelled {
                 status: InteractionStatus::Pressed { session: cancelled },
-                reason: InteractionCancelReason::Escape,
+                reason: InteractionCancelReason::ExplicitCancellation,
             },
             ..
         } if *cancelled == session

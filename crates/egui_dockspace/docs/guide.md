@@ -136,14 +136,31 @@ default 150ms dwell without requesting pane-content focus. The wake submits an
 explicit continuation with fresh receiver checks; it never fabricates pointer
 motion. `DockStyle::hover_selection_delay` can customize or disable this behavior.
 
-Shift temporarily disables magnetic acquisition. The adapter preserves ordered
+`DockInputConfig` controls gesture bindings through `DockspaceBuilder::input`
+and `Dockspace::set_input`. `DockingActivation` supports always-on docking,
+hold-to-enable and hold-to-disable modifier chords. `cancel_drag` accepts an
+optional egui `KeyboardShortcut`. Required modifiers use subset matching, so
+extra modifiers do not accidentally restore docking or prevent cancellation.
+`Modifiers::COMMAND` follows egui's platform mapping. Runtime changes recompute
+the last observed modifiers at the next input boundary, without fabricated
+motion. Explicit touch contacts use the same settings.
+
+By default, Shift temporarily disables docking acquisition. The adapter preserves ordered
 `ModifiersChanged`, key and pointer-button modifier observations, including
 changes within one raw packet. A modifier-only frame can clear an existing
-magnetic preview without reporting mouse motion. Releasing Shift leaves that
+docking preview without reporting mouse motion. Releasing Shift leaves that
 preview absent until a subsequent real Move or Release resolves a fresh target.
-Explicit docking guides and tab-gap targets remain available, and contained
+Explicit docking guides and tab-gap targets are also suspended, and contained
 content keeps its current drag position. This intent is independent from the
 arrangement lock and cannot alter an ordinary release which already committed.
+
+Docking selects a destination from the currently presented panes. Its highlight
+shows the candidate result after removing the payload from its source and
+inserting it at that destination. Moving the last tab out of a pane can expand
+the remaining panes, so the highlight can differ from the destination's current
+bounds. A tab-gap target shows an insertion line at the resulting tab position.
+Use `DockVisualOverrides::drop_fill` and `drop_border_color` for these cues;
+`PaneView::drag_preview_ui` decorates the moving source ghost separately.
 
 The same finite continuation drives stationary overflow-edge scrolling during
 a local drag. `DockStyle::tab_strip_edge_scroll_band` defaults to 24 points and

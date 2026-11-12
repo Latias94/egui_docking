@@ -1,4 +1,4 @@
-//! Direct prepared Escape actions retain the identity of their captured gesture.
+//! Direct prepared cancellation retains the identity of its captured gesture.
 
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::model::{
@@ -50,7 +50,7 @@ fn pointer_edge(
 }
 
 #[test]
-fn direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version() {
+fn direct_prepared_cancel_cannot_cancel_a_successor_gesture_at_the_same_version() {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(RootId::new(1), DockspaceNode::central_tabs([FIRST, SECOND])),
@@ -112,7 +112,7 @@ fn direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version(
             .paint_plan(SURFACE)
             .unwrap()
             .unwrap()
-            .prepare_escape_cancel()
+            .prepare_gesture_cancel()
             .unwrap()
     };
     assert_eq!(stale_cancel.expected_version(), version);
@@ -140,7 +140,7 @@ fn direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version(
     let report = commit(frame);
     assert!(
         session.has_active_gesture(),
-        "Escape captured from the cancelled gesture must leave its same-version successor active: {report:?}"
+        "cancellation captured from the previous gesture must leave its same-version successor active: {report:?}"
     );
     assert_eq!(session.version(), version);
     assert!(!report.workspace_changed());
@@ -155,7 +155,7 @@ fn direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version(
             .paint_plan(SURFACE)
             .unwrap()
             .unwrap()
-            .prepare_escape_cancel()
+            .prepare_gesture_cancel()
             .unwrap()
     };
     let mut frame = session.begin_host_frame().unwrap();
@@ -163,6 +163,6 @@ fn direct_prepared_escape_cannot_cancel_a_successor_gesture_at_the_same_version(
     assert!(!commit(frame).workspace_changed());
     assert!(
         !session.has_active_gesture(),
-        "a fresh direct Escape must still cancel the exact current gesture"
+        "a fresh prepared action must still cancel the exact current gesture"
     );
 }

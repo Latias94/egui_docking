@@ -17,7 +17,7 @@ use dockspace::runtime::{
     DockspaceSubmittedAction, HostFrameReport, HostInputOutcome, NativeSurfaceBinding,
     PreparedCloseRequest, PreparedDockAction, PreparedDockspaceLayoutReset,
 };
-use egui_dockspace::{DockStyle, DockspaceActionStatus};
+use egui_dockspace::{DockInputConfig, DockStyle, DockspaceActionStatus};
 
 use crate::NativeRuntimeErrorKind;
 
@@ -185,6 +185,11 @@ pub enum NativeActionStatus {
         /// Whether core geometry or interaction timing changed.
         geometry_changed: bool,
     },
+    /// Input bindings committed after all earlier native input was consumed.
+    InputChanged {
+        /// Whether the bindings differed from their previous value.
+        changed: bool,
+    },
     /// An application default or preset replaced the logical layout.
     ///
     /// Native bindings and output authority still require their fresh observations.
@@ -241,6 +246,10 @@ pub(crate) enum NativeApplicationCommand {
     Style {
         style: Box<DockStyle>,
         presentation: Box<DockPresentationConfig>,
+        changed: bool,
+    },
+    Input {
+        input: DockInputConfig,
         changed: bool,
     },
     LayoutReset(Box<PreparedDockspaceLayoutReset>),
@@ -336,6 +345,9 @@ impl NativeApplicationAction {
                     changed,
                 });
             }
+            NativeApplicationCommand::Input { input, changed } => {
+                return Ok(NativeApplicationSubmission::InputConfiguration { input, changed });
+            }
             NativeApplicationCommand::LayoutReset(reset) => {
                 return Ok(NativeApplicationSubmission::Replacement(
                     NativeWorkspaceReplacement::Layout(reset),
@@ -384,6 +396,7 @@ impl NativeApplicationAction {
                 arrangement_lock, ..
             } => NativeActionExpectation::Policy(*arrangement_lock),
             NativeApplicationCommand::Style { .. } => NativeActionExpectation::Style,
+            NativeApplicationCommand::Input { .. } => NativeActionExpectation::Input,
             NativeApplicationCommand::LayoutReset(_)
             | NativeApplicationCommand::LayoutResetRebindingRoot { .. } => {
                 NativeActionExpectation::LayoutReset
@@ -415,6 +428,10 @@ pub(crate) enum NativeApplicationSubmission {
         presentation: Box<DockPresentationConfig>,
         changed: bool,
     },
+    InputConfiguration {
+        input: DockInputConfig,
+        changed: bool,
+    },
     Replacement(NativeWorkspaceReplacement),
     Terminal(NativeActionStatus),
 }
@@ -442,6 +459,10 @@ pub(crate) enum NativeSubmittedApplicationAction {
         submitted: Option<DockspaceSubmittedAction>,
         changed: bool,
     },
+    InputConfiguration {
+        input: DockInputConfig,
+        changed: bool,
+    },
     LayoutReset,
     #[cfg(feature = "serde")]
     DocumentRestore,
@@ -449,6 +470,15 @@ pub(crate) enum NativeSubmittedApplicationAction {
 }
 
 impl NativeSubmittedApplicationAction {
+    pub(crate) fn commit_input(&mut self) -> Option<DockInputConfig> {
+        let Self::InputConfiguration { input, changed } = self else {
+            return None;
+        };
+        let input = *input;
+        *self = Self::Terminal(NativeActionStatus::InputChanged { changed: *changed });
+        Some(input)
+    }
+
     /// Uses the candidate style for this update's encoding before publication.
     pub(crate) fn encoding_style(&self) -> Option<&DockStyle> {
         match self {
@@ -512,6 +542,23 @@ impl NativeApplicationSubmission {
                     submitted,
                     changed,
                 })
+            }
+            Self::InputConfiguration { input, changed } => {
+                if changed {
+                    // A binding change ends the previous gesture through its
+                    // existing semantic cancellation action. This frame keeps
+                    // its original bindings while encoding captured raw input.
+                    for surface in frame.surfaces() {
+                        let cancel = frame
+                            .paint_plan(surface)?
+                            .and_then(|plan| plan.prepare_gesture_cancel());
+                        if let Some(cancel) = cancel {
+                            frame.submit_surface_action(cancel)?;
+                            break;
+                        }
+                    }
+                }
+                Ok(NativeSubmittedApplicationAction::InputConfiguration { input, changed })
             }
             Self::Replacement(NativeWorkspaceReplacement::Layout(reset)) => {
                 frame.submit_layout_reset(&reset)?;
@@ -582,6 +629,7 @@ enum NativeActionExpectation {
     CloseDecision,
     Policy(Option<bool>),
     Style,
+    Input,
     LayoutReset,
     #[cfg(feature = "serde")]
     DocumentRestore,
@@ -695,7 +743,10 @@ impl NativeApplicationActions {
             Some(NativeSubmittedApplicationAction::Input(submitted)) => {
                 report.submitted_action_outcome(submitted)
             }
-            Some(NativeSubmittedApplicationAction::Style { .. }) => return Err(()),
+            Some(
+                NativeSubmittedApplicationAction::Style { .. }
+                | NativeSubmittedApplicationAction::InputConfiguration { .. },
+            ) => return Err(()),
             Some(NativeSubmittedApplicationAction::LayoutReset) => report
                 .inputs()
                 .iter()
@@ -720,6 +771,9 @@ impl NativeApplicationActions {
                     NativeActionStatus::RootContinuationRejected { .. } => kind.is_replacement(),
                     NativeActionStatus::StyleChanged { .. } => {
                         matches!(kind, NativeActionExpectation::Style)
+                    }
+                    NativeActionStatus::InputChanged { .. } => {
+                        matches!(kind, NativeActionExpectation::Input)
                     }
                     _ => false,
                 };

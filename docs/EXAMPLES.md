@@ -52,6 +52,10 @@ Enable **Custom tabs** to try per-tab icons and rounded backgrounds, fixed group
 counts and **Tint** buttons. The [tab callbacks](../crates/egui_dockspace/examples/workbench/tabs.rs)
 show how to customize chrome while retaining docking input and accessibility.
 
+Hold **Shift** while dragging a tab to disable docking and release inside the
+window to float it. Drag the dotted title grip to move or dock the
+whole floating group. These gestures also work with **Custom tabs** disabled.
+
 Smaller eframe examples:
 
 ```sh

@@ -5,10 +5,10 @@ use crate::interaction::ActiveClick;
 use crate::pointer_journal::PointerEventMetadata;
 
 impl DockEngine {
-    pub(super) fn touch_complete_drag_root(
+    pub(super) fn touch_drag_payload(
         &self,
         region: PresentationHitRegionKind,
-    ) -> Option<RootId> {
+    ) -> Option<MovePayload> {
         let payload = match region {
             PresentationHitRegionKind::TabBody(tab) => MovePayload::Item(
                 self.workspace
@@ -31,10 +31,7 @@ impl DockEngine {
             }
             _ => return None,
         };
-        self.complete_root_source(&payload)
-            .ok()
-            .flatten()
-            .map(|source| source.root())
+        Some(payload)
     }
 
     pub(super) const fn touch_wait_region(kind: PresentationHitRegionKind) -> bool {

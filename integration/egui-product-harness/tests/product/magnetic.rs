@@ -4,6 +4,281 @@ use super::*;
 use dockspace_host_conformance::scenario::MagneticDockCase;
 use egui_dockspace::DockspaceNodeView;
 
+#[test]
+fn configured_modifiers_control_real_docking_and_update_without_pointer_motion() {
+    use egui_dockspace::{DockInputConfig, DockingActivation};
+
+    for (activation, modifiers, enabled) in [
+        (DockingActivation::Always, Modifiers::SHIFT, true),
+        (
+            DockingActivation::HoldToEnable(Modifiers::ALT),
+            Modifiers::ALT,
+            true,
+        ),
+        (
+            DockingActivation::HoldToEnable(Modifiers::ALT),
+            Modifiers::NONE,
+            false,
+        ),
+        (
+            DockingActivation::HoldToDisable(Modifiers::ALT),
+            Modifiers::SHIFT,
+            true,
+        ),
+        (
+            DockingActivation::HoldToDisable(Modifiers::ALT),
+            Modifiers::ALT | Modifiers::SHIFT,
+            false,
+        ),
+    ] {
+        let (context, mut dockspace, mut panes, source, target) = magnetic_modifier_fixture();
+        dockspace.set_input(DockInputConfig {
+            docking: activation,
+            ..Default::default()
+        });
+        let target = target.center();
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![
+                Event::ModifiersChanged(modifiers),
+                Event::PointerMoved(source),
+                button(source, true),
+            ],
+        );
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(source + vec2(12.0, 8.0))],
+        );
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![button(target, false)],
+        );
+        let second = dockspace.view().item(SECOND).unwrap();
+        if enabled {
+            assert_eq!(
+                second.tabs().items(),
+                &[FIRST, SECOND],
+                "{activation:?}, {modifiers:?}"
+            );
+        } else {
+            assert!(
+                second.contained().is_some(),
+                "{activation:?}, {modifiers:?}"
+            );
+            assert_eq!(
+                dockspace.view().item(FIRST).unwrap().tabs().items(),
+                &[FIRST]
+            );
+        }
+    }
+
+    let (context, mut dockspace, mut panes, source, target) = magnetic_modifier_fixture();
+    let target = target.center();
+    let _ = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source + vec2(12.0, 8.0))],
+    );
+    let preview = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target)],
+    );
+    let passive = dockspace.style().visuals.drop_guide_fill.unwrap();
+    let active = dockspace.style().visuals.drop_guide_active_fill.unwrap();
+    assert!(guide_button_count(&preview.output, passive, active) > 0);
+    dockspace.set_input(DockInputConfig {
+        docking: DockingActivation::HoldToEnable(Modifiers::ALT),
+        ..Default::default()
+    });
+    let paused = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(guide_button_count(&paused.output, passive, active), 0);
+    let _ = run_pane_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![pointer_button(target, false)],
+    );
+    assert!(dockspace.view().item(SECOND).unwrap().contained().is_some());
+}
+
+#[test]
+fn configured_cancel_shortcut_replaces_escape_and_keeps_extra_modifiers() {
+    use egui_dockspace::DockInputConfig;
+
+    for cancel_enabled in [false, true] {
+        let (context, mut dockspace, mut panes, source, target) = magnetic_modifier_fixture();
+        dockspace.set_input(DockInputConfig {
+            cancel_drag: cancel_enabled
+                .then(|| egui::KeyboardShortcut::new(Modifiers::ALT, Key::F2)),
+            ..Default::default()
+        });
+        let target = target.center();
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(source), pointer_button(source, true)],
+        );
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(source + vec2(12.0, 8.0))],
+        );
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+        let passive = dockspace.style().visuals.drop_guide_fill.unwrap();
+        let active = dockspace.style().visuals.drop_guide_active_fill.unwrap();
+        let escape = run_pane_frame(&context, &mut dockspace, &mut panes, key_press(Key::Escape));
+        assert!(
+            guide_button_count(&escape.output, passive, active) > 0,
+            "an unbound Escape must not cancel through the renderer fallback"
+        );
+        let cancelled = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::Key {
+                key: Key::F2,
+                physical_key: Some(Key::F2),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::ALT | Modifiers::CTRL,
+            }],
+        );
+        assert_eq!(
+            guide_button_count(&cancelled.output, passive, active) == 0,
+            cancel_enabled
+        );
+        let _ = run_pane_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![pointer_button(target, false)],
+        );
+        if cancel_enabled {
+            assert_eq!(
+                dockspace.view().item(FIRST).unwrap().tabs().items(),
+                &[FIRST]
+            );
+        } else {
+            assert_eq!(
+                dockspace.view().item(FIRST).unwrap().tabs().items(),
+                &[FIRST, SECOND]
+            );
+        }
+    }
+}
+
+#[test]
+fn shift_disables_explicit_guides_and_tab_gap_docking() {
+    for tab_gap in [false, true] {
+        let context = Context::default();
+        context.enable_accesskit();
+        let mut dockspace = Dockspace::builder(("product-shift-explicit", tab_gap), split_layout())
+            .style(instrumented_style())
+            .build()
+            .unwrap();
+        let mut panes = Panes;
+        let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let source = tab_center(&stable.output, "Second");
+        let first_tab = tab_center(&stable.output, "First");
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(source), pointer_button(source, true)],
+        );
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(source + vec2(12.0, 8.0))],
+        );
+        let preview = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(Pos2::new(200.0, 314.0))],
+        );
+        let target = if tab_gap {
+            first_tab
+        } else {
+            node_rect(&preview.output, Role::Label, "Dockspace center drop guide").center()
+        };
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+        let paused = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::ModifiersChanged(Modifiers::SHIFT)],
+        );
+        let style = dockspace.style();
+        assert_eq!(
+            guide_button_count(
+                &paused.output,
+                style.visuals.drop_guide_fill.unwrap(),
+                style.visuals.drop_guide_active_fill.unwrap(),
+            ),
+            0,
+            "Shift must hide docking affordances even when an exact target was acquired",
+        );
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerButton {
+                pos: target,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::SHIFT,
+            }],
+        );
+        assert!(dockspace.view().item(SECOND).unwrap().contained().is_some());
+        assert_eq!(
+            dockspace.view().item(FIRST).unwrap().tabs().items(),
+            &[FIRST]
+        );
+    }
+}
+
 struct MagneticPanes {
     target_rect: Cell<Option<Rect>>,
 }
@@ -780,13 +1055,14 @@ fn shift_held_from_press_stays_suppressed_through_moves_without_modifiers() {
         assert_eq!(product_magnetic_snapshot(&dockspace), before);
     }
     let dragging = run_pane_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert!(
+    assert_eq!(
         guide_button_count(
             &dragging.output,
             style.visuals.drop_guide_fill.unwrap(),
             style.visuals.drop_guide_active_fill.unwrap(),
-        ) > 0,
-        "the suspended gesture must stay active and keep explicit guides available",
+        ),
+        0,
+        "the suspended gesture must keep moving without offering docking targets",
     );
     let _ = run_pane_frame(
         &context,
