@@ -9,7 +9,12 @@ use open_gpui::{
     AcceptedFrameFence, App, Window, WindowFrameSubmissionOutcome, WindowFrameSubmissionTicket,
 };
 
-use crate::{HostState, SharedHost, element::Packet, input::QueuedPointer};
+use crate::{
+    HostState, SharedHost,
+    continuation::{self, InputFrame},
+    element::Packet,
+    input::QueuedPointer,
+};
 
 pub(super) struct PendingSubmission {
     pub(super) serial: u64,
@@ -61,7 +66,7 @@ pub(super) fn observe(
     window: &mut Window,
 ) {
     let weak = Rc::downgrade(shared);
-    window.on_exact_frame_submission_presented(ticket, move |snapshot, window, _| {
+    window.on_exact_frame_submission_presented(ticket, move |snapshot, window, cx| {
         let Some(shared) = weak.upgrade() else {
             return;
         };
@@ -103,21 +108,31 @@ pub(super) fn observe(
         if host.dirty || !host.inputs.is_empty() {
             window.refresh();
         }
+        drop(host);
+        continuation::schedule(&shared, window, cx);
     });
 }
 
 pub(super) fn accept(
     shared: &SharedHost,
     serial: u64,
+    input_frame: InputFrame,
     fence: AcceptedFrameFence,
     window: &mut Window,
+    cx: &App,
 ) {
     let mut host = shared.borrow_mut();
+    if serial != host.serial {
+        return;
+    }
+    host.input_frame = Some(input_frame);
     if !host
         .pending
         .as_ref()
         .is_some_and(|pending| pending.serial == serial)
     {
+        drop(host);
+        continuation::schedule(shared, window, cx);
         return;
     }
     let Some(mut pending) = host.pending.take() else {
@@ -148,6 +163,8 @@ pub(super) fn accept(
     }
     pending.accepted_generation = Some(fence.generation());
     host.pending = Some(pending);
+    drop(host);
+    continuation::schedule(shared, window, cx);
 }
 
 pub(super) fn accept_focus_stable(
@@ -180,12 +197,15 @@ pub(super) fn discard(shared: &SharedHost, window: &mut Window) {
     // The callback may come from the previous accepted packet after a newer
     // candidate was rolled back. Publication loss retracts the entire host.
     withdraw_pending(&mut host, window);
+    continuation::cancel(&mut host);
+    host.input_frame = None;
     host.packet = None;
     host.presented = None;
     host.dirty = true;
 }
 
 fn withdraw_pending(host: &mut HostState, window: &mut Window) {
+    continuation::cancel(host);
     let Some(mut pending) = host.pending.take() else {
         return;
     };
@@ -219,5 +239,7 @@ pub(super) fn close(host: &mut HostState) {
     host.packet = None;
     host.presented = None;
     host.inputs.clear();
+    continuation::cancel(host);
+    host.input_frame = None;
     let _ = host.session.disable_host_pointer();
 }

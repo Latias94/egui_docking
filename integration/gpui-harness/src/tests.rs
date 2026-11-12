@@ -6,18 +6,22 @@ use std::{
     convert::Infallible,
     panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
+    time::Duration,
 };
 
 use dockspace::{
     geometry::LogicalRect,
     model::{FloatingPresentationId, ItemId},
-    runtime::{SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step},
+    runtime::{
+        DockspacePointerContinuation, SurfacePaintProgramOperation as Operation,
+        SurfacePaintProgramStep as Step,
+    },
 };
 use open_gpui::{
-    Context, InputEvent, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
-    PlatformWindowPresentOutcome, Point, PointerCancelEvent, PointerCancelReason, Render,
-    RequestFrameOptions, TestAppContext, VisualTestContext, Window, canvas, div, fill, point,
-    prelude::*, px, rgb, size,
+    Context, InputEvent, IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, PlatformWindowPresentOutcome, Point, PointerCancelEvent,
+    PointerCancelReason, Render, RequestFrameOptions, TestAppContext, VisualTestContext, Window,
+    canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 
 use crate::{CounterPanel, SURFACE, SharedHost, Workbench, element::DockspaceElement, input};
@@ -245,6 +249,94 @@ impl Fixture {
         );
         self.present();
     }
+
+    fn hover_preview_tab(&mut self) -> DockspacePointerContinuation {
+        let window = self.visual.update(|window, _| window.window_handle());
+        self.visual.set_platform_hovered_window(Some(window));
+        let geometry = self.geometry();
+        let source = center(geometry.tabs[&ItemId::new(3)]);
+        let target = center(geometry.tabs[&ItemId::new(2)]);
+        self.visual
+            .simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        self.present();
+        self.visual
+            .simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        self.present();
+        self.visual.simulate_mouse_move(
+            target + point(px(1.0), px(0.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        self.present();
+        assert!(self.selected(1));
+        assert!(!self.selected(2));
+        let request = self
+            .host
+            .borrow()
+            .session
+            .pointer_continuation()
+            .expect("dragging over an inactive tab arms core hover selection");
+        self.assert_hover_request(request);
+        request
+    }
+
+    fn assert_hover_request(&mut self, request: DockspacePointerContinuation) {
+        let shared = self.host.clone();
+        self.visual.update(|window, cx| {
+            let host = shared.borrow();
+            let frame = host.input_frame.as_ref().expect("accepted input frame");
+            let position = window.mouse_position();
+            assert!(host.session.has_active_gesture());
+            assert_eq!(host.session.pointer_continuation(), Some(request));
+            assert!(
+                host.wake.is_some(),
+                "the exact Submitted packet must schedule the core request"
+            );
+            assert!(host.observed_at() < request.deadline());
+            assert!(input::is_presented(&host, frame.serial));
+            assert_eq!(frame.serial, host.serial);
+            assert!(host.pending.is_none());
+            assert!(window.is_window_active());
+            assert_eq!(cx.hovered_window().window(), Some(window.window_handle()));
+            assert!(frame.capture.is_captured(window));
+            assert_eq!(
+                input::logical_point(position, frame.bounds),
+                Some(request.position())
+            );
+            assert!(
+                frame
+                    .hitboxes
+                    .iter()
+                    .any(|hitbox| hitbox.window_point_target_rank(position, window) == Some(0))
+            );
+            let hit = host
+                .session
+                .host_pointer_hit_for_device(
+                    SURFACE,
+                    request.position(),
+                    dockspace::runtime::PointerDeviceKind::Mouse,
+                )
+                .expect("the current exact packet has a receiver at the stationary point");
+            assert_eq!(
+                hit.delivery()
+                    .expect("tab click receiver")
+                    .descriptor()
+                    .role(),
+                dockspace::runtime::DockspaceReceiverRole::TabBody
+            );
+        });
+    }
+
+    fn advance(&self, duration: Duration) {
+        self.visual.executor().advance_clock(duration);
+        self.visual.run_until_parked();
+    }
+
+    fn cancel_drag(&mut self) {
+        self.visual.simulate_event(PointerCancelEvent {
+            reason: PointerCancelReason::PlatformCaptureLost,
+        });
+    }
 }
 
 fn center(bounds: LogicalRect) -> Point<Pixels> {
@@ -366,6 +458,193 @@ fn real_tab_drag_merges_into_another_pane(cx: &mut TestAppContext) {
 }
 
 #[open_gpui::test]
+fn stationary_drag_selects_the_hovered_tab_at_the_core_deadline(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::new(cx);
+    let request = fixture.hover_preview_tab();
+    let remaining = request
+        .deadline()
+        .saturating_sub(fixture.host.borrow().observed_at());
+    assert_eq!(remaining, Duration::from_millis(150));
+    fixture.advance(remaining - Duration::from_millis(1));
+    assert_eq!(
+        fixture.host.borrow().observed_at(),
+        request.deadline() - Duration::from_millis(1)
+    );
+    fixture.assert_hover_request(request);
+    assert!(fixture.selected(1));
+    assert!(fixture.host.borrow().inputs.is_empty());
+
+    fixture.advance(Duration::from_millis(1));
+    assert_eq!(fixture.host.borrow().observed_at(), request.deadline());
+    // GPUI's test App flush draws refreshed windows before the async update returns.
+    // The committed selection proves the stationary edge ran at this exact deadline.
+    assert!(
+        fixture.selected(2),
+        "the due wake must switch the tab without another mouse event"
+    );
+    assert!(fixture.host.borrow().wake.is_none());
+    assert!(
+        fixture
+            .host
+            .borrow()
+            .session
+            .pointer_continuation()
+            .is_none()
+    );
+    fixture.present();
+    assert!(fixture.selected(2));
+    assert!(!fixture.selected(1));
+    assert!(
+        fixture.host.borrow().session.has_active_gesture(),
+        "hover selection must preserve the captured drag"
+    );
+    let selected_version = fixture.host.borrow().session.version();
+    fixture.advance(Duration::from_secs(1));
+    assert_eq!(fixture.host.borrow().session.version(), selected_version);
+    assert!(
+        fixture.host.borrow().inputs.is_empty(),
+        "the consumed wake does not poll or repeat"
+    );
+    fixture.cancel_drag();
+    fixture.present();
+}
+
+#[open_gpui::test]
+fn cancellation_cannot_lend_its_old_hover_wake_to_a_new_drag(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::new(cx);
+    let old = fixture.hover_preview_tab();
+    fixture.advance(Duration::from_millis(50));
+    fixture.cancel_drag();
+    assert!(
+        fixture.host.borrow().wake.is_none(),
+        "a raw cancellation revokes scheduling before publication"
+    );
+    fixture.present();
+    let current = fixture.hover_preview_tab();
+    assert_ne!(old.token(), current.token());
+    assert_eq!(
+        current.deadline() - old.deadline(),
+        Duration::from_millis(50)
+    );
+    fixture.advance(Duration::from_millis(100));
+    assert!(fixture.selected(1));
+    assert!(fixture.host.borrow().inputs.is_empty());
+    fixture.advance(Duration::from_millis(50));
+    fixture.present();
+    assert!(fixture.selected(2));
+    fixture.cancel_drag();
+    fixture.present();
+}
+
+#[open_gpui::test]
+fn motion_away_revokes_the_hover_wake_before_its_input_frame_is_committed(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::new(cx);
+    let request = fixture.hover_preview_tab();
+    let away = center(fixture.geometry().panes[&ItemId::new(1)]);
+    let shared = fixture.host.clone();
+    fixture.visual.update(|window, cx| {
+        window.dispatch_event(
+            MouseMoveEvent {
+                position: away,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        let host = shared.borrow();
+        assert_eq!(window.mouse_position(), away);
+        assert!(host.capture.unwrap().is_captured(window));
+        assert!(
+            host.wake.is_none(),
+            "raw motion cancels the old task before the update can commit"
+        );
+        assert_eq!(
+            host.inputs.len(),
+            1,
+            "the pending prefix contains exactly the real Move"
+        );
+        assert_eq!(
+            host.session.pointer_continuation(),
+            Some(request),
+            "core still owns the previous request until this raw prefix is committed"
+        );
+    });
+    assert!(
+        fixture
+            .host
+            .borrow()
+            .session
+            .pointer_continuation()
+            .is_none()
+    );
+    fixture.advance(Duration::from_millis(200));
+    assert!(
+        fixture.host.borrow().inputs.is_empty(),
+        "the consumed motion must not be followed by a stale timer event"
+    );
+    assert!(
+        fixture
+            .host
+            .borrow()
+            .session
+            .pointer_continuation()
+            .is_none()
+    );
+    assert_eq!(
+        fixture.visual.update(|window, _| window.mouse_position()),
+        away
+    );
+    fixture.present();
+    assert!(fixture.selected(1));
+    assert!(!fixture.selected(2));
+    fixture.cancel_drag();
+    fixture.present();
+}
+
+#[open_gpui::test]
+fn deferred_replacement_cannot_execute_a_previously_armed_hover_wake(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::new(cx);
+    fixture.hover_preview_tab();
+    fixture.outcome(PlatformWindowPresentOutcome::Deferred);
+    fixture.visual.simulate_resize(size(px(1000.0), px(760.0)));
+    fixture.frame();
+    {
+        let host = fixture.host.borrow();
+        assert!(host.pending.is_some());
+        assert!(!input::is_presented(&host, host.serial));
+        assert!(host.wake.is_none());
+    }
+    fixture.advance(Duration::from_millis(200));
+    assert!(fixture.selected(1));
+    assert!(!fixture.selected(2));
+    assert!(fixture.host.borrow().inputs.is_empty());
+    fixture.cancel_drag();
+    fixture.outcome(PlatformWindowPresentOutcome::Submitted);
+    fixture.present();
+    assert!(!fixture.selected(2));
+}
+
+#[open_gpui::test]
+fn native_occlusion_at_the_deadline_cannot_borrow_capture_as_hover_clearance(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = Fixture::new(cx);
+    fixture.hover_preview_tab();
+    fixture.visual.set_platform_hovered_window(None);
+    fixture.advance(Duration::from_millis(150));
+    assert!(fixture.host.borrow().inputs.is_empty());
+    assert!(fixture.selected(1));
+    assert!(!fixture.selected(2));
+    assert!(
+        fixture.host.borrow().wake.is_none(),
+        "failed eligibility does not busy-loop a due timer"
+    );
+    fixture.cancel_drag();
+    fixture.present();
+}
+
+#[open_gpui::test]
 fn real_splitter_drag_changes_the_pane_geometry(cx: &mut TestAppContext) {
     let mut fixture = Fixture::new(cx);
     let before = fixture.geometry();
@@ -414,6 +693,67 @@ fn real_contained_title_drag_moves_the_existing_floating_root(cx: &mut TestAppCo
         Some(floating)
     );
     assert!(!host.session.has_active_gesture());
+}
+
+#[open_gpui::test]
+fn captured_float_motion_survives_a_deferred_renderer_submission(cx: &mut TestAppContext) {
+    let mut fixture = Fixture::new(cx);
+    let floating = FloatingPresentationId::new(1);
+    let before = fixture
+        .host
+        .borrow()
+        .session
+        .view()
+        .contained(floating)
+        .unwrap()
+        .rect();
+    let start = center(fixture.geometry().titles[&floating]);
+    fixture
+        .visual
+        .simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    fixture.present();
+    fixture.outcome(PlatformWindowPresentOutcome::Deferred);
+    fixture.visual.simulate_mouse_move(
+        start + point(px(-20.0), px(20.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    fixture.frame();
+    {
+        let host = fixture.host.borrow();
+        assert!(host.pending.is_some());
+        assert!(host.session.has_active_gesture());
+        assert!(!input::is_presented(&host, host.serial));
+    }
+
+    let end = start + point(px(-120.0), px(110.0));
+    fixture
+        .visual
+        .simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    fixture.frame();
+    fixture.outcome(PlatformWindowPresentOutcome::Submitted);
+    fixture.present();
+    let title_after = center(fixture.geometry().titles[&floating]);
+    assert!(
+        (f32::from(title_after.x - end.x)).abs() < 1.0
+            && (f32::from(title_after.y - end.y)).abs() < 1.0,
+        "the visible floating root must follow a captured move during Deferred: {start:?} -> {title_after:?}, expected {end:?}"
+    );
+    fixture
+        .visual
+        .simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    fixture.present();
+    let after = fixture
+        .host
+        .borrow()
+        .session
+        .view()
+        .contained(floating)
+        .unwrap()
+        .rect();
+    assert!((after.x() - (before.x() - 120.0)).abs() < 1.0);
+    assert!((after.y() - (before.y() + 110.0)).abs() < 1.0);
+    assert!(!fixture.host.borrow().session.has_active_gesture());
 }
 
 #[open_gpui::test]

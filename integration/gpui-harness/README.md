@@ -29,6 +29,8 @@ Drag a divider to resize panes. The Tools window also has a draggable title and
 resize edges. Hold Shift to suspend docking targets while retaining the drag;
 press Escape to cancel. Each pane contains a normal GPUI button with its own
 counter, so application-widget input can be checked alongside docking input.
+Dragging over an inactive target tab selects it after the core's hover delay;
+the adapter schedules that deadline without requiring further mouse motion.
 
 ## Real-window smoke check
 
@@ -37,17 +39,37 @@ cargo run --manifest-path integration/gpui-harness/Cargo.toml \
   --bin gpui-workbench --locked -- --smoke
 ```
 
-This opens the ordinary workbench on the real platform and exits successfully
-only after the window is visible, the Editor, Inspector, and Tools GPUI views
-have been composed, and the corresponding exact submission reaches Submitted
-and its artifact is accepted by the core. It prints `SMOKE OK` on success.
-Accepted and Deferred alone do not complete the check. Opening failure, closing
-or quitting early, an adapter error, and a 12-second presentation timeout all
-produce a nonzero exit status.
+This opens the ordinary workbench on the real platform and waits for the visible
+native window, the composed Editor, Inspector, and Tools GPUI views, a real exact
+Submitted result, and the matching core artifact. It then dispatches framework
+mouse events to:
 
-The smoke check requires a working native display and renderer. It does not
-inject input, verify physical display scanout, or qualify native multiview.
-Use the retained tests below for deterministic input coverage.
+1. Click the Editor button and verify its counter advances from zero to one.
+2. Select Preview, click its button, then return to Editor and verify both
+   counters and their original GPUI entities survive the tab switches.
+3. Press, move, and release the splitter, waiting for a submitted artifact
+   between those edges, and verify the resulting pane size.
+4. Drag the Tools window with 24 consecutive motion samples without waiting for
+   each preceding submission, then verify its submitted preview follows the last
+   position and the gesture ends with the original view.
+
+Button coordinates come from paint-time bounds enabled only for this check.
+Tab and splitter coordinates come from the exact submitted core packet. Each
+assertion waits for a newer real renderer submission; Accepted and Deferred alone
+never satisfy it. The check counts motion samples sent while a submission is pending,
+prints the last input-to-observed-submission interval and `SMOKE OK`
+before requesting native quit. Opening
+failure, closing or quitting early, an adapter error, a failed assertion, and a
+20-second interaction timeout all produce a nonzero exit status. An independent
+25-second process watchdog also detects a stalled native quit; success requires
+the process to actually exit with status zero.
+
+The smoke check requires a working native display and renderer. Its input enters
+through GPUI's public `Window::dispatch_event` path rather than the operating
+system's mouse-delivery queue. It verifies native backend rendering and framework
+interaction, without claiming OS mouse delivery, physical display scanout, or
+native multiview qualification. The tests below provide deterministic CPU
+coverage of the same retained adapter.
 
 ## Integration boundaries
 
@@ -56,6 +78,9 @@ Use the retained tests below for deterministic input coverage.
 - `src/input.rs` saves event-time receiver, clearance, and capture observations.
   An application widget in front of docking chrome blocks docking delivery.
   A later layout never replaces the observations saved for an earlier event.
+- `src/continuation.rs` schedules the core's current stationary request once,
+  then refreshes exact presentation, capture and framework clearance before
+  submitting its non-motion event. Cancellation and new input revoke old wakes.
 - `src/presentation.rs` holds the suspended public update until GPUI accepts its
   frame. It reports an output as presented only after the matching exact-frame
   submission callback succeeds. Rejected candidates can retry their original
@@ -65,7 +90,9 @@ The presentation boundary is GPUI's renderer submission to the platform's
 presentation mechanism. It does not claim to observe physical display scanout.
 GPUI frame acceptance alone does not grant the core input authority. Input
 also checks that the framework packet matches the exact artifact acknowledged
-by the core.
+by the core. An already captured gesture can retain its own source coordinates
+while a replacement awaits submission; that capability grants neither new-press
+nor hover authority.
 
 This first slice supports one OS window and contained floating roots. Pane close
 requests are disabled because the example has no close-approval flow. Touch,

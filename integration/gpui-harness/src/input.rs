@@ -16,13 +16,14 @@ use crate::{HostState, SURFACE};
 #[derive(Clone, Copy)]
 pub(super) struct QueuedPointer {
     event: SurfacePointerEvent,
-    route: HostPointerRoute,
+    manipulation: HostPointerRoute,
+    hover: HostPointerRoute,
     surface: Option<PresentedDockspaceSurface>,
     delivery: Option<PresentedDockReceiver>,
     drag: Option<PresentedDockReceiver>,
     clear: bool,
     capture: SurfacePointerCapture,
-    enabled: bool,
+    metadata: PointerEventMetadata,
 }
 
 impl QueuedPointer {
@@ -50,15 +51,12 @@ impl QueuedPointer {
         frame.submit_host_pointer_batch([HostPointerInput::new(
             SurfacePointerId::new(1),
             self.event,
-            self.route,
-            self.route,
+            self.manipulation,
+            self.hover,
             self.capture,
             facts,
         )
-        .with_metadata(
-            PointerEventMetadata::untimed(PointerDeviceKind::Mouse)
-                .with_docking_enabled(self.enabled),
-        )])?;
+        .with_metadata(self.metadata)])?;
         Ok(())
     }
 }
@@ -74,10 +72,7 @@ pub(super) fn queue(
     shift: bool,
     window: &Window,
 ) -> bool {
-    let Ok(point) = LogicalPoint::new(
-        f64::from(f32::from(position.x - bounds.origin.x)),
-        f64::from(f32::from(position.y - bounds.origin.y)),
-    ) else {
+    let Some(point) = logical_point(position, bounds) else {
         return false;
     };
     let clear = hitboxes
@@ -97,9 +92,24 @@ pub(super) fn queue(
         return false;
     }
     let surface = hit.map(|hit| hit.surface());
+    // Capture can retain only the current gesture's source coordinates while
+    // its own next output awaits presentation. Receivers and hover still need
+    // the exact submitted packet used by the framework hitboxes above.
+    let manipulation = captured
+        .then(|| {
+            host.session
+                .host_pointer_manipulation_surface(SurfacePointerId::new(1))
+        })
+        .flatten()
+        .filter(|source| source.surface() == SURFACE)
+        .or(surface);
+    crate::continuation::cancel(host);
     host.inputs.push(QueuedPointer {
         event,
-        route: surface.map_or(HostPointerRoute::Unknown, |surface| {
+        manipulation: manipulation.map_or(HostPointerRoute::Unknown, |surface| {
+            HostPointerRoute::new(surface, point)
+        }),
+        hover: surface.map_or(HostPointerRoute::Unknown, |surface| {
             HostPointerRoute::new(surface, point)
         }),
         surface,
@@ -113,11 +123,23 @@ pub(super) fn queue(
         } else {
             SurfacePointerCapture::None
         },
-        enabled: !shift,
+        metadata: PointerEventMetadata::new(PointerDeviceKind::Mouse, host.observed_at())
+            .with_docking_enabled(!shift),
     });
     host.pointer = Some(point);
     host.dirty = true;
     true
+}
+
+pub(super) fn logical_point(
+    position: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+) -> Option<LogicalPoint> {
+    LogicalPoint::new(
+        f64::from(f32::from(position.x - bounds.origin.x)),
+        f64::from(f32::from(position.y - bounds.origin.y)),
+    )
+    .ok()
 }
 
 pub(super) fn is_presented(host: &HostState, serial: u64) -> bool {

@@ -908,6 +908,20 @@ impl SurfacePointerRetirement {
 }
 
 impl DockspaceSession {
+    /// Returns retained source coordinates for this exact active host pointer.
+    ///
+    /// Retained hosts can freeze this capability when an event arrives, even
+    /// while a newer renderer candidate awaits presentation. It grants only
+    /// manipulation of the active gesture, never hover or new-press authority.
+    /// Coordinate, owner, epoch and source continuation checks still apply.
+    #[must_use]
+    pub fn host_pointer_manipulation_surface(
+        &self,
+        pointer: SurfacePointerId,
+    ) -> Option<PresentedDockspaceSurface> {
+        host_pointer_manipulation_surface(&self.engine, pointer)
+    }
+
     /// Queries docking's semantic receiver winners in one exact current output.
     ///
     /// Framework overlays and application widgets may still block these candidates.
@@ -1172,6 +1186,19 @@ fn host_pointer_hit(
     })
 }
 
+fn host_pointer_manipulation_surface(
+    engine: &crate::engine::DockEngine,
+    pointer: SurfacePointerId,
+) -> Option<PresentedDockspaceSurface> {
+    let authority =
+        engine.host_local_manipulation_authority(crate::intent::PointerId::new(pointer.get()))?;
+    Some(PresentedDockspaceSurface {
+        surface: authority.surface(),
+        output: authority.ticket(),
+        authority,
+    })
+}
+
 fn pointer_authority_blocked(
     engine: &crate::engine::DockEngine,
     presentation: &super::presentation::RuntimePresentationState,
@@ -1221,15 +1248,7 @@ impl DockspaceHostFrame<'_> {
         &self,
         pointer: SurfacePointerId,
     ) -> Option<PresentedDockspaceSurface> {
-        let authority = self
-            .frame
-            .candidate_engine()
-            .host_local_manipulation_authority(crate::intent::PointerId::new(pointer.get()))?;
-        Some(PresentedDockspaceSurface {
-            surface: authority.surface(),
-            output: authority.ticket(),
-            authority,
-        })
+        host_pointer_manipulation_surface(self.frame.candidate_engine(), pointer)
     }
 
     /// Returns the exact presented capability after this update's accepted observations.

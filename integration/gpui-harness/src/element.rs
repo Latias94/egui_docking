@@ -7,11 +7,11 @@ use dockspace::{
     geometry::{LogicalRect, LogicalSize},
     model::ItemId,
     runtime::{
-        DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceUpdate,
-        SurfaceMeasurementAnswer as Answer, SurfaceMeasurementRequest as Request, SurfacePaintPlan,
-        SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
-        SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerEvent, SurfaceWork,
-        SurfaceWorkDeferred, TabStripMetrics,
+        DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceReceiverRole,
+        DockspaceUpdate, SurfaceMeasurementAnswer as Answer, SurfaceMeasurementRequest as Request,
+        SurfacePaintPlan, SurfacePaintProgramOperation as Operation,
+        SurfacePaintProgramStep as Step, SurfacePointerButton, SurfacePointerCancelReason,
+        SurfacePointerEvent, SurfaceWork, SurfaceWorkDeferred, TabStripMetrics,
     },
 };
 use open_gpui::{
@@ -21,7 +21,7 @@ use open_gpui::{
     font, point, prelude::*, px, relative, rgb, rgba, size,
 };
 
-use crate::{HostState, SURFACE, SharedHost, input, presentation};
+use crate::{HostState, SURFACE, SharedHost, continuation::InputFrame, input, presentation};
 
 const BACKGROUND: u32 = 0xe6eaf0;
 const TAB_BAR: u32 = 0xd8dee8;
@@ -36,14 +36,34 @@ pub(super) struct Packet {
 
 impl Packet {
     pub(super) fn contains_pane(&self, item: ItemId) -> bool {
-        self.draws
-            .iter()
-            .any(|draw| matches!(draw, Draw::Pane(_, candidate) if *candidate == item))
+        self.pane_bounds(item).is_some()
+    }
+
+    pub(super) fn pane_bounds(&self, item: ItemId) -> Option<LogicalRect> {
+        self.draws.iter().find_map(|draw| match draw {
+            Draw::Pane(bounds, candidate) if *candidate == item => Some(*bounds),
+            _ => None,
+        })
+    }
+
+    pub(super) fn tab_bounds(&self, item: ItemId) -> Option<LogicalRect> {
+        self.draws.iter().find_map(|draw| match draw {
+            Draw::Tab(bounds, candidate, _) if *candidate == item => Some(*bounds),
+            _ => None,
+        })
+    }
+
+    pub(super) fn receiver_bounds(&self, role: DockspaceReceiverRole) -> Option<LogicalRect> {
+        self.draws.iter().find_map(|draw| match draw {
+            Draw::Receiver(receiver) if receiver.role() == role => Some(receiver.bounds()),
+            _ => None,
+        })
     }
 }
 
 enum Draw {
     Fill(LogicalRect, u32),
+    Tab(LogicalRect, ItemId, u32),
     Outline(LogicalRect, u32),
     Text(LogicalRect, String, u32),
     Pane(LogicalRect, ItemId),
@@ -144,6 +164,9 @@ impl Element for DockspaceElement {
         let Some(prepared) = prepared.as_mut() else {
             return;
         };
+        if let Some(probe) = &self.host.borrow().surface_probe {
+            probe.set(Some(bounds));
+        }
         // Keep the core order, including pane widgets between chrome and overlays.
         for draw in &mut prepared.draws {
             match draw {
@@ -238,7 +261,7 @@ impl DockspaceElement {
         let mut draws = Vec::new();
         for draw in &packet.draws {
             match draw {
-                Draw::Fill(rect, color) => {
+                Draw::Fill(rect, color) | Draw::Tab(rect, _, color) => {
                     draws.push(PreparedDraw::Fill(to_gpui(*rect, bounds), *color))
                 }
                 Draw::Outline(rect, color) => {
@@ -291,9 +314,17 @@ impl DockspaceElement {
 
         let shared = self.host.clone();
         let discard = self.host.clone();
+        let input_frame = InputFrame {
+            serial,
+            bounds,
+            hitboxes: hitboxes.clone(),
+            capture,
+        };
         window.record_prepaint_window_transaction(
             publication,
-            move |fence, window, _| presentation::accept(&shared, serial, fence, window),
+            move |fence, window, cx| {
+                presentation::accept(&shared, serial, input_frame.clone(), fence, window, cx)
+            },
             move |_, window, _| presentation::discard(&discard, window),
         );
         let shared = self.host.clone();
@@ -584,8 +615,9 @@ fn record(
                     Operation::Tab(tab) => {
                         receiver(&mut draws, plan.receiver_for_tab_body(tab));
                         if !paint.is_source_gap() {
-                            draws.push(Draw::Fill(
+                            draws.push(Draw::Tab(
                                 tab.visible_bounds(),
+                                tab.item(),
                                 if tab.selected() { SELECTED } else { TAB },
                             ));
                             draws.push(Draw::Text(tab.text_bounds(), label(Some(tab.item())), INK));

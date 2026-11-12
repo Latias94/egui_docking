@@ -1,5 +1,6 @@
 //! A retained Open GPUI consumer of the public, renderer-neutral docking runtime.
 
+mod continuation;
 mod element;
 mod input;
 mod presentation;
@@ -7,7 +8,12 @@ mod smoke;
 #[cfg(test)]
 mod tests;
 
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use dockspace::{
@@ -48,10 +54,17 @@ struct HostState {
     error: Option<String>,
     publication: open_gpui::PrepaintPublicationId,
     capture: Option<open_gpui::PointerCaptureHandle>,
+    surface_probe: Option<smoke::ButtonProbe>,
+    input_frame: Option<continuation::InputFrame>,
+    wake: Option<continuation::Wake>,
+    clock: open_gpui::BackgroundExecutor,
+    clock_origin: Instant,
 }
 
 impl HostState {
     fn new(cx: &mut App) -> Result<Self> {
+        let clock = cx.background_executor().clone();
+        let clock_origin = clock.now();
         let content = DockspaceNode::split(
             DockspaceAxis::Horizontal,
             [
@@ -90,6 +103,7 @@ impl HostState {
                     title,
                     accent,
                     clicks: 0,
+                    button_probe: None,
                 })
                 .into();
             (ItemId::new(id), Panel { title, view })
@@ -109,7 +123,18 @@ impl HostState {
             error: None,
             publication: open_gpui::PrepaintPublicationId::new(),
             capture: None,
+            surface_probe: None,
+            input_frame: None,
+            wake: None,
+            clock,
+            clock_origin,
         })
+    }
+
+    fn observed_at(&self) -> Duration {
+        self.clock
+            .now()
+            .saturating_duration_since(self.clock_origin)
     }
 
     fn fail(&mut self, error: impl std::fmt::Display) {
@@ -123,6 +148,7 @@ struct CounterPanel {
     title: &'static str,
     accent: u32,
     clicks: usize,
+    button_probe: Option<smoke::ButtonProbe>,
 }
 
 impl Render for CounterPanel {
@@ -152,6 +178,19 @@ impl Render for CounterPanel {
                         panel.clicks += 1;
                         cx.notify();
                     }))
+                    .when_some(self.button_probe.clone(), |button, probe| {
+                        button.relative().child(
+                            open_gpui::canvas(
+                                |_, _, _| {},
+                                move |bounds, (), _, _| probe.set(Some(bounds)),
+                            )
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left_0()
+                            .right_0(),
+                        )
+                    })
                     .child(format!("GPUI button · {} clicks", self.clicks)),
             )
     }
@@ -184,7 +223,7 @@ pub fn run() {
     run_application(None);
 }
 
-/// Checks one real native window and exits after exact presentation is accepted.
+/// Checks real-window presentation, retained controls, tab selection and splitter input.
 pub fn run_smoke() {
     run_application(Some(smoke::Smoke::default()));
 }
