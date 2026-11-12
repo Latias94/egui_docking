@@ -3,8 +3,8 @@
 use dockspace::model::ItemId;
 use egui::{Context, Id, Response, Ui, Vec2, WidgetText};
 
-use crate::DragPreview;
 use crate::tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose, TabVisuals};
+use crate::{DragPreview, DropPreview};
 
 /// Ordinary application-content registrations produced by one pane callback.
 ///
@@ -138,9 +138,19 @@ pub trait PaneView {
 
     /// Paints the source's drag ghost without adding interactive widgets.
     ///
-    /// The destination highlight uses [`crate::DockVisualOverrides::drop_fill`]
-    /// and [`crate::DockVisualOverrides::drop_border_color`] separately.
+    /// The destination is customized separately with [`Self::drop_preview_ui`].
     fn drag_preview_ui(&mut self, ui: &Ui, preview: &DragPreview) {
+        preview.paint(ui);
+    }
+
+    /// Paints the resulting docking area; target annotations are opt-in.
+    ///
+    /// Core supplies the resolved target; do not infer it from overlap with the
+    /// future area. The default only calls [`DropPreview::paint`]. Applications
+    /// may add an outline with `paint_target`, an icon through the painter, or
+    /// their own localized text through `paint_label`. The callback must not
+    /// add interactive widgets or change layout.
+    fn drop_preview_ui(&mut self, ui: &Ui, preview: &DropPreview) {
         preview.paint(ui);
     }
 
@@ -268,6 +278,10 @@ impl<T: PaneView + ?Sized> PaneView for Box<T> {
 
     fn drag_preview_ui(&mut self, ui: &Ui, preview: &DragPreview) {
         (**self).drag_preview_ui(ui, preview);
+    }
+
+    fn drop_preview_ui(&mut self, ui: &Ui, preview: &DropPreview) {
+        (**self).drop_preview_ui(ui, preview);
     }
 
     fn tab_bar_layout(&self, bar: TabBarId, ui: &Ui) -> TabBarLayout {

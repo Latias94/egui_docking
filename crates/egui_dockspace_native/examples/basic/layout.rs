@@ -615,14 +615,16 @@ pub(super) fn describe_status(status: &NativeActionStatus, panes: &ExamplePanes)
                     "The floating group is already in view.".to_owned()
                 }
             }
-            DockspaceActionOutcome::RootDocked { changed, .. } => {
+            DockspaceActionOutcome::RootDocked { changed, .. }
+            | DockspaceActionOutcome::TabsDocked { changed, .. } => {
                 if *changed {
                     "Docked the group; pane content is retained.".to_owned()
                 } else {
                     "The group is already at that docking position.".to_owned()
                 }
             }
-            DockspaceActionOutcome::RootFloated { changed, .. } => {
+            DockspaceActionOutcome::RootFloated { changed, .. }
+            | DockspaceActionOutcome::TabsFloated { changed, .. } => {
                 if *changed {
                     "The group is floating; pane content is retained.".to_owned()
                 } else {

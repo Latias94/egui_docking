@@ -44,6 +44,12 @@ pub(super) enum ProductCommandContext {
         source_root: RootId,
         target_root: RootId,
     },
+    DockTabs {
+        source_root: RootId,
+        target_root: RootId,
+        target_surface: Option<SurfaceId>,
+        items: Vec<ItemId>,
+    },
     DockInstallMain {
         item: ItemId,
         source_root: RootId,
@@ -94,6 +100,13 @@ pub(super) enum ProductCommandContext {
         root: RootId,
         surface: SurfaceId,
         floating: FloatingPresentationId,
+    },
+    FloatTabs {
+        source_root: RootId,
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+        items: Vec<ItemId>,
     },
     FloatRootRehome {
         root: RootId,
@@ -326,6 +339,18 @@ impl DockEngine {
         self.prepare_product_action(ProductAction::DockItem { item, placement })
     }
 
+    pub(crate) fn prepare_dock_tabs(
+        &self,
+        group: PreparedTabsGroup,
+        placement: DockPlacement,
+    ) -> PreparedDockAction {
+        PreparedDockAction::new(
+            group.authority_domain,
+            group.expected,
+            ProductAction::DockTabs { group, placement },
+        )
+    }
+
     /// Prepares one complete-root docking action against the exact published workspace version.
     #[must_use]
     pub const fn prepare_dock_root(
@@ -409,6 +434,18 @@ impl DockEngine {
         self.prepare_product_action(ProductAction::FloatItem { item, surface })
     }
 
+    pub(crate) fn prepare_float_tabs(
+        &self,
+        group: PreparedTabsGroup,
+        surface: SurfaceId,
+    ) -> PreparedDockAction {
+        PreparedDockAction::new(
+            group.authority_domain,
+            group.expected,
+            ProductAction::FloatTabs { group, surface },
+        )
+    }
+
     /// Prepares one contained raise against the exact published workspace version.
     #[must_use]
     pub const fn prepare_raise_contained(&self, item: ItemId) -> PreparedDockAction {
@@ -445,6 +482,11 @@ impl DockEngine {
                 item,
                 placement,
             },
+            ProductAction::DockTabs { group, placement } => EngineInput::DockTabs {
+                expected,
+                group,
+                placement,
+            },
             ProductAction::DockRoot { root, placement } => EngineInput::DockRoot {
                 expected,
                 root,
@@ -469,6 +511,11 @@ impl DockEngine {
             ProductAction::FloatItem { item, surface } => EngineInput::FloatItem {
                 expected,
                 item,
+                surface,
+            },
+            ProductAction::FloatTabs { group, surface } => EngineInput::FloatTabs {
+                expected,
+                group,
                 surface,
             },
             ProductAction::RaiseContained { item } => {
@@ -507,14 +554,20 @@ impl DockEngine {
             });
         }
 
-        let focus_item = match action {
+        let focus_item = match &action {
             ProductAction::SelectItem { item }
             | ProductAction::OpenItem { item, .. }
             | ProductAction::DockItem { item, .. }
-            | ProductAction::FloatItem { item, .. } => Some(item),
+            | ProductAction::FloatItem { item, .. } => Some(*item),
+            ProductAction::DockTabs { group, .. } | ProductAction::FloatTabs { group, .. } => {
+                match self.workspace.node(group.source.node()) {
+                    Some(Node::Tabs { selected, .. }) => *selected,
+                    _ => None,
+                }
+            }
             ProductAction::DockRoot { root, .. }
             | ProductAction::DockBackRoot { root }
-            | ProductAction::FloatRoot { root, .. } => self.product_root_focus_item(root),
+            | ProductAction::FloatRoot { root, .. } => self.product_root_focus_item(*root),
             _ => None,
         };
         let plan = match self.compile_product_action(action.clone()) {
@@ -713,6 +766,9 @@ impl DockEngine {
                 let source = self.capture_product_item(item)?;
                 self.compile_product_move(item, source, placement)
             }
+            ProductAction::DockTabs { group, placement } => {
+                self.compile_product_tabs_move(&group, placement)
+            }
             ProductAction::DockRoot { root, placement } => {
                 self.compile_product_root_move(root, placement)
             }
@@ -735,6 +791,9 @@ impl DockEngine {
                 let rect = self.derive_product_root_float_rect(source.root(), surface)?;
                 self.compile_product_float(item, surface, rect)
             }
+            ProductAction::FloatTabs { group, surface } => {
+                self.compile_product_tabs_float(&group, surface)
+            }
             ProductAction::RaiseContained { item } => self.compile_product_contained_raise(item),
             ProductAction::BringContainedIntoView { item } => {
                 self.compile_product_contained_bring_into_view(item)
@@ -750,6 +809,23 @@ impl DockEngine {
             .capture_item_source_by_id(item)
             .map_err(|_| DockspaceActionRejection::Conflict)?
             .ok_or(DockspaceActionRejection::ItemUnavailable { item })
+    }
+
+    pub(super) fn capture_product_tabs(
+        &self,
+        group: &PreparedTabsGroup,
+    ) -> Result<(NodeSource, Vec<ItemId>), DockspaceActionRejection> {
+        if group.authority_domain != self.authority_domain || group.expected != self.version {
+            return Err(DockspaceActionRejection::Conflict);
+        }
+        self.validate_node_source(&group.source)
+            .map_err(|_| DockspaceActionRejection::Conflict)?;
+        match self.workspace.node(group.source.node()) {
+            Some(Node::Tabs { items, .. }) if !items.is_empty() => {
+                Ok((group.source.clone(), items.to_vec()))
+            }
+            _ => Err(DockspaceActionRejection::Conflict),
+        }
     }
 
     fn compile_product_placement(
@@ -836,6 +912,57 @@ impl DockEngine {
         Ok(ProductActionPlan::Command {
             command: plan.command,
             context,
+        })
+    }
+
+    fn compile_product_tabs_move(
+        &self,
+        group: &PreparedTabsGroup,
+        placement: DockPlacement,
+    ) -> Result<ProductActionPlan, DockspaceActionRejection> {
+        let (source, items) = self.capture_product_tabs(group)?;
+        let source_root = source.root();
+        let payload = MovePayload::Tabs(source);
+        let (command, target_root, target_surface) = match placement {
+            DockPlacement::Main(surface) => {
+                let (command, root) = match self.capture_complete_root_payload(&payload)? {
+                    Some(complete) => (
+                        self.compile_complete_root_main(source_root, complete, surface)?
+                            .command,
+                        source_root,
+                    ),
+                    None => {
+                        self.require_rootless_surface(surface)?;
+                        let root = self.next_product_root()?;
+                        (
+                            WorkspaceCommand::InstallMainRoot {
+                                surface,
+                                root,
+                                content: RootContent::Move(payload),
+                            },
+                            root,
+                        )
+                    }
+                };
+                (command, root, Some(surface))
+            }
+            _ => {
+                let (target, target_root) = self.capture_product_target(placement)?;
+                (
+                    WorkspaceCommand::Move { payload, target },
+                    target_root,
+                    None,
+                )
+            }
+        };
+        Ok(ProductActionPlan::Command {
+            command,
+            context: ProductCommandContext::DockTabs {
+                source_root,
+                target_root,
+                target_surface,
+                items,
+            },
         })
     }
 
@@ -1106,6 +1233,9 @@ pub(super) const fn product_presentation_transition_root(action: &ProductAction)
         ProductAction::DockRoot { root, .. }
         | ProductAction::DockBackRoot { root }
         | ProductAction::FloatRoot { root, .. } => Some(*root),
+        ProductAction::DockTabs { group, .. } | ProductAction::FloatTabs { group, .. } => {
+            Some(group.source.root())
+        }
         ProductAction::TearOffNative {
             source: NativeTearOffSource::Root(root),
             ..
@@ -1134,6 +1264,124 @@ impl ProductCommandContext {
         changed: bool,
     ) -> Result<DockspaceActionOutcome, EngineError> {
         match (self, outcome) {
+            (
+                Self::DockTabs {
+                    source_root,
+                    target_root,
+                    target_surface,
+                    items,
+                },
+                outcome,
+            ) => {
+                let matches = match &outcome {
+                    CommandOutcome::Moved {
+                        source_root: actual_source,
+                        target_root: actual_target,
+                        items: actual_items,
+                        ..
+                    } => {
+                        *actual_source == source_root
+                            && *actual_target == target_root
+                            && *actual_items == items
+                    }
+                    CommandOutcome::MainRootInstalled {
+                        root,
+                        surface,
+                        items: actual_items,
+                    } => {
+                        *root == target_root
+                            && Some(*surface) == target_surface
+                            && *actual_items == items
+                    }
+                    CommandOutcome::RootRehomed {
+                        root,
+                        surface,
+                        floating: None,
+                        changed: actual_changed,
+                    } => {
+                        *root == source_root
+                            && target_root == source_root
+                            && Some(*surface) == target_surface
+                            && *actual_changed == changed
+                    }
+                    CommandOutcome::ContainedPromoted { root, surface, .. } => {
+                        *root == source_root
+                            && target_root == source_root
+                            && Some(*surface) == target_surface
+                            && changed
+                    }
+                    _ => false,
+                };
+                if !matches {
+                    return Err(EngineError::ReductionCauseInvariant {
+                        detail: "tabs docking outcome did not match its compiled payload",
+                    });
+                }
+                Ok(DockspaceActionOutcome::TabsDocked {
+                    source_root,
+                    target_root,
+                    items,
+                    changed,
+                })
+            }
+            (
+                Self::FloatTabs {
+                    source_root,
+                    root,
+                    surface,
+                    floating,
+                    items,
+                },
+                outcome,
+            ) => {
+                let matches = match &outcome {
+                    CommandOutcome::ContainedRootCreated {
+                        root: actual_root,
+                        surface: actual_surface,
+                        floating: actual_floating,
+                        items: actual_items,
+                    } => {
+                        *actual_root == root
+                            && *actual_surface == surface
+                            && *actual_floating == floating
+                            && *actual_items == items
+                            && changed
+                    }
+                    CommandOutcome::RootRehomed {
+                        root: actual_root,
+                        surface: actual_surface,
+                        floating: Some(actual_floating),
+                        changed: actual_changed,
+                    } => {
+                        *actual_root == root
+                            && *actual_surface == surface
+                            && *actual_floating == floating
+                            && *actual_changed == changed
+                    }
+                    CommandOutcome::ContainedPresentationUpdated {
+                        floating: actual_floating,
+                        rect_changed,
+                        order_changed,
+                        ..
+                    } => {
+                        *actual_floating == floating && changed == (*rect_changed || *order_changed)
+                    }
+                    _ => false,
+                };
+                if !matches {
+                    return Err(EngineError::ReductionCauseInvariant {
+                        detail: "tabs floating outcome did not match its compiled payload",
+                    });
+                }
+                Ok(DockspaceActionOutcome::TabsFloated {
+                    source_root,
+                    root,
+                    surface,
+                    floating,
+                    items,
+                    changed,
+                })
+            }
             (Self::Select { item }, CommandOutcome::Selected { item: selected, .. })
                 if selected == item =>
             {
@@ -1495,6 +1743,9 @@ pub(super) fn product_command_rejection(
                 } | ProductAction::DockRoot {
                     placement: DockPlacement::Main(_),
                     ..
+                } | ProductAction::DockTabs {
+                    placement: DockPlacement::Main(_),
+                    ..
                 }
             ) =>
         {
@@ -1503,7 +1754,9 @@ pub(super) fn product_command_rejection(
         CommandError::MissingSurface { surface }
             if matches!(
                 action,
-                ProductAction::FloatItem { .. } | ProductAction::FloatRoot { .. }
+                ProductAction::FloatItem { .. }
+                    | ProductAction::FloatRoot { .. }
+                    | ProductAction::FloatTabs { .. }
             ) =>
         {
             Ok(DockspaceActionRejection::SurfaceUnavailable { surface: *surface })

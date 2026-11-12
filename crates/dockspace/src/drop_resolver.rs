@@ -965,7 +965,7 @@ impl<'a> DropEligibilityContext<'a> {
             std::slice::from_ref(&command),
         ) {
             Ok(prepared) => {
-                let visual = preview::resolved_visual(
+                let preview = preview::resolved_visual(
                     self.workspace,
                     prepared.candidate(),
                     self.policy,
@@ -985,8 +985,9 @@ impl<'a> DropEligibilityContext<'a> {
                         command,
                         candidate,
                         report,
-                    ),
-                    visual,
+                    )
+                    .with_preview_tab_strip(preview.tab_strip),
+                    visual: preview.visual,
                 })
             }
             Err(TransactionError::Command {
@@ -1959,6 +1960,7 @@ pub(crate) struct PreparedDropMutation {
     command: WorkspaceCommand,
     candidate: Arc<Workspace>,
     report: TransactionReport,
+    tab_strip: Option<Arc<crate::scene_compiler::FutureTabStrip>>,
 }
 
 impl PreparedDropMutation {
@@ -1975,7 +1977,16 @@ impl PreparedDropMutation {
             command,
             candidate: Arc::new(candidate),
             report,
+            tab_strip: None,
         }
+    }
+
+    fn with_preview_tab_strip(
+        mut self,
+        tab_strip: Option<Arc<crate::scene_compiler::FutureTabStrip>>,
+    ) -> Self {
+        self.tab_strip = tab_strip;
+        self
     }
 
     pub(crate) fn matches(
@@ -1995,6 +2006,10 @@ impl PreparedDropMutation {
 }
 
 impl ResolvedDrop {
+    pub(crate) fn preview_tab_strip(&self) -> Option<Arc<crate::scene_compiler::FutureTabStrip>> {
+        self.mutation.tab_strip.clone()
+    }
+
     /// Returns the structural target identity used to acknowledge this preview.
     #[must_use]
     pub const fn target_id(&self) -> DropTargetId {

@@ -11,12 +11,12 @@ use dockspace::model::{
 };
 use dockspace::policy::{CloseCapability, DockPolicy};
 use dockspace::runtime::{
-    DockspaceCloseInertReason, DockspaceCloseResolution, DockspaceSession, HostFrameReport,
-    HostInputOutcome, HostWorkAreaToken, NativeCloseState, NativeCreateReadiness,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativeReceiverAnswer, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
-    NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
-    UniformSurfaceMetrics,
+    DockspaceCloseInertReason, DockspaceCloseResolution, DockspacePresentationTransitionResult,
+    DockspaceSession, HostFrameReport, HostInputOutcome, HostWorkAreaToken, NativeCloseState,
+    NativeCreateReadiness, NativeEffectAcknowledgement, NativeEffectOperation,
+    NativeReceiverAnswer, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster,
+    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use eframe::egui;
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
@@ -124,6 +124,7 @@ fn moving_the_last_noncentral_host_item_to_another_surface_is_refused_before_adm
     .unwrap();
     let mut state = state_with_layout(layout);
     let before = state.coordinator.session().version();
+    let group = state.capture_tabs_group(DockAnchor::Item(FIRST)).unwrap();
     for command in [
         NativeCommand::DockItem {
             item: FIRST,
@@ -136,6 +137,14 @@ fn moving_the_last_noncentral_host_item_to_another_surface_is_refused_before_adm
         NativeCommand::DockRoot {
             root: ROOT,
             placement: DockPlacement::Center(DockAnchor::Item(target_item)),
+        },
+        NativeCommand::DockTabs {
+            group: group.clone(),
+            placement: DockPlacement::Center(DockAnchor::Item(target_item)),
+        },
+        NativeCommand::FloatTabs {
+            group,
+            surface: target_surface,
         },
     ] {
         assert_eq!(
@@ -921,6 +930,378 @@ fn native_payload_commands_share_the_result_slot_and_exact_first_live_transfer()
         assert!(!state.coordinator.session().has_pending_native_create());
         assert_eq!(state.panes.0, "application-owned content");
         assert!(state.error().is_none());
+        if kind == 2 || kind == 3 {
+            return_complete_group_through_the_result_slot(&mut state, binding, bounds, kind == 3);
+        }
+    }
+}
+
+fn return_complete_group_through_the_result_slot(
+    state: &mut NativeRuntimeState<Panes>,
+    source_binding: NativeSurfaceBinding,
+    source_bounds: PhysicalRect,
+    float: bool,
+) {
+    present_group_return_endpoints(state, source_binding, source_bounds);
+    let source_root = state.view().item(SECOND).unwrap().root();
+    let source_surface = state.view().item(SECOND).unwrap().surface();
+    assert_eq!(source_surface, source_binding.surface());
+    let before = state.coordinator.session().version();
+    let group = state.capture_tabs_group(DockAnchor::Item(SECOND)).unwrap();
+    assert_eq!(group.expected_version(), before);
+    let command = if float {
+        NativeCommand::FloatTabs {
+            group,
+            surface: SURFACE,
+        }
+    } else {
+        NativeCommand::DockTabs {
+            group,
+            placement: DockPlacement::After(FIRST),
+        }
+    };
+    state.request_command(command).unwrap();
+    let staged = commit_queued_report(state);
+    assert_eq!(staged.before(), before);
+    assert_eq!(staged.after(), before);
+    let transition = match staged.inputs() {
+        [
+            HostInputOutcome::ProductPresentationActionRequested {
+                outcome,
+                transition,
+            },
+        ] => {
+            let expected = if float {
+                DockspaceActionOutcome::RootFloatRequested {
+                    root: source_root,
+                    source_surface,
+                    target_surface: SURFACE,
+                    items: vec![SECOND, THIRD],
+                }
+            } else {
+                DockspaceActionOutcome::RootDockRequested {
+                    root: source_root,
+                    source_surface,
+                    target_root: ROOT,
+                    items: vec![SECOND, THIRD],
+                }
+            };
+            assert_eq!(outcome, &expected);
+            *transition
+        }
+        inputs => {
+            panic!("the complete native group must request an exact return barrier: {inputs:?}")
+        }
+    };
+    assert!(state.coordinator.session().has_pending_presentation());
+    assert!(state.take_action_status().is_none());
+    assert_eq!(state.view().item(SECOND).unwrap().surface(), source_surface);
+    assert_eq!(
+        state.request_command(NativeCommand::SelectItem { item: FIRST }),
+        Err(NativeActionRequestError::Busy)
+    );
+
+    let mut frame = state
+        .coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .frame
+        .measure_surface(
+            SURFACE,
+            UniformSurfaceMetrics::new(
+                LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap(),
+                LogicalSize::new(64.0, 48.0).unwrap(),
+                96.0,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let receipt = frame
+        .frame
+        .paint_plan(SURFACE)
+        .unwrap()
+        .unwrap()
+        .execute_surface_program(|_| Ok::<(), ()>(()))
+        .unwrap();
+    frame.frame.confirm_surface_painted(receipt).unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let mut painted = frame.commit().unwrap();
+    state
+        .coordinator
+        .settle_host_frame_report(&painted)
+        .unwrap();
+    assert!(
+        !state
+            .application_actions
+            .settle_presentation_transitions(painted.presentation_transitions())
+            .unwrap()
+    );
+    let [output] = painted.take_painted_outputs().try_into().unwrap();
+    assert_eq!(state.view().item(SECOND).unwrap().surface(), source_surface);
+    state
+        .coordinator
+        .report_model_presentation_for_test(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let settled = commit_native_command_observations(state);
+    let [terminal] = settled.presentation_transitions() else {
+        panic!("the exact group return must produce one transition terminal");
+    };
+    assert_eq!(terminal.id(), transition);
+    assert_eq!(terminal.root(), source_root);
+    assert_eq!(terminal.source_surface(), source_surface);
+    assert_eq!(terminal.target_surface(), SURFACE);
+    assert_eq!(
+        terminal.result(),
+        DockspacePresentationTransitionResult::Applied
+    );
+    assert!(
+        state
+            .application_actions
+            .settle_presentation_transitions(settled.presentation_transitions())
+            .unwrap()
+    );
+    let status = take(state);
+    let NativeActionStatus::Dock(DockspaceActionStatus::Applied(outcome)) = &status else {
+        panic!("the exact group return must settle with its typed outcome: {status:?}");
+    };
+    assert_eq!(terminal.outcome(), Some(outcome));
+    match status {
+        NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+            DockspaceActionOutcome::TabsFloated {
+                source_root: completed_source,
+                root,
+                surface: SURFACE,
+                items,
+                changed: true,
+                ..
+            },
+        )) if float => {
+            assert_eq!(completed_source, source_root);
+            assert_eq!(root, source_root);
+            assert_eq!(items, [SECOND, THIRD]);
+            assert!(state.view().item(SECOND).unwrap().contained().is_some());
+        }
+        NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+            DockspaceActionOutcome::TabsDocked {
+                source_root: completed_source,
+                target_root: ROOT,
+                items,
+                changed: true,
+            },
+        )) if !float => {
+            assert_eq!(completed_source, source_root);
+            assert_eq!(items, [SECOND, THIRD]);
+            assert_eq!(
+                state.view().item(SECOND).unwrap().tabs().items(),
+                &[FIRST, SECOND, THIRD]
+            );
+        }
+        status => panic!("the slot must settle the exact complete-group terminal: {status:?}"),
+    }
+    assert_eq!(state.view().item(SECOND).unwrap().surface(), SURFACE);
+    assert!(state.view().item(SECOND).unwrap().is_selected());
+    assert!(!state.application_actions.is_occupied());
+    assert!(state.error().is_none());
+}
+
+fn present_group_return_endpoints(
+    state: &mut NativeRuntimeState<Panes>,
+    source_binding: NativeSurfaceBinding,
+    source_bounds: PhysicalRect,
+) {
+    let before = state.coordinator.session().version();
+    let host = state
+        .coordinator
+        .viewport_binding(egui::ViewportId::ROOT)
+        .unwrap();
+    let endpoints = [
+        (host, LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap()),
+        (
+            source_binding,
+            LogicalRect::new(0.0, 0.0, source_bounds.width(), source_bounds.height()).unwrap(),
+        ),
+    ];
+    let mut frame = state
+        .coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame.frame.begin_encoding_pass().unwrap();
+    for (binding, bounds) in endpoints {
+        frame
+            .frame
+            .measure_surface(
+                binding.surface(),
+                UniformSurfaceMetrics::new(bounds, LogicalSize::new(64.0, 48.0).unwrap(), 96.0)
+                    .unwrap(),
+            )
+            .unwrap();
+        let receipt = frame
+            .frame
+            .paint_plan(binding.surface())
+            .unwrap()
+            .unwrap()
+            .execute_surface_program(|_| Ok::<(), ()>(()))
+            .unwrap();
+        frame.frame.confirm_surface_painted(receipt).unwrap();
+    }
+    let mut painted = frame.commit().unwrap();
+    assert_eq!(painted.before(), before);
+    assert_eq!(painted.after(), before);
+    state
+        .coordinator
+        .settle_host_frame_report(&painted)
+        .unwrap();
+    let outputs = painted.take_painted_outputs();
+    assert_eq!(outputs.len(), endpoints.len());
+    for (output, (binding, _)) in outputs.into_iter().zip(endpoints) {
+        assert!(output.matches_native_binding(binding));
+        state
+            .coordinator
+            .report_model_presentation_for_test(output, SurfacePresentationResult::Presented)
+            .unwrap();
+    }
+    let settled = commit_native_command_observations(state);
+    assert_eq!(settled.before(), before);
+    assert_eq!(settled.after(), before);
+    for (binding, _) in endpoints {
+        assert!(
+            state
+                .coordinator
+                .session()
+                .is_current_native_binding(binding)
+        );
+        assert!(
+            state
+                .coordinator
+                .session()
+                .presented_surface(binding.surface())
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn native_group_commands_preserve_the_remaining_central_area() {
+    for float in [false, true] {
+        let mut state = state_for_native_commands();
+        let group = state.capture_tabs_group(DockAnchor::Item(SECOND)).unwrap();
+        let command = if float {
+            NativeCommand::FloatTabs {
+                group,
+                surface: SURFACE,
+            }
+        } else {
+            NativeCommand::DockTabs {
+                group,
+                placement: DockPlacement::After(FIRST),
+            }
+        };
+        state.request_command(command).unwrap();
+        let report = commit_queued_report(&mut state);
+        assert_ne!(report.before(), report.after());
+        match take(&mut state) {
+            NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                DockspaceActionOutcome::TabsFloated {
+                    source_root: ROOT,
+                    root,
+                    surface: SURFACE,
+                    items,
+                    changed: true,
+                    ..
+                },
+            )) if float => {
+                assert_ne!(root, ROOT);
+                assert_eq!(items, [SECOND, THIRD]);
+                assert_eq!(
+                    state.view().item(SECOND).unwrap().tabs().items(),
+                    &[SECOND, THIRD]
+                );
+                assert_eq!(state.view().item(FIRST).unwrap().tabs().items(), &[FIRST]);
+            }
+            NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                DockspaceActionOutcome::TabsDocked {
+                    source_root: ROOT,
+                    target_root: ROOT,
+                    items,
+                    changed: true,
+                },
+            )) if !float => {
+                assert_eq!(items, [SECOND, THIRD]);
+                assert_eq!(
+                    state.view().item(SECOND).unwrap().tabs().items(),
+                    &[FIRST, SECOND, THIRD]
+                );
+            }
+            status => panic!("one captured group must produce one terminal result: {status:?}"),
+        }
+        assert_eq!(state.view().item(FIRST).unwrap().root(), ROOT);
+        assert!(state.view().root(ROOT).unwrap().central().is_some());
+        assert!(state.view().item(SECOND).unwrap().is_selected());
+        assert!(!state.coordinator.session().has_pending_presentation());
+        assert!(state.error().is_none());
+    }
+}
+
+#[test]
+fn native_group_dock_and_float_commands_keep_stale_and_foreign_authority() {
+    for float in [false, true] {
+        for foreign in [false, true] {
+            let mut source = state();
+            let group = source.capture_tabs_group(DockAnchor::Item(FIRST)).unwrap();
+            let captured = group.expected_version();
+            if !foreign {
+                source
+                    .request_command(NativeCommand::SelectItem { item: SECOND })
+                    .unwrap();
+                commit_queued(&mut source);
+                take(&mut source);
+            }
+            let mut target = if foreign { state() } else { source };
+            let accepted = target.coordinator.session().version();
+            let command = if float {
+                NativeCommand::FloatTabs {
+                    group,
+                    surface: SURFACE,
+                }
+            } else {
+                NativeCommand::DockTabs {
+                    group,
+                    placement: DockPlacement::After(FIRST),
+                }
+            };
+            target.request_command(command).unwrap();
+            let report = commit_queued_report(&mut target);
+            assert_eq!(report.before(), report.after());
+            assert_eq!(
+                take(&mut target),
+                NativeActionStatus::Dock(if foreign {
+                    DockspaceActionStatus::Rejected(DockspaceActionRejection::Conflict)
+                } else {
+                    DockspaceActionStatus::Stale {
+                        expected: captured,
+                        accepted,
+                    }
+                })
+            );
+            assert_eq!(
+                target.view().item(FIRST).unwrap().tabs().items(),
+                &[FIRST, SECOND, THIRD]
+            );
+            target
+                .request_command(NativeCommand::SelectItem { item: THIRD })
+                .unwrap();
+            commit_queued(&mut target);
+            assert!(matches!(
+                take(&mut target),
+                NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                    DockspaceActionOutcome::Selected { item: THIRD, .. }
+                ))
+            ));
+            assert!(target.error().is_none());
+        }
     }
 }
 

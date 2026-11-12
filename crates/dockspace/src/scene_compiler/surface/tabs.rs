@@ -1027,15 +1027,15 @@ fn compile_tab_list_menu(
     Ok(())
 }
 
-struct TabChromeGeometry {
-    visible: LogicalRect,
-    text_layout: LogicalRect,
-    text: LogicalRect,
-    drag: LogicalRect,
-    close: Option<LogicalRect>,
+pub(in crate::scene_compiler) struct TabChromeGeometry {
+    pub(in crate::scene_compiler) visible: LogicalRect,
+    pub(in crate::scene_compiler) text_layout: LogicalRect,
+    pub(in crate::scene_compiler) text: LogicalRect,
+    pub(in crate::scene_compiler) drag: LogicalRect,
+    pub(in crate::scene_compiler) close: Option<LogicalRect>,
 }
 
-fn operable_tab_chrome(
+pub(in crate::scene_compiler) fn operable_tab_chrome(
     full: LogicalRect,
     viewport: LogicalRect,
     close_allowed: bool,

@@ -7,7 +7,8 @@ use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
 use dockspace::model::{
-    DockPlacement, DockspaceLayout, DockspaceView, ItemId, PreparedDockAction, RootId, SurfaceId,
+    DockAnchor, DockPlacement, DockspaceActionRejection, DockspaceLayout, DockspaceView, ItemId,
+    PreparedDockAction, PreparedTabsGroup, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 #[cfg(feature = "serde")]
@@ -405,6 +406,32 @@ impl Dockspace {
         self.session.prepare_dock_item(item, placement)
     }
 
+    /// Captures an exact nonempty tabs group without exposing runtime node identities.
+    ///
+    /// Membership, order, selection, session and version remain bound to this
+    /// capture even if its anchor subsequently moves.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable rejection when the anchor is absent or its group is empty.
+    pub fn capture_tabs_group(
+        &self,
+        anchor: DockAnchor,
+    ) -> Result<PreparedTabsGroup, DockspaceActionRejection> {
+        self.session.capture_tabs_group(anchor)
+    }
+
+    /// Prepares one atomic docking action from a previously captured tabs group.
+    ///
+    /// Preparing again preserves the capture's original session and version.
+    pub fn prepare_dock_tabs(
+        &self,
+        group: PreparedTabsGroup,
+        placement: DockPlacement,
+    ) -> PreparedDockAction {
+        self.session.prepare_dock_tabs(group, placement)
+    }
+
     /// Prepares a revision-bound complete-root docking action.
     pub const fn prepare_dock_root(
         &self,
@@ -422,6 +449,15 @@ impl Dockspace {
     /// Prepares a revision-bound action that moves one item into contained floating content.
     pub const fn prepare_float_item(&self, item: ItemId, surface: SurfaceId) -> PreparedDockAction {
         self.session.prepare_float_item(item, surface)
+    }
+
+    /// Prepares one captured tabs group for contained floating as an atomic payload.
+    pub fn prepare_float_tabs(
+        &self,
+        group: PreparedTabsGroup,
+        surface: SurfaceId,
+    ) -> PreparedDockAction {
+        self.session.prepare_float_tabs(group, surface)
     }
 
     /// Prepares a revision-bound contained raise addressed by item identity.
@@ -523,6 +559,21 @@ impl Dockspace {
         self.submit_prepared_action(self.prepare_dock_item(item, placement))
     }
 
+    /// Docks a captured complete tabs group without refreshing its source authority.
+    ///
+    /// Inspect [`DockspaceActionResult::status`] for stale capture or policy rejection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign capture or when the action cannot be published.
+    pub fn dock_tabs_current(
+        &mut self,
+        group: PreparedTabsGroup,
+        placement: DockPlacement,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        self.submit_prepared_action(self.prepare_dock_tabs(group, placement))
+    }
+
     /// Docks one complete root at a stable placement against the current revision.
     ///
     /// Inspect [`DockspaceActionResult::status`] for placement or policy rejection.
@@ -568,6 +619,22 @@ impl Dockspace {
         surface: SurfaceId,
     ) -> Result<DockspaceActionResult, DockspaceError> {
         self.submit_prepared_action(self.prepare_float_item(item, surface))
+    }
+
+    /// Floats a captured complete tabs group while preserving its order and selection.
+    ///
+    /// The capture retains its original session and version. Inspect
+    /// [`DockspaceActionResult::status`] for stale capture or policy rejection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign capture or when the action cannot be published.
+    pub fn float_tabs_current(
+        &mut self,
+        group: PreparedTabsGroup,
+        surface: SurfaceId,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        self.submit_prepared_action(self.prepare_float_tabs(group, surface))
     }
 
     /// Raises the contained presentation owning one item to the front.

@@ -19,6 +19,8 @@ use crate::runtime::{
 
 #[path = "product_actions/focus.rs"]
 mod focus;
+#[path = "product_actions/tabs_group.rs"]
+mod tabs_group;
 
 const MAIN_SURFACE: SurfaceId = SurfaceId::new(10);
 const ROOTLESS_SURFACE: SurfaceId = SurfaceId::new(20);

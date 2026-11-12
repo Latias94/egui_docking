@@ -275,6 +275,19 @@ impl DockspaceSession {
         self.engine.prepare_dock_item(item, placement)
     }
 
+    /// Prepares one atomic move of a previously captured complete tabs group.
+    ///
+    /// The group retains its original session and workspace version. Preparing
+    /// it again never refreshes a stale capture or looks up its former anchor.
+    #[must_use]
+    pub fn prepare_dock_tabs(
+        &self,
+        group: PreparedTabsGroup,
+        placement: DockPlacement,
+    ) -> PreparedDockAction {
+        self.engine.prepare_dock_tabs(group, placement)
+    }
+
     /// Prepares one complete-root move against the exact published workspace version.
     pub const fn prepare_dock_root(
         &self,
@@ -360,6 +373,20 @@ impl DockspaceSession {
         surface: crate::ids::SurfaceId,
     ) -> PreparedDockAction {
         self.engine.prepare_float_item(item, surface)
+    }
+
+    /// Prepares one captured tabs group for contained floating on an existing surface.
+    ///
+    /// Order and selection move together in one transaction. A complete root
+    /// retains its identity; a group within a larger root receives a new root.
+    /// The capture's original session and workspace version remain authoritative.
+    #[must_use]
+    pub fn prepare_float_tabs(
+        &self,
+        group: PreparedTabsGroup,
+        surface: crate::ids::SurfaceId,
+    ) -> PreparedDockAction {
+        self.engine.prepare_float_tabs(group, surface)
     }
 
     /// Prepares one revision-bound contained raise addressed by item identity.

@@ -1158,6 +1158,12 @@ fn completed_presentation_outcome(
                 target_root: completed_target,
                 items: completed_items,
                 ..
+            }
+            | DockspaceActionOutcome::TabsDocked {
+                source_root: completed_root,
+                target_root: completed_target,
+                items: completed_items,
+                ..
             },
         ) if completed_root == root
             && completed_target == target_root
@@ -1188,6 +1194,22 @@ fn completed_presentation_outcome(
                 ..
             },
         ) if completed_root == root
+            && *surface == transition.target_surface()
+            && completed_items == items =>
+        {
+            Some(completed.clone())
+        }
+        (
+            DockspaceActionOutcome::RootFloatRequested { root, items, .. },
+            DockspaceActionOutcome::TabsFloated {
+                source_root,
+                root: completed_root,
+                surface,
+                items: completed_items,
+                ..
+            },
+        ) if source_root == root
+            && completed_root == root
             && *surface == transition.target_surface()
             && completed_items == items =>
         {

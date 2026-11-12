@@ -823,6 +823,15 @@ pub enum EngineInput {
         /// Item-, root-, or surface-centric destination.
         placement: crate::model::DockPlacement,
     },
+    /// Move one captured complete tabs group as one atomic payload.
+    DockTabs {
+        /// Exact version retained by the group capture.
+        expected: WorkspaceVersion,
+        /// Opaque, session-bound group source.
+        group: crate::model::PreparedTabsGroup,
+        /// Stable destination for the complete group.
+        placement: crate::model::DockPlacement,
+    },
     /// Move one complete root to a stable product placement.
     DockRoot {
         /// Exact workspace version from which this product action was derived.
@@ -866,6 +875,15 @@ pub enum EngineInput {
         /// Stable application item.
         item: ItemId,
         /// Existing target surface.
+        surface: SurfaceId,
+    },
+    /// Move one captured complete tabs group into contained floating content.
+    FloatTabs {
+        /// Exact version retained by the group capture.
+        expected: WorkspaceVersion,
+        /// Opaque, session-bound group source.
+        group: crate::model::PreparedTabsGroup,
+        /// Existing surface which will own the contained presentation.
         surface: SurfaceId,
     },
     /// Raise the contained presentation owning one item.
@@ -1193,11 +1211,13 @@ impl EngineInput {
             | Self::SelectItem { .. }
             | Self::OpenItem { .. }
             | Self::DockItem { .. }
+            | Self::DockTabs { .. }
             | Self::DockRoot { .. }
             | Self::DockBackRoot { .. }
             | Self::TearOffNative { .. }
             | Self::FloatRoot { .. }
             | Self::FloatItem { .. }
+            | Self::FloatTabs { .. }
             | Self::RaiseContained { .. }
             | Self::BringContainedIntoView { .. }
             | Self::RequestContentClose { .. }

@@ -1,10 +1,13 @@
 //! Source-aware projection of a transaction candidate from retained measurements.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::surface::{pane_outer_minimum, tab_strip_optional_chrome_layout};
+use super::surface::{
+    clip_rect, operable_tab_chrome, pane_outer_minimum, tab_strip_optional_chrome_layout,
+};
 use super::tab_strip_layout::{TabStripFlow, desired_tab_width, select_menu_host};
 use crate::RootPresentationOwner;
 use crate::command::{MovePayload, TabTarget};
@@ -21,6 +24,36 @@ use crate::scene_manifest::{PaneMinimumKey, TabIntrinsicKey, TabStripKey};
 
 #[cfg(test)]
 mod tests;
+
+/// Immutable target-strip geometry derived from the unique transaction candidate.
+#[derive(Debug, PartialEq)]
+pub(crate) struct FutureTabStrip {
+    pub(crate) bounds: LogicalRect,
+    pub(crate) viewport: LogicalRect,
+    pub(crate) scroll_offset: f64,
+    pub(crate) maximum_scroll_offset: f64,
+    pub(crate) tabs: Box<[FutureTab]>,
+}
+
+/// One future member, including members clipped out of the target viewport.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FutureTab {
+    pub(crate) item: ItemId,
+    pub(crate) ordinal: usize,
+    pub(crate) full_bounds: LogicalRect,
+    pub(crate) clip_bounds: LogicalRect,
+    pub(crate) visible_bounds: Option<LogicalRect>,
+    pub(crate) text_layout_bounds: Option<LogicalRect>,
+    pub(crate) text_bounds: Option<LogicalRect>,
+    pub(crate) close_visual_bounds: Option<LogicalRect>,
+    pub(crate) selected: bool,
+    pub(crate) payload: bool,
+}
+
+pub(crate) struct FutureTabStripProjection {
+    pub(crate) insertion: LogicalRect,
+    pub(crate) strip: Option<Arc<FutureTabStrip>>,
+}
 
 /// Reprojects one future root using only measurements retained by presented outputs.
 pub(crate) fn project_future_root(
@@ -100,9 +133,9 @@ pub(crate) fn project_future_root(
         .map_err(FutureLayoutProjectionError::Layout)
 }
 
-/// Projects the first payload tab's insertion marker or the hidden-bar candidate's content area.
+/// Projects every candidate member and the first payload tab's insertion marker once.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn project_future_tab_gap_visual(
+pub(crate) fn project_future_tab_strip(
     original: &Workspace,
     candidate: &Workspace,
     policy: &DockPolicySnapshot,
@@ -111,7 +144,7 @@ pub(crate) fn project_future_tab_gap_visual(
     target: &TabTarget,
     payload: &MovePayload,
     projection: &LayoutProjection,
-) -> Result<LogicalRect, FutureLayoutProjectionError> {
+) -> Result<FutureTabStripProjection, FutureLayoutProjectionError> {
     let target_facts = target_plan
         .layout_facts()
         .ok_or(FutureLayoutProjectionError::TargetLayoutFactsMissing)?;
@@ -121,7 +154,7 @@ pub(crate) fn project_future_tab_gap_visual(
     {
         return Err(FutureLayoutProjectionError::PresentationConfigMismatch);
     }
-    let node_bounds = projection
+    let projected_bounds = projection
         .nodes
         .get(&target.tabs())
         .map(|result| result.rect)
@@ -129,6 +162,13 @@ pub(crate) fn project_future_tab_gap_visual(
             root: target.root(),
             node: target.tabs(),
         })?;
+    let root_bounds = target_facts
+        .root(target.root())
+        .ok_or(FutureLayoutProjectionError::TargetRootNotPresented {
+            root: target.root(),
+        })?
+        .bounds();
+    let node_bounds = clip_rect(projected_bounds, root_bounds)?;
     let Node::Tabs {
         items, selected, ..
     } = candidate
@@ -157,7 +197,10 @@ pub(crate) fn project_future_tab_gap_visual(
     let target_policy =
         policy.tab_bar_policy(DockTabBarPolicyRequest::new(target.surface(), Some(rule)));
     if target_policy.visibility() == TabBarVisibility::Hidden {
-        return Ok(node_bounds);
+        return Ok(FutureTabStripProjection {
+            insertion: node_bounds,
+            strip: None,
+        });
     }
     let original_selected = match original.node(target.tabs()) {
         Some(Node::Tabs { selected, .. }) => *selected,
@@ -183,9 +226,9 @@ pub(crate) fn project_future_tab_gap_visual(
         tab_height,
     )?;
     if bar.width() <= 0.0 || bar.height() <= 0.0 {
-        return Err(FutureLayoutProjectionError::TargetTabBarUnrepresentable {
-            root: target.root(),
-            tabs: target.tabs(),
+        return Ok(FutureTabStripProjection {
+            insertion: node_bounds,
+            strip: None,
         });
     }
 
@@ -218,6 +261,7 @@ pub(crate) fn project_future_tab_gap_visual(
         include_presentation_menu,
     )?;
     let mut desired_widths = Vec::with_capacity(items.len());
+    let mut close_allowed = Vec::with_capacity(items.len());
     for item in items.iter().copied() {
         let intrinsic = candidate_tab_intrinsic(
             original,
@@ -228,20 +272,12 @@ pub(crate) fn project_future_tab_gap_visual(
             target.tabs(),
             item,
         )?;
-        desired_widths.push(desired_tab_width(
-            intrinsic.content_width(),
-            policy.pane_close_capability(item).allows_close(),
-            config,
-        ));
+        let close = policy.pane_close_capability(item).allows_close();
+        desired_widths.push(desired_tab_width(intrinsic.content_width(), close, config));
+        close_allowed.push(close);
     }
 
     let viewport = chrome.viewport;
-    if viewport.width() <= 0.0 {
-        return Err(FutureLayoutProjectionError::TargetTabBarUnrepresentable {
-            root: target.root(),
-            tabs: target.tabs(),
-        });
-    }
     let flow = TabStripFlow::allocate(
         &desired_widths,
         viewport.width(),
@@ -267,10 +303,44 @@ pub(crate) fn project_future_tab_gap_visual(
         original_selected != *selected || viewport_shrank,
     );
 
-    let first_payload = payload_items(original, payload)
-        .into_iter()
-        .next()
+    let payload_items = payload_items(original, payload);
+    let first_payload = payload_items
+        .first()
+        .copied()
         .ok_or(FutureLayoutProjectionError::PayloadContainsNoItems)?;
+    let payload_items = payload_items.into_iter().collect::<BTreeSet<_>>();
+    let mut tabs = Vec::with_capacity(items.len());
+    let mut cursor = viewport.x() - scroll;
+    for (ordinal, ((item, width), close)) in items
+        .iter()
+        .copied()
+        .zip(flow.widths.iter().copied())
+        .zip(close_allowed)
+        .enumerate()
+    {
+        let full_bounds = LogicalRect::new(cursor, bar.y(), width, bar.height())?;
+        let chrome = operable_tab_chrome(full_bounds, viewport, close, config)?;
+        tabs.push(FutureTab {
+            item,
+            ordinal,
+            full_bounds,
+            clip_bounds: viewport,
+            visible_bounds: chrome.as_ref().map(|chrome| chrome.visible),
+            text_layout_bounds: chrome.as_ref().map(|chrome| chrome.text_layout),
+            text_bounds: chrome.as_ref().map(|chrome| chrome.text),
+            close_visual_bounds: chrome.as_ref().and_then(|chrome| chrome.close),
+            selected: *selected == Some(item),
+            payload: payload_items.contains(&item),
+        });
+        cursor += width;
+    }
+    let strip = Some(Arc::new(FutureTabStrip {
+        bounds: bar,
+        viewport,
+        scroll_offset: scroll,
+        maximum_scroll_offset: flow.maximum_scroll_offset(viewport.width()),
+        tabs: tabs.into_boxed_slice(),
+    }));
     let payload_index = items.iter().position(|item| *item == first_payload).ok_or(
         FutureLayoutProjectionError::PayloadItemMissing {
             item: first_payload,
@@ -285,21 +355,19 @@ pub(crate) fn project_future_tab_gap_visual(
     let marker_x = viewport.x() - scroll + payload_start;
     let marker_width = config.splitter_thickness().min(viewport.width());
     if marker_width <= 0.0 {
-        return Err(FutureLayoutProjectionError::TargetTabBarUnrepresentable {
-            root: target.root(),
-            tabs: target.tabs(),
+        return Ok(FutureTabStripProjection {
+            insertion: node_bounds,
+            strip,
         });
     }
     let marker_min = (marker_x - marker_width * 0.5).clamp(
         viewport.x(),
         (viewport.max().x() - marker_width).max(viewport.x()),
     );
-    Ok(LogicalRect::new(
-        marker_min,
-        viewport.y(),
-        marker_width,
-        viewport.height(),
-    )?)
+    Ok(FutureTabStripProjection {
+        insertion: LogicalRect::new(marker_min, viewport.y(), marker_width, viewport.height())?,
+        strip,
+    })
 }
 
 fn future_presentation_menu_tab_bar(
@@ -324,11 +392,16 @@ fn future_presentation_menu_tab_bar(
         if tab_bar.visibility() == TabBarVisibility::Hidden {
             return Ok(None);
         }
-        let node_bounds = projection
+        let projected_bounds = projection
             .nodes
             .get(&tabs)
             .map(|result| result.rect)
             .ok_or(FutureLayoutProjectionError::MissingNodeProjection { root, node: tabs })?;
+        let root_bounds = target_facts
+            .root(root)
+            .ok_or(FutureLayoutProjectionError::TargetRootNotPresented { root })?
+            .bounds();
+        let node_bounds = clip_rect(projected_bounds, root_bounds)?;
         let bar = LogicalRect::new(
             node_bounds.x(),
             node_bounds.y(),
@@ -494,8 +567,6 @@ pub(crate) enum FutureLayoutProjectionError {
     ConflictingPaneMinimum { key: PaneMinimumKey },
     #[error("target presentation omitted retained layout facts")]
     TargetLayoutFactsMissing,
-    #[error("candidate target tab bar {root}/{tabs:?} has no representable insertion marker")]
-    TargetTabBarUnrepresentable { root: RootId, tabs: NodeId },
     #[error("tab intrinsic measurement {key:?} is unavailable")]
     TabIntrinsicUnavailable { key: TabIntrinsicKey },
     #[error("tab-strip measurement {key:?} is unavailable")]

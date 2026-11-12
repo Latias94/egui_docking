@@ -1487,6 +1487,23 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            EngineInput::DockTabs {
+                expected,
+                group,
+                placement,
+            } => self.reduce_product_action(
+                input.sequence,
+                cause,
+                focus_causal,
+                *expected,
+                ProductAction::DockTabs {
+                    group: group.clone(),
+                    placement: *placement,
+                },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::DockRoot {
                 expected,
                 root,
@@ -1554,6 +1571,23 @@ impl DockEngine {
                 *expected,
                 ProductAction::FloatItem {
                     item: *item,
+                    surface: *surface,
+                },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
+            EngineInput::FloatTabs {
+                expected,
+                group,
+                surface,
+            } => self.reduce_product_action(
+                input.sequence,
+                cause,
+                focus_causal,
+                *expected,
+                ProductAction::FloatTabs {
+                    group: group.clone(),
                     surface: *surface,
                 },
                 tick_start.policy,

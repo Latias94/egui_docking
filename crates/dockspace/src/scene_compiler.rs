@@ -48,7 +48,8 @@ mod surface;
 mod tab_strip_layout;
 
 pub(crate) use future_layout::{
-    FutureLayoutProjectionError, project_future_root, project_future_tab_gap_visual,
+    FutureLayoutProjectionError, FutureTab, FutureTabStrip, project_future_root,
+    project_future_tab_strip,
 };
 pub(crate) use requirements::{
     SceneRequirementDerivationError, derive_scene_requirement_draft,

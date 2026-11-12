@@ -308,9 +308,18 @@ impl PreviewVisual {
 pub struct InteractionPreview {
     token: PreviewToken,
     visual: PreviewVisual,
+    tab_strip: Option<Arc<crate::scene_compiler::FutureTabStrip>>,
 }
 
 impl InteractionPreview {
+    pub(crate) fn tab_strip(&self) -> Option<&crate::scene_compiler::FutureTabStrip> {
+        self.tab_strip.as_deref()
+    }
+
+    pub(crate) fn shared_tab_strip(&self) -> Option<Arc<crate::scene_compiler::FutureTabStrip>> {
+        self.tab_strip.clone()
+    }
+
     /// Returns the opaque preview token.
     #[must_use]
     pub const fn token(&self) -> PreviewToken {
@@ -2605,6 +2614,7 @@ impl InteractionState {
                     sequence,
                 },
                 visual,
+                tab_strip: None,
             },
             proof,
             painted: false,
@@ -3194,6 +3204,7 @@ impl InteractionState {
         visual: PreviewVisual,
         proof: PreviewProof,
         acquisition: Option<TargetAcquisition>,
+        tab_strip: Option<Arc<crate::scene_compiler::FutureTabStrip>>,
     ) -> Result<(InteractionPreview, bool), InteractionCounterError> {
         if !preview_acquisition_matches(scene, &proof, acquisition) {
             return Err(InteractionCounterError::StateInvariant);
@@ -3203,6 +3214,7 @@ impl InteractionState {
             && existing.public.token.scene == scene
             && existing.public.visual == visual
             && existing.proof == proof
+            && existing.public.tab_strip == tab_strip
         {
             let existing = existing.public.clone();
             self.active_drag_mut(session)
@@ -3222,6 +3234,7 @@ impl InteractionState {
                 sequence,
             },
             visual,
+            tab_strip,
         };
         self.last_preview_sequence = sequence;
         let drag = self
@@ -4265,6 +4278,7 @@ mod tests {
                     command: resolved.command().clone(),
                 },
                 Some(acquisition),
+                resolved.preview_tab_strip(),
             )
             .expect("test preview must publish");
         state

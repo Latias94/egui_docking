@@ -1530,6 +1530,7 @@ impl DockEngine {
             scene,
             visual,
             proof,
+            tab_strip,
         } = release_decision
         else {
             return false;
@@ -1537,6 +1538,7 @@ impl DockEngine {
         preview.public().token().scene() == *scene
             && preview.public().visual() == visual
             && preview.proof() == proof.as_ref()
+            && preview.public().tab_strip() == tab_strip.as_deref()
     }
 
     pub(super) fn frozen_drag_release_decision(
@@ -1547,6 +1549,7 @@ impl DockEngine {
             scene: preview.public().token().scene(),
             visual: preview.public().visual().clone(),
             proof: Box::new(preview.proof().clone()),
+            tab_strip: preview.public().shared_tab_strip(),
         })
     }
 
@@ -2235,6 +2238,7 @@ impl DockEngine {
                 let scene = resolved.scene_stamp();
                 let rect = resolved.visual().rect();
                 let command = resolved.command().clone();
+                let tab_strip = resolved.preview_tab_strip();
                 prepared_mutation = Some(resolved.into_prepared_mutation());
                 PreviewDecision::Publish {
                     scene,
@@ -2244,6 +2248,7 @@ impl DockEngine {
                         rect,
                     },
                     proof: Box::new(PreviewProof::Dock { target, command }),
+                    tab_strip,
                 }
             }
             DropResolution::KnownNone(_) => {
@@ -2497,6 +2502,7 @@ impl DockEngine {
                 placement: offer.proposal().physical_placement(),
             },
             proof: Box::new(PreviewProof::Native { command, offer }),
+            tab_strip: None,
         })
     }
 
@@ -2760,6 +2766,7 @@ impl DockEngine {
                     proposal,
                     fallback: false,
                 }),
+                tab_strip: None,
             },
             Some(mutation),
         ))
@@ -2782,7 +2789,12 @@ impl DockEngine {
         } = evaluation;
         let mut acquisition = observation.acquisition();
         let mut decision = decision;
-        if let PreviewDecision::Publish { visual, proof, .. } = &decision
+        if let PreviewDecision::Publish {
+            visual,
+            proof,
+            tab_strip,
+            ..
+        } = &decision
             && let Ok(drag) = self.interaction.active_drag(session)
             && self.current_contained_projection_is_owned(drag.source_surface)
             && self.drag_preview_authority_is_current(drag)
@@ -2792,6 +2804,7 @@ impl DockEngine {
                 == affordance.as_ref().map(DropAffordance::guide_suppression)
             && let Some(previous) = drag.preview()
             && previous.public().visual() == visual
+            && previous.public().tab_strip() == tab_strip.as_deref()
             && previous.target_layout_basis() == target_layout_basis
         {
             let same_command = match (previous.proof(), proof.as_ref()) {
@@ -2833,10 +2846,11 @@ impl DockEngine {
                 scene,
                 visual,
                 proof,
+                tab_strip,
             } => {
                 let (preview, changed) = self
                     .interaction
-                    .publish_preview(session, scene, visual, *proof, acquisition)
+                    .publish_preview(session, scene, visual, *proof, acquisition, tab_strip)
                     .map_err(|source| EngineError::PointerInteractionInvariant {
                         cause,
                         detail: format!("{source:?}"),

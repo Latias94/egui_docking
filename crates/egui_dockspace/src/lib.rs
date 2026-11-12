@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod drag_preview;
+pub mod drop_preview;
 pub mod pane;
 pub mod style;
 pub mod tab;
@@ -47,7 +48,7 @@ pub use dockspace::model::{
     DockspaceLayout, DockspaceLayoutError, DockspaceNode, DockspaceNodeView, DockspaceRootLayout,
     DockspaceRootView, DockspaceSplitView, DockspaceSurfaceLayout, DockspaceSurfaceView,
     DockspaceTabsView, DockspaceView, FloatingPresentationId, InvalidDockFraction, ItemId,
-    PreparedDockAction, RootId, SurfaceId, WorkspaceVersion,
+    PreparedDockAction, PreparedTabsGroup, RootId, SurfaceId, WorkspaceVersion,
 };
 pub use dockspace::runtime::SurfacePresentationResult;
 pub use dockspace::runtime::{
@@ -65,6 +66,10 @@ pub use dockspace::runtime::{
     DockspacePersistenceErrorKind,
 };
 pub use drag_preview::{DockspaceDragSourceKind, DragPreview};
+pub use drop_preview::{
+    DockspaceDropAction, DockspaceDropTargetFeedback, DockspaceDropTargetScope, DropPreview,
+    DropPreviewTab,
+};
 pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;
 pub use input::{DockInputConfig, DockingActivation};

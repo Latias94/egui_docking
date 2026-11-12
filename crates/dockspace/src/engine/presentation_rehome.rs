@@ -333,22 +333,22 @@ impl DockEngine {
             .map_err(|source| EngineError::Interaction { input, source })?;
         let items = self.workspace.collect_items_in_subtree(source.node());
         let outcome = match action {
-            ProductAction::FloatItem { .. } | ProductAction::FloatRoot { .. } => {
-                DockspaceActionOutcome::RootFloatRequested {
-                    root,
-                    source_surface: source_native.surface,
-                    target_surface,
-                    items: items.clone(),
-                }
-            }
-            ProductAction::DockItem { .. } | ProductAction::DockRoot { .. } => {
-                DockspaceActionOutcome::RootDockRequested {
-                    root,
-                    source_surface: source_native.surface,
-                    target_root,
-                    items: items.clone(),
-                }
-            }
+            ProductAction::FloatItem { .. }
+            | ProductAction::FloatRoot { .. }
+            | ProductAction::FloatTabs { .. } => DockspaceActionOutcome::RootFloatRequested {
+                root,
+                source_surface: source_native.surface,
+                target_surface,
+                items: items.clone(),
+            },
+            ProductAction::DockItem { .. }
+            | ProductAction::DockRoot { .. }
+            | ProductAction::DockTabs { .. } => DockspaceActionOutcome::RootDockRequested {
+                root,
+                source_surface: source_native.surface,
+                target_root,
+                items: items.clone(),
+            },
             _ => return Ok(None),
         };
         self.pending_mutation = Some(PendingMutation::Rehome(PendingPresentationRehome {

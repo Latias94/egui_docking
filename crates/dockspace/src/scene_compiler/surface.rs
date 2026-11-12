@@ -19,8 +19,8 @@ use measurement::{RootLayoutMeasurement, measure_root_layout};
 pub(crate) use measurement::{
     contained_minimum_size, pane_outer_minimum, selection_geometry_unchanged,
 };
-pub(super) use tabs::tab_strip_optional_chrome_layout;
 use tabs::{compile_tabs_leaf, select_presentation_menu_tab_bar};
+pub(super) use tabs::{operable_tab_chrome, tab_strip_optional_chrome_layout};
 #[cfg(test)]
 pub(super) use tabs::{reveal_tab_range, tab_strip_control_layout};
 
@@ -845,7 +845,10 @@ fn splitter_hit_rects(
         .collect()
 }
 
-fn clip_rect(left: LogicalRect, right: LogicalRect) -> Result<LogicalRect, GeometryError> {
+pub(super) fn clip_rect(
+    left: LogicalRect,
+    right: LogicalRect,
+) -> Result<LogicalRect, GeometryError> {
     let min_x = left.x().max(right.x()).min(right.max().x());
     let min_y = left.y().max(right.y()).min(right.max().y());
     let max_x = left.max().x().min(right.max().x()).max(min_x);

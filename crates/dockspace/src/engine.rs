@@ -1138,6 +1138,7 @@ enum PreviewDecision {
         scene: SurfaceSceneStamp,
         visual: PreviewVisual,
         proof: Box<PreviewProof>,
+        tab_strip: Option<std::sync::Arc<crate::scene_compiler::FutureTabStrip>>,
     },
     Clear(PreviewResolutionStatus),
     Cancel(InteractionCancelReason),

@@ -24,6 +24,8 @@ mod arrangement_lock;
 mod close_commands;
 #[path = "product/contained_redock.rs"]
 mod contained_redock;
+#[path = "product/feedback.rs"]
+mod feedback;
 #[path = "product/output_authority.rs"]
 mod output_authority;
 #[path = "product/overflow_ownership.rs"]
@@ -2405,11 +2407,15 @@ fn active_tab_drag_leaves_an_accessible_gap_and_paints_one_pointer_ghost() {
     );
 
     let dragged = source + vec2(24.0, 8.0);
+    // Isolate the source gap from a future target tab drawn at the same position.
     let dragging = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
-        vec![Event::PointerMoved(dragged)],
+        vec![
+            Event::ModifiersChanged(egui::Modifiers::SHIFT),
+            Event::PointerMoved(dragged),
+        ],
     );
     assert_eq!(
         rect_fill_count_in(&dragging.output, active_fill, source_rect),

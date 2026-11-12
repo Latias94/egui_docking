@@ -13,6 +13,60 @@ struct ProductContainedSource {
     roster: ContainedRosterSource,
 }
 
+enum ProductFloatSource {
+    Item(ItemId),
+    Tabs {
+        source_root: RootId,
+        items: Vec<ItemId>,
+    },
+}
+
+enum ProductFloatOperation {
+    Create,
+    Rehome,
+    Update,
+}
+
+impl ProductFloatSource {
+    fn context(
+        self,
+        operation: ProductFloatOperation,
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+    ) -> ProductCommandContext {
+        match self {
+            Self::Tabs { source_root, items } => ProductCommandContext::FloatTabs {
+                source_root,
+                root,
+                surface,
+                floating,
+                items,
+            },
+            Self::Item(item) => match operation {
+                ProductFloatOperation::Create => ProductCommandContext::FloatCreate {
+                    item,
+                    root,
+                    surface,
+                    floating,
+                },
+                ProductFloatOperation::Rehome => ProductCommandContext::FloatRehome {
+                    item,
+                    root,
+                    surface,
+                    floating,
+                },
+                ProductFloatOperation::Update => ProductCommandContext::FloatUpdate {
+                    item,
+                    root,
+                    surface,
+                    floating,
+                },
+            },
+        }
+    }
+}
+
 impl DockEngine {
     pub(in crate::engine) fn derive_product_root_float_rect(
         &self,
@@ -289,10 +343,50 @@ impl DockEngine {
         surface: SurfaceId,
         rect: LogicalRect,
     ) -> Result<ProductActionPlan, DockspaceActionRejection> {
-        self.require_product_surface(surface)?;
         let item_source = self.capture_product_item(item)?;
-        let source_root = item_source.root();
-        let payload = MovePayload::Item(item_source);
+        self.compile_product_float_payload(
+            MovePayload::Item(item_source),
+            ProductFloatSource::Item(item),
+            item,
+            surface,
+            rect,
+        )
+    }
+
+    pub(super) fn compile_product_tabs_float(
+        &self,
+        group: &PreparedTabsGroup,
+        surface: SurfaceId,
+    ) -> Result<ProductActionPlan, DockspaceActionRejection> {
+        let (source, items) = self.capture_product_tabs(group)?;
+        let source_root = source.root();
+        let anchor = items
+            .first()
+            .copied()
+            .ok_or(DockspaceActionRejection::Conflict)?;
+        let rect = self.derive_product_root_float_rect(source_root, surface)?;
+        self.compile_product_float_payload(
+            MovePayload::Tabs(source),
+            ProductFloatSource::Tabs { source_root, items },
+            anchor,
+            surface,
+            rect,
+        )
+    }
+
+    fn compile_product_float_payload(
+        &self,
+        payload: MovePayload,
+        source: ProductFloatSource,
+        anchor: ItemId,
+        surface: SurfaceId,
+        rect: LogicalRect,
+    ) -> Result<ProductActionPlan, DockspaceActionRejection> {
+        self.require_product_surface(surface)?;
+        let source_root = match &payload {
+            MovePayload::Item(source) => source.root(),
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => source.root(),
+        };
         let Some(root_source) = self.capture_complete_root_payload(&payload)? else {
             let root = self.next_product_root()?;
             let floating = self.next_product_floating()?;
@@ -305,12 +399,7 @@ impl DockEngine {
                     position: ContainedPosition::Front,
                     content: RootContent::Move(payload),
                 },
-                context: ProductCommandContext::FloatCreate {
-                    item,
-                    root,
-                    surface,
-                    floating,
-                },
+                context: source.context(ProductFloatOperation::Create, root, surface, floating),
             });
         };
 
@@ -323,7 +412,7 @@ impl DockEngine {
                 surface: current_surface,
                 floating,
             } if current_surface == surface => {
-                let contained = self.capture_product_contained(item)?;
+                let contained = self.capture_product_contained(anchor)?;
                 Ok(ProductActionPlan::Command {
                     command: WorkspaceCommand::UpdateContainedPresentation {
                         source: contained.source,
@@ -333,12 +422,12 @@ impl DockEngine {
                         rect,
                         position: ContainedPosition::Front,
                     },
-                    context: ProductCommandContext::FloatUpdate {
-                        item,
-                        root: source_root,
+                    context: source.context(
+                        ProductFloatOperation::Update,
+                        source_root,
                         surface,
                         floating,
-                    },
+                    ),
                 })
             }
             crate::RootPresentationOwner::Contained { floating, .. } => {
@@ -352,12 +441,12 @@ impl DockEngine {
                             position: ContainedPosition::Front,
                         },
                     },
-                    context: ProductCommandContext::FloatRehome {
-                        item,
-                        root: source_root,
+                    context: source.context(
+                        ProductFloatOperation::Rehome,
+                        source_root,
                         surface,
                         floating,
-                    },
+                    ),
                 })
             }
             crate::RootPresentationOwner::Main { .. } => {
@@ -372,12 +461,12 @@ impl DockEngine {
                             position: ContainedPosition::Front,
                         },
                     },
-                    context: ProductCommandContext::FloatRehome {
-                        item,
-                        root: source_root,
+                    context: source.context(
+                        ProductFloatOperation::Rehome,
+                        source_root,
                         surface,
                         floating,
-                    },
+                    ),
                 })
             }
         }

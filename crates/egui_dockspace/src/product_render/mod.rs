@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 mod actions;
 mod contained;
 mod drag_feedback;
+mod drop_feedback;
 mod geometry;
 mod guides;
 mod measurement;
@@ -473,8 +474,7 @@ pub(crate) fn paint_surface(
                         tab_chrome::paint_menu(&mut context, menu, paint);
                     }
                     SurfacePaintProgramStep::DragPreview(preview) => {
-                        let drag_preview_painted =
-                            paint_preview(context.ui, context.plan, preview, context.visuals);
+                        let drag_preview_painted = paint_preview(&mut context, preview);
                         transient_visuals_complete &= drag_preview_painted;
                         if context.pointer_authority.supports_preview_gestures()
                             && drag_preview_painted
@@ -696,11 +696,11 @@ fn paint_surface_program_operation(
 }
 
 fn paint_preview(
-    ui: &Ui,
-    plan: SurfacePaintPlan<'_>,
+    context: &mut RenderContext<'_, '_, '_>,
     preview: DockspaceDragPreview<'_>,
-    visuals: ResolvedDockVisuals,
 ) -> bool {
+    let ui = &*context.ui;
+    let plan = context.plan;
     let visual = preview.visual();
     let Some(bounds) = geometry::egui_rect(plan.bounds()) else {
         return false;
@@ -712,20 +712,21 @@ fn paint_preview(
     if !painter.is_visible() {
         return false;
     }
-    if preview.is_layout_projected() {
-        return true;
+    if !drop_feedback::paint(context, preview, rect) && !preview.is_layout_projected() {
+        painter.extend([
+            Shape::rect_filled(rect, 2.0, context.visuals.drop_fill),
+            Shape::rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(1.0, context.visuals.drop_border_color),
+                StrokeKind::Inside,
+            ),
+        ]);
     }
-    painter.extend([
-        Shape::rect_filled(rect, 2.0, visuals.drop_fill),
-        Shape::rect_stroke(
-            rect,
-            2.0,
-            Stroke::new(1.0, visuals.drop_border_color),
-            StrokeKind::Inside,
-        ),
-    ]);
     #[cfg(feature = "native-render-support")]
-    publish_native_drag_preview_diagnostic(ui, plan.surface(), rect, visual);
+    if !preview.is_layout_projected() {
+        publish_native_drag_preview_diagnostic(context.ui, plan.surface(), rect, visual);
+    }
     true
 }
 

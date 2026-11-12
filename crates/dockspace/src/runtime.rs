@@ -122,9 +122,11 @@ pub use native_effect::{
 pub use paint::{
     ContainedPaintRecord, ContainedResizeDirection, ContainedResizePaintRecord,
     DockspaceContainedTransformPreview, DockspaceDragDecoration, DockspaceDragPreview,
-    DockspaceDragSourceKind, DockspaceDropDirection, DockspaceDropEligibility, DockspaceGuideScope,
+    DockspaceDragSourceKind, DockspaceDropAction, DockspaceDropDirection, DockspaceDropEligibility,
+    DockspaceDropTargetFeedback, DockspaceDropTargetScope, DockspaceGuideScope,
     DockspacePaintLayer, DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
-    DockspacePresentationMenuAnchorKind, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspacePresentationMenuAnchorKind, DockspacePreviewTabBarPaintRecord,
+    DockspacePreviewTabPaintRecord, DockspacePreviewVisual, DockspaceReceiverDescriptor,
     DockspaceReceiverRole, DockspaceSemanticOutput, DockspaceVisualId, DockspaceVisualKind,
     DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
     DropGuidePaintRecord, DropGuideTargetPaintRecord, DropTargetPaintRecord, PanePaintRecord,

@@ -594,6 +594,67 @@ impl<'frame> HostFrameView<'frame> {
             .filter(|preview| preview.token() == expected && preview.visual().surface() == surface)
     }
 
+    /// Reads the presented target and captured payload of an existing preview.
+    /// No candidate transaction or source-membership reconstruction is performed.
+    pub(crate) fn presentation_dock_target_context(
+        &self,
+        preview: &crate::interaction::InteractionPreview,
+    ) -> Option<(
+        &'frame PresentationPlan,
+        crate::drop_target::DropTargetId,
+        Option<&'frame MovePayload>,
+    )> {
+        let PreviewVisual::Dock {
+            target, surface, ..
+        } = *preview.visual()
+        else {
+            return None;
+        };
+        let token = preview.token();
+        let drag = self
+            .engine
+            .interaction
+            .active_drag(token.session())
+            .ok()
+            .or_else(|| {
+                self.engine
+                    .pending_mutation
+                    .as_ref()
+                    .and_then(PendingMutation::drag_release)
+                    .filter(|pending| pending.preview == token)
+                    .map(|pending| &pending.drag)
+            });
+        let (published, payload) = match drag {
+            Some(drag) => (drag.preview()?, Some(&drag.payload)),
+            None => {
+                let pending = self.engine.pending_mutation.as_ref()?.rehome()?;
+                let payload = match pending.preview.proof() {
+                    PreviewProof::PresentationRehome {
+                        command: WorkspaceCommand::Move { payload, .. },
+                    } => Some(payload),
+                    _ => None,
+                };
+                (&pending.preview, payload)
+            }
+        };
+        if published.public().token() != token {
+            return None;
+        }
+        let presented = self.engine.scene().interaction_projection(surface)?;
+        let plan = presented.plan();
+        if presented.output().stamp() != token.scene() {
+            let projection = plan.contained_projection()?;
+            if projection.owner != crate::scene::ContainedLayoutOwner::Drag(token.session())
+                || projection.target_basis.is_none()
+                || projection.target_basis != published.target_layout_basis()
+                || target.root() == Some(projection.root)
+            {
+                return None;
+            }
+        }
+        Some((plan, target, payload))
+    }
+
     /// Returns the exact frozen contained-transform preview which this surface must paint.
     #[must_use]
     pub fn presentation_contained_transform_preview(

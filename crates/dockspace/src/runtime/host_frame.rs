@@ -617,6 +617,25 @@ impl<'session> DockspaceHostFrame<'session> {
         ))
     }
 
+    /// Docks a previously captured complete tabs group in one transaction.
+    ///
+    /// The capture is not refreshed against this candidate. A stale capture is
+    /// accepted structurally and reported as [`crate::runtime::HostInputOutcome::StaleRejected`].
+    /// Inspect [`HostFrameReport::submitted_action_outcome`] after committing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign session's capture or when the frame cannot
+    /// accept another semantic input.
+    pub fn dock_tabs_current(
+        &mut self,
+        group: crate::model::PreparedTabsGroup,
+        placement: DockPlacement,
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let prepared = self.session.engine.prepare_dock_tabs(group, placement);
+        self.submit_prepared_action(prepared)
+    }
+
     /// Docks one complete root at a stable product placement.
     ///
     /// The returned identity resolves the committed outcome through
@@ -745,6 +764,25 @@ impl<'session> DockspaceHostFrame<'session> {
             frame_attempt,
             source_sequence,
         ))
+    }
+
+    /// Floats one previously captured complete tabs group as an atomic payload.
+    ///
+    /// The capture's original session and version remain authoritative. The
+    /// returned identity resolves through [`HostFrameReport::submitted_action_outcome`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a foreign session's capture or when the frame cannot
+    /// accept another semantic input. Stale captures and unavailable placements
+    /// are reported as committed product outcomes.
+    pub fn float_tabs_current(
+        &mut self,
+        group: crate::model::PreparedTabsGroup,
+        surface: crate::ids::SurfaceId,
+    ) -> Result<DockspaceSubmittedAction, DockspaceRuntimeError> {
+        let prepared = self.session.engine.prepare_float_tabs(group, surface);
+        self.submit_prepared_action(prepared)
     }
 
     /// Raises the contained presentation owning one open item.

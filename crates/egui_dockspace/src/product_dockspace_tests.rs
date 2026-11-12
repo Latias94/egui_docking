@@ -28,6 +28,8 @@ const SIXTH: ItemId = ItemId::new(6);
 
 #[path = "product_edge_scroll_tests.rs"]
 mod edge_scroll;
+#[path = "product_tabs_actions_tests.rs"]
+mod tabs_actions;
 #[path = "product_touch_tests.rs"]
 mod touch;
 #[path = "product_touch_target_tests.rs"]

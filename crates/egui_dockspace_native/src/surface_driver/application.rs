@@ -337,12 +337,18 @@ impl<P: PaneView> NativeRuntimeState<P> {
             NativeCommand::DockItem { item, placement } => {
                 session.prepare_dock_item(item, placement).into()
             }
+            NativeCommand::DockTabs { group, placement } => {
+                session.prepare_dock_tabs(group, placement).into()
+            }
             NativeCommand::DockRoot { root, placement } => {
                 session.prepare_dock_root(root, placement).into()
             }
             NativeCommand::DockRootBack { root } => session.prepare_dock_root_back(root).into(),
             NativeCommand::FloatItem { item, surface } => {
                 session.prepare_float_item(item, surface).into()
+            }
+            NativeCommand::FloatTabs { group, surface } => {
+                session.prepare_float_tabs(group, surface).into()
             }
             NativeCommand::RaiseContained { item } => session.prepare_raise_contained(item).into(),
             NativeCommand::BringContainedIntoView { item } => {
@@ -435,9 +441,24 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     .and_then(|node| node.tabs())
                     .is_some_and(|tabs| tabs.items() == [item])
         };
+        let complete_tabs = |group: &PreparedTabsGroup| {
+            root.content()
+                .and_then(|node| node.tabs())
+                .and_then(|tabs| tabs.selected())
+                .and_then(|item| {
+                    self.coordinator
+                        .session()
+                        .capture_tabs_group(DockAnchor::Item(item))
+                        .ok()
+                })
+                .is_some_and(|current| current == *group)
+        };
         let view = self.coordinator.session().view();
         let target = match command {
             NativeCommand::DockItem { item, placement } if complete_item(*item) => {
+                self.placement_surface(*placement)
+            }
+            NativeCommand::DockTabs { group, placement } if complete_tabs(group) => {
                 self.placement_surface(*placement)
             }
             NativeCommand::DockRoot {
@@ -445,6 +466,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 placement,
             } if *source == root.id() => self.placement_surface(*placement),
             NativeCommand::FloatItem { item, surface } if complete_item(*item) => {
+                view.surface(*surface).map(|surface| surface.id())
+            }
+            NativeCommand::FloatTabs { group, surface } if complete_tabs(group) => {
                 view.surface(*surface).map(|surface| surface.id())
             }
             _ => None,

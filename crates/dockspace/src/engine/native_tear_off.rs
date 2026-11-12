@@ -205,20 +205,8 @@ impl DockEngine {
                 .map(|source| (MovePayload::Item(source), vec![*item]))
                 .ok_or(DockspaceActionRejection::ItemUnavailable { item: *item }),
             NativeTearOffSource::Tabs(group) => {
-                if group.authority_domain != self.authority_domain || group.expected != self.version
-                {
-                    return Err(DockspaceActionRejection::Conflict);
-                }
-                self.validate_node_source(&group.source)
-                    .map_err(|_| DockspaceActionRejection::Conflict)?;
-                let Some(Node::Tabs { items, .. }) = self.workspace.node(group.source.node())
-                else {
-                    return Err(DockspaceActionRejection::Conflict);
-                };
-                if items.is_empty() {
-                    return Err(DockspaceActionRejection::Conflict);
-                }
-                Ok((MovePayload::Tabs(group.source.clone()), items.to_vec()))
+                let (source, items) = self.capture_product_tabs(group)?;
+                Ok((MovePayload::Tabs(source), items))
             }
             NativeTearOffSource::Root(root) => self
                 .capture_product_root_payload(*root)

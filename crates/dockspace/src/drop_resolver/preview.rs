@@ -1,5 +1,7 @@
 //! Post-transaction edge preview projection.
 
+use std::sync::Arc;
+
 use thiserror::Error;
 
 use crate::command::{DockTarget, MovePayload, WorkspaceCommand};
@@ -12,8 +14,22 @@ use crate::layout::{NodeMap, NodeResult};
 use crate::policy::DockPolicySnapshot;
 use crate::scene::{PresentationLayoutFacts, PresentationPlan};
 use crate::scene_compiler::{
-    FutureLayoutProjectionError, project_future_root, project_future_tab_gap_visual,
+    FutureLayoutProjectionError, FutureTabStrip, project_future_root, project_future_tab_strip,
 };
+
+pub(super) struct ResolvedPreview {
+    pub(super) visual: DropVisual,
+    pub(super) tab_strip: Option<Arc<FutureTabStrip>>,
+}
+
+impl From<DropVisual> for ResolvedPreview {
+    fn from(visual: DropVisual) -> Self {
+        Self {
+            visual,
+            tab_strip: None,
+        }
+    }
+}
 
 pub(super) fn resolved_visual(
     original: &Workspace,
@@ -23,7 +39,7 @@ pub(super) fn resolved_visual(
     source_layout_facts: Option<&PresentationLayoutFacts>,
     target_record: &DropTargetRecord,
     command: &WorkspaceCommand,
-) -> Result<DropVisual, DropPreviewProjectionError> {
+) -> Result<ResolvedPreview, DropPreviewProjectionError> {
     if !matches!(
         target_record.id().kind(),
         DropTargetKind::TabGap
@@ -31,10 +47,10 @@ pub(super) fn resolved_visual(
             | DropTargetKind::InnerEdge
             | DropTargetKind::OuterEdge
     ) {
-        return Ok(target_record.visual());
+        return Ok(target_record.visual().into());
     }
     let WorkspaceCommand::Move { payload, target } = command else {
-        return Ok(target_record.visual());
+        return Ok(target_record.visual().into());
     };
     let root = target_root(target);
     let Some(projection) = project_future_root(
@@ -48,7 +64,31 @@ pub(super) fn resolved_visual(
     else {
         // Synthetic plans exist only in crate-local resolver tests. Production
         // plans always retain their measured layout facts.
-        return Ok(target_record.visual());
+        return Ok(target_record.visual().into());
+    };
+    let tab_strip = match target {
+        DockTarget::Center(target) | DockTarget::TabGap { target, .. } => {
+            match project_future_tab_strip(
+                original,
+                candidate,
+                policy,
+                target_plan,
+                source_layout_facts,
+                target,
+                payload,
+                &projection,
+            ) {
+                Ok(projected) => Some(projected),
+                // A previously hidden strip has no host measurements. Keep the
+                // legal content preview, rather than inventing its tab chrome.
+                Err(
+                    FutureLayoutProjectionError::TabStripMeasurementUnavailable { .. }
+                    | FutureLayoutProjectionError::TabIntrinsicUnavailable { .. },
+                ) => None,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        DockTarget::InnerEdge(_) | DockTarget::OuterEdge(_) => None,
     };
     let rect = match target {
         DockTarget::Center(target) => {
@@ -57,16 +97,12 @@ pub(super) fn resolved_visual(
         DockTarget::InnerEdge(_) | DockTarget::OuterEdge(_) => {
             projected_payload_rect(original, candidate, root, payload, &projection.nodes)?
         }
-        DockTarget::TabGap { target, .. } => project_future_tab_gap_visual(
-            original,
-            candidate,
-            policy,
-            target_plan,
-            source_layout_facts,
-            target,
-            payload,
-            &projection,
-        )?,
+        DockTarget::TabGap { target, .. } => match tab_strip.as_ref() {
+            Some(projected) => projected.insertion,
+            None => {
+                projected_center_rect(candidate, policy, target_plan, target, &projection.nodes)?
+            }
+        },
     };
     let rect = match target {
         DockTarget::InnerEdge(_) | DockTarget::OuterEdge(_) => {
@@ -74,7 +110,10 @@ pub(super) fn resolved_visual(
         }
         DockTarget::Center(_) | DockTarget::TabGap { .. } => rect,
     };
-    Ok(DropVisual::new(rect))
+    Ok(ResolvedPreview {
+        visual: DropVisual::new(rect),
+        tab_strip: tab_strip.and_then(|projected| projected.strip),
+    })
 }
 
 fn clip_to_visible_root(
@@ -130,6 +169,13 @@ fn projected_center_rect(
     let facts = target_plan
         .layout_facts()
         .ok_or(DropPreviewProjectionError::TargetLayoutFactsMissing)?;
+    let root_bounds = facts
+        .root(target.root())
+        .ok_or(FutureLayoutProjectionError::TargetRootNotPresented {
+            root: target.root(),
+        })?
+        .bounds();
+    let bounds = clip_rect(bounds, root_bounds)?;
     let central = candidate
         .root(target.root())
         .is_some_and(|root| root.central == Some(target.tabs()));

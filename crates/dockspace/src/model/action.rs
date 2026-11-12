@@ -170,7 +170,7 @@ pub enum NativeTearOffSource {
     Root(RootId),
 }
 
-/// Product-visible result of one accepted item action.
+/// Product-visible result of one accepted semantic docking action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DockspaceActionOutcome {
     /// Selection was checked and optionally changed.
@@ -203,6 +203,17 @@ pub enum DockspaceActionOutcome {
         /// Whether topology or tab order changed.
         changed: bool,
     },
+    /// A captured complete tabs group was docked as one atomic payload.
+    TabsDocked {
+        /// Root which owned the group before the action.
+        source_root: RootId,
+        /// Root which owns the group after the action.
+        target_root: RootId,
+        /// Items moved in their captured tab order.
+        items: Vec<ItemId>,
+        /// Whether topology, presentation ownership, or tab order changed.
+        changed: bool,
+    },
     /// A complete root was merged into another placement or rehomed as one unit.
     RootDocked {
         /// Stable root moved as the payload authority.
@@ -224,6 +235,21 @@ pub enum DockspaceActionOutcome {
         surface: SurfaceId,
         /// Stable contained-presentation identity.
         floating: crate::ids::FloatingPresentationId,
+        /// Whether topology, geometry, or stacking changed.
+        changed: bool,
+    },
+    /// A captured complete tabs group entered a contained presentation.
+    TabsFloated {
+        /// Root which owned the group before the action.
+        source_root: RootId,
+        /// Root which owns the resulting contained presentation.
+        root: RootId,
+        /// Surface which owns the contained presentation.
+        surface: SurfaceId,
+        /// Resulting contained-presentation identity.
+        floating: crate::ids::FloatingPresentationId,
+        /// Items moved in their captured tab order.
+        items: Vec<ItemId>,
         /// Whether topology, geometry, or stacking changed.
         changed: bool,
     },
@@ -306,8 +332,10 @@ impl DockspaceActionOutcome {
         match self {
             Self::Selected { changed, .. }
             | Self::Docked { changed, .. }
+            | Self::TabsDocked { changed, .. }
             | Self::RootDocked { changed, .. }
             | Self::Floated { changed, .. }
+            | Self::TabsFloated { changed, .. }
             | Self::RootFloated { changed, .. }
             | Self::ContainedBoundsUpdated { changed, .. }
             | Self::ContainedRaised { changed, .. } => *changed,
@@ -440,6 +468,10 @@ pub(crate) enum ProductAction {
         item: ItemId,
         placement: DockPlacement,
     },
+    DockTabs {
+        group: PreparedTabsGroup,
+        placement: DockPlacement,
+    },
     DockRoot {
         root: RootId,
         placement: DockPlacement,
@@ -458,6 +490,10 @@ pub(crate) enum ProductAction {
     },
     FloatItem {
         item: ItemId,
+        surface: SurfaceId,
+    },
+    FloatTabs {
+        group: PreparedTabsGroup,
         surface: SurfaceId,
     },
     RaiseContained {

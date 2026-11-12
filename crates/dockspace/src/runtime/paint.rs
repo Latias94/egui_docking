@@ -40,18 +40,24 @@ use super::{
 
 mod actions;
 mod drag_decoration;
+mod drop_feedback;
 mod guides;
 #[cfg(test)]
 mod junction_query_tests;
+mod preview_tabs;
 mod tab_chrome;
 mod tabs;
 pub use actions::ContainedResizeDirection;
 pub use drag_decoration::{DockspaceDragDecoration, DockspaceDragSourceKind};
+pub use drop_feedback::{
+    DockspaceDropAction, DockspaceDropTargetFeedback, DockspaceDropTargetScope,
+};
 pub use guides::{
     DockspaceDropDirection, DockspaceDropEligibility, DockspaceGuideScope,
     DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
     DropGuidePaintRecord, DropGuideTargetPaintRecord,
 };
+pub use preview_tabs::{DockspacePreviewTabBarPaintRecord, DockspacePreviewTabPaintRecord};
 pub use tab_chrome::{
     TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
     TabStripControlKind, TabStripControlPaintRecord,
@@ -423,6 +429,7 @@ pub enum DockspacePreviewVisual {
 pub struct DockspaceDragPreview<'plan> {
     preview: &'plan InteractionPreview,
     layout_projected: bool,
+    target: Option<DockspaceDropTargetFeedback>,
 }
 
 impl DockspaceDragPreview<'_> {
@@ -433,6 +440,16 @@ impl DockspaceDragPreview<'_> {
     #[must_use]
     pub const fn is_layout_projected(self) -> bool {
         self.layout_projected
+    }
+
+    /// Returns the resolved destination in its current presented layout.
+    ///
+    /// Selection, bounds and insertion neighbors identify the destination before
+    /// source removal; [`Self::visual`] retains the future layout rectangle.
+    /// Contained placement and native tear-off cues have no docking target.
+    #[must_use]
+    pub const fn target(self) -> Option<DockspaceDropTargetFeedback> {
+        self.target
     }
 
     /// Returns the renderer-neutral geometry which must be painted.
@@ -1511,8 +1528,9 @@ impl DockspaceHostFrame<'_> {
 impl<'frame> SurfacePaintPlan<'frame> {
     /// Visits tab resource requests in their original surface-program order.
     ///
-    /// Requests include visible tabs, popup rows and the active drag ghost,
-    /// including repeated items. This reads the sealed program without building
+    /// Requests include visible tabs, popup rows, destination feedback, every
+    /// future target member and the active drag ghost, including repeated items.
+    /// This reads the sealed program without building
     /// interaction descriptors or granting a surface execution receipt.
     ///
     /// # Errors
@@ -1553,11 +1571,31 @@ impl<'frame> SurfacePaintPlan<'frame> {
                             visitor(decoration.source_visual(), item);
                         }
                     }
+                    ResolvedSurfaceProgramStep::DragPreview => {
+                        if let Some(preview) = self.drag_preview()
+                            && let Some(target) = preview.target()
+                        {
+                            let (previous, next) = match target.action() {
+                                DockspaceDropAction::InsertTab { previous, next, .. } => {
+                                    (previous, next)
+                                }
+                                _ => (None, None),
+                            };
+                            for item in [target.selected_item(), previous, next]
+                                .into_iter()
+                                .flatten()
+                            {
+                                visitor(target.visual_id(), item);
+                            }
+                            for tab in preview.tabs() {
+                                visitor(target.visual_id(), tab.item());
+                            }
+                        }
+                    }
                     ResolvedSurfaceProgramStep::RootBegin(_)
                     | ResolvedSurfaceProgramStep::Operation { .. }
                     | ResolvedSurfaceProgramStep::RootEnd(_)
                     | ResolvedSurfaceProgramStep::PopupBackdrop(_)
-                    | ResolvedSurfaceProgramStep::DragPreview
                     | ResolvedSurfaceProgramStep::DropTarget(_)
                     | ResolvedSurfaceProgramStep::DropGuide(_)
                     | ResolvedSurfaceProgramStep::ContainedTransformPreview
@@ -2593,6 +2631,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
     #[must_use]
     fn drag_preview(&self) -> Option<DockspaceDragPreview<'frame>> {
         let preview = self.drag_preview?;
+        let target = self
+            .candidate
+            .presentation_dock_target_context(preview)
+            .and_then(|(plan, target, payload)| drop_feedback::resolve(plan, target, payload));
         let layout_projected = self.plan.contained_projection().is_some_and(|projection| {
             projection.owner == ContainedLayoutOwner::Drag(preview.token().session())
                 && projection.surface == self.surface
@@ -2605,6 +2647,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         Some(DockspaceDragPreview {
             preview,
             layout_projected,
+            target,
         })
     }
 

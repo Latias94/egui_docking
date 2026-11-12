@@ -4,7 +4,8 @@ use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
 use dockspace::model::{
-    DockPlacement, ItemId, NativeTearOffSource, NativeWindowPlacement, RootId, SurfaceId,
+    DockPlacement, ItemId, NativeTearOffSource, NativeWindowPlacement, PreparedTabsGroup, RootId,
+    SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 
@@ -53,6 +54,16 @@ pub enum NativeCommand {
         /// Destination in the current workspace.
         placement: DockPlacement,
     },
+    /// Move one previously captured tabs group as an atomic payload.
+    ///
+    /// The capture retains its original session and version. Admission never
+    /// refreshes its source from an item that may have moved to another group.
+    DockTabs {
+        /// Exact complete group to move.
+        group: PreparedTabsGroup,
+        /// Destination in the captured workspace version.
+        placement: DockPlacement,
+    },
     /// Dock an entire root as one group.
     DockRoot {
         /// Complete group to move.
@@ -73,6 +84,17 @@ pub enum NativeCommand {
         /// Pane to float.
         item: ItemId,
         /// Existing surface that will contain the floating window.
+        surface: SurfaceId,
+    },
+    /// Float one previously captured tabs group inside an existing surface.
+    ///
+    /// The complete group moves once, preserving its order and selection. A
+    /// group that forms the complete source root preserves that root's identity.
+    /// Native source ownership remains until the target's exact first presentation.
+    FloatTabs {
+        /// Exact complete group to float, retaining its captured session and version.
+        group: PreparedTabsGroup,
+        /// Existing surface that will contain the floating group.
         surface: SurfaceId,
     },
     /// Raise the contained window owning this pane without selecting the pane.
