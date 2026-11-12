@@ -16,27 +16,48 @@ pub(super) fn paint_tab(
     record: TabPaintRecord<'_>,
     resource: &TabPaintResource,
     response: &Response,
-) {
-    let (Some(rect), Some(visible_rect), Some(content_rect), Some(content_clip_rect)) = (
-        egui_rect(record.full_bounds()),
-        egui_rect(record.visible_bounds()),
-        egui_rect(record.text_layout_bounds()),
-        egui_rect(record.text_bounds()),
-    ) else {
-        return;
-    };
+    pane_focused: bool,
+) -> TabVisuals {
     let selected = record.selected();
     let text_override = if selected {
         context.style.visuals.tab_active_text_color
     } else {
         context.style.visuals.tab_text_color
     };
-    let text_color = if selected {
-        context.visuals.tab_active_text_color
-    } else if RenderContext::response_emphasized(response) {
-        context.interaction_text_color(response, text_override)
-    } else {
-        context.visuals.tab_text_color
+    let visuals = TabVisuals {
+        fill: if selected {
+            context.visuals.tab_active_fill
+        } else if RenderContext::response_emphasized(response) {
+            context.interaction_fill(response)
+        } else {
+            context.visuals.tab_fill
+        },
+        stroke: if selected {
+            context.style.visuals.tab_active_stroke
+        } else {
+            context.style.visuals.tab_stroke
+        }
+        .unwrap_or(Stroke::NONE),
+        corner_radius: context.style.tab_corner_radius,
+        text_color: if selected {
+            context.visuals.tab_active_text_color
+        } else if RenderContext::response_emphasized(response) {
+            context.interaction_text_color(response, text_override)
+        } else {
+            context.visuals.tab_text_color
+        },
+        text_color_override: text_override.or(context.ui.visuals().override_text_color),
+        close_color: None,
+        focus_stroke: context.visuals.tab_focus_stroke,
+        pane_focus_stroke: context.visuals.pane_focus_stroke,
+    };
+    let (Some(rect), Some(visible_rect), Some(content_rect), Some(content_clip_rect)) = (
+        egui_rect(record.full_bounds()),
+        egui_rect(record.visible_bounds()),
+        egui_rect(record.text_layout_bounds()),
+        egui_rect(record.text_bounds()),
+    ) else {
+        return visuals;
     };
     let tab = Tab {
         item: record.item(),
@@ -48,25 +69,9 @@ pub(super) fn paint_tab(
         title: resource.galley.clone(),
         response,
         selected,
+        pane_focused,
         enabled: effective_enabled(context.ui, record.operable()),
-        visuals: TabVisuals {
-            fill: if selected {
-                context.visuals.tab_active_fill
-            } else if RenderContext::response_emphasized(response) {
-                context.interaction_fill(response)
-            } else {
-                context.visuals.tab_fill
-            },
-            stroke: if selected {
-                context.style.visuals.tab_active_stroke
-            } else {
-                context.style.visuals.tab_stroke
-            }
-            .unwrap_or(Stroke::NONE),
-            corner_radius: context.style.tab_corner_radius,
-            text_color,
-            text_color_override: text_override.or(context.ui.visuals().override_text_color),
-        },
+        visuals,
     };
     let mut child = context.ui.new_child(
         UiBuilder::new()
@@ -79,9 +84,9 @@ pub(super) fn paint_tab(
         child.disable();
     }
     if resource.missing {
-        tab.paint(&child);
+        tab.paint(&child)
     } else {
-        context.panes.tab_ui(&mut child, &tab);
+        context.panes.tab_ui(&mut child, &tab)
     }
 }
 
@@ -96,10 +101,23 @@ pub(super) fn paint_bar_slots(
     for (slot, bounds) in [
         (TabBarSlot::Leading, record.leading_reserved_bounds()),
         (TabBarSlot::Trailing, record.trailing_reserved_bounds()),
+        (TabBarSlot::AfterTabs, record.after_tabs_bounds()),
     ] {
         let Some(bounds) = bounds.and_then(egui_rect).filter(egui::Rect::is_positive) else {
             continue;
         };
+        let clip = if slot == TabBarSlot::AfterTabs {
+            let Some(viewport) = egui_rect(record.viewport()) else {
+                continue;
+            };
+            bounds.intersect(viewport)
+        } else {
+            bounds
+        };
+        let clip = context.ui.clip_rect().intersect(clip);
+        if !clip.is_positive() {
+            continue;
+        }
         let mut child = context.ui.new_child(
             UiBuilder::new()
                 .id_salt((
@@ -111,7 +129,7 @@ pub(super) fn paint_bar_slots(
                 .max_rect(bounds)
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        child.set_clip_rect(context.ui.clip_rect().intersect(bounds));
+        child.set_clip_rect(clip);
         if record.interaction() == TabBarInteraction::Disabled && child.is_enabled() {
             child.disable();
         }

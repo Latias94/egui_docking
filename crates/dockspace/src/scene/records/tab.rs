@@ -237,20 +237,26 @@ impl TabGroupDragRegionRecord {
 /// Exact hit geometry for the whole-tab-stack gesture of one tab bar.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabGroupDragRecord {
-    leading_grip: TabGroupDragRegionRecord,
+    leading_grip: Option<TabGroupDragRegionRecord>,
     trailing_empty: Option<TabGroupDragRegionRecord>,
 }
 
 impl TabGroupDragRecord {
     pub(crate) const fn new(
-        leading_grip: LogicalRect,
+        leading_grip: Option<LogicalRect>,
         trailing_empty: Option<LogicalRect>,
-    ) -> Self {
-        Self {
-            leading_grip: TabGroupDragRegionRecord::new(
-                TabGroupDragRegionKind::LeadingGrip,
-                leading_grip,
-            ),
+    ) -> Option<Self> {
+        if leading_grip.is_none() && trailing_empty.is_none() {
+            return None;
+        }
+        Some(Self {
+            leading_grip: match leading_grip {
+                Some(bounds) => Some(TabGroupDragRegionRecord::new(
+                    TabGroupDragRegionKind::LeadingGrip,
+                    bounds,
+                )),
+                None => None,
+            },
             trailing_empty: match trailing_empty {
                 Some(bounds) => Some(TabGroupDragRegionRecord::new(
                     TabGroupDragRegionKind::TrailingEmpty,
@@ -258,12 +264,12 @@ impl TabGroupDragRecord {
                 )),
                 None => None,
             },
-        }
+        })
     }
 
-    /// Returns the dedicated region before the first tab.
+    /// Returns the dedicated region before the first tab, when configured.
     #[must_use]
-    pub const fn leading_grip(self) -> TabGroupDragRegionRecord {
+    pub const fn leading_grip(self) -> Option<TabGroupDragRegionRecord> {
         self.leading_grip
     }
 
@@ -277,14 +283,14 @@ impl TabGroupDragRecord {
     #[must_use]
     pub const fn region(self, kind: TabGroupDragRegionKind) -> Option<TabGroupDragRegionRecord> {
         match kind {
-            TabGroupDragRegionKind::LeadingGrip => Some(self.leading_grip),
+            TabGroupDragRegionKind::LeadingGrip => self.leading_grip,
             TabGroupDragRegionKind::TrailingEmpty => self.trailing_empty,
         }
     }
 
     /// Iterates exact group-drag regions in stable visual order.
     pub fn regions(self) -> impl Iterator<Item = TabGroupDragRegionRecord> {
-        [Some(self.leading_grip), self.trailing_empty]
+        [self.leading_grip, self.trailing_empty]
             .into_iter()
             .flatten()
     }
@@ -309,6 +315,7 @@ pub struct TabBarRecord {
     group_grip_bounds: Option<LogicalRect>,
     leading_reserved_bounds: Option<LogicalRect>,
     trailing_reserved_bounds: Option<LogicalRect>,
+    after_tabs_bounds: Option<LogicalRect>,
     group_drag: Option<TabGroupDragRecord>,
     interaction: TabBarInteraction,
     menu_geometry: TabListMenuGeometryAvailability,
@@ -362,6 +369,7 @@ impl TabBarRecord {
             group_grip_bounds,
             leading_reserved_bounds: None,
             trailing_reserved_bounds: None,
+            after_tabs_bounds: None,
             group_drag,
             interaction,
             menu_geometry,
@@ -417,13 +425,15 @@ impl TabBarRecord {
         self.group_grip_bounds
     }
 
-    pub(crate) fn with_reserved_bounds(
+    pub(crate) fn with_application_bounds(
         mut self,
         leading: Option<LogicalRect>,
         trailing: Option<LogicalRect>,
+        after_tabs: Option<LogicalRect>,
     ) -> Self {
         self.leading_reserved_bounds = leading;
         self.trailing_reserved_bounds = trailing;
+        self.after_tabs_bounds = after_tabs;
         self
     }
 
@@ -437,6 +447,13 @@ impl TabBarRecord {
     #[must_use]
     pub const fn trailing_reserved_bounds(&self) -> Option<LogicalRect> {
         self.trailing_reserved_bounds
+    }
+
+    /// Returns the full scrolling allocation after the final tab.
+    /// Renderers must clip this rectangle to [`Self::viewport`].
+    #[must_use]
+    pub const fn after_tabs_bounds(&self) -> Option<LogicalRect> {
+        self.after_tabs_bounds
     }
 
     /// Returns the exact whole-stack group gesture geometry, when available.

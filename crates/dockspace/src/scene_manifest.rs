@@ -352,7 +352,7 @@ impl TabIntrinsic {
     }
 }
 
-/// Requested adapter-owned extents before and after a tab strip.
+/// Adapter-owned fixed reservations and a scrolling slot after the final tab.
 ///
 /// Reservations may shrink in a narrow bar to preserve an operable tab. The
 /// leading request has priority over the trailing request. Renderers consume
@@ -361,6 +361,7 @@ impl TabIntrinsic {
 pub struct TabStripMetrics {
     leading_reserved: f64,
     trailing_reserved: f64,
+    after_tabs_width: f64,
     controls: Option<TabStripControlMetrics>,
     tab_list_menu: Option<TabListMenuMetrics>,
 }
@@ -380,6 +381,7 @@ impl TabStripMetrics {
         Ok(Self {
             leading_reserved,
             trailing_reserved,
+            after_tabs_width: 0.0,
             controls: None,
             tab_list_menu: None,
         })
@@ -397,6 +399,22 @@ impl TabStripMetrics {
     pub const fn with_tab_list_menu(mut self, metrics: TabListMenuMetrics) -> Self {
         self.tab_list_menu = Some(metrics);
         self
+    }
+
+    /// Adds application chrome after the final tab, inside the scrollable flow.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MeasurementValueError`] for a non-finite or negative width.
+    pub fn with_after_tabs_width(mut self, width: f64) -> Result<Self, MeasurementValueError> {
+        validate_non_negative("after-tabs width", width)?;
+        self.after_tabs_width = width;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub const fn after_tabs_width(self) -> f64 {
+        self.after_tabs_width
     }
 
     /// Returns chrome reserved before the first tab.

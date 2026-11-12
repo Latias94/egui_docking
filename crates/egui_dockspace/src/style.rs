@@ -7,9 +7,12 @@ use dockspace::runtime::{
 };
 use egui::{Color32, CornerRadius, Frame, Margin, Rgba, Stroke, Style as EguiStyle, Vec2, Visuals};
 
+mod frame;
+pub use frame::DockFrameVisuals;
+
 /// Optional visual overrides applied on top of the current egui theme.
 ///
-/// Every field defaults to `None`, so dockspace follows the [`egui::Visuals`]
+/// Every override defaults to unset, so dockspace follows the [`egui::Visuals`]
 /// active on the [`egui::Ui`] that paints it. Set only the colors that belong to
 /// an application-specific visual language; theme changes continue to affect
 /// every color left unspecified. Optional tab outlines default to no stroke.
@@ -33,10 +36,12 @@ pub struct DockVisualOverrides {
     pub tab_text_color: Option<Color32>,
     /// Text color of the selected tab.
     pub tab_active_text_color: Option<Color32>,
-    /// Underline color of the selected tab whose pane owns observed content focus.
+    /// Underline of the selected tab whose pane owns observed content focus.
     ///
-    /// Defaults to egui's selection stroke. A transparent color hides the cue.
-    pub pane_focus_color: Option<Color32>,
+    /// Defaults to two points in egui's selection color; `Stroke::NONE` hides it.
+    pub pane_focus_stroke: Option<Stroke>,
+    /// Keyboard-focus outline, independent of drag-and-drop colors.
+    pub tab_focus_stroke: Option<Stroke>,
     /// Fill of an idle splitter.
     pub splitter_color: Option<Color32>,
     /// Fill of a hovered, dragged, or keyboard-focused splitter.
@@ -53,12 +58,16 @@ pub struct DockVisualOverrides {
     pub drop_guide_border_color: Option<Color32>,
     /// Border and directional cue color of the exact active docking guide.
     pub drop_guide_active_border_color: Option<Color32>,
-    /// Fill of contained-floating surfaces and menus.
-    pub floating_fill: Option<Color32>,
+    /// Contained-floating frames, independent of popup menus.
+    pub floating: DockFrameVisuals,
+    /// Tab-list and presentation-menu frames.
+    pub popup: DockFrameVisuals,
     /// Fill of an inactive contained-floating title bar.
     pub floating_title_fill: Option<Color32>,
-    /// Border color of contained-floating surfaces and menus.
-    pub floating_border_color: Option<Color32>,
+    /// Fill of the frontmost contained-floating title bar.
+    pub floating_title_active_fill: Option<Color32>,
+    /// Text and grip color of contained-floating title bars.
+    pub floating_title_text_color: Option<Color32>,
     /// Translucent fill of a drag ghost.
     pub ghost_fill: Option<Color32>,
     /// Border color of a drag ghost.
@@ -74,7 +83,8 @@ pub(crate) struct ResolvedDockVisuals {
     pub(crate) tab_active_fill: Color32,
     pub(crate) tab_text_color: Color32,
     pub(crate) tab_active_text_color: Color32,
-    pub(crate) pane_focus_color: Color32,
+    pub(crate) pane_focus_stroke: Stroke,
+    pub(crate) tab_focus_stroke: Stroke,
     pub(crate) splitter_color: Color32,
     pub(crate) splitter_hover_color: Color32,
     pub(crate) drop_fill: Color32,
@@ -83,9 +93,8 @@ pub(crate) struct ResolvedDockVisuals {
     pub(crate) drop_guide_active_fill: Color32,
     pub(crate) drop_guide_border_color: Color32,
     pub(crate) drop_guide_active_border_color: Color32,
-    pub(crate) floating_fill: Color32,
+    pub(crate) popup_fill: Color32,
     pub(crate) floating_title_fill: Color32,
-    pub(crate) floating_border_color: Color32,
     pub(crate) ghost_fill: Color32,
     pub(crate) ghost_border_color: Color32,
 }
@@ -122,9 +131,10 @@ impl DockVisualOverrides {
                 .tab_active_text_color
                 .or(visuals.override_text_color)
                 .unwrap_or(visuals.widgets.active.fg_stroke.color),
-            pane_focus_color: self
-                .pane_focus_color
-                .unwrap_or(visuals.selection.stroke.color),
+            pane_focus_stroke: self
+                .pane_focus_stroke
+                .unwrap_or(Stroke::new(2.0, visuals.selection.stroke.color)),
+            tab_focus_stroke: self.tab_focus_stroke.unwrap_or(visuals.selection.stroke),
             splitter_color: self.splitter_color.unwrap_or(tab_bar_fill),
             splitter_hover_color: self
                 .splitter_hover_color
@@ -143,13 +153,10 @@ impl DockVisualOverrides {
             drop_guide_active_border_color: self
                 .drop_guide_active_border_color
                 .unwrap_or(visuals.selection.stroke.color),
-            floating_fill: self.floating_fill.unwrap_or_else(|| visuals.window_fill()),
+            popup_fill: self.popup.fill.unwrap_or_else(|| visuals.window_fill()),
             floating_title_fill: self
                 .floating_title_fill
                 .unwrap_or(visuals.widgets.noninteractive.bg_fill),
-            floating_border_color: self
-                .floating_border_color
-                .unwrap_or(visuals.window_stroke.color),
             ghost_fill: self.ghost_fill.unwrap_or_else(|| with_alpha(selection, 64)),
             ghost_border_color: self
                 .ghost_border_color
@@ -174,6 +181,26 @@ pub enum DockDensity {
     /// Follow egui button spacing and interaction height.
     #[default]
     Comfortable,
+}
+
+/// When to paint a tab's close icon. Its allocated hit target remains stable.
+/// Keyboard focus on the tab or close control always reveals the icon.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabCloseVisibility {
+    Always,
+    #[default]
+    SelectedOrHovered,
+    Hovered,
+}
+
+/// Presentation of the whole-group grip. The trailing empty bar remains draggable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabGroupGripVisibility {
+    #[default]
+    Always,
+    Hovered,
+    /// Reclaims the leading grip's space in core layout.
+    Hidden,
 }
 
 /// Configurable docking geometry, interaction timing and visual overrides.
@@ -204,6 +231,8 @@ pub struct DockStyle {
     pub tab_strip_edge_scroll_interval: Option<std::time::Duration>,
     /// Nominal square extent of the whole-tab-stack grip.
     pub tab_group_grip_extent: f32,
+    /// Changes grip painting; `Hidden` also removes its core allocation.
+    pub tab_group_grip_visibility: TabGroupGripVisibility,
     /// Horizontal padding on each side of tab content.
     pub tab_horizontal_padding: f32,
     /// Minimum width of a tab.
@@ -212,6 +241,10 @@ pub struct DockStyle {
     pub tab_max_width: f32,
     /// Width and height of a tab close control.
     pub tab_close_size: f32,
+    /// Positive visual cross size, clamped to the independent close hit target.
+    pub tab_close_icon_size: f32,
+    /// Controls icon painting without changing the tab's width or close target.
+    pub tab_close_visibility: TabCloseVisibility,
     /// Visible thickness of a splitter.
     pub splitter_thickness: f32,
     /// Total interaction thickness centered on a splitter.
@@ -288,6 +321,7 @@ impl DockStyle {
             floating_title_height: height,
             tab_group_grip_extent: if compact { font_height } else { height },
             tab_close_size: font_height,
+            tab_close_icon_size: font_height * 0.5,
             tab_horizontal_padding: padding,
             floating_border_width: ui.visuals().window_stroke.width,
             ..Self::default()
@@ -306,14 +340,7 @@ impl DockStyle {
     }
 
     pub(crate) fn resolved_popup_frame(&self, style: &EguiStyle) -> Frame {
-        let mut frame = Frame::popup(style);
-        if let Some(fill) = self.visuals.floating_fill {
-            frame.fill = fill;
-        }
-        if let Some(color) = self.visuals.floating_border_color {
-            frame.stroke.color = color;
-        }
-        frame
+        self.visuals.popup.apply(Frame::popup(style))
     }
 
     pub(crate) fn resolved_contained_window(
@@ -321,28 +348,25 @@ impl DockStyle {
         style: &EguiStyle,
         active: bool,
     ) -> ResolvedContainedWindowVisuals {
-        let mut frame = Frame::window(style);
+        let mut frame = self.visuals.floating.apply(Frame::window(style));
         let title_margin = frame.inner_margin;
         frame.inner_margin = Margin::ZERO;
         frame.outer_margin = Margin::ZERO;
         frame.stroke.width = self.floating_border_width;
-        if let Some(fill) = self.visuals.floating_fill {
-            frame.fill = fill;
-        }
-        if let Some(color) = self.visuals.floating_border_color {
-            frame.stroke.color = color;
-        }
-        let title_fill = self.visuals.floating_title_fill.unwrap_or({
-            if active {
-                style.visuals.widgets.open.weak_bg_fill
-            } else {
-                frame.fill
-            }
-        });
+        let title_fill = if active {
+            self.visuals
+                .floating_title_active_fill
+                .unwrap_or(style.visuals.widgets.open.weak_bg_fill)
+        } else {
+            self.visuals.floating_title_fill.unwrap_or(frame.fill)
+        };
         ResolvedContainedWindowVisuals {
             frame,
             title_fill,
-            title_text_color: style.visuals.widgets.noninteractive.fg_stroke.color,
+            title_text_color: self
+                .visuals
+                .floating_title_text_color
+                .unwrap_or(style.visuals.widgets.noninteractive.fg_stroke.color),
             title_margin,
         }
     }
@@ -395,7 +419,13 @@ impl DockStyle {
             .tab_bar_height(f64::from(self.tab_bar_height))
             .tab_strip_edge_scroll_band(f64::from(self.tab_strip_edge_scroll_band))
             .tab_strip_edge_scroll_interval(self.tab_strip_edge_scroll_interval)
-            .tab_group_grip_extent(f64::from(self.tab_group_grip_extent))
+            .tab_group_grip_extent(
+                if self.tab_group_grip_visibility == TabGroupGripVisibility::Hidden {
+                    0.0
+                } else {
+                    f64::from(self.tab_group_grip_extent)
+                },
+            )
             .tab_horizontal_padding(f64::from(self.tab_horizontal_padding))
             .tab_min_width(f64::from(self.tab_min_width))
             .tab_max_width(f64::from(self.tab_max_width))
@@ -436,6 +466,8 @@ impl DockStyle {
         for (field, stroke) in [
             ("tab_stroke.width", self.visuals.tab_stroke),
             ("tab_active_stroke.width", self.visuals.tab_active_stroke),
+            ("tab_focus_stroke.width", self.visuals.tab_focus_stroke),
+            ("pane_focus_stroke.width", self.visuals.pane_focus_stroke),
         ] {
             if let Some(stroke) = stroke {
                 require_non_negative(field, stroke.width)?;
@@ -443,10 +475,10 @@ impl DockStyle {
         }
         for (field, value) in [
             ("tab_bar_height", self.tab_bar_height),
-            ("tab_group_grip_extent", self.tab_group_grip_extent),
             ("tab_min_width", self.tab_min_width),
             ("tab_max_width", self.tab_max_width),
             ("tab_close_size", self.tab_close_size),
+            ("tab_close_icon_size", self.tab_close_icon_size),
             ("splitter_thickness", self.splitter_thickness),
             ("splitter_hit_extent", self.splitter_hit_extent),
             ("splitter_keyboard_step", self.splitter_keyboard_step),
@@ -459,6 +491,7 @@ impl DockStyle {
         }
 
         for (field, value) in [
+            ("tab_group_grip_extent", self.tab_group_grip_extent),
             ("tab_horizontal_padding", self.tab_horizontal_padding),
             (
                 "tab_strip_edge_scroll_band",
@@ -507,7 +540,9 @@ impl DockStyle {
                 container: "tab_bar_height",
             });
         }
-        if self.tab_group_grip_extent > self.tab_bar_height {
+        if self.tab_group_grip_visibility != TabGroupGripVisibility::Hidden
+            && self.tab_group_grip_extent > self.tab_bar_height
+        {
             return Err(DockStyleError::ExtentExceedsContainer {
                 extent: "tab_group_grip_extent",
                 container: "tab_bar_height",
@@ -549,10 +584,13 @@ impl Default for DockStyle {
             tab_strip_edge_scroll_band: geometry.tab_strip_edge_scroll_band() as f32,
             tab_strip_edge_scroll_interval: geometry.tab_strip_edge_scroll_interval(),
             tab_group_grip_extent: geometry.tab_group_grip_extent() as f32,
+            tab_group_grip_visibility: TabGroupGripVisibility::Always,
             tab_horizontal_padding: geometry.tab_horizontal_padding() as f32,
             tab_min_width: geometry.tab_min_width() as f32,
             tab_max_width: geometry.tab_max_width() as f32,
             tab_close_size: geometry.tab_close_extent() as f32,
+            tab_close_icon_size: 8.0,
+            tab_close_visibility: TabCloseVisibility::default(),
             splitter_thickness: geometry.splitter_thickness() as f32,
             splitter_hit_extent: geometry.splitter_hit_extent() as f32,
             splitter_keyboard_step: geometry.splitter_keyboard_step() as f32,
@@ -880,7 +918,7 @@ mod tests {
         assert_eq!(resolved.tab_active_fill, egui_visuals.panel_fill);
         assert_eq!(resolved.tab_fill, Color32::TRANSPARENT);
         assert_eq!(resolved.tab_bar_fill, egui_visuals.extreme_bg_color);
-        assert_eq!(resolved.floating_fill, egui_visuals.window_fill());
+        assert_eq!(resolved.popup_fill, egui_visuals.window_fill());
         assert_eq!(
             resolved.drop_guide_active_fill,
             egui_visuals.selection.bg_fill
@@ -926,6 +964,31 @@ mod tests {
             active.title_fill,
             egui_style.visuals.widgets.open.weak_bg_fill
         );
+    }
+
+    #[test]
+    fn local_window_and_popup_overrides_do_not_leak_into_each_other() {
+        let theme = EguiStyle::default();
+        let mut style = DockStyle::default();
+        style.visuals.floating.fill = Some(Color32::RED);
+        style.visuals.floating.corner_radius = Some(CornerRadius::same(9));
+        style.visuals.popup.fill = Some(Color32::BLUE);
+        style.visuals.popup.corner_radius = Some(CornerRadius::same(3));
+        style.visuals.floating_title_fill = Some(Color32::YELLOW);
+        style.visuals.floating_title_active_fill = Some(Color32::GREEN);
+        style.visuals.floating_title_text_color = Some(Color32::BLACK);
+        let inactive = style.resolved_contained_window(&theme, false);
+        let active = style.resolved_contained_window(&theme, true);
+        let popup = style.resolved_popup_frame(&theme);
+        assert_eq!(inactive.frame.fill, Color32::RED);
+        assert_eq!(inactive.frame.corner_radius, CornerRadius::same(9));
+        assert_eq!(inactive.frame.shadow, theme.visuals.window_shadow);
+        assert_eq!(inactive.title_fill, Color32::YELLOW);
+        assert_eq!(active.title_fill, Color32::GREEN);
+        assert_eq!(active.title_text_color, Color32::BLACK);
+        assert_eq!(popup.fill, Color32::BLUE);
+        assert_eq!(popup.corner_radius, CornerRadius::same(3));
+        assert_eq!(popup.stroke, Frame::popup(&theme).stroke);
     }
 
     #[test]

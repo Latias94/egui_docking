@@ -245,6 +245,7 @@ fn resolve_measurement(
                 f64::from(layout.leading_width),
                 f64::from(layout.trailing_width),
             )
+            .and_then(|metrics| metrics.with_after_tabs_width(f64::from(layout.after_tabs_width)))
             .map_err(|_| DockspaceErrorSource::InvalidMeasurement { what: "tab strip" })?;
             if visibility == TabBarVisibility::Visible {
                 let extent = f64::from(style.tab_bar_height);

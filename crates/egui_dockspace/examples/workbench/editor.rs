@@ -6,9 +6,9 @@ use egui::{Color32, Context, FontId, Frame, Margin, TextStyle, Theme, Vec2};
 use egui_dockspace::{
     CloseDecision, CloseItemDecisionState, DockStyle, Dockspace, DockspaceAxis,
     DockspaceContainedLayout, DockspaceError, DockspaceLayout, DockspaceNode, DockspaceOutput,
-    DockspaceResponse, DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId,
-    LogicalRect, PaneResponse, PaneView, RootId, SurfaceId, Tab, TabBar, TabBarId, TabBarLayout,
-    TabBarSlot,
+    DockspaceResponse, DockspaceRootLayout, DockspaceSurfaceLayout, DragPreview,
+    FloatingPresentationId, ItemId, LogicalRect, PaneResponse, PaneView, RootId, SurfaceId, Tab,
+    TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose, TabVisuals,
 };
 
 mod tabs;
@@ -241,8 +241,16 @@ impl PaneView for DemoPanes {
         title.size().x + if self.custom_tabs { 18.0 } else { 0.0 }
     }
 
-    fn tab_ui(&mut self, ui: &mut egui::Ui, tab: &Tab<'_>) {
-        tabs::tab_ui(self, ui, tab);
+    fn tab_ui(&mut self, ui: &mut egui::Ui, tab: &Tab<'_>) -> TabVisuals {
+        tabs::tab_ui(self, ui, tab)
+    }
+
+    fn tab_close_ui(&mut self, ui: &egui::Ui, close: &TabClose<'_>) {
+        tabs::tab_close_ui(self, ui, close);
+    }
+
+    fn drag_preview_ui(&mut self, ui: &egui::Ui, preview: &DragPreview) {
+        tabs::drag_preview_ui(self, ui, preview);
     }
 
     fn tab_bar_layout(&self, _bar: TabBarId, _ui: &egui::Ui) -> TabBarLayout {
@@ -250,6 +258,7 @@ impl PaneView for DemoPanes {
             TabBarLayout {
                 leading_width: 24.0,
                 trailing_width: 44.0,
+                after_tabs_width: 24.0,
             }
         } else {
             TabBarLayout::default()

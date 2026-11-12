@@ -1,6 +1,5 @@
 //! Pane and tab rendering over opaque product paint records.
 
-use dockspace::model::ItemId;
 use dockspace::runtime::{
     DockspaceVisualId, PanePaintRecord, SurfacePaintDisposition, SurfaceTabNavigation,
     TabGroupDragRegionKind, TabPaintRecord,
@@ -11,7 +10,7 @@ use egui::{
     UiBuilder, pos2,
 };
 
-use super::actions::{button_activation_origin, effective_enabled};
+use super::actions::effective_enabled;
 use super::geometry::{accesskit_bounds, egui_rect, inset_ui_rect};
 use super::measurement::TabPaintResource;
 use super::{ProductReceiverBinding, RenderContext};
@@ -248,6 +247,8 @@ fn paint_group_drag_regions(
     bar: dockspace::runtime::TabBarPaintRecord<'_>,
     paint: SurfacePaintDisposition,
 ) {
+    let bar_hovered =
+        egui_rect(bar.bounds()).is_some_and(|rect| context.ui.rect_contains_pointer(rect));
     for region in bar.group_drag_regions() {
         let Some(bounds) = egui_rect(region.bounds()) else {
             continue;
@@ -287,7 +288,12 @@ fn paint_group_drag_regions(
         }
         if region.kind() == TabGroupDragRegionKind::LeadingGrip {
             let paint_omitted = paint.is_source_gap();
-            if !paint_omitted && enabled {
+            if !paint_omitted
+                && enabled
+                && (context.style.tab_group_grip_visibility
+                    == crate::TabGroupGripVisibility::Always
+                    || bar_hovered)
+            {
                 paint_group_grip_icon(
                     context.ui,
                     bounds,
@@ -367,28 +373,37 @@ pub(crate) fn paint_tab(
     }
     let selected = tab.selected();
     let focused = response.has_focus();
-    if !source_gap {
-        super::tab_customization::paint_tab(context, tab, resource, &response);
-        if selected
-            && operable
-            && context.plan.focused_pane() == Some(tab.item())
-            && context.ui.input(|input| input.focused)
-            && context.visuals.pane_focus_color.a() > 0
+    let pane_focused = selected
+        && operable
+        && context.plan.focused_pane() == Some(tab.item())
+        && context.ui.input(|input| input.focused);
+    let visuals = (!source_gap).then(|| {
+        super::tab_customization::paint_tab(context, tab, resource, &response, pane_focused)
+    });
+    if let Some(visuals) = visuals {
+        if pane_focused
+            && visuals.pane_focus_stroke.width > 0.0
+            && visuals.pane_focus_stroke.color.a() > 0
         {
             let underline = egui::Rect::from_min_max(
-                pos2(visible.left(), (visible.bottom() - 2.0).max(visible.top())),
+                pos2(
+                    visible.left(),
+                    (visible.bottom() - visuals.pane_focus_stroke.width).max(visible.top()),
+                ),
                 visible.right_bottom(),
             );
             context
                 .ui
                 .painter()
-                .rect_filled(underline, 0.0, context.visuals.pane_focus_color);
+                .rect_filled(underline, 0.0, visuals.pane_focus_stroke.color);
         }
         if focused {
-            context.ui.painter().rect_stroke(
-                visible.shrink(1.0),
-                0.0,
-                Stroke::new(1.0, context.visuals.drop_border_color),
+            context.ui.painter_at(visible).rect_stroke(
+                egui_rect(tab.full_bounds())
+                    .unwrap_or(visible)
+                    .shrink(visuals.focus_stroke.width),
+                visuals.corner_radius,
+                visuals.focus_stroke,
                 StrokeKind::Inside,
             );
         }
@@ -404,7 +419,8 @@ pub(crate) fn paint_tab(
     #[cfg(feature = "native-render-support")]
     publish_native_tab_bounds_diagnostic(context.ui, id, visible, resource.title.as_str());
     if operable {
-        capture_tab_actions(context, tab, resource, &response, focused, !source_gap);
+        capture_tab_actions(context, tab, &response, focused);
+        super::tab_close::paint(context, tab, resource, &response, visuals);
     }
 }
 
@@ -432,10 +448,8 @@ fn tab_id_for_visual(ui: &Ui, instance_id: Id, visual: DockspaceVisualId) -> Id 
 fn capture_tab_actions(
     context: &mut RenderContext<'_, '_, '_>,
     tab: TabPaintRecord<'_>,
-    resource: &TabPaintResource,
     response: &egui::Response,
     focused: bool,
-    paint_close_icon: bool,
 ) {
     let id = response.id;
     let keyboard_activation = focused
@@ -510,80 +524,6 @@ fn capture_tab_actions(
             }
             context.push_local_action(id.with(("keyboard-navigation", key)), action);
         }
-    }
-    if let Some(close_bounds) = tab.close_bounds().and_then(egui_rect) {
-        paint_close(
-            context,
-            tab.item(),
-            close_bounds,
-            resource.title.as_str(),
-            tab.selected() || response.hovered() || response.has_focus(),
-            context.plan.receiver_for_tab_close(tab),
-            paint_close_icon,
-        );
-    }
-}
-
-fn paint_close(
-    context: &mut RenderContext<'_, '_, '_>,
-    item: ItemId,
-    rect: egui::Rect,
-    title: &str,
-    tab_emphasized: bool,
-    receiver: Option<dockspace::runtime::DockspaceReceiverDescriptor>,
-    paint_icon: bool,
-) {
-    let id = context
-        .ui
-        .make_persistent_id((context.instance_id, "tab-close", item));
-    let enabled = effective_enabled(context.ui, receiver.is_some());
-    let response = context.interact_receiver(
-        rect,
-        id,
-        if enabled {
-            Sense::click()
-        } else {
-            Sense::hover()
-        },
-        enabled.then_some(receiver).flatten(),
-    );
-    let response = response.on_hover_text(format!("Close {title}"));
-    let visuals = *context.ui.style().interact(&response);
-    if paint_icon && (tab_emphasized || RenderContext::response_emphasized(&response)) {
-        let paint_rect = rect.expand(visuals.expansion);
-        let inset = paint_rect.width().min(paint_rect.height()) * 0.28;
-        let stroke = context.interaction_stroke(&response, context.style.visuals.tab_text_color);
-        context.ui.painter().line_segment(
-            [
-                paint_rect.left_top() + egui::vec2(inset, inset),
-                paint_rect.right_bottom() - egui::vec2(inset, inset),
-            ],
-            stroke,
-        );
-        context.ui.painter().line_segment(
-            [
-                paint_rect.right_top() + egui::vec2(-inset, inset),
-                paint_rect.left_bottom() + egui::vec2(inset, -inset),
-            ],
-            stroke,
-        );
-    }
-    context.ui.ctx().accesskit_node_builder(id, |node| {
-        node.set_role(Role::Button);
-        node.set_bounds(accesskit_bounds(rect));
-        node.set_label(format!("Close {title}"));
-        if enabled {
-            node.add_action(Action::Click);
-        } else {
-            node.set_disabled();
-        }
-    });
-    if enabled
-        && let Some(origin) =
-            button_activation_origin(context.ui, &response, context.pointer_authority)
-        && let Some(action) = context.plan.prepare_tab_close(item)
-    {
-        context.push_local_action(origin, action);
     }
 }
 

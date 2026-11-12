@@ -353,19 +353,33 @@ and drag-preview text even when the visible tab is custom.
   unclipped allocation, visible clip, content rect and resolved `TabVisuals`.
   Call `tab.paint(ui)` for defaults, or paint the background and title separately.
   `tab.paint_title(ui, rect)` elides and clips the title to a content subrect.
+  Return the final `TabVisuals`: built-in focus cues inherit its corners and
+  strokes; `close_color` can coordinate the close icon with a custom fill.
+  Its default retains egui's independent interaction colors. `tab.pane_focused` reports
+  observed content focus separately from tab selection and keyboard focus.
+- `tab_close_ui(ui, close)` paints the close icon. Its response, hit target,
+  keyboard actions, accessibility and close request remain adapter-owned.
 - `tab_bar_layout(bar_id, ui)` reserves fixed leading/trailing widths outside
-  the scrollable strip. `tab_bar_ui(ui, bar, slot)` draws into each actual
-  positive allocation. `bar.items()` includes every group member in tab order.
+  the scrollable strip, plus an optional `after_tabs_width` inside it.
+  `tab_bar_ui(ui, bar, slot)` draws into each visible allocation.
+  `bar.items()` includes every group member in tab order.
+- `drag_preview_ui(ui, preview)` paints the non-interactive drag ghost. Reuse
+  its background/title helpers to add the same icons or badges as the tabs.
+  The callback is skipped when core projects the actual floating source.
 
 For example, customize one item's background without copying the renderer:
 
 ```rust
-fn tab_ui(&mut self, ui: &mut egui::Ui, tab: &egui_dockspace::Tab<'_>) {
+fn tab_ui(
+    &mut self,
+    ui: &mut egui::Ui,
+    tab: &egui_dockspace::Tab<'_>,
+) -> egui_dockspace::TabVisuals {
     let mut appearance = tab.clone();
     if self.needs_attention(tab.item) {
         appearance.visuals.fill = egui::Color32::from_rgb(120, 75, 25);
     }
-    appearance.paint(ui);
+    appearance.paint(ui)
 }
 ```
 
@@ -376,23 +390,54 @@ close requests, dragging, keyboard navigation, focus cues and accessibility.
 Missing panes use the built-in fallback, and dragged source gaps skip custom
 tab/slot callbacks. Disabled groups pass disabled Uis to application callbacks.
 
-Slots stay fixed while tabs scroll. Core prioritizes the leading slot and may
-shrink or omit either slot in a narrow group to preserve an operable tab. Use
+`Leading` and `Trailing` stay fixed while tabs scroll. Core prioritizes the
+leading slot and may shrink or omit either fixed slot in a narrow group to
+preserve an operable tab. `AfterTabs` follows the last tab and contributes to
+scrolling width, like a browser's add button. It keeps its requested width;
+the supplied clip determines its visible and interactive portion. Use
 the supplied Ui's actual width and clip rather than the requested width. The
 callbacks render synchronously into the supplied Ui; queue workspace edits in
 application state and apply them after the docking call returns.
 `Box<dyn PaneView>` forwards every callback. Native windows share
 the same implementation and `PaneView` interface.
 
+`DockStyle::tab_close_visibility` supports always-visible, selected-or-hovered,
+and hover-only icons. Keyboard focus reveals the icon in every mode. The icon
+size (`tab_close_icon_size`) is independent of the hit target (`tab_close_size`),
+so reducing visual weight does not shrink the clickable area or move the title.
+Use the close painting callback for custom shapes or per-item colors.
+
+`tab_group_grip_visibility` supports `Always`, `Hovered` (when the bar is
+hovered), and `Hidden`. Hidden grips reclaim their layout space. Unoccupied
+space after tabs and application chrome still drags the group; a full or
+overflowing bar may have no such space, so retain the grip when that gesture
+must always be discoverable.
+
+Floating windows and popup menus have independent `DockFrameVisuals` overrides:
+
+```rust
+style.visuals.floating.corner_radius = Some(egui::CornerRadius::same(8));
+style.visuals.floating.fill = Some(egui::Color32::from_gray(35));
+style.visuals.popup.corner_radius = Some(egui::CornerRadius::same(4));
+```
+
+Each recipe supports fill, border color, corners and shadow; unspecified values
+follow the local egui theme. Floating title bars also expose active/inactive
+fills and text color. Frame overrides leave core-owned margins and hit regions
+under the existing geometry settings.
+
 The workbench's **Custom tabs** toggle demonstrates title icons, rounded
-backgrounds, group counts and a fixed **Tint** button. Its
+backgrounds, coordinated drag previews, close-button hover feedback, group
+counts, a fixed **Tint** button and a scrolling help button. Its
 [tab customization module](../examples/workbench/tabs.rs) is separate
 from the host and pane-content code.
 
 A selected tab gains a two-point underline when its pane owns observed content
 focus. This is distinct from selection and the outline around a keyboard-focused
 tab. The cue uses egui's selection stroke color; override
-`style.visuals.pane_focus_color`, or set it to `Color32::TRANSPARENT` to hide it.
+`style.visuals.pane_focus_stroke`, or set it to `Stroke::NONE` to hide it.
+The stroke width controls underline thickness. `tab_focus_stroke` independently
+controls the keyboard-focus outline and follows each tab's final corner radius.
 Expose `PaneView::focus_target` (or an authoritative composite `focus_state`) so
 the existing host-focus sampling can identify the pane. Selection, a pending
 focus request, and the frontmost floating window alone do not produce the cue.

@@ -163,6 +163,8 @@ proptest! {
         intrinsic in 0_u16..1024,
         reservation in 0_u16..1024,
         trailing_reservation in 0_u16..1024,
+        after_tabs in 0_u16..1024,
+        hide_grip in any::<bool>(),
         hidden in any::<bool>(),
         locked in any::<bool>(),
     ) {
@@ -172,16 +174,99 @@ proptest! {
         if hidden { policy.set_tab_bar(TabBarPolicy::new(TabBarVisibility::Hidden, TabBarInteraction::Disabled)); }
         let policy = policy.snapshot(PolicyRevision::new(1));
         let config = DockPresentationConfig::builder()
+            .tab_group_grip_extent(if hide_grip { 0.0 } else { 28.0 })
             .tab_min_width(f64::from(tab_width))
             .tab_max_width(f64::from(tab_width) + 32.0)
             .build().unwrap();
         let bounds = LogicalRect::new(f64::from(x)*scale, f64::from(y)*scale,
             f64::from(width)*scale, f64::from(height)*scale).unwrap();
         let (manifest, measurements) = inputs(&workspace, &policy, bounds,
-            TabStripMetrics::new(f64::from(reservation), f64::from(trailing_reservation)).unwrap(),
+            TabStripMetrics::new(f64::from(reservation), f64::from(trailing_reservation)).unwrap()
+                .with_after_tabs_width(f64::from(after_tabs)).unwrap(),
             f64::from(minimum), f64::from(intrinsic));
         compare(&workspace, &policy, &config, &manifest, &measurements, None);
     }
+}
+
+#[test]
+fn gripless_bar_keeps_background_dragging_outside_application_chrome() {
+    let workspace = workspace(false, false);
+    let policy = DockPolicy::default().snapshot(PolicyRevision::new(1));
+    let config = DockPresentationConfig::builder()
+        .tab_group_grip_extent(0.0)
+        .build()
+        .unwrap();
+    let strip = TabStripMetrics::new(20.0, 40.0)
+        .unwrap()
+        .with_after_tabs_width(32.0)
+        .unwrap();
+    let (manifest, measurements) = inputs(
+        &workspace,
+        &policy,
+        LogicalRect::new(0.0, 0.0, 800.0, 500.0).unwrap(),
+        strip,
+        0.0,
+        60.0,
+    );
+    let plan = compare(&workspace, &policy, &config, &manifest, &measurements, None)
+        .unwrap()
+        .unwrap();
+    let bar = &plan.tab_bar_records()[0];
+    let after_tabs = bar.after_tabs_bounds().unwrap();
+    assert!(bar.group_grip_bounds().is_none());
+    assert_eq!(bar.leading_reserved_bounds().unwrap().x(), bar.bounds().x());
+    assert_eq!(
+        after_tabs.x(),
+        bar.members().last().unwrap().full_bounds().max().x()
+    );
+    assert_eq!(after_tabs.width(), 32.0);
+    let group = bar.group_drag().unwrap();
+    assert!(group.leading_grip().is_none());
+    assert_eq!(group.regions().count(), 1);
+    let trailing = group.trailing_empty().unwrap().bounds();
+    assert_eq!(trailing.x(), after_tabs.max().x());
+    assert_eq!(trailing.max().x(), bar.viewport().max().x());
+}
+
+#[test]
+fn scrolling_application_slot_contributes_to_overflow_without_squeezing_tab_targets() {
+    let workspace = workspace(false, false);
+    let policy = DockPolicy::default().snapshot(PolicyRevision::new(1));
+    let config = DockPresentationConfig::builder()
+        .tab_group_grip_extent(0.0)
+        .build()
+        .unwrap();
+    let strip = TabStripMetrics::new(0.0, 0.0)
+        .unwrap()
+        .with_after_tabs_width(96.0)
+        .unwrap();
+    let (manifest, measurements) = inputs(
+        &workspace,
+        &policy,
+        LogicalRect::new(0.0, 0.0, 180.0, 500.0).unwrap(),
+        strip,
+        0.0,
+        60.0,
+    );
+    let plan = compare(&workspace, &policy, &config, &manifest, &measurements, None)
+        .unwrap()
+        .unwrap();
+    let bar = &plan.tab_bar_records()[0];
+    let total = bar
+        .members()
+        .iter()
+        .map(|tab| tab.full_bounds().width())
+        .sum::<f64>()
+        + 96.0;
+    assert!(
+        bar.members()
+            .iter()
+            .all(|tab| tab.full_bounds().width() >= config.tab_min_width())
+    );
+    assert_eq!(bar.maximum_scroll_offset(), total - bar.viewport().width());
+    assert!(bar.maximum_scroll_offset() > 0.0);
+    assert_eq!(bar.after_tabs_bounds().unwrap().width(), 96.0);
+    assert!(bar.group_drag().is_none());
 }
 
 #[test]

@@ -884,7 +884,7 @@ fn tab_group_drag_regions_are_exact_disjoint_leading_and_trailing_space() {
     let group = bar
         .group_drag()
         .expect("an interactive non-empty bar has group regions");
-    let leading = group.leading_grip();
+    let leading = group.leading_grip().unwrap();
     let trailing = group
         .trailing_empty()
         .expect("unused trailing strip space remains");
@@ -954,7 +954,7 @@ fn overflowing_tab_bar_omits_trailing_empty_group_region() {
     assert!(group.trailing_empty().is_none());
     assert_eq!(group.regions().count(), 1);
     assert_eq!(
-        group.leading_grip().kind(),
+        group.leading_grip().unwrap().kind(),
         TabGroupDragRegionKind::LeadingGrip
     );
 }

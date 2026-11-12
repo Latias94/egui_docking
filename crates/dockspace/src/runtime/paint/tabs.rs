@@ -317,6 +317,13 @@ impl<'plan> TabBarPaintRecord<'plan> {
         self.record.trailing_reserved_bounds()
     }
 
+    /// Returns application chrome scrolling immediately after the last tab.
+    /// Clip painting and widget hits to [`Self::viewport`].
+    #[must_use]
+    pub const fn after_tabs_bounds(self) -> Option<LogicalRect> {
+        self.record.after_tabs_bounds()
+    }
+
     /// Iterates every exact whole-group drag region in stable visual order.
     pub fn group_drag_regions(self) -> impl Iterator<Item = TabGroupDragRegionPaintRecord> + 'plan {
         let bar = *self.record.id();

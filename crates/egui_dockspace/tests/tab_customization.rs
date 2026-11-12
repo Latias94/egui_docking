@@ -5,14 +5,23 @@ use egui::accesskit::Role;
 use egui::{Color32, Context, Event, FullOutput, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{
     DockStyle, Dockspace, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, ItemId, PaneResponse, PaneView, RootId, SurfaceId,
-    SurfacePresentationResult, Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot,
+    DockspaceSurfaceLayout, DragPreview, ItemId, PaneResponse, PaneView, RootId, SurfaceId,
+    SurfacePresentationResult, Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose,
+    TabCloseVisibility, TabVisuals,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 const CUSTOM_FILL: Color32 = Color32::from_rgb(22, 140, 120);
+const PREVIEW_FILL: Color32 = Color32::from_rgb(151, 61, 123);
+
+struct CloseSnapshot {
+    item: ItemId,
+    rect: Rect,
+    icon: Rect,
+    color: Color32,
+}
 
 #[derive(Clone)]
 struct TabSnapshot {
@@ -45,6 +54,11 @@ struct Panes {
     slot_clicks: usize,
     slot_menu: bool,
     missing: bool,
+    custom_visuals: bool,
+    closes: Vec<CloseSnapshot>,
+    after_button: Option<Rect>,
+    after_clicks: usize,
+    previews: Vec<Rect>,
 }
 
 impl Default for Panes {
@@ -54,6 +68,7 @@ impl Default for Panes {
             layout: TabBarLayout {
                 leading_width: 36.0,
                 trailing_width: 64.0,
+                ..Default::default()
             },
             tabs: Vec::new(),
             slots: Vec::new(),
@@ -63,6 +78,11 @@ impl Default for Panes {
             slot_clicks: 0,
             slot_menu: false,
             missing: false,
+            custom_visuals: false,
+            closes: Vec::new(),
+            after_button: None,
+            after_clicks: 0,
+            previews: Vec::new(),
         }
     }
 }
@@ -80,7 +100,7 @@ impl PaneView for Panes {
         title.size().x + self.extra_width
     }
 
-    fn tab_ui(&mut self, ui: &mut Ui, tab: &Tab<'_>) {
+    fn tab_ui(&mut self, ui: &mut Ui, tab: &Tab<'_>) -> TabVisuals {
         self.tabs.push(TabSnapshot {
             item: tab.item,
             bar: tab.bar,
@@ -91,6 +111,12 @@ impl PaneView for Panes {
         });
         let mut custom = tab.clone();
         custom.visuals.fill = CUSTOM_FILL;
+        if self.custom_visuals {
+            custom.visuals.corner_radius = egui::CornerRadius::same(9);
+            custom.visuals.focus_stroke = egui::Stroke::new(3.0, Color32::MAGENTA);
+            custom.visuals.text_color_override = Some(Color32::WHITE);
+            custom.visuals.close_color = Some(Color32::WHITE);
+        }
         custom.paint_background(ui.painter());
         let button = Rect::from_min_max(
             egui::pos2(tab.content_rect.right() - 24.0, tab.content_rect.top()),
@@ -103,6 +129,26 @@ impl PaneView for Panes {
             self.tab_button = Some(response.rect);
             self.tab_clicks += usize::from(response.clicked());
         }
+        custom.visuals
+    }
+
+    fn tab_close_ui(&mut self, ui: &Ui, close: &TabClose<'_>) {
+        assert!(close.rect.contains_rect(ui.clip_rect()));
+        self.closes.push(CloseSnapshot {
+            item: close.item,
+            rect: close.rect,
+            icon: close.icon_rect,
+            color: close.stroke.color,
+        });
+        close.paint(ui);
+    }
+
+    fn drag_preview_ui(&mut self, ui: &Ui, preview: &DragPreview) {
+        assert!(preview.rect.contains_rect(ui.clip_rect()));
+        self.previews.push(preview.rect);
+        let mut preview = preview.clone();
+        preview.fill = PREVIEW_FILL;
+        preview.paint(ui);
     }
 
     fn tab_bar_layout(&self, _bar: TabBarId, _ui: &Ui) -> TabBarLayout {
@@ -127,6 +173,10 @@ impl PaneView for Panes {
             };
             self.slot_button = Some(response.rect);
             self.slot_clicks += usize::from(response.clicked());
+        } else if slot == TabBarSlot::AfterTabs {
+            let response = ui.button("+");
+            self.after_button = Some(response.rect.intersect(ui.clip_rect()));
+            self.after_clicks += usize::from(response.clicked());
         } else {
             ui.label("2");
         }
@@ -172,6 +222,9 @@ impl Harness {
     fn run(&mut self, events: Vec<Event>) -> FullOutput {
         self.panes.tabs.clear();
         self.panes.slots.clear();
+        self.panes.closes.clear();
+        self.panes.after_button = None;
+        self.panes.previews.clear();
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, 400.0))),
             time: Some(self.context.input(|input| input.time) + 0.1),
@@ -221,6 +274,225 @@ impl Harness {
     fn tab(&self, item: ItemId) -> &TabSnapshot {
         self.panes.tabs.iter().find(|tab| tab.item == item).unwrap()
     }
+
+    fn accesskit_action(&mut self, label: &str, action: egui::accesskit::Action) {
+        let output = self.run(Vec::new());
+        let target = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find_map(|(id, node)| (node.label() == Some(label)).then_some(*id))
+            .unwrap();
+        self.run(vec![Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                action,
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: target,
+                data: None,
+            },
+        )])
+        .drop_without_applying_deltas();
+        self.settle();
+    }
+}
+
+#[test]
+fn returned_tab_visuals_coordinate_close_icons_and_rounded_keyboard_focus() {
+    let mut harness = Harness::new(DockPolicy::default());
+    harness.panes.custom_visuals = true;
+    let mut style = harness.dock.style().clone();
+    style.tab_close_visibility = TabCloseVisibility::Always;
+    style.tab_close_icon_size = 6.0;
+    harness.dock.set_style(style).unwrap();
+    harness.settle();
+    assert_eq!(harness.panes.closes.len(), 2);
+    for close in &harness.panes.closes {
+        assert_eq!(close.icon.size(), vec2(6.0, 6.0));
+        assert_eq!(close.color, Color32::WHITE);
+        assert!(close.rect.width() > close.icon.width());
+    }
+    harness.accesskit_action("First", egui::accesskit::Action::Focus);
+    let output = harness.run(Vec::new());
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Rect(rect) if rect.stroke == egui::Stroke::new(3.0, Color32::MAGENTA)
+            && rect.corner_radius == egui::CornerRadius::same(9)
+    )));
+    let close = harness
+        .panes
+        .closes
+        .iter()
+        .find(|close| close.item == FIRST)
+        .unwrap();
+    harness.click(close.rect.left_center() + vec2(1.0, 0.0));
+    assert_eq!(
+        harness.close_requests, 1,
+        "the full close target remains clickable outside the small icon"
+    );
+}
+
+#[test]
+fn hover_only_close_icons_keep_layout_stable_and_reveal_for_keyboard_focus() {
+    let mut harness = Harness::new(DockPolicy::default());
+    let mut style = harness.dock.style().clone();
+    style.tab_close_visibility = TabCloseVisibility::Hovered;
+    harness.dock.set_style(style).unwrap();
+    harness.settle();
+    let width = harness.tab(FIRST).rect.width();
+    assert!(harness.panes.closes.is_empty());
+    let point = harness.tab(FIRST).content.left_center() + vec2(2.0, 0.0);
+    harness
+        .run(vec![Event::PointerMoved(point)])
+        .drop_without_applying_deltas();
+    assert!(harness.panes.closes.iter().any(|close| close.item == FIRST));
+    assert_eq!(harness.tab(FIRST).rect.width(), width);
+    harness.accesskit_action("Second", egui::accesskit::Action::Focus);
+    assert!(
+        harness
+            .panes
+            .closes
+            .iter()
+            .any(|close| close.item == SECOND)
+    );
+}
+
+#[test]
+fn after_tabs_button_scrolls_with_tabs_and_keeps_its_own_input() {
+    let mut harness = Harness::new(DockPolicy::default());
+    harness.panes.layout.after_tabs_width = 40.0;
+    harness.settle();
+    let slot = harness
+        .panes
+        .slots
+        .iter()
+        .find(|slot| slot.slot == TabBarSlot::AfterTabs)
+        .unwrap();
+    assert_eq!(slot.rect.left(), harness.tab(SECOND).rect.right());
+    harness.width = 380.0;
+    let mut style = harness.dock.style().clone();
+    style.tab_min_width = 160.0;
+    style.tab_max_width = 160.0;
+    harness.dock.set_style(style).unwrap();
+    harness.settle();
+    let pinned = harness
+        .panes
+        .slots
+        .iter()
+        .filter(|slot| slot.slot != TabBarSlot::AfterTabs)
+        .cloned()
+        .collect::<Vec<_>>();
+    for _ in 0..8 {
+        if harness
+            .panes
+            .slots
+            .iter()
+            .any(|slot| slot.slot == TabBarSlot::AfterTabs && slot.clip.width() >= 40.0)
+        {
+            break;
+        }
+        harness.accesskit_action("Scroll tabs forward", egui::accesskit::Action::Click);
+    }
+    let slot = harness
+        .panes
+        .slots
+        .iter()
+        .find(|slot| slot.slot == TabBarSlot::AfterTabs)
+        .unwrap();
+    assert_eq!(slot.rect.left(), harness.tab(SECOND).rect.right());
+    assert_eq!(slot.clip.width(), 40.0);
+    for before in pinned {
+        let after = harness
+            .panes
+            .slots
+            .iter()
+            .find(|slot| slot.slot == before.slot)
+            .unwrap();
+        assert_eq!(after.rect, before.rect);
+    }
+    harness.click(harness.panes.after_button.unwrap().center());
+    assert_eq!(harness.panes.after_clicks, 1);
+    assert_eq!(harness.close_requests, 0);
+    assert!(harness.dock.view().item(FIRST).unwrap().is_selected());
+}
+
+#[test]
+fn application_drag_preview_paints_inside_the_core_owned_gesture() {
+    let mut harness = Harness::new(DockPolicy::default());
+    harness.settle();
+    let start = harness.tab(FIRST).content.left_center() + vec2(3.0, 0.0);
+    harness
+        .run(vec![
+            Event::PointerMoved(start),
+            Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ])
+        .drop_without_applying_deltas();
+    let target = start + vec2(40.0, 80.0);
+    harness
+        .run(vec![Event::PointerMoved(target)])
+        .drop_without_applying_deltas();
+    let output = harness.run(Vec::new());
+    assert!(!harness.panes.previews.is_empty());
+    assert!(
+        output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.fill == PREVIEW_FILL)
+        )
+    );
+    harness
+        .run(vec![Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }])
+        .drop_without_applying_deltas();
+    harness.settle();
+    assert!(harness.panes.previews.is_empty());
+    assert!(harness.dock.view().item(FIRST).is_some());
+    assert_eq!(harness.close_requests, 0);
+}
+
+#[test]
+fn hidden_grip_reclaims_space_and_background_still_starts_a_group_drag() {
+    let mut harness = Harness::new(DockPolicy::default());
+    harness.settle();
+    let original_left = harness.tab(FIRST).rect.left();
+    let mut style = harness.dock.style().clone();
+    let grip_width = style.tab_group_grip_extent;
+    style.tab_group_grip_visibility = egui_dockspace::TabGroupGripVisibility::Hidden;
+    style.tab_bar_height = 20.0;
+    harness.dock.set_style(style).unwrap();
+    harness.settle();
+    assert_eq!(original_left - harness.tab(FIRST).rect.left(), grip_width);
+    let start = harness.tab(SECOND).rect.right_center() + vec2(20.0, 0.0);
+    harness
+        .run(vec![
+            Event::PointerMoved(start),
+            Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ])
+        .drop_without_applying_deltas();
+    harness
+        .run(vec![Event::PointerMoved(start + vec2(30.0, 60.0))])
+        .drop_without_applying_deltas();
+    harness.run(Vec::new()).drop_without_applying_deltas();
+    assert!(
+        !harness.panes.previews.is_empty(),
+        "the trailing empty region still owns the group gesture"
+    );
+    harness
+        .run(vec![Event::PointerGone])
+        .drop_without_applying_deltas();
 }
 
 #[test]
@@ -335,6 +607,7 @@ fn oversubscribed_slots_shrink_without_overlapping_operable_tabs() {
     harness.panes.layout = TabBarLayout {
         leading_width: 5000.0,
         trailing_width: 5000.0,
+        ..Default::default()
     };
     harness.settle();
     assert!(!harness.panes.slots.is_empty());
@@ -360,6 +633,7 @@ fn disabled_and_hidden_bars_apply_to_application_chrome() {
         TabBarInteraction::Disabled,
     ));
     let mut harness = Harness::new(policy);
+    harness.panes.layout.after_tabs_width = 32.0;
     harness.settle();
     assert_eq!(harness.panes.tabs.len(), 2);
     assert!(harness.panes.tabs.iter().all(|tab| !tab.enabled));
@@ -384,6 +658,7 @@ fn unloaded_panes_use_default_missing_tabs_without_application_callbacks() {
     harness.settle();
     assert!(harness.panes.tabs.is_empty());
     let output = harness.run(Vec::new());
+    assert!(harness.panes.closes.is_empty());
     assert!(
         output
             .platform_output

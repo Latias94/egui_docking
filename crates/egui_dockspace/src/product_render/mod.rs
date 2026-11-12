@@ -16,6 +16,7 @@ mod measurement;
 mod presentation_menu;
 mod splitters;
 mod tab_chrome;
+mod tab_close;
 mod tab_customization;
 mod tabs;
 

@@ -93,11 +93,17 @@ The `basic` example lets you compare compact and comfortable density.
 
 Override `PaneView::tab_ui` for per-item backgrounds, icons, badges or buttons;
 `Tab::paint`, `paint_background` and `paint_title` retain the default rendering
-where useful. Reserve additional content width with `tab_content_width`.
-`tab_bar_layout` and `tab_bar_ui` add fixed leading/trailing controls without
-overlapping scrollable tabs. Selection, dragging, close controls and
-accessibility stay in the adapter. Enable **Custom tabs** in the workbench for a
+where useful. Return the final `TabVisuals` to coordinate built-in focus and
+close cues. Reserve additional content width with `tab_content_width`.
+`tab_bar_layout` and `tab_bar_ui` add fixed leading/trailing controls or a
+scrolling `AfterTabs` slot. `tab_close_ui` and `drag_preview_ui` customize the
+remaining decorations. Selection, dragging, close controls and accessibility
+stay in the adapter. Enable **Custom tabs** in the workbench for a
 [small working example](examples/workbench/tabs.rs).
+
+Close icon size and visibility are separate from its hit target. The group
+grip can be permanent, shown on bar hover, or hidden with its space reclaimed.
+Floating windows and popups accept independent frame appearance overrides.
 
 `DockPolicy` controls docking rules and close permissions. The
 [integration guide](docs/guide.md) covers these options and the output contract.

@@ -2661,7 +2661,7 @@ fn contained_title_drag_paints_a_full_window_preview_in_the_same_run() {
     let source_fill = egui::Color32::from_rgb(83, 59, 137);
     let ghost_fill = egui::Color32::from_rgba_unmultiplied(235, 157, 67, 96);
     let mut style = DockStyle::default();
-    style.visuals.floating_fill = Some(source_fill);
+    style.visuals.floating.fill = Some(source_fill);
     style.visuals.ghost_fill = Some(ghost_fill);
     let mut dockspace = Dockspace::builder("product-contained-drag-decoration", contained_layout())
         .style(style)

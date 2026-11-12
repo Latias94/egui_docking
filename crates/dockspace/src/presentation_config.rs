@@ -458,6 +458,7 @@ impl DockPresentationConfigBuilder {
     }
 
     /// Sets the nominal square extent of a whole-tab-stack grip.
+    /// Zero omits the leading grip while preserving trailing-space group dragging.
     #[must_use]
     pub const fn tab_group_grip_extent(mut self, value: f64) -> Self {
         self.tab_group_grip_extent = value;
@@ -671,7 +672,6 @@ impl DockPresentationConfigBuilder {
                 "tab_strip_scroll_line_extent",
                 self.tab_strip_scroll_line_extent,
             ),
-            ("tab_group_grip_extent", self.tab_group_grip_extent),
             ("tab_min_width", self.tab_min_width),
             ("tab_max_width", self.tab_max_width),
             ("tab_close_extent", self.tab_close_extent),
@@ -703,6 +703,7 @@ impl DockPresentationConfigBuilder {
             require_positive(field, value)?;
         }
         for (field, value) in [
+            ("tab_group_grip_extent", self.tab_group_grip_extent),
             ("tab_horizontal_padding", self.tab_horizontal_padding),
             (
                 "tab_strip_edge_scroll_band",

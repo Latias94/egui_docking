@@ -3,7 +3,8 @@
 use dockspace::model::ItemId;
 use egui::{Context, Id, Response, Ui, Vec2, WidgetText};
 
-use crate::tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot};
+use crate::DragPreview;
+use crate::tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose, TabVisuals};
 
 /// Ordinary application-content registrations produced by one pane callback.
 ///
@@ -125,22 +126,33 @@ pub trait PaneView {
     /// skipped for missing panes and a dragged source gap.
     /// Application widgets remain ordinary egui widgets; no [`PaneResponse`]
     /// registration is needed or accepted for tab chrome.
-    fn tab_ui(&mut self, ui: &mut Ui, tab: &Tab<'_>) {
-        tab.paint(ui);
+    /// Return the final appearance so built-in focus and close cues follow it.
+    fn tab_ui(&mut self, ui: &mut Ui, tab: &Tab<'_>) -> TabVisuals {
+        tab.paint(ui)
     }
 
-    /// Measures fixed application slots outside one group's scrollable tabs.
+    /// Paints a visible close icon without taking ownership of its interaction.
+    fn tab_close_ui(&mut self, ui: &Ui, close: &TabClose<'_>) {
+        close.paint(ui);
+    }
+
+    /// Paints a docking drag preview without adding interactive widgets.
+    fn drag_preview_ui(&mut self, ui: &Ui, preview: &DragPreview) {
+        preview.paint(ui);
+    }
+
+    /// Measures fixed and scrolling application slots in one group's tab bar.
     ///
     /// Return finite, non-negative widths. Defaults reserve no space and do
     /// not invoke `tab_bar_ui`. Use egui font/spacing measurements here rather
-    /// than a previous paint pass; core may shrink the actual slot allocation.
+    /// than a previous paint pass; core may shrink fixed slot allocations.
     fn tab_bar_layout(&self, _bar: TabBarId, _ui: &Ui) -> TabBarLayout {
         TabBarLayout::default()
     }
 
-    /// Renders one positive, core-allocated fixed tab-bar slot.
+    /// Renders one visible, core-allocated application tab-bar slot.
     ///
-    /// Both slots use a left-to-right, vertically centered Ui. It is clipped to
+    /// All slots use a left-to-right, vertically centered Ui. It is clipped to
     /// the actual allocation and disabled when tab-bar interaction is disabled.
     /// Widgets own their input and cannot initiate a docking gesture. This uses
     /// the same synchronous rendering contract as [`Self::tab_ui`]. Queue
@@ -243,8 +255,16 @@ impl<T: PaneView + ?Sized> PaneView for Box<T> {
         (**self).tab_content_width(item, ui, title)
     }
 
-    fn tab_ui(&mut self, ui: &mut Ui, tab: &Tab<'_>) {
-        (**self).tab_ui(ui, tab);
+    fn tab_ui(&mut self, ui: &mut Ui, tab: &Tab<'_>) -> TabVisuals {
+        (**self).tab_ui(ui, tab)
+    }
+
+    fn tab_close_ui(&mut self, ui: &Ui, close: &TabClose<'_>) {
+        (**self).tab_close_ui(ui, close);
+    }
+
+    fn drag_preview_ui(&mut self, ui: &Ui, preview: &DragPreview) {
+        (**self).drag_preview_ui(ui, preview);
     }
 
     fn tab_bar_layout(&self, bar: TabBarId, ui: &Ui) -> TabBarLayout {

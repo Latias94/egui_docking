@@ -16,6 +16,7 @@ const SURFACE: SurfaceId = SurfaceId::new(1);
 struct Panes {
     titles: Vec<String>,
     text: String,
+    focused_tabs: Vec<ItemId>,
 }
 
 impl PaneView for Panes {
@@ -33,6 +34,13 @@ impl PaneView for Panes {
 
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
         Some(egui::Id::unique(("chrome-test-editor", item)))
+    }
+
+    fn tab_ui(&mut self, ui: &mut Ui, tab: &crate::Tab<'_>) -> crate::TabVisuals {
+        if tab.pane_focused {
+            self.focused_tabs.push(tab.item);
+        }
+        tab.paint(ui)
     }
 }
 
@@ -66,6 +74,7 @@ impl Harness {
             panes: Panes {
                 titles,
                 text: String::new(),
+                focused_tabs: Vec::new(),
             },
             frame: 0,
             local_style: None,
@@ -95,6 +104,7 @@ impl Harness {
     }
 
     fn run_input(&mut self, raw: RawInput) -> FullOutput {
+        self.panes.focused_tabs.clear();
         let output = if let Some(style) = &self.local_style {
             crate::run_ui(&self.context, raw, |ui| {
                 ui.set_style(style.clone());
@@ -271,7 +281,7 @@ fn pane_focus_cue_tracks_content_across_split_and_floating_groups_without_changi
 
     let color = egui::Color32::from_rgb(17, 192, 123);
     let mut style = DockStyle::default();
-    style.visuals.pane_focus_color = Some(color);
+    style.visuals.pane_focus_stroke = Some(egui::Stroke::new(2.0, color));
     let mut harness = Harness::new(
         ["Editor", "Hidden", "Outline", "Inspector"]
             .map(str::to_owned)
@@ -329,6 +339,14 @@ fn pane_focus_cue_tracks_content_across_split_and_floating_groups_without_changi
             let output = harness.run(900.0, Vec::new());
             let cues = pane_focus_cues(&output, color);
             assert_eq!(cues.len(), 1, "{title} must be the only focused pane");
+            assert!(!harness.panes.focused_tabs.is_empty());
+            assert!(
+                harness
+                    .panes
+                    .focused_tabs
+                    .iter()
+                    .all(|focused| *focused == ItemId::new(item))
+            );
             let tab = nodes(&output)
                 .iter()
                 .find(|(_, node)| node.role() == Role::Tab && node.label() == Some(title))
@@ -398,7 +416,7 @@ fn pane_focus_cue_follows_local_theme_and_clears_on_blur_or_unknown_focus() {
     let output = harness.run(640.0, Vec::new());
     assert_eq!(pane_focus_cues(&output, color).len(), 1);
     let mut style = DockStyle::default();
-    style.visuals.pane_focus_color = Some(egui::Color32::TRANSPARENT);
+    style.visuals.pane_focus_stroke = Some(egui::Stroke::NONE);
     harness.dockspace.set_style(style).unwrap();
     let output = harness.run(640.0, Vec::new());
     assert!(pane_focus_cues(&output, color).is_empty());
@@ -571,8 +589,8 @@ fn presentation_menu_uses_local_theme_and_docking_visual_overrides() {
     for customize in [false, true] {
         let mut style = DockStyle::default();
         if customize {
-            style.visuals.floating_fill = Some(override_fill);
-            style.visuals.floating_border_color = Some(override_border);
+            style.visuals.popup.fill = Some(override_fill);
+            style.visuals.popup.border_color = Some(override_border);
         }
         let mut harness = Harness::new(vec!["Document".into()], ItemId::new(1), style);
         let mut theme = (*harness.context.global_style()).clone();

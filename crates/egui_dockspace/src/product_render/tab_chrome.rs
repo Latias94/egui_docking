@@ -407,7 +407,7 @@ fn paint_menu_row(
     } else if row.selected() {
         context.ui.visuals().selection.bg_fill
     } else {
-        context.visuals.floating_fill
+        context.visuals.popup_fill
     };
     let painter = context.ui.painter_at(viewport);
     if !paint_omitted {

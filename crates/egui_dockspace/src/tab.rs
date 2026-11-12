@@ -1,4 +1,4 @@
-//! Optional tab rendering and fixed tab-bar slots for application chrome.
+//! Optional tab rendering and fixed or scrolling slots for application chrome.
 
 use std::sync::Arc;
 
@@ -15,25 +15,30 @@ use crate::{ItemId, RootId};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TabBarId(pub(crate) DockspaceVisualId);
 
-/// Requested fixed widths outside the scrollable tab strip, in egui points.
+/// Requested application slots in a tab bar, in egui points.
 ///
-/// Core reserves these widths before allocating tabs and overflow controls.
-/// In a narrow group, the leading slot has priority and both slots may shrink
-/// or disappear to preserve the minimum operable tab width. Always draw into
+/// Core reserves the fixed leading/trailing widths before allocating tabs and
+/// overflow controls. In a narrow group, leading has priority and fixed slots
+/// may shrink or disappear to preserve the minimum operable tab width. Draw into
 /// the actual Ui supplied to [`crate::PaneView::tab_bar_ui`].
+/// The after-tabs slot scrolls with tabs and keeps its requested width; only
+/// its visible intersection is painted and interactive.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TabBarLayout {
     /// Slot after the group grip and before the first tab or scroll arrow.
     pub leading_width: f32,
     /// Slot at the right edge, after the built-in presentation controls.
     pub trailing_width: f32,
+    /// Scrolling slot immediately after the final tab, such as an add button.
+    pub after_tabs_width: f32,
 }
 
-/// The fixed tab-bar slot currently being rendered.
+/// The application tab-bar slot currently being rendered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TabBarSlot {
     Leading,
     Trailing,
+    AfterTabs,
 }
 
 /// Current group identity and core-allocated geometry for a tab-bar callback.
@@ -70,6 +75,13 @@ pub struct TabVisuals {
     pub text_color: Color32,
     /// When present, replaces every title span's color.
     pub text_color_override: Option<Color32>,
+    /// Explicit close-icon color; `None` retains egui's own interaction colors.
+    /// Use this when a custom background needs a contrasting icon in every state.
+    pub close_color: Option<Color32>,
+    /// Keyboard-focus outline. Its corners follow `corner_radius`.
+    pub focus_stroke: Stroke,
+    /// Content-focus underline; stroke width is its vertical thickness.
+    pub pane_focus_stroke: Stroke,
 }
 
 /// One tab's allocated geometry, response, title, and resolved appearance.
@@ -95,16 +107,20 @@ pub struct Tab<'a> {
     pub title: Arc<Galley>,
     pub response: &'a Response,
     pub selected: bool,
+    /// The selected pane owns observed content focus in the active window.
+    pub pane_focused: bool,
     /// Includes both the egui enablement and docking interaction policy.
     pub enabled: bool,
     pub visuals: TabVisuals,
 }
 
 impl Tab<'_> {
-    /// Paints the default background and title. Close and focus cues are separate.
-    pub fn paint(&self, ui: &Ui) {
+    /// Paints the default background and title, returning their final appearance.
+    /// Close and focus cues are painted separately from this appearance.
+    pub fn paint(&self, ui: &Ui) -> TabVisuals {
         self.paint_background(ui.painter());
         self.paint_title(ui, self.content_rect);
+        self.visuals
     }
 
     /// Paints the configured background and outline without the title.
@@ -126,16 +142,69 @@ impl Tab<'_> {
         if !rect.is_positive() {
             return;
         }
-        let galley = galley_for_width(ui, &self.title, rect.width());
+        paint_title(
+            ui,
+            &self.title,
+            rect,
+            self.content_clip_rect,
+            self.visuals.text_color,
+            self.visuals.text_color_override,
+        );
+    }
+}
+
+pub(crate) fn paint_title(
+    ui: &Ui,
+    title: &Arc<Galley>,
+    rect: Rect,
+    clip: Rect,
+    color: Color32,
+    color_override: Option<Color32>,
+) {
+    if !rect.is_positive() {
+        return;
+    }
+    let galley = galley_for_width(ui, title, rect.width());
+    let painter = ui.painter().with_clip_rect(clip.intersect(rect));
+    let position = egui::pos2(rect.min.x, rect.center().y - galley.size().y * 0.5);
+    if let Some(color) = color_override {
+        painter.galley_with_override_text_color(position, galley, color);
+    } else {
+        painter.galley(position, galley, color);
+    }
+}
+
+/// Paint-only customization of an adapter-owned tab close button.
+///
+/// The response, hit target, keyboard action and close protocol belong to the
+/// adapter. Change the stroke or paint another icon inside the supplied clip.
+#[derive(Clone, Debug)]
+pub struct TabClose<'a> {
+    pub item: ItemId,
+    /// Core-owned close-control allocation.
+    pub rect: Rect,
+    /// Centered icon allocation, independent of the hit target.
+    pub icon_rect: Rect,
+    pub response: &'a Response,
+    pub selected: bool,
+    pub enabled: bool,
+    pub stroke: Stroke,
+}
+
+impl TabClose<'_> {
+    /// Paints the default cross in the supplied icon allocation.
+    pub fn paint(&self, ui: &Ui) {
         let painter = ui
             .painter()
-            .with_clip_rect(self.content_clip_rect.intersect(rect));
-        let position = egui::pos2(rect.min.x, rect.center().y - galley.size().y * 0.5);
-        if let Some(color) = self.visuals.text_color_override {
-            painter.galley_with_override_text_color(position, galley, color);
-        } else {
-            painter.galley(position, galley, self.visuals.text_color);
-        }
+            .with_clip_rect(ui.clip_rect().intersect(self.rect));
+        painter.line_segment(
+            [self.icon_rect.left_top(), self.icon_rect.right_bottom()],
+            self.stroke,
+        );
+        painter.line_segment(
+            [self.icon_rect.right_top(), self.icon_rect.left_bottom()],
+            self.stroke,
+        );
     }
 }
 

@@ -21,26 +21,25 @@ pub(super) fn aligned_tab_strip_scroll_offset(
     let viewport = bar.viewport();
     let current = bar.scroll_offset();
     let maximum = bar.maximum_scroll_offset();
+    let scrolling_bounds = || {
+        bar.members()
+            .iter()
+            .map(|member| member.full_bounds())
+            .chain(bar.after_tabs_bounds())
+    };
     match control {
-        TabStripControlId::ScrollBackward(control_bar) if control_bar == key.bar() => bar
-            .members()
-            .iter()
-            .filter(|record| record.full_bounds().x() < viewport.x())
-            .max_by(|left, right| left.full_bounds().x().total_cmp(&right.full_bounds().x()))
-            .map(|record| (current + record.full_bounds().x() - viewport.x()).clamp(0.0, maximum)),
-        TabStripControlId::ScrollForward(control_bar) if control_bar == key.bar() => bar
-            .members()
-            .iter()
-            .filter(|record| record.full_bounds().max().x() > viewport.max().x())
-            .min_by(|left, right| {
-                left.full_bounds()
-                    .max()
-                    .x()
-                    .total_cmp(&right.full_bounds().max().x())
-            })
-            .map(|record| {
-                (current + record.full_bounds().max().x() - viewport.max().x()).clamp(0.0, maximum)
-            }),
+        TabStripControlId::ScrollBackward(control_bar) if control_bar == key.bar() => {
+            scrolling_bounds()
+                .filter(|bounds| bounds.x() < viewport.x())
+                .max_by(|left, right| left.x().total_cmp(&right.x()))
+                .map(|bounds| (current + bounds.x() - viewport.x()).clamp(0.0, maximum))
+        }
+        TabStripControlId::ScrollForward(control_bar) if control_bar == key.bar() => {
+            scrolling_bounds()
+                .filter(|bounds| bounds.max().x() > viewport.max().x())
+                .min_by(|left, right| left.max().x().total_cmp(&right.max().x()))
+                .map(|bounds| (current + bounds.max().x() - viewport.max().x()).clamp(0.0, maximum))
+        }
         TabStripControlId::ScrollBackward(_)
         | TabStripControlId::ScrollForward(_)
         | TabStripControlId::TabListMenu(_) => None,

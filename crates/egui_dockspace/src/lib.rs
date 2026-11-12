@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod drag_preview;
 pub mod pane;
 pub mod style;
 pub mod tab;
@@ -62,6 +63,7 @@ pub use dockspace::runtime::{
     DockspaceDocumentBootstrap, DockspaceDocumentId, DockspacePersistenceError,
     DockspacePersistenceErrorKind,
 };
+pub use drag_preview::{DockspaceDragSourceKind, DragPreview};
 pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;
 pub use pane::{PaneFocusState, PaneResponse, PaneView};
@@ -73,5 +75,8 @@ pub use response::{
     DockspaceMutation, DockspaceResponse, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus,
     DockspaceUnavailableReason,
 };
-pub use style::{DockDensity, DockStyle, DockStyleError, DockVisualOverrides};
-pub use tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabVisuals};
+pub use style::{
+    DockDensity, DockFrameVisuals, DockStyle, DockStyleError, DockVisualOverrides,
+    TabCloseVisibility, TabGroupGripVisibility,
+};
+pub use tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose, TabVisuals};

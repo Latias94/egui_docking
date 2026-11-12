@@ -219,7 +219,13 @@ fn tab_strip_optional_chrome_candidate(
         .max(0.0);
     let item_count_u32 =
         u32::try_from(item_count).map_err(|_| SceneCompilationError::GeometryCountOverflow)?;
-    let minimum_total = config.tab_min_width() * f64::from(item_count_u32);
+    let minimum_total = checked_sum(
+        [
+            config.tab_min_width() * f64::from(item_count_u32),
+            strip.after_tabs_width(),
+        ],
+        "minimum tab flow width",
+    )?;
     let overflowing = item_count > 0 && minimum_total > base_viewport_width;
     let controls = if overflowing && include_overflow_controls {
         match strip.controls().filter(|metrics| !metrics.is_empty()) {
@@ -562,8 +568,18 @@ fn compile_tab_strip(
     } else {
         TabListMenuGeometryAvailability::Unavailable
     };
-    let widths = allocate_tab_widths(&desired_widths, viewport_width, config.tab_min_width())?;
-    let total_width = checked_sum(widths.iter().copied(), "tab strip width")?;
+    let widths = allocate_tab_widths(
+        &desired_widths,
+        (viewport_width - strip.after_tabs_width()).max(0.0),
+        config.tab_min_width(),
+    )?;
+    let total_width = checked_sum(
+        widths
+            .iter()
+            .copied()
+            .chain(std::iter::once(strip.after_tabs_width())),
+        "tab strip width",
+    )?;
     let max_scroll = (total_width - viewport.width()).max(0.0);
     let selected_range = selected.and_then(|selected| {
         let index = items.iter().position(|item| *item == selected)?;
@@ -640,6 +656,10 @@ fn compile_tab_strip(
         full_tabs.push(full);
         cursor += width;
     }
+    let after_tabs_bounds = (strip.after_tabs_width() > 0.0)
+        .then(|| LogicalRect::new(cursor, bar.y(), strip.after_tabs_width(), bar.height()))
+        .transpose()?;
+    cursor += strip.after_tabs_width();
     let trailing_empty_bounds = if max_scroll == 0.0 {
         let trailing_start = cursor.min(viewport.max().x());
         let trailing_width = (viewport.max().x() - trailing_start).max(0.0);
@@ -649,8 +669,8 @@ fn compile_tab_strip(
     } else {
         None
     };
-    let group_drag = if interaction == TabBarInteraction::Enabled {
-        group_grip_bounds.map(|grip| TabGroupDragRecord::new(grip, trailing_empty_bounds))
+    let group_drag = if interaction == TabBarInteraction::Enabled && !items.is_empty() {
+        TabGroupDragRecord::new(group_grip_bounds, trailing_empty_bounds)
     } else {
         None
     };
@@ -673,9 +693,10 @@ fn compile_tab_strip(
             menu_geometry,
             layer,
         )
-        .with_reserved_bounds(
+        .with_application_bounds(
             chrome.leading_reserved_bounds,
             chrome.trailing_reserved_bounds,
+            after_tabs_bounds,
         ),
     );
     if presentation_menu_anchor {
@@ -759,7 +780,17 @@ fn compile_tab_strip(
 
     if interaction == TabBarInteraction::Enabled {
         let availability = tab_availability(policy);
-        for gap in tab_gap_geometries(viewport, &full_tabs, config.splitter_thickness())? {
+        let gap_viewport = if let Some(after_tabs) = after_tabs_bounds {
+            LogicalRect::new(
+                viewport.x(),
+                viewport.y(),
+                (after_tabs.x() - viewport.x()).clamp(0.0, viewport.width()),
+                viewport.height(),
+            )?
+        } else {
+            viewport
+        };
+        for gap in tab_gap_geometries(gap_viewport, &full_tabs, config.splitter_thickness())? {
             ready.push_drop_target(Arc::new(DropTargetRecord::new(
                 DropTargetLocation::TabGap {
                     surface,
