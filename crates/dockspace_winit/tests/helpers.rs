@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use backend::dpi::PhysicalPosition;
+use backend::dpi::{PhysicalPosition, PhysicalSize};
 use backend::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 use backend::keyboard::ModifiersState;
 use dockspace::geometry::{GeometryError, LogicalPoint, PhysicalPoint, ScaleFactor};
@@ -135,15 +135,21 @@ fn mouse_buttons_retain_cursor_and_ordered_modifiers() {
 }
 
 #[test]
-fn cursor_departure_forgets_position_without_cancelling_drag() {
+fn cursor_departure_invalidates_hover_without_cancelling_drag() {
     let mut mouse = MouseInput::default();
     let _ = mouse.on_window_event(&moved(PhysicalPosition::new(30.0, 40.0)));
+    let _ = mouse.on_window_event(&button(ElementState::Pressed));
+    let _ = mouse.on_window_event(&WindowEvent::ModifiersChanged(ModifiersState::SHIFT.into()));
+    let left = WindowEvent::CursorLeft {
+        device_id: DeviceId::dummy(),
+    };
+    let invalidated = mouse.on_window_event(&left).unwrap();
+    assert_eq!(invalidated.event, SurfacePointerEvent::Moved);
+    assert_eq!(invalidated.position, None);
+    assert_eq!(invalidated.modifiers, ModifiersState::SHIFT);
     assert!(
-        mouse
-            .on_window_event(&WindowEvent::CursorLeft {
-                device_id: DeviceId::dummy()
-            })
-            .is_none()
+        mouse.on_window_event(&left).is_none(),
+        "an already unknown position does not emit a second invalidation"
     );
     let released = mouse
         .on_window_event(&button(ElementState::Released))
@@ -153,6 +159,76 @@ fn cursor_departure_forgets_position_without_cancelling_drag() {
         SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary)
     );
     assert_eq!(released.position, None);
+    assert_eq!(released.modifiers, ModifiersState::SHIFT);
+}
+
+#[test]
+fn geometry_changes_cannot_reuse_old_cursor_for_button_receivers() {
+    let coordinates = SurfaceCoordinates::new(
+        PhysicalPoint::new(0.0, 0.0).unwrap(),
+        ScaleFactor::new(2.0).unwrap(),
+    );
+    for event in [
+        WindowEvent::Resized(PhysicalSize::new(800, 600)),
+        WindowEvent::Moved(PhysicalPosition::new(100, 80)),
+    ] {
+        let mut mouse = MouseInput::default();
+        let _ = mouse.on_window_event(&moved(PhysicalPosition::new(30.0, 40.0)));
+        let _ = mouse.on_window_event(&WindowEvent::ModifiersChanged(
+            ModifiersState::CONTROL.into(),
+        ));
+        let invalidated = mouse.on_window_event(&event).unwrap();
+        assert_eq!(invalidated.event, SurfacePointerEvent::Moved);
+        assert_eq!(invalidated.modifiers, ModifiersState::CONTROL);
+        assert_eq!(
+            invalidated.logical_position(coordinates),
+            Ok(SurfacePointerPosition::Unknown)
+        );
+        assert!(mouse.on_window_event(&event).is_none());
+        for state in [ElementState::Pressed, ElementState::Released] {
+            let sample = mouse.on_window_event(&button(state)).unwrap();
+            assert_eq!(
+                sample.logical_position(coordinates),
+                Ok(SurfacePointerPosition::Unknown),
+                "{event:?} cannot rebind the old point to a new receiver"
+            );
+        }
+        let _ = mouse.on_window_event(&moved(PhysicalPosition::new(60.0, 80.0)));
+        let pressed = mouse
+            .on_window_event(&button(ElementState::Pressed))
+            .unwrap();
+        assert_eq!(
+            pressed.logical_position(coordinates),
+            Ok(SurfacePointerPosition::Known(
+                LogicalPoint::new(30.0, 40.0).unwrap()
+            ))
+        );
+    }
+}
+
+#[test]
+fn explicit_coordinate_invalidation_is_idempotent_and_preserves_modifiers() {
+    let mut mouse = MouseInput::default();
+    assert!(mouse.invalidate_position().is_none());
+    let _ = mouse.on_window_event(&WindowEvent::ModifiersChanged(ModifiersState::ALT.into()));
+    assert!(mouse.invalidate_position().is_none());
+    let _ = mouse.on_window_event(&moved(PhysicalPosition::new(30.0, 40.0)));
+
+    let invalidated = mouse.invalidate_position().unwrap();
+    assert_eq!(invalidated.event, SurfacePointerEvent::Moved);
+    assert_eq!(invalidated.position, None);
+    assert_eq!(invalidated.modifiers, ModifiersState::ALT);
+    assert!(mouse.invalidate_position().is_none());
+    let pressed = mouse
+        .on_window_event(&button(ElementState::Pressed))
+        .unwrap();
+    assert_eq!(pressed.position, None);
+
+    let position = PhysicalPosition::new(60.0, 80.0);
+    let motion = mouse.on_window_event(&moved(position)).unwrap();
+    assert_eq!(motion.position, Some(position));
+    assert_eq!(motion.modifiers, ModifiersState::ALT);
+    assert!(mouse.invalidate_position().is_some());
 }
 
 #[test]
@@ -186,7 +262,7 @@ fn focus_loss_and_window_retirement_cancel_for_distinct_reasons() {
     for (event, reason) in [
         (
             WindowEvent::Focused(false),
-            SurfacePointerCancelReason::ExplicitCancellation,
+            SurfacePointerCancelReason::ExplicitPlatformCancellation,
         ),
         (
             WindowEvent::Destroyed,
@@ -205,6 +281,7 @@ fn focus_loss_and_window_retirement_cancel_for_distinct_reasons() {
         );
         assert_eq!(cancelled.position, None);
         assert!(cancelled.modifiers.is_empty());
+        assert!(mouse.invalidate_position().is_none());
         let later = mouse
             .on_window_event(&button(ElementState::Pressed))
             .unwrap();

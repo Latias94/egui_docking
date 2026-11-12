@@ -50,8 +50,9 @@ impl MouseSample {
 ///
 /// Keep one instance per window and feed only that window's events. Mouse device
 /// IDs are treated as one window cursor; touch and scroll events are ignored.
-/// Losing focus actively cancels this host's stream. Leaving the client area
-/// only forgets its cursor position and does not cancel an ongoing drag.
+/// Losing focus actively cancels this host's stream. Cursor departure, window
+/// movement, resizing, and DPI changes invalidate the retained position and
+/// emit an unknown-position move, preserving any ongoing drag.
 ///
 /// The host still owns pointer identity, capture, receiver routing, presentation
 /// settlement and the decision to submit each returned sample to dockspace.
@@ -62,10 +63,34 @@ pub struct MouseInput {
 }
 
 impl MouseInput {
+    /// Forgets a previously observed position and returns its invalidation edge.
+    ///
+    /// Submit the returned unknown-position [`SurfacePointerEvent::Moved`] through
+    /// the ordinary input lane to revoke old hover feedback while retaining the
+    /// gesture. Modifiers remain unchanged. Until a new `CursorMoved` event,
+    /// subsequent button samples also have an unknown position.
+    ///
+    /// Returns `None` when no position is retained, including repeated calls.
+    /// Window geometry events call this automatically. Call it when the host
+    /// changes its own coordinate mapping and cannot qualify the retained point.
+    #[must_use = "submit the returned position invalidation through the host input lane"]
+    pub fn invalidate_position(&mut self) -> Option<MouseSample> {
+        self.position.take()?;
+        Some(MouseSample {
+            event: SurfacePointerEvent::Moved,
+            position: None,
+            modifiers: self.modifiers,
+        })
+    }
+
     /// Updates mouse state and returns an edge for supported mouse/lifecycle events.
     ///
-    /// Modifier changes and cursor departure update retained state without emitting
-    /// a pointer edge. Keyboard, touch, wheel and unrelated window events return `None`.
+    /// Cursor departure and geometry changes return [`Self::invalidate_position`],
+    /// including `None` when the position is already unknown. Modifier changes
+    /// update the retained snapshot without emitting an edge: the host must apply
+    /// its own activation policy to existing gestures with
+    /// [`SurfacePointerEvent::DockingEnabledChanged`]. Keyboard, touch, wheel and
+    /// unrelated window events return `None`.
     pub fn on_window_event(&mut self, event: &WindowEvent) -> Option<MouseSample> {
         let event = match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -84,15 +109,15 @@ impl MouseInput {
                 self.modifiers = modifiers.state();
                 return None;
             }
-            WindowEvent::CursorLeft { .. } => {
-                self.position = None;
-                return None;
-            }
+            WindowEvent::CursorLeft { .. }
+            | WindowEvent::Moved(_)
+            | WindowEvent::Resized(_)
+            | WindowEvent::ScaleFactorChanged { .. } => return self.invalidate_position(),
             WindowEvent::Focused(false) => {
                 self.position = None;
                 self.modifiers = ModifiersState::empty();
                 SurfacePointerEvent::StreamCancelled(
-                    SurfacePointerCancelReason::ExplicitCancellation,
+                    SurfacePointerCancelReason::ExplicitPlatformCancellation,
                 )
             }
             WindowEvent::Destroyed => {
