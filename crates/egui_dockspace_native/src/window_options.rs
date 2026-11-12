@@ -10,8 +10,11 @@ use eframe::egui::{IconData, ViewportBuilder, WindowLevel};
 /// `None` uses the backend default when creating a window and leaves an existing
 /// property unchanged, following egui's viewport-builder semantics. Platform
 /// support for decorations, taskbar presence, icons and stacking may differ.
-/// Placement, visibility, activation and pointer passthrough remain owned by
-/// Dockspace's native lifecycle.
+/// Initial and recovery placement, visibility, activation and pointer passthrough
+/// remain owned by Dockspace's native lifecycle. Once a window is live, the
+/// application may request ordinary window movement through its UI host; core
+/// consumes the provider's fresh geometry observations rather than treating the
+/// requested position as fact.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NativeChildWindowOptions {
     /// Whether the platform should draw window decorations.

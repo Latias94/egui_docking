@@ -27,6 +27,21 @@ window operations from physical cross-window dragging. Linux X11 has a finite
 qualified physical-input profile. macOS/Windows physical drag-out and arbitrary
 mixed-monitor DPI are not qualified by that profile.
 
+For a small multiview demonstration with a central Sun and three orbiting OS
+windows:
+
+```sh
+cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --example solar_system --locked
+```
+
+Pause the orbit to drag and dock windows by hand. Closing a planet window
+recovers its pane; **Launch returned planets** creates new windows for panes
+back in the main window. A combined multi-pane window stops orbiting so its
+panes do not issue conflicting position requests. The example needs a backend
+with native creation and desktop placement support. Add `-- --smoke` for a
+finite real-window create/move/Dock-Back/recreate check. The smoke uses the
+public programmatic recovery command; it does not simulate an OS close-button event.
+
 ## Integrate
 
 Construct `NativeDockspaceApp` with a `DockspaceSession`, Root surface, pane
@@ -55,9 +70,11 @@ changes through `request_input` and consume their result through
 
 `with_child_window_options` and `set_child_window_options` configure managed
 Child window decorations, Windows taskbar presence, stacking level and icon.
-New windows and replacements share these settings. Placement and visibility
-remain coordinated by the native lifecycle; configure the external Root window
-through eframe's `NativeOptions::viewport`. Child titles follow selected panes
+New windows and replacements share these settings. Creation and recovery
+placement, visibility and ownership remain coordinated by the native lifecycle.
+Applications may request ordinary movement of a live window through the host;
+fresh OS observations determine its actual geometry. Configure the external
+Root window through eframe's `NativeOptions::viewport`. Child titles follow selected panes
 without adding a library-brand suffix.
 
 [Examples](../../docs/EXAMPLES.md) · [Development](../../CONTRIBUTING.md)

@@ -81,6 +81,8 @@ the applications once in the native workspace's target directory and runs:
 - Actual renderer/output, text backpressure, shared Root, capture and lifecycle
   boundary tests under Xvfb/Openbox, including their ignored real-window cases.
 - Public pane commands and style changes in the eight-pane editor.
+- Three moving child windows, pause, programmatic Dock Back and fresh-window
+  recreation through `solar_system --smoke`; OS close-button delivery is separate.
 - Both editor input drivers with persistence and Root continuity enabled.
 - Programmatic native redock and all three native close policies.
 - Physical X11/XTest drag-out and redock.

@@ -91,6 +91,12 @@ button-state authority. Neither backend currently has complete physical
 cross-window drag qualification. Keep those paths unavailable when their required
 facts are missing.
 
+The [solar-system example](../crates/egui_dockspace_native/examples/solar_system.rs)
+provides a finite programmatic check: three real children present and move,
+pause, return one child through Dock Back, then create and move a fresh child.
+This exercises live geometry and lifecycle; it does not simulate physical
+cross-window dragging or an OS close-button event.
+
 ### Wayland and other backends
 
 Wayland does not advertise managed lifecycle, global placement or work-area

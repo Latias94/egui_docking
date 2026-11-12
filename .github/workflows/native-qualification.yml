@@ -52,10 +52,10 @@ jobs:
         run: >-
           cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml
           --package egui-native-smoke --bins --locked
-      - name: Build eight-pane editor with persistence
+      - name: Build editor and moving-window examples
         run: >-
           cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml
-          --package egui_dockspace_native --example basic --all-features --locked
+          --package egui_dockspace_native --example basic --example solar_system --all-features --locked
       - name: Exercise actual output, input, capture and lifecycle boundaries
         run: |
           xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension RANDR +extension XTEST" \
@@ -72,6 +72,13 @@ jobs:
             integration/egui-fork-workspace/target/debug/examples/basic --command-smoke \
             2>&1 | tee "$QUALIFICATION_LOG_DIR/commands.log"
           grep -Fq 'command-smoke: complete;' "$QUALIFICATION_LOG_DIR/commands.log"
+      - name: Exercise moving child windows and recreation
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python3 integration/egui-native-smoke/with_openbox.py -- \
+            integration/egui-fork-workspace/target/debug/examples/solar_system --smoke \
+            2>&1 | tee "$QUALIFICATION_LOG_DIR/solar-system.log"
+          grep -Fq 'solar-smoke: PASS' "$QUALIFICATION_LOG_DIR/solar-system.log"
       - name: Qualify editor docking, text, restore and Root continuity
         timeout-minutes: 8
         run: |
