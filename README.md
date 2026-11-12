@@ -81,6 +81,7 @@ storage stay in your application.
 - [Examples](docs/EXAMPLES.md): choose a runnable starting point.
 - [Core overview](crates/dockspace/README.md) and [engine host guide](crates/dockspace/docs/guide.md).
 - [egui overview](crates/egui_dockspace/README.md) and [integration guide](crates/egui_dockspace/docs/guide.md).
+- [GPUI adapter and workbench](integration/gpui-harness/README.md): embed retained application views and run the native demo.
 - [Documentation index](docs/README.md): platform limits, adapter testing and architecture decisions.
 - [Contributing](CONTRIBUTING.md): repository layout and development checks.
 

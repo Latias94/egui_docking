@@ -7,7 +7,7 @@ use open_gpui::{
     App, Bounds, HitboxId, Pixels, PlatformHoveredWindow, PointerCaptureHandle, Task, Window,
 };
 
-use crate::{HostState, SURFACE, SharedHost, input};
+use crate::{HostState, SharedHost, input};
 
 #[derive(Clone)]
 pub(super) struct InputFrame {
@@ -35,7 +35,7 @@ pub(super) fn schedule(shared: &SharedHost, window: &Window, cx: &App) {
         (host.pending.is_none()
             && host.inputs.is_empty()
             && frame.serial == host.serial
-            && request.surface() == SURFACE
+            && request.surface() == host.surface
             && input::is_presented(&host, frame.serial))
         .then_some((request, frame.serial))
     });
@@ -121,7 +121,7 @@ fn wake(
         frame.bounds,
         &frame.hitboxes,
         true,
-        window.modifiers().shift,
+        window.modifiers(),
         window,
     ) {
         window.refresh();

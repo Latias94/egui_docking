@@ -1,34 +1,30 @@
 //! A single retained Element consuming the core's complete ordered paint program.
 
-use std::{collections::BTreeMap, convert::Infallible, rc::Rc};
+use std::rc::Rc;
 
 use anyhow::{Context as _, Result, anyhow};
 use dockspace::{
     geometry::{LogicalRect, LogicalSize},
     model::ItemId,
     runtime::{
-        DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceReceiverRole,
-        DockspaceUpdate, SurfaceMeasurementAnswer as Answer, SurfaceMeasurementRequest as Request,
-        SurfacePaintPlan, SurfacePaintProgramOperation as Operation,
-        SurfacePaintProgramStep as Step, SurfacePointerButton, SurfacePointerCancelReason,
-        SurfacePointerEvent, SurfaceWork, SurfaceWorkDeferred, TabStripMetrics,
+        DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceUpdate,
+        SurfaceMeasurementAnswer as Answer, SurfaceMeasurementRequest as Request,
+        SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerEvent, SurfaceWork,
+        SurfaceWorkDeferred, TabStripMetrics,
     },
 };
 use open_gpui::{
     AnyElement, App, AvailableSpace, Bounds, Element, ElementId, GlobalElementId, HitboxBehavior,
-    HitboxId, InspectorElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, PointerCaptureHandle, Style, TextRun, Window, div, fill,
-    font, point, prelude::*, px, relative, rgb, rgba, size,
+    HitboxId, Hsla, InspectorElementId, IntoElement, KeyDownEvent, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PointerCaptureHandle, Style, TextRun,
+    Window, div, fill, point, prelude::*, px, relative, size,
 };
 
-use crate::{HostState, SURFACE, SharedHost, continuation::InputFrame, input, presentation};
+use crate::{HostState, SharedHost, continuation::InputFrame, input, presentation};
 
-const BACKGROUND: u32 = 0xe6eaf0;
-const TAB_BAR: u32 = 0xd8dee8;
-const TAB: u32 = 0xcbd4e1;
-const SELECTED: u32 = 0xf5f6f8;
-const INK: u32 = 0x253247;
-const ACCENT: u32 = 0x2b7b99;
+mod recording;
+
+use recording::record;
 
 pub(super) struct Packet {
     draws: Vec<Draw>,
@@ -62,32 +58,38 @@ impl Packet {
 }
 
 enum Draw {
-    Fill(LogicalRect, u32),
-    Tab(LogicalRect, ItemId, u32),
-    Outline(LogicalRect, u32),
-    Text(LogicalRect, String, u32),
+    Fill(LogicalRect, Hsla),
+    Tab(LogicalRect, ItemId, Hsla),
+    Outline(LogicalRect, Hsla),
+    Text(LogicalRect, String, Hsla),
+    TabText(LogicalRect, ItemId, String, Hsla),
     Pane(LogicalRect, ItemId),
     Receiver(DockspaceReceiverDescriptor),
     Preview(LogicalRect),
 }
 
 enum PreparedDraw {
-    Fill(Bounds<Pixels>, u32),
-    Outline(Bounds<Pixels>, u32),
+    Fill(Bounds<Pixels>, Hsla),
+    Outline(Bounds<Pixels>, Hsla),
     Element(AnyElement),
-    Preview(Bounds<Pixels>),
+    Preview(Bounds<Pixels>, Hsla, Hsla),
 }
 
-pub struct DockspaceElement {
+pub(crate) struct DockspaceElement {
     host: SharedHost,
 }
 
-pub struct PreparedFrame {
+pub(crate) struct PreparedFrame {
     draws: Vec<PreparedDraw>,
     hitboxes: Vec<HitboxId>,
     capture: PointerCaptureHandle,
     serial: u64,
     bounds: Bounds<Pixels>,
+}
+
+pub(crate) enum PreparedState {
+    Frame(PreparedFrame),
+    Failure(AnyElement),
 }
 
 impl DockspaceElement {
@@ -106,10 +108,13 @@ impl IntoElement for DockspaceElement {
 
 impl Element for DockspaceElement {
     type RequestLayoutState = ();
-    type PrepaintState = Option<PreparedFrame>;
+    type PrepaintState = PreparedState;
 
     fn id(&self) -> Option<ElementId> {
-        Some("dockspace-gpui-host".into())
+        Some(ElementId::named_usize(
+            "dockspace-gpui-host",
+            Rc::as_ptr(&self.host) as usize,
+        ))
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -133,19 +138,52 @@ impl Element for DockspaceElement {
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) -> Option<PreparedFrame> {
-        let prepared = self.prepare(bounds, window, cx);
-        match prepared {
-            Ok(prepared) => Some(prepared),
+    ) -> PreparedState {
+        let mount = self.host.borrow_mut().ensure_mount(id, window);
+        match mount {
+            Ok(true) => {
+                let weak = Rc::downgrade(&self.host);
+                let owner = window.window_handle().window_id();
+                cx.on_window_closed(move |_, closed| {
+                    if closed == owner {
+                        if let Some(host) = weak.upgrade() {
+                            presentation::close(&mut host.borrow_mut());
+                        }
+                    }
+                })
+                .detach();
+            }
+            Ok(false) => {}
+            Err(error) => return self.failure(error, bounds, window, cx),
+        }
+        let capture = *self
+            .host
+            .borrow_mut()
+            .capture
+            .get_or_insert_with(|| window.new_pointer_capture_handle());
+        // Claim the framework's once-per-frame capture binding before touching
+        // a pending core candidate. Failed duplicate mounts retract their hitbox.
+        let background = window.transact(|window| {
+            let background = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+            window.bind_pointer_capture(&capture, background.id)?;
+            Ok::<_, open_gpui::PointerCaptureError>(background.id)
+        });
+        let background = match background {
+            Ok(background) => background,
+            Err(error) => return self.failure(error, bounds, window, cx),
+        };
+        window.set_focus_handle(&self.host.borrow().focus, cx);
+        match self.prepare(bounds, background, capture, window, cx) {
+            Ok(prepared) => PreparedState::Frame(prepared),
             Err(error) => {
-                self.host.borrow_mut().fail(error);
-                None
+                self.host.borrow_mut().fail(&error);
+                self.failure(error, bounds, window, cx)
             }
         }
     }
@@ -156,37 +194,67 @@ impl Element for DockspaceElement {
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request: &mut (),
-        prepared: &mut Option<PreparedFrame>,
+        prepared: &mut PreparedState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.paint_quad(fill(bounds, rgb(BACKGROUND)));
-        let Some(prepared) = prepared.as_mut() else {
-            return;
+        let background = self.host.borrow().config.colors.background;
+        window.paint_quad(fill(bounds, background));
+        let prepared = match prepared {
+            PreparedState::Frame(prepared) => prepared,
+            PreparedState::Failure(error) => {
+                error.paint(window, cx);
+                return;
+            }
         };
         if let Some(probe) = &self.host.borrow().surface_probe {
             probe.set(Some(bounds));
         }
+        // Child paint changes GPUI's active dispatch node. Register this
+        // element's listeners while its own node is still active.
+        self.listen(prepared, window);
         // Keep the core order, including pane widgets between chrome and overlays.
         for draw in &mut prepared.draws {
             match draw {
-                PreparedDraw::Fill(bounds, color) => window.paint_quad(fill(*bounds, rgb(*color))),
+                PreparedDraw::Fill(bounds, color) => window.paint_quad(fill(*bounds, *color)),
                 PreparedDraw::Outline(bounds, color) => outline(*bounds, *color, window),
-                PreparedDraw::Preview(bounds) => {
-                    window.paint_quad(fill(*bounds, rgba(0x2b7b993c)));
-                    outline(*bounds, ACCENT, window);
+                PreparedDraw::Preview(bounds, color, border) => {
+                    window.paint_quad(fill(*bounds, *color));
+                    outline(*bounds, *border, window);
                 }
                 PreparedDraw::Element(element) => element.paint(window, cx),
             }
         }
-        self.listen(prepared, window);
     }
 }
 
 impl DockspaceElement {
+    fn failure(
+        &self,
+        error: impl std::fmt::Display,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> PreparedState {
+        let config = self.host.borrow().config.clone();
+        let mut diagnostic = div()
+            .w(bounds.size.width)
+            .h(bounds.size.height)
+            .overflow_hidden()
+            .font(config.font)
+            .text_size(config.text_size)
+            .text_color(config.colors.text)
+            .child(format!("Cannot mount dockspace: {error}"))
+            .into_any_element();
+        diagnostic.prepaint_as_root(bounds.origin, definite(bounds), window, cx);
+        PreparedState::Failure(diagnostic)
+    }
+
     fn prepare(
         &mut self,
         bounds: Bounds<Pixels>,
+        background: HitboxId,
+        capture: PointerCaptureHandle,
         window: &mut Window,
         cx: &mut App,
     ) -> Result<PreparedFrame> {
@@ -196,15 +264,12 @@ impl DockspaceElement {
             f64::from(f32::from(bounds.size.width)),
             f64::from(f32::from(bounds.size.height)),
         )?;
-        let (packet, serial, publication, capture) = {
+        let (packet, serial, publication) = {
             let mut host = self.host.borrow_mut();
             presentation::abandon_unaccepted(&mut host, window);
-            let capture = *host
-                .capture
-                .get_or_insert_with(|| window.new_pointer_capture_handle());
             let publication = host.publication;
             if let Some(pending) = &host.pending {
-                (pending.packet.clone(), pending.serial, publication, capture)
+                (pending.packet.clone(), pending.serial, publication)
             } else if !host.dirty && host.inputs.is_empty() && host.bounds == Some(logical) {
                 (
                     host.packet
@@ -212,7 +277,6 @@ impl DockspaceElement {
                         .context("a reusable frame has a retained packet")?,
                     host.serial,
                     publication,
-                    capture,
                 )
             } else {
                 let inputs = std::mem::take(&mut host.inputs);
@@ -251,14 +315,13 @@ impl DockspaceElement {
                     inputs,
                 ));
                 presentation::observe(&self.host, &ticket, serial, window);
-                (packet, serial, publication, capture)
+                (packet, serial, publication)
             }
         };
 
-        let background = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        window.bind_pointer_capture(&capture, background.id)?;
-        let mut hitboxes = vec![background.id];
+        let mut hitboxes = vec![background];
         let mut draws = Vec::new();
+        let config = self.host.borrow().config.clone();
         for draw in &packet.draws {
             match draw {
                 Draw::Fill(rect, color) | Draw::Tab(rect, _, color) => {
@@ -267,13 +330,17 @@ impl DockspaceElement {
                 Draw::Outline(rect, color) => {
                     draws.push(PreparedDraw::Outline(to_gpui(*rect, bounds), *color))
                 }
-                Draw::Preview(rect) => draws.push(PreparedDraw::Preview(to_gpui(*rect, bounds))),
+                Draw::Preview(rect) => draws.push(PreparedDraw::Preview(
+                    to_gpui(*rect, bounds),
+                    config.colors.preview,
+                    config.colors.accent,
+                )),
                 Draw::Receiver(receiver) => {
                     let hitbox = window
                         .insert_hitbox(to_gpui(receiver.bounds(), bounds), HitboxBehavior::Normal);
                     hitboxes.push(hitbox.id);
                 }
-                Draw::Text(rect, title, color) => {
+                Draw::Text(rect, title, color) | Draw::TabText(rect, _, title, color) => {
                     let rect = to_gpui(*rect, bounds);
                     let mut element = div()
                         .w(rect.size.width)
@@ -281,9 +348,18 @@ impl DockspaceElement {
                         .overflow_hidden()
                         .flex()
                         .items_center()
-                        .font_family("Arial")
-                        .text_size(px(14.0))
-                        .text_color(rgb(*color))
+                        .font(config.font.clone())
+                        .text_size(config.text_size)
+                        .text_color(*color)
+                        .when_some(
+                            match draw {
+                                Draw::TabText(_, item, _, _) => Some(*item),
+                                _ => None,
+                            },
+                            |text, item| {
+                                text.debug_selector(move || format!("dockspace:tab:{}", item.get()))
+                            },
+                        )
                         .child(title.clone())
                         .into_any_element();
                     element.prepaint_as_root(rect.origin, definite(rect), window, cx);
@@ -367,9 +443,11 @@ impl DockspaceElement {
                 bounds,
                 &hitboxes,
                 true,
-                event.modifiers.shift,
+                event.modifiers,
                 window,
             ) {
+                let focus = shared.borrow().focus.clone();
+                window.focus(&focus, cx);
                 window.refresh();
                 cx.stop_propagation();
             } else {
@@ -390,7 +468,7 @@ impl DockspaceElement {
                 bounds,
                 &hitboxes,
                 true,
-                event.modifiers.shift,
+                event.modifiers,
                 window,
             ) {
                 window.refresh();
@@ -411,7 +489,7 @@ impl DockspaceElement {
                 bounds,
                 &hitboxes,
                 true,
-                event.modifiers.shift,
+                event.modifiers,
                 window,
             ) {
                 window.refresh();
@@ -425,17 +503,20 @@ impl DockspaceElement {
                 return;
             }
             let position = window.mouse_position();
+            let enabled = shared
+                .borrow()
+                .config
+                .input
+                .docking_enabled(event.modifiers);
             if input::queue(
                 &mut shared.borrow_mut(),
                 serial,
-                SurfacePointerEvent::DockingEnabledChanged {
-                    enabled: !event.modifiers.shift,
-                },
+                SurfacePointerEvent::DockingEnabledChanged { enabled },
                 position,
                 bounds,
                 &hitboxes,
                 true,
-                event.modifiers.shift,
+                event.modifiers,
                 window,
             ) {
                 window.refresh();
@@ -444,21 +525,27 @@ impl DockspaceElement {
         let shared = self.host.clone();
         let hitboxes = prepared.hitboxes.clone();
         window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
-            if !phase.bubble() || event.keystroke.key != "escape" || !capture.is_captured(window) {
+            if !phase.bubble()
+                || !capture.is_captured(window)
+                || !shared
+                    .borrow()
+                    .config
+                    .input
+                    .cancel_matches(&event.keystroke)
+            {
                 return;
             }
-            let position = window.mouse_position();
             input::queue(
                 &mut shared.borrow_mut(),
                 serial,
                 SurfacePointerEvent::StreamCancelled(
                     SurfacePointerCancelReason::ExplicitCancellation,
                 ),
-                position,
+                window.mouse_position(),
                 bounds,
                 &hitboxes,
                 true,
-                false,
+                event.keystroke.modifiers,
                 window,
             );
             let _ = window.release_pointer(&capture);
@@ -490,7 +577,7 @@ impl DockspaceElement {
                 bounds,
                 &hitboxes,
                 false,
-                false,
+                window.modifiers(),
                 window,
             );
             window.refresh();
@@ -504,36 +591,16 @@ fn build_candidate(
     bounds: LogicalRect,
     window: &Window,
 ) -> Result<(Rc<Packet>, DockspaceUpdate)> {
-    let widths: BTreeMap<_, _> = host
-        .panels
-        .iter()
-        .map(|(item, panel)| {
-            let title = panel.title;
-            let line = window.text_system().shape_line(
-                title.into(),
-                px(14.0),
-                &[TextRun {
-                    len: title.len(),
-                    font: font("Arial"),
-                    color: rgb(INK).into(),
-                    ..Default::default()
-                }],
-                None,
-            );
-            (*item, f64::from(f32::from(line.width)))
-        })
-        .collect();
-    let titles: BTreeMap<_, _> = host
-        .panels
-        .iter()
-        .map(|(item, panel)| (*item, panel.title))
-        .collect();
+    let panels = &host.panels;
+    let config = &host.config;
+    let surface = host.surface;
+    let pointer = host.pointer;
     let mut frame = host.session.begin_host_frame()?;
     for input in inputs {
         input.submit(&mut frame)?;
     }
     frame.begin_encoding_pass()?;
-    let measure = match frame.surface_work(SURFACE)? {
+    let measure = match frame.surface_work(surface)? {
         SurfaceWork::Ready(plan) => plan.measurement_refresh().is_allowed(),
         SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured) => true,
         SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity) => {
@@ -541,13 +608,30 @@ fn build_candidate(
         }
     };
     if measure {
-        frame.measure_surface_with(SURFACE, |request| match request {
+        frame.measure_surface_with(surface, |request| match request {
             Request::DockBounds { .. } | Request::PopupPlaneBounds { .. } => Answer::Bounds(bounds),
-            Request::PaneMinimum { .. } => Answer::PaneMinimum(
-                LogicalSize::new(120.0, 90.0).expect("constant pane minimum is valid"),
-            ),
+            Request::PaneMinimum { item, .. } => {
+                Answer::PaneMinimum(item.and_then(|item| panels.get(&item)).map_or_else(
+                    || LogicalSize::new(120.0, 90.0).expect("default minimum is valid"),
+                    |pane| pane.minimum_size,
+                ))
+            }
             Request::TabIntrinsic { item, .. } => {
-                Answer::TabIntrinsic(widths.get(&item).copied().unwrap_or(120.0))
+                let width = panels.get(&item).map_or(120.0, |pane| {
+                    let line = window.text_system().shape_line(
+                        pane.title.clone(),
+                        config.text_size,
+                        &[TextRun {
+                            len: pane.title.len(),
+                            font: config.font.clone(),
+                            color: config.colors.text,
+                            ..Default::default()
+                        }],
+                        None,
+                    );
+                    f64::from(f32::from(line.width))
+                });
+                Answer::TabIntrinsic(width)
             }
             Request::TabStrip { .. } => Answer::TabStrip(
                 TabStripMetrics::new(0.0, 0.0).expect("zero chrome reservation is valid"),
@@ -555,188 +639,11 @@ fn build_candidate(
         })?;
     }
     let plan = frame
-        .paint_plan(SURFACE)?
+        .paint_plan(surface)?
         .context("measured surface has no ready paint plan")?;
-    let (packet, receipt) = record(plan, &titles, host.pointer)?;
+    let (packet, receipt) = record(plan, panels, pointer, &config.colors)?;
     frame.confirm_surface_painted(receipt)?;
     Ok((Rc::new(packet), frame.suspend()))
-}
-
-fn record(
-    plan: SurfacePaintPlan<'_>,
-    titles: &BTreeMap<ItemId, &'static str>,
-    pointer: Option<dockspace::geometry::LogicalPoint>,
-) -> Result<(Packet, dockspace::runtime::SurfaceProgramExecutionReceipt)> {
-    let mut draws = Vec::new();
-    let label = |item: Option<ItemId>| {
-        item.and_then(|item| titles.get(&item).copied())
-            .unwrap_or("Workspace")
-            .to_owned()
-    };
-    let receiver = |draws: &mut Vec<Draw>, value: Option<DockspaceReceiverDescriptor>| {
-        if let Some(value) = value {
-            draws.push(Draw::Receiver(value));
-        }
-    };
-    let receipt = plan
-        .execute_surface_program(|step| {
-            match step {
-                Step::RootBegin { root, paint } => {
-                    if let Some(contained) = root.contained() {
-                        receiver(&mut draws, plan.receiver_for_contained_frame(contained));
-                        if !paint.is_source_gap() {
-                            draws.push(Draw::Fill(contained.outer_bounds(), TAB_BAR));
-                            draws.push(Draw::Outline(contained.outer_bounds(), 0x8391a6));
-                        }
-                    }
-                }
-                Step::Operation {
-                    operation,
-                    paint,
-                    root,
-                } => match operation {
-                    Operation::Pane(pane) => {
-                        receiver(&mut draws, plan.receiver_for_pane(pane));
-                        if !paint.is_source_gap() {
-                            draws.push(Draw::Fill(pane.content_bounds(), SELECTED));
-                            if let Some(item) = pane.selected() {
-                                draws.push(Draw::Pane(pane.content_bounds(), item));
-                            }
-                        }
-                    }
-                    Operation::TabBar(bar) => {
-                        if !paint.is_source_gap() {
-                            draws.push(Draw::Fill(bar.bounds(), TAB_BAR));
-                        }
-                        for region in bar.group_drag_regions() {
-                            receiver(&mut draws, plan.receiver_for_tab_group_drag_region(region));
-                        }
-                    }
-                    Operation::Tab(tab) => {
-                        receiver(&mut draws, plan.receiver_for_tab_body(tab));
-                        if !paint.is_source_gap() {
-                            draws.push(Draw::Tab(
-                                tab.visible_bounds(),
-                                tab.item(),
-                                if tab.selected() { SELECTED } else { TAB },
-                            ));
-                            draws.push(Draw::Text(tab.text_bounds(), label(Some(tab.item())), INK));
-                        }
-                    }
-                    Operation::Splitter(splitter) => {
-                        receiver(&mut draws, plan.receiver_for_splitter(splitter));
-                        if !paint.is_source_gap() {
-                            draws.push(Draw::Fill(splitter.draw_bounds(), 0xa3afbf));
-                        }
-                    }
-                    Operation::SplitterJunction(junction) => {
-                        receiver(&mut draws, plan.receiver_for_splitter_junction(junction))
-                    }
-                    Operation::ContainedControls(contained) => {
-                        receiver(&mut draws, plan.receiver_for_contained_title(contained));
-                        for resize in contained.resize() {
-                            receiver(
-                                &mut draws,
-                                plan.receiver_for_contained_resize(contained, resize),
-                            );
-                        }
-                        if !paint.is_source_gap() {
-                            draws.push(Draw::Fill(contained.title_bounds(), 0xb9c6d8));
-                            draws.push(Draw::Text(
-                                contained.title_drag_bounds(),
-                                label(root.title_item()),
-                                INK,
-                            ));
-                        }
-                    }
-                    Operation::TabStripControl(control) => {
-                        receiver(&mut draws, plan.receiver_for_tab_strip_control(control));
-                        if !paint.is_source_gap() {
-                            draws.push(Draw::Fill(control.bounds(), TAB));
-                        }
-                    }
-                    Operation::PresentationMenuAnchor(_) => {}
-                },
-                Step::DropGuide {
-                    affordance: Some(cluster),
-                    ..
-                } => {
-                    for target in cluster.targets() {
-                        receiver(&mut draws, plan.receiver_for_drop_target(target));
-                        draws.push(Draw::Fill(
-                            target.draw_bounds(),
-                            if target.is_active() { ACCENT } else { 0xc4dde7 },
-                        ));
-                        draws.push(Draw::Outline(target.draw_bounds(), ACCENT));
-                        let caption = match target.direction() {
-                            dockspace::runtime::DockspaceDropDirection::Center => "+",
-                            dockspace::runtime::DockspaceDropDirection::Left => "←",
-                            dockspace::runtime::DockspaceDropDirection::Right => "→",
-                            dockspace::runtime::DockspaceDropDirection::Top => "↑",
-                            dockspace::runtime::DockspaceDropDirection::Bottom => "↓",
-                        };
-                        draws.push(Draw::Text(target.draw_bounds(), caption.into(), INK));
-                    }
-                }
-                Step::DragPreview(preview) => {
-                    if let Some(target) = preview.target() {
-                        draws.push(Draw::Outline(target.bounds(), ACCENT));
-                    }
-                    if !preview.is_layout_projected() {
-                        match preview.visual() {
-                            DockspacePreviewVisual::Dock { rect, .. }
-                            | DockspacePreviewVisual::Contained { rect, .. } => {
-                                draws.push(Draw::Preview(rect))
-                            }
-                            DockspacePreviewVisual::Native { .. } => {}
-                        }
-                    }
-                }
-                Step::ContainedTransformPreview(preview) => {
-                    if !preview.is_layout_projected() {
-                        draws.push(Draw::Preview(preview.rect()));
-                    }
-                }
-                Step::DragDecoration(decoration) => {
-                    if !decoration.source_is_projected() {
-                        if let Some(pointer) = pointer {
-                            if let Ok(ghost) = LogicalRect::new(
-                                pointer.x() + 12.0,
-                                pointer.y() + 14.0,
-                                160.0,
-                                28.0,
-                            ) {
-                                draws.push(Draw::Fill(ghost, 0xd3e0ed));
-                                draws.push(Draw::Outline(ghost, ACCENT));
-                                draws.push(Draw::Text(ghost, label(decoration.ghost_item()), INK));
-                            }
-                        }
-                    }
-                }
-                Step::PopupBackdrop(backdrop) => receiver(
-                    &mut draws,
-                    plan.receiver_for_tab_list_menu_backdrop(backdrop),
-                ),
-                Step::PopupMenu { menu, .. } => {
-                    draws.push(Draw::Fill(menu.bounds(), SELECTED));
-                    receiver(&mut draws, plan.receiver_for_tab_list_menu_frame(menu));
-                    for row in menu.rows() {
-                        receiver(&mut draws, plan.receiver_for_tab_list_menu_row(row));
-                        draws.push(Draw::Text(row.bounds(), label(Some(row.item())), INK));
-                    }
-                }
-                Step::DropTarget(_)
-                | Step::DropGuide {
-                    affordance: None, ..
-                }
-                | Step::InteractionFeedback
-                | Step::RootEnd(_)
-                | Step::SurfaceEnd { .. } => {}
-            }
-            Ok::<(), Infallible>(())
-        })
-        .map_err(|error| anyhow!("core surface program rejected: {error:?}"))?;
-    Ok((Packet { draws }, receipt))
 }
 
 fn to_gpui(rect: LogicalRect, surface: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -756,7 +663,7 @@ fn definite(bounds: Bounds<Pixels>) -> open_gpui::Size<AvailableSpace> {
     )
 }
 
-fn outline(bounds: Bounds<Pixels>, color: u32, window: &mut Window) {
+fn outline(bounds: Bounds<Pixels>, color: Hsla, window: &mut Window) {
     let x = bounds.origin.x;
     let y = bounds.origin.y;
     let w = bounds.size.width;
@@ -767,6 +674,6 @@ fn outline(bounds: Bounds<Pixels>, color: u32, window: &mut Window) {
         Bounds::new(point(x, y), size(px(1.0), h)),
         Bounds::new(point(x + w - px(1.0), y), size(px(1.0), h)),
     ] {
-        window.paint_quad(fill(bounds, rgb(color)));
+        window.paint_quad(fill(bounds, color));
     }
 }

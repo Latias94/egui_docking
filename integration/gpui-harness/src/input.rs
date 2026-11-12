@@ -8,9 +8,9 @@ use dockspace::{
         SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts,
     },
 };
-use open_gpui::{Bounds, HitboxId, Pixels, Point, Window};
+use open_gpui::{Bounds, HitboxId, Modifiers, Pixels, Point, Window};
 
-use crate::{HostState, SURFACE};
+use crate::HostState;
 
 /// Owned event-time facts; delayed input never re-hits a newer layout.
 #[derive(Clone, Copy)]
@@ -69,7 +69,7 @@ pub(super) fn queue(
     bounds: Bounds<Pixels>,
     hitboxes: &[HitboxId],
     captured: bool,
-    shift: bool,
+    modifiers: Modifiers,
     window: &Window,
 ) -> bool {
     let Some(point) = logical_point(position, bounds) else {
@@ -85,7 +85,7 @@ pub(super) fn queue(
     let hit = is_presented(host, serial)
         .then(|| {
             host.session
-                .host_pointer_hit_for_device(SURFACE, point, PointerDeviceKind::Mouse)
+                .host_pointer_hit_for_device(host.surface, point, PointerDeviceKind::Mouse)
         })
         .flatten();
     if hit.is_none() && !captured && !cancellation {
@@ -101,7 +101,7 @@ pub(super) fn queue(
                 .host_pointer_manipulation_surface(SurfacePointerId::new(1))
         })
         .flatten()
-        .filter(|source| source.surface() == SURFACE)
+        .filter(|source| source.surface() == host.surface)
         .or(surface);
     crate::continuation::cancel(host);
     host.inputs.push(QueuedPointer {
@@ -124,7 +124,7 @@ pub(super) fn queue(
             SurfacePointerCapture::None
         },
         metadata: PointerEventMetadata::new(PointerDeviceKind::Mouse, host.observed_at())
-            .with_docking_enabled(!shift),
+            .with_docking_enabled(host.config.input.docking_enabled(modifiers)),
     });
     host.pointer = Some(point);
     host.dirty = true;
@@ -147,7 +147,7 @@ pub(super) fn is_presented(host: &HostState, serial: u64) -> bool {
         serial == presented_serial
             && host
                 .session
-                .presented_surface(SURFACE)
+                .presented_surface(host.surface)
                 .is_some_and(|surface| surface.matches_presentation_artifact(artifact))
     })
 }

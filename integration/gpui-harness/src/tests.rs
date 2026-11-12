@@ -799,10 +799,9 @@ fn publication_loss_with_outer_transaction_rollback_retires_the_pending_candidat
             host.pending.is_none(),
             "the absent publication must withdraw candidate B"
         );
-        assert_eq!(
-            host.inputs.len(),
-            2,
-            "the unpublished Down/Up prefix is restored"
+        assert!(
+            host.inputs.is_empty(),
+            "an accepted unmount retires the unpublished Down/Up prefix"
         );
         assert!(!host.session.has_active_gesture());
         assert!(
@@ -837,6 +836,56 @@ fn publication_loss_with_outer_transaction_rollback_retires_the_pending_candidat
             .tab_index(),
         1
     );
+}
+
+#[open_gpui::test]
+fn unmount_during_a_captured_drag_retires_input_without_quitting_the_window(
+    cx: &mut TestAppContext,
+) {
+    let (mut fixture, mode) = Fixture::with_boundary(cx);
+    let start = center(fixture.geometry().tabs[&ItemId::new(2)]);
+    fixture
+        .visual
+        .simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    fixture.present();
+    fixture.visual.simulate_mouse_move(
+        start + point(px(100.0), px(100.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    fixture.present();
+    assert!(fixture.host.borrow().session.has_active_gesture());
+    assert!(fixture.selected(2), "the original press selected Preview");
+    mode.set(BoundaryMode::Absent);
+    fixture.visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+        assert!(window.captured_pointer().is_none());
+    });
+    {
+        let host = fixture.host.borrow();
+        assert!(!host.session.has_active_gesture());
+        assert!(host.inputs.is_empty());
+        assert!(host.pending.is_none());
+        assert!(host.wake.is_none());
+        assert!(host.input_frame.is_none());
+    }
+    fixture.visual.simulate_mouse_up(
+        start + point(px(100.0), px(100.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    mode.set(BoundaryMode::Live);
+    fixture.visual.update(|window, _| window.refresh());
+    fixture.present();
+    assert!(
+        fixture.selected(2),
+        "unmount preserves the committed selection"
+    );
+    fixture.click_tab(1);
+    assert!(fixture.selected(1));
+    assert!(!fixture.host.borrow().session.has_active_gesture());
+    assert!(!fixture.visual.did_quit());
 }
 
 #[open_gpui::test]

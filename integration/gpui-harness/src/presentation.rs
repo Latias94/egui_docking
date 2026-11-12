@@ -145,7 +145,7 @@ pub(super) fn accept(
             .and_then(|frame| frame.commit());
         match result {
             Ok(mut report) => {
-                host.dirty |= report.repaint_surfaces().contains(&crate::SURFACE);
+                host.dirty |= report.repaint_surfaces().contains(&host.surface);
                 pending.output = report.take_painted_outputs().into_iter().next();
                 pending.inputs.clear();
                 host.packet = Some(pending.packet.clone());
@@ -197,11 +197,14 @@ pub(super) fn discard(shared: &SharedHost, window: &mut Window) {
     // The callback may come from the previous accepted packet after a newer
     // candidate was rolled back. Publication loss retracts the entire host.
     withdraw_pending(&mut host, window);
-    continuation::cancel(&mut host);
-    host.input_frame = None;
-    host.packet = None;
-    host.presented = None;
+    host.inputs.clear();
+    let capture = host.capture.take();
+    close(&mut host);
     host.dirty = true;
+    drop(host);
+    if let Some(capture) = capture {
+        let _ = window.release_pointer(&capture);
+    }
 }
 
 fn withdraw_pending(host: &mut HostState, window: &mut Window) {
@@ -241,5 +244,11 @@ pub(super) fn close(host: &mut HostState) {
     host.inputs.clear();
     continuation::cancel(host);
     host.input_frame = None;
-    let _ = host.session.disable_host_pointer();
+    host.pointer = None;
+    host.bounds = None;
+    host.capture = None;
+    host.attached = false;
+    if let Err(error) = host.session.disable_host_pointer() {
+        host.fail(error);
+    }
 }

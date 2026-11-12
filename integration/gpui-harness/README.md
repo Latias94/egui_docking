@@ -1,8 +1,9 @@
-# GPUI workbench
+# GPUI adapter and workbench
 
-A standalone Open GPUI consumer of `dockspace`. It opens a real OS window and
-hosts stable GPUI views in the rectangles produced by the public docking runtime.
-It does not depend on `open-gpui`'s existing `gpui_docking` implementation.
+A retained Open GPUI adapter for `dockspace`, with a runnable workbench. Applications
+provide their session and GPUI views; the adapter places those stable views in the
+rectangles produced by the public docking runtime. It does not depend on
+`open-gpui`'s existing `gpui_docking` implementation.
 
 ## Run
 
@@ -31,6 +32,45 @@ press Escape to cancel. Each pane contains a normal GPUI button with its own
 counter, so application-widget input can be checked alongside docking input.
 Dragging over an inactive target tab selects it after the core's hover delay;
 the adapter schedules that deadline without requiring further mouse motion.
+
+## Embed in an application
+
+The independent workspace also exposes the `dockspace_gpui_harness` library.
+Create a `GpuiDockspace` once, then include `dock.element()` in your application's
+normal `Render` implementation:
+
+```rust
+use dockspace_gpui_harness::{DockPane, GpuiDockspace, GpuiDockspaceConfig};
+
+let dock = GpuiDockspace::new(
+    session,
+    surface,
+    [
+        DockPane::new(editor_id, "Editor", editor_view),
+        DockPane::new(preview_id, preview_title, preview_view),
+    ],
+    GpuiDockspaceConfig::default(),
+    cx,
+)?;
+
+// Inside Render, with a sized parent:
+div().size_full().child(dock.element())
+```
+
+Titles accept owned `SharedString` values and views accept existing entities through
+`AnyView`. Tab selection, docking, floating and temporary removal preserve those
+entities. `DockPane::with_minimum_size` provides application-specific pane limits.
+`GpuiDockspaceConfig` supplies the font, text size, colors and input bindings;
+measurement and painting use the same configuration. Core layout metrics remain
+part of the session's `DockPresentationConfig`.
+
+This adapter currently owns one logical surface in one application-owned GPUI
+window. Use a session whose native-surface and pane-close policies are disabled.
+The constructor rejects unsupported sessions and duplicate or missing panes.
+Cloning the handle shares its state; mount it once in its original window.
+Removing its subtree cancels gestures, timers and unpublished input; reinserting it
+in that window establishes a fresh presentation without recreating pane views.
+Application startup, window closing and process exit remain application decisions.
 
 ## Real-window smoke check
 
@@ -108,7 +148,7 @@ graph to the root workspace.
 ## Automated interaction checks
 
 ```sh
-cargo nextest run --manifest-path integration/gpui-harness/Cargo.toml --lib --locked
+cargo nextest run --manifest-path integration/gpui-harness/Cargo.toml --locked
 ```
 
 The retained tests run the actual workbench Element and GPUI event dispatch.
@@ -119,6 +159,8 @@ previous packet's presentation authority to start a gesture.
 An outer prepaint transaction rollback verifies that publication loss releases a
 newer suspended update. A rejected candidate followed by platform capture loss
 verifies that cancellation follows the retained input prefix during retry.
+External consumer tests embed the public host with different identities, dynamic
+titles and application-owned views, and verify removal and reinsertion.
 
 These tests use GPUI's CPU test platform and its explicit Submitted/Deferred
 renderer outcomes. They verify adapter contracts and interaction behavior,

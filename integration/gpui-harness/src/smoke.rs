@@ -20,7 +20,7 @@ const PREVIEW: ItemId = ItemId::new(2);
 const TOOLS: ItemId = ItemId::new(4);
 const VISIBLE_PANES: [ItemId; 3] = [EDITOR, ItemId::new(3), ItemId::new(4)];
 
-pub(super) type ButtonProbe = Rc<Cell<Option<Bounds<Pixels>>>>;
+pub(super) type ButtonProbe = crate::host::BoundsProbe;
 
 #[derive(Clone, Default)]
 pub(super) struct Smoke {
