@@ -101,7 +101,11 @@ where useful. Return the final `TabVisuals` to coordinate built-in focus and
 close cues. Reserve additional content width with `tab_content_width`.
 `tab_bar_layout` and `tab_bar_ui` add fixed leading/trailing controls or a
 scrolling `AfterTabs` slot. `tab_close_ui` and `drag_preview_ui` customize the
-remaining decorations. Selection, dragging, close controls and accessibility
+close icon and source ghost. `drop_preview_ui` receives the resolved target and
+resulting area. Its default paints the result highlight and future tab shapes
+for merging or reordering, including titles and committed order. Applications can add
+their own colors, icons, outlines or an optional localized `paint_label` hint.
+Selection, dragging, close controls and accessibility
 stay in the adapter. Enable **Custom tabs** in the workbench for a
 [small working example](examples/workbench/tabs.rs).
 
@@ -132,6 +136,14 @@ shortcuts remain with their existing input owners.
 
 `DockPolicy` controls docking rules and close permissions. The
 [integration guide](docs/guide.md) covers these options and the output contract.
+
+With `serde`, use `save_document_json` and `from_document_json` to save and reopen
+a layout. Reconnect pane data with `item_id_for_external_key`; business data
+stays in your application. The persistence example loads `dockspace-layout.json`
+on startup, saves before closing, and has an explicit **Save layout file** button.
+If saving fails, the window stays open so the error remains visible.
+Pass a different path after `--` to keep multiple files. Its named presets remain
+in memory for the current process.
 
 ## Features
 

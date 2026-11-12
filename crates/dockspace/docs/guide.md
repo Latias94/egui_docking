@@ -64,6 +64,14 @@ A successful submission means the candidate accepted the input; policy or
 availability can still reject the product operation at commit. The identity
 belongs to that frame attempt and does not resolve against a later report.
 
+To move a complete tabs leaf, capture it once with
+`session.capture_tabs_group(DockAnchor::Item(item))`, then use
+`prepare_dock_tabs` or `prepare_float_tabs`. The resulting action uses one atomic
+payload and retains tab order and selection. Capture freezes session and
+workspace authority; preparing or submitting later does not refresh a stale
+group or look its old anchor up again. `DockspaceHostFrame` supplies the
+corresponding `dock_tabs_current` and `float_tabs_current` conveniences.
+
 1. Begin a host frame, submit ordered input and application commands, then
    begin encoding and supply surface measurements in logical coordinates.
    A surface is a logical layout and input domain; it need not be a platform

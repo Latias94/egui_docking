@@ -159,8 +159,16 @@ shows the candidate result after removing the payload from its source and
 inserting it at that destination. Moving the last tab out of a pane can expand
 the remaining panes, so the highlight can differ from the destination's current
 bounds. A tab-gap target shows an insertion line at the resulting tab position.
-Use `DockVisualOverrides::drop_fill` and `drop_border_color` for these cues;
-`PaneView::drag_preview_ui` decorates the moving source ghost separately.
+Use `DockVisualOverrides::drop_fill` and `drop_border_color` for these cues.
+`PaneView::drop_preview_ui` receives the core-resolved target, current bounds,
+selected item, insertion neighbors and result rectangle. Applications can add
+colors, icons or other destination feedback without another hit test. The
+default draws the result highlight and projected target tabs, without extra
+annotations. The future tabs use committed order, selection, scrolling and
+clipping; split targets and hidden bars do not invent a tab preview. Optional
+`paint_target` and `paint_label(ui, text)` helpers draw an outline or an
+application-provided accessible hint. `drag_preview_ui` decorates the moving
+source ghost separately.
 
 The same finite continuation drives stationary overflow-edge scrolling during
 a local drag. `DockStyle::tab_strip_edge_scroll_band` defaults to 24 points and
@@ -248,6 +256,13 @@ application-owned named layout documents.
 Use the distinct `Dock Back` menu item or `dock_root_back_current` to return
 floating content to its docking destination while keeping it open. Closing and
 Dock Back share stable item/root identities, but execute different commands.
+
+For a complete tabs leaf, `capture_tabs_group(DockAnchor::Item(item))` returns a
+`PreparedTabsGroup`. Pass it by value to `dock_tabs_current` or
+`float_tabs_current`; the group moves in one transaction with its order and
+selected item preserved. A captured group belongs to its original session and
+workspace version. Recapture after layout changes rather than replaying an old
+anchor against a different group.
 
 ## Feedback And Focus
 
@@ -383,6 +398,12 @@ and drag-preview text even when the visible tab is custom.
 - `drag_preview_ui(ui, preview)` paints the non-interactive drag ghost. Reuse
   its background/title helpers to add the same icons or badges as the tabs.
   The callback is skipped when core projects the actual floating source.
+- `drop_preview_ui(ui, preview)` paints the result highlight and future tabs. Its semantic target
+  describes the currently presented layout; its result rectangle describes the
+  pending layout. `DropPreview::tabs` exposes paint-only members; each
+  `DropPreviewTab` has background/title helpers for custom colors or icons.
+  `paint_target` and `paint_label(ui, text)` are optional helpers
+  for applications that want additional annotations.
 
 For example, customize one item's background without copying the renderer:
 
@@ -515,12 +536,18 @@ outside them.
 Run the bounded editor layout example with:
 
 ```sh
-cargo run -p egui_dockspace --example workspace_persistence --features example-app,serde
+cargo run -p egui_dockspace --example workspace_persistence --features example-app,serde --locked -- my-layout.json
 ```
 
 It has eight application-owned panes, text/scroll content and a small drawn
 scene. Its closed inventory, immutable default and at most eight user presets
-remain in application memory. Layout locking uses `DockPolicy` authority;
+remain in application memory. The current layout loads from the supplied JSON
+file at startup and saves before closing or through **Save layout file**.
+A failed close-time save keeps the window open with a visible error and an
+explicit **Exit without saving** option. An unreadable
+or invalid existing document is preserved until an explicit save. File writes
+use a temporary file in the destination directory and replace the document
+after successful encoding and writing. Layout locking uses `DockPolicy` authority;
 reset/apply/reopen controls require an explicit unlock, while normal pane use
 continues. Saved layouts contain docking state and stable keys, not pane data.
 The example resolves current presentation identities after a preset restore.

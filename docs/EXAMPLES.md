@@ -12,8 +12,10 @@ need a desktop session and a working graphics backend.
 | Try full docking with official egui | [Workbench](../crates/egui_dockspace/examples/workbench.rs) | Drag docking, splitters, contained Inspector, themes and retained document data |
 | Start from an eframe callback | [Basic](../crates/egui_dockspace/examples/basic.rs) | Pane rendering, close decisions and theme/font/density controls; callback capabilities |
 | Save before closing a tab | [Background save](../crates/egui_dockspace/examples/background_save.rs) | Background worker, exact deferred token, failure recovery and stale completion |
-| Save and restore editor layouts | [Workspace persistence](../crates/egui_dockspace/examples/workspace_persistence.rs) | Presets, closed-pane inventory, missing content and layout locking |
+| Save and restore editor layouts | [Workspace persistence](../crates/egui_dockspace/examples/workspace_persistence.rs) | JSON file across launches, presets, closed-pane inventory and layout locking |
 | Explore native OS windows | [Native editor](../crates/egui_dockspace_native/examples/basic.rs) | Experimental multiview, window recovery, policy/style commands and optional presets |
+| Exercise moving OS windows | [Solar system](../crates/egui_dockspace_native/examples/solar_system.rs) | Three orbiting child windows, pause, recovery and recreation |
+| Try another UI framework | [GPUI workbench](../integration/gpui-harness/README.md) | Retained GPUI views and single-window docking using a local open-gpui checkout |
 
 Start with the **workbench** for draggable egui docking. The three
 packaged eframe examples use an ordinary `App::ui` callback: selection, close,
@@ -71,7 +73,11 @@ destination; the example does not overwrite an existing file.
 
 In **workspace_persistence**, save a named layout, close/reopen panes, lock the
 arrangement, and restore the default. Presets live in application memory; pane
-content is stored separately from layout documents.
+content is stored separately from layout documents. The current layout loads
+from `dockspace-layout.json` and saves before closing or through **Save layout file**.
+A failed save keeps the window open with an explicit choice to exit without saving.
+Pass a different file after `--`, for example `-- my-layout.json`. A document
+which fails to load is preserved until an explicit save.
 
 ## Experimental native windows
 
@@ -88,6 +94,25 @@ Check [platform support](PLATFORM_SUPPORT.md) before testing cross-window input.
 This workspace pins eframe/winit forks and remains separate from the official
 egui adapter. It does not require changes to the official workspace's dependency
 sources.
+
+For the smaller Sun-and-planets multiview example:
+
+```sh
+cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --example solar_system --locked
+```
+
+It creates three real child windows, moves them around the main window, pauses
+for manual docking, and can relaunch returned planets. Add `-- --smoke` to
+observe movement, recover a child through `DockRootBack` and verify its recreated
+native identity. Native close-button delivery has its own qualification boundary.
+
+## GPUI
+
+The independent [GPUI harness](../integration/gpui-harness/README.md) consumes the
+local `open-gpui` checkout beside this repository. It keeps actual GPUI pane
+views while core owns tabs, splits and contained windows. Its manifest and
+lockfile are isolated from the official egui workspace. Follow its README for
+the checkout layout, run commands and the current single-window scope.
 
 ## Validation tools
 
