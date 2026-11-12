@@ -205,6 +205,11 @@ impl DockEngine {
                     self.presented_root_structure_is_current(plan, root)
                 }
             },
+            PresentationHitRegionKind::TabStripControl(TabStripControlId::RevealTabBar(bar)) => {
+                self.presented_root_owner_is_current(plan, bar.root)
+                    && matches!(self.workspace.node(bar.tabs), Some(Node::Tabs { items, selected, .. })
+                        if items.len() == 1 && *selected == plan.selected_in_tabs(bar.tabs))
+            }
             PresentationHitRegionKind::TabStripControl(control) => bar_is_current(control.bar()),
             PresentationHitRegionKind::TabListMenuScroll(_)
             | PresentationHitRegionKind::TabListMenuBlocker(_)

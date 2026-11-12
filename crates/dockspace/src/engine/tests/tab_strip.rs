@@ -4,6 +4,149 @@ use super::*;
 use crate::viewport_focus::unknown_focus_observation;
 
 #[test]
+fn auto_hidden_single_bar_reveals_through_its_exact_presented_corner_control() {
+    let surface = SurfaceId::new(801);
+    let root = RootId::new(802);
+    let item = ItemId::new(803);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([item]));
+    builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let mut policy = DockPolicy::default();
+    policy.set_tab_bar(crate::policy::TabBarPolicy::new(
+        crate::policy::TabBarVisibility::AutoHideSingle,
+        TabBarInteraction::Enabled,
+    ));
+    let mut engine = DockEngine::new(builder.build().unwrap(), policy).unwrap();
+    let host = engine.create_presentation_host().unwrap();
+    let bar = TabBarSceneId { root, tabs };
+    let control = TabStripControlId::RevealTabBar(bar);
+    let measurements = tab_strip_reducer_measurements_for(&engine, surface, false);
+    let hidden = compile_tab_strip_reducer_plan_for(&engine, surface, &measurements);
+    assert!(hidden.tab_bar_records().is_empty());
+    assert_eq!(
+        hidden.pane_records()[0].bounds(),
+        hidden.pane_records()[0].content_bounds()
+    );
+    let record = hidden.tab_strip_control_records()[0];
+    assert_eq!(record.id(), control);
+    let ticket = hidden.measurement_ticket().unwrap();
+    let stamp = SurfaceSceneStamp::new(ticket, SurfaceSceneRevision::new(1));
+    let output = SurfacePresentationOutputTicket::mint(
+        engine.authority_domain,
+        PresentationOutputSerial::new_for_test(1),
+        stamp,
+    );
+    let region = PresentationHitManifest::compile(output, &hidden)
+        .unwrap()
+        .regions()
+        .iter()
+        .find(|region| region.id().kind() == PresentationHitRegionKind::TabStripControl(control))
+        .expect("the hidden pane publishes its exact corner receiver")
+        .id();
+    assert!(engine.presented_receiver_is_current(&hidden, region));
+    assert!(matches!(
+        engine.freeze_journal_click_action(
+            &hidden,
+            surface,
+            region,
+            LogicalPoint::new(
+                record.bounds().x() + record.bounds().width() * 0.5,
+                record.bounds().y() + record.bounds().height() * 0.5
+            )
+            .unwrap(),
+            &engine.policy
+        ),
+        Ok(FrozenClickAction::TabStripControl(_))
+    ));
+    publish_surface_projection_with_measurements(&mut engine, host, surface, measurements.clone());
+    let outcome = submit_prepared_interaction(&mut engine, host, |view| {
+        view.prepare_tab_strip_control_activation(surface, control)
+            .map(|prepared| EngineInput::ActivateTabStripControl { prepared })
+    });
+    assert!(matches!(
+        outcome.reduced_inputs()[0].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::TabStripControlActivated { changed: true, .. },
+            ..
+        }
+    ));
+    let revealed = compile_tab_strip_reducer_plan_for(&engine, surface, &measurements);
+    assert_eq!(revealed.tab_bar_records().len(), 1);
+    assert!(revealed.tab_strip_control_records().is_empty());
+    assert!(
+        revealed
+            .tab_records()
+            .iter()
+            .any(|tab| tab.id().item == item)
+    );
+    assert!(
+        revealed.tab_bar_records()[0].group_drag().is_some(),
+        "revealing restores the existing group drag affordance"
+    );
+    assert!(
+        revealed.pane_records()[0].content_bounds().height()
+            < hidden.pane_records()[0].content_bounds().height()
+    );
+    assert_eq!(
+        revealed.measurement_ticket(),
+        hidden.measurement_ticket(),
+        "the potential strip was measured before revealing it"
+    );
+    assert_eq!(
+        engine.workspace().node(tabs).unwrap(),
+        &Node::tabs([item]),
+        "revealing is transient presentation state"
+    );
+}
+
+#[test]
+fn becoming_auto_hidden_retires_an_open_overflow_popup_before_manifest_publication() {
+    let mut policy = DockPolicy::default();
+    policy.set_tab_bar(crate::policy::TabBarPolicy::new(
+        crate::policy::TabBarVisibility::AutoHideSingle,
+        TabBarInteraction::Enabled,
+    ));
+    let fixture = tab_strip_reducer_fixture(policy);
+    let key = TabStripStateKey::new(fixture.surface, fixture.bar);
+    let mut states = fixture
+        .engine
+        .presentation_authority
+        .tab_strip_states
+        .clone();
+    states
+        .open_tab_list_menu(key, Some(fixture.items[0]))
+        .unwrap();
+    let mut builder = fixture.engine.workspace().clone().into_builder();
+    builder
+        .replace_node(fixture.bar.tabs, Node::tabs([fixture.items[0]]))
+        .unwrap();
+    let workspace = builder.build().unwrap();
+    let draft = crate::scene_compiler::derive_scene_requirement_draft(
+        fixture.engine.authority_domain,
+        &workspace,
+        fixture.engine.version(),
+        fixture
+            .engine
+            .presentation_authority
+            .presentation_config_revision,
+        &fixture.engine.policy,
+        RequirementRevision::new(100),
+        &BTreeMap::from([(fixture.surface, SurfaceRequirementRevision::new(100))]),
+    )
+    .unwrap();
+    DockEngine::reconcile_tab_strip_state_store_with_sources(&draft, &mut states, false, |_| {
+        &workspace
+    })
+    .unwrap();
+    assert!(
+        states.active_menu().is_none(),
+        "potential strip measurements must not keep a hidden popup alive"
+    );
+    draft.finalize(states.popup_requirement()).unwrap();
+}
+
+#[test]
 fn requirement_pipeline_reconciles_popup_before_finalizing_disabled_policy() {
     let mut fixture = tab_strip_reducer_fixture(DockPolicy::default());
     let key = TabStripStateKey::new(fixture.surface, fixture.bar);

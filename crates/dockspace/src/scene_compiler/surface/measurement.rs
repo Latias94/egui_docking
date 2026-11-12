@@ -27,10 +27,18 @@ pub(super) fn measure_root_layout<'workspace>(
     requirements: &SurfaceRequirements,
     measurements: AuthoritativeSurfaceMeasurements<'_>,
     root: RootId,
+    tab_strip_states: &TabStripStateStore,
 ) -> Result<RootLayoutMeasurement<'workspace>, SceneCompilationError> {
     let surface = requirements.ticket().surface();
     let pane_minimums = root_pane_minimum_measurements(requirements, measurements, root)?;
-    let minimums = root_leaf_minimums(workspace, config, requirements, root, &pane_minimums)?;
+    let minimums = root_leaf_minimums(
+        workspace,
+        config,
+        requirements,
+        root,
+        &pane_minimums,
+        tab_strip_states,
+    )?;
     let layout = measure_root_minimums(
         workspace,
         root,
@@ -83,6 +91,7 @@ fn root_leaf_minimums(
     requirements: &SurfaceRequirements,
     root: RootId,
     pane_minimums: &BTreeMap<PaneMinimumKey, LogicalSize>,
+    tab_strip_states: &TabStripStateStore,
 ) -> Result<BTreeMap<NodeId, LogicalSize>, SceneCompilationError> {
     let mut minimums = BTreeMap::new();
     for (key, measured) in pane_minimums.iter().filter(|(key, _)| key.root() == root) {
@@ -102,7 +111,13 @@ fn root_leaf_minimums(
             .ok_or(SceneCompilationError::MissingTabBarRequirement { id })?;
         minimums.insert(
             key.tabs(),
-            pane_outer_minimum(*measured, config, tab_bar.policy().visibility())?,
+            pane_outer_minimum(
+                *measured,
+                config,
+                tab_bar
+                    .resolved_policy(requirements.ticket().surface(), tab_strip_states)
+                    .visibility(),
+            )?,
         );
     }
     Ok(minimums)
@@ -154,7 +169,9 @@ pub(crate) fn selection_geometry_unchanged(
     else {
         return Ok(false);
     };
-    let visibility = requirement.policy().visibility();
+    let visibility = requirement
+        .resolved_policy(plan.surface(), tab_strip_states)
+        .visibility();
     if pane_outer_minimum(old_minimum, config, visibility)?
         != pane_outer_minimum(new_minimum, config, visibility)?
     {

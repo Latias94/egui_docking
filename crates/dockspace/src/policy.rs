@@ -184,6 +184,11 @@ pub enum TabBarVisibility {
     Visible,
     /// The core presentation omits the tab bar and all of its hit regions.
     Hidden,
+    /// Hide a single-member tab bar until its core-owned corner control is activated.
+    ///
+    /// Empty leaves and groups containing multiple items retain their tab bar.
+    /// Revealing a single-member bar lasts until its membership changes.
+    AutoHideSingle,
 }
 
 /// Static policy for tab-bar interaction.
@@ -197,7 +202,7 @@ pub enum TabBarInteraction {
     Disabled,
 }
 
-/// Effective tab-bar policy for one semantic target.
+/// Tab-bar declaration, or the resolved result of one exact policy query.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct TabBarPolicy {
@@ -215,7 +220,7 @@ impl TabBarPolicy {
         }
     }
 
-    /// Returns whether the bar exists in semantic presentation.
+    /// Returns the declared visibility, or the resolved visibility of a policy query.
     #[must_use]
     pub const fn visibility(self) -> TabBarVisibility {
         self.visibility
@@ -227,11 +232,26 @@ impl TabBarPolicy {
         self.interaction
     }
 
+    pub(crate) const fn resolved(self, item_count: usize, single_tab_revealed: bool) -> Self {
+        let visibility = match self.visibility {
+            TabBarVisibility::AutoHideSingle if item_count == 1 && !single_tab_revealed => {
+                TabBarVisibility::Hidden
+            }
+            TabBarVisibility::AutoHideSingle => TabBarVisibility::Visible,
+            visibility => visibility,
+        };
+        Self::new(visibility, self.interaction)
+    }
+
     fn intersect(self, other: Self) -> Self {
         let visibility = if self.visibility == TabBarVisibility::Hidden
             || other.visibility == TabBarVisibility::Hidden
         {
             TabBarVisibility::Hidden
+        } else if self.visibility == TabBarVisibility::AutoHideSingle
+            || other.visibility == TabBarVisibility::AutoHideSingle
+        {
+            TabBarVisibility::AutoHideSingle
         } else {
             TabBarVisibility::Visible
         };
@@ -326,6 +346,7 @@ pub struct DockItemRule {
     source_enabled: bool,
     operations: RuleFilter<DockOperation>,
     allow_undocking: bool,
+    allow_tab_reorder: bool,
     close: Option<CloseCapability>,
 }
 
@@ -379,6 +400,22 @@ impl DockItemRule {
         self.allow_undocking = allowed;
     }
 
+    /// Returns whether this tab may be reordered or crossed within its current group.
+    ///
+    /// Undocking and closing use their independent policy rules.
+    #[must_use]
+    pub const fn allows_tab_reorder(&self) -> bool {
+        self.allow_tab_reorder
+    }
+
+    /// Enables or disables reordering this tab and moving other tabs across it.
+    ///
+    /// This restriction applies only within the current group. It does not
+    /// restrict undocking, closing, or merging additional tabs into the group.
+    pub fn set_allow_tab_reorder(&mut self, allowed: bool) {
+        self.allow_tab_reorder = allowed;
+    }
+
     /// Returns this item's close override, or `None` to inherit the workspace default.
     #[must_use]
     pub const fn close_capability(&self) -> Option<CloseCapability> {
@@ -398,6 +435,7 @@ impl Default for DockItemRule {
             source_enabled: true,
             operations: RuleFilter::any(),
             allow_undocking: true,
+            allow_tab_reorder: true,
             close: None,
         }
     }
@@ -1274,14 +1312,6 @@ impl DockResizePolicyRequest {
     }
 }
 
-/// Complete tab-bar request for one pure policy evaluation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub struct DockTabBarPolicyRequest {
-    surface: SurfaceId,
-    target: Option<DockTargetRuleKey>,
-}
-
 /// Normalized policy facts for one root owned by a recoverable child surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -1359,14 +1389,6 @@ impl DockSurfaceRecoveryPolicyRequest {
     }
 }
 
-impl DockTabBarPolicyRequest {
-    /// Creates a tab-bar request for one semantic target.
-    #[must_use]
-    pub const fn new(surface: SurfaceId, target: Option<DockTargetRuleKey>) -> Self {
-        Self { surface, target }
-    }
-}
-
 /// Renderer-neutral policy query evaluated against exactly one frozen revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -1386,8 +1408,6 @@ pub enum DockPolicyRequest {
     RecoverSurface(DockSurfaceRecoveryPolicyRequest),
     /// Evaluate one split resize.
     Resize(DockResizePolicyRequest),
-    /// Evaluate tab-bar interaction availability.
-    InteractWithTabBar(DockTabBarPolicyRequest),
     /// Evaluate the static pane-close capability.
     ClosePane {
         /// Stable item being closed.
@@ -1411,6 +1431,14 @@ pub struct DockPolicySnapshot {
 }
 
 impl DockPolicySnapshot {
+    pub(crate) fn has_tab_reorder_constraints(&self) -> bool {
+        self.policy
+            .rules
+            .item_rules
+            .values()
+            .any(|rule| !rule.allows_tab_reorder())
+    }
+
     /// Returns the exact revision carried by all proofs derived from this snapshot.
     #[must_use]
     pub const fn revision(&self) -> PolicyRevision {
@@ -1482,7 +1510,6 @@ impl DockPolicySnapshot {
             DockPolicyRequest::RaiseContained(request) => self.evaluate_contained_rules(request),
             DockPolicyRequest::RecoverSurface(request) => self.evaluate_surface_recovery(request),
             DockPolicyRequest::Resize(request) => self.evaluate_resize(*request),
-            DockPolicyRequest::InteractWithTabBar(request) => self.evaluate_tab_bar(*request),
             DockPolicyRequest::ClosePane { item, deferred } => {
                 self.evaluate_pane_close(*item, *deferred)
             }
@@ -1520,17 +1547,16 @@ impl DockPolicySnapshot {
         )
     }
 
-    /// Computes the effective tab-bar policy by intersecting workspace, surface, and target rules.
-    #[must_use]
-    pub fn tab_bar_policy(&self, request: DockTabBarPolicyRequest) -> TabBarPolicy {
+    pub(crate) fn tab_bar_declaration(
+        &self,
+        surface: SurfaceId,
+        target: Option<DockTargetRuleKey>,
+    ) -> TabBarPolicy {
         let mut policy = self.policy.rules.tab_bar;
-        if let Some(surface) = self.policy.rules.surface_rules.get(&request.surface) {
+        if let Some(surface) = self.policy.rules.surface_rules.get(&surface) {
             policy = policy.intersect(surface.tab_bar);
         }
-        if let Some(target) = request
-            .target
-            .and_then(|key| self.policy.rules.target_rules.get(&key))
-        {
+        if let Some(target) = target.and_then(|key| self.policy.rules.target_rules.get(&key)) {
             policy = policy.intersect(target.tab_bar);
         }
         policy
@@ -1676,17 +1702,6 @@ impl DockPolicySnapshot {
                 surface,
                 axis: request.axis,
             });
-        }
-        Ok(())
-    }
-
-    fn evaluate_tab_bar(&self, request: DockTabBarPolicyRequest) -> Result<(), PolicyRejection> {
-        let policy = self.tab_bar_policy(request);
-        if policy.visibility == TabBarVisibility::Hidden {
-            return Err(PolicyRejection::TabBarHidden);
-        }
-        if policy.interaction == TabBarInteraction::Disabled {
-            return Err(PolicyRejection::TabBarInteractionDisabled);
         }
         Ok(())
     }
@@ -1937,6 +1952,12 @@ pub enum PolicyRejection {
     /// Application-driven arrangement changes are locked.
     #[error("arrangement changes are locked by workspace policy")]
     ArrangementLocked,
+    /// A tab cannot be reordered or crossed within its current group.
+    #[error("tab reordering is disabled by policy for item {item}")]
+    TabReorderDisabled {
+        /// The moved tab or the tab that would be crossed.
+        item: ItemId,
+    },
     /// Center/tab-gap merge is disabled.
     #[error("tab merging is disabled by workspace policy")]
     TabMergeDisabled,

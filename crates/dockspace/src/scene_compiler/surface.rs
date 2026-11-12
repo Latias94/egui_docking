@@ -154,8 +154,14 @@ fn compile_surface_scene(
         if let Some(basis) = workspace_index.root_fingerprint(root) {
             ready.bind_command_basis(root, basis.clone());
         }
-        let root_measurement =
-            measure_root_layout(workspace, config, requirements, measurements, root)?;
+        let root_measurement = measure_root_layout(
+            workspace,
+            config,
+            requirements,
+            measurements,
+            root,
+            tab_strip_states,
+        )?;
         ready.begin_surface_program_root(root, SurfaceProgramRootPresentation::Main)?;
         compile_root(
             workspace,
@@ -191,8 +197,14 @@ fn compile_surface_scene(
         if let Some(basis) = workspace_index.root_fingerprint(record.root) {
             ready.bind_command_basis(record.root, basis.clone());
         }
-        let root_measurement =
-            measure_root_layout(workspace, config, requirements, measurements, record.root)?;
+        let root_measurement = measure_root_layout(
+            workspace,
+            config,
+            requirements,
+            measurements,
+            record.root,
+            tab_strip_states,
+        )?;
         let minimum = contained_minimum_size(config, root_measurement.layout.minimum())?;
         ready.push_contained_minimum(ContainedMinimumMeasurement::new(floating, minimum));
 
@@ -567,6 +579,7 @@ fn compile_root(
                 root_record.central,
                 bounds,
                 &projection.nodes,
+                tab_strip_states,
             )
         })
         .transpose()?

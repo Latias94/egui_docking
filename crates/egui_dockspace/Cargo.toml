@@ -76,5 +76,8 @@ name = "tab_accessibility"
 [[test]]
 name = "tab_customization"
 
+[[test]]
+name = "auto_hide_tabs"
+
 [lints]
 workspace = true

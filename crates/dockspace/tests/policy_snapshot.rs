@@ -5,9 +5,9 @@ use dockspace::policy::{
     CloseCapability, DockClassId, DockDropOperation, DockDropPolicyRequest, DockDropTargetFacts,
     DockItemRule, DockPayloadKind, DockPayloadPolicyFacts, DockPolicy, DockPolicyRequest,
     DockPresentationMode, DockPresentationPolicyRequest, DockPresentationTarget,
-    DockResizePolicyRequest, DockSourceRule, DockSurfaceRule, DockTabBarPolicyRequest,
-    DockTargetRule, DockTargetRuleKey, PolicyDecision, PolicyRejection, PolicyRevision,
-    PolicyRuleScope, TabBarInteraction, TabBarPolicy, TabBarVisibility,
+    DockResizePolicyRequest, DockSourceRule, DockSurfaceRule, DockTargetRule, DockTargetRuleKey,
+    PolicyDecision, PolicyRejection, PolicyRevision, PolicyRuleScope, TabBarInteraction,
+    TabBarPolicy, TabBarVisibility,
 };
 
 const SOURCE_ROOT: RootId = RootId::new(1);
@@ -16,6 +16,52 @@ const TARGET_SURFACE: SurfaceId = SurfaceId::new(20);
 const SOURCE_ITEM: ItemId = ItemId::new(100);
 const PEER_ITEM: ItemId = ItemId::new(101);
 const TARGET: DockTargetRuleKey = DockTargetRuleKey::Root(RootId::new(2));
+
+#[test]
+fn automatic_tab_visibility_resolves_roster_and_reveal_after_rule_intersection() {
+    let mut policy = DockPolicy::default();
+    policy.set_tab_bar(TabBarPolicy::new(
+        TabBarVisibility::AutoHideSingle,
+        TabBarInteraction::Enabled,
+    ));
+    let snapshot = policy.snapshot(PolicyRevision::new(1));
+    for (count, visibility) in [
+        (0, TabBarVisibility::Visible),
+        (1, TabBarVisibility::Hidden),
+        (2, TabBarVisibility::Visible),
+    ] {
+        assert_eq!(
+            snapshot
+                .tab_bar_declaration(TARGET_SURFACE, Some(TARGET))
+                .resolved(count, false)
+                .visibility(),
+            visibility
+        );
+    }
+    assert_eq!(
+        snapshot
+            .tab_bar_declaration(TARGET_SURFACE, Some(TARGET))
+            .resolved(1, true)
+            .visibility(),
+        TabBarVisibility::Visible
+    );
+
+    let mut target = DockTargetRule::new();
+    target.set_tab_bar(TabBarPolicy::new(
+        TabBarVisibility::Hidden,
+        TabBarInteraction::Enabled,
+    ));
+    policy.set_target_rule(TARGET, target);
+    assert_eq!(
+        policy
+            .snapshot(PolicyRevision::new(2))
+            .tab_bar_declaration(TARGET_SURFACE, Some(TARGET))
+            .resolved(1, true)
+            .visibility(),
+        TabBarVisibility::Hidden,
+        "a transient reveal cannot widen an explicit hidden declaration"
+    );
+}
 
 fn payload(
     items: impl IntoIterator<Item = ItemId>,
@@ -165,10 +211,10 @@ fn axis_tab_close_and_presentation_permissions_are_independent() {
         })
     );
     assert_eq!(
-        snapshot.evaluate(&DockPolicyRequest::InteractWithTabBar(
-            DockTabBarPolicyRequest::new(TARGET_SURFACE, Some(TARGET)),
-        )),
-        PolicyDecision::Reject(PolicyRejection::TabBarInteractionDisabled)
+        snapshot
+            .tab_bar_declaration(TARGET_SURFACE, Some(TARGET))
+            .interaction(),
+        TabBarInteraction::Disabled,
     );
     assert_eq!(
         snapshot.evaluate(&DockPolicyRequest::ClosePane {

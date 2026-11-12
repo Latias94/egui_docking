@@ -755,7 +755,11 @@ impl DockEngine {
             requirements
                 .surface(session.key().surface())
                 .and_then(|surface| surface.tab_bar(session.key().bar()))
-                .is_some_and(|bar| bar.policy().interaction() == TabBarInteraction::Enabled)
+                .is_some_and(|bar| {
+                    let policy = bar.resolved_policy(session.key().surface(), states);
+                    policy.visibility() == crate::policy::TabBarVisibility::Visible
+                        && policy.interaction() == TabBarInteraction::Enabled
+                })
         });
         if let Some(session) = active
             && !active_is_enabled

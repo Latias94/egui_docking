@@ -252,6 +252,7 @@ impl<'a> DropCommandEligibility<'a> {
     }
 
     fn check_validated_target(&self, target: &DockTarget) -> Result<(), CommandError> {
+        authorize_move_reorder(self.workspace, self.policy, self.payload, target)?;
         let payload = if move_undocks_source(self.workspace, self.payload, target) {
             &self.undocked_facts
         } else {
@@ -281,6 +282,7 @@ fn authorize_reorder(
         index: insertion_index,
     };
     authorize_tab_bar(policy, &target)?;
+    authorize_reorder_barriers(workspace, policy, source, insertion_index)?;
     let payload = move_payload_policy_facts(workspace, &MovePayload::Item(source.clone()), false)?;
     authorize_drop(policy, DockDropOperation::TabMerge, &payload, &target)
 }
@@ -329,6 +331,7 @@ pub(super) fn check_move(
     validate_target(workspace, target)?;
     validate_move_target_semantics(workspace, payload, target)?;
     if let Some(policy) = policy {
+        authorize_move_reorder(workspace, policy, payload, target)?;
         let facts = move_payload_policy_facts_validated(
             workspace,
             payload,
@@ -338,6 +341,72 @@ pub(super) fn check_move(
     }
     Ok(())
 }
+
+fn authorize_move_reorder(
+    workspace: &Workspace,
+    policy: &DockPolicySnapshot,
+    payload: &MovePayload,
+    target: &DockTarget,
+) -> Result<(), CommandError> {
+    if let MovePayload::Item(source) = payload
+        && let DockTarget::TabGap { target, index } = target
+        && source.tabs() == target.tabs()
+    {
+        authorize_reorder_barriers(workspace, policy, source, *index)?;
+    }
+    Ok(())
+}
+
+/// Restricts relative order inside the current group, independently of undocking.
+fn authorize_reorder_barriers(
+    workspace: &Workspace,
+    policy: &DockPolicySnapshot,
+    source: &ItemSource,
+    insertion_index: usize,
+) -> Result<(), CommandError> {
+    if !policy.has_tab_reorder_constraints() {
+        return Ok(());
+    }
+    let tabs = source.tabs();
+    let Some(Node::Tabs { items, .. }) = workspace.storage.nodes.get(tabs) else {
+        return Err(CommandError::NodeIsNotTabs { node: tabs });
+    };
+    let from = items.iter().position(|item| *item == source.item()).ok_or(
+        CommandError::ItemNotInTabs {
+            tabs,
+            item: source.item(),
+        },
+    )?;
+    let to = if insertion_index > from {
+        insertion_index - 1
+    } else {
+        insertion_index
+    };
+    if from == to {
+        return Ok(());
+    }
+    let crossed =
+        items
+            .get(from.min(to)..=from.max(to))
+            .ok_or(CommandError::TabIndexOutOfBounds {
+                tabs,
+                index: insertion_index,
+                len: items.len(),
+            })?;
+    if let Some(&item) = crossed.iter().find(|item| {
+        policy
+            .policy()
+            .item_rule(**item)
+            .is_some_and(|rule| !rule.allows_tab_reorder())
+    }) {
+        return Err(crate::policy::PolicyRejection::TabReorderDisabled { item }.into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "authorization/tab_reorder_tests.rs"]
+mod tab_reorder_tests;
 
 pub(crate) fn authorize_captured_drag_source(
     workspace: &Workspace,
@@ -352,13 +421,17 @@ pub(crate) fn authorize_captured_drag_source(
 }
 
 fn authorize_tab_bar(policy: &DockPolicySnapshot, target: &DockTarget) -> Result<(), CommandError> {
-    evaluate_policy(
-        policy,
-        &DockPolicyRequest::InteractWithTabBar(DockTabBarPolicyRequest::new(
-            target.surface(),
-            Some(target.rule()),
-        )),
-    )
+    // Commands address semantic insertion points. Auto-hide does not disable
+    // them: inserting a second item may itself make the bar visible, and the
+    // transient reveal state belongs to presentation rather than the workspace.
+    let declaration = policy.tab_bar_declaration(target.surface(), Some(target.rule()));
+    if declaration.visibility() == crate::policy::TabBarVisibility::Hidden {
+        return Err(crate::policy::PolicyRejection::TabBarHidden.into());
+    }
+    if declaration.interaction() == crate::policy::TabBarInteraction::Disabled {
+        return Err(crate::policy::PolicyRejection::TabBarInteractionDisabled.into());
+    }
+    Ok(())
 }
 
 fn authorize_move_target(

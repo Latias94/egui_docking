@@ -19,9 +19,7 @@ use crate::graph::{Node, Workspace};
 use crate::hit_region::HitRegion;
 use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, NodeId, RootId, SurfaceId};
 use crate::layout::SplitWeightOverride;
-use crate::policy::{
-    DockPolicySnapshot, DockTabBarPolicyRequest, TabBarInteraction, TabBarVisibility,
-};
+use crate::policy::{DockPolicySnapshot, TabBarInteraction, TabBarVisibility};
 use crate::presentation_config::{DockPresentationConfig, PresentationConfigRevision};
 use crate::scene::{
     ContainedLayoutProjection, ContainedMinimumMeasurement, PresentationPlan,
@@ -47,9 +45,11 @@ mod requirements;
 mod surface;
 mod tab_strip_layout;
 
+pub(crate) use tab_strip_layout::reveal_tab_bar_bounds;
+
 pub(crate) use future_layout::{
-    FutureLayoutProjectionError, FutureTab, FutureTabStrip, project_future_root,
-    project_future_tab_strip,
+    FutureLayoutProjectionError, FutureTab, FutureTabStrip, candidate_tab_bar_policy,
+    project_future_root, project_future_tab_strip,
 };
 pub(crate) use requirements::{
     SceneRequirementDerivationError, derive_scene_requirement_draft,

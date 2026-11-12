@@ -505,6 +505,7 @@ fn edge_content_viewport(plan: &PresentationPlan, bar: &TabBarRecord) -> Option<
             TabStripControlId::ScrollBackward(_) => metrics?.scroll_backward(),
             TabStripControlId::ScrollForward(_) => metrics?.scroll_forward(),
             TabStripControlId::TabListMenu(_) => metrics?.tab_list_menu(),
+            TabStripControlId::RevealTabBar(_) => None,
         }?;
         match metric.placement() {
             TabStripControlPlacement::OverlayLeading => left = left.max(hit.max().x()),

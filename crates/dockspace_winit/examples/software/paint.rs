@@ -185,6 +185,7 @@ fn paint_operation(
                 TabStripControlKind::ScrollBackward => "<",
                 TabStripControlKind::ScrollForward => ">",
                 TabStripControlKind::TabListMenu => "v",
+                TabStripControlKind::RevealTabBar => ">",
             };
             paint.icon(
                 bounds,

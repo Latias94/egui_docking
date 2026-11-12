@@ -10,14 +10,12 @@ use crate::error::CommandError;
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::graph::{Node, Workspace};
 use crate::ids::{EngineAuthorityDomainId, ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
-use crate::policy::{
-    CloseCapability, DockPolicySnapshot, DockTabBarPolicyRequest, TabBarInteraction, TabBarPolicy,
-};
+use crate::policy::{CloseCapability, DockPolicySnapshot, TabBarInteraction, TabBarPolicy};
 pub use crate::policy_impl::PolicyRevision;
 use crate::presentation_config::PresentationConfigRevision;
 use crate::scene::{TabBarSceneId, TabSceneId};
 use crate::scene_compiler::SceneRequirementDerivationError;
-use crate::tab_strip::{PopupPlaneRequirement, TabStripStateKey};
+use crate::tab_strip::{PopupPlaneRequirement, TabStripStateKey, TabStripStateStore};
 use crate::transition::WorkspaceVersion;
 use crate::workspace::{RootPresentationOwner, WorkspaceIndex};
 
@@ -722,10 +720,27 @@ impl TabBarRequirement {
         self.id
     }
 
-    /// Returns the complete effective presentation policy frozen by core.
+    /// Returns the intersected presentation declaration frozen by core.
+    ///
+    /// `AutoHideSingle` retains potential strip measurements. Core resolves
+    /// its visibility using the exact roster and transient reveal state.
     #[must_use]
     pub const fn policy(&self) -> TabBarPolicy {
         self.policy
+    }
+
+    pub(crate) fn resolved_policy(
+        &self,
+        surface: SurfaceId,
+        states: &TabStripStateStore,
+    ) -> TabBarPolicy {
+        let revealed = self.policy.visibility() == crate::policy::TabBarVisibility::AutoHideSingle
+            && self.close_capabilities.len() == 1
+            && states
+                .revealed_single_item(TabStripStateKey::new(surface, self.id))
+                .is_some_and(|item| self.close_capabilities.contains_key(&item));
+        self.policy
+            .resolved(self.close_capabilities.len(), revealed)
     }
 
     /// Returns the frozen close capability for an item in this tabs leaf.
@@ -950,8 +965,7 @@ impl SceneRequirementManifest {
         let rule = workspace
             .pane_local_target_rule(root, tabs, central)
             .map_err(|source| SceneRequirementDerivationError::WorkspaceIndex { source })?;
-        let effective_policy =
-            policy.tab_bar_policy(DockTabBarPolicyRequest::new(surface, Some(rule)));
+        let effective_policy = policy.tab_bar_declaration(surface, Some(rule));
         if previous.policy() != effective_policy
             || previous.close_capabilities().len() != items.len()
             || items.iter().any(|&item| {

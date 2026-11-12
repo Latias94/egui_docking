@@ -226,10 +226,27 @@ pub enum TabStripControlId {
     ScrollForward(TabBarSceneId),
     /// Open or close the complete tab-list menu.
     TabListMenu(TabBarSceneId),
+    /// Reveal one automatically hidden, single-member tab bar.
+    RevealTabBar(TabBarSceneId),
 }
 
 impl TabStripControlId {
-    /// Returns all controls in deterministic leading-to-trailing order.
+    pub(crate) fn has_source_in(self, plan: &PresentationPlan) -> bool {
+        let bar = self.bar();
+        if matches!(self, Self::RevealTabBar(_)) {
+            plan.pane_records()
+                .iter()
+                .any(|pane| pane.id().root == bar.root && pane.id().tabs == bar.tabs)
+        } else {
+            plan.tab_bar_records()
+                .iter()
+                .any(|record| *record.id() == bar)
+        }
+    }
+
+    /// Returns the visible bar's overflow controls in deterministic order.
+    ///
+    /// `RevealTabBar` is compiled separately inside an automatically hidden pane.
     #[must_use]
     pub const fn for_bar(bar: TabBarSceneId) -> [Self; 3] {
         [
@@ -243,7 +260,10 @@ impl TabStripControlId {
     #[must_use]
     pub const fn bar(self) -> TabBarSceneId {
         match self {
-            Self::ScrollBackward(bar) | Self::ScrollForward(bar) | Self::TabListMenu(bar) => bar,
+            Self::ScrollBackward(bar)
+            | Self::ScrollForward(bar)
+            | Self::TabListMenu(bar)
+            | Self::RevealTabBar(bar) => bar,
         }
     }
 }
@@ -254,6 +274,7 @@ pub(crate) struct TabStripState {
     scroll_offset: Option<f64>,
     resolved_selection: Option<ItemId>,
     resolved_viewport_width: Option<f64>,
+    revealed_single_item: Option<ItemId>,
 }
 
 impl TabStripState {
@@ -410,6 +431,31 @@ impl TabStripStateStore {
 
     pub(crate) fn state(&self, key: TabStripStateKey) -> Option<&TabStripState> {
         self.states.get(&key)
+    }
+
+    pub(crate) fn revealed_single_item(&self, key: TabStripStateKey) -> Option<ItemId> {
+        self.states.get(&key)?.revealed_single_item
+    }
+
+    pub(crate) fn reveal_single_tab_bar(
+        &mut self,
+        key: TabStripStateKey,
+    ) -> Result<TabStripStateDelta, TabStripStateError> {
+        let Some([item]) = self.live_rosters.get(&key).map(Vec::as_slice) else {
+            return Err(TabStripStateError::UnknownTabStrip { key });
+        };
+        let state = self
+            .states
+            .get_mut(&key)
+            .ok_or(TabStripStateError::UnknownTabStrip { key })?;
+        if state.revealed_single_item == Some(*item) {
+            return Ok(TabStripStateDelta::unchanged());
+        }
+        state.revealed_single_item = Some(*item);
+        Ok(TabStripStateDelta::new(
+            true,
+            TabStripInfluenceDomain::local(key.surface()),
+        ))
     }
 
     #[allow(dead_code, reason = "reserved for the typed tab-strip input reducer")]
@@ -634,6 +680,9 @@ impl TabStripStateStore {
         }
         for (key, state) in &mut candidate.states {
             let items = &live_rosters[key];
+            if self.live_rosters.get(key) != Some(items) {
+                state.revealed_single_item = None;
+            }
             if items.is_empty()
                 && self
                     .live_rosters
@@ -820,6 +869,67 @@ mod tests {
             builder.insert_node(Node::tabs([])),
             builder.insert_node(Node::tabs([])),
         ]
+    }
+
+    #[test]
+    fn revealed_single_bar_expires_on_membership_change_and_is_local_to_its_owner() {
+        let [first, second] = nodes();
+        let first = key(1, 1, first);
+        let second = key(1, 1, second);
+        let item = ItemId::new(1);
+        let peer = ItemId::new(2);
+        let mut states = TabStripStateStore::default();
+        states
+            .reconcile_exact_for_surface_roster(
+                [(first, [item].as_slice()), (second, [peer].as_slice())],
+                false,
+            )
+            .unwrap();
+        states.reveal_single_tab_bar(first).unwrap();
+        states.reveal_single_tab_bar(second).unwrap();
+        states
+            .reconcile_exact_for_surface_roster(
+                [(first, [item].as_slice()), (second, [peer].as_slice())],
+                false,
+            )
+            .unwrap();
+        assert_eq!(states.revealed_single_item(first), Some(item));
+        states
+            .reconcile_exact_for_surface_roster(
+                [
+                    (first, [item, peer].as_slice()),
+                    (second, [peer].as_slice()),
+                ],
+                false,
+            )
+            .unwrap();
+        assert_eq!(states.revealed_single_item(first), None);
+        assert_eq!(states.revealed_single_item(second), Some(peer));
+        states
+            .reconcile_exact_for_surface_roster(
+                [(first, [item].as_slice()), (second, [peer].as_slice())],
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            states.revealed_single_item(first),
+            None,
+            "2→1 starts a fresh automatic hiding cycle"
+        );
+        states.reveal_single_tab_bar(first).unwrap();
+        states
+            .reconcile_exact_for_surface_roster([(first, [peer].as_slice())], false)
+            .unwrap();
+        assert_eq!(
+            states.revealed_single_item(first),
+            None,
+            "a replacement single item cannot inherit the old item's reveal"
+        );
+        assert_eq!(
+            states.revealed_single_item(second),
+            None,
+            "retiring an owner drops its temporary reveal"
+        );
     }
 
     #[test]

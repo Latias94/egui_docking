@@ -21,7 +21,7 @@ use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::policy::{
     DockContainedTransformPolicyRequest, DockDropOperation, DockDropTargetFacts, DockPayloadKind,
     DockPayloadPolicyFacts, DockPolicyRequest, DockPolicySnapshot, DockPresentationPolicyRequest,
-    DockPresentationTarget, DockResizePolicyRequest, DockTabBarPolicyRequest, PolicyDecision,
+    DockPresentationTarget, DockResizePolicyRequest, PolicyDecision,
 };
 use crate::surface_recovery::SurfaceRecoveryTransaction;
 use crate::transaction::{TransactionReport, clone_workspace_draft};

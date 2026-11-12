@@ -14,7 +14,8 @@ use crate::layout::{NodeMap, NodeResult};
 use crate::policy::DockPolicySnapshot;
 use crate::scene::{PresentationLayoutFacts, PresentationPlan};
 use crate::scene_compiler::{
-    FutureLayoutProjectionError, FutureTabStrip, project_future_root, project_future_tab_strip,
+    FutureLayoutProjectionError, FutureTabStrip, candidate_tab_bar_policy, project_future_root,
+    project_future_tab_strip,
 };
 
 pub(super) struct ResolvedPreview {
@@ -91,17 +92,27 @@ pub(super) fn resolved_visual(
         DockTarget::InnerEdge(_) | DockTarget::OuterEdge(_) => None,
     };
     let rect = match target {
-        DockTarget::Center(target) => {
-            projected_center_rect(candidate, policy, target_plan, target, &projection.nodes)?
-        }
+        DockTarget::Center(target) => projected_center_rect(
+            original,
+            candidate,
+            policy,
+            target_plan,
+            target,
+            &projection.nodes,
+        )?,
         DockTarget::InnerEdge(_) | DockTarget::OuterEdge(_) => {
             projected_payload_rect(original, candidate, root, payload, &projection.nodes)?
         }
         DockTarget::TabGap { target, .. } => match tab_strip.as_ref() {
             Some(projected) => projected.insertion,
-            None => {
-                projected_center_rect(candidate, policy, target_plan, target, &projection.nodes)?
-            }
+            None => projected_center_rect(
+                original,
+                candidate,
+                policy,
+                target_plan,
+                target,
+                &projection.nodes,
+            )?,
         },
     };
     let rect = match target {
@@ -141,6 +152,7 @@ fn clip_rect(rect: LogicalRect, clip: LogicalRect) -> Result<LogicalRect, Geomet
 }
 
 fn projected_center_rect(
+    original: &Workspace,
     candidate: &Workspace,
     policy: &DockPolicySnapshot,
     target_plan: &PresentationPlan,
@@ -176,14 +188,14 @@ fn projected_center_rect(
         })?
         .bounds();
     let bounds = clip_rect(bounds, root_bounds)?;
-    let central = candidate
-        .root(target.root())
-        .is_some_and(|root| root.central == Some(target.tabs()));
-    let rule = candidate.pane_local_target_rule(target.root(), target.tabs(), central)?;
-    let tab_bar = policy.tab_bar_policy(crate::policy::DockTabBarPolicyRequest::new(
-        target.surface(),
-        Some(rule),
-    ));
+    let tab_bar = candidate_tab_bar_policy(
+        original,
+        candidate,
+        policy,
+        target_plan,
+        target.root(),
+        target.tabs(),
+    )?;
     let tab_height = if tab_bar.visibility() == crate::policy::TabBarVisibility::Visible {
         facts.config().tab_bar_height().min(bounds.height())
     } else {

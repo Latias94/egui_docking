@@ -93,7 +93,8 @@ pub enum SurfaceMeasurementRequest {
     TabStrip {
         /// Stable renderer identity of the tab strip.
         visual: DockspaceVisualId,
-        /// Frozen tab-bar visibility policy for this frame.
+        /// Visibility of the strip being measured, including potential chrome
+        /// for an automatically hidden bar. This is not a request to paint it.
         visibility: TabBarVisibility,
     },
 }
@@ -274,6 +275,11 @@ impl DockspaceHostFrame<'_> {
                 .ok_or(DockspaceInteractionError::MeasurementRosterInvariant)?
                 .policy()
                 .visibility();
+            let visibility = if visibility == TabBarVisibility::AutoHideSingle {
+                TabBarVisibility::Visible
+            } else {
+                visibility
+            };
             measurements
                 .insert_tab_strip(
                     key,

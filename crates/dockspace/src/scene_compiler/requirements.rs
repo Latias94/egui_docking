@@ -183,8 +183,7 @@ fn derive_root_requirements(
                 }
                 let target_rule = Some(target.rule());
                 let id = TabBarSceneId { root, tabs: node };
-                let tab_bar_policy =
-                    policy.tab_bar_policy(DockTabBarPolicyRequest::new(surface, target_rule));
+                let tab_bar_policy = policy.tab_bar_declaration(surface, target_rule);
                 tab_bars.insert(
                     id,
                     TabBarRequirement::new(
@@ -197,10 +196,12 @@ fn derive_root_requirements(
                             .collect(),
                     ),
                 );
-                if tab_bar_policy.visibility() == TabBarVisibility::Visible {
+                // Auto-hidden bars retain the measurements required to reveal
+                // them and to preview a merge before its first visible frame.
+                if tab_bar_policy.visibility() != TabBarVisibility::Hidden {
                     tab_strips.insert(TabStripKey::new(surface, id));
                 }
-                if tab_bar_policy.visibility() == TabBarVisibility::Visible
+                if tab_bar_policy.visibility() != TabBarVisibility::Hidden
                     || tab_bar_policy.interaction() == TabBarInteraction::Enabled
                 {
                     tab_intrinsics.extend(items.iter().copied().map(|item| {

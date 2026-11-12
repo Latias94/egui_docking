@@ -3,9 +3,21 @@
 use std::collections::BTreeSet;
 
 use super::SceneCompilationError;
+use crate::geometry::{GeometryError, LogicalRect};
 use crate::graph::{Node, Workspace};
 use crate::ids::{NodeId, RootId, SurfaceId};
 use crate::presentation_config::DockPresentationConfig;
+
+pub(crate) fn reveal_tab_bar_bounds(
+    pane: LogicalRect,
+    config: &DockPresentationConfig,
+) -> Result<Option<LogicalRect>, GeometryError> {
+    let extent = (config.tab_bar_height() * 0.55)
+        .min(pane.width())
+        .min(pane.height());
+    let bounds = LogicalRect::new(pane.x(), pane.y(), extent, extent)?;
+    Ok((bounds.width() > 0.0 && bounds.height() > 0.0).then_some(bounds))
+}
 
 pub(super) fn desired_tab_width(
     content_width: f64,

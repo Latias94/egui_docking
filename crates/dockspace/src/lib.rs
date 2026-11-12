@@ -143,8 +143,8 @@ pub mod policy {
         DockContainedTransformPolicyRequest, DockDropOperation, DockDropTargetFacts,
         DockPayloadPolicyFacts, DockPolicyRequest, DockPolicySnapshot,
         DockPresentationPolicyRequest, DockPresentationTarget, DockResizePolicyRequest,
-        DockSurfaceRecoveryPolicyRequest, DockSurfaceRecoveryRootFacts, DockTabBarPolicyRequest,
-        PolicyDecision, PolicyRejection, PolicyRevision,
+        DockSurfaceRecoveryPolicyRequest, DockSurfaceRecoveryRootFacts, PolicyDecision,
+        PolicyRejection, PolicyRevision,
     };
     #[cfg(test)]
     pub(crate) use crate::policy_impl::{DockDropPolicyRequest, PolicyRuleScope};

@@ -85,6 +85,21 @@ fn compile_on_surface_with_minimums(
     .unwrap()
     .finalize(PopupPlaneRequirement::default())
     .unwrap();
+    states
+        .reconcile_exact_for_surface_roster(
+            manifest.surfaces().flat_map(|(surface, requirements)| {
+                requirements.tab_strips().filter_map(move |key| {
+                    match workspace.node(key.bar().tabs) {
+                        Some(Node::Tabs { items, .. }) => {
+                            Some((TabStripStateKey::new(surface, key.bar()), items.as_slice()))
+                        }
+                        _ => None,
+                    }
+                })
+            }),
+            false,
+        )
+        .unwrap();
     let requirements = manifest.surface(surface).unwrap();
     let mut measurements = SurfaceMeasurements::new(requirements.ticket());
     measurements
@@ -271,6 +286,207 @@ fn contained_visible_bar_center_merge_preview_matches_the_committed_content() {
         DropTargetKind::Center,
         TabBarVisibility::Hidden,
         TabBarVisibility::Visible,
+    );
+}
+
+#[test]
+fn auto_hidden_single_merge_then_split_previews_match_committed_layouts() {
+    let floating_root = RootId::new(2);
+    let floating = FloatingPresentationId::new(1);
+    let retained = ItemId::new(10);
+    let mut builder = Workspace::builder();
+    let source = builder.insert_node(Node::tabs([MOVED]));
+    let target = builder.insert_node(Node::tabs([retained]));
+    builder.set_root(ROOT, RootRecord::new(target).with_central(target));
+    builder.set_root(floating_root, RootRecord::new(source));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+    builder.set_contained_floating(
+        floating,
+        ContainedFloating::new(
+            floating_root,
+            LogicalRect::new(600.0, 200.0, 300.0, 300.0).unwrap(),
+        ),
+    );
+    builder.attach_contained(SURFACE, floating).unwrap();
+    let mut workspace = builder.build().unwrap();
+    let mut policy = DockPolicy::default();
+    policy.set_tab_bar(TabBarPolicy::new(
+        TabBarVisibility::AutoHideSingle,
+        TabBarInteraction::Enabled,
+    ));
+    let policy = policy.snapshot(PolicyRevision::new(1));
+    let config = DockPresentationConfig::default();
+    let strip = TabStripMetrics::new(0.0, 0.0).unwrap();
+    let mut states = TabStripStateStore::default();
+    let plan = compile(&workspace, &policy, &config, strip, &mut states);
+    assert!(plan.tab_bar_records().is_empty());
+    assert!(
+        plan.contained_record(floating).is_some(),
+        "the hidden source retains its window title"
+    );
+    assert_eq!(plan.tab_strip_control_records().len(), 2);
+
+    let merged = resolve_target(
+        &workspace,
+        &policy,
+        &plan,
+        &plan,
+        MovePayload::Subtree(
+            workspace
+                .capture_node_source(floating_root, source)
+                .unwrap(),
+        ),
+        DropTargetId::Center {
+            surface: SURFACE,
+            root: ROOT,
+            tabs: target,
+        },
+    );
+    WorkspaceTransaction::from_commands([merged.command().clone()])
+        .apply(&mut workspace, &policy)
+        .unwrap();
+    let merged_plan = compile(&workspace, &policy, &config, strip, &mut states);
+    assert_future_tabs_match_committed(&merged, &merged_plan, target, &[MOVED]);
+    assert_eq!(
+        merged.visual().rect(),
+        merged_plan
+            .pane_records()
+            .iter()
+            .find(|pane| pane.id().tabs == target)
+            .unwrap()
+            .content_bounds()
+    );
+
+    let edge = DropTargetId::OuterEdge {
+        surface: SURFACE,
+        root: ROOT,
+        node: target,
+        edge: crate::command::Edge::Right,
+    };
+    let separated = resolve_target(
+        &workspace,
+        &policy,
+        &merged_plan,
+        &merged_plan,
+        MovePayload::Item(workspace.capture_item_source(ROOT, target, MOVED).unwrap()),
+        edge,
+    );
+    WorkspaceTransaction::from_commands([separated.command().clone()])
+        .apply(&mut workspace, &policy)
+        .unwrap();
+    let separated_plan = compile(&workspace, &policy, &config, strip, &mut states);
+    assert!(
+        separated_plan.tab_bar_records().is_empty(),
+        "both single-member leaves hide after the split"
+    );
+    assert_eq!(separated_plan.tab_strip_control_records().len(), 2);
+    let moved_pane = separated_plan
+        .pane_records()
+        .iter()
+        .find(|pane| separated_plan.pane_selected(pane) == Some(MOVED))
+        .unwrap();
+    assert_eq!(
+        separated.visual().rect(),
+        moved_pane.content_bounds(),
+        "2→1 membership changes must use hidden-bar minimums in the future layout"
+    );
+}
+
+#[test]
+fn future_split_preserves_an_unchanged_revealed_single_sibling() {
+    let retained = ItemId::new(2);
+    let revealed = ItemId::new(10);
+    let mut builder = Workspace::builder();
+    let source = builder.insert_node(Node::tabs([MOVED, retained]));
+    let sibling = builder.insert_node(Node::tabs([revealed]));
+    let split = builder.insert_node(Node::equal_split(Axis::Vertical, [source, sibling]).unwrap());
+    builder.set_root(ROOT, RootRecord::new(split).with_central(sibling));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+    let mut workspace = builder.build().unwrap();
+    let mut policy = DockPolicy::default();
+    policy.set_tab_bar(TabBarPolicy::new(
+        TabBarVisibility::AutoHideSingle,
+        TabBarInteraction::Enabled,
+    ));
+    let policy = policy.snapshot(PolicyRevision::new(1));
+    let config = DockPresentationConfig::default();
+    let strip = TabStripMetrics::new(0.0, 0.0).unwrap();
+    let minimums = BTreeMap::from([
+        (MOVED, LogicalSize::new(100.0, 250.0).unwrap()),
+        (retained, LogicalSize::new(100.0, 250.0).unwrap()),
+        (revealed, LogicalSize::new(100.0, 310.0).unwrap()),
+    ]);
+    let mut states = TabStripStateStore::default();
+    compile_on_surface_with_minimums(
+        &workspace,
+        &policy,
+        &config,
+        strip,
+        &mut states,
+        SURFACE,
+        &minimums,
+    );
+    let sibling_key = TabStripStateKey::new(
+        SURFACE,
+        TabBarSceneId {
+            root: ROOT,
+            tabs: sibling,
+        },
+    );
+    states.reveal_single_tab_bar(sibling_key).unwrap();
+    let plan = compile_on_surface_with_minimums(
+        &workspace,
+        &policy,
+        &config,
+        strip,
+        &mut states,
+        SURFACE,
+        &minimums,
+    );
+    assert!(
+        plan.tab_bar_records()
+            .iter()
+            .any(|bar| bar.id().tabs == sibling)
+    );
+    let edge = plan.drop_targets().iter().map(|record| record.id()).find(|id| {
+        matches!(id, DropTargetId::InnerEdge { node, edge: crate::command::Edge::Right, .. } if *node == source)
+    }).unwrap();
+    let resolved = resolve_target(
+        &workspace,
+        &policy,
+        &plan,
+        &plan,
+        MovePayload::Item(workspace.capture_item_source(ROOT, source, MOVED).unwrap()),
+        edge,
+    );
+    WorkspaceTransaction::from_commands([resolved.command().clone()])
+        .apply(&mut workspace, &policy)
+        .unwrap();
+    let committed = compile_on_surface_with_minimums(
+        &workspace,
+        &policy,
+        &config,
+        strip,
+        &mut states,
+        SURFACE,
+        &minimums,
+    );
+    assert!(
+        committed
+            .tab_bar_records()
+            .iter()
+            .any(|bar| bar.id().tabs == sibling)
+    );
+    assert_eq!(states.revealed_single_item(sibling_key), Some(revealed));
+    let moved_pane = committed
+        .pane_records()
+        .iter()
+        .find(|pane| committed.pane_selected(pane) == Some(MOVED))
+        .unwrap();
+    assert_eq!(
+        resolved.visual().rect(),
+        moved_pane.content_bounds(),
+        "candidate minimums must retain the actual presented reveal of an unchanged sibling"
     );
 }
 

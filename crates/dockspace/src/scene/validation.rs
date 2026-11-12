@@ -1202,18 +1202,35 @@ fn validate_tab_records(
     policy: &DockPolicySnapshot,
 ) -> Result<(), SceneBuildError> {
     let panes = &record_order.panes;
+    let bars = &record_order.bars;
     // The caller establishes membership, owner and selection through either
     // the expected roster or the sealed compiler. Policy needs only the
     // selected item's stable rule, not another complete root fingerprint.
     let pane_policy = |pane: &PaneRecord| {
-        policy.tab_bar_policy(DockTabBarPolicyRequest::new(
+        let declaration = policy.tab_bar_declaration(
             ready.surface,
             ready
                 .pane_selected(pane)
-                .map(crate::policy::DockTargetRuleKey::Item),
-        ))
+                .map(crate::policy::DockTargetRuleKey::Item)
+                .or(Some(crate::policy::DockTargetRuleKey::Root(pane.id().root))),
+        );
+        let item_count = match workspace.node(pane.id().tabs) {
+            Some(Node::Tabs { items, .. }) => items.len(),
+            _ => 0,
+        };
+        let revealed = declaration.visibility() == TabBarVisibility::AutoHideSingle
+            && item_count == 1
+            && bars
+                .get(
+                    &ready.facts.tab_bar_records,
+                    TabBarSceneId {
+                        root: pane.id().root,
+                        tabs: pane.id().tabs,
+                    },
+                )
+                .is_some();
+        declaration.resolved(item_count, revealed)
     };
-    let bars = &record_order.bars;
     let mut controls_by_bar = BTreeMap::<TabBarSceneId, BTreeMap<TabStripControlId, _>>::new();
     for control in &ready.facts.tab_strip_control_records {
         let bar = control.id().bar();
@@ -1246,15 +1263,24 @@ fn validate_tab_records(
         });
     }
     let bar_exists = |id: &TabBarSceneId| bars.get(&ready.facts.tab_bar_records, *id).is_some();
-    if controls_by_bar.keys().any(|id| !bar_exists(id))
-        || menus_by_bar.keys().any(|id| !bar_exists(id))
+    let foreign_control = controls_by_bar.iter().find_map(|(id, controls)| {
+        (!bar_exists(id)
+            && (controls.len() != 1
+                || !controls.contains_key(&TabStripControlId::RevealTabBar(*id))
+                || panes
+                    .get(
+                        &ready.facts.pane_records,
+                        PaneSceneId {
+                            root: id.root,
+                            tabs: id.tabs,
+                        },
+                    )
+                    .is_none()))
+        .then_some(*id)
+    });
+    if let Some(id) =
+        foreign_control.or_else(|| menus_by_bar.keys().find(|id| !bar_exists(id)).copied())
     {
-        let id = controls_by_bar
-            .keys()
-            .chain(menus_by_bar.keys())
-            .find(|id| !bar_exists(id))
-            .copied()
-            .expect("a foreign tab-strip record was detected");
         return Err(SceneBuildError::InvalidTabBarRecord {
             surface: ready.surface,
             id,
@@ -1285,6 +1311,38 @@ fn validate_tab_records(
                     surface: ready.surface,
                     id: bar_id,
                 });
+            }
+            if let Some(controls) = controls_by_bar.get(&bar_id) {
+                let control = controls.get(&TabStripControlId::RevealTabBar(bar_id));
+                let declaration = policy.tab_bar_declaration(
+                    ready.surface,
+                    ready
+                        .pane_selected(pane)
+                        .map(crate::policy::DockTargetRuleKey::Item),
+                );
+                let expected_bounds = ready.layout_facts().and_then(|facts| {
+                    crate::scene_compiler::reveal_tab_bar_bounds(pane.bounds(), facts.config())
+                        .ok()
+                        .flatten()
+                });
+                let valid = declaration.visibility() == TabBarVisibility::AutoHideSingle
+                    && matches!(workspace.node(id.tabs), Some(Node::Tabs { items, .. }) if items.len() == 1)
+                    && controls.len() == 1
+                    && control.is_some_and(|control| {
+                        expected_bounds == Some(control.bounds())
+                            && rect_has_area(control.bounds())
+                            && rect_contains(pane.bounds(), control.bounds())
+                            && control.hit().rect() == control.bounds()
+                            && control.layer() == pane.layer()
+                            && control.enabled()
+                                == (declaration.interaction() == TabBarInteraction::Enabled)
+                    });
+                if !valid {
+                    return Err(SceneBuildError::InvalidTabBarRecord {
+                        surface: ready.surface,
+                        id: bar_id,
+                    });
+                }
             }
             continue;
         }
@@ -1574,6 +1632,7 @@ fn validate_tab_strip_controls_and_menu(
                 TabStripControlId::TabListMenu(_) => {
                     interaction_enabled && bar.menu_geometry_availability().is_available()
                 }
+                TabStripControlId::RevealTabBar(_) => false,
             };
             control.enabled() == expected
         });

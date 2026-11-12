@@ -42,7 +42,8 @@ pub(super) fn aligned_tab_strip_scroll_offset(
         }
         TabStripControlId::ScrollBackward(_)
         | TabStripControlId::ScrollForward(_)
-        | TabStripControlId::TabListMenu(_) => None,
+        | TabStripControlId::TabListMenu(_)
+        | TabStripControlId::RevealTabBar(_) => None,
     }
 }
 
@@ -244,6 +245,12 @@ impl DockEngine {
 
         let mut tab_strip_states = self.presentation_authority.tab_strip_states.clone();
         let (menu, delta) = match control {
+            TabStripControlId::RevealTabBar(_) => {
+                let delta = tab_strip_states
+                    .reveal_single_tab_bar(frozen.key)
+                    .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
+                (None, delta)
+            }
             TabStripControlId::ScrollBackward(_) | TabStripControlId::ScrollForward(_) => {
                 let Some(offset) = aligned_tab_strip_scroll_offset(plan, frozen.key, control)
                 else {

@@ -53,9 +53,7 @@ use crate::graph::{Node, Workspace};
 use crate::ids::{
     EngineAuthorityDomainId, FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId,
 };
-use crate::policy::{
-    DockPolicySnapshot, DockTabBarPolicyRequest, TabBarInteraction, TabBarVisibility,
-};
+use crate::policy::{DockPolicySnapshot, TabBarInteraction, TabBarVisibility};
 use crate::presentation_config::DockPresentationConfig;
 use crate::presentation_hit::PresentationHitManifest;
 use crate::presentation_observation::{

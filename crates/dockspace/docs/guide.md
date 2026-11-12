@@ -872,6 +872,20 @@ The internal Waiting state is excluded from published focus requests and focus
 deltas. A matching fresh global observation settles native facts without replacing
 the restored semantic request's identity or causal order.
 
+Per-item restrictions can express different kinds of pinning independently:
+
+- `DockItemRule::set_allow_tab_reorder(false)` preserves the item's relative
+  order inside its current tabs group. The item cannot be reordered, and other
+  existing tabs cannot cross it. No-op placements remain valid.
+- `set_allow_undocking(false)` prevents leaving the current docking owner.
+- `set_source_enabled(false)` disables the item as a moving payload.
+- `set_close_capability(Some(CloseCapability::Disabled))` prevents closing it.
+
+Reorder restrictions do not prevent closing or undocking an item. Opening a new
+tab before it may change its numeric index without crossing an existing tab.
+Applications own pin icons and preview-document state; core enforces the chosen
+layout restrictions for both programmatic commands and pointer drop previews.
+
 ## Application defaults and layout reset
 
 Keep default layouts and preset names in the application. Applying a default

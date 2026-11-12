@@ -18,7 +18,7 @@ use crate::ids::{ItemId, NodeId, RootId};
 use crate::layout::{
     LayoutError, LayoutMetrics, LayoutMetricsError, LayoutProjection, measure_root_minimums,
 };
-use crate::policy::{DockPolicySnapshot, DockTabBarPolicyRequest, TabBarVisibility};
+use crate::policy::{DockPolicySnapshot, TabBarPolicy, TabBarVisibility};
 use crate::scene::{PresentationLayoutFacts, PresentationPlan, TabBarSceneId, TabSceneId};
 use crate::scene_manifest::{PaneMinimumKey, TabIntrinsicKey, TabStripKey};
 
@@ -55,6 +55,36 @@ pub(crate) struct FutureTabStripProjection {
     pub(crate) strip: Option<Arc<FutureTabStrip>>,
 }
 
+/// A reveal belongs to the exact presented single-member roster. New or
+/// changed candidate rosters return to their declared automatic visibility.
+pub(crate) fn candidate_tab_bar_policy(
+    original: &Workspace,
+    candidate: &Workspace,
+    policy: &DockPolicySnapshot,
+    target_plan: &PresentationPlan,
+    root: RootId,
+    tabs: NodeId,
+) -> Result<TabBarPolicy, FutureLayoutProjectionError> {
+    let Some(Node::Tabs { items, .. }) = candidate.node(tabs) else {
+        return Err(FutureLayoutProjectionError::TargetIsNotTabs { root, node: tabs });
+    };
+    let central = candidate
+        .root(root)
+        .ok_or(FutureLayoutProjectionError::MissingRoot { root })?
+        .central
+        == Some(tabs);
+    let rule = candidate.pane_local_target_rule(root, tabs, central)?;
+    let declaration = policy.tab_bar_declaration(target_plan.surface(), Some(rule));
+    let revealed = declaration.visibility() == TabBarVisibility::AutoHideSingle
+        && items.len() == 1
+        && matches!(original.node(tabs), Some(Node::Tabs { items: previous, .. }) if previous == items)
+        && target_plan
+            .tab_bar_records()
+            .iter()
+            .any(|bar| *bar.id() == TabBarSceneId { root, tabs });
+    Ok(declaration.resolved(items.len(), revealed))
+}
+
 /// Reprojects one future root using only measurements retained by presented outputs.
 pub(crate) fn project_future_root(
     original: &Workspace,
@@ -79,16 +109,15 @@ pub(crate) fn project_future_root(
         collect_pane_minimums(source_facts, &mut pane_minimums)?;
     }
 
-    let surface = match workspace.presentation_for_root(root) {
-        Some(RootPresentationOwner::Main { surface })
-        | Some(RootPresentationOwner::Contained { surface, .. }) => surface,
+    match workspace.presentation_for_root(root) {
+        Some(RootPresentationOwner::Main { .. })
+        | Some(RootPresentationOwner::Contained { .. }) => {}
         None => return Err(FutureLayoutProjectionError::TargetRootNotPresented { root }),
     };
     let root_record = workspace
         .root(root)
         .ok_or(FutureLayoutProjectionError::MissingRoot { root })?;
     let root_node = root_record.node;
-    let central = root_record.central;
     let mut leaf_minimums = BTreeMap::new();
     let mut pending = vec![root_node];
     let mut visited = BTreeSet::new();
@@ -107,9 +136,8 @@ pub(crate) fn project_future_root(
                     }
                     None => LogicalSize::new(0.0, 0.0)?,
                 };
-                let rule = workspace.pane_local_target_rule(root, node, central == Some(node))?;
                 let tab_bar =
-                    policy.tab_bar_policy(DockTabBarPolicyRequest::new(surface, Some(rule)));
+                    candidate_tab_bar_policy(original, workspace, policy, target_plan, root, node)?;
                 leaf_minimums.insert(
                     node,
                     pane_outer_minimum(measured, target_facts.config(), tab_bar.visibility())?,
@@ -183,19 +211,14 @@ pub(crate) fn project_future_tab_strip(
             node: target.tabs(),
         });
     };
-    let central = candidate
-        .root(target.root())
-        .ok_or(FutureLayoutProjectionError::MissingRoot {
-            root: target.root(),
-        })?
-        .central;
-    let rule = candidate.pane_local_target_rule(
+    let target_policy = candidate_tab_bar_policy(
+        original,
+        candidate,
+        policy,
+        target_plan,
         target.root(),
         target.tabs(),
-        central == Some(target.tabs()),
     )?;
-    let target_policy =
-        policy.tab_bar_policy(DockTabBarPolicyRequest::new(target.surface(), Some(rule)));
     if target_policy.visibility() == TabBarVisibility::Hidden {
         return Ok(FutureTabStripProjection {
             insertion: node_bounds,
@@ -246,8 +269,10 @@ pub(crate) fn project_future_tab_strip(
         candidate.presentation_for_root(target.root()),
         Some(RootPresentationOwner::Main { surface }) if surface == target.surface()
     ) && future_presentation_menu_tab_bar(
+        original,
         candidate,
         policy,
+        target_plan,
         target_facts,
         target.surface(),
         target.root(),
@@ -370,9 +395,12 @@ pub(crate) fn project_future_tab_strip(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn future_presentation_menu_tab_bar(
+    original: &Workspace,
     candidate: &Workspace,
     policy: &DockPolicySnapshot,
+    target_plan: &PresentationPlan,
     target_facts: &PresentationLayoutFacts,
     surface: crate::ids::SurfaceId,
     root: RootId,
@@ -387,8 +415,8 @@ fn future_presentation_menu_tab_bar(
         let Some(Node::Tabs { items, .. }) = candidate.node(tabs) else {
             return Ok(None);
         };
-        let rule = candidate.pane_local_target_rule(root, tabs, central == Some(tabs))?;
-        let tab_bar = policy.tab_bar_policy(DockTabBarPolicyRequest::new(surface, Some(rule)));
+        let tab_bar =
+            candidate_tab_bar_policy(original, candidate, policy, target_plan, root, tabs)?;
         if tab_bar.visibility() == TabBarVisibility::Hidden {
             return Ok(None);
         }

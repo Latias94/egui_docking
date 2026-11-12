@@ -97,10 +97,8 @@ fn locked_policy_rejects_mutation_requests_and_eligibility_fast_paths() {
         );
     }
     assert_eq!(
-        locked.evaluate(&DockPolicyRequest::InteractWithTabBar(
-            DockTabBarPolicyRequest::new(surface, None)
-        )),
-        PolicyDecision::Allow
+        locked.tab_bar_declaration(surface, None),
+        unlocked.tab_bar_declaration(surface, None),
     );
     assert_eq!(
         locked.evaluate(&DockPolicyRequest::RaiseContained(

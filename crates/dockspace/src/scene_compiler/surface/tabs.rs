@@ -26,7 +26,9 @@ use crate::scene::{
     TabListMenuGeometryAvailability, TabListMenuRecord, TabListMenuRowRecord, TabRecord,
     TabSceneId, TabStripControlRecord, TabStripMemberRecord, TabStripMemberVisibility,
 };
-use crate::scene_compiler::tab_strip_layout::{TabStripFlow, desired_tab_width, select_menu_host};
+use crate::scene_compiler::tab_strip_layout::{
+    TabStripFlow, desired_tab_width, reveal_tab_bar_bounds, select_menu_host,
+};
 pub(in crate::scene_compiler) use crate::scene_compiler::tab_strip_layout::{
     reveal_tab_range, tab_local_range,
 };
@@ -51,13 +53,18 @@ pub(super) fn select_presentation_menu_tab_bar(
     central: Option<NodeId>,
     root_bounds: LogicalRect,
     node_results: &NodeMap<NodeResult>,
+    tab_strip_states: &TabStripStateStore,
 ) -> Result<Option<NodeId>, SceneCompilationError> {
     let visible_menu_available = |tabs| -> Result<Option<bool>, SceneCompilationError> {
         let id = TabBarSceneId { root, tabs };
         let requirement = requirements
             .tab_bar(id)
             .ok_or(SceneCompilationError::MissingTabBarRequirement { id })?;
-        if requirement.policy().visibility() == TabBarVisibility::Hidden {
+        if requirement
+            .resolved_policy(surface, tab_strip_states)
+            .visibility()
+            == TabBarVisibility::Hidden
+        {
             return Ok(None);
         }
         let projected = node_results
@@ -348,7 +355,8 @@ pub(super) fn compile_tabs_leaf(
     let tab_bar_requirement = requirements
         .tab_bar(bar_id)
         .ok_or(SceneCompilationError::MissingTabBarRequirement { id: bar_id })?;
-    let tab_height = if tab_bar_requirement.policy().visibility() == TabBarVisibility::Visible {
+    let resolved_policy = tab_bar_requirement.resolved_policy(surface, tab_strip_states);
+    let tab_height = if resolved_policy.visibility() == TabBarVisibility::Visible {
         config.tab_bar_height().min(bounds.height())
     } else {
         0.0
@@ -381,6 +389,23 @@ pub(super) fn compile_tabs_leaf(
             presentation_menu_anchor,
             ready,
         )?;
+    } else if tab_bar_requirement.policy().visibility() == TabBarVisibility::AutoHideSingle
+        && resolved_policy.visibility() == TabBarVisibility::Hidden
+        && items.len() == 1
+        && rect_has_area(bounds)
+    {
+        if let Some(bounds) = reveal_tab_bar_bounds(bounds, config)? {
+            let control = TabStripControlId::RevealTabBar(bar_id);
+            ready.push_tab_strip_control_record(TabStripControlRecord::new(
+                control,
+                bounds,
+                resolved_policy.interaction() == TabBarInteraction::Enabled,
+                layer,
+            ));
+            ready.push_surface_program_root_operation(
+                SurfaceProgramRootOperation::TabStripControl(control),
+            )?;
+        }
     }
     if rect_has_area(bounds) {
         let inner_guide = if let Some(outer_guides) = outer_guides {

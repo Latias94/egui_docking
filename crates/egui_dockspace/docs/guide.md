@@ -463,6 +463,15 @@ All tab callbacks are optional methods on `PaneView`. Keep the existing `title`
 method: it supplies measurement, hover text, accessibility names, overflow rows
 and drag-preview text even when the visible tab is custom.
 
+For compact single-pane groups, declare
+`TabBarPolicy::new(TabBarVisibility::AutoHideSingle, TabBarInteraction::Enabled)`
+through `DockPolicy::set_tab_bar`. Core hides a one-member bar and keeps a small
+accessible corner button to reveal it. The revealed bar stays open until its
+membership changes; adding a second tab shows the bar automatically. Empty
+central regions retain their ordinary presentation. The same rule determines
+layout minima and future docking previews. Explicit `Hidden` omits the bar and
+its recovery button entirely.
+
 - `tab_content_width(item, ui, title)` returns intrinsic content width before
   docking padding and the close button. The default is the shaped title width.
   Add space here for custom icons, badges or buttons; measurements must be

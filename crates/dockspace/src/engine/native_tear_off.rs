@@ -97,7 +97,9 @@ impl DockEngine {
                         .and_then(|requirements| {
                             requirements.tab_bar(crate::scene::TabBarSceneId { root, tabs: node })
                         })
-                        .map(|bar| bar.policy().visibility())
+                        // A partial item becomes a fresh single-member leaf;
+                        // it cannot inherit the source group's temporary reveal.
+                        .map(|bar| bar.policy().resolved(1, false).visibility())
                         .ok_or(unavailable)?;
                     pane_outer_minimum(measured, facts.config(), visibility)
                         .map_err(|_| DockspaceActionRejection::Conflict)?

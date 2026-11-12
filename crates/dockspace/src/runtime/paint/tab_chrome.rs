@@ -18,6 +18,8 @@ pub enum TabStripControlKind {
     ScrollForward,
     /// Open or close the complete tab-list menu.
     TabListMenu,
+    /// Reveal an automatically hidden single-member tab bar.
+    RevealTabBar,
 }
 
 /// Read-only geometry and state for one tab-strip control.
@@ -49,6 +51,7 @@ impl TabStripControlPaintRecord {
             TabStripControlId::ScrollBackward(_) => TabStripControlKind::ScrollBackward,
             TabStripControlId::ScrollForward(_) => TabStripControlKind::ScrollForward,
             TabStripControlId::TabListMenu(_) => TabStripControlKind::TabListMenu,
+            TabStripControlId::RevealTabBar(_) => TabStripControlKind::RevealTabBar,
         }
     }
 

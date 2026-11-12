@@ -24,10 +24,7 @@ impl DockEngine {
             .tab_strip_states
             .state(key)
             .is_none()
-            || !plan
-                .tab_bar_records()
-                .iter()
-                .any(|bar| *bar.id() == control.bar())
+            || !control.has_source_in(plan)
         {
             return Err(InteractionRejection::TabStripSourceUnavailable { key });
         }

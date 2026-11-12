@@ -62,6 +62,7 @@ fn paint_control_records(
                 "Close the list of open tabs"
             }
             TabStripControlKind::TabListMenu => "Show all open tabs",
+            TabStripControlKind::RevealTabBar => "Show the tab bar",
         });
         let paint_omitted = paint.is_source_gap();
         if !paint_omitted {
@@ -145,6 +146,20 @@ fn paint_control(
                     .circle_filled(center + vec2(x * spacing, 0.0), 1.4, color);
             }
         }
+        TabStripControlKind::RevealTabBar => {
+            let inset = bounds.width().min(bounds.height()) * 0.15;
+            let corner = bounds.min + vec2(inset, inset);
+            let extent = bounds.width().min(bounds.height()) - inset * 2.0;
+            context.ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    corner,
+                    corner + vec2(extent, 0.0),
+                    corner + vec2(0.0, extent),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
     }
 }
 
@@ -163,6 +178,7 @@ fn configure_control_accessibility(
             TabStripControlKind::ScrollBackward => "Scroll tabs backward",
             TabStripControlKind::ScrollForward => "Scroll tabs forward",
             TabStripControlKind::TabListMenu => "Show hidden tabs",
+            TabStripControlKind::RevealTabBar => "Show the tab bar",
         });
         if control.kind() == TabStripControlKind::TabListMenu {
             node.set_has_popup(HasPopup::Menu);
