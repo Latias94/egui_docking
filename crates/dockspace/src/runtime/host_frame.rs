@@ -1156,13 +1156,17 @@ impl<'session> DockspaceHostFrame<'session> {
         Ok(())
     }
 
-    /// Atomically publishes the frame after every surface received an explicit
-    /// contribution disposition.
+    /// Atomically publishes staged input, measurements, and confirmed surface emissions.
+    ///
+    /// Surfaces may remain unmeasured or unpainted. Commit completes pending pointer input
+    /// and settles outstanding output obligations internally; only confirmed emissions
+    /// produce painted outputs. Frames containing only application input or queued
+    /// presentation reports can commit directly.
     ///
     /// # Errors
     ///
-    /// Returns an error when the contribution roster is incomplete or the core
-    /// rejects the final candidate.
+    /// Returns an error for incomplete input, an invalid contribution, or a rejected
+    /// publication.
     pub fn commit(self) -> Result<HostFrameReport, DockspaceRuntimeError> {
         self.prepare_commit()?.commit()
     }
@@ -1175,7 +1179,7 @@ impl<'session> DockspaceHostFrame<'session> {
     ///
     /// # Errors
     ///
-    /// Returns an error for incomplete surface contributions, reduction failure,
+    /// Returns an error for incomplete input, invalid surface contributions, reduction failure,
     /// or when the core cannot reserve the required publication storage.
     pub fn prepare_commit(
         mut self,

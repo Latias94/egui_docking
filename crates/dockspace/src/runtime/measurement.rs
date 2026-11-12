@@ -297,6 +297,10 @@ impl DockspaceHostFrame<'_> {
     /// Explicitly settles every unanswered surface by retaining a current
     /// Ready candidate or reporting the supplied unavailability reason.
     ///
+    /// With [`SurfaceUnavailableReason::Deferred`], this only completes pending
+    /// pointer input. [`Self::commit`] already performs that step; an explicit
+    /// call is useful only when input must finish before further frame work.
+    ///
     /// # Errors
     ///
     /// Returns an error when any contribution is stale, duplicated, or cannot

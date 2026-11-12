@@ -18,7 +18,7 @@ use dockspace::runtime::{
     DockspaceReceiverRole, DockspaceSession, HostFrameReport, HostInputOutcome, HostPointerInput,
     HostPointerRoute, SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture,
     SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    UniformSurfaceMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -42,10 +42,7 @@ fn measure(frame: &mut DockspaceHostFrame<'_>) {
 }
 
 fn settle(session: &mut DockspaceSession) -> HostFrameReport {
-    let mut frame = session.begin_host_frame().unwrap();
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
+    let frame = session.begin_host_frame().unwrap();
     frame.commit().unwrap()
 }
 
@@ -181,9 +178,6 @@ fn main() {
                     request.prepare_observation(DockspacePaneFocusObservation::Focused);
                 frame.submit_pane_focus_observation(observation).unwrap();
             }
-            frame
-                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-                .unwrap();
             frame.commit().unwrap();
             cancel_logical_press(&mut session, receiver.center(), &mut seen_feedback);
         }
@@ -195,9 +189,6 @@ fn main() {
     let close = session.prepare_close_root(ROOT_A);
     let mut frame = session.begin_host_frame().unwrap();
     frame.submit_prepared_close_request(close).unwrap();
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
     let requested = frame.commit().unwrap();
     let [HostInputOutcome::CloseRequested { plan, .. }] = requested.inputs() else {
         panic!("expected an application close plan: {requested:?}")
@@ -212,9 +203,6 @@ fn main() {
             .resolve_close(plan.request(), item.token(), CloseDecision::Allow)
             .unwrap();
     }
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .unwrap();
     let closed = frame.commit().unwrap();
     let mut applied = false;
     for input in closed.inputs() {
@@ -279,9 +267,6 @@ fn cancel_logical_press(
                 )
             }),
         )
-        .unwrap();
-    frame
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .unwrap();
     let report = frame.commit().unwrap();
     assert!(matches!(

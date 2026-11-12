@@ -85,8 +85,9 @@ corresponding `dock_tabs_current` and `float_tabs_current` conveniences.
    measurements; `Deferred(OutputCapacity)` is normal bounded backpressure
    before content callbacks, not a failed input update.
 3. Pass the returned `SurfaceProgramExecutionReceipt` to
-   `confirm_surface_painted`, account for unpainted surfaces, then commit the
-   frame. A receipt proves complete sink acceptance; the committed
+   `confirm_surface_painted`, then commit the frame. Frames containing only
+   input or presentation reports can commit directly without painting.
+   A receipt proves complete sink acceptance; the committed
    `PaintedSurfaceOutput` identifies that exact emission. Neither proves renderer
    submission or presentation.
 4. After the host knows the final result, consume that output with

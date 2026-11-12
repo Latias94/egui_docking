@@ -7,7 +7,7 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceSession, DockspaceSubmittedAction, HostFrameReport,
-    HostInputOutcome, SurfaceUnavailableReason,
+    HostInputOutcome,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -73,12 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn commit_action(
-    mut frame: DockspaceHostFrame<'_>,
+    frame: DockspaceHostFrame<'_>,
     action: DockspaceSubmittedAction,
 ) -> Result<HostFrameReport, Box<dyn std::error::Error>> {
     // This example changes layout only. A renderer host instead measures,
     // executes the surface program and reports its exact output result.
-    frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
     let report = frame.commit()?;
     match report.submitted_action_outcome(action) {
         Some(HostInputOutcome::ProductActionApplied(outcome)) => println!("Applied: {outcome:?}"),

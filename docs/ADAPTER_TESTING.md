@@ -49,8 +49,10 @@ artifact until the host-frame commit succeeds:
 1. Measure and traverse the complete surface program into staged owned records.
    Keep rendering and hit records associated with the same exact output.
 2. Pass the execution receipt to `confirm_surface_painted`, account for unpainted
-   surfaces, then commit the host frame. A receipt proves sink acceptance; it
-   does not prove presentation. Discard staged changes if the candidate fails.
+   surfaces when an explicit unavailable result is needed, then commit the host
+   frame. Input-only and presentation-settlement frames can commit directly.
+   A receipt proves sink acceptance; it does not prove presentation. Discard
+   staged changes if the candidate fails.
 3. Install or enqueue the committed artifact using the framework's own rendering
    boundary. Keep its output handle until that exact artifact is presented or
    dropped. Do not promote its new hit records to input authority yet.

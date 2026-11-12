@@ -118,12 +118,9 @@ fn present_surfaces_with_report(
             .expect("presentation output is accepted");
     }
 
-    let mut settle = session
+    let settle = session
         .begin_host_frame()
         .expect("presentation settlement frame begins");
-    settle
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("presentation settlement retains every surface");
     settle
         .commit()
         .expect("presentation settlement frame commits")
@@ -286,7 +283,11 @@ fn live_managed_native_root() -> (DockspaceSession, NativeSurfaceBinding) {
 #[test]
 fn presentation_commands_report_current_availability_before_submission() {
     let mut session = session();
-    present_surfaces(&mut session, &[MAIN_SURFACE, ROOTLESS_SURFACE]);
+    let settled = present_surfaces_with_report(&mut session, &[MAIN_SURFACE, ROOTLESS_SURFACE]);
+    assert_eq!(settled.surface_presentation_commits().len(), 2);
+    for surface in [MAIN_SURFACE, ROOTLESS_SURFACE] {
+        assert!(session.presented_surface(surface).is_some());
+    }
 
     let contained = session.presentation_commands(CONTAINED_ROOT);
     assert_eq!(contained.root(), CONTAINED_ROOT);
@@ -337,7 +338,10 @@ fn product_actions_select_open_and_dock_without_runtime_node_ids() {
 
     let mut frame = session.begin_host_frame().expect("selection frame begins");
     frame.select_item_current(SECOND).expect("selection stages");
-    let report = commit(frame);
+    let mut report = frame
+        .commit()
+        .expect("unpainted selection frame commits directly");
+    assert!(report.take_painted_outputs().is_empty());
     assert_eq!(
         report.inputs(),
         &[HostInputOutcome::ProductActionApplied(
