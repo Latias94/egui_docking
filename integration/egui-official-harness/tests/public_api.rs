@@ -321,7 +321,7 @@ fn official_raw_egui_host_owns_terminal_settlement() {
 }
 
 #[test]
-fn missing_or_dropped_host_receipt_cannot_complete_pane_focus() {
+fn missing_or_dropped_host_receipts_do_not_reapply_surrendered_focus() {
     #[derive(Clone, Copy, Debug)]
     enum HostResult {
         Unreported,
@@ -378,39 +378,47 @@ fn missing_or_dropped_host_receipt_cannot_complete_pane_focus() {
                 .expect("the unpresented observation leaves pane focus pending");
         });
         output.textures_delta.clear();
-        assert_eq!(
-            context.memory(|memory| memory.focused()),
-            Some(target),
-            "{result:?} must leave the request pending so a legal retry reacquires focus",
-        );
-        drop(pending);
-        let (mut output, receipt) = run_ui(&context, raw_input(), |ui| {
-            dockspace
-                .show_single_surface(SURFACE, ui, &mut panes)
-                .expect("the presented retry completes the exact focus request");
-        })
-        .into_parts();
-        output.textures_delta.clear();
-        assert_eq!(context.memory(|memory| memory.focused()), Some(target));
-        receipt.report(SurfacePresentationResult::Dropped);
-        context.memory_mut(|memory| memory.surrender_focus(target));
-        assert_ne!(context.memory(|memory| memory.focused()), Some(target));
-        let mut output = run_headless(&context, raw_input(), |ui| {
-            dockspace
-                .show_single_surface(SURFACE, ui, &mut panes)
-                .expect("the acknowledged retry no longer reclaims surrendered focus");
-        });
-        output.textures_delta.clear();
         assert_ne!(
             context.memory(|memory| memory.focused()),
             Some(target),
-            "only the presented retry may complete the request after {result:?}",
+            "{result:?} must preserve later focus changes while exact acknowledgement is pending",
         );
+        drop(pending);
+        for _ in 0..2 {
+            let mut output = run_headless(&context, raw_input(), |ui| {
+                dockspace
+                    .show_single_surface(SURFACE, ui, &mut panes)
+                    .expect("retiring old outputs preserves surrendered framework focus");
+            });
+            output.textures_delta.clear();
+            assert_ne!(context.memory(|memory| memory.focused()), Some(target));
+        }
+
+        // Framework focus application and exact presentation acknowledgement
+        // have separate lifetimes. A new explicit intent may request focus again.
+        dockspace.select_item_current(SECOND_ITEM).unwrap();
+        for _ in 0..2 {
+            let mut output = run_headless(&context, raw_input(), |ui| {
+                dockspace
+                    .show_single_surface(SURFACE, ui, &mut panes)
+                    .expect("the new selection requests and acknowledges pane focus");
+            });
+            output.textures_delta.clear();
+            assert_eq!(context.memory(|memory| memory.focused()), Some(target));
+        }
+        context.memory_mut(|memory| memory.surrender_focus(target));
+        let mut output = run_headless(&context, raw_input(), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the newly acknowledged request is not reapplied");
+        });
+        output.textures_delta.clear();
+        assert_ne!(context.memory(|memory| memory.focused()), Some(target));
     }
 }
 
 #[test]
-fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
+fn out_of_order_host_reports_preserve_later_focus_across_their_exact_core_commit() {
     let (context, mut dockspace, mut panes) = selected_second_pane();
     let target = panes.focus_id(SECOND_ITEM);
     let (mut output_a, receipt_a) = run_ui(&context, raw_input(), |ui| {
@@ -421,8 +429,6 @@ fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
     .into_parts();
     output_a.textures_delta.clear();
     assert_eq!(context.memory(|memory| memory.focused()), Some(target));
-    context.memory_mut(|memory| memory.surrender_focus(target));
-    assert_ne!(context.memory(|memory| memory.focused()), Some(target));
     let (mut output_b, receipt_b) = run_ui(&context, raw_input(), |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
@@ -442,7 +448,7 @@ fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
     assert_eq!(
         context.memory(|memory| memory.focused()),
         Some(target),
-        "the unreported output A cannot complete the pending request",
+        "output B must observe the focus which was applied once for the request",
     );
     receipt_b.report(SurfacePresentationResult::Presented);
     context.memory_mut(|memory| memory.surrender_focus(target));
@@ -455,10 +461,10 @@ fn out_of_order_host_report_keeps_focus_until_its_exact_core_commit() {
     })
     .into_parts();
     output_c.textures_delta.clear();
-    assert_eq!(
+    assert_ne!(
         context.memory(|memory| memory.focused()),
         Some(target),
-        "B's report cannot settle focus before core accepts its exact prefix; C must reacquire it",
+        "B's report is waiting for A, but cannot override a later framework focus change",
     );
 
     // Keep C unreported so its result cannot replace B in the next core acknowledgement.
