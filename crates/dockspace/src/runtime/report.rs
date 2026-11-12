@@ -425,6 +425,7 @@ impl HostFrameReport {
             affected_surfaces,
             surface_commits,
             inputs,
+            events: super::events::committed_events(transition),
             submitted_actions,
             presentation_transitions,
             manipulation_feedback,

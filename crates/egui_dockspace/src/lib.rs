@@ -56,10 +56,10 @@ pub use dockspace::runtime::SurfacePresentationResult;
 pub use dockspace::runtime::{
     DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePhase,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
-    DockspaceCloseResolution, DockspaceContextMenuRequest, DockspaceFocusTarget,
-    DockspaceManipulationCancelReason, DockspaceManipulationDelivery,
-    DockspaceManipulationFeedback, DockspaceManipulationFeedbackId, DockspaceManipulationId,
-    DockspaceManipulationPendingReason, DockspaceManipulationRejection,
+    DockspaceCloseResolution, DockspaceContextMenuRequest, DockspaceEvent, DockspaceEventId,
+    DockspaceEventKind, DockspaceFocusTarget, DockspaceManipulationCancelReason,
+    DockspaceManipulationDelivery, DockspaceManipulationFeedback, DockspaceManipulationFeedbackId,
+    DockspaceManipulationId, DockspaceManipulationPendingReason, DockspaceManipulationRejection,
     DockspaceManipulationStatus, DockspaceTouchEvent, PreparedCloseRequest,
 };
 #[cfg(feature = "serde")]
@@ -89,3 +89,7 @@ pub use style::{
     TabCloseVisibility, TabGroupGripVisibility,
 };
 pub use tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose, TabVisuals};
+
+#[cfg(test)]
+#[path = "product_events_tests.rs"]
+mod product_events_tests;

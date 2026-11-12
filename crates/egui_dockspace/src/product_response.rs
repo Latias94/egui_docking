@@ -6,7 +6,7 @@ use dockspace::model::{
 pub use dockspace::runtime::{
     DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePlan,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
-    DockspaceCloseResolution, DockspaceManipulationFeedback,
+    DockspaceCloseResolution, DockspaceEvent, DockspaceManipulationFeedback,
 };
 use dockspace::runtime::{
     DockspacePresentationTransitionResult, DockspaceTouchEvent, HostCloseRequestOrigin,
@@ -21,6 +21,7 @@ pub struct DockspaceMutation {
     workspace_changed: bool,
     published_state_changed: bool,
     affected_surfaces: Vec<SurfaceId>,
+    events: Vec<DockspaceEvent>,
     manipulation_feedback: Vec<DockspaceManipulationFeedback>,
 }
 
@@ -32,6 +33,7 @@ impl DockspaceMutation {
             workspace_changed: false,
             published_state_changed: false,
             affected_surfaces: Vec::new(),
+            events: Vec::new(),
             manipulation_feedback: Vec::new(),
         }
     }
@@ -43,6 +45,7 @@ impl DockspaceMutation {
             workspace_changed: report.workspace_changed(),
             published_state_changed: report.published_state_changed(),
             affected_surfaces: report.affected_surfaces().to_vec(),
+            events: report.events().to_vec(),
             manipulation_feedback: report.manipulation_feedback().to_vec(),
         }
     }
@@ -85,6 +88,17 @@ impl DockspaceMutation {
     #[must_use]
     pub fn affected_surfaces(&self) -> &[SurfaceId] {
         &self.affected_surfaces
+    }
+
+    /// Returns this publication's committed product changes in core event order.
+    ///
+    /// Consume application notifications after a successful docking call,
+    /// outside repeated pane/tab painting callbacks. Unchanged and rejected
+    /// actions, close requests and pending native transfers are not completion
+    /// events. Rereading or cloning this value preserves event identities.
+    #[must_use]
+    pub fn events(&self) -> &[DockspaceEvent] {
+        &self.events
     }
 
     /// Returns manipulation feedback committed by this exact publication.

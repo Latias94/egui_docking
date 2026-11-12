@@ -7,6 +7,7 @@
 - [Complete-output hosts](#complete-output-hosts) and [callback hosts](#callback-hosts)
 - [Pointer input](#pointer-input) and [output contract](#output-contract)
 - [Close decisions](#closing-content-and-dock-back)
+- [Committed lifecycle events](#committed-lifecycle-events)
 - [Feedback and focus](#feedback-and-focus)
 - [Styling](#styling) and [features](#features)
 
@@ -294,6 +295,50 @@ For a complete tabs leaf, `capture_tabs_group(DockAnchor::Item(item))` returns a
 selected item preserved. A captured group belongs to its original session and
 workspace version. Recapture after layout changes rather than replaying an old
 anchor against a different group.
+
+## Committed lifecycle events
+
+Read `result.mutation().events()` after a successful docking call to react to
+committed selection/MRU changes, tab reorder, opening, placement changes, or
+approved closes. The same `DockspaceMutation::events()` API is available on
+ordinary surface responses and programmatic action/close results. Layout reset
+and document restore return their events directly on the mutation. Headless
+hosts receive the same product events through `HostFrameReport::events()`.
+
+```rust,ignore
+for event in response.mutation().events() {
+    match event.kind() {
+        DockspaceEventKind::ItemOpened { item, .. } => app.pane_opened(*item),
+        DockspaceEventKind::Closed(outcome) => app.content_closed(outcome),
+        _ => {}
+    }
+}
+```
+
+These are read-only notifications from one successful core publication, not
+before/after drawing hooks. The owned `run_single_surface` call returns one
+batch after its terminal pass; discarded encoding passes do not publish it.
+Callback hosts using `show_single_surface` already commit inside each successful
+callback. Collect their notifications across callbacks rather than keeping
+only the final pass's response, then process them outside the outer egui run.
+A later egui output discard does not undo those earlier core publications.
+Repeated passes do not replay input. Reading or cloning a result preserves each
+opaque `event.id()`; applications that retain notifications can deduplicate.
+`event.version()` records the version after that event's mutation, which can
+precede the report's final version when a frame contains several changes.
+
+No-op, rejected and stale actions do not emit completion events. A close
+request, reused plan, deferred decision or veto is not a successful close.
+Presentation-gated native transfers emit placement changes only after content
+ownership commits; rendering a prospective target is insufficient. Layout
+replacement emits one reset/restore notification and suppresses earlier
+changes superseded inside that same atomic commit. `SelectionCommitted`
+includes selection or MRU changes and does not assert keyboard or window focus.
+
+Keep pane and tab drawing callbacks synchronous. Use `tab_ui` for custom tab
+painting and `tab_bar_ui` with `Leading`, `Trailing` or `AfterTabs` for controls
+around tabs; queue requested edits and handle lifecycle notifications outside
+those potentially repeated callbacks.
 
 ## Feedback And Focus
 

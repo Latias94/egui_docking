@@ -11,6 +11,7 @@ mod close;
 mod content_actions_tests;
 pub(crate) mod direct_manipulation;
 mod error_kind;
+mod events;
 mod focus;
 mod host_frame;
 mod interaction;
@@ -34,6 +35,7 @@ mod touch;
 mod update;
 
 pub use crate::interaction::PointerContinuationToken;
+pub use events::{DockspaceEvent, DockspaceEventId, DockspaceEventKind};
 pub use host_frame::{DockspaceHostFrame, PreparedDockspaceHostFrameCommit};
 pub use layout_reset::PreparedDockspaceLayoutReset;
 pub use manipulation_feedback::{
@@ -617,6 +619,7 @@ pub struct HostFrameReport {
     affected_surfaces: Vec<SurfaceId>,
     surface_commits: Vec<HostSurfaceCommit>,
     inputs: Vec<HostInputOutcome>,
+    events: Vec<DockspaceEvent>,
     submitted_actions: Vec<(DockspaceSubmittedAction, usize)>,
     presentation_transitions: Vec<DockspacePresentationTransition>,
     manipulation_feedback: Vec<DockspaceManipulationFeedback>,
@@ -685,6 +688,18 @@ impl HostFrameReport {
     #[must_use]
     pub fn inputs(&self) -> &[HostInputOutcome] {
         &self.inputs
+    }
+
+    /// Returns committed product changes in their original core event order.
+    ///
+    /// A successful frame produces these notifications once; reading a report
+    /// repeatedly does not consume them. Event identities support application
+    /// deduplication. Rejected, unchanged and superseded pre-replacement changes
+    /// are omitted. Preparing an encoding pass does not emit events; abandoning
+    /// its unpublished host frame produces no committed notifications.
+    #[must_use]
+    pub fn events(&self) -> &[DockspaceEvent] {
+        &self.events
     }
 
     /// Returns the exact reduced outcome for one action submitted through this frame.
