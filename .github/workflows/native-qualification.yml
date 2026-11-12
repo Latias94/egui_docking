@@ -62,6 +62,17 @@ jobs:
         run: >-
           cargo build --package egui_dockspace --example workbench
           --features wgpu,accesskit --locked
+      - name: Build independent software host
+        run: >-
+          cargo build --package dockspace_winit --example software
+          --features example-app --locked
+      - name: Exercise software output with synthetic winit input
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python3 integration/egui-native-smoke/with_openbox.py --timeout 60 -- \
+            target/debug/examples/software --smoke \
+            2>&1 | tee "$QUALIFICATION_LOG_DIR/software.log"
+          grep -Fq 'software smoke passed:' "$QUALIFICATION_LOG_DIR/software.log"
       - name: Exercise official winit startup and complete output
         run: |
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \

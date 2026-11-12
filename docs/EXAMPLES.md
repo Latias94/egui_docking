@@ -9,6 +9,7 @@ need a desktop session and a working graphics backend.
 | --- | --- | --- |
 | Learn the renderer-neutral core | [Layout commands](../crates/dockspace/examples/layout_commands.rs) | Create a layout, select/open/move panes and inspect committed results; no window |
 | Integrate a custom renderer | [Engine host](../integration/dockspace-host-harness/examples/engine_host.rs) | Measure, record and settle output for two logical surfaces; recording renderer |
+| Connect a custom renderer to winit | [Software host](../crates/dockspace_winit/examples/software.rs) | Caller-owned event loop, software drawing, pointer routing and actual presentation; no UI framework |
 | Try full docking with official egui | [Workbench](../crates/egui_dockspace/examples/workbench.rs) | Drag docking, splitters, contained Inspector, themes and retained document data |
 | Start a small winit editor | [Winit editor](../crates/egui_dockspace/examples/winit.rs) | Application panes with the optional complete-output runner; no custom event-loop code |
 | Start from an eframe callback | [Basic](../crates/egui_dockspace/examples/basic.rs) | Pane rendering, close decisions and theme/font/density controls; callback capabilities |
@@ -35,6 +36,19 @@ cargo run --manifest-path integration/dockspace-host-harness/Cargo.toml --exampl
 `layout_commands` is the smallest introduction. The independent `engine_host`
 adds output ownership and input integration. It uses public core interfaces and
 models presentation results without creating windows or submitting GPU work.
+
+For a real single-window host without a UI framework:
+
+```sh
+cargo run -p dockspace_winit --example software --features example-app --locked
+```
+
+Drag tabs, resize dividers and move the floating Inspector. Hold **Shift** to
+float, use **+/-** to change UI zoom, **R** to reset and **Escape** to cancel.
+The example consumes the complete core surface program and reports presentation
+after softbuffer accepts the pixels. Add `-- --smoke` for a finite interaction
+exercise with synthetic winit events and actual software presentation. It does
+not automate physical OS input or provide a complete UI framework adapter.
 
 ## Official egui
 

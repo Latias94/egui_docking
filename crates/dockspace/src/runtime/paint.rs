@@ -1244,15 +1244,17 @@ pub enum SurfacePaintProgramStep<'frame> {
 }
 
 /// Failure while resolving or executing one compiled paint program.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SurfacePaintProgramVisitError<E> {
     /// The sealed program no longer matches its canonical record roster.
+    #[error("invalid surface paint program for {surface:?}")]
     InvalidProgram {
         /// Surface whose program failed its internal invariant.
         surface: SurfaceId,
     },
     /// The renderer rejected one emitted step.
-    Sink(E),
+    #[error("surface paint sink failed: {0}")]
+    Sink(#[source] E),
 }
 
 impl<E: Into<DockspaceRuntimeError>> SurfacePaintProgramVisitError<E> {
