@@ -1,15 +1,15 @@
-//! WGPU presentation and texture-delta ownership for the example host.
+//! WGPU presentation and texture-delta ownership for the single-window runner.
 
 use std::sync::Arc;
 
-use egui_dockspace::SurfacePresentationResult;
+use crate::SurfacePresentationResult;
 use egui_wgpu::wgpu;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
-pub(super) struct OfficialRenderer {
-    pub(super) adapter_info: wgpu::AdapterInfo,
+pub(super) struct WgpuRenderer {
     pub(super) drop_reason: Option<&'static str>,
+    clear_color: wgpu::Color,
     instance: wgpu::Instance,
     surface: Option<wgpu::Surface<'static>>,
     pub(super) device: wgpu::Device,
@@ -20,10 +20,11 @@ pub(super) struct OfficialRenderer {
     pub(super) pending_textures: egui::TexturesDelta,
 }
 
-impl OfficialRenderer {
+impl WgpuRenderer {
     pub(super) async fn new(
         event_loop: &ActiveEventLoop,
         window: Arc<Window>,
+        clear_color: egui::Color32,
     ) -> Result<Self, egui_wgpu::WgpuError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
             Box::new(event_loop.owned_display_handle()),
@@ -43,7 +44,7 @@ impl OfficialRenderer {
         };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("official demo device"),
+                label: Some("dockspace device"),
                 required_limits: limits.using_resolution(adapter.limits()),
                 ..Default::default()
             })
@@ -60,8 +61,14 @@ impl OfficialRenderer {
             config.format,
             egui_wgpu::RendererOptions::default(),
         );
+        let [r, g, b, a] = egui::Rgba::from(clear_color).to_array();
         Ok(Self {
-            adapter_info,
+            clear_color: wgpu::Color {
+                r: f64::from(r),
+                g: f64::from(g),
+                b: f64::from(b),
+                a: f64::from(a),
+            },
             drop_reason: None,
             instance,
             surface: Some(surface),
@@ -91,7 +98,7 @@ impl OfficialRenderer {
                 Ok(surface) => self.surface = Some(surface),
                 Err(error) => {
                     self.drop_reason = Some("surface recreation failed");
-                    eprintln!("Failed to recreate the official demo surface: {error}");
+                    eprintln!("Failed to recreate the dockspace surface: {error}");
                     return SurfacePresentationResult::Dropped;
                 }
             }
@@ -161,7 +168,7 @@ impl OfficialRenderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("official demo encoder"),
+                label: Some("dockspace encoder"),
             });
         let user_commands = self.renderer.update_buffers(
             &self.device,
@@ -175,18 +182,13 @@ impl OfficialRenderer {
             .create_view(&wgpu::TextureViewDescriptor::default());
         {
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("official demo egui pass"),
+                label: Some("dockspace egui pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.055,
-                            g: 0.06,
-                            b: 0.07,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(self.clear_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -210,7 +212,7 @@ impl OfficialRenderer {
     }
 }
 
-impl Drop for OfficialRenderer {
+impl Drop for WgpuRenderer {
     fn drop(&mut self) {
         // The renderer and context are shutting down; no future frame will use these deltas.
         self.pending_textures.clear();

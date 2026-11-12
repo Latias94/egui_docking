@@ -33,7 +33,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: native-linux
-          workspaces: integration/egui-fork-workspace -> target
+          workspaces: |
+            . -> target
+            integration/egui-fork-workspace -> target
       - name: Install X11 build and runtime dependencies
         timeout-minutes: 5
         run: >-
@@ -41,7 +43,7 @@ jobs:
           -o Acquire::https::Timeout=20 update &&
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20
           -o Acquire::https::Timeout=20 install --no-install-recommends -y
-          libwayland-dev libxkbcommon-x11-0 openbox x11-utils xauth xdotool xvfb
+          libwayland-dev libxkbcommon-x11-0 mesa-vulkan-drivers openbox x11-utils xauth xdotool xvfb
       - name: Record source and toolchain
         run: |
           mkdir -p "$QUALIFICATION_LOG_DIR"
@@ -56,6 +58,17 @@ jobs:
         run: >-
           cargo build --manifest-path integration/egui-fork-workspace/Cargo.toml
           --package egui_dockspace_native --example basic --example solar_system --all-features --locked
+      - name: Build official winit runner with system accessibility
+        run: >-
+          cargo build --package egui_dockspace --example workbench
+          --features wgpu,accesskit --locked
+      - name: Exercise official winit startup and complete output
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python3 integration/egui-native-smoke/with_openbox.py --timeout 120 -- \
+            target/debug/examples/workbench --exercise "$QUALIFICATION_LOG_DIR/official-winit.csv" \
+            2>&1 | tee "$QUALIFICATION_LOG_DIR/official-winit.log"
+          grep -Fq 'egui-host-exercise: complete;' "$QUALIFICATION_LOG_DIR/official-winit.log"
       - name: Exercise actual output, input, capture and lifecycle boundaries
         run: |
           xvfb-run -a --server-args="-screen 0 1280x1024x24 +extension RANDR +extension XTEST" \

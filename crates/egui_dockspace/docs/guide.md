@@ -214,8 +214,14 @@ The repository includes a real-window official-egui host that exercises this
 supported tier directly:
 
 ```text
-cargo run -p egui_dockspace --example workbench --features example-wgpu --locked
+cargo run -p egui_dockspace --example workbench --features wgpu --locked
 ```
+
+Enable `wgpu` to reuse the public single-window `winit::run_native` runner, or
+enable `winit` for `WinitIntegration` with an existing event loop and renderer.
+Both are optional. The [small editor](../examples/winit.rs) demonstrates the
+runner; the [crate README](../README.md#use-winit) covers setup and the optional
+system accessibility adapter.
 
 ## Callback hosts
 

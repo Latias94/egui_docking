@@ -9,6 +9,7 @@ to reproduce behavior in the appropriate host.
 | Path | Responsibility |
 | --- | --- |
 | `crates/dockspace` | Renderer-neutral public model, policy and session runtime |
+| `crates/dockspace_winit` | Shared input, coordinate and repaint helpers for winit hosts |
 | `crates/egui_dockspace` | Official egui adapter and packaged application examples |
 | `crates/egui_dockspace_native` | Unpublished adapter for the pinned native forks |
 | `crates/dockspace_host_conformance` | Shared semantic test scenarios |

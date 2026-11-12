@@ -59,7 +59,7 @@ The binary compiles the packaged
 [workbench example](../../crates/egui_dockspace/examples/workbench.rs) directly.
 There is one implementation of its layout, application panes and renderer.
 For everyday use, run `cargo run -p egui_dockspace --example workbench --features
-example-wgpu --locked` from the repository root. The independent manifest above
+wgpu --locked` from the repository root. The independent manifest above
 exists to check compatibility against unpatched official dependencies.
 
 ## Continuous editor exercise

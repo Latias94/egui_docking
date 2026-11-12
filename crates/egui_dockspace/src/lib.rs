@@ -13,6 +13,8 @@ pub mod drop_preview;
 pub mod pane;
 pub mod style;
 pub mod tab;
+#[cfg(feature = "winit")]
+pub mod winit;
 
 mod builder;
 mod error;

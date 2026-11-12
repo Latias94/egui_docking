@@ -14,18 +14,59 @@ and egui 0.37. Native OS windows use a separate experimental adapter.
 From the repository root:
 
 ```sh
-cargo run -p egui_dockspace --example workbench --features example-wgpu --locked
+cargo run -p egui_dockspace --example workbench --features wgpu --locked
 ```
 
 This official-egui/WGPU host supports drag docking, splitter resizing and
 floating groups in one OS window. Start with
 [`workbench/editor.rs`](examples/workbench/editor.rs) for layout, pane rendering,
-styling and close decisions. The [window host](examples/workbench.rs) and
-[renderer](examples/workbench/renderer.rs) show complete input and presentation.
+styling and close decisions. The example uses the
+[public winit integration](src/winit.rs) for complete input and presentation.
 
 Drag tabs onto a pane to merge or split it. To float a tab, hold **Shift** while
 dragging and release inside the window. Shift temporarily disables docking. Drag a
 floating group's dotted title grip onto a docking guide to dock the group again.
+
+## Use winit
+
+For a small runnable editor with full drag docking:
+
+```sh
+cargo run -p egui_dockspace --example winit --features wgpu --locked
+```
+
+Enable only the integration your application needs; platform features are off by default:
+
+```toml
+[dependencies]
+dockspace = { path = "../dockspace/crates/dockspace" }
+egui_dockspace = { path = "../dockspace/crates/egui_dockspace", features = ["wgpu"] }
+egui = "=0.37.0"
+```
+
+- `winit` exposes `egui_dockspace::winit::WinitIntegration` for an existing
+  event loop and renderer. Feed window events, take input, run Dockspace, and
+  handle platform output. Your renderer settles the returned output receipt.
+- `wgpu` includes `winit` and exposes `run_native`, `NativeApp` and `NativeOptions`.
+  Implement `NativeApp::update` by returning the `DockspaceOutput` from
+  `run_single_surface`. The runner owns the window loop, renderer and exact
+  output settlement. `frame_finished` handles application commands after rendering.
+- `accesskit` adds the system accessibility adapter. The runner connects it
+  automatically; an existing event loop calls `init_accesskit` and forwards its
+  user events through `on_accesskit_event`. Create the window hidden, initialize
+  the adapter, then show it for the first time.
+
+The [small editor](examples/winit.rs) shows this setup without custom event-loop
+code. Configure window attributes through `NativeOptions::window`, and configure
+fonts and theme on the supplied egui context. A root-window close request reaches
+the application as viewport input; return `ViewportCommand::CancelClose` to keep
+the window open for saving or confirmation. This runner owns one OS window and
+reports an error for separate viewport or screenshot requests. Use a custom
+host when those capabilities are needed.
+
+The separate [`dockspace_winit`](../dockspace_winit) crate supplies mouse event,
+coordinate and repaint helpers for other winit-based UI frameworks. It has no
+egui or renderer dependency. GPUI uses its own platform event integration.
 
 ## Host choices
 
@@ -151,7 +192,9 @@ in memory for the current process.
 | --- | --- |
 | `serde` | Layout document save/restore; pane data and file storage remain application-owned |
 | `example-app` | Build the packaged eframe examples |
-| `example-wgpu` | Build the complete-output workbench using official winit/WGPU |
+| `winit` | Input and platform-output bridge for an existing winit event loop and renderer |
+| `wgpu` | Complete-output single-window runner and renderer using official WGPU |
+| `accesskit` | System accessibility delivery and action input for the winit integration |
 | `native-render-support` | Internal seam for the unpublished native adapter |
 
 ## License

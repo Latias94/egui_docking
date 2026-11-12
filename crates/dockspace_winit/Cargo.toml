@@ -1,0 +1,17 @@
+[package]
+name = "dockspace_winit"
+description = "Window input and repaint helpers for winit-based dockspace hosts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+dockspace.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true

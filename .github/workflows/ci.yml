@@ -36,6 +36,10 @@ jobs:
         run: cargo fmt --all --check
       - name: Check core dependency boundary
         run: python3 scripts/check_core_dependencies.py
+      - name: Check renderer-independent winit integration
+        run: >-
+          cargo check --package egui_dockspace --no-default-features
+          --features winit --lib --locked
       - name: Check Python syntax
         run: python3 -m compileall -q scripts integration/egui-native-smoke
       - name: Check correctness lints
@@ -46,7 +50,7 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: >-
-          cargo doc --package dockspace --package egui_dockspace
+          cargo doc --package dockspace --package dockspace_winit --package egui_dockspace
           --all-features --no-deps --locked
       - name: Run workspace tests
         run: >-

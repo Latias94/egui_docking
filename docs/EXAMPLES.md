@@ -10,6 +10,7 @@ need a desktop session and a working graphics backend.
 | Learn the renderer-neutral core | [Layout commands](../crates/dockspace/examples/layout_commands.rs) | Create a layout, select/open/move panes and inspect committed results; no window |
 | Integrate a custom renderer | [Engine host](../integration/dockspace-host-harness/examples/engine_host.rs) | Measure, record and settle output for two logical surfaces; recording renderer |
 | Try full docking with official egui | [Workbench](../crates/egui_dockspace/examples/workbench.rs) | Drag docking, splitters, contained Inspector, themes and retained document data |
+| Start a small winit editor | [Winit editor](../crates/egui_dockspace/examples/winit.rs) | Application panes with the optional complete-output runner; no custom event-loop code |
 | Start from an eframe callback | [Basic](../crates/egui_dockspace/examples/basic.rs) | Pane rendering, close decisions and theme/font/density controls; callback capabilities |
 | Save before closing a tab | [Background save](../crates/egui_dockspace/examples/background_save.rs) | Background worker, exact deferred token, failure recovery and stale completion |
 | Save and restore editor layouts | [Workspace persistence](../crates/egui_dockspace/examples/workspace_persistence.rs) | JSON file across launches, presets, closed-pane inventory and layout locking |
@@ -40,7 +41,8 @@ models presentation results without creating windows or submitting GPU work.
 Full docking, with official crates.io dependencies:
 
 ```sh
-cargo run -p egui_dockspace --example workbench --features example-wgpu --locked
+cargo run -p egui_dockspace --example winit --features wgpu --locked
+cargo run -p egui_dockspace --example workbench --features wgpu --locked
 ```
 
 Try editing text, dragging a tab into another group, resizing a split, moving the
@@ -48,7 +50,7 @@ contained Inspector, then closing and restoring a pane. The host integrates
 `run_single_surface_with_ui` with winit/WGPU and reports its actual renderer
 presentation result. This is a single OS-window example. Its application code
 lives in [editor.rs](../crates/egui_dockspace/examples/workbench/editor.rs), separate
-from the window loop, renderer and opt-in measurement exercise. The independent
+from the public runner and opt-in measurement exercise. The independent
 official harness compiles the same example against its own locked dependencies.
 Enable **Custom tabs** to try per-tab icons and rounded backgrounds, fixed group
 counts and **Tint** buttons. The [tab callbacks](../crates/egui_dockspace/examples/workbench/tabs.rs)

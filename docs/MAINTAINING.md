@@ -11,6 +11,7 @@ Keep these names distinct:
 | Name | Role |
 | --- | --- |
 | `dockspace` | Core crate and repository slug |
+| `dockspace_winit` | Optional window input and repaint helpers for winit hosts |
 | `egui_dockspace` | Official egui adapter crate |
 | `egui_dockspace_native` | Experimental unpublished native adapter |
 | `dockspace_host_conformance` | Shared test-scenario crate |
@@ -41,7 +42,7 @@ once one is hosted; avoid linking an internal plan as the product homepage.
 
 ## First registry release
 
-Both public crates are currently source-only. Do not advertise a crates.io
+The public crates are currently source-only. Do not advertise a crates.io
 installation command or docs.rs version badge until that release exists.
 
 1. Finalize naming and package metadata, include the declared license texts in
@@ -50,10 +51,11 @@ installation command or docs.rs version badge until that release exists.
 2. Run the CI gates and applicable native qualification. Check both default and
    persistence consumers and keep the documented platform limits accurate.
 3. Inspect package contents. `dockspace` must include its command example and
-   host guide; `egui_dockspace` must include its application examples and guide.
-4. Publish `dockspace` first. Then verify and publish `egui_dockspace` against
-   that exact released core version. A local extracted-pair test does not prove
-   registry publication.
+   host guide; `dockspace_winit` must include its host setup README;
+   `egui_dockspace` must include its application examples and guide.
+4. Publish `dockspace` first, then verify and publish `dockspace_winit`, then
+   `egui_dockspace` against those exact released versions. A local package test
+   does not prove registry publication.
 5. Add installation/version links and release notes after verifying the registry
    packages and generated documentation. Keep the native adapter unpublished
    until it has a separate release decision.
@@ -62,11 +64,12 @@ Useful package inspection commands:
 
 ```sh
 cargo package -p dockspace --all-features --locked --list
+cargo package -p dockspace_winit --all-features --locked --list
 cargo package -p egui_dockspace --all-features --locked --list
 ```
 
 Package verification is a separate step from listing. Before registry release,
-the adapter needs the matching core version to resolve successfully. Publish and
-verify the core first, then run `cargo package -p egui_dockspace --all-features
---locked` before publishing the adapter. Listing archive contents alone does not
-verify either package's build.
+each adapter needs its matching dependencies to resolve successfully. Publish and
+verify in dependency order, running `cargo package -p <crate> --all-features
+--locked` before publishing each adapter. Listing archive contents alone does not
+verify a package's build.

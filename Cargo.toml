@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/dockspace",
     "crates/dockspace_host_conformance",
+    "crates/dockspace_winit",
     "crates/egui_dockspace",
 ]
 exclude = [
@@ -34,6 +35,7 @@ codegen-units = 1
 [workspace.dependencies]
 blake3 = "1.8.3"
 dockspace = { version = "0.1.0", path = "crates/dockspace", default-features = false }
+dockspace_winit = { version = "0.1.0", path = "crates/dockspace_winit" }
 egui = { version = "=0.37.0", default-features = false }
 eframe = { version = "=0.37.0", default-features = false }
 proptest = "1.9.0"
@@ -41,6 +43,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 slotmap = "1.1.1"
 thiserror = "2.0.18"
+winit = "=0.30.13"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -15,7 +15,7 @@ Rust 1.95 or later is required. The egui adapter targets egui 0.37.
 Run the interactive editor using official egui, winit and WGPU:
 
 ```sh
-cargo run -p egui_dockspace --example workbench --features example-wgpu --locked
+cargo run -p egui_dockspace --example workbench --features wgpu --locked
 ```
 
 Drag tabs to merge or split panes, resize splitters, and move the floating
@@ -38,6 +38,7 @@ cargo run -p dockspace --example layout_commands --locked
 | You want to… | Start here | Host requirements |
 | --- | --- | --- |
 | Add docking to a custom engine or UI framework | [`dockspace`](crates/dockspace) | Supply measurements, drawing, input and presentation results |
+| Connect a winit-based UI framework | [`dockspace_winit`](crates/dockspace_winit) | Keep your UI/renderer and use shared event, coordinate and repaint helpers |
 | Use egui in one OS window | [`egui_dockspace`](crates/egui_dockspace) | Own the complete egui run and final output for drag docking |
 | Experiment with multiple native windows | [`egui_dockspace_native`](crates/egui_dockspace_native) | Use the pinned eframe/winit forks; platform support varies |
 
@@ -87,6 +88,6 @@ storage stay in your application.
 
 ## License
 
-`dockspace` uses Apache-2.0. `egui_dockspace` and the experimental native adapter
-use MIT OR Apache-2.0. [Third-party sources](THIRD_PARTY.md) records prior art
-and fixture provenance.
+`dockspace` uses Apache-2.0. `dockspace_winit`, `egui_dockspace` and the experimental
+native adapter use MIT OR Apache-2.0. [Third-party sources](THIRD_PARTY.md) records
+prior art and fixture provenance.
