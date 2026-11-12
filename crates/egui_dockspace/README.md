@@ -64,6 +64,11 @@ the window open for saving or confirmation. This runner owns one OS window and
 reports an error for separate viewport or screenshot requests. Use a custom
 host when those capabilities are needed.
 
+The runner discards stale egui repaint messages and paces failed surface
+acquisitions. Scheduled hidden-window updates still process visibility and close commands,
+but run only when requested and at most once every 250 ms. Native input and
+window restoration can wake the UI immediately.
+
 The separate [`dockspace_winit`](../dockspace_winit) crate supplies mouse event,
 coordinate and repaint helpers for other winit-based UI frameworks. It has no
 egui or renderer dependency. GPUI uses its own platform event integration.

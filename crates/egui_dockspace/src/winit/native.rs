@@ -1,8 +1,11 @@
 //! Complete-output single-window hosting with official winit and WGPU.
 
-use std::{error::Error, sync::Arc, time::Instant};
+use std::{
+    error::Error,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use dockspace_winit::RepaintScheduler;
 use egui::{Context, FullOutput, RawInput, ViewportId};
 use winit::{
     application::ApplicationHandler,
@@ -16,7 +19,19 @@ use crate::{DockspaceOutput, SurfacePresentationResult};
 
 #[path = "renderer.rs"]
 mod renderer;
+#[path = "repaint.rs"]
+mod repaint;
 use renderer::WgpuRenderer;
+use repaint::{Repaint, RepaintRequest};
+
+const HIDDEN_REPAINT_INTERVAL: Duration = Duration::from_millis(250);
+
+fn needs_direct_update(window: &Window) -> bool {
+    window.is_visible() == Some(false)
+        // Runtime minimized-state queries can deadlock on macOS. Windows needs
+        // this fallback because hidden/minimized windows may never receive RedrawRequested.
+        || (cfg!(target_os = "windows") && window.is_minimized() == Some(true))
+}
 
 /// Application failures returned from a native frame callback.
 pub type AppResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -117,6 +132,9 @@ pub trait NativeApp {
 /// reach the root egui viewport and may be rejected with `ViewportCommand::CancelClose`.
 /// The renderer reports Presented only after submitting and presenting the exact
 /// complete output. Failed acquisitions report Dropped and retain texture updates.
+/// Surface recovery is paced, and hidden-window updates run only when requested.
+/// Those updates still process close and visibility commands on platforms which
+/// withhold redraw events for hidden windows.
 ///
 /// # Errors
 ///
@@ -134,7 +152,7 @@ pub fn run_native(
         options,
         app,
         window: None,
-        repaint: RepaintScheduler::default(),
+        repaint: Repaint::default(),
         failure: None,
     };
     event_loop.run_app(&mut runner)?;
@@ -142,7 +160,7 @@ pub fn run_native(
 }
 
 enum UserEvent {
-    RepaintAt(Instant),
+    Repaint(RepaintRequest),
     #[cfg(feature = "accesskit")]
     AccessKit(egui_winit::accesskit_winit::Event),
 }
@@ -183,14 +201,15 @@ struct Runner<'app, A> {
     options: NativeOptions,
     app: &'app mut A,
     window: Option<NativeWindow>,
-    repaint: RepaintScheduler,
+    repaint: Repaint,
     failure: Option<NativeError>,
 }
 
 impl<A: NativeApp> Runner<'_, A> {
     fn open(&mut self, event_loop: &ActiveEventLoop) -> Result<(), NativeError> {
-        if let Some(state) = &self.window {
-            state.window.request_redraw();
+        if self.window.is_some() {
+            self.repaint.resume();
+            self.repaint.request(Instant::now());
             return Ok(());
         }
         // Accessibility must attach before the window has ever been shown.
@@ -209,20 +228,20 @@ impl<A: NativeApp> Runner<'_, A> {
         let proxy = self.proxy.clone();
         self.context.set_request_repaint_callback(move |request| {
             // Capture the deadline when requested, so queueing cannot restart its delay.
-            if let Some(deadline) = Instant::now().checked_add(request.delay) {
-                let _ = proxy.send_event(UserEvent::RepaintAt(deadline));
+            if let Some(request) = RepaintRequest::new(request, Instant::now()) {
+                let _ = proxy.send_event(UserEvent::Repaint(request));
             }
         });
         window.set_visible(self.options.window.visible);
         if self.options.window.visible && self.options.window.active {
             window.focus_window();
         }
-        window.request_redraw();
         self.window = Some(NativeWindow {
             renderer,
             integration,
             window,
         });
+        self.repaint.request(Instant::now());
         Ok(())
     }
 
@@ -276,6 +295,18 @@ impl<A: NativeApp> Runner<'_, A> {
             .renderer
             .paint(&state.window, pixels_per_point, &primitives);
         let paint_duration = paint_started.elapsed();
+        let now = Instant::now();
+        if let Some(reason) = state.renderer.drop_reason {
+            self.repaint.defer_until(now + reason.retry_delay());
+            if reason.needs_retry() {
+                self.repaint.request(now);
+            }
+        } else {
+            self.repaint.resume();
+        }
+        if state.renderer.needs_another_frame() {
+            self.repaint.request(now);
+        }
         receipt.report(presentation);
         let frame_duration = started.elapsed();
         let control = self
@@ -283,7 +314,10 @@ impl<A: NativeApp> Runner<'_, A> {
             .frame_finished(NativeFrameReport {
                 context: &self.context,
                 presentation,
-                drop_reason: state.renderer.drop_reason,
+                drop_reason: state
+                    .renderer
+                    .drop_reason
+                    .map(renderer::DropReason::description),
                 accesskit_update: accesskit_update.as_ref(),
                 primitives: &primitives,
                 update_duration,
@@ -304,10 +338,36 @@ impl<A: NativeApp> Runner<'_, A> {
         event_loop.exit();
     }
 
+    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        match self.render(event_loop) {
+            Ok(FrameControl::Exit) => event_loop.exit(),
+            Ok(FrameControl::Repaint) => self.repaint.request(Instant::now()),
+            Ok(FrameControl::Continue) => {}
+            Err(error) => self.fail(event_loop, error),
+        }
+        if self
+            .window
+            .as_ref()
+            .is_some_and(|state| needs_direct_update(&state.window))
+        {
+            // An application can still close or show a hidden window. Throttle
+            // only requested work; an idle window needs no background polling.
+            self.repaint
+                .defer_until(Instant::now() + HIDDEN_REPAINT_INTERVAL);
+        }
+    }
+
     fn schedule(&mut self, event_loop: &ActiveEventLoop) {
+        if event_loop.exiting() {
+            return;
+        }
         if self.repaint.take_due(Instant::now()) {
             if let Some(state) = &self.window {
-                state.window.request_redraw();
+                if needs_direct_update(&state.window) {
+                    self.redraw(event_loop);
+                } else {
+                    state.window.request_redraw();
+                }
             }
         }
         event_loop.set_control_flow(
@@ -323,6 +383,7 @@ impl<A: NativeApp> ApplicationHandler<UserEvent> for Runner<'_, A> {
         if let Err(error) = self.open(event_loop) {
             self.fail(event_loop, error);
         }
+        self.schedule(event_loop);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -337,16 +398,7 @@ impl<A: NativeApp> ApplicationHandler<UserEvent> for Runner<'_, A> {
             return;
         }
         if matches!(event, WindowEvent::RedrawRequested) {
-            match self.render(event_loop) {
-                Ok(FrameControl::Exit) => event_loop.exit(),
-                Ok(FrameControl::Repaint) => {
-                    if let Some(state) = &self.window {
-                        state.window.request_redraw();
-                    }
-                }
-                Ok(FrameControl::Continue) => {}
-                Err(error) => self.fail(event_loop, error),
-            }
+            self.redraw(event_loop);
             self.schedule(event_loop);
             return;
         }
@@ -357,13 +409,19 @@ impl<A: NativeApp> ApplicationHandler<UserEvent> for Runner<'_, A> {
                 WindowEvent::Resized(_) | WindowEvent::Occluded(false)
             )
         {
-            state.window.request_redraw();
+            self.repaint.resume();
+            self.repaint.request(Instant::now());
         }
+        self.schedule(event_loop);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::RepaintAt(deadline) => self.repaint.request(deadline),
+            UserEvent::Repaint(request) => {
+                if request.is_current(&self.context) {
+                    self.repaint.request(request.deadline);
+                }
+            }
             #[cfg(feature = "accesskit")]
             UserEvent::AccessKit(event) => {
                 if let Some(state) = &mut self.window {
@@ -372,7 +430,8 @@ impl<A: NativeApp> ApplicationHandler<UserEvent> for Runner<'_, A> {
                         .on_accesskit_event(&state.window, &event)
                         .repaint
                     {
-                        state.window.request_redraw();
+                        self.repaint.resume();
+                        self.repaint.request(Instant::now());
                     }
                 }
             }

@@ -1,14 +1,51 @@
 //! WGPU presentation and texture-delta ownership for the single-window runner.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crate::SurfacePresentationResult;
 use egui_wgpu::wgpu;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
+#[derive(Clone, Copy)]
+pub(super) enum DropReason {
+    ZeroSized,
+    RecreationFailed,
+    Outdated,
+    Lost,
+    TimedOut,
+    Occluded,
+    Validation,
+}
+
+impl DropReason {
+    pub(super) const fn description(self) -> &'static str {
+        match self {
+            Self::ZeroSized => "zero-sized window",
+            Self::RecreationFailed => "surface recreation failed",
+            Self::Outdated => "surface outdated",
+            Self::Lost => "surface lost",
+            Self::TimedOut => "surface timeout",
+            Self::Occluded => "surface occluded",
+            Self::Validation => "surface validation failure",
+        }
+    }
+
+    pub(super) const fn needs_retry(self) -> bool {
+        matches!(self, Self::Outdated | Self::Lost | Self::TimedOut)
+    }
+
+    pub(super) const fn retry_delay(self) -> Duration {
+        if self.needs_retry() {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(250)
+        }
+    }
+}
+
 pub(super) struct WgpuRenderer {
-    pub(super) drop_reason: Option<&'static str>,
+    pub(super) drop_reason: Option<DropReason>,
     clear_color: wgpu::Color,
     instance: wgpu::Instance,
     surface: Option<wgpu::Surface<'static>>,
@@ -21,6 +58,10 @@ pub(super) struct WgpuRenderer {
 }
 
 impl WgpuRenderer {
+    pub(super) fn needs_another_frame(&self) -> bool {
+        self.drop_reason.is_none() && self.needs_reconfigure
+    }
+
     pub(super) async fn new(
         event_loop: &ActiveEventLoop,
         window: Arc<Window>,
@@ -90,14 +131,14 @@ impl WgpuRenderer {
         self.drop_reason = None;
         let size = window.inner_size();
         if size.width == 0 || size.height == 0 {
-            self.drop_reason = Some("zero-sized window");
+            self.drop_reason = Some(DropReason::ZeroSized);
             return SurfacePresentationResult::Dropped;
         }
         if self.surface.is_none() {
             match self.instance.create_surface(Arc::clone(window)) {
                 Ok(surface) => self.surface = Some(surface),
                 Err(error) => {
-                    self.drop_reason = Some("surface recreation failed");
+                    self.drop_reason = Some(DropReason::RecreationFailed);
                     eprintln!("Failed to recreate the dockspace surface: {error}");
                     return SurfacePresentationResult::Dropped;
                 }
@@ -122,33 +163,29 @@ impl WgpuRenderer {
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 // Reconfigure only after this frame has been presented and released.
                 self.needs_reconfigure = true;
-                window.request_redraw();
                 frame
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
-                self.drop_reason = Some("surface outdated");
+                self.drop_reason = Some(DropReason::Outdated);
                 self.needs_reconfigure = true;
-                window.request_redraw();
                 return SurfacePresentationResult::Dropped;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                self.drop_reason = Some("surface lost");
+                self.drop_reason = Some(DropReason::Lost);
                 // Release the lost surface before creating its replacement next frame.
                 self.surface = None;
-                window.request_redraw();
                 return SurfacePresentationResult::Dropped;
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
-                self.drop_reason = Some("surface timeout");
-                window.request_redraw();
+                self.drop_reason = Some(DropReason::TimedOut);
                 return SurfacePresentationResult::Dropped;
             }
             wgpu::CurrentSurfaceTexture::Occluded => {
-                self.drop_reason = Some("surface occluded");
+                self.drop_reason = Some(DropReason::Occluded);
                 return SurfacePresentationResult::Dropped;
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                self.drop_reason = Some("surface validation failure");
+                self.drop_reason = Some(DropReason::Validation);
                 return SurfacePresentationResult::Dropped;
             }
         };
