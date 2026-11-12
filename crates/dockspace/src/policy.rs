@@ -630,9 +630,25 @@ pub struct CentralNodePolicy {
 }
 
 impl CentralNodePolicy {
+    /// Returns the declared central-node permission for tab merging.
+    ///
+    /// Workspace-wide permissions and arrangement locking are evaluated separately.
+    #[must_use]
+    pub const fn allows_tab_merge(&self) -> bool {
+        self.allow_tab_merge
+    }
+
     /// Enables or disables tab merging over the central node.
     pub fn set_allow_tab_merge(&mut self, allowed: bool) {
         self.allow_tab_merge = allowed;
+    }
+
+    /// Returns the declared central-node permission for edge splitting.
+    ///
+    /// Workspace-wide permissions and arrangement locking are evaluated separately.
+    #[must_use]
+    pub const fn allows_edge_split(&self) -> bool {
+        self.allow_edge_split
     }
 
     /// Enables or disables edge splitting over the central node.
@@ -904,14 +920,38 @@ impl DockPolicy {
         }
     }
 
+    /// Returns the declared workspace-wide tab-bar policy.
+    ///
+    /// This declaration does not include surface or target overrides, or arrangement locking.
+    #[must_use]
+    pub const fn tab_bar(&self) -> TabBarPolicy {
+        self.rules.tab_bar
+    }
+
     /// Replaces the workspace-wide tab-bar policy.
     pub fn set_tab_bar(&mut self, policy: TabBarPolicy) {
         self.rules.tab_bar = policy;
     }
 
+    /// Returns the declared workspace-wide pane close capability.
+    ///
+    /// This declaration does not include per-item overrides or arrangement locking.
+    #[must_use]
+    pub const fn close_capability(&self) -> CloseCapability {
+        self.rules.close
+    }
+
     /// Replaces the workspace-wide pane close capability.
     pub fn set_close_capability(&mut self, capability: CloseCapability) {
         self.rules.close = capability;
+    }
+
+    /// Returns the declared central-node restrictions.
+    ///
+    /// Workspace-wide permissions and arrangement locking are evaluated separately.
+    #[must_use]
+    pub const fn central_node(&self) -> &CentralNodePolicy {
+        &self.rules.central_node
     }
 
     /// Returns mutable central-node restrictions.
@@ -920,9 +960,27 @@ impl DockPolicy {
         &mut self.rules.central_node
     }
 
+    /// Returns the explicitly declared rule for one stable item.
+    ///
+    /// `None` means no item rule was declared. Defaults, inheritance and arrangement locking
+    /// are evaluated separately; this query does not return effective permissions.
+    #[must_use]
+    pub fn item_rule(&self, item: ItemId) -> Option<&DockItemRule> {
+        self.rules.item_rules.get(&item)
+    }
+
     /// Inserts or replaces the rule for one stable item.
     pub fn set_item_rule(&mut self, item: ItemId, rule: DockItemRule) -> Option<DockItemRule> {
         self.rules.item_rules.insert(item, rule)
+    }
+
+    /// Returns the explicitly declared source rule for one root.
+    ///
+    /// `None` means no source rule was declared. Other rules and arrangement locking are
+    /// evaluated separately; this query does not return effective permissions.
+    #[must_use]
+    pub fn source_rule(&self, root: RootId) -> Option<&DockSourceRule> {
+        self.rules.source_rules.get(&root)
     }
 
     /// Inserts or replaces the source rule for one root.
@@ -934,6 +992,15 @@ impl DockPolicy {
         self.rules.source_rules.insert(root, rule)
     }
 
+    /// Returns the explicitly declared rule for one exact target.
+    ///
+    /// `None` means no target rule was declared. Other rules and arrangement locking are
+    /// evaluated separately; this query does not return effective permissions.
+    #[must_use]
+    pub fn target_rule(&self, target: DockTargetRuleKey) -> Option<&DockTargetRule> {
+        self.rules.target_rules.get(&target)
+    }
+
     /// Inserts or replaces one exact target rule.
     pub fn set_target_rule(
         &mut self,
@@ -941,6 +1008,15 @@ impl DockPolicy {
         rule: DockTargetRule,
     ) -> Option<DockTargetRule> {
         self.rules.target_rules.insert(target, rule)
+    }
+
+    /// Returns the explicitly declared rule for one logical surface.
+    ///
+    /// `None` means no surface rule was declared. Other rules and arrangement locking are
+    /// evaluated separately; this query does not return effective permissions.
+    #[must_use]
+    pub fn surface_rule(&self, surface: SurfaceId) -> Option<&DockSurfaceRule> {
+        self.rules.surface_rules.get(&surface)
     }
 
     /// Inserts or replaces the rule for one logical surface.

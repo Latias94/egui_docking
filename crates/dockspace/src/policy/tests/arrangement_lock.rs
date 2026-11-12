@@ -17,6 +17,8 @@ fn locked_policy_rejects_mutation_requests_and_eligibility_fast_paths() {
     policy.set_close_capability(CloseCapability::DeferredAllowed);
     let unlocked = policy.snapshot(PolicyRevision::new(1));
     policy.set_arrangement_locked(true);
+    assert!(policy.central_node().allows_tab_merge());
+    assert!(policy.central_node().allows_edge_split());
     let locked = policy.snapshot(PolicyRevision::new(2));
 
     let mut requests = vec![
@@ -145,10 +147,24 @@ fn effective_close_capabilities_preserve_raw_rules_and_restore_after_unlock() {
     assert!(locked.arrangement_locked());
     assert_eq!(locked.item_rules(), unlocked.item_rules());
     assert_eq!(
-        locked.item_rules()[&immediate].close_capability(),
+        policy.close_capability(),
+        CloseCapability::DeferredAllowed,
+        "locking changes effective permissions without rewriting the declared default"
+    );
+    assert_eq!(
+        policy
+            .item_rule(immediate)
+            .expect("the explicit immediate rule remains declared")
+            .close_capability(),
         Some(CloseCapability::Immediate)
     );
-    assert_eq!(locked.item_rules()[&inherited].close_capability(), None);
+    assert_eq!(
+        policy
+            .item_rule(inherited)
+            .expect("the inheriting item rule remains declared")
+            .close_capability(),
+        None
+    );
     for item in [immediate, disabled, inherited, ItemId::new(4)] {
         assert_eq!(
             locked.pane_close_capability(item),
