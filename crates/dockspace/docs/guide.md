@@ -385,6 +385,47 @@ query or exact receipt validation. Framework widgets still need their ordinary
 clearance proof. Native touch event-time/stationary capture remains separate
 qualification work.
 
+## Native Window Resources
+
+Hosts with their own platform backend can use
+`runtime::NativeWindows<K, T>` directly, without winit or another crate. `K` is
+the framework's window ID (`Copy + Eq + Hash + Debug`); `T` holds the host's
+window and renderer resources without `Clone`, `Send` or `Debug` requirements.
+The optional `native-windows` feature on `dockspace_winit` specializes this
+registry for winit's `WindowId`.
+
+```rust,no_run
+use dockspace::runtime::{NativeWindowBinding, NativeWindowInsertError, NativeWindows};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct AppWindowId(u64);
+
+struct WindowResources {
+    // Application-owned window and renderer state.
+}
+
+fn register(
+    windows: &mut NativeWindows<AppWindowId, WindowResources>,
+    binding: NativeWindowBinding,
+    id: AppWindowId,
+    resources: WindowResources,
+) -> Result<(), NativeWindowInsertError<AppWindowId, WindowResources>> {
+    windows.insert(binding, id, resources)
+}
+```
+
+Resolve a framework ID with `binding(id)` at synchronous event delivery. Retain
+that exact binding through deferred work and use `get(binding)` on completion,
+so an old callback cannot address a replacement window that reused its ID.
+Rejected registrations return the original resource through `into_value()`.
+Apply `continue_root(pair)` only for continuations in a committed host report.
+The registry stores one physical window independently of its logical surfaces.
+
+Removing resources does not prove native destruction or callback quiescence.
+Effects, window observations, renderer preparation, output settlement and
+retirement remain part of the native host protocol below. This unbounded
+container does not replace an adapter's prepaid callback storage guarantees.
+
 ## Budgeted Native Input
 
 Declare backend support through `runtime::NativeHostCapabilities` and supply

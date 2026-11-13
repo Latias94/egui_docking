@@ -27,7 +27,8 @@ for navigation only when a dependency revision has not been selected.
 | --- | --- | --- |
 | egui tabs, splits and contained floating groups in one OS window | `egui_dockspace`; use a complete-output host for drag docking | [egui](references/egui.md) |
 | A different immediate or retained UI framework | `dockspace::runtime::DockspaceSession` | [Custom host](references/custom-host.md) |
-| Shared winit event, coordinate and repaint helpers | `dockspace_winit` alongside the application's UI and renderer | [Custom host](references/custom-host.md) |
+| Shared winit input/repaint helpers or optional native window integration | `dockspace_winit` alongside the application's UI and renderer | [Custom host](references/custom-host.md), [Multiview](references/multiview.md) |
+| Native resources using a framework's own platform implementation | `dockspace::runtime::NativeWindows<K, T>` plus core native hosting | [Multiview](references/multiview.md) |
 | Managed OS windows and cross-window interactions | Core native hosting, or the experimental `egui_dockspace_native` adapter | [Multiview](references/multiview.md), plus the chosen renderer's reference |
 
 A contained floating group stays inside a logical surface. Moving content to a

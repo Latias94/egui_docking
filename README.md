@@ -38,7 +38,8 @@ cargo run -p dockspace --example layout_commands --locked
 | You want to… | Start here | Host requirements |
 | --- | --- | --- |
 | Add docking to a custom engine or UI framework | [`dockspace`](crates/dockspace) | Supply measurements, drawing, input and presentation results |
-| Connect a winit-based UI framework | [`dockspace_winit`](crates/dockspace_winit) | Keep your UI/renderer and use shared event, coordinate and repaint helpers |
+| Connect a winit-based UI framework | [`dockspace_winit`](crates/dockspace_winit) | Shared input/repaint helpers and optional native window integration; keep your UI and renderer |
+| Reuse your own native platform backend | [`dockspace::runtime`](crates/dockspace/docs/guide.md) | Native protocol and resource registry using your framework's IDs; no winit or UI dependency |
 | Use egui in one OS window | [`egui_dockspace`](crates/egui_dockspace) | Own the complete egui run and final output for drag docking |
 | Experiment with multiple native windows | [`egui_dockspace_native`](crates/egui_dockspace_native) | Use the pinned eframe/winit forks; platform support varies |
 

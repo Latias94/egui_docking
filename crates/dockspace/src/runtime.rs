@@ -117,6 +117,7 @@ pub use native::{
     NativeWorkAreaRoster,
 };
 pub use native::{NativePointerCaptureRequest, NativePointerContinuation};
+pub use native::{NativeWindowInsertError, NativeWindowRegistryError, NativeWindows};
 pub use native_effect::{
     NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseDisposition,
     NativeCloseEffectAcknowledgement, NativeCreateEffectAcknowledgement, NativeDispatchFailure,

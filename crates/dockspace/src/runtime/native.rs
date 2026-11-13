@@ -13,6 +13,7 @@ mod storage;
 mod tests;
 mod window_binding;
 mod window_hit;
+mod window_resources;
 
 use thiserror::Error;
 
@@ -64,6 +65,7 @@ pub use pointer::{
 pub use storage::{NativeInputStorageLimit, NativeProducerStorageLimit, NativeReportStorageLimit};
 pub use window_binding::NativeWindowBinding;
 pub use window_hit::{NativeWindowHit, NativeWindowHitPurpose, NativeWindowHitQuery};
+pub use window_resources::{NativeWindowInsertError, NativeWindowRegistryError, NativeWindows};
 
 /// Opaque native-window resource key.
 ///

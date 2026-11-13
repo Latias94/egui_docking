@@ -4,7 +4,7 @@
 mod app;
 #[path = "software/editor.rs"]
 mod editor;
-#[path = "software/paint.rs"]
+#[path = "support/paint.rs"]
 mod paint;
 #[path = "software/smoke.rs"]
 mod smoke;

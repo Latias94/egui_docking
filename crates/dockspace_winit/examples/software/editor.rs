@@ -1,7 +1,7 @@
 //! Application layout, measurements and exact presented receiver routing.
 
 use dockspace::{
-    geometry::{LogicalPoint, LogicalRect, LogicalSize},
+    geometry::{LogicalPoint, LogicalRect},
     model::{
         DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
         DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId,
@@ -10,9 +10,8 @@ use dockspace::{
     policy::{CloseCapability, DockPolicy},
     runtime::{
         DockspaceHostFrame, DockspaceSession, HostFrameReport, HostPointerInput, HostPointerRoute,
-        PointerDeviceKind, PointerEventMetadata, SurfaceMeasurementAnswer as Answer,
-        SurfaceMeasurementRequest as Request, SurfacePointerCancelReason, SurfacePointerCapture,
-        SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts, TabStripMetrics,
+        PointerDeviceKind, PointerEventMetadata, SurfacePointerCancelReason, SurfacePointerCapture,
+        SurfacePointerEvent, SurfacePointerId, SurfacePointerReceiverFacts,
     },
 };
 use dockspace_winit::{MouseInput, SurfaceCoordinates, backend::event::WindowEvent};
@@ -65,17 +64,7 @@ pub(super) fn session() -> AppResult<DockspaceSession> {
 }
 
 pub(super) fn measure(frame: &mut DockspaceHostFrame<'_>, bounds: LogicalRect) -> AppResult<()> {
-    let minimum = LogicalSize::new(100.0, 64.0)?;
-    let strip = TabStripMetrics::new(0.0, 0.0)?;
-    frame.measure_surface_with(SURFACE, |request| match request {
-        Request::DockBounds { .. } | Request::PopupPlaneBounds { .. } => Answer::Bounds(bounds),
-        Request::PaneMinimum { .. } => Answer::PaneMinimum(minimum),
-        Request::TabIntrinsic { item, .. } => {
-            Answer::TabIntrinsic(paint::title(item).len() as f64 * 8.0)
-        }
-        Request::TabStrip { .. } => Answer::TabStrip(strip),
-    })?;
-    Ok(())
+    paint::measure(frame, SURFACE, bounds)
 }
 
 /// Applies the example's Shift-to-float policy in the original window-event order.

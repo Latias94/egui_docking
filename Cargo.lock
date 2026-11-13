@@ -822,6 +822,7 @@ dependencies = [
  "dockspace",
  "font8x8",
  "softbuffer",
+ "thiserror 2.0.18",
  "winit",
 ]
 

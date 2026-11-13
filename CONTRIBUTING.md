@@ -1,15 +1,15 @@
 # Contributing
 
-Use Rust 1.95 with rustfmt and Clippy, Python 3.10+ for repository scripts, and
+Use the pinned Rust toolchain with rustfmt and Clippy, Python 3.10+ for repository scripts, and
 [cargo-nextest](https://nexte.st/) for tests. Start with the [examples](docs/EXAMPLES.md)
-to reproduce behavior in the appropriate host.
+to reproduce behavior in the appropriate host. Public crates retain Rust 1.95 as their MSRV.
 
 ## Repository layout
 
 | Path | Responsibility |
 | --- | --- |
 | `crates/dockspace` | Renderer-neutral public model, policy and session runtime |
-| `crates/dockspace_winit` | Shared input, coordinate and repaint helpers for winit hosts |
+| `crates/dockspace_winit` | Shared input/repaint helpers and optional native window integration for winit hosts |
 | `crates/egui_dockspace` | Official egui adapter and packaged application examples |
 | `crates/egui_dockspace_native` | Unpublished adapter for the pinned native forks |
 | `crates/dockspace_host_conformance` | Shared semantic test scenarios |

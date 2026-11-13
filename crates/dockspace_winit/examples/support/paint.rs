@@ -2,14 +2,15 @@
 
 use std::convert::Infallible;
 
-use dockspace::geometry::LogicalRect;
-use dockspace::model::ItemId;
+use dockspace::geometry::{LogicalRect, LogicalSize};
+use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
     ContainedPaintRecord, DockspaceDragPreview, DockspaceDropDirection, DockspaceDropEligibility,
-    DockspacePreviewVisual, PanePaintRecord, SurfacePaintPlan,
+    DockspaceHostFrame, DockspacePreviewVisual, PanePaintRecord,
+    SurfaceMeasurementAnswer as Answer, SurfaceMeasurementRequest as Request, SurfacePaintPlan,
     SurfacePaintProgramOperation as Operation, SurfacePaintProgramRoot,
     SurfacePaintProgramStep as Step, SurfacePaintProgramVisitError, SurfaceProgramExecutionReceipt,
-    TabListMenuPaintRecord, TabStripControlKind,
+    TabListMenuPaintRecord, TabStripControlKind, TabStripMetrics,
 };
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 
@@ -23,6 +24,22 @@ const BLUE: u32 = 0x0078_b6ff;
 
 // Logical half-open rectangles; the rasterizer intersects them with the surface clip.
 type Rect = [f64; 4];
+
+pub(super) fn measure(
+    frame: &mut DockspaceHostFrame<'_>,
+    surface: SurfaceId,
+    bounds: LogicalRect,
+) -> super::AppResult<()> {
+    let minimum = LogicalSize::new(100.0, 64.0)?;
+    let strip = TabStripMetrics::new(0.0, 0.0)?;
+    frame.measure_surface_with(surface, |request| match request {
+        Request::DockBounds { .. } | Request::PopupPlaneBounds { .. } => Answer::Bounds(bounds),
+        Request::PaneMinimum { .. } => Answer::PaneMinimum(minimum),
+        Request::TabIntrinsic { item, .. } => Answer::TabIntrinsic(title(item).len() as f64 * 8.0),
+        Request::TabStrip { .. } => Answer::TabStrip(strip),
+    })?;
+    Ok(())
+}
 
 pub(super) fn title(item: ItemId) -> &'static str {
     match item.get() {

@@ -15,6 +15,9 @@ Preserve program clipping, ordering and `SourceGap` semantics.
 Confirm the execution receipt and commit before publishing staged UI changes.
 Failed or abandoned candidates leave the installed artifact intact. Input-only
 and presentation-settlement frames can commit without painting.
+Commit those frames directly when retaining the current measured scene. Use
+explicit surface deferral when its scene really is unavailable; deferring every
+unpainted surface can withdraw geometry needed by native recovery commands.
 
 Keep each committed output handle paired with the artifact and its hit records.
 Consume it with `report_surface_presentation(Presented | Dropped)` after the
@@ -49,8 +52,10 @@ Use `dockspace_winit` helpers when the host uses winit. Invalidate stale mapping
 through resize/DPI gaps until a replacement output is actually presented, while
 continuing to deliver releases and cancellation. Follow
 `crates/dockspace_winit/examples/software.rs` and its `software/` modules for a
-complete single-window renderer-neutral host. Native windows and richer input
-need their own platform integration, as described in the crate's README.
+complete single-window renderer-neutral host. For OS windows, enable the crate's
+`native` feature and follow `crates/dockspace_winit/examples/multiview.rs` and its
+`multiview/` modules. The shared renderer is in `examples/support/paint.rs`.
+See the crate's README for the native helpers and platform input requirements.
 
 Keep rendering asynchronous through owned records and terminal reports when the
 framework needs it. Host frames and pane callbacks remain synchronous; an async

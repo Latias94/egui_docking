@@ -18,8 +18,8 @@ GPUI hosts use their own platform integration and do not use this crate.
 The host supplies pointer identities, receiver delivery and capture facts, and
 reports presentation only after its renderer presents the exact output. Mouse
 samples supply none of those proofs and have no original OS timestamp. Touch,
-scroll, keyboard shortcuts, native window docking and rendering are outside
-this crate's current scope. Keep framework-specific input and accessibility
+scroll, keyboard shortcuts and rendering remain application responsibilities.
+Keep framework-specific input and accessibility
 integration in your UI adapter, and submit each physical input only once.
 The host remains responsible for retiring its pointer provider and window resources.
 
@@ -31,14 +31,39 @@ placement. Route `WindowEvent` by `WindowId`, while one `DockspaceSession` owns
 the shared workspace and the host supplies one total input order across windows.
 Use the earliest outstanding window deadline for the event loop's wait.
 
-Native effect execution, core-issued window bindings, capture/hover observations
-and exact output settlement remain host responsibilities. Local cursor samples
+Enable the optional **`native`** feature for window integration, or choose its
+`native-windows` and `native-geometry` parts independently:
+
+```toml
+dockspace_winit = { path = "../dockspace/crates/dockspace_winit", features = ["native"] }
+```
+
+- `NativeWindows<T>` associates application resources with exact core-issued
+  `NativeWindowBinding` values. It rejects conflicting registrations without
+  losing resources and follows committed Root continuations. Resolve `WindowId`
+  at event delivery; retain the binding for delayed callbacks.
+- `observe_window` samples actual client/outer geometry, native DPI and known
+  visibility/minimization. Supply the renderer's separate presentation scale;
+  unavailable positions and zero-sized drawable geometry stay unknown.
+- `window_attributes` and `request_outer_bounds` apply physical placements,
+  compensating observed decoration extents after creation. Requested placement
+  still needs a later observation; unsupported backends retain their limits.
+
+The registry accepts your resource type without `Clone` or `Send` bounds. It
+owns no session, event loop or native state machine. Native effects, renderer
+readiness, capture/hover observations and exact output settlement remain host
+responsibilities. Local cursor samples
 alone cannot establish cross-window routing or desktop pointer authority. One
 OS window may contain several logical surfaces; keep its placement roster separate
 from its OS identity and renderer resources.
 
-The current software example demonstrates one window. For a native host, follow
-the [engine host guide](../dockspace/docs/guide.md) and check the
+The registry is a specialization of `dockspace::runtime::NativeWindows<K, T>`.
+A framework with its own platform implementation can use the core type with its
+own window ID type and no winit dependency.
+
+The [multiview example](examples/multiview.rs) demonstrates that lifecycle with
+real OS windows and software presentation. Follow the
+[engine host guide](../dockspace/docs/guide.md) and check the
 [platform matrix](../../docs/PLATFORM_SUPPORT.md). The
 [integration skill](../../skills/dockspace-integration/SKILL.md) also covers
 host selection and multiview ownership.
@@ -57,6 +82,31 @@ Adding this crate opts into winit. The `dockspace` core has no platform
 dependency. For egui, use the optional `winit` or `wgpu` feature on
 [`egui_dockspace`](../egui_dockspace/README.md) instead of routing input twice.
 
+## Features
+
+| Feature | Purpose | Default |
+| --- | --- | --- |
+| `rwh_06` | Raw window/display handle traits for application renderers | Yes |
+| `x11` | Winit X11 backend; forwards X11 to softbuffer when enabled | Yes |
+| `wayland` | Winit Wayland backend with dynamic loading; forwards Wayland to softbuffer when enabled | Yes |
+| `wayland-csd-adwaita` | Optional Wayland client decorations; includes `wayland` | Yes |
+| `native-windows` | Shared native-window resource registry specialized for winit IDs | No |
+| `native-geometry` | Actual geometry observations and physical placement helpers | No |
+| `native` | Convenience combination of both native features | No |
+| `example-app` | Software renderer, bitmap font and raw-window-handle support for examples | No |
+
+Defaults preserve the usual Linux desktop backend support. Use
+`default-features = false` to select one backend; for example:
+
+```toml
+dockspace_winit = { path = "../dockspace/crates/dockspace_winit", default-features = false, features = ["x11", "native-windows"] }
+```
+
+On Linux, select at least one of `x11` or `wayland`. macOS and Windows use winit's
+target-specific backend and need neither Linux feature. Native helpers do not
+enable example rendering dependencies. Backend features forward to softbuffer
+only if `example-app` has already enabled it.
+
 ## Run the software host
 
 ```sh
@@ -71,7 +121,7 @@ or **Escape** to cancel a gesture. The window repaints on input and core request
 it has no animation loop.
 
 The [event loop](examples/software/app.rs), [core wiring](examples/software/editor.rs)
-and [software drawing](examples/software/paint.rs) show separate host responsibilities.
+and [software drawing](examples/support/paint.rs) show separate host responsibilities.
 `example-app` enables only the example's optional software/font dependencies and
 is disabled by default. This is a renderer integration example; touch, scrolling,
 accessibility and multiple OS windows need their own host integration.
@@ -79,6 +129,40 @@ accessibility and multiple OS windows need their own host integration.
 Add `-- --smoke` for a finite exercise using synthetic winit events with real
 software-buffer presentation. It checks core interaction through the public
 helpers; it does not drive the physical OS mouse. A desktop session is required.
+
+## Run native multiview
+
+```sh
+cargo run -p dockspace_winit --example multiview --features native,example-app --locked
+```
+
+Press **N** to move Inspector into a child OS window, **D** to Dock Back,
+**C** to request Child close and recover its content, or **Escape** to exit.
+The native close button uses the same recovery path. Pane content and the docking
+session stay in the application; this example uses keyboard commands rather
+than implementing a second pointer integration.
+Application shutdown retains the layout while retiring windows, so exit also
+works when the main window is minimized and cannot present recovered content.
+
+The [event loop](examples/multiview/app.rs), [window resources](examples/multiview/host.rs)
+and [workspace commands](examples/multiview/workspace.rs) demonstrate creation,
+renderer Prepared facts, exact first-live presentation and ordered retirement.
+Dropping resources requests a close; a later `Destroyed` event proves that the
+window is gone. The example releases callback routes and settles outputs before
+reporting permanent binding quiescence. Input-only and output-settlement frames
+commit directly, retaining the last measured scene for recovery commands.
+
+Add `-- --smoke` to deliberately fail one child's renderer preparation, verify
+compensating cleanup, then create and present three children, Dock Back, recover
+closed content, minimize the main window and drain both Child and Root
+destruction before exit. The
+commands are programmatic; windows, software presentation and destruction
+notifications are real. It runs on desktop macOS, Windows and Linux X11; on Linux
+the example explicitly selects X11 for absolute placement. Stock winit supplies
+neither usable monitor work areas nor authoritative global hover/capture facts,
+so those stay unknown. Physical cross-window dragging requires additional
+platform integration. A synchronous software renderer does not qualify deferred
+GPU-resource retirement.
 
 ## Use your event loop
 

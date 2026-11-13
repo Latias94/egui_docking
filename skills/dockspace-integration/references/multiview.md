@@ -21,6 +21,13 @@ GPUI native multiview coverage.
 
 ## Compose the current winit helpers
 
+For a framework that owns its platform implementation, use
+`dockspace::runtime::NativeWindows<K, T>` with the framework's window IDs. It has no UI or OS backend
+dependency. It manages resources and committed binding continuations; the
+framework still supplies its real observations, frame fences and callback
+retirement. It is an unbounded container and does not replace an adapter's
+prepaid storage guarantees.
+
 For a custom winit host, keep `MouseInput` and `RepaintScheduler` per window,
 `SurfaceCoordinates` per logical placement, and one shared docking session.
 Dispatch by `WindowId`, retain exact native bindings across delayed callbacks,
@@ -28,9 +35,19 @@ and take the earliest deadline across windows for the event loop's wait. A windo
 with several logical surfaces needs a placement roster rather than one fixed
 window-to-surface assignment.
 
-These helpers currently cover local mouse sampling, client-to-surface conversion
-and repaint deadlines. Native effect execution, window lifetimes and cross-window
-capture/hover facts still belong to the host. Stock winit mouse events do not
+With the optional `native-windows` feature (included by `native`), `NativeWindows<T>` indexes application
+resources by exact core-issued window bindings and applies committed Root
+continuations through the same shared implementation. The separate
+`native-geometry` feature supplies `observe_window` for geometry and known presentation facts;
+the physical placement helpers compensate actual decoration extents. Keep the
+logical placement roster separate from that physical resource registry.
+
+Follow `crates/dockspace_winit/examples/multiview.rs` for a real-window software
+host, including failed renderer preparation and compensation, first-live
+presentation, Dock Back, close recovery and shutdown. The example uses
+programmatic commands and X11 on Linux. Native effect settlement, readiness,
+actual destruction and cross-window capture/hover facts remain host obligations.
+Stock winit mouse events do not
 supply original OS timestamps or authoritative global pointer/capture facts;
 integrate the platform observations required by the core's managed native path.
 Use one input path for each physical event, including when the UI framework has
