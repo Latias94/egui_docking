@@ -346,6 +346,7 @@ impl Dockspace {
             .reserve_surface_output(surface)
             .map_err(DockspaceError::from_detail)?
         {
+            self.pass_settlement.wait_for_output(context, viewport);
             return Err(DockspaceErrorSource::OutputBackpressure {
                 input: Box::new(input),
             }

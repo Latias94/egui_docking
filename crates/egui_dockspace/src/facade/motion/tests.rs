@@ -221,3 +221,123 @@ fn terminal_receipt_wakes_caller_owned_motion_after_output_backpressure() {
         "terminal settlement must resume the paused trajectory"
     );
 }
+
+fn idle_context(context: &egui::Context, time: f64) {
+    for step in 0..4 {
+        let output = context.run_ui(
+            egui::RawInput {
+                time: Some(time + f64::from(step) * 0.001),
+                ..Default::default()
+            },
+            |_| {},
+        );
+        output.drop_without_applying_deltas();
+        if !context.has_requested_repaint() {
+            return;
+        }
+    }
+    panic!("the context must be idle before observing a delayed receipt wakeup");
+}
+
+#[test]
+fn settled_motion_receipt_wakes_backpressured_owned_input_without_a_repaint_loop() {
+    for result in [
+        Some(SurfacePresentationResult::Presented),
+        Some(SurfacePresentationResult::Dropped),
+        None,
+    ] {
+        let (context, mut dock) = fixture();
+        let surface = SurfaceId::new(1);
+        dock.session
+            .configure_output_capacity(NonZeroUsize::new(1).unwrap())
+            .unwrap();
+        dock.set_motion_preference(MotionPreference::Full);
+        reflow(&mut dock);
+        let (output, _) = dock
+            .run_single_surface(
+                &context,
+                egui::RawInput {
+                    time: Some(1.0),
+                    ..Default::default()
+                },
+                surface,
+                &mut Panes,
+            )
+            .unwrap();
+        assert!(dock.session.surface_motion_is_active(surface));
+        let (output, receipt) = output.into_parts();
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+
+        let (output, _) = dock
+            .run_single_surface(
+                &context,
+                egui::RawInput {
+                    time: Some(10.0),
+                    ..Default::default()
+                },
+                surface,
+                &mut Panes,
+            )
+            .unwrap();
+        assert!(!dock.session.surface_motion_is_active(surface));
+        let (output, final_receipt) = output.into_parts();
+        output.drop_without_applying_deltas();
+        idle_context(&context, 10.1);
+
+        let wakeups = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&wakeups);
+        context.set_request_repaint_callback(move |info| {
+            assert_eq!(info.viewport_id, egui::ViewportId::ROOT);
+            observed.fetch_add(1, Ordering::Relaxed);
+        });
+        let events = vec![egui::Event::Text("deferred input".into())];
+        let mut deferred = egui::RawInput {
+            time: Some(11.0),
+            events: events.clone(),
+            ..Default::default()
+        };
+        let frame_before = context.cumulative_frame_nr();
+        let mut composition_calls = 0;
+        for _ in 0..2 {
+            let error = dock
+                .run_single_surface_with_ui(&context, deferred, surface, &mut Panes, |_| {
+                    composition_calls += 1;
+                })
+                .err()
+                .expect("the final unsettled output must retain its capacity slot");
+            assert_eq!(error.kind(), crate::DockspaceErrorKind::OutputBackpressure);
+            deferred = error.into_deferred_input().unwrap();
+            assert_eq!(deferred.events, events);
+            assert_eq!(deferred.time, Some(11.0));
+            assert_eq!(context.cumulative_frame_nr(), frame_before);
+            assert_eq!(composition_calls, 0);
+            assert_eq!(wakeups.load(Ordering::Relaxed), 0);
+        }
+
+        match result {
+            Some(result) => final_receipt.report(result),
+            None => drop(final_receipt),
+        }
+        assert_eq!(
+            wakeups.load(Ordering::Relaxed),
+            1,
+            "{result:?} must wake deferred input even after motion has settled"
+        );
+        let (output, _) = dock
+            .run_single_surface_with_ui(&context, deferred, surface, &mut Panes, |ui| {
+                composition_calls += 1;
+                assert_eq!(ui.input(|input| input.events.clone()), events);
+            })
+            .unwrap();
+        assert_eq!(composition_calls, 1);
+        assert!(!dock.session.surface_motion_is_active(surface));
+        let (output, static_receipt) = output.into_parts();
+        output.drop_without_applying_deltas();
+        idle_context(&context, 11.1);
+        wakeups.store(0, Ordering::Relaxed);
+        static_receipt.report(SurfacePresentationResult::Presented);
+        assert_eq!(wakeups.load(Ordering::Relaxed), 0);
+        assert!(!context.has_requested_repaint());
+    }
+}

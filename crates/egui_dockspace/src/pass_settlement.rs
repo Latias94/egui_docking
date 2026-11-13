@@ -69,16 +69,17 @@ impl DockspaceOutputReceipt {
         // stream while egui is still producing its replacement output.
         self.discarded.clear();
         let mut needs_repaint = false;
+        let mut output_wakeups = Vec::new();
         for delivery in self.deliveries.drain(..) {
             let Some(state) = delivery.state.upgrade() else {
                 continue;
             };
             let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-            if state
+            let lane_matches = state
                 .lane
                 .as_ref()
-                .is_some_and(|lane| Arc::ptr_eq(&lane.identity, &delivery.lane))
-            {
+                .is_some_and(|lane| Arc::ptr_eq(&lane.identity, &delivery.lane));
+            if lane_matches {
                 needs_repaint |= delivery.needs_repaint;
                 state.ready.push(ReadySurfacePresentation {
                     output: delivery.output,
@@ -89,10 +90,19 @@ impl DockspaceOutputReceipt {
                         None
                     },
                 });
+            } else {
+                drop(delivery.output);
+                state.output_retired = true;
+            }
+            if let Some(waiter) = state.waiting_for_output.take() {
+                output_wakeups.push(waiter);
             }
         }
         if needs_repaint {
             self.context.request_repaint_of(self.viewport);
+        }
+        for (context, viewport) in output_wakeups {
+            context.request_repaint_of(viewport);
         }
     }
 }
@@ -318,6 +328,22 @@ impl ProductPassSettlement {
         }
         state.bind_lane(&context, viewport);
         Some(state.take_ready())
+    }
+
+    pub(super) fn wait_for_output(&self, context: &Context, viewport: ViewportId) {
+        let identity = context_identity(context);
+        let needs_repaint = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if !state.lane_matches(&identity, viewport) {
+                return;
+            }
+            let ready = !state.ready.is_empty() || state.output_retired;
+            state.waiting_for_output = (!ready).then(|| (context.clone(), viewport));
+            ready
+        };
+        if needs_repaint {
+            context.request_repaint_of(viewport);
+        }
     }
 }
 
@@ -664,6 +690,8 @@ struct PassSettlementState {
     ready: Vec<ReadySurfacePresentation>,
     failure: Option<PresentationSettlementFailure>,
     lane_changed: bool,
+    waiting_for_output: Option<(Context, ViewportId)>,
+    output_retired: bool,
 }
 
 impl PassSettlementState {
@@ -674,6 +702,8 @@ impl PassSettlementState {
                 self.failure = Some(PresentationSettlementFailure::Abandoned);
             }
             self.ready.clear();
+            self.waiting_for_output = None;
+            self.output_retired = false;
             self.lane = Some(SettlementLane {
                 context: Arc::downgrade(context),
                 viewport,
@@ -683,6 +713,8 @@ impl PassSettlementState {
     }
 
     fn take_ready(&mut self) -> ReadyProductPassSettlementBatch {
+        self.waiting_for_output = None;
+        self.output_retired = false;
         ReadyProductPassSettlementBatch {
             presentations: std::mem::take(&mut self.ready),
             presentation_failure: self.failure.take(),
