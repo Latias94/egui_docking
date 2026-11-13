@@ -706,19 +706,33 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     pub(crate) fn is_quiescent(&self) -> bool {
+        self.pending_work().is_empty()
+    }
+
+    pub(crate) fn pending_work(&self) -> crate::NativePendingWork {
+        use crate::NativeWaitReason as Reason;
+
         // Queries made while painting observe the committed boundary. An
         // ordinary private encoding pass is not pending semantic or OS work.
-        !self.pending_service
-            && committed_boundary_is_quiescent(
-                self.shutdown.is_some(),
-                self.coordinator
-                    .session()
-                    .presented_surface(self.root_surface)
-                    .is_some(),
-                self.application_actions.is_occupied(),
-                self.pass_actions.has_retained_action_work(),
-                self.coordinator.is_quiescent(),
-            )
+        let mut pending = self.coordinator.pending_work();
+        pending.include(Reason::Service, self.pending_service);
+        pending.include(Reason::Stopped, self.shutdown.is_some());
+        pending.include(
+            Reason::RootPresentation,
+            self.coordinator
+                .session()
+                .presented_surface(self.root_surface)
+                .is_none(),
+        );
+        pending.include(
+            Reason::ApplicationAction,
+            self.application_actions.is_occupied(),
+        );
+        pending.include(
+            Reason::LocalAction,
+            self.pass_actions.has_retained_action_work(),
+        );
+        pending
     }
 
     pub(crate) fn is_shutdown_drained(&self) -> bool {
@@ -1997,20 +2011,6 @@ fn map_pass_action_error(error: NativePassActionError) -> NativeRuntimeError {
     }
 }
 
-fn committed_boundary_is_quiescent(
-    stopped: bool,
-    root_presented: bool,
-    application_action_pending: bool,
-    retained_local_actions_pending: bool,
-    coordinator_quiescent: bool,
-) -> bool {
-    !stopped
-        && root_presented
-        && !application_action_pending
-        && !retained_local_actions_pending
-        && coordinator_quiescent
-}
-
 #[cfg(test)]
 mod tests {
     mod focus_idle;
@@ -2768,9 +2768,9 @@ mod tests {
     #[test]
     fn quiescence_tracks_the_committed_boundary_and_real_pending_actions() {
         let mut state = test_state();
-        assert!(committed_boundary_is_quiescent(
-            false, true, false, false, true,
-        ));
+        let before = state.pending_work();
+        assert!(before.contains(crate::NativeWaitReason::RootPresentation));
+        assert!(!before.contains(crate::NativeWaitReason::ApplicationAction));
 
         state
             .request_command(NativeCommand::DockRoot {
@@ -2779,19 +2779,12 @@ mod tests {
             })
             .expect("the committed boundary accepts one application action");
 
+        let pending = state.pending_work();
+        assert!(pending.contains(crate::NativeWaitReason::ApplicationAction));
+        assert!(!state.is_quiescent());
         assert!(
-            !committed_boundary_is_quiescent(
-                false,
-                true,
-                state.application_actions.is_occupied(),
-                state.pass_actions.has_retained_action_work(),
-                true,
-            ),
-            "a real durable application action still blocks quiescence"
-        );
-        assert!(
-            !committed_boundary_is_quiescent(false, true, false, true, true),
-            "a local action retained across egui passes remains durable work"
+            !before.contains(crate::NativeWaitReason::ApplicationAction),
+            "snapshots never query later state"
         );
     }
 

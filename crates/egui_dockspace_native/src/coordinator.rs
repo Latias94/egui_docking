@@ -701,21 +701,54 @@ impl NativeCoordinator {
     }
 
     pub(crate) fn is_quiescent(&self) -> bool {
-        !self.session.has_pending_native_create()
-            && !self.session.has_pending_presentation()
-            && !self.bridge.has_pending_coordinator_work()
-            && !self.bridge.has_pending_lifecycle_output(&self.session)
-            && !self.receivers.has_pending_commit()
-            && self.queued_snapshot.is_none()
-            && !self.deferred_viewports.has_transitional_viewport()
-            && !self.effects.has_pending_work()
-            && self.pending_effect_results.is_empty()
-            && self.pending_presentation_transitions.is_empty()
-            && self.callback_errors.is_empty()
-            && !self.bridge.retirement_has_pending_work()
-            && !self.focus_control.has_pending_work()
-            && !self.input_control.has_pending_work()
-            && !self.stationary.has_pending_work()
+        self.pending_work().is_empty()
+    }
+
+    pub(crate) fn pending_work(&self) -> crate::NativePendingWork {
+        use crate::NativeWaitReason as Reason;
+
+        let mut pending = crate::NativePendingWork::default();
+        pending.include(
+            Reason::WindowCreation,
+            self.session.has_pending_native_create(),
+        );
+        pending.include(
+            Reason::Presentation,
+            self.session.has_pending_presentation()
+                || !self.pending_presentation_transitions.is_empty(),
+        );
+        pending.include(
+            Reason::HostEvents,
+            self.bridge.has_pending_coordinator_work()
+                || self.queued_snapshot.is_some()
+                || !self.callback_errors.is_empty(),
+        );
+        pending.include(
+            Reason::LifecycleOutput,
+            self.bridge.has_pending_lifecycle_output(&self.session),
+        );
+        pending.include(
+            Reason::WindowTransition,
+            self.deferred_viewports.has_transitional_viewport(),
+        );
+        pending.include(
+            Reason::PlatformEffect,
+            self.effects.has_pending_work() || !self.pending_effect_results.is_empty(),
+        );
+        pending.include(
+            Reason::WindowRetirement,
+            self.bridge.retirement_has_pending_work(),
+        );
+        pending.include(Reason::Focus, self.focus_control.has_pending_work());
+        pending.include(
+            Reason::InputRouting,
+            self.receivers.has_pending_commit() || self.input_control.has_pending_work(),
+        );
+        pending.include(
+            Reason::PointerObservation,
+            self.stationary.has_pending_work(),
+        );
+        pending
     }
 
     fn retain_internal_presentation_transitions(&mut self, report: &HostFrameReport) {

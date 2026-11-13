@@ -87,6 +87,13 @@ The callback's second argument, `NativeNotificationContext`, provides scoped
 `with_view`, `request_command` and, with `serde`, `save_document_json` access.
 Commands and saves follow the application's existing single-slot busy rules.
 
+`pending_work()` explains `is_quiescent()` with an allocation-free snapshot of
+current wait reasons. Inspect `contains(NativeWaitReason::Focus)` or iterate the
+active reasons; debug formatting prints their names. This includes unconsumed
+application results, pending presentations and native window retirement, while
+ordinary stable repaint outputs remain idle. The query consumes no work and
+retains no history. Inspect `output_backlog()` separately for output-owner counts.
+
 `with_child_window_options` and `set_child_window_options` configure managed
 Child window decorations, Windows taskbar presence, stacking level and icon.
 Use `with_child_window_options_for(surface, options)` or

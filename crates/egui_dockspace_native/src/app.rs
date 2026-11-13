@@ -465,6 +465,17 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).is_quiescent()
     }
 
+    /// Returns all work currently preventing ordinary runtime quiescence.
+    ///
+    /// The allocation-free snapshot explains [`Self::is_quiescent`] without
+    /// consuming input or retaining history. Its debug output lists active
+    /// reasons. A queued application command remains pending until its result
+    /// is consumed. This is diagnostic state, not authority to skip a barrier.
+    #[must_use]
+    pub fn pending_work(&self) -> crate::NativePendingWork {
+        lock_state(&self.state).pending_work()
+    }
+
     /// Returns whether fatal shutdown has drained application and lifecycle work.
     ///
     /// Requires an existing fatal error, no pending application or retained
@@ -1097,6 +1108,33 @@ mod tests {
         let app = app().with_input(config).unwrap();
         assert_eq!(app.input(), config);
         assert!(app.take_action_status().is_none());
+    }
+
+    #[test]
+    fn pending_work_explains_queued_commands_and_keeps_snapshots_read_only() {
+        use crate::{NativeCommand, NativeWaitReason};
+
+        let app = app();
+        let before = app.pending_work();
+        assert!(before.contains(NativeWaitReason::RootPresentation));
+        assert!(!before.contains(NativeWaitReason::ApplicationAction));
+        app.request_command(NativeCommand::SelectItem {
+            item: ItemId::new(1),
+        })
+        .unwrap();
+        let pending = app.pending_work();
+        assert!(
+            pending
+                .iter()
+                .any(|reason| reason == NativeWaitReason::ApplicationAction)
+        );
+        assert_eq!(pending.is_empty(), app.is_quiescent());
+        assert!(!before.contains(NativeWaitReason::ApplicationAction));
+        assert!(format!("{pending:?}").contains("ApplicationAction"));
+        assert!(
+            app.take_action_status().is_none(),
+            "reading diagnostics never executes a command"
+        );
     }
 
     #[test]

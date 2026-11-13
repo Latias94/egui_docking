@@ -89,8 +89,11 @@ impl CommandSmoke {
     ) -> Result<bool, String> {
         if self.started.elapsed() > Duration::from_secs(60) {
             return Err(format!(
-                "timed out at command {} (waiting={})",
-                self.step, self.waiting
+                "timed out at command {} (waiting={}, pending={:?}, outputs={:?})",
+                self.step,
+                self.waiting,
+                app.pending_work(),
+                app.output_backlog()
             ));
         }
         if let Some(kind) = app.error_kind() {
