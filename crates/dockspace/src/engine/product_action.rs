@@ -275,26 +275,16 @@ impl DockEngine {
         {
             return Ok(Err(reason));
         }
-        if let ProductAction::DockBackRoot { root } = action {
+        let plan = if let ProductAction::DockBackRoot { root } = action {
             match self.native_main_dock_back_target(root) {
-                Ok(Some(surface)) => {
-                    return Ok(self
-                        .validate_product_root_float_availability(root, surface)
-                        .and_then(|()| {
-                            self.freeze_surface_recovery_target(surface)
-                                .map(|_| ())
-                                .ok_or(DockspaceActionRejection::PresentationUnavailable {
-                                    surface,
-                                })
-                        })
-                        .map(|()| self.prepare_product_action(action)));
-                }
-                Ok(None) => {}
-                Err(reason) => return Ok(Err(reason)),
+                Ok(Some(surface)) => self.compile_product_native_main_dock_back(root, surface),
+                Ok(None) => self.compile_product_action(action.clone()),
+                Err(reason) => Err(reason),
             }
-        }
-
-        let plan = match self.compile_product_action(action.clone()) {
+        } else {
+            self.compile_product_action(action.clone())
+        };
+        let plan = match plan {
             Ok(plan) => plan,
             Err(reason) => return Ok(Err(reason)),
         };

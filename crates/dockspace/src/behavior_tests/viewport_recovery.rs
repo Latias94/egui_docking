@@ -26,6 +26,7 @@ use dockspace::ids::{
 };
 use dockspace::intent::{Authority, AuthorityUnavailableReason};
 use dockspace::interaction::{InteractionOutcome, InteractionRejection};
+use dockspace::model::DockspaceActionRejection;
 use dockspace::platform::{
     CloseEffectAcknowledgement, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     PlatformCapability, PlatformSnapshot, WindowCloseObservation, WindowCloseState,
@@ -33,6 +34,7 @@ use dockspace::platform::{
     WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
+use dockspace::runtime::DockspaceSession;
 use dockspace::scene::SurfaceScene;
 use dockspace::surface_recovery::{
     ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryBlockedReason, SurfaceRecoveryError,
@@ -1185,6 +1187,47 @@ fn recovery_keeps_the_last_exact_outer_anchor_when_the_latest_fact_is_unknown() 
     );
 
     assert_whole_root_recovered(&fixture);
+}
+
+#[test]
+fn native_main_dock_back_preflight_requires_exact_source_outer_bounds() {
+    let fixture = fixture_with_child_outer(false);
+    let workspace = fixture.engine.workspace().clone();
+    let session =
+        DockspaceSession::from_engine_for_test(fixture.engine, fixture.presentation_host.lease());
+    let version = session.version();
+    let availability = session
+        .presentation_commands(ROOT_CHILD)
+        .dock_back()
+        .expect("native dock-back availability must be queryable without source outer bounds");
+    assert!(!availability.is_ready());
+    assert_eq!(
+        availability.unavailable_reason(),
+        Some(DockspaceActionRejection::DockBackUnavailable { root: ROOT_CHILD })
+    );
+
+    assert_eq!(session.version(), version);
+    assert_eq!(session.workspace(), &workspace);
+}
+
+#[test]
+fn native_main_dock_back_preflight_with_exact_outer_bounds_remains_ready() {
+    let fixture = fixture();
+    let workspace = fixture.engine.workspace().clone();
+    let session =
+        DockspaceSession::from_engine_for_test(fixture.engine, fixture.presentation_host.lease());
+    let version = session.version();
+    let availability = session
+        .presentation_commands(ROOT_CHILD)
+        .dock_back()
+        .expect("native dock-back availability must be queryable with source outer bounds");
+    assert!(availability.is_ready());
+    let prepared = availability
+        .into_prepared()
+        .expect("exact source outer bounds must allow dock-back preparation");
+    assert_eq!(prepared.expected_version(), version);
+    assert_eq!(session.version(), version);
+    assert_eq!(session.workspace(), &workspace);
 }
 
 #[test]
@@ -3131,4 +3174,58 @@ fn recovery_replacement_rejects_the_wrong_hidden_acknowledgement() {
             .phase(),
         EffectPhase::Requested
     ));
+}
+
+#[test]
+fn native_main_dock_back_preflight_rejects_arrangement_lock_without_mutation() {
+    let mut fixture = fixture();
+    let mut policy = fixture.engine.policy().clone();
+    policy.set_arrangement_locked(true);
+    let expected = fixture.engine.version();
+    submit_test_input(
+        &mut fixture.engine,
+        &mut fixture.presentation_host,
+        EngineInput::ReplacePolicy { expected, policy },
+    )
+    .expect("arrangement lock must publish before dock-back preflight");
+    assert!(fixture.engine.policy().arrangement_locked());
+    publish_scene(&mut fixture.engine, &mut fixture.presentation_host);
+
+    let workspace = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
+    let rejected = submit_test_input(
+        &mut fixture.engine,
+        &mut fixture.presentation_host,
+        EngineInput::DockBackRoot {
+            expected: version,
+            root: ROOT_CHILD,
+        },
+    )
+    .expect("locked native dock-back must reduce to a typed rejection");
+    assert_eq!(
+        rejected.reduced_inputs()[0].outcome(),
+        &InputOutcome::ProductActionRejected {
+            reason: DockspaceActionRejection::PolicyDenied,
+            version,
+        }
+    );
+    assert_eq!(fixture.engine.version(), version);
+    assert_eq!(fixture.engine.workspace(), &workspace);
+
+    let session =
+        DockspaceSession::from_engine_for_test(fixture.engine, fixture.presentation_host.lease());
+    let availability = session
+        .presentation_commands(ROOT_CHILD)
+        .dock_back()
+        .expect("locked native dock-back availability must remain queryable");
+    assert!(
+        !availability.is_ready(),
+        "native dock-back preflight must honor the arrangement lock used during submission"
+    );
+    assert_eq!(
+        availability.unavailable_reason(),
+        Some(DockspaceActionRejection::PolicyDenied)
+    );
+    assert_eq!(session.version(), version);
+    assert_eq!(session.workspace(), &workspace);
 }
