@@ -430,6 +430,7 @@ pub enum RegistryEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegistryTransition {
     generation: InventoryGeneration,
+    native_window_placement_changed: bool,
     events: Vec<RegistryEvent>,
 }
 
@@ -497,6 +498,10 @@ impl RestoreRegistryReconciliation {
 }
 
 impl RegistryTransition {
+    pub(crate) const fn native_window_placement_changed(&self) -> bool {
+        self.native_window_placement_changed
+    }
+
     #[must_use]
     #[cfg(test)]
     pub const fn generation(&self) -> InventoryGeneration {
@@ -843,7 +848,11 @@ impl ViewportRegistry {
             window.lifecycle = ViewportLifecycle::AwaitingObservation;
         }
         self.inventory_generation = generation;
-        Ok(RegistryTransition { generation, events })
+        Ok(RegistryTransition {
+            generation,
+            native_window_placement_changed: false,
+            events,
+        })
     }
 
     /// Revokes every live fact owned by the current platform provider.
@@ -928,6 +937,7 @@ impl ViewportRegistry {
         if events.is_empty() {
             return Ok(RegistryTransition {
                 generation: self.inventory_generation,
+                native_window_placement_changed: false,
                 events,
             });
         }
@@ -943,7 +953,11 @@ impl ViewportRegistry {
             .checked_next()
             .ok_or(ViewportRegistryError::InventoryGenerationExhausted)?;
         self.inventory_generation = generation;
-        Ok(RegistryTransition { generation, events })
+        Ok(RegistryTransition {
+            generation,
+            native_window_placement_changed: false,
+            events,
+        })
     }
 
     fn apply_snapshot_in_place(
@@ -969,6 +983,7 @@ impl ViewportRegistry {
             .map(|observation| (observation.binding().window(), *observation))
             .collect();
         let mut events = Vec::new();
+        let mut native_window_placement_changed = false;
         let mut next_authority = self.last_coordinate_generation;
         for (&binding, window) in &mut self.windows {
             let previous = window.clone();
@@ -1108,6 +1123,21 @@ impl ViewportRegistry {
                     window,
                 }
                 .has_coordinate_authority();
+                if (changed || !before_authority)
+                    && has_authority
+                    && record.admission == ViewportAdmission::Admitted
+                    && let Some(after) = record.coordinates
+                    && after.outer_bounds().is_some()
+                {
+                    // A newly authoritative placement can enter document capture
+                    // even when its geometry arrived during an earlier hidden pass.
+                    native_window_placement_changed |= !before_authority
+                        || before.is_none_or(|before| {
+                            before.outer_bounds() != after.outer_bounds()
+                                || before.content_size() != after.content_size()
+                                || before.native_scale_factor() != after.native_scale_factor()
+                        });
+                }
                 if changed
                     || before_authority != has_authority
                     || destroyed
@@ -1158,7 +1188,11 @@ impl ViewportRegistry {
         }
         self.inventory_generation = generation;
         self.last_coordinate_generation = next_authority;
-        Ok(RegistryTransition { generation, events })
+        Ok(RegistryTransition {
+            generation,
+            native_window_placement_changed,
+            events,
+        })
     }
 
     fn validate_snapshot_bindings(

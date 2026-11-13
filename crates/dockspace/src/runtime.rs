@@ -706,7 +706,9 @@ impl HostFrameReport {
     /// Returns one application notification for this successful publication.
     ///
     /// Its layout-change summary also covers durable changes without detailed
-    /// lifecycle events, such as resizing a split. Abandoned frames publish none.
+    /// lifecycle events, such as resizing a split. Native placement has a separate
+    /// summary; use [`DockspaceNotification::document_changed`] for persistence.
+    /// Abandoned frames publish none.
     #[must_use]
     pub const fn notification(&self) -> &DockspaceNotification {
         &self.notification

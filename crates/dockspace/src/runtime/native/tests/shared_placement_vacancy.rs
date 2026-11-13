@@ -118,6 +118,51 @@ fn shared_session() -> (
     (session, window, bindings.try_into().unwrap())
 }
 
+#[test]
+fn shared_window_geometry_produces_one_document_summary_for_all_placements() {
+    let (mut session, window, _) = shared_session();
+    let version = session.version();
+    let facts = NativeWindowFacts::live()
+        .with_content_bounds(PhysicalRect::new(100.0, 30.0, 800.0, 600.0).unwrap())
+        .with_outer_bounds(PhysicalRect::new(92.0, 0.0, 816.0, 638.0).unwrap())
+        .with_native_scale_factor(ScaleFactor::new(1.0).unwrap())
+        .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap())
+        .with_input(NativeWindowInputState::ReceivesInput, None)
+        .with_presentation(NativeWindowPresentationState::Visible);
+    session
+        .report_managed_native_snapshot([(window, facts)], NativeWorkAreaRoster::Unknown)
+        .unwrap();
+    let report = finish(frame(&mut session));
+    assert!(report.notification().native_window_placement_changed());
+    assert!(report.notification().document_changed());
+    assert!(report.layout_change().is_none());
+    assert!(report.events().is_empty());
+    assert_eq!(session.version(), version);
+    assert_eq!(
+        session.native_surface_bindings_for_window(window).count(),
+        2
+    );
+
+    session
+        .report_managed_native_snapshot([(window, facts)], NativeWorkAreaRoster::Unknown)
+        .unwrap();
+    assert!(finish(frame(&mut session)).notification().is_empty());
+
+    let mut projections = placements();
+    projections[0] = NativeSurfacePlacement::new(
+        A,
+        LogicalSize::new(200.0, 300.0).unwrap(),
+        PhysicalPoint::new(0.0, 0.0).unwrap(),
+        ScaleFactor::new(2.0).unwrap(),
+        PhysicalRect::new(0.0, 0.0, 400.0, 600.0).unwrap(),
+    );
+    let mut projection = frame(&mut session);
+    projection
+        .set_native_surface_placements(window, &projections)
+        .unwrap();
+    assert!(finish(projection).notification().is_empty());
+}
+
 fn dock_b(frame: &mut DockspaceHostFrame<'_>) {
     frame
         .dock_item_current(

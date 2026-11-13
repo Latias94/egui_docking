@@ -151,6 +151,60 @@ fn native_handlers_observe_committed_selection_and_internal_close_once() {
 }
 
 #[test]
+fn native_handler_delivers_window_only_changes_after_commit_without_layout_events() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    native
+        .report_snapshot(
+            [
+                (first, ready_window_facts(0.0)),
+                (second, ready_window_facts(800.0)),
+            ],
+            NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
+        )
+        .unwrap();
+    publish(&mut native, |_| {}, true);
+    let version = native.session.version();
+    let (sender, receiver) = mpsc::channel();
+    native.notifications.set_handler(move |notification| {
+        sender.send(notification.clone()).unwrap();
+    });
+
+    native
+        .report_snapshot(
+            [
+                (first, ready_window_facts(120.0)),
+                (second, ready_window_facts(800.0)),
+            ],
+            NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
+        )
+        .unwrap();
+    {
+        let mut abandoned = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        abandoned
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+    }
+    deliver_notifications(&mut native);
+    assert!(receiver.try_recv().is_err());
+
+    assert!(publish(&mut native, |_| {}, true).is_empty());
+    let notification = receiver.try_recv().unwrap();
+    assert!(notification.document_changed());
+    assert!(notification.native_window_placement_changed());
+    assert!(notification.layout_change().is_none());
+    assert!(notification.events().is_empty());
+    assert_eq!(native.session.version(), version);
+    assert!(receiver.try_recv().is_err());
+    publish(&mut native, |_| {}, false);
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn installing_a_native_handler_does_not_replay_earlier_publications() {
     let mut native = coordinator();
     register_roots(&mut native);

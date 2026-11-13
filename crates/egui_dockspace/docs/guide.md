@@ -320,13 +320,15 @@ ordinary surface responses and programmatic action/close results. Layout reset
 and document restore return their events directly on the mutation. Headless
 hosts receive the same product events through `HostFrameReport::events()`.
 
-Use `mutation.layout_change()` to debounce layout persistence. It summarizes the
-complete publication, including split resizing and contained-window geometry
+Use `mutation.notification().document_changed()` to debounce document persistence.
+`mutation.layout_change()` summarizes the complete publication, including split
+resizing and contained-window geometry
 which do not necessarily produce a detailed event. `mutation.notification()`
 combines that summary and its events without retaining a session-wide history.
 Headless hosts expose the same values on `HostFrameReport`. Pure rendering,
 pending close decisions and rejected actions do not mark a layout change.
-OS-window geometry remains a separate host observation.
+Native hosts also include confirmed OS-window geometry in `document_changed()`,
+without advancing the docking-layout version.
 
 ```rust,ignore
 for event in response.mutation().events() {

@@ -21,6 +21,7 @@ mod budget_replay;
 mod device_removal;
 mod input_capacity;
 mod managed_lifecycle;
+mod notifications;
 mod pointer_metadata;
 mod pointer_sequence;
 mod prepared_pointer;

@@ -288,8 +288,9 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// the runtime lock. The callback may query shared runtime state and queue
     /// commands for a later update. It can run outside an egui UI pass; keep it
     /// short and move file I/O or background work to application-owned workers.
-    /// Split resizing is included in the layout-change summary, even when no
-    /// detailed event is emitted. The adapter retains no notification history.
+    /// Use `notification.document_changed()` for debounced persistence. It covers
+    /// split resizing and confirmed native-window placement even without a
+    /// detailed event. The adapter retains no notification history.
     /// The second argument provides scoped view, persistence and command access
     /// without capturing the application itself. Queries see the current state,
     /// which can include later commits from the same native service operation.

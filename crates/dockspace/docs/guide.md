@@ -67,11 +67,15 @@ belongs to that frame attempt and does not resolve against a later report.
 After commit, `report.notification()` exposes one application notification:
 `layout_change()` summarizes all durable layout edits, while `events()` gives
 ordered selection, membership, placement and close details. Split ratios and
-contained bounds can change without a detailed event, so use the summary for
-debounced persistence. Rejected/no-op actions, pending close decisions, pure
-rendering and unpublished frames do not dirty the layout. OS-window geometry
-remains a separate host observation. Hosts own notification delivery and storage;
-core retains no notification history.
+contained bounds can change without a detailed event. For debounced document
+persistence, use `notification.document_changed()`: it also covers committed
+native-window placement without advancing the docking-layout version.
+`native_window_placement_changed()` reports known outer bounds, client size,
+native scale, first-live admission and geometry becoming authoritative again.
+Renderer zoom and focus do not independently trigger a save. Rejected/no-op
+actions, pending close decisions, pure rendering and unpublished frames do not
+dirty the layout. Hosts own notification delivery and storage; core retains no
+notification history.
 
 To move a complete tabs leaf, capture it once with
 `session.capture_tabs_group(DockAnchor::Item(item))`, then use

@@ -74,15 +74,18 @@ changes through `request_input` and consume their result through
 
 Use `with_notification_handler` to observe the same `DockspaceNotification`
 as headless hosts and the single-surface egui adapter. Each notification combines
-a layout-change summary with detailed lifecycle events, so split resizing can
-trigger debounced persistence even without a separate event. The optional synchronous
+layout and native-placement summaries with detailed lifecycle events. Use
+`notification.document_changed()` for debounced persistence: split resizing and
+confirmed OS-window movement, size and native scale can request a save without
+a detailed lifecycle event. The optional synchronous
 callback receives only future nonempty publications, including native service
 work and final UI passes. Pending transfers, discarded passes and rejected
 actions do not produce completion notifications. The adapter retains no event
 history. Callbacks run in commit order after internal settlement releases the
 runtime lock. Shared runtime queries and queued commands are safe; keep handlers
 short and schedule file I/O through application-owned workers. OS-window geometry
-remains a separate host observation, outside the docking-layout version.
+stays outside the docking-layout version. Unknown placement is not guessed;
+first-live admission and geometry becoming authoritative again are also announced.
 The callback's second argument, `NativeNotificationContext`, provides scoped
 `with_view`, `request_command` and, with `serde`, `save_document_json` access.
 Commands and saves follow the application's existing single-slot busy rules.

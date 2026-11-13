@@ -1,6 +1,6 @@
 //! Application notifications from one successfully published core frame.
 
-use crate::transition::{EngineTransition, WorkspaceVersion};
+use crate::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
 
 use super::DockspaceEvent;
 
@@ -33,22 +33,31 @@ impl DockspaceLayoutChange {
 
 /// Read-only application notification from one committed core publication.
 ///
-/// A single layout-change summary accompanies any detailed lifecycle events.
+/// Layout and native-window placement summaries accompany detailed lifecycle events.
 /// Empty notifications need no application work. Applications own persistence,
 /// debouncing and delivery; reading or cloning this value does not replay input.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DockspaceNotification {
     layout_change: Option<DockspaceLayoutChange>,
+    native_window_placement_changed: bool,
     events: Vec<DockspaceEvent>,
 }
 
 impl DockspaceNotification {
-    pub(super) fn from_transition(transition: &EngineTransition) -> Self {
+    pub(super) fn from_transition(transition: &EngineTransition, native_admission: bool) -> Self {
         Self {
             layout_change: transition.changed().then(|| DockspaceLayoutChange {
                 before: transition.before(),
                 after: transition.after(),
             }),
+            native_window_placement_changed: native_admission
+                || transition.reduced_inputs().iter().any(|input| {
+                    matches!(
+                        input.outcome(),
+                        InputOutcome::PlatformSnapshotPublished { transition, .. }
+                            if transition.native_window_placement_changed()
+                    )
+                }),
             events: super::events::committed_events(transition),
         }
     }
@@ -57,6 +66,26 @@ impl DockspaceNotification {
     #[must_use]
     pub const fn layout_change(&self) -> Option<DockspaceLayoutChange> {
         self.layout_change
+    }
+
+    /// Returns whether committed native-window placement can affect document capture.
+    ///
+    /// This covers known outer bounds, content size, native DPI scale, first-live
+    /// admission and placement becoming authoritative after an observation gap or
+    /// hidden interval. It does not advance the docking-layout version. Renderer
+    /// zoom, clipping, focus and unavailable geometry do not independently trigger it.
+    #[must_use]
+    pub const fn native_window_placement_changed(&self) -> bool {
+        self.native_window_placement_changed
+    }
+
+    /// Returns whether docking layout or native placement may need saving.
+    ///
+    /// Applications can debounce this signal before capturing a document. The
+    /// notification does not save data or compare against an earlier saved file.
+    #[must_use]
+    pub const fn document_changed(&self) -> bool {
+        self.layout_change.is_some() || self.native_window_placement_changed
     }
 
     /// Returns the publication's detailed product changes in core event order.
@@ -68,6 +97,6 @@ impl DockspaceNotification {
     /// Returns whether this publication requires no application notification.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.layout_change.is_none() && self.events.is_empty()
+        !self.document_changed() && self.events.is_empty()
     }
 }

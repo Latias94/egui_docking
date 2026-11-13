@@ -424,7 +424,10 @@ impl HostFrameReport {
             affected_surfaces,
             surface_commits,
             inputs,
-            notification: super::DockspaceNotification::from_transition(transition),
+            notification: super::DockspaceNotification::from_transition(
+                transition,
+                !native_admissions.is_empty(),
+            ),
             submitted_actions,
             presentation_transitions,
             manipulation_feedback,

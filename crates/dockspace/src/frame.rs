@@ -201,12 +201,17 @@ pub struct ViewportFrameTransition {
     work_area_generation: WorkAreaGeneration,
     capabilities_changed: bool,
     work_areas_changed: bool,
+    native_window_placement_changed: bool,
     registry_events: Vec<RegistryEvent>,
     consumed_pre_admission_close_requests: Vec<WindowCloseObservation>,
     actions: Vec<ViewportLifecycleAction>,
 }
 
 impl ViewportFrameTransition {
+    pub(crate) const fn native_window_placement_changed(&self) -> bool {
+        self.native_window_placement_changed
+    }
+
     #[must_use]
     #[cfg(test)]
     pub const fn capability_generation(&self) -> CapabilityGeneration {

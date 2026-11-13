@@ -27,6 +27,7 @@ fn pending_first_live_native_create()
         .expect("the source presentation remains retained");
     let mut report = frame.commit().expect("the child create request commits");
     assert!(report.native_admissions().is_empty());
+    assert!(!report.notification().native_window_placement_changed());
     let create = take_only_native_effect(&mut report);
     let child = create.operation().binding();
     assert!(matches!(
@@ -126,6 +127,7 @@ fn pending_first_live_native_create()
         report.native_admissions().is_empty(),
         "Prepared readiness must not admit the child before its first interactive output"
     );
+    assert!(!report.notification().native_window_placement_changed());
     for (item, source_root, source_surface) in source_ownership {
         let view = session.view();
         let current = view.item(item).expect("the source item remains present");
@@ -459,6 +461,8 @@ fn exact_first_live_presented_retries_dropped_candidate_and_publishes_ownership_
 
     let report = commit_managed_frame_report(&mut session);
     assert_eq!(report.native_admissions(), &[child]);
+    assert!(report.notification().native_window_placement_changed());
+    assert!(report.notification().document_changed());
     let [presentation] = report.surface_presentation_commits() else {
         panic!("retry must accept exactly the retained first-live presentation");
     };
@@ -483,6 +487,7 @@ fn exact_first_live_presented_retries_dropped_candidate_and_publishes_ownership_
     let report = commit_managed_frame_report(&mut session);
     assert!(report.native_admissions().is_empty());
     assert!(report.surface_presentation_commits().is_empty());
+    assert!(report.notification().is_empty());
     assert_first_live_child_admitted(&session, child, version);
     assert_eq!(session.committed_source_sequence, sequence);
 }
