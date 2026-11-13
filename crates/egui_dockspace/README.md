@@ -125,7 +125,7 @@ focus on application workflows; use the workbench above for drag docking.
 | --- | --- |
 | [Basic pane rendering](examples/basic.rs) | `cargo run -p egui_dockspace --example basic --features example-app --locked` |
 | [Background saving](examples/background_save.rs) | `cargo run -p egui_dockspace --example background_save --features example-app --locked` |
-| [Layout persistence](examples/workspace_persistence.rs) | `cargo run -p egui_dockspace --example workspace_persistence --features example-app,serde --locked` |
+| [Layout presets and debounced autosave](examples/workspace_persistence.rs) | `cargo run -p egui_dockspace --example workspace_persistence --features example-app,serde --locked` |
 
 [All examples](../../docs/EXAMPLES.md) · [Native OS-window example](../egui_dockspace_native/README.md)
 

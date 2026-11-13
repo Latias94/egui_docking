@@ -3,13 +3,14 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use eframe::egui;
 use egui_dockspace::{
     CloseDecision, CloseItemDecisionState, DockAnchor, DockPlacement, Dockspace,
     DockspaceActionStatus, DockspaceAxis, DockspaceDocumentBootstrap, DockspaceDocumentId,
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, PaneView,
-    RootId, SurfaceId,
+    DockspaceLayout, DockspaceMutation, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+    ItemId, PaneView, RootId, SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -18,6 +19,7 @@ const PERSISTENCE_DOCUMENT_ID: DockspaceDocumentId =
     DockspaceDocumentId::from_bytes(*b"egui-example-doc");
 const DEFAULT_PRESET: &str = "Default";
 const MAX_USER_PRESETS: usize = 8;
+const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
 const PANES: [(&str, &str); 8] = [
     ("pane/document", "Document"),
     ("pane/console", "Console"),
@@ -58,6 +60,9 @@ struct PersistenceApp {
     save_on_close: bool,
     close_pending: bool,
     close_save_failed: bool,
+    auto_save: bool,
+    layout_dirty: bool,
+    auto_save_at: Option<f64>,
 }
 
 impl PersistenceApp {
@@ -91,6 +96,9 @@ impl PersistenceApp {
             save_on_close: false,
             close_pending: false,
             close_save_failed: false,
+            auto_save: true,
+            layout_dirty: false,
+            auto_save_at: None,
         }
     }
 
@@ -113,7 +121,7 @@ impl PersistenceApp {
                 }
             },
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                app.status = format!("Layout saves to {} on close", path.display());
+                app.status = format!("Layout autosaves to {} after changes", path.display());
                 app.save_on_close = true;
             }
             Err(error) => app.status = format!("Could not read {}: {error}", path.display()),
@@ -164,6 +172,8 @@ impl PersistenceApp {
         let Some(path) = self.layout_file.clone() else {
             return;
         };
+        self.auto_save_at = None;
+        self.layout_dirty = false;
         match self.write_layout(&path) {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
@@ -171,6 +181,32 @@ impl PersistenceApp {
                 self.close_save_failed = false;
             }
             Err(error) => self.status = format!("Could not save {}: {error}", path.display()),
+        }
+    }
+
+    fn observe_mutation(&mut self, mutation: &DockspaceMutation) {
+        self.layout_dirty |= mutation.layout_change().is_some();
+    }
+
+    fn autosave(&mut self, context: &egui::Context) {
+        // An unreadable file requires an explicit save before automatic replacement.
+        if !self.auto_save || !self.save_on_close || self.layout_file.is_none() {
+            self.auto_save_at = None;
+            return;
+        }
+        if context.will_discard() {
+            return;
+        }
+        let now = context.input(|input| input.time);
+        if std::mem::take(&mut self.layout_dirty) {
+            self.auto_save_at = Some(now + AUTOSAVE_DELAY.as_secs_f64());
+        }
+        if let Some(deadline) = self.auto_save_at {
+            if now >= deadline {
+                self.save_layout_file();
+            } else {
+                context.request_repaint_after(Duration::from_secs_f64(deadline - now));
+            }
         }
     }
 
@@ -203,7 +239,10 @@ impl PersistenceApp {
         if name == DEFAULT_PRESET {
             // Defaults are ordinary layouts; applying one does not need JSON or document authority.
             match self.dockspace.reset_layout(self.default_layout.clone()) {
-                Ok(_) => self.status = format!("Applied layout: {name}"),
+                Ok(mutation) => {
+                    self.observe_mutation(&mutation);
+                    self.status = format!("Applied layout: {name}");
+                }
                 Err(error) => self.status = error.to_string(),
             }
             return;
@@ -218,7 +257,10 @@ impl PersistenceApp {
                 document_id == PERSISTENCE_DOCUMENT_ID
                     && PANES.iter().any(|(known, _)| *known == key)
             }) {
-            Ok(_) => self.status = format!("Applied layout: {name}"),
+            Ok(mutation) => {
+                self.observe_mutation(&mutation);
+                self.status = format!("Applied layout: {name}");
+            }
             Err(error) => self.status = error.to_string(),
         }
     }
@@ -252,10 +294,15 @@ impl PersistenceApp {
             }
         };
         match self.dockspace.open_item_current(item, placement) {
-            Ok(result) => match result.status() {
-                DockspaceActionStatus::Applied(_) => "Pane reopened".clone_into(&mut self.status),
-                status => self.status = format!("Open pane: {status:?}"),
-            },
+            Ok(result) => {
+                self.observe_mutation(result.mutation());
+                match result.status() {
+                    DockspaceActionStatus::Applied(_) => {
+                        "Pane reopened".clone_into(&mut self.status)
+                    }
+                    status => self.status = format!("Open pane: {status:?}"),
+                }
+            }
             Err(error) => self.status = error.to_string(),
         }
     }
@@ -294,6 +341,7 @@ impl eframe::App for PersistenceApp {
                 if ui.button("Save layout file").clicked() {
                     self.save_layout_file();
                 }
+                ui.checkbox(&mut self.auto_save, "Autosave layout");
                 if self.close_save_failed && ui.button("Exit without saving").clicked() {
                     self.save_on_close = false;
                     self.close_pending = false;
@@ -384,6 +432,7 @@ impl eframe::App for PersistenceApp {
                 .show_single_surface(surface, ui, &mut self.panes)
             {
                 Ok(response) => {
+                    self.observe_mutation(response.mutation());
                     for request in response.close_request_events() {
                         if request.reused() {
                             continue;
@@ -400,6 +449,7 @@ impl eframe::App for PersistenceApp {
                                 CloseDecision::Allow,
                             ) {
                                 Ok(result) => {
+                                    self.observe_mutation(result.mutation());
                                     if result.mutation().workspace_changed() {
                                         ui.ctx().request_repaint();
                                     }
@@ -412,6 +462,9 @@ impl eframe::App for PersistenceApp {
                 Err(error) => self.status = error.to_string(),
             }
         });
+        if !self.close_pending {
+            self.autosave(ui.ctx());
+        }
         if self.close_pending && self.save_on_close && !ui.ctx().will_discard() {
             self.close_pending = false;
             let path = self
@@ -710,6 +763,15 @@ mod tests {
         app: &mut PersistenceApp,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
+        run_frame_at(context, app, events, None)
+    }
+
+    fn run_frame_at(
+        context: &egui::Context,
+        app: &mut PersistenceApp,
+        events: Vec<egui::Event>,
+        time: Option<f64>,
+    ) -> egui::FullOutput {
         let mut frame = eframe::Frame::_new_kittest();
         let mut output = context.run_ui(
             egui::RawInput {
@@ -718,12 +780,80 @@ mod tests {
                     egui::vec2(1100.0, 720.0),
                 )),
                 events,
+                time,
                 ..Default::default()
             },
             |ui| eframe::App::ui(app, ui, &mut frame),
         );
         output.textures_delta.clear();
         output
+    }
+
+    #[test]
+    fn splitter_changes_autosave_after_idle_and_idle_frames_do_not_resave() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.json");
+        let mut app = PersistenceApp::open(path.clone());
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        run_frame_at(&context, &mut app, Vec::new(), Some(0.0)).drop_without_applying_deltas();
+        let ready = run_frame_at(&context, &mut app, Vec::new(), Some(0.1));
+        let target = ready
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find_map(|(id, node)| {
+                (node.role() == Role::Splitter && node.supports_action(Action::Increment))
+                    .then_some(*id)
+            })
+            .expect("the real editor split supports accessible resizing");
+        ready.drop_without_applying_deltas();
+        assert!(
+            !path.exists(),
+            "initial measurement does not dirty the layout"
+        );
+        let before = app.dockspace.version();
+        run_frame_at(
+            &context,
+            &mut app,
+            vec![egui::Event::AccessKitActionRequest(ActionRequest {
+                action: Action::Increment,
+                target_tree: TreeId::ROOT,
+                target_node: target,
+                data: None,
+            })],
+            Some(0.2),
+        )
+        .drop_without_applying_deltas();
+        run_frame_at(&context, &mut app, Vec::new(), Some(0.3)).drop_without_applying_deltas();
+        assert_ne!(app.dockspace.version(), before);
+        assert!(app.auto_save_at.is_some());
+        assert!(!path.exists(), "resizing waits for the debounce interval");
+        run_frame_at(&context, &mut app, Vec::new(), Some(0.9)).drop_without_applying_deltas();
+        let saved = std::fs::read(&path).unwrap();
+        assert!(PersistenceApp::decode(&saved).is_ok());
+        assert!(app.auto_save_at.is_none());
+        run_frame_at(&context, &mut app, Vec::new(), Some(2.0)).drop_without_applying_deltas();
+        assert_eq!(std::fs::read(path).unwrap(), saved);
+    }
+
+    #[test]
+    fn autosave_preserves_an_unreadable_file_until_explicit_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.json");
+        let original = b"unreadable application document";
+        std::fs::write(&path, original).unwrap();
+        let mut app = PersistenceApp::open(path.clone());
+        let context = egui::Context::default();
+        app.restore_named(DEFAULT_PRESET);
+        run_frame_at(&context, &mut app, Vec::new(), Some(0.0)).drop_without_applying_deltas();
+        run_frame_at(&context, &mut app, Vec::new(), Some(2.0)).drop_without_applying_deltas();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        app.save_layout_file();
+        assert!(PersistenceApp::decode(&std::fs::read(path).unwrap()).is_ok());
     }
 
     #[test]
