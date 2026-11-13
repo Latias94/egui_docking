@@ -181,6 +181,136 @@ fn survivor_reflow_uses_confirmed_content_and_ticks_do_not_resolve_target_again(
 }
 
 #[test]
+fn popup_on_another_surface_preserves_the_running_layout_sample() {
+    use crate::runtime::{
+        DockspaceHostFrame, SurfaceMeasurementAnswer, SurfaceMeasurementRequest,
+        TabListMenuMetrics, TabStripControlKind, TabStripControlMetric, TabStripControlMetrics,
+        TabStripControlPlacement, TabStripMetrics,
+    };
+
+    let menu_surface = SurfaceId::new(2);
+    let menu_root = RootId::new(2);
+    let content = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [A, B, C].map(|item| DockspaceNode::tabs([item])),
+    )
+    .unwrap();
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(SURFACE, DockspaceRootLayout::new(ROOT, content)),
+        DockspaceSurfaceLayout::new(
+            menu_surface,
+            DockspaceRootLayout::new(menu_root, DockspaceNode::tabs((10..30).map(ItemId::new))),
+        ),
+    ])
+    .unwrap();
+    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+    let strip = TabStripMetrics::new(0.0, 0.0)
+        .unwrap()
+        .with_controls(
+            TabStripControlMetrics::new(0.0)
+                .unwrap()
+                .with_tab_list_menu(
+                    TabStripControlMetric::new(20.0, TabStripControlPlacement::ReservedTrailing)
+                        .unwrap(),
+                ),
+        )
+        .with_tab_list_menu(TabListMenuMetrics::new(24.0, 8.0, 8.0, 2.0, 92.0, 10.0).unwrap());
+    let measure_menu = |frame: &mut DockspaceHostFrame<'_>| {
+        frame
+            .measure_surface_with(menu_surface, |request| match request {
+                SurfaceMeasurementRequest::DockBounds { .. }
+                | SurfaceMeasurementRequest::PopupPlaneBounds { .. } => {
+                    SurfaceMeasurementAnswer::Bounds(
+                        LogicalRect::new(0.0, 0.0, 260.0, 180.0).unwrap(),
+                    )
+                }
+                SurfaceMeasurementRequest::PaneMinimum { .. } => {
+                    SurfaceMeasurementAnswer::PaneMinimum(LogicalSize::new(40.0, 30.0).unwrap())
+                }
+                SurfaceMeasurementRequest::TabIntrinsic { .. } => {
+                    SurfaceMeasurementAnswer::TabIntrinsic(80.0)
+                }
+                SurfaceMeasurementRequest::TabStrip { .. } => {
+                    SurfaceMeasurementAnswer::TabStrip(strip)
+                }
+            })
+            .unwrap();
+    };
+    let mut frame = session.begin_host_frame().unwrap();
+    measure_menu(&mut frame);
+    frame.commit().unwrap();
+    let (before, output) = paint(&mut session, motion(0));
+    present(&mut session, output);
+    dock(&mut session, C, A);
+    let (_, output) = paint(&mut session, motion(1000));
+    present(&mut session, output);
+    let (moving, output) = paint(&mut session, motion(1050));
+    present(&mut session, output);
+    assert!(moving.panes[&B].x() > before.panes[&B].x());
+    assert!(!moving.partition);
+
+    let mut frame = session.begin_host_frame().unwrap();
+    let plan = frame.paint_plan(menu_surface).unwrap().unwrap();
+    let control = plan
+        .tab_strip_controls()
+        .find(|control| control.kind() == TabStripControlKind::TabListMenu)
+        .unwrap();
+    let open = plan
+        .prepare_tab_strip_control_activation(control)
+        .unwrap()
+        .into_deferred();
+    frame.commit().unwrap();
+
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.submit_deferred_surface_action(open).unwrap();
+    measure_menu(&mut frame);
+    let plan = frame.paint_plan(menu_surface).unwrap().unwrap();
+    assert!(plan.partition_available(menu_root));
+    assert!(plan.tab_strip_controls().any(|control| control.menu_open()));
+    let mut dismiss = None;
+    let receipt = plan
+        .execute_surface_program(|step| {
+            if let Step::PopupBackdrop(backdrop) = step {
+                dismiss = Some(
+                    plan.prepare_tab_list_menu_dismiss(backdrop)
+                        .unwrap()
+                        .into_deferred(),
+                );
+            }
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+    frame.confirm_surface_painted(receipt).unwrap();
+    let mut report = frame.commit().unwrap();
+    present(&mut session, report.take_painted_outputs().pop().unwrap());
+
+    let (during_popup, output) = paint(&mut session, motion(1050));
+    assert_eq!(
+        during_popup.panes, moving.panes,
+        "another surface's popup must not replace the running sample with target geometry"
+    );
+    assert!(!during_popup.partition);
+    assert_eq!(during_popup.splitters, 0);
+    assert!(session.surface_motion_is_active(SURFACE));
+    present(&mut session, output);
+
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .submit_deferred_surface_action(dismiss.unwrap())
+        .unwrap();
+    measure_menu(&mut frame);
+    let plan = frame.paint_plan(menu_surface).unwrap().unwrap();
+    assert!(
+        plan.tab_strip_controls()
+            .all(|control| !control.menu_open())
+    );
+    frame.commit().unwrap();
+    let (after_popup, _) = paint(&mut session, motion(1060));
+    assert!(after_popup.panes[&B].x() > during_popup.panes[&B].x());
+    assert!(!after_popup.partition);
+}
+
+#[test]
 fn unpresented_and_late_motion_outputs_never_steal_the_visible_receiver_authority() {
     let (mut session, _) = fixture();
     dock(&mut session, C, A);
