@@ -168,7 +168,7 @@ pub(super) fn demo_layout() -> DockspaceLayout {
         DockspaceAxis::Horizontal,
         [
             (DockspaceNode::tabs([OUTLINE]), 0.24),
-            (DockspaceNode::central_tabs([EDITOR, PREVIEW]), 0.76),
+            (DockspaceNode::tabs([EDITOR, PREVIEW]), 0.76),
         ],
     )
     .expect("the static top split is valid");

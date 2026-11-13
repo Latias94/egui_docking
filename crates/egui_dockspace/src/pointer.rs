@@ -159,11 +159,32 @@ pub(crate) struct ProductPointer {
     rejected_run: Option<ProductPointerPacket>,
     position: Option<Pos2>,
     // Adapter input enrollment only; core remains the sole gesture owner.
-    generic_live: bool,
+    generic_phase: GenericPointerPhase,
     observed_modifiers: Option<Modifiers>,
     docking_enabled: Option<bool>,
     foreign_capture: bool,
     touches: TouchContacts,
+}
+
+/// Phase of the synthesized generic pointer stream.
+///
+/// A hover stream remains live after a release so ordinary motion and focus
+/// observations keep their existing ownership semantics. The explicit
+/// pressed phase is needed to recover when a host loses a release and later
+/// delivers another primary press; a second press cannot be sent to the core
+/// as though the first one had ended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum GenericPointerPhase {
+    #[default]
+    Idle,
+    Hover,
+    Pressed,
+}
+
+impl GenericPointerPhase {
+    const fn is_live(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -458,18 +479,16 @@ impl ProductPointer {
         // with a new contact identity or different receiver facts.
         self.rejected_run = Some(packet.clone());
         let mut position = self.position;
-        let mut generic_live = self.generic_live;
+        let mut generic_phase = self.generic_phase;
         let mut observed_modifiers = self.observed_modifiers;
         let mut docking_enabled = self.docking_enabled;
         let mut touches = self.touches.clone();
-        let touch_packet = !touches.is_empty()
-            || packet
-                .events()
-                .iter()
-                .any(|event| matches!(event, Event::Touch { .. }));
+        let host_focused = packet.focused();
+        let mut pointer_focused = host_focused;
+        let mut touch_interval = !touches.is_empty() || focus_interval_has_touch(packet.events());
         let mut records = Vec::new();
-        if rejected_previous || !coordinates_supported {
-            if generic_live {
+        if rejected_previous || !coordinates_supported || !host_focused {
+            if generic_phase.is_live() {
                 records.push(PointerSample::generic(
                     SurfacePointerEvent::StreamCancelled(
                         SurfacePointerCancelReason::ExplicitPlatformCancellation,
@@ -477,7 +496,7 @@ impl ProductPointer {
                     position,
                     docking_enabled,
                 ));
-                generic_live = false;
+                generic_phase = GenericPointerPhase::Idle;
             }
             records.extend(touches.cancel_all(
                 SurfacePointerCancelReason::ExplicitPlatformCancellation,
@@ -485,7 +504,7 @@ impl ProductPointer {
             ));
         }
         if foreign_drag && !self.foreign_capture {
-            if generic_live {
+            if generic_phase.is_live() {
                 records.push(PointerSample::generic(
                     SurfacePointerEvent::CaptureChanged,
                     position,
@@ -501,19 +520,52 @@ impl ProductPointer {
             self.config,
             observed_modifiers.unwrap_or(Modifiers::NONE),
         ) {
-            records.extend(docking_change_samples(&touches, generic_live, enabled));
+            records.extend(docking_change_samples(
+                &touches,
+                generic_phase.is_live(),
+                enabled,
+            ));
         }
-        for event in packet.events().iter().cloned() {
+        for (event_index, event) in packet.events().iter().cloned().enumerate() {
+            if let Event::WindowFocused(focused) = &event {
+                // A false host snapshot denies this whole packet. Within a
+                // focused packet, ordered loss/gain events still delimit the
+                // intervals that can deliver pointer input.
+                let next_focused = host_focused && *focused;
+                if next_focused && !pointer_focused {
+                    // Loss cancelled the preceding contacts. Only touch in
+                    // this new interval can suppress its synthesized mouse
+                    // tail. Each interval is scanned at most once.
+                    touch_interval = !touches.is_empty()
+                        || focus_interval_has_touch(&packet.events()[event_index + 1..]);
+                }
+                pointer_focused = next_focused;
+            }
+            if !pointer_focused
+                && matches!(
+                    &event,
+                    Event::Touch { .. }
+                        | Event::PointerMoved(_)
+                        | Event::PointerButton { .. }
+                        | Event::PointerGone
+                )
+            {
+                continue;
+            }
             if let Some(modifiers) = event_modifiers(&event) {
                 observed_modifiers = Some(modifiers);
                 if let Some(enabled) =
                     update_docking_enabled(&mut docking_enabled, self.config, modifiers)
                 {
-                    records.extend(docking_change_samples(&touches, generic_live, enabled));
+                    records.extend(docking_change_samples(
+                        &touches,
+                        generic_phase.is_live(),
+                        enabled,
+                    ));
                 }
             }
-            if touch_packet
-                && generic_live
+            if touch_interval
+                && generic_phase.is_live()
                 && matches!(
                     &event,
                     Event::Touch { .. }
@@ -532,7 +584,7 @@ impl ProductPointer {
                     position,
                     docking_enabled,
                 ));
-                generic_live = false;
+                generic_phase = GenericPointerPhase::Idle;
             }
             let event = match event {
                 Event::Touch {
@@ -551,7 +603,7 @@ impl ProductPointer {
                     None
                 }
                 Event::PointerMoved(_) | Event::PointerButton { .. } | Event::PointerGone
-                    if touch_packet =>
+                    if touch_interval =>
                 {
                     None
                 }
@@ -566,6 +618,19 @@ impl ProductPointer {
                     ..
                 } => {
                     position = Some(pos);
+                    if pressed && generic_phase == GenericPointerPhase::Pressed {
+                        // A second primary press means the platform dropped
+                        // the preceding release. End the old stream before
+                        // admitting the new edge in this same host batch.
+                        records.push(PointerSample::generic(
+                            SurfacePointerEvent::StreamCancelled(
+                                SurfacePointerCancelReason::ExplicitPlatformCancellation,
+                            ),
+                            position,
+                            docking_enabled,
+                        ));
+                        generic_phase = GenericPointerPhase::Idle;
+                    }
                     Some(if pressed {
                         SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary)
                     } else {
@@ -603,12 +668,23 @@ impl ProductPointer {
             };
             if let Some(event) = event {
                 if matches!(event, SurfacePointerEvent::StreamCancelled(_)) {
-                    if !generic_live {
+                    if !generic_phase.is_live() {
                         continue;
                     }
-                    generic_live = false;
+                    generic_phase = GenericPointerPhase::Idle;
                 } else {
-                    generic_live = true;
+                    generic_phase = match event {
+                        SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary) => {
+                            GenericPointerPhase::Pressed
+                        }
+                        SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary) => {
+                            GenericPointerPhase::Hover
+                        }
+                        _ if generic_phase == GenericPointerPhase::Idle => {
+                            GenericPointerPhase::Hover
+                        }
+                        _ => generic_phase,
+                    };
                 }
                 records.push(PointerSample::generic(event, position, docking_enabled));
             }
@@ -616,7 +692,8 @@ impl ProductPointer {
         // Empty packets and blocked layers need no join. All qualified edges
         // and stationary probes in this packet share the same frozen result.
         let blockers = OnceCell::new();
-        let edge_at = |sample: PointerSample| {
+        let mut retain_frame_owner = true;
+        let mut edge_at = |sample: PointerSample| {
             if matches!(
                 sample.event,
                 SurfacePointerEvent::DockingEnabledChanged { .. }
@@ -644,6 +721,34 @@ impl ProductPointer {
                 });
             let hit = point
                 .and_then(|point| frame.host_pointer_hit_for_device(surface, point, sample.device));
+            let frame_owner = frame
+                .host_pointer_manipulation_surface(sample.pointer)
+                .filter(|source| coordinates_supported && source.surface() == surface);
+            if frame_owner.is_some()
+                && matches!(
+                    sample.event,
+                    SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary)
+                )
+            {
+                retain_frame_owner = false;
+            }
+            let manipulation_surface = frame_owner
+                .filter(|_| retain_frame_owner)
+                .or(current.filter(|_| coordinates_supported));
+            if frame_owner.is_some()
+                && matches!(
+                    sample.event,
+                    SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary)
+                        | SurfacePointerEvent::ContactEnded(SurfacePointerButton::Primary)
+                        | SurfacePointerEvent::StreamCancelled(_)
+                        | SurfacePointerEvent::StreamEnded
+                )
+            {
+                // Only the original owner may retain its old coordinate proof.
+                // Its terminal ends that exception within this raw packet too;
+                // a later down and its suffix use the current presented output.
+                retain_frame_owner = false;
+            }
             let qualified = scene.zip(position).is_some_and(|(scene, position)| {
                 !foreign_drag
                     && ui.is_enabled()
@@ -661,10 +766,7 @@ impl ProductPointer {
                 event: sample.event,
                 point,
                 surface: hit.map(|hit| hit.surface()),
-                manipulation_surface: frame
-                    .host_pointer_manipulation_surface(sample.pointer)
-                    .filter(|source| coordinates_supported && source.surface() == surface)
-                    .or_else(|| hit.map(|hit| hit.surface())),
+                manipulation_surface,
                 delivery: qualified
                     .then(|| hit.and_then(|hit| hit.delivery()))
                     .flatten(),
@@ -676,9 +778,10 @@ impl ProductPointer {
                 capture,
             }
         };
-        let edges = records.into_iter().map(&edge_at).collect::<Vec<_>>();
+        let edges = records.into_iter().map(&mut edge_at).collect::<Vec<_>>();
         let continuation = frame.pointer_continuation().and_then(|request| {
-            if request.surface() != surface
+            if !pointer_focused
+                || request.surface() != surface
                 || !packet
                     .observed_at()
                     .is_some_and(|now| now >= request.deadline())
@@ -725,7 +828,7 @@ impl ProductPointer {
             }
         }
         self.position = position;
-        self.generic_live = generic_live;
+        self.generic_phase = generic_phase;
         self.observed_modifiers = observed_modifiers;
         self.docking_enabled = docking_enabled;
         self.foreign_capture = foreign_drag;
@@ -736,6 +839,13 @@ impl ProductPointer {
             deferred_focus,
         })
     }
+}
+
+fn focus_interval_has_touch(events: &[Event]) -> bool {
+    events
+        .iter()
+        .take_while(|event| !matches!(event, Event::WindowFocused(false)))
+        .any(|event| matches!(event, Event::Touch { .. }))
 }
 
 fn has_foreign_drag(context: &Context) -> bool {

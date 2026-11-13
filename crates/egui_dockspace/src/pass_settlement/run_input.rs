@@ -13,6 +13,7 @@ pub(crate) const RUN_SCOPE_TAG: &str = "egui_dockspace::official_run_scope";
 
 pub(super) struct RunInput {
     events: Vec<egui::Event>,
+    focused: bool,
     receivers: ProductPointerInputSnapshot,
 }
 
@@ -46,8 +47,12 @@ impl egui::plugin::Plugin for RunInputSnapshot {
             return;
         }
         if portal.viewport == ui.ctx().viewport_id() && portal.input.is_none() {
+            let (events, focused) = ui
+                .ctx()
+                .input(|input| (input.raw.events.clone(), input.raw.focused));
             portal.input = Some(Arc::new(RunInput {
-                events: ui.ctx().input(|input| input.raw.events.clone()),
+                events,
+                focused,
                 receivers: ProductPointerInputSnapshot::capture(ui.ctx()),
             }));
         }
@@ -68,6 +73,10 @@ impl ProductPointerPacket {
 
     pub(crate) fn events(&self) -> &[egui::Event] {
         &self.input.events
+    }
+
+    pub(crate) fn focused(&self) -> bool {
+        self.input.focused
     }
 
     pub(crate) fn receivers(&self) -> &ProductPointerInputSnapshot {

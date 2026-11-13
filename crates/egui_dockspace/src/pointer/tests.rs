@@ -16,7 +16,14 @@ use egui::{
 use crate::input::{DockInputConfig, DockingActivation};
 use crate::{Dockspace, PaneView};
 
-use super::{ProductPointer, continuation_sample, event_modifiers, update_docking_enabled};
+use super::{
+    GenericPointerPhase, ProductPointer, continuation_sample, event_modifiers,
+    update_docking_enabled,
+};
+
+mod reentry;
+
+mod focus_snapshot;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const FIRST: ItemId = ItemId::new(1);
@@ -145,7 +152,7 @@ fn modifier_only_input_remembers_shift_without_enrolling_a_pointer() {
     assert_eq!(submissions, 0, "idle modifiers need no host pointer batch");
     assert_eq!(pointer.docking_enabled, Some(false));
     assert_eq!(pointer.observed_modifiers, Some(Modifiers::SHIFT));
-    assert!(!pointer.generic_live);
+    assert_eq!(pointer.generic_phase, GenericPointerPhase::Idle);
     assert!(pointer.touches.is_empty());
     assert_eq!(pointer.position, None);
 }

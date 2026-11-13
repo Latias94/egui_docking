@@ -3,12 +3,16 @@
 use super::super::editor::{self, SURFACE, apply_editor_commands, demo_layout, run_editor};
 use super::*;
 
+#[path = "tests/randomized.rs"]
+mod randomized;
+
 fn workbench_frame(
     context: &egui::Context,
     dock: &mut Dockspace,
     panes: &mut DemoPanes,
     events: Vec<Event>,
 ) -> egui::FullOutput {
+    let mut restore = false;
     let (output, response) = run_editor(
         dock,
         context,
@@ -19,13 +23,13 @@ fn workbench_frame(
             ..Default::default()
         },
         panes,
-        &mut false,
+        &mut restore,
     )
     .unwrap();
     let (mut output, receipt) = output.into_parts();
     output.textures_delta.clear();
     receipt.report(SurfacePresentationResult::Presented);
-    apply_editor_commands(dock, response.as_ref(), false).unwrap();
+    apply_editor_commands(dock, response.as_ref(), restore).unwrap();
     output
 }
 
@@ -47,6 +51,134 @@ fn semantic_rect(output: &egui::FullOutput, role: egui::accesskit::Role, label: 
         egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
         egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
     )
+}
+
+#[test]
+fn rearranging_the_editor_tabs_does_not_leave_an_unlabelled_empty_pane() {
+    use egui_dockspace::{DockAnchor, DockEdge, DockFraction, DockPlacement};
+
+    let context = editor::new_context();
+    let mut dock = Dockspace::builder("workbench-empty-region", demo_layout())
+        .style(editor::dock_style())
+        .build()
+        .unwrap();
+    let mut panes = DemoPanes::new();
+    let _ = workbench_frame(&context, &mut dock, &mut panes, Vec::new());
+    let _ = workbench_frame(&context, &mut dock, &mut panes, Vec::new());
+
+    for (item, anchor, edge) in [
+        (PREVIEW, EDITOR, DockEdge::Top),
+        (INSPECTOR, EDITOR, DockEdge::Left),
+        (EDITOR, INSPECTOR, DockEdge::Top),
+    ] {
+        dock.dock_item_current(
+            item,
+            DockPlacement::InnerEdge {
+                anchor: DockAnchor::Item(anchor),
+                edge,
+                fraction: DockFraction::new(0.5).unwrap(),
+            },
+        )
+        .unwrap();
+        for _ in 0..16 {
+            let _ = workbench_frame(&context, &mut dock, &mut panes, Vec::new());
+        }
+    }
+
+    let root = dock.view().root(MAIN_ROOT).unwrap();
+    let mut pending = vec![root.content().unwrap()];
+    let mut empty = 0;
+    let mut populated = 0;
+    while let Some(node) = pending.pop() {
+        if let Some(tabs) = node.tabs() {
+            empty += usize::from(tabs.items().is_empty());
+            populated += usize::from(!tabs.items().is_empty());
+        } else if let Some(split) = node.split() {
+            pending.extend(split.children());
+        }
+    }
+    assert_eq!(populated, 6, "all six populated groups remain available");
+    assert_eq!(
+        empty, 0,
+        "the workbench must reclaim the Editor group's space when its final tab moves",
+    );
+}
+
+#[cfg(feature = "motion")]
+#[test]
+fn an_animated_editor_tab_can_start_another_docking_gesture() {
+    use egui::accesskit::Role;
+    use egui_dockspace::{DockAnchor, DockEdge, DockFraction, DockPlacement};
+
+    let context = editor::new_context();
+    context.enable_accesskit();
+    let mut dock = Dockspace::builder("workbench-interrupt-reflow", demo_layout())
+        .style(editor::dock_style())
+        .build()
+        .unwrap();
+    let mut panes = DemoPanes::new();
+    let _ = workbench_frame(&context, &mut dock, &mut panes, Vec::new());
+    let initial = workbench_frame(&context, &mut dock, &mut panes, Vec::new());
+    let initial_editor = semantic_rect(&initial, Role::Tab, "Editor");
+    dock.dock_item_current(
+        PREVIEW,
+        DockPlacement::InnerEdge {
+            anchor: DockAnchor::Item(EDITOR),
+            edge: DockEdge::Top,
+            fraction: DockFraction::new(0.5).unwrap(),
+        },
+    )
+    .unwrap();
+    let mut output = workbench_frame(&context, &mut dock, &mut panes, Vec::new());
+    for _ in 0..4 {
+        output = workbench_frame(&context, &mut dock, &mut panes, Vec::new());
+    }
+    assert!(
+        semantic_rect(&output, Role::Tab, "Editor").top() > initial_editor.top(),
+        "the Editor is sampled during its downward reflow before the next press",
+    );
+
+    for target in [OUTLINE, PREVIEW] {
+        let tab = semantic_rect(&output, Role::Tab, "Editor");
+        let content = panes.panes[&EDITOR].content.unwrap();
+        assert!(
+            (tab.bottom() - content.top()).abs() < 0.1,
+            "the visible title and application content share the sampled pane geometry",
+        );
+        let source = tab.center();
+        let _ = workbench_frame(
+            &context,
+            &mut dock,
+            &mut panes,
+            vec![Event::PointerMoved(source), button(source, true)],
+        );
+        let _ = workbench_frame(
+            &context,
+            &mut dock,
+            &mut panes,
+            vec![Event::PointerMoved(source + egui::vec2(20.0, 8.0))],
+        );
+        let destination = panes.panes[&target].content.unwrap().center();
+        let preview = workbench_frame(
+            &context,
+            &mut dock,
+            &mut panes,
+            vec![Event::PointerMoved(destination)],
+        );
+        let guide = semantic_rect(&preview, Role::Label, "Dockspace center drop guide").center();
+        output = workbench_frame(
+            &context,
+            &mut dock,
+            &mut panes,
+            vec![Event::PointerMoved(guide), button(guide, false)],
+        );
+        assert_eq!(
+            dock.view().item(EDITOR).unwrap().tabs().items(),
+            &[target, EDITOR],
+            "the visible Editor tab must authorize the next gesture during layout reflow",
+        );
+        assert!(dock.view().item(EDITOR).unwrap().contained().is_none());
+    }
 }
 
 #[test]
