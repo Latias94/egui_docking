@@ -11,12 +11,13 @@ use dockspace::model::{
 };
 use dockspace::policy::{CloseCapability, DockPolicy};
 use dockspace::runtime::{
-    DockspaceCloseInertReason, DockspaceCloseResolution, DockspacePresentationTransitionResult,
-    DockspaceSession, HostFrameReport, HostInputOutcome, HostWorkAreaToken, NativeCloseState,
-    NativeCreateReadiness, NativeEffectAcknowledgement, NativeEffectOperation,
-    NativeReceiverAnswer, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster,
-    SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    DockspaceCloseInertReason, DockspaceCloseResolution, DockspacePresentationTransition,
+    DockspacePresentationTransitionResult, DockspaceSession, HostFrameReport, HostInputOutcome,
+    HostWorkAreaToken, NativeCloseState, NativeCreateReadiness, NativeEffectAcknowledgement,
+    NativeEffectOperation, NativeReceiverAnswer, NativeSurfaceBinding, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
+    NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
+    UniformSurfaceMetrics,
 };
 use eframe::egui;
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
@@ -799,7 +800,8 @@ fn state_for_native_commands() -> NativeRuntimeState<Panes> {
 fn native_payload_commands_share_the_result_slot_and_exact_first_live_transfer() {
     let placement =
         NativeWindowPlacement::new(PhysicalRect::new(900.0, 100.0, 480.0, 320.0).unwrap());
-    for kind in 0..5 {
+    let mut prior_terminals = [None, None];
+    for kind in [0, 1, 2, 2, 3, 3, 4] {
         let mut state = state_for_native_commands();
         let before = state.coordinator.session().version();
         let group = state.capture_tabs_group(DockAnchor::Item(SECOND)).unwrap();
@@ -931,7 +933,14 @@ fn native_payload_commands_share_the_result_slot_and_exact_first_live_transfer()
         assert_eq!(state.panes.0, "application-owned content");
         assert!(state.error().is_none());
         if kind == 2 || kind == 3 {
-            return_complete_group_through_the_result_slot(&mut state, binding, bounds, kind == 3);
+            let prior = &mut prior_terminals[kind - 2];
+            *prior = Some(return_complete_group_through_the_result_slot(
+                &mut state,
+                binding,
+                bounds,
+                kind == 3,
+                prior.as_ref(),
+            ));
         }
     }
 }
@@ -941,7 +950,8 @@ fn return_complete_group_through_the_result_slot(
     source_binding: NativeSurfaceBinding,
     source_bounds: PhysicalRect,
     float: bool,
-) {
+    unrelated: Option<&DockspacePresentationTransition>,
+) -> DockspacePresentationTransition {
     present_group_return_endpoints(state, source_binding, source_bounds);
     let source_root = state.view().item(SECOND).unwrap().root();
     let source_surface = state.view().item(SECOND).unwrap().surface();
@@ -996,6 +1006,20 @@ fn return_complete_group_through_the_result_slot(
     assert!(state.coordinator.session().has_pending_presentation());
     assert!(state.take_action_status().is_none());
     assert_eq!(state.view().item(SECOND).unwrap().surface(), source_surface);
+    if let Some(unrelated) = unrelated {
+        assert_ne!(unrelated.id(), transition);
+        assert_eq!(unrelated.root(), source_root);
+        assert_eq!(unrelated.source_surface(), source_surface);
+        assert_eq!(unrelated.target_surface(), SURFACE);
+        assert!(
+            !state
+                .application_actions
+                .settle_presentation_transitions(std::slice::from_ref(unrelated))
+                .unwrap(),
+            "an identical transfer in another session must not settle this command"
+        );
+        assert!(state.take_action_status().is_none());
+    }
     assert_eq!(
         state.request_command(NativeCommand::SelectItem { item: FIRST }),
         Err(NativeActionRequestError::Busy)
@@ -1105,6 +1129,7 @@ fn return_complete_group_through_the_result_slot(
     assert!(state.view().item(SECOND).unwrap().is_selected());
     assert!(!state.application_actions.is_occupied());
     assert!(state.error().is_none());
+    terminal.clone()
 }
 
 fn present_group_return_endpoints(

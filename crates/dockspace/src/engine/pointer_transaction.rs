@@ -2920,10 +2920,8 @@ impl DockEngine {
             prepared_mutation: _,
         } = evaluation;
         let latch_observation = match observation {
-            crate::runtime::direct_manipulation::TargetObservation::Surface {
-                layer,
-                candidate,
-                ..
+            crate::interaction::targeting::TargetObservation::Surface {
+                layer, candidate, ..
             } if self.interaction.active_drag(session).is_ok_and(|drag| {
                 self.current_contained_projection_is_owned(drag.source_surface)
                     && self.drag_preview_authority_is_current(drag)
@@ -2940,7 +2938,7 @@ impl DockEngine {
                     .interaction
                     .active_drag(session)
                     .expect("the exact source projection owner was checked");
-                crate::runtime::direct_manipulation::TargetObservation::Surface {
+                crate::interaction::targeting::TargetObservation::Surface {
                     scene: drag
                         .preview()
                         .expect("the target preview was checked")
@@ -2966,7 +2964,7 @@ impl DockEngine {
                 detail: format!("drag target latch rejected the position: {source:?}"),
             })?;
         let outcome = match latch {
-            crate::runtime::direct_manipulation::TargetLatchDecision::AcceptCandidate => self
+            crate::interaction::targeting::TargetLatchDecision::AcceptCandidate => self
                 .apply_preview_evaluation(
                     cause,
                     owner,
@@ -2974,7 +2972,7 @@ impl DockEngine {
                     PreviewEvaluation::new(decision, affordance, observation, target_layout_basis),
                     interaction_events,
                 )?,
-            crate::runtime::direct_manipulation::TargetLatchDecision::RetainCurrent => {
+            crate::interaction::targeting::TargetLatchDecision::RetainCurrent => {
                 let drag = self.interaction.active_drag(session).map_err(|source| {
                     EngineError::PointerInteractionInvariant {
                         cause,

@@ -1,4 +1,4 @@
-//! Private state kernel for direct-manipulation target selection.
+//! Core-owned target acquisition and release hysteresis.
 
 use crate::drop_guide::{DropGuideClusterId, DropGuideSlot};
 use crate::drop_target::{DropTargetId, SceneLayerKey};

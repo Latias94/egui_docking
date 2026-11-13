@@ -3,21 +3,19 @@
 use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
-use dockspace::model::{
-    DockspaceActionOutcome, DockspaceActionRejection, SurfaceId, WorkspaceVersion,
-};
+use dockspace::model::{DockspaceActionRejection, SurfaceId, WorkspaceVersion};
 use dockspace::policy::DockPolicy;
 #[cfg(feature = "serde")]
 use dockspace::runtime::PreparedDockspaceDocumentRestore;
 use dockspace::runtime::{
-    DockPresentationConfig, DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
-    DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspaceHostFrame,
-    DockspacePresentationTransition, DockspacePresentationTransitionId,
+    DockPresentationConfig, DockspaceActionStatus, DockspaceCloseOutcome, DockspaceClosePlan,
+    DockspaceCloseRejection, DockspaceCloseRequestRejection, DockspaceCloseResolution,
+    DockspaceHostFrame, DockspacePresentationTransition, DockspacePresentationTransitionId,
     DockspacePresentationTransitionResult, DockspaceRuntimeError, DockspaceRuntimeErrorKind,
     DockspaceSubmittedAction, HostFrameReport, HostInputOutcome, NativeSurfaceBinding,
     PreparedCloseRequest, PreparedDockAction, PreparedDockspaceLayoutReset,
 };
-use egui_dockspace::{DockInputConfig, DockStyle, DockspaceActionStatus};
+use egui_dockspace::{DockInputConfig, DockStyle};
 
 use crate::NativeRuntimeErrorKind;
 
@@ -661,7 +659,6 @@ enum NativeApplicationActionState {
         kind: NativeActionExpectation,
     },
     AwaitingPresentation {
-        requested: DockspaceActionOutcome,
         transition: DockspacePresentationTransitionId,
         shutdown_kind: Option<NativeRuntimeErrorKind>,
     },
@@ -814,12 +811,8 @@ impl NativeApplicationActions {
                     )),
                     (
                         NativeActionExpectation::Dock,
-                        HostInputOutcome::ProductPresentationActionRequested {
-                            outcome,
-                            transition,
-                        },
+                        HostInputOutcome::ProductPresentationActionRequested { transition, .. },
                     ) => ReductionSettlement::Presentation {
-                        requested: outcome.clone(),
                         transition: *transition,
                     },
                     (
@@ -919,19 +912,6 @@ impl NativeApplicationActions {
                 };
                 match settlement {
                     ReductionSettlement::Terminal(status) => {
-                        if matches!(
-                            status,
-                            DockspaceActionStatus::Applied(
-                                DockspaceActionOutcome::RootDockRequested { .. }
-                                    | DockspaceActionOutcome::RootFloatRequested { .. }
-                            )
-                        ) {
-                            self.set_terminal_failure(
-                                NativeRuntimeErrorKind::Internal,
-                                NativeActionInterruption::CommittedOutcomeUnavailable,
-                            );
-                            return Err(());
-                        }
                         self.state = NativeApplicationActionState::Terminal(Ok(
                             NativeActionStatus::Dock(status),
                         ));
@@ -941,23 +921,8 @@ impl NativeApplicationActions {
                         self.state = NativeApplicationActionState::Terminal(Ok(status));
                         Ok(true)
                     }
-                    ReductionSettlement::Presentation {
-                        requested,
-                        transition,
-                    } => {
-                        if !matches!(
-                            requested,
-                            DockspaceActionOutcome::RootDockRequested { .. }
-                                | DockspaceActionOutcome::RootFloatRequested { .. }
-                        ) {
-                            self.set_terminal_failure(
-                                NativeRuntimeErrorKind::Internal,
-                                NativeActionInterruption::CommittedOutcomeUnavailable,
-                            );
-                            return Err(());
-                        }
+                    ReductionSettlement::Presentation { transition } => {
                         self.state = NativeApplicationActionState::AwaitingPresentation {
-                            requested,
                             transition,
                             shutdown_kind: None,
                         };
@@ -989,20 +954,22 @@ impl NativeApplicationActions {
         transitions: &[DockspacePresentationTransition],
     ) -> Result<bool, ()> {
         let NativeApplicationActionState::AwaitingPresentation {
-            requested,
             transition: requested_transition,
             ..
         } = &self.state
         else {
             return Ok(false);
         };
-        let Some(transition) = transitions.iter().find(|transition| {
-            transition_matches_request(transition, *requested_transition, requested)
-        }) else {
+        // Core validates the frozen command and its completed payload. The host
+        // correlates only the opaque session-scoped request identity.
+        let Some(transition) = transitions
+            .iter()
+            .find(|transition| transition.id() == *requested_transition)
+        else {
             return Ok(false);
         };
         let status = if transition.result() == DockspacePresentationTransitionResult::Applied {
-            let Some(outcome) = completed_presentation_outcome(requested, transition) else {
+            let Some(outcome) = transition.outcome().cloned() else {
                 self.set_terminal_failure(
                     NativeRuntimeErrorKind::Internal,
                     NativeActionInterruption::CommittedOutcomeUnavailable,
@@ -1088,133 +1055,6 @@ enum ReductionSettlement {
     Terminal(DockspaceActionStatus),
     ApplicationTerminal(NativeActionStatus),
     Presentation {
-        requested: DockspaceActionOutcome,
         transition: DockspacePresentationTransitionId,
     },
-}
-
-fn transition_matches_request(
-    transition: &DockspacePresentationTransition,
-    requested_transition: DockspacePresentationTransitionId,
-    requested: &DockspaceActionOutcome,
-) -> bool {
-    if transition.id() != requested_transition {
-        return false;
-    }
-    match requested {
-        DockspaceActionOutcome::RootDockRequested {
-            root,
-            source_surface,
-            ..
-        } => transition.root() == *root && transition.source_surface() == *source_surface,
-        DockspaceActionOutcome::RootFloatRequested {
-            root,
-            source_surface,
-            target_surface,
-            ..
-        } => {
-            transition.root() == *root
-                && transition.source_surface() == *source_surface
-                && transition.target_surface() == *target_surface
-        }
-        _ => false,
-    }
-}
-
-fn completed_presentation_outcome(
-    requested: &DockspaceActionOutcome,
-    transition: &DockspacePresentationTransition,
-) -> Option<DockspaceActionOutcome> {
-    let completed = transition.outcome()?;
-    match (requested, completed) {
-        (
-            DockspaceActionOutcome::RootDockRequested {
-                root,
-                target_root,
-                items,
-                ..
-            },
-            DockspaceActionOutcome::Docked {
-                item,
-                source_root,
-                target_root: completed_target,
-                ..
-            },
-        ) if source_root == root
-            && completed_target == target_root
-            && items.as_slice() == [*item] =>
-        {
-            Some(completed.clone())
-        }
-        (
-            DockspaceActionOutcome::RootDockRequested {
-                root,
-                target_root,
-                items,
-                ..
-            },
-            DockspaceActionOutcome::RootDocked {
-                root: completed_root,
-                target_root: completed_target,
-                items: completed_items,
-                ..
-            }
-            | DockspaceActionOutcome::TabsDocked {
-                source_root: completed_root,
-                target_root: completed_target,
-                items: completed_items,
-                ..
-            },
-        ) if completed_root == root
-            && completed_target == target_root
-            && completed_items == items =>
-        {
-            Some(completed.clone())
-        }
-        (
-            DockspaceActionOutcome::RootFloatRequested { root, items, .. },
-            DockspaceActionOutcome::Floated {
-                item,
-                root: completed_root,
-                surface,
-                ..
-            },
-        ) if completed_root == root
-            && *surface == transition.target_surface()
-            && items.as_slice() == [*item] =>
-        {
-            Some(completed.clone())
-        }
-        (
-            DockspaceActionOutcome::RootFloatRequested { root, items, .. },
-            DockspaceActionOutcome::RootFloated {
-                root: completed_root,
-                surface,
-                items: completed_items,
-                ..
-            },
-        ) if completed_root == root
-            && *surface == transition.target_surface()
-            && completed_items == items =>
-        {
-            Some(completed.clone())
-        }
-        (
-            DockspaceActionOutcome::RootFloatRequested { root, items, .. },
-            DockspaceActionOutcome::TabsFloated {
-                source_root,
-                root: completed_root,
-                surface,
-                items: completed_items,
-                ..
-            },
-        ) if source_root == root
-            && completed_root == root
-            && *surface == transition.target_surface()
-            && completed_items == items =>
-        {
-            Some(completed.clone())
-        }
-        _ => None,
-    }
 }

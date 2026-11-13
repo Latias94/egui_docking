@@ -2789,7 +2789,7 @@ mod tests {
     }
 
     #[test]
-    fn committed_action_reports_an_uncorrelated_outcome_as_a_terminal_failure() {
+    fn committed_action_requires_its_exact_submission_outcome() {
         let mut state = test_state();
         let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
         state
@@ -2803,22 +2803,7 @@ mod tests {
             .take()
             .expect("the final root pass takes the pending action");
 
-        assert!(
-            state
-                .application_actions
-                .settle(
-                    Some(&HostInputOutcome::ProductActionApplied(
-                        dockspace::model::DockspaceActionOutcome::RootDockRequested {
-                            root: RootId::new(1),
-                            source_surface: SURFACE,
-                            target_root: RootId::new(1),
-                            items: vec![ItemId::new(1)],
-                        },
-                    )),
-                    &[],
-                )
-                .is_err()
-        );
+        assert!(state.application_actions.settle(None, &[]).is_err());
         assert!(state.application_actions.is_occupied());
         assert!(matches!(
             state.take_action_status(),

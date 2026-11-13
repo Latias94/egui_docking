@@ -1187,7 +1187,7 @@ struct PendingPresentationRehome {
 struct PreviewEvaluation {
     decision: PreviewDecision,
     affordance: Option<DropAffordance>,
-    observation: crate::runtime::direct_manipulation::TargetObservation,
+    observation: crate::interaction::targeting::TargetObservation,
     target_layout_basis: Option<SurfaceSceneStamp>,
     prepared_mutation: Option<PreparedDropMutation>,
 }
@@ -1210,7 +1210,7 @@ impl PreviewEvaluation {
     const fn new(
         decision: PreviewDecision,
         affordance: Option<DropAffordance>,
-        observation: crate::runtime::direct_manipulation::TargetObservation,
+        observation: crate::interaction::targeting::TargetObservation,
         target_layout_basis: Option<SurfaceSceneStamp>,
     ) -> Self {
         Self {
@@ -1226,7 +1226,7 @@ impl PreviewEvaluation {
         Self::new(
             decision,
             None,
-            crate::runtime::direct_manipulation::TargetObservation::Unavailable,
+            crate::interaction::targeting::TargetObservation::Unavailable,
             None,
         )
     }
@@ -1235,7 +1235,7 @@ impl PreviewEvaluation {
         Self::new(
             decision,
             None,
-            crate::runtime::direct_manipulation::TargetObservation::OutsideAll,
+            crate::interaction::targeting::TargetObservation::OutsideAll,
             None,
         )
     }

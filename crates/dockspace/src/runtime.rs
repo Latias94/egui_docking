@@ -1,15 +1,15 @@
 //! Narrow renderer-neutral runtime facade for application host frames.
 //!
-//! This module is the migration boundary for adapters which must not own or
-//! access the backend reducer directly. It supports revision-bound product actions,
+//! Adapters use this module without owning or accessing the backend reducer
+//! directly. It supports revision-bound product actions,
 //! close decisions, complete measurement answers, exact paint settlement, and
 //! lossless host-local and surface-local pointer batches backed by concrete final-presentation
 //! authority.
 
+mod action_status;
 mod close;
 #[cfg(test)]
 mod content_actions_tests;
-pub(crate) mod direct_manipulation;
 mod error_kind;
 mod events;
 mod focus;
@@ -36,6 +36,7 @@ mod touch;
 mod update;
 
 pub use crate::interaction::PointerContinuationToken;
+pub use action_status::DockspaceActionStatus;
 pub use events::{DockspaceEvent, DockspaceEventId, DockspaceEventKind};
 pub use host_frame::{DockspaceHostFrame, PreparedDockspaceHostFrameCommit};
 pub use layout_reset::PreparedDockspaceLayoutReset;
@@ -512,27 +513,37 @@ impl DockspacePresentationTransition {
         self.id
     }
 
+    /// Returns the stable root addressed by the original presentation request.
     #[must_use]
     pub const fn root(&self) -> RootId {
         self.root
     }
 
+    /// Returns the surface which owned the root before the requested transfer.
     #[must_use]
     pub const fn source_surface(&self) -> SurfaceId {
         self.source_surface
     }
 
+    /// Returns the surface whose presentation was required to complete the transfer.
     #[must_use]
     pub const fn target_surface(&self) -> SurfaceId {
         self.target_surface
     }
 
+    /// Returns whether the transfer applied or why it could not complete.
     #[must_use]
     pub const fn result(&self) -> DockspacePresentationTransitionResult {
         self.result
     }
 
     /// Returns the complete product outcome captured by an applied terminal.
+    ///
+    /// Core has already checked this outcome against the frozen command. Hosts
+    /// correlate the original request through [`Self::id`] and consume this
+    /// result without reconstructing its payload from the earlier request.
+    /// This is present exactly when [`Self::result`] is
+    /// [`DockspacePresentationTransitionResult::Applied`].
     #[must_use]
     pub const fn outcome(&self) -> Option<&DockspaceActionOutcome> {
         self.outcome.as_ref()
@@ -612,6 +623,15 @@ pub enum DockspacePresentationTransitionResult {
 }
 
 /// High-level report from one atomically published facade frame.
+///
+/// A successful commit publishes the frame; individual actions can still be
+/// rejected or stale. Inspect [`Self::inputs`] or [`Self::submitted_action_outcome`]
+/// for their results. Presentation-gated transfers can settle in a later report
+/// through [`Self::presentation_transitions`].
+///
+/// Hosts must handle the work returned by [`Self::take_native_effects`] and
+/// [`Self::take_painted_outputs`], and schedule [`Self::repaint_surfaces`]. Dropping
+/// this report does not roll back the published frame or perform that host work.
 #[derive(Debug, PartialEq)]
 pub struct HostFrameReport {
     before: WorkspaceVersion,
@@ -757,6 +777,7 @@ impl HostFrameReport {
     /// The host must consume each capability through
     /// [`DockspaceSession::report_surface_presentation`] only after its renderer
     /// reports whether that exact output was presented or dropped.
+    #[must_use = "report each output's final disposition or deliberately drop it to retire it"]
     pub fn take_painted_outputs(&mut self) -> Vec<PaintedSurfaceOutput> {
         std::mem::take(&mut self.painted_outputs)
     }
@@ -811,6 +832,7 @@ impl HostFrameReport {
     ///
     /// The vector preserves core order. Each request is affine and must be
     /// dispatched, converted into a typed result, or retained explicitly.
+    #[must_use = "dispatch, reject, or retain each native effect request"]
     pub fn take_native_effects(&mut self) -> Vec<NativeEffectRequest> {
         std::mem::take(&mut self.native_effects)
     }

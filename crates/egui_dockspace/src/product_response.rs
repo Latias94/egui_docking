@@ -1,17 +1,15 @@
-//! Stable responses produced by the renderer-neutral product facade.
+//! Stable responses produced by the single-surface egui facade.
 
-use dockspace::model::{
-    DockspaceActionOutcome, DockspaceActionRejection, ItemId, RootId, SurfaceId, WorkspaceVersion,
-};
+use dockspace::model::{ItemId, SurfaceId, WorkspaceVersion};
 pub use dockspace::runtime::{
-    DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePlan,
-    DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
-    DockspaceCloseResolution, DockspaceEvent, DockspaceLayoutChange, DockspaceManipulationFeedback,
-    DockspaceNotification,
+    DockspaceActionStatus, DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose,
+    DockspaceClosePlan, DockspaceCloseRejection as DockspaceCloseApplicationRejection,
+    DockspaceCloseRequestRejection, DockspaceCloseResolution, DockspaceEvent,
+    DockspaceLayoutChange, DockspaceManipulationFeedback, DockspaceNotification,
 };
 use dockspace::runtime::{
-    DockspacePresentationTransitionResult, DockspaceTouchEvent, HostCloseRequestOrigin,
-    HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus,
+    DockspaceTouchEvent, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
+    HostSurfaceCommitStatus,
 };
 
 /// Product-level summary of committed docking publications.
@@ -70,7 +68,11 @@ impl DockspaceMutation {
         self.after
     }
 
-    /// Returns whether durable workspace state changed.
+    /// Returns whether the durable docking layout changed.
+    ///
+    /// Native-window placement is tracked separately. Use
+    /// [`DockspaceNotification::document_changed`] through [`Self::notification`]
+    /// when deciding whether to save a complete document.
     #[must_use]
     pub const fn workspace_changed(&self) -> bool {
         self.notification.layout_change().is_some()
@@ -108,7 +110,9 @@ impl DockspaceMutation {
     /// Returns one summary for all durable docking-layout changes in this call.
     ///
     /// Includes split resizing even when no detailed lifecycle event is emitted.
-    /// Applications can debounce layout persistence from this value.
+    /// Applications saving a complete document should debounce
+    /// [`DockspaceNotification::document_changed`] through [`Self::notification`]
+    /// to include native-window placement as well.
     #[must_use]
     pub const fn layout_change(&self) -> Option<DockspaceLayoutChange> {
         self.notification.layout_change()
@@ -123,33 +127,6 @@ impl DockspaceMutation {
     pub fn manipulation_feedback(&self) -> &[DockspaceManipulationFeedback] {
         &self.manipulation_feedback
     }
-}
-
-/// Product-level terminal status of one revision-bound action.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DockspaceActionStatus {
-    /// The action committed or produced a valid no-op.
-    Applied(DockspaceActionOutcome),
-    /// Current policy or topology rejected the action.
-    Rejected(DockspaceActionRejection),
-    /// The action was prepared from an older workspace revision.
-    Stale {
-        /// Version carried by the prepared action.
-        expected: WorkspaceVersion,
-        /// Version accepted by the reducer boundary.
-        accepted: WorkspaceVersion,
-    },
-    /// A presentation-gated action was accepted, but its exact transfer barrier failed.
-    PresentationFailed {
-        /// Stable root retained while the target presentation was prepared.
-        root: RootId,
-        /// Surface which retained ownership before the failed transfer.
-        source_surface: SurfaceId,
-        /// Surface whose exact presentation terminal settled the transfer.
-        target_surface: SurfaceId,
-        /// Stable terminal category reported by the core presentation authority.
-        reason: DockspacePresentationTransitionResult,
-    },
 }
 
 /// Atomic publication plus one exact product-action result.
@@ -294,7 +271,7 @@ impl DockspaceCloseRequestResult {
 }
 
 /// Product-level result of one initial or deferred close decision.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DockspaceCloseOutcome {
     /// The exact decision token was consumed by the close workflow.
     Processed {
@@ -315,7 +292,7 @@ pub enum DockspaceCloseOutcome {
 }
 
 /// Atomic publication plus one close-decision result.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockspaceCloseResult {
     mutation: DockspaceMutation,
     outcome: DockspaceCloseOutcome,
@@ -416,9 +393,15 @@ pub enum DockspaceUnavailableReason {
     /// The exact native window is not focused.
     PaneFocusWindowNotFocused,
     /// The pane did not expose a stable focus target.
-    PaneFocusTargetMissing { item: ItemId },
+    PaneFocusTargetMissing {
+        /// Pane which did not expose a focus target.
+        item: ItemId,
+    },
     /// The pane focus state is not authoritative.
-    PaneFocusStateUnknown { item: ItemId },
+    PaneFocusStateUnknown {
+        /// Pane whose actual focus state could not be observed.
+        item: ItemId,
+    },
     /// More than one pane claimed focus.
     ConflictingPaneFocus,
     /// The focus observation identity domain was exhausted.
@@ -464,7 +447,7 @@ impl DockspaceInteractionCapabilities {
 
     /// Returns whether ordered scroll events have an exact delivery receiver.
     ///
-    /// Official egui 0.36 exposes only a frame aggregate and final hover
+    /// Official egui exposes only a frame aggregate and final hover
     /// position, so this remains `false` on the callback-only product path.
     /// Native hosts may use their separate event journal and receiver reports.
     #[must_use]

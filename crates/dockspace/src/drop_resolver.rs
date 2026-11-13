@@ -27,10 +27,10 @@ use crate::ids::WorkspaceRevision;
 use crate::ids::{FloatingPresentationId, RootId};
 use crate::intent::SurfaceBackgroundRootOffer;
 use crate::interaction::DragSessionId;
-use crate::policy::{DockPolicySnapshot, PolicyRejection};
-use crate::runtime::direct_manipulation::{
+use crate::interaction::targeting::{
     DirectTargetCandidate, DirectTargetProvenance, TargetCandidate, TargetObservation,
 };
+use crate::policy::{DockPolicySnapshot, PolicyRejection};
 use crate::scene::{PresentationLayoutFacts, PresentationPlan, SurfaceSceneStamp};
 #[cfg(test)]
 use crate::scene::{SurfaceScene, SurfaceSceneSet};

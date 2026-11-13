@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
+pub(crate) mod targeting;
 mod timed;
+use targeting::{TargetAcquisition, TargetLatchDecision, TargetObservation, reconcile_target};
 pub use timed::PointerContinuationToken;
 pub(crate) use timed::{
     DragTimedContinuation, HoverSelectionState, PointerContinuationRequest,
@@ -42,9 +44,6 @@ use crate::policy::PolicyRevision;
 use crate::presentation_config::PresentationConfigRevision;
 use crate::presentation_hit::PresentationHitRegionId;
 use crate::presentation_observation::PresentedSurfaceAuthority;
-use crate::runtime::direct_manipulation::{
-    TargetAcquisition, TargetLatchDecision, TargetObservation, reconcile_target,
-};
 use crate::scene::{
     PresentationLayoutFacts, SplitterResizeTarget, SurfaceCoordinateCapture, SurfaceSceneStamp,
     TabBarSceneId, TabListMenuBackdropRecord, TabListMenuRecord, TabListMenuRowRecord, TabSceneId,
