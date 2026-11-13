@@ -76,7 +76,6 @@ impl DockspaceBuilder {
     ///
     /// Returns [`DockspaceError`] when style or layout validation fails.
     pub fn build(self) -> Result<Dockspace, DockspaceError> {
-        self.style.validate().map_err(DockspaceError::from_detail)?;
         #[cfg(feature = "serde")]
         if let Some(document) = self.document {
             let mut dockspace = Dockspace::from_persistent_layout_parts(

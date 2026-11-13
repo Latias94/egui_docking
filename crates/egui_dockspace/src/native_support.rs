@@ -91,7 +91,6 @@ pub fn style_presentation_mismatch(
     style: &DockStyle,
     accepted: &DockPresentationConfig,
 ) -> Result<Option<&'static str>, DockspaceError> {
-    style.validate().map_err(DockspaceError::from_detail)?;
     let mapped = style
         .presentation_config_with(accepted)
         .map_err(DockspaceError::from_detail)?;
@@ -661,7 +660,7 @@ mod style_tests {
             ghost_offset: egui::vec2(f32::NAN, 0.0),
             ..DockStyle::default()
         };
-        assert_eq!(style.presentation_config_with(&accepted).unwrap(), accepted);
+        assert!(style.presentation_config_with(&accepted).is_err());
         let error = style_presentation_mismatch(&style, &accepted).unwrap_err();
         assert_eq!(error.kind(), DockspaceErrorKind::InvalidConfiguration);
         assert!(matches!(

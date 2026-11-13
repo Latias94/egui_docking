@@ -62,7 +62,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
         style: DockStyle,
     ) -> Result<(), crate::NativeStyleRequestError> {
         self.ensure_application_slot_available()?;
-        style.validate()?;
         let presentation =
             style.presentation_config_with(self.coordinator.session().presentation_config())?;
         let changed = self.style != style;

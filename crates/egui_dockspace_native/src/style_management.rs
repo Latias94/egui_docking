@@ -12,7 +12,4 @@ pub enum NativeStyleRequestError {
     /// Adapter geometry or visual settings are invalid.
     #[error(transparent)]
     Style(#[from] egui_dockspace::DockStyleError),
-    /// Combined renderer and core-only configuration is invalid.
-    #[error(transparent)]
-    Presentation(#[from] dockspace::runtime::DockPresentationConfigError),
 }

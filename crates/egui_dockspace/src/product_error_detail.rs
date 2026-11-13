@@ -1,6 +1,5 @@
 //! Stable error details for the renderer-neutral product facade.
 
-use dockspace::runtime::DockPresentationConfigError;
 #[cfg(feature = "serde")]
 use dockspace::runtime::DockspacePersistenceError;
 use dockspace::runtime::DockspaceRuntimeError;
@@ -15,9 +14,6 @@ pub(crate) enum DockspaceErrorSource {
     /// Style validation failed before a session was created.
     #[error("dock style is invalid: {0}")]
     Style(#[from] DockStyleError),
-    /// Style geometry could not be represented by the core configuration.
-    #[error("dock presentation configuration is invalid: {0}")]
-    PresentationConfig(#[from] DockPresentationConfigError),
     /// The renderer-neutral session rejected a host-frame operation.
     #[error("dockspace runtime failed: {0}")]
     Runtime(#[from] DockspaceRuntimeError),
@@ -55,7 +51,7 @@ pub(crate) enum DockspaceErrorSource {
 impl DockspaceErrorSource {
     pub(crate) const fn kind(&self) -> DockspaceErrorKind {
         match self {
-            Self::Style(_) | Self::PresentationConfig(_) | Self::InvalidMeasurement { .. } => {
+            Self::Style(_) | Self::InvalidMeasurement { .. } => {
                 DockspaceErrorKind::InvalidConfiguration
             }
             Self::SingleSurfaceRequiresOne { .. } | Self::PassSettlementConflict => {

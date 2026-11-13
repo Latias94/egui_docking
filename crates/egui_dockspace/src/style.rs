@@ -1,7 +1,5 @@
 //! Fixed geometry and egui-relative visual configuration for the adapter.
 
-use std::{error::Error, fmt};
-
 use dockspace::runtime::{
     DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
 };
@@ -387,12 +385,9 @@ impl DockStyle {
     ///
     /// # Errors
     ///
-    /// Returns an error when the represented geometry or interaction settings
-    /// violate core configuration constraints. Call [`Self::validate`] to also
-    /// validate adapter-only settings before rendering.
-    pub fn presentation_config(
-        &self,
-    ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
+    /// Returns an error when adapter visuals are invalid or the represented
+    /// geometry and interaction settings violate core configuration constraints.
+    pub fn presentation_config(&self) -> Result<DockPresentationConfig, DockStyleError> {
         self.configure_presentation(DockPresentationConfig::builder())
     }
 
@@ -404,18 +399,19 @@ impl DockStyle {
     ///
     /// # Errors
     ///
-    /// Returns an error when the combined geometry or timing is invalid.
+    /// Returns an error when adapter visuals, combined geometry or timing are invalid.
     pub fn presentation_config_with(
         &self,
         current: &DockPresentationConfig,
-    ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
+    ) -> Result<DockPresentationConfig, DockStyleError> {
         self.configure_presentation(current.to_builder())
     }
 
     fn configure_presentation(
         &self,
         builder: DockPresentationConfigBuilder,
-    ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
+    ) -> Result<DockPresentationConfig, DockStyleError> {
+        self.validate_visuals()?;
         builder
             .hover_selection_delay(self.hover_selection_delay)
             .touch_long_press_delay(self.touch_long_press_delay)
@@ -455,6 +451,7 @@ impl DockStyle {
                 f64::from(self.minimum_floating_size.y),
             )
             .build()
+            .map_err(DockStyleError::Presentation)
     }
 
     /// Validates every geometry metric and all cross-field invariants.
@@ -468,6 +465,10 @@ impl DockStyle {
     /// sign constraint, the touch resize hit extent is below 44 points,
     /// a scroll interval is zero, or metrics conflict.
     pub fn validate(&self) -> Result<(), DockStyleError> {
+        self.presentation_config().map(|_| ())
+    }
+
+    fn validate_visuals(&self) -> Result<(), DockStyleError> {
         for (field, stroke) in [
             ("tab_stroke.width", self.visuals.tab_stroke),
             ("tab_active_stroke.width", self.visuals.tab_active_stroke),
@@ -478,99 +479,11 @@ impl DockStyle {
                 require_non_negative(field, stroke.width)?;
             }
         }
-        for (field, value) in [
-            ("tab_bar_height", self.tab_bar_height),
-            ("tab_min_width", self.tab_min_width),
-            ("tab_max_width", self.tab_max_width),
-            ("tab_close_size", self.tab_close_size),
-            ("tab_close_icon_size", self.tab_close_icon_size),
-            ("splitter_thickness", self.splitter_thickness),
-            ("splitter_hit_extent", self.splitter_hit_extent),
-            ("splitter_keyboard_step", self.splitter_keyboard_step),
-            ("drop_guide_extent", self.drop_guide_extent),
-            ("drop_guide_outer_inset", self.drop_guide_outer_inset),
-            ("floating_title_height", self.floating_title_height),
-            ("floating_resize_extent", self.floating_resize_extent),
-        ] {
-            require_positive(field, value)?;
-        }
-
-        for (field, value) in [
-            ("tab_group_grip_extent", self.tab_group_grip_extent),
-            ("tab_horizontal_padding", self.tab_horizontal_padding),
-            (
-                "tab_strip_edge_scroll_band",
-                self.tab_strip_edge_scroll_band,
-            ),
-            ("touch_press_slop_distance", self.touch_press_slop_distance),
-            ("drop_guide_gap", self.drop_guide_gap),
-            ("drop_guide_hit_padding", self.drop_guide_hit_padding),
-            ("floating_border_width", self.floating_border_width),
-            ("ghost_offset.x", self.ghost_offset.x),
-            ("ghost_offset.y", self.ghost_offset.y),
-        ] {
-            require_non_negative(field, value)?;
-        }
-        require_finite("touch_resize_hit_extent", self.touch_resize_hit_extent)?;
-        if self.touch_resize_hit_extent < 44.0 {
-            return Err(DockStyleError::TouchResizeHitExtentTooSmall);
-        }
-        if self.tab_strip_edge_scroll_interval == Some(std::time::Duration::ZERO) {
-            return Err(DockStyleError::ZeroEdgeScrollInterval);
-        }
-
-        for (field, value) in [
-            ("minimum_pane_size.x", self.minimum_pane_size.x),
-            ("minimum_pane_size.y", self.minimum_pane_size.y),
-            ("minimum_floating_size.x", self.minimum_floating_size.x),
-            ("minimum_floating_size.y", self.minimum_floating_size.y),
-        ] {
-            require_positive(field, value)?;
-        }
-
-        require_finite("dock_fraction", self.dock_fraction)?;
-        if !(0.0..1.0).contains(&self.dock_fraction) || self.dock_fraction == 0.0 {
-            return Err(DockStyleError::DockFractionOutOfRange);
-        }
-
-        if self.tab_min_width > self.tab_max_width {
-            return Err(DockStyleError::MinimumExceedsMaximum {
-                minimum: "tab_min_width",
-                maximum: "tab_max_width",
-            });
-        }
-        if self.tab_close_size > self.tab_bar_height {
-            return Err(DockStyleError::ExtentExceedsContainer {
-                extent: "tab_close_size",
-                container: "tab_bar_height",
-            });
-        }
-        if self.tab_group_grip_visibility != TabGroupGripVisibility::Hidden
-            && self.tab_group_grip_extent > self.tab_bar_height
-        {
-            return Err(DockStyleError::ExtentExceedsContainer {
-                extent: "tab_group_grip_extent",
-                container: "tab_bar_height",
-            });
-        }
-        if self.splitter_hit_extent < self.splitter_thickness {
-            return Err(DockStyleError::HitExtentSmallerThanVisible {
-                hit_extent: "splitter_hit_extent",
-                visible_extent: "splitter_thickness",
-            });
-        }
-        if self.floating_resize_extent < self.floating_border_width {
-            return Err(DockStyleError::HitExtentSmallerThanVisible {
-                hit_extent: "floating_resize_extent",
-                visible_extent: "floating_border_width",
-            });
-        }
-        if self.drop_guide_gap < 2.0 * self.drop_guide_hit_padding {
-            return Err(DockStyleError::GuideHitRegionsOverlap);
-        }
-        let guide_hit_half = self.drop_guide_extent * 0.5 + self.drop_guide_hit_padding;
-        if self.drop_guide_outer_inset < guide_hit_half {
-            return Err(DockStyleError::GuideOuterInsetTooSmall);
+        require_positive("tab_close_icon_size", self.tab_close_icon_size)?;
+        require_non_negative("ghost_offset.x", self.ghost_offset.x)?;
+        require_non_negative("ghost_offset.y", self.ghost_offset.y)?;
+        if self.tab_group_grip_visibility == TabGroupGripVisibility::Hidden {
+            require_non_negative("tab_group_grip_extent", self.tab_group_grip_extent)?;
         }
         Ok(())
     }
@@ -622,93 +535,34 @@ impl Default for DockStyle {
 }
 
 /// Error returned when [`DockStyle`] geometry or interaction timing is invalid.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum DockStyleError {
-    /// A metric is NaN or infinite.
+    /// Core geometry or interaction timing is invalid.
+    ///
+    /// Field names use the renderer-neutral configuration's vocabulary, such as
+    /// `tab_close_extent` for [`DockStyle::tab_close_size`]. The original error
+    /// and rejected value remain available through the error's source chain.
+    #[error("invalid docking geometry: {0}")]
+    Presentation(#[from] DockPresentationConfigError),
+    /// An adapter-only metric is NaN or infinite.
+    #[error("`{field}` must be finite")]
     NonFinite {
         /// Name of the invalid style field.
         field: &'static str,
     },
-    /// A metric that may be zero is negative.
+    /// An adapter-only metric that may be zero is negative.
+    #[error("`{field}` must not be negative")]
     Negative {
         /// Name of the invalid style field.
         field: &'static str,
     },
-    /// A metric that represents a size is zero or negative.
+    /// An adapter-only size is zero or negative.
+    #[error("`{field}` must be positive")]
     NotPositive {
         /// Name of the invalid style field.
         field: &'static str,
     },
-    /// The requested touch resize hit extent was below 44 logical points.
-    TouchResizeHitExtentTooSmall,
-    /// A zero edge scroll interval would continuously reschedule work.
-    ZeroEdgeScrollInterval,
-    /// A configured minimum is greater than its maximum.
-    MinimumExceedsMaximum {
-        /// Name of the lower-bound field.
-        minimum: &'static str,
-        /// Name of the upper-bound field.
-        maximum: &'static str,
-    },
-    /// A visible control cannot fit within its containing chrome.
-    ExtentExceedsContainer {
-        /// Name of the field requesting too much space.
-        extent: &'static str,
-        /// Name of the field defining the containing allocation.
-        container: &'static str,
-    },
-    /// An interaction extent is smaller than the visible element it covers.
-    HitExtentSmallerThanVisible {
-        /// Name of the interaction-extent field.
-        hit_extent: &'static str,
-        /// Name of the visible-extent field which it must cover.
-        visible_extent: &'static str,
-    },
-    /// The initial docking fraction is not strictly between zero and one.
-    DockFractionOutOfRange,
-    /// Expanded guide hit rectangles would overlap.
-    GuideHitRegionsOverlap,
-    /// An outer guide button and its hit padding would cross the root boundary.
-    GuideOuterInsetTooSmall,
 }
-
-impl fmt::Display for DockStyleError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NonFinite { field } => write!(formatter, "`{field}` must be finite"),
-            Self::Negative { field } => write!(formatter, "`{field}` must not be negative"),
-            Self::NotPositive { field } => write!(formatter, "`{field}` must be positive"),
-            Self::TouchResizeHitExtentTooSmall => {
-                formatter.write_str("`touch_resize_hit_extent` must be at least 44 logical points")
-            }
-            Self::ZeroEdgeScrollInterval => formatter
-                .write_str("tab-strip edge scroll interval must be positive or disabled with None"),
-            Self::MinimumExceedsMaximum { minimum, maximum } => {
-                write!(formatter, "`{minimum}` must not exceed `{maximum}`")
-            }
-            Self::ExtentExceedsContainer { extent, container } => {
-                write!(formatter, "`{extent}` must not exceed `{container}`")
-            }
-            Self::HitExtentSmallerThanVisible {
-                hit_extent,
-                visible_extent,
-            } => write!(
-                formatter,
-                "`{hit_extent}` must not be smaller than `{visible_extent}`"
-            ),
-            Self::DockFractionOutOfRange => {
-                formatter.write_str("`dock_fraction` must be strictly between zero and one")
-            }
-            Self::GuideHitRegionsOverlap => formatter
-                .write_str("`drop_guide_gap` must be at least twice `drop_guide_hit_padding`"),
-            Self::GuideOuterInsetTooSmall => formatter.write_str(
-                "`drop_guide_outer_inset` must contain half a guide plus its hit padding",
-            ),
-        }
-    }
-}
-
-impl Error for DockStyleError {}
 
 fn require_finite(field: &'static str, value: f32) -> Result<(), DockStyleError> {
     if value.is_finite() {
@@ -816,18 +670,14 @@ mod tests {
                 touch_resize_hit_extent: extent,
                 ..DockStyle::default()
             };
-            assert_eq!(
-                style.validate(),
-                Err(DockStyleError::NonFinite {
-                    field: "touch_resize_hit_extent",
-                })
-            );
             assert!(matches!(
-                style.presentation_config(),
-                Err(DockPresentationConfigError::NonFinite {
-                    field: "touch_resize_hit_extent",
-                    ..
-                })
+                style.validate(),
+                Err(DockStyleError::Presentation(
+                    DockPresentationConfigError::NonFinite {
+                        field: "touch_resize_hit_extent",
+                        ..
+                    }
+                ))
             ));
         }
         for extent in [-1.0, 0.0, 43.5] {
@@ -837,13 +687,11 @@ mod tests {
             };
             assert_eq!(
                 style.validate(),
-                Err(DockStyleError::TouchResizeHitExtentTooSmall)
-            );
-            assert_eq!(
-                style.presentation_config(),
-                Err(DockPresentationConfigError::TouchResizeHitExtentTooSmall {
-                    value: f64::from(extent),
-                })
+                Err(DockStyleError::Presentation(
+                    DockPresentationConfigError::TouchResizeHitExtentTooSmall {
+                        value: f64::from(extent),
+                    }
+                ))
             );
         }
     }
@@ -880,11 +728,9 @@ mod tests {
         };
         assert_eq!(
             style.validate(),
-            Err(DockStyleError::ZeroEdgeScrollInterval)
-        );
-        assert_eq!(
-            style.presentation_config(),
-            Err(DockPresentationConfigError::ZeroEdgeScrollInterval)
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::ZeroEdgeScrollInterval
+            ))
         );
         for band in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let style = DockStyle {
@@ -892,18 +738,14 @@ mod tests {
                 tab_strip_edge_scroll_interval: None,
                 ..DockStyle::default()
             };
-            assert_eq!(
-                style.validate(),
-                Err(DockStyleError::NonFinite {
-                    field: "tab_strip_edge_scroll_band",
-                })
-            );
             assert!(matches!(
-                style.presentation_config(),
-                Err(DockPresentationConfigError::NonFinite {
-                    field: "tab_strip_edge_scroll_band",
-                    ..
-                })
+                style.validate(),
+                Err(DockStyleError::Presentation(
+                    DockPresentationConfigError::NonFinite {
+                        field: "tab_strip_edge_scroll_band",
+                        ..
+                    }
+                ))
             ));
         }
         let style = DockStyle {
@@ -912,16 +754,12 @@ mod tests {
         };
         assert_eq!(
             style.validate(),
-            Err(DockStyleError::Negative {
-                field: "tab_strip_edge_scroll_band",
-            })
-        );
-        assert_eq!(
-            style.presentation_config(),
-            Err(DockPresentationConfigError::Negative {
-                field: "tab_strip_edge_scroll_band",
-                value: -1.0,
-            })
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::Negative {
+                    field: "tab_strip_edge_scroll_band",
+                    value: -1.0,
+                }
+            ))
         );
     }
 
@@ -1048,29 +886,38 @@ mod tests {
             splitter_thickness: f32::NAN,
             ..DockStyle::default()
         };
-        assert_eq!(
+        assert!(matches!(
             style.validate(),
-            Err(DockStyleError::NonFinite {
-                field: "splitter_thickness"
-            })
-        );
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::NonFinite {
+                    field: "splitter_thickness",
+                    ..
+                }
+            ))
+        ));
 
         style.splitter_thickness = 1.0;
         style.tab_horizontal_padding = -1.0;
         assert_eq!(
             style.validate(),
-            Err(DockStyleError::Negative {
-                field: "tab_horizontal_padding"
-            })
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::Negative {
+                    field: "tab_horizontal_padding",
+                    value: -1.0,
+                }
+            ))
         );
 
         style.tab_horizontal_padding = 0.0;
         style.drop_guide_extent = 0.0;
         assert_eq!(
             style.validate(),
-            Err(DockStyleError::NotPositive {
-                field: "drop_guide_extent"
-            })
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::NonPositive {
+                    field: "guide_extent",
+                    value: 0.0,
+                }
+            ))
         );
     }
 
@@ -1082,45 +929,97 @@ mod tests {
         };
         assert_eq!(
             style.validate(),
-            Err(DockStyleError::MinimumExceedsMaximum {
-                minimum: "tab_min_width",
-                maximum: "tab_max_width"
-            })
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::MinimumExceedsMaximum {
+                    minimum: "tab_min_width",
+                    maximum: "tab_max_width"
+                }
+            ))
         );
 
         style.tab_min_width = 72.0;
         style.splitter_hit_extent = 0.5;
         assert_eq!(
             style.validate(),
-            Err(DockStyleError::HitExtentSmallerThanVisible {
-                hit_extent: "splitter_hit_extent",
-                visible_extent: "splitter_thickness"
-            })
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::HitExtentSmallerThanVisible {
+                    hit_extent: "splitter_hit_extent",
+                    visible_extent: "splitter_thickness"
+                }
+            ))
         );
 
         style.splitter_hit_extent = 6.0;
         style.dock_fraction = 1.0;
         assert_eq!(
             style.validate(),
-            Err(DockStyleError::DockFractionOutOfRange)
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::DockFractionOutOfRange { value: 1.0 }
+            ))
         );
 
         style.dock_fraction = 0.5;
         style.drop_guide_gap = 3.0;
         assert_eq!(
             style.validate(),
-            Err(DockStyleError::GuideHitRegionsOverlap)
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::GuideHitRegionsOverlap
+            ))
         );
 
         style.drop_guide_gap = 12.0;
         style.drop_guide_outer_inset = 9.0;
         assert_eq!(
             style.validate(),
-            Err(DockStyleError::GuideOuterInsetTooSmall)
+            Err(DockStyleError::Presentation(
+                DockPresentationConfigError::GuideOuterInsetTooSmall
+            ))
         );
 
         style.drop_guide_outer_inset = 72.0;
         assert_eq!(style.validate(), Ok(()));
+    }
+
+    #[test]
+    fn geometry_failures_preserve_the_core_error_and_its_field_names() {
+        use std::error::Error;
+
+        let style = DockStyle {
+            tab_close_size: 40.0,
+            ..DockStyle::default()
+        };
+        let error = style.presentation_config().unwrap_err();
+        assert_eq!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<DockPresentationConfigError>(),
+            Some(&DockPresentationConfigError::ExtentExceedsContainer {
+                extent: "tab_close_extent",
+                container: "tab_bar_height",
+            })
+        );
+        assert_eq!(style.validate().unwrap_err(), error);
+    }
+
+    #[test]
+    fn hidden_grip_retains_adapter_validation_before_mapping_to_zero() {
+        let mut style = DockStyle {
+            tab_group_grip_visibility: TabGroupGripVisibility::Hidden,
+            tab_group_grip_extent: 100.0,
+            ..DockStyle::default()
+        };
+        assert_eq!(
+            style.presentation_config().unwrap().tab_group_grip_extent(),
+            0.0
+        );
+        style.tab_group_grip_extent = -1.0;
+        assert_eq!(
+            style.presentation_config().unwrap_err(),
+            DockStyleError::Negative {
+                field: "tab_group_grip_extent"
+            }
+        );
     }
 
     #[test]

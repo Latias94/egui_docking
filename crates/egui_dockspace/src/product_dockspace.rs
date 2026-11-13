@@ -133,7 +133,6 @@ impl Dockspace {
         style: DockStyle,
         recognize_external_item: impl Fn(DockspaceDocumentId, &str) -> bool,
     ) -> Result<Self, DockspaceError> {
-        style.validate().map_err(DockspaceError::from_detail)?;
         let presentation = style
             .presentation_config()
             .map_err(DockspaceError::from_detail)?;
@@ -266,9 +265,8 @@ impl Dockspace {
     ///
     /// Returns an error when the style is invalid or the host frame cannot commit.
     pub fn set_style(&mut self, style: DockStyle) -> Result<DockspaceMutation, DockspaceError> {
-        style.validate().map_err(DockspaceError::from_detail)?;
         let presentation = style
-            .presentation_config()
+            .presentation_config_with(self.session.presentation_config())
             .map_err(DockspaceError::from_detail)?;
         let style_changed = self.style != style;
         let presentation_changed = self.session.presentation_config() != &presentation;
