@@ -23,6 +23,9 @@ struct Entry<K, T> {
 /// Resolve the framework window ID at the synchronous event-loop boundary with [`Self::binding`].
 /// Carry that binding through deferred work and use [`Self::get`] afterward so
 /// an old callback cannot address a replacement window that reused its OS ID.
+/// The key must include the framework's generation, or the host must drain old
+/// events before reusing it. Resolving a bare reused key after queuing cannot
+/// recover the original event's lifetime.
 /// Removing an entry releases host ownership; it does not report destruction or
 /// quiescence to the docking session.
 #[derive(Debug)]
@@ -75,7 +78,10 @@ impl<K: Eq + Hash + Copy + fmt::Debug, T> NativeWindows<K, T> {
         Ok(())
     }
 
-    /// Resolves a physical event's current native-window binding.
+    /// Resolves the current route at the event's original delivery boundary.
+    ///
+    /// Capture the result before deferring work. A bare reused key cannot
+    /// distinguish an old queued event from a replacement window's event.
     #[must_use]
     pub fn binding(&self, window: K) -> Option<NativeWindowBinding> {
         self.routes.get(&window).copied()
@@ -109,6 +115,8 @@ impl<K: Eq + Hash + Copy + fmt::Debug, T> NativeWindows<K, T> {
     /// resource lookup, without promoting old hit records, coordinates or outputs.
     /// Shared-surface pairs and repeated delivery are idempotent. Returns whether
     /// a registered predecessor changed to its successor.
+    /// A `false` result describes resource movement only: every distinct
+    /// predecessor surface still needs its own output and callback retirement.
     ///
     /// # Errors
     ///

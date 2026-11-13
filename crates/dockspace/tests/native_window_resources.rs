@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use dockspace::runtime::{NativeWindowRegistryError, NativeWindows};
 use dockspace::{
+    geometry::{LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor},
     model::{
         DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
         RootId, SurfaceId,
@@ -10,7 +11,8 @@ use dockspace::{
     runtime::{
         DockspaceHostFrame, DockspaceSession, HostFrameReport, HostWindowToken,
         NativeHostCapabilities, NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
-        NativeRootContinuation, NativeSurfaceBinding, SurfaceUnavailableReason,
+        NativeRootContinuation, NativeSurfaceBinding, NativeSurfacePlacement, NativeWindowFacts,
+        NativeWorkAreaRoster, SurfaceUnavailableReason,
     },
 };
 
@@ -144,6 +146,99 @@ fn committed_root_continuation_preserves_resources_and_retires_old_lookup() {
     ));
     assert_eq!(windows.binding(id), Some(continuation.successor().window()));
     assert_eq!(windows.len(), 1);
+}
+
+#[test]
+fn shared_root_pairs_move_resources_once_and_keep_each_placement_retirement() {
+    let mut session = DockspaceSession::from_layout(layout(), DockPolicy::default()).unwrap();
+    session
+        .enable_managed_native_host(NativePointerRoster::Unknown)
+        .unwrap();
+    session
+        .configure_managed_native_capabilities(
+            NativeHostCapabilities::none_supported()
+                .with(NativeHostCapability::AuthoritativeInventory),
+        )
+        .unwrap();
+    session
+        .register_native_root(SurfaceId::new(1), HostWindowToken::new(1))
+        .unwrap();
+    let report = finish(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    let original = report.native_bindings()[0].window();
+    session
+        .report_managed_native_snapshot(
+            [(
+                original,
+                NativeWindowFacts::live()
+                    .with_content_bounds(PhysicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap())
+                    .with_native_scale_factor(ScaleFactor::new(1.0).unwrap())
+                    .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap()),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .unwrap();
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    let placements = [1_u32, 2].map(|id| {
+        let x = f64::from(id - 1) * 400.0;
+        NativeSurfacePlacement::new(
+            SurfaceId::new(u64::from(id)),
+            LogicalSize::new(400.0, 600.0).unwrap(),
+            PhysicalPoint::new(x, 0.0).unwrap(),
+            ScaleFactor::new(1.0).unwrap(),
+            PhysicalRect::new(x, 0.0, 400.0, 600.0).unwrap(),
+        )
+    });
+    frame
+        .set_native_surface_placements(original, &placements)
+        .unwrap();
+    finish(frame);
+    let resource = Rc::new("shared renderer");
+    let id = WindowId::from(41);
+    let mut windows = NativeWindows::new();
+    windows.insert(original, id, Rc::clone(&resource)).unwrap();
+    let reset = session.prepare_layout_reset(layout()).unwrap();
+    let report = finish(
+        session
+            .begin_native_layout_reset_frame(&reset, |_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    let pairs = report.native_root_continuations();
+    assert_eq!(pairs.len(), 2);
+    assert_ne!(pairs[0].predecessor(), pairs[1].predecessor());
+    assert_eq!(pairs[0].successor().window(), pairs[1].successor().window());
+    assert!(windows.continue_root(pairs[0]).unwrap());
+    assert!(!windows.continue_root(pairs[1]).unwrap());
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows.binding(id), Some(pairs[0].successor().window()));
+    for &pair in pairs {
+        assert!(windows.get(pair.predecessor()).is_none());
+        assert!(Rc::ptr_eq(
+            windows.get(pair.successor()).unwrap(),
+            &resource
+        ));
+        session
+            .report_native_binding_quiescence(pair.predecessor())
+            .unwrap();
+    }
+    finish(
+        session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    for pair in pairs {
+        assert!(!session.recognizes_native_binding(pair.predecessor()));
+        assert!(session.is_current_native_binding(pair.successor()));
+    }
+    assert!(Rc::ptr_eq(
+        windows.get(pairs[0].successor()).unwrap(),
+        &resource
+    ));
 }
 
 #[test]
