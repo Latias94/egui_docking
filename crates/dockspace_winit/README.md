@@ -23,6 +23,26 @@ this crate's current scope. Keep framework-specific input and accessibility
 integration in your UI adapter, and submit each physical input only once.
 The host remains responsible for retiring its pointer provider and window resources.
 
+## Multiple windows
+
+Compose the helpers per window: keep `MouseInput` and `RepaintScheduler` in each
+host window's state, and a `SurfaceCoordinates` mapping for each logical surface
+placement. Route `WindowEvent` by `WindowId`, while one `DockspaceSession` owns
+the shared workspace and the host supplies one total input order across windows.
+Use the earliest outstanding window deadline for the event loop's wait.
+
+Native effect execution, core-issued window bindings, capture/hover observations
+and exact output settlement remain host responsibilities. Local cursor samples
+alone cannot establish cross-window routing or desktop pointer authority. One
+OS window may contain several logical surfaces; keep its placement roster separate
+from its OS identity and renderer resources.
+
+The current software example demonstrates one window. For a native host, follow
+the [engine host guide](../dockspace/docs/guide.md) and check the
+[platform matrix](../../docs/PLATFORM_SUPPORT.md). The
+[integration skill](../../skills/dockspace-integration/SKILL.md) also covers
+host selection and multiview ownership.
+
 ## Add from source
 
 Until the first release, use path dependencies from this checkout:

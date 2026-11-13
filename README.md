@@ -84,6 +84,7 @@ storage stay in your application.
 - [egui overview](crates/egui_dockspace/README.md) and [integration guide](crates/egui_dockspace/docs/guide.md).
 - [GPUI adapter and workbench](integration/gpui-harness/README.md): embed retained application views and run the native demo.
 - [Documentation index](docs/README.md): platform limits, adapter testing and architecture decisions.
+- [AI integration skill](skills/dockspace-integration/SKILL.md): guidance for docking, custom hosts and native multiview. Copy its folder into your agent's skills directory (`~/.codex/skills/` for Codex) and invoke `$dockspace-integration`.
 - [Contributing](CONTRIBUTING.md): repository layout and development checks.
 
 ## License
